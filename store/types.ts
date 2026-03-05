@@ -341,4 +341,7 @@ export type AppSettings = {
   ragMaxChunks: number;
   /** RAGを適用するAIメンション */
   ragTargetMentions: Array<'claude' | 'gemini' | 'local' | 'perplexity' | 'team'>;
+  // ─── CLI Permission Proxy ────────────────────────────────────────────────────
+  /** Chatタブ経由でのCLI自動承認レベル (default: 'safe') */
+  autoApproveLevel: 'none' | 'safe' | 'all';
 };

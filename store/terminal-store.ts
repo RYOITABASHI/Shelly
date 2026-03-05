@@ -55,6 +55,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   obsidianVaultPath: '/storage/emulated/0/ObsidianVault',
   ragMaxChunks: 5,
   ragTargetMentions: ['claude', 'gemini', 'local'] as Array<'claude' | 'gemini' | 'local' | 'perplexity' | 'team'>,
+  // CLI Permission Proxy — 読み取りのみ自動承認
+  autoApproveLevel: 'safe' as const,
 };
 
 const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {

@@ -37,6 +37,7 @@ import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { resetOnboarding } from '@/components/Onboarding';
 import { resetSetupWizard } from '@/components/SetupWizard';
 import { PackageManager as PackageManagerModal } from '@/components/PackageManager';
+import { saveCustomContext, loadCustomContext, DEFAULT_CUSTOM_CONTEXT } from '@/lib/shelly-system-prompt';
 
 const THEME_OPTIONS: { value: ThemeVariant; label: string; bg: string }[] = [
   { value: 'black', label: '漆黒', bg: '#0D0D0D' },
@@ -163,6 +164,21 @@ export default function SettingsScreen() {
   // llama.cpp model management state
   const [activeModelId, setActiveModelId] = useState<string | null>(settings.localLlmModel ?? null);
   const [installedModelIds, setInstalledModelIds] = useState<Set<string>>(new Set());
+
+  // Custom context for LLM system prompt
+  const [customContextText, setCustomContextText] = useState('');
+  const [customContextSaved, setCustomContextSaved] = useState(false);
+  React.useEffect(() => {
+    loadCustomContext().then((text) => setCustomContextText(text || DEFAULT_CUSTOM_CONTEXT));
+  }, []);
+  const handleSaveCustomContext = useCallback(async () => {
+    await saveCustomContext(customContextText);
+    setCustomContextSaved(true);
+    setTimeout(() => setCustomContextSaved(false), 2000);
+  }, [customContextText]);
+
+  // Auto-approve level for CLI permission proxy
+  const autoApproveLevel = settings.autoApproveLevel ?? 'safe';
 
   const handleSelectModel = (model: LlamaCppModel) => {
     setActiveModelId(model.id);
@@ -1008,6 +1024,80 @@ export default function SettingsScreen() {
           isConnected={bridgeStatus === 'connected'}
           onRunCommand={handleRunCommandForSetup}
         />
+
+        {/* ── Custom Context ────────────────────────────────────────────── */}
+        <SectionHeader
+          title="カスタムコンテキスト"
+          subtitle="ローカルLLMに自動注入されるMD。設計思想やルールを記述"
+        />
+        <View style={styles.wsUrlRow}>
+          <TextInput
+            style={[styles.wsUrlInput, {
+              color: '#E5E7EB',
+              minHeight: 120,
+              textAlignVertical: 'top',
+              fontFamily: 'monospace',
+              fontSize: 12,
+            }]}
+            value={customContextText}
+            onChangeText={setCustomContextText}
+            placeholder={DEFAULT_CUSTOM_CONTEXT}
+            placeholderTextColor="#4B5563"
+            multiline
+            numberOfLines={8}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Pressable
+            style={[styles.segmentBtn, { backgroundColor: customContextSaved ? '#065F46' : '#1F2937', marginTop: 8 }]}
+            onPress={handleSaveCustomContext}
+          >
+            <Text style={styles.segmentBtnText}>
+              {customContextSaved ? '保存済み' : '保存する'}
+            </Text>
+          </Pressable>
+          <Text style={[styles.wsUrlHint, { marginTop: 4 }]}>
+            LLMをONにした時、ここの内容がシステムプロンプトに自動追加されます
+          </Text>
+        </View>
+
+        {/* ── CLI Auto-Approve ──────────────────────────────────────────── */}
+        <SectionHeader
+          title="CLI自動承認"
+          subtitle="Chatタブ経由でClaude Code/Geminiを使う時の権限承認"
+        />
+        <View style={styles.wsUrlRow}>
+          {(['none', 'safe', 'all'] as const).map((level) => {
+            const labels: Record<string, { title: string; desc: string }> = {
+              none: { title: '全て手動', desc: '毎回確認する（安全）' },
+              safe: { title: '読み取りのみ自動', desc: 'ファイル読み取りは自動承認' },
+              all: { title: '全自動', desc: '全て自動承認（上級者向け）' },
+            };
+            const isActive = autoApproveLevel === level;
+            return (
+              <Pressable
+                key={level}
+                style={[styles.segmentBtn, {
+                  backgroundColor: isActive ? '#1E3A5F' : '#111827',
+                  borderColor: isActive ? '#3B82F6' : '#374151',
+                  marginBottom: 6,
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }]}
+                onPress={() => updateSettings({ autoApproveLevel: level })}
+              >
+                <View>
+                  <Text style={[styles.segmentBtnText, { fontWeight: isActive ? '700' : '400' }]}>
+                    {labels[level].title}
+                  </Text>
+                  <Text style={[styles.wsUrlHint, { marginTop: 2 }]}>{labels[level].desc}</Text>
+                </View>
+                {isActive && <MaterialIcons name="check-circle" size={20} color="#3B82F6" />}
+              </Pressable>
+            );
+          })}
+        </View>
 
             {/* ── Perplexity API ─────────────────────────────────────────────── */}
         <SectionHeader

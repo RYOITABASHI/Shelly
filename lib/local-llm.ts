@@ -10,6 +10,8 @@
  * - ストリーミングレスポンス対応（Ollama /api/chat）
  */
 
+import { buildSystemPrompt } from './shelly-system-prompt';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TaskCategory =
@@ -425,6 +427,7 @@ export async function orchestrateTask(
   conversationHistory: OllamaMessage[] = [],
   projectContext?: string,
   userProfileSummary?: string,
+  customContext?: string,
 ): Promise<OrchestrationResult> {
   // Local LLM無効の場合はClaude Codeに委譲
   if (!config.enabled) {
@@ -440,19 +443,12 @@ export async function orchestrateTask(
 
   switch (category) {
     case 'chat': {
-      // Local LLMで直接回答
-      let systemContent =
-        'あなたはShellyというAndroidターミナルアプリのAIアシスタントです。' +
-        '必ず日本語で答えてください。英語や中国語など他の言語は絶対に使わないでください。' +
-        '簡潔に答えてください。3文以内が理想です。' +
-        'コード生成や調査が必要な場合はその旨を伝えてください。';
-
-      if (userProfileSummary) {
-        systemContent += `\n\n--- ユーザー情報 ---\n${userProfileSummary}\n--- ここまで ---`;
-      }
-      if (projectContext) {
-        systemContent += `\n\n--- プロジェクトコンテキスト ---\n${projectContext}\n--- ここまで ---\n\n上記の情報を踏まえて回答してください。`;
-      }
+      // Local LLMで直接回答（動的システムプロンプト使用）
+      const systemContent = buildSystemPrompt({
+        projectContext,
+        userProfileSummary,
+        customContext,
+      });
 
       const messages: OllamaMessage[] = [
         { role: 'system', content: systemContent },
@@ -530,6 +526,7 @@ export async function orchestrateChatStream(
   conversationHistory: OllamaMessage[] = [],
   projectContext?: string,
   userProfileSummary?: string,
+  customContext?: string,
 ): Promise<OrchestrationResult> {
   if (!config.enabled) {
     return {
@@ -544,21 +541,14 @@ export async function orchestrateChatStream(
 
   if (category !== 'chat') {
     // chat以外は通常のorchestrateに委譲
-    return orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary);
+    return orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext);
   }
 
-  let systemContent =
-    'あなたはShellyというAndroidターミナルアプリのAIアシスタントです。' +
-    '必ず日本語で答えてください。英語や中国語など他の言語は絶対に使わないでください。' +
-    '簡潔に答えてください。3文以内が理想です。' +
-    'コード生成や調査が必要な場合はその旨を伝えてください。';
-
-  if (userProfileSummary) {
-    systemContent += `\n\n--- ユーザー情報 ---\n${userProfileSummary}\n--- ここまで ---`;
-  }
-  if (projectContext) {
-    systemContent += `\n\n--- プロジェクトコンテキスト ---\n${projectContext}\n--- ここまで ---\n\n上記の情報を踏まえて回答してください。`;
-  }
+  const systemContent = buildSystemPrompt({
+    projectContext,
+    userProfileSummary,
+    customContext,
+  });
 
   const messages: OllamaMessage[] = [
     { role: 'system', content: systemContent },
