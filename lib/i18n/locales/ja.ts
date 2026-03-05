@@ -4,10 +4,10 @@
  */
 const ja: Record<string, string> = {
   // ── Tabs ──────────────────────────────────────────────────────────
+  'tab.projects': 'Projects',
+  'tab.chat': 'Chat',
   'tab.terminal': 'Terminal',
-  'tab.tty': 'TTY',
   'tab.snippets': 'Snippets',
-  'tab.creator': 'Creator',
   'tab.browser': 'Browser',
   'tab.obsidian': 'Obsidian',
   'tab.search': 'Search',
@@ -22,10 +22,10 @@ const ja: Record<string, string> = {
   // ── Command Palette ───────────────────────────────────────────────
   'palette.search': 'コマンドを検索...',
   'palette.no_results': '結果なし',
-  'palette.hint_terminal': 'メインターミナル',
-  'palette.hint_tty': 'ttydウェブターミナル',
+  'palette.hint_projects': 'プロジェクトフォルダ',
+  'palette.hint_chat': 'AIチャット',
+  'palette.hint_terminal': '生ターミナル (ttyd)',
   'palette.hint_snippets': '保存コマンド',
-  'palette.hint_creator': 'AIプロジェクト生成',
   'palette.hint_browser': '内蔵ブラウザ',
   'palette.hint_obsidian': 'ナレッジ管理',
   'palette.hint_search': '履歴検索',

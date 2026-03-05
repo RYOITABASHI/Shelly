@@ -32,14 +32,14 @@ export function CommandPalette() {
   const actions = useMemo((): PaletteAction[] => {
     const list: PaletteAction[] = [
       // Tab navigation
-      { id: 'tab-terminal', label: 'Terminal', hint: t('palette.hint_terminal'), icon: 'terminal', category: 'tab',
+      { id: 'tab-projects', label: 'Projects', hint: t('palette.hint_projects'), icon: 'folder', category: 'tab',
+        onExecute: () => { router.push('/(tabs)/projects' as any); close(); } },
+      { id: 'tab-chat', label: 'Chat', hint: t('palette.hint_chat'), icon: 'chat', category: 'tab',
         onExecute: () => { router.push('/(tabs)/' as any); close(); } },
-      { id: 'tab-tty', label: 'TTY', hint: t('palette.hint_tty'), icon: 'code', category: 'tab',
-        onExecute: () => { router.push('/(tabs)/tty' as any); close(); } },
+      { id: 'tab-terminal', label: 'Terminal', hint: t('palette.hint_terminal'), icon: 'terminal', category: 'tab',
+        onExecute: () => { router.push('/(tabs)/terminal' as any); close(); } },
       { id: 'tab-snippets', label: 'Snippets', hint: t('palette.hint_snippets'), icon: 'bookmark', category: 'tab',
         onExecute: () => { router.push('/(tabs)/snippets' as any); close(); } },
-      { id: 'tab-creator', label: 'Creator', hint: t('palette.hint_creator'), icon: 'auto-awesome', category: 'tab',
-        onExecute: () => { router.push('/(tabs)/creator' as any); close(); } },
       { id: 'tab-browser', label: 'Browser', hint: t('palette.hint_browser'), icon: 'public', category: 'tab',
         onExecute: () => { router.push('/(tabs)/browser' as any); close(); } },
       { id: 'tab-obsidian', label: 'Obsidian', hint: t('palette.hint_obsidian'), icon: 'psychology', category: 'tab',

@@ -2,7 +2,8 @@ import { create } from 'zustand';
 
 export type PaneTab =
   | 'index'
-  | 'tty'
+  | 'terminal'
+  | 'projects'
   | 'snippets'
   | 'creator'
   | 'browser'
@@ -20,7 +21,7 @@ type MultiPaneState = {
 };
 
 type MultiPaneActions = {
-  /** Enable multi-pane with optional initial tabs (default: ['index', 'tty']) */
+  /** Enable multi-pane with optional initial tabs (default: ['index', 'terminal']) */
   enableMultiPane: (initial?: PaneTab[]) => void;
   /** Disable multi-pane, return to normal tab view */
   disableMultiPane: () => void;
@@ -44,7 +45,7 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
 
     enableMultiPane: (initial) => {
       const { maxPanes } = get();
-      const tabs = initial ?? ['index', 'tty'];
+      const tabs = initial ?? ['index', 'terminal'];
       set({
         isMultiPane: true,
         panes: tabs.slice(0, maxPanes),

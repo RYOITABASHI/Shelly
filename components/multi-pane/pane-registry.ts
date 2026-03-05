@@ -8,15 +8,20 @@ type PaneEntry = {
 };
 
 export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
+  projects: {
+    title: 'Projects',
+    icon: 'folder',
+    getComponent: () => require('@/app/(tabs)/projects').default,
+  },
   index: {
-    title: 'Terminal',
-    icon: 'terminal',
+    title: 'Chat',
+    icon: 'chat',
     getComponent: () => require('@/app/(tabs)/index').default,
   },
-  tty: {
-    title: 'TTY',
-    icon: 'code',
-    getComponent: () => require('@/app/(tabs)/tty').default,
+  terminal: {
+    title: 'Terminal',
+    icon: 'terminal',
+    getComponent: () => require('@/app/(tabs)/terminal').default,
   },
   snippets: {
     title: 'Snippets',

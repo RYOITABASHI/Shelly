@@ -13,7 +13,7 @@ export function MultiPaneContainer() {
   const handleAdd = () => {
     const used = new Set(panes);
     const available = (
-      ['snippets', 'creator', 'browser', 'obsidian', 'search', 'settings', 'index', 'tty'] as const
+      ['projects', 'snippets', 'browser', 'obsidian', 'search', 'settings', 'index', 'terminal'] as const
     ).find((t) => !used.has(t));
     addPane(available ?? 'snippets');
   };

@@ -28,6 +28,7 @@ import { useCreatorStore } from '@/store/creator-store';
 import { BRIDGE_SERVER_JS, BRIDGE_SERVER_VERSION } from '@/lib/bridge-bundle';
 import { CursorShape, ThemeVariant, BridgeStatus } from '@/store/types';
 import { LlamaCppSection } from '@/components/settings/LlamaCppSection';
+import { McpSection } from '@/components/settings/McpSection';
 import { LlamaCppModel, buildStartAllScript, getRecommendedModel } from '@/lib/llamacpp-setup';
 import { useTranslation } from '@/lib/i18n';
 import { useI18n, AVAILABLE_LOCALES, type Locale } from '@/lib/i18n';
@@ -996,6 +997,16 @@ export default function SettingsScreen() {
           onSelectModel={handleSelectModel}
           onRunCommand={handleRunCommandForSetup}
           onUpdateLocalLlmUrl={handleUpdateLocalLlmUrl}
+        />
+
+        {/* ── MCP Servers ─────────────────────────────────────────────────── */}
+        <SectionHeader
+          title="MCP Servers"
+          subtitle="Claude Codeのコンテキストを強化するサーバー群"
+        />
+        <McpSection
+          isConnected={bridgeStatus === 'connected'}
+          onRunCommand={handleRunCommandForSetup}
         />
 
             {/* ── Perplexity API ─────────────────────────────────────────────── */}

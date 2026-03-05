@@ -4,10 +4,10 @@
  */
 const en: Record<string, string> = {
   // ── Tabs ──────────────────────────────────────────────────────────
+  'tab.projects': 'Projects',
+  'tab.chat': 'Chat',
   'tab.terminal': 'Terminal',
-  'tab.tty': 'TTY',
   'tab.snippets': 'Snippets',
-  'tab.creator': 'Creator',
   'tab.browser': 'Browser',
   'tab.obsidian': 'Obsidian',
   'tab.search': 'Search',
@@ -22,10 +22,10 @@ const en: Record<string, string> = {
   // ── Command Palette ───────────────────────────────────────────────
   'palette.search': 'Search commands...',
   'palette.no_results': 'No results',
-  'palette.hint_terminal': 'Main terminal',
-  'palette.hint_tty': 'ttyd web terminal',
+  'palette.hint_projects': 'Project folders',
+  'palette.hint_chat': 'AI chat interface',
+  'palette.hint_terminal': 'Raw terminal (ttyd)',
   'palette.hint_snippets': 'Saved commands',
-  'palette.hint_creator': 'AI project generator',
   'palette.hint_browser': 'Built-in browser',
   'palette.hint_obsidian': 'Knowledge management',
   'palette.hint_search': 'History search',

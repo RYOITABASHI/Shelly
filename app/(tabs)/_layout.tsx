@@ -129,20 +129,29 @@ export default function TabLayout() {
         }}
       >
         <Tabs.Screen
-          name="index"
+          name="projects"
           options={{
-            title: "Terminal",
+            title: "Projects",
             tabBarIcon: ({ color }) => (
-              <MaterialIcons name="terminal" size={22} color={color} />
+              <MaterialIcons name="folder" size={22} color={color} />
             ),
           }}
         />
         <Tabs.Screen
-          name="tty"
+          name="index"
           options={{
-            title: "TTY",
+            title: "Chat",
             tabBarIcon: ({ color }) => (
-              <MaterialIcons name="code" size={22} color={color} />
+              <MaterialIcons name="chat" size={22} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="terminal"
+          options={{
+            title: "Terminal",
+            tabBarIcon: ({ color }) => (
+              <MaterialIcons name="terminal" size={22} color={color} />
             ),
           }}
         />
@@ -158,10 +167,7 @@ export default function TabLayout() {
         <Tabs.Screen
           name="creator"
           options={{
-            title: "Creator",
-            tabBarIcon: ({ color }) => (
-              <MaterialIcons name="auto-awesome" size={22} color={color} />
-            ),
+            href: null,
           }}
         />
         <Tabs.Screen

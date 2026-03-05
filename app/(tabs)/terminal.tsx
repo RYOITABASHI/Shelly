@@ -1,5 +1,5 @@
 /**
- * TTY Screen — Raw terminal via ttyd + WebView
+ * Terminal Screen — Raw terminal via ttyd + WebView
  * 自動リトライ + 初心者向けセットアップガイド付き
  */
 import React, { useRef, useState } from 'react';
@@ -42,7 +42,7 @@ type ConnectionState = 'connecting' | 'connected' | 'error';
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
-export default function TTYScreen() {
+export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
   const {
