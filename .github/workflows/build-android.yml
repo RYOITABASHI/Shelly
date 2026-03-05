@@ -50,3 +50,8 @@ jobs:
         with:
           name: shelly-apk
           path: android/app/build/outputs/apk/release/*.apk
+
+      - name: Publish EAS Update (OTA)
+        run: eas update --platform android --branch preview --message "${{ github.event.head_commit.message }}" --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
