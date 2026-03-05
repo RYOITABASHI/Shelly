@@ -342,9 +342,11 @@ export async function ollamaChatStream(
       return { success: false, error: `HTTP ${res.status}: ${res.statusText}` };
     }
 
-    const reader = res.body?.getReader();
+    // React Native's fetch doesn't support ReadableStream.getReader()
+    // Return error so orchestrateChatStream can fall back to non-streaming ollamaChat
+    const reader = res.body?.getReader?.();
     if (!reader) {
-      return { success: false, error: 'レスポンスボディが読み取れません' };
+      return { success: false, error: 'ReadableStream not supported (React Native)' };
     }
 
     const decoder = new TextDecoder();
@@ -572,14 +574,26 @@ export async function orchestrateChatStream(
       handledBy: 'local_llm',
       reasoning: `Local LLM (${config.model}) ストリーミング回答`,
     };
-  } else {
+  }
+
+  // Streaming failed — try non-streaming as fallback (React Native doesn't support ReadableStream)
+  console.warn(`[local-llm] Stream failed (${result.error}), falling back to non-streaming`);
+  const fallback = await ollamaChat(config, messages);
+  if (fallback.success && fallback.content) {
+    onChunk(fallback.content, true);
     return {
       category: 'chat',
-      handledBy: 'claude',
-      delegatedCommand: buildClaudeCommand(userInput),
-      reasoning: `Local LLMエラー（${result.error}）のため、Claude Codeにフォールバック`,
+      handledBy: 'local_llm',
+      reasoning: `Local LLM (${config.model}) 非ストリーミング回答（ストリーミングフォールバック）`,
     };
   }
+
+  return {
+    category: 'chat',
+    handledBy: 'claude',
+    delegatedCommand: buildClaudeCommand(userInput),
+    reasoning: `Local LLMエラー（${fallback.error ?? result.error}）のため、Claude Codeにフォールバック`,
+  };
 }
 
 // ─── Command Builders ─────────────────────────────────────────────────────────

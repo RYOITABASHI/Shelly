@@ -157,6 +157,15 @@ Shelly/
 
 3. **ファイル重複の注意**: シンボリックリンクをコピーで置き換えたため、ルート直下とサブディレクトリ（例: `local-llm.ts` と `lib/local-llm.ts`）に同じファイルが存在する場合がある。`app/(tabs)/`内のimportは`@/lib/`を参照するため、`lib/`配下が正。ルート直下のファイルは参照されない可能性あり
 
+4. **⚠️ ブリッジサーバーのセットアップバグ**: SetupWizardのインストールコマンドが `mkdir -p ~/shelly-bridge` しか実行せず、`server.js` をコピー/生成していない。ユーザーが `node ~/shelly-bridge/server.js` を実行すると `MODULE_NOT_FOUND` エラーになる。修正方法: セットアップコマンドで `server.js` を `~/shelly-bridge/` に配置するか、`lib/bridge-bundle.ts` にサーバーコードを埋め込んでセットアップ時に書き出す仕組みにする。暫定対応: `cp ~/Shelly/server.js ~/shelly-bridge/server.js`
+
+5. **⚠️ セットアップUX全体の改善が必要**:
+   - ブリッジ + llama-server の2つを起動する必要があるが、ユーザーにとって手順が分かりづらい
+   - ポート競合時のエラー（EADDRINUSE）がユーザーフレンドリーでない
+   - 理想: SetupWizardでワンタップで全部起動できるようにする（tmuxセッション自動作成、ブリッジ+LLMサーバー同時起動）
+   - もしくは: ブリッジサーバーにllama-serverのプロセス管理機能を統合して、1コマンドで全部起動
+   - 最低限: セットアップ手順にtmuxの使い方、ポート競合時の対処法（`pkill -f "node.*server.js"`）を明記
+
 ---
 
 ## 開発ルール

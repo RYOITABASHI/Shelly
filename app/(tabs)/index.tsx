@@ -81,6 +81,29 @@ export default function TerminalScreen() {
     requestNotificationPermission();
   }, []);
 
+  // ── Auth URL auto-detection: open browser for OAuth/login URLs from CLI tools ──
+  const openedAuthUrlsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    // Check running blocks for auth URLs in their output
+    for (const block of activeSession.blocks) {
+      if (!block.isRunning && !block.output?.length) continue;
+      const output = block.output?.map((o) => o.text).join('') ?? '';
+      // Match URLs from CLI tool auth flows (Claude Code, Gemini, Codex, GitHub, etc.)
+      const urlPattern = /https?:\/\/[^\s"'<>]*(?:auth|login|oauth|consent|accounts\.google|github\.com\/login|anthropic\.com\/|signin|device\/activate|verify|callback|token)[^\s"'<>]*/gi;
+      const matches = output.match(urlPattern);
+      if (!matches) continue;
+      for (const url of matches) {
+        if (openedAuthUrlsRef.current.has(url)) continue;
+        openedAuthUrlsRef.current.add(url);
+        // Open in Shelly's browser tab
+        useTerminalStore.setState({ pendingBrowserUrl: url } as any);
+        router.push('/(tabs)/browser' as any);
+        break; // Only open one at a time
+      }
+    }
+  }, [activeSession.blocks, router]);
+
   // ── ユーザープロファイル（自動学習）─────────────────────────────────────────
   const userProfileRef = useRef<string>('');
 
@@ -419,14 +442,25 @@ export default function TerminalScreen() {
 
     addAiBlock(aiBlock);
 
-    // ── Layer 3: Natural language → show suggestion cards, wait for user ─
+    // ── Layer 3: Natural language → route directly to Local LLM (if enabled) ─
+    // No more suggestion cards — just send it straight to the LLM
+    let target = parsed.target;
     if (parsed.layer === 'natural') {
-      // Suggestions are already in the block, user will tap one
-      return;
+      if (settings.localLlmEnabled) {
+        target = 'local';
+        updateAiBlock(blockId, {
+          target: 'local',
+          logSummary: `[Local LLM] ${parsed.prompt.slice(0, 60)}${parsed.prompt.length > 60 ? '…' : ''}`,
+        });
+      } else {
+        // Local LLM disabled — show brief hint instead of suggestion cards
+        updateAiBlock(blockId, {
+          response: '@mentionでツールを指定してください。例: @claude, @gemini, @local',
+          isStreaming: false,
+        });
+        return;
+      }
     }
-
-    // ── Layer 1 & 2: Route to specific tool ───────────────────────────
-    const target = parsed.target;
 
     if (target === 'local') {
       // Local LLM — use streaming orchestration

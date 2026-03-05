@@ -30,6 +30,7 @@ import { isShellCommand } from '@/lib/input-router';
 import { useSpeechInput } from '@/hooks/use-speech-input';
 import { ShortcutBar } from './ShortcutBar';
 import { AutocompleteDropdown } from '@/components/input/AutocompleteDropdown';
+import { MentionDropdown } from '@/components/input/MentionDropdown';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { SPRING_CONFIGS } from '@/hooks/use-motion';
@@ -120,6 +121,22 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     if (!trimmed) return false;
     return !isShellCommand(trimmed);
   }, [inputText]);
+
+  // @mention detection: show dropdown when input starts with @ (no space yet after trigger)
+  const mentionState = useMemo(() => {
+    const trimmed = inputText.trimStart();
+    if (!trimmed.startsWith('@')) return null;
+    // If there's a space after the @word, mention is already "committed"
+    const firstSpace = trimmed.indexOf(' ');
+    if (firstSpace !== -1) return null;
+    // Extract query after @
+    return { query: trimmed.slice(1) };
+  }, [inputText]);
+
+  const handleMentionSelect = useCallback((trigger: string) => {
+    setInputText(trigger + ' ');
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, []);
 
   // Mode switch animation
   const prevMode = useRef(isNaturalMode);
@@ -328,9 +345,11 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
         isBridgeConnected={isBridgeConnected}
       />
 
-      {!isNaturalMode && inputText.trim().length > 0 && (
+      {mentionState ? (
+        <MentionDropdown query={mentionState.query} onSelect={handleMentionSelect} />
+      ) : !isNaturalMode && inputText.trim().length > 0 ? (
         <AutocompleteDropdown input={inputText} onSelect={handleAutocomplete} />
-      )}
+      ) : null}
 
       {attachedImages.length > 0 && (
         <ScrollView
