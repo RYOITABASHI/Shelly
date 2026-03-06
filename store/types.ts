@@ -344,4 +344,7 @@ export type AppSettings = {
   // ─── CLI Permission Proxy ────────────────────────────────────────────────────
   /** Chatタブ経由でのCLI自動承認レベル (default: 'safe') */
   autoApproveLevel: 'none' | 'safe' | 'all';
+  // ─── Default Agent ─────────────────────────────────────────────────────────
+  /** ローカルLLM無効時のデフォルトエージェント (default: 'gemini-cli') */
+  defaultAgent: 'gemini-cli' | 'claude-code' | 'codex';
 };

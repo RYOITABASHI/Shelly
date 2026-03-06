@@ -1099,6 +1099,44 @@ export default function SettingsScreen() {
           })}
         </View>
 
+        {/* ── Default Agent ──────────────────────────────────────────────── */}
+        <SectionHeader
+          title="デフォルトエージェント"
+          subtitle="ローカルLLM未使用時に優先するCLI"
+        />
+        <View style={styles.wsUrlRow}>
+          {(['gemini-cli', 'claude-code', 'codex'] as const).map((agent) => {
+            const labels: Record<string, { title: string; desc: string }> = {
+              'gemini-cli': { title: 'Gemini CLI', desc: '無料枠あり。Googleアカウントだけで使える。初心者におすすめ' },
+              'claude-code': { title: 'Claude Code', desc: '最も賢い。複雑な開発タスクに最強。有料' },
+              'codex': { title: 'Codex CLI', desc: '高速で軽量。簡単な修正向き' },
+            };
+            const isActive = (settings.defaultAgent ?? 'gemini-cli') === agent;
+            return (
+              <Pressable
+                key={agent}
+                style={[styles.segmentBtn, {
+                  backgroundColor: isActive ? '#1E3A5F' : '#111827',
+                  borderColor: isActive ? '#3B82F6' : '#374151',
+                  marginBottom: 6,
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }]}
+                onPress={() => updateSettings({ defaultAgent: agent })}
+              >
+                <View>
+                  <Text style={[styles.segmentBtnText, { fontWeight: isActive ? '700' : '400' }]}>
+                    {labels[agent].title}
+                  </Text>
+                  <Text style={[styles.wsUrlHint, { marginTop: 2 }]}>{labels[agent].desc}</Text>
+                </View>
+                {isActive && <MaterialIcons name="check-circle" size={20} color="#3B82F6" />}
+              </Pressable>
+            );
+          })}
+        </View>
+
             {/* ── Perplexity API ─────────────────────────────────────────────── */}
         <SectionHeader
           title="Perplexity API"

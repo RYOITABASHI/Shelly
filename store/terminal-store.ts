@@ -57,6 +57,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   ragTargetMentions: ['claude', 'gemini', 'local'] as Array<'claude' | 'gemini' | 'local' | 'perplexity' | 'team'>,
   // CLI Permission Proxy — 読み取りのみ自動承認
   autoApproveLevel: 'safe' as const,
+  // ペルソナB向けデフォルトエージェント — Gemini CLI（無料枠・低ハードル）
+  defaultAgent: 'gemini-cli' as const,
 };
 
 const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {

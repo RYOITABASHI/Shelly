@@ -106,10 +106,11 @@ export async function routeIntent(
   userInput: string,
   config: LocalLlmConfig,
   toolStatuses: ToolStatus[] = [],
+  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
 ): Promise<RoutingDecision> {
   // LLM無効時はフォールバック
   if (!config.enabled) {
-    return fallbackRoute(userInput, toolStatuses);
+    return fallbackRoute(userInput, toolStatuses, defaultAgent);
   }
 
   const messages: OllamaMessage[] = [
@@ -133,7 +134,7 @@ export async function routeIntent(
     // パース失敗 → フォールバック
   }
 
-  return fallbackRoute(userInput, toolStatuses);
+  return fallbackRoute(userInput, toolStatuses, defaultAgent);
 }
 
 /**
@@ -199,26 +200,57 @@ function buildDecision(
 
 // ─── Fallback (Keyword-based) ─────────────────────────────────────────────────
 
+/**
+ * LLM無効時のフォールバックルーティング。
+ *
+ * ペルソナB（ローカルLLM無し）のデフォルト:
+ * - chatカテゴリ → Gemini CLI（無料枠あり、セットアップ簡単、自然言語対応）
+ * - code → インストール済みのCLIを優先、なければGemini CLI
+ * - research → Gemini CLI
+ * - file_ops → Termux直接実行
+ * - unknown → Gemini CLI
+ *
+ * ローカルLLMが無い = フォールバック = 初心者の可能性が高い。
+ * Geminiをデフォルトにすることで、コスト・ハードル・汎用性のバランスを取る。
+ */
 function fallbackRoute(
   userInput: string,
   toolStatuses: ToolStatus[],
+  defaultAgent: RoutingTool = 'gemini-cli',
 ): RoutingDecision {
   const category = classifyTask(userInput);
 
+  // インストール済みのCLIを確認
+  const hasClaudeCode = toolStatuses.some((s) => s.id === 'claude-code' && s.installed);
+
+  // ツール名の日本語ラベル
+  const agentLabels: Record<string, string> = {
+    'gemini-cli': 'Gemini CLI',
+    'claude-code': 'Claude Code',
+    'codex': 'Codex CLI',
+  };
+  const defaultLabel = agentLabels[defaultAgent] || defaultAgent;
+
+  // codeカテゴリ: Claude Codeがあればそちら、なければデフォルトエージェント
+  const codeTool: RoutingTool = hasClaudeCode ? 'claude-code' : defaultAgent;
+  const codeReason = hasClaudeCode
+    ? 'コード関連のタスクのため、Claude Codeに委譲します'
+    : `コード関連のタスクです。${defaultLabel}で対応します`;
+
   const categoryToTool: Record<TaskCategory, RoutingTool> = {
-    chat: 'local-llm',
-    code: 'claude-code',
-    research: 'gemini-cli',
+    chat: defaultAgent,
+    code: codeTool,
+    research: 'gemini-cli',  // 調査は常にGemini（検索連携が強い）
     file_ops: 'termux',
-    unknown: 'claude-code',
+    unknown: defaultAgent,
   };
 
   const categoryReasons: Record<TaskCategory, string> = {
-    chat: '会話・質問のため、ローカルLLMで回答します',
-    code: 'コード関連のタスクのため、Claude Codeに委譲します',
+    chat: `${defaultLabel}で回答します`,
+    code: codeReason,
     research: '調査・検索タスクのため、Gemini CLIに委譲します',
     file_ops: 'ファイル操作のため、直接実行します',
-    unknown: '汎用タスクのため、Claude Codeに委譲します',
+    unknown: `${defaultLabel}で対応します`,
   };
 
   const tool = categoryToTool[category];

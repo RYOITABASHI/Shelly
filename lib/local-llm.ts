@@ -434,9 +434,10 @@ export async function orchestrateTask(
   userProfileSummary?: string,
   customContext?: string,
   toolStatuses?: ToolStatus[],
+  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
 ): Promise<OrchestrationResult> {
   // LLMベースのインテントルーティング
-  const routing = await routeIntent(userInput, config, toolStatuses ?? []);
+  const routing = await routeIntent(userInput, config, toolStatuses ?? [], defaultAgent);
 
   // ツール未インストール → セットアップ案内を返す
   if (routing.setupRequired) {
@@ -556,13 +557,14 @@ export async function orchestrateChatStream(
   userProfileSummary?: string,
   customContext?: string,
   toolStatuses?: ToolStatus[],
+  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
 ): Promise<OrchestrationResult> {
   // LLMベースのインテントルーティング
-  const routing = await routeIntent(userInput, config, toolStatuses ?? []);
+  const routing = await routeIntent(userInput, config, toolStatuses ?? [], defaultAgent);
 
   // セットアップが必要 or ローカルLLM以外 → 通常フローに委譲
   if (routing.setupRequired || routing.tool !== 'local-llm') {
-    return orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext, toolStatuses);
+    return orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext, toolStatuses, defaultAgent);
   }
 
   const systemContent = buildSystemPrompt({

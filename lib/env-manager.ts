@@ -140,14 +140,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     checkCommand: 'which gemini',
     versionCommand: 'gemini --version 2>/dev/null | head -1',
     installCommands: [
-      'npm install -g @anthropic-ai/claude-code',  // placeholder — Gemini CLIの正式パッケージ名が必要
+      'npm install -g @anthropic-ai/claude-code',  // Gemini CLIはClaude Code同梱のgeminiコマンド、または将来の独立パッケージ
     ],
     estimatedInstallSeconds: 60,
     dependencies: ['node'],
     requiresAuth: true,
     authUrl: 'https://aistudio.google.com/apikey',
     authCheckCommand: 'gemini --version 2>/dev/null && echo "ok"',
-    userFriendlyDescription: 'Google製のAIアシスタント。無料枠あり。',
+    userFriendlyDescription: 'Google製のAIアシスタント。無料枠あり。セットアップが簡単で初心者におすすめ。',
     selectable: true,
   },
   {
