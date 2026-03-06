@@ -69,7 +69,16 @@ export default function TerminalScreen() {
   const router = useRouter();
 
   // Termux bridge — always mounted so WS lifecycle follows connectionMode
-  const { sendCommand, cancelCurrent, isConnected: isBridgeConnected } = useTermuxBridge();
+  const { sendCommand, cancelCurrent, isConnected: isBridgeConnected, runCommand: bridgeRunCommand } = useTermuxBridge();
+
+  // Adapter: bridge runCommand → CommandRunner型 (Promise<string>)
+  const execForContext = useCallback(
+    async (cmd: string): Promise<string> => {
+      const result = await bridgeRunCommand(cmd);
+      return result.stdout;
+    },
+    [bridgeRunCommand],
+  );
 
   // Whether any block in the active session is currently running (for Ctrl+C state)
   const isRunning = activeSession.blocks.some(
@@ -119,16 +128,16 @@ export default function TerminalScreen() {
   useEffect(() => {
     if (!isBridgeConnected || !settings.localLlmEnabled) return;
     const cwd = activeSession.currentDir;
-    loadProjectContext(cwd, sendCommand).then(async (ctx) => {
+    loadProjectContext(cwd, execForContext).then(async (ctx) => {
       if (ctx) {
         projectContextRef.current = ctx;
       } else {
         // context.mdがない場合、package.json等があれば自動生成
-        const hasProject = await sendCommand(
+        const hasProject = await execForContext(
           `test -f "${cwd}/package.json" -o -f "${cwd}/Cargo.toml" -o -f "${cwd}/go.mod" -o -f "${cwd}/pyproject.toml" -o -f "${cwd}/Makefile" && echo "yes" || echo "no"`,
         );
         if (hasProject.trim() === 'yes') {
-          const generated = await generateProjectContext(cwd, sendCommand);
+          const generated = await generateProjectContext(cwd, execForContext);
           projectContextRef.current = generated;
           // プロジェクトアクセスを学習
           const projName = cwd.split('/').pop() ?? cwd;
@@ -372,7 +381,7 @@ export default function TerminalScreen() {
       updateAiBlock(blockId, { isStreaming: true, streamingText: '解析中...' });
 
       try {
-        const ctx = await generateProjectContext(cwd, sendCommand);
+        const ctx = await generateProjectContext(cwd, execForContext);
         projectContextRef.current = ctx;
         updateAiBlock(blockId, {
           response: `.shelly/context.md を生成しました (${ctx.length}文字)\nLLMが自動でプロジェクト情報を参照します。\n\n---\n${ctx.slice(0, 1500)}${ctx.length > 1500 ? '\n...(省略)' : ''}`,

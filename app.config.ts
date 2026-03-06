@@ -113,7 +113,7 @@ const config: ExpoConfig = {
   updates: {
     url: "https://u.expo.dev/e0d124cb-e18f-46c4-aca2-e19e48ba04fc",
     enabled: true,
-    checkOnLaunch: "ALWAYS",
+    checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 3000,
   },
   extra: {

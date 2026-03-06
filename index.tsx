@@ -69,7 +69,16 @@ export default function TerminalScreen() {
   const router = useRouter();
 
   // Termux bridge — always mounted so WS lifecycle follows connectionMode
-  const { sendCommand, cancelCurrent, isConnected: isBridgeConnected } = useTermuxBridge();
+  const { sendCommand, cancelCurrent, isConnected: isBridgeConnected, runCommand: bridgeRunCommand } = useTermuxBridge();
+
+  // Adapter: bridge runCommand → CommandRunner型 (Promise<string>)
+  const execForContext = useCallback(
+    async (cmd: string): Promise<string> => {
+      const result = await bridgeRunCommand(cmd);
+      return result.stdout;
+    },
+    [bridgeRunCommand],
+  );
 
   // Whether any block in the active session is currently running (for Ctrl+C state)
   const isRunning = activeSession.blocks.some(
@@ -80,6 +89,29 @@ export default function TerminalScreen() {
     loadSettings();
     requestNotificationPermission();
   }, []);
+
+  // ── Auth URL auto-detection: open browser for OAuth/login URLs from CLI tools ──
+  const openedAuthUrlsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    // Check running blocks for auth URLs in their output
+    for (const block of activeSession.blocks) {
+      if (!block.isRunning && !block.output?.length) continue;
+      const output = block.output?.map((o) => o.text).join('') ?? '';
+      // Match URLs from CLI tool auth flows (Claude Code, Gemini, Codex, GitHub, etc.)
+      const urlPattern = /https?:\/\/[^\s"'<>]*(?:auth|login|oauth|consent|accounts\.google|github\.com\/login|anthropic\.com\/|signin|device\/activate|verify|callback|token)[^\s"'<>]*/gi;
+      const matches = output.match(urlPattern);
+      if (!matches) continue;
+      for (const url of matches) {
+        if (openedAuthUrlsRef.current.has(url)) continue;
+        openedAuthUrlsRef.current.add(url);
+        // Open in Shelly's browser tab
+        useTerminalStore.setState({ pendingBrowserUrl: url } as any);
+        router.push('/(tabs)/browser' as any);
+        break; // Only open one at a time
+      }
+    }
+  }, [activeSession.blocks, router]);
 
   // ── ユーザープロファイル（自動学習）─────────────────────────────────────────
   const userProfileRef = useRef<string>('');
@@ -96,16 +128,16 @@ export default function TerminalScreen() {
   useEffect(() => {
     if (!isBridgeConnected || !settings.localLlmEnabled) return;
     const cwd = activeSession.currentDir;
-    loadProjectContext(cwd, sendCommand).then(async (ctx) => {
+    loadProjectContext(cwd, execForContext).then(async (ctx) => {
       if (ctx) {
         projectContextRef.current = ctx;
       } else {
         // context.mdがない場合、package.json等があれば自動生成
-        const hasProject = await sendCommand(
+        const hasProject = await execForContext(
           `test -f "${cwd}/package.json" -o -f "${cwd}/Cargo.toml" -o -f "${cwd}/go.mod" -o -f "${cwd}/pyproject.toml" -o -f "${cwd}/Makefile" && echo "yes" || echo "no"`,
         );
         if (hasProject.trim() === 'yes') {
-          const generated = await generateProjectContext(cwd, sendCommand);
+          const generated = await generateProjectContext(cwd, execForContext);
           projectContextRef.current = generated;
           // プロジェクトアクセスを学習
           const projName = cwd.split('/').pop() ?? cwd;
@@ -349,7 +381,7 @@ export default function TerminalScreen() {
       updateAiBlock(blockId, { isStreaming: true, streamingText: '解析中...' });
 
       try {
-        const ctx = await generateProjectContext(cwd, sendCommand);
+        const ctx = await generateProjectContext(cwd, execForContext);
         projectContextRef.current = ctx;
         updateAiBlock(blockId, {
           response: `.shelly/context.md を生成しました (${ctx.length}文字)\nLLMが自動でプロジェクト情報を参照します。\n\n---\n${ctx.slice(0, 1500)}${ctx.length > 1500 ? '\n...(省略)' : ''}`,
@@ -419,14 +451,28 @@ export default function TerminalScreen() {
 
     addAiBlock(aiBlock);
 
-    // ── Layer 3: Natural language → show suggestion cards, wait for user ─
+    // ── Layer 3: Natural language → route directly to Local LLM (if enabled) ─
+    // No more suggestion cards — just send it straight to the LLM
+    let target = parsed.target;
     if (parsed.layer === 'natural') {
-      // Suggestions are already in the block, user will tap one
-      return;
+      if (settings.localLlmEnabled) {
+        target = 'local';
+        updateAiBlock(blockId, {
+          target: 'local',
+          logSummary: `[Local LLM] ${parsed.prompt.slice(0, 60)}${parsed.prompt.length > 60 ? '…' : ''}`,
+          routingDetail: undefined,
+          toolSuggestions: undefined,
+          mentionHint: undefined,
+        });
+      } else {
+        // Local LLM disabled — show brief hint instead of suggestion cards
+        updateAiBlock(blockId, {
+          response: '@mentionでツールを指定してください。例: @claude, @gemini, @local',
+          isStreaming: false,
+        });
+        return;
+      }
     }
-
-    // ── Layer 1 & 2: Route to specific tool ───────────────────────────
-    const target = parsed.target;
 
     if (target === 'local') {
       // Local LLM — use streaming orchestration
@@ -754,70 +800,8 @@ export default function TerminalScreen() {
     return navigateHistory('down');
   }, [navigateHistory]);
 
-  // ── Z Fold6 inner screen landscape: side-by-side split layout ──────────────
-  // In multi-pane mode, use pane width to decide; skip split if pane is narrow
-  const effectiveWidth = paneCtx ? paneCtx.paneWidth : layout.width;
-  const useSplit = layout.useSplitLayout && effectiveWidth > 900;
-  if (useSplit) {
-    const splitContent = (
-      <View style={[styles.rootInner, { paddingTop: insets.top, backgroundColor: rootBgColor }]}>
-        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-        <TerminalHeader />
-        <View style={styles.splitContainer}>
-          {/* Left 60%: terminal output */}
-          <View style={styles.splitLeft}>
-            <BlockList
-              blocks={activeSession.blocks}
-              entries={activeSession.entries}
-              currentDir={activeSession.currentDir}
-              onRerun={handleSend}
-              onCancel={handleCancel}
-              onSelectTool={handleSelectTool}
-            />
-          </View>
-          {/* Right 40%: input + shortcuts */}
-          <View style={styles.splitRight}>
-            <KeyboardAvoidingView
-              style={styles.flex}
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              keyboardVerticalOffset={0}
-            >
-              <View style={styles.splitRightInner}>
-                {/* Mini output mirror — show last 5 entries for context */}
-                <View style={styles.splitRightTerminal}>
-                  <BlockList
-                    blocks={activeSession.blocks.slice(-5)}
-                    entries={activeSession.entries.slice(-5)}
-                    currentDir={activeSession.currentDir}
-                    onRerun={handleSend}
-                    onCancel={handleCancel}
-                    onSelectTool={handleSelectTool}
-                  />
-                </View>
-                <CommandInput
-                  ref={commandInputRef}
-                  onSend={handleSend}
-                  onHistoryUp={handleHistoryUp}
-                  onHistoryDown={handleHistoryDown}
-                  onCtrlC={handleCtrlC}
-                  isRunning={isRunning}
-                  isBridgeConnected={isBridgeConnected}
-                />
-              </View>
-            </KeyboardAvoidingView>
-          </View>
-        </View>
-      </View>
-    );
-    return hasWallpaper ? (
-      <ImageBackground source={{ uri: settings.wallpaperUri! }} style={styles.root} resizeMode="cover">
-        {blurIntensity > 0 && <BlurView intensity={blurIntensity} style={StyleSheet.absoluteFill} tint="dark" />}
-        {splitContent}
-      </ImageBackground>
-    ) : splitContent;
-  }
-
-  // ── Default portrait layout (outer screen or inner portrait) ───────────────
+  // ── Single-pane layout (all screens) ─────────────────────────────────────
+  // Multi-pane is handled by MultiPaneContainer overlay in _layout.tsx
   const portraitContent = (
     <View style={[styles.rootInner, { paddingTop: insets.top, backgroundColor: rootBgColor }]}>
       {/* コマンド安全確認ダイアログ */}
@@ -929,30 +913,6 @@ const styles = StyleSheet.create({
   terminalArea: {
     flex: 1,
     backgroundColor: '#0A0A0A',
-  },
-  // Landscape split layout
-  splitContainer: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  splitLeft: {
-    flex: 3,                    // 60% of width
-    backgroundColor: '#0A0A0A',
-    borderRightWidth: 1,
-    borderRightColor: '#1E1E1E',
-  },
-  splitRight: {
-    flex: 2,                    // 40% of width
-    backgroundColor: '#0A0A0A',
-  },
-  splitRightInner: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  splitRightTerminal: {
-    flex: 1,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E1E1E',
   },
   // コマンド安全確認ダイアログ
   safetyOverlay: {
