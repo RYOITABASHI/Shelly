@@ -22,6 +22,18 @@ Shelly上のTermuxからClaude Codeを起動した際にも自動で読み込ま
 
 ---
 
+## タブ構成（v5.0 新設計）
+
+| 順 | タブ | 役割 |
+|----|------|------|
+| 1 | **Projects** | プロジェクト一覧 + チャット履歴。GPT/Claudeの左パネルと同じ概念をタブで実現 |
+| 2 | **Chat** | メイン画面。右:ユーザーバブル、左:AIバブル。裏でCLI実行、結果をチャット風に描画 |
+| 3 | **Terminal** | TTY生ターミナル。日本語入力対応（Termux単体では不可能） |
+| 4 | **Settings** | 設定 + スニペット管理 + Obsidian RAG + バックアップ |
+
+旧8タブ（Chat/TTY/Snippets/Creator/Browser/Obsidian/Search/Settings）から4タブに集約。
+Creator → Chatから「アプリ作って」で実行。Snippets → Settings内。Browser → 廃止。Obsidian → Settings内。Search → Projects内。
+
 ## ディレクトリ構成
 
 ```
@@ -30,33 +42,32 @@ Shelly/
 │   ├── _layout.tsx          # ルートレイアウト（GestureHandler, SafeArea）
 │   ├── index.tsx             # (tabs)へのリダイレクト
 │   └── (tabs)/
-│       ├── _layout.tsx       # タブレイアウト（8タブ + マルチペイン + コマンドパレット）
-│       ├── index.tsx         # メインターミナル画面（600行超）
-│       ├── tty.tsx           # ttyd WebViewターミナル
-│       ├── snippets.tsx      # スニペット管理
-│       ├── creator.tsx       # AIプロジェクト生成
-│       ├── browser.tsx       # 内蔵ブラウザ
-│       ├── obsidian.tsx      # ナレッジベース
-│       ├── search.tsx        # 履歴検索
+│       ├── _layout.tsx       # タブレイアウト（4タブ）
+│       ├── index.tsx         # Chatタブ（メイン画面）
+│       ├── projects.tsx      # Projectsタブ（プロジェクト + 履歴）
+│       ├── terminal.tsx      # Terminalタブ（TTY生ターミナル）
 │       └── settings.tsx      # 設定画面
 ├── components/
+│   ├── chat/
+│   │   ├── ChatBubble.tsx        # ユーザー/AIバブルコンポーネント
+│   │   ├── ChatInput.tsx         # GPT風入力欄（音声入力 + 画像添付）
+│   │   ├── CommandExecBubble.tsx  # コマンド実行結果バブル（折りたたみ対応）
+│   │   └── ChatHeader.tsx        # ヘッダー（接続状態 + Terminalショートカット）
+│   ├── projects/
+│   │   ├── ProjectList.tsx       # プロジェクト一覧
+│   │   ├── ChatHistory.tsx       # チャット履歴（検索付き）
+│   │   └── ProjectCard.tsx       # プロジェクトカード（フォルダ + メッセージ数）
 │   ├── terminal/
-│   │   ├── TerminalHeader.tsx    # ヘッダー（セッション管理 + 接続状態 + マルチペイン切り替え）
-│   │   ├── BlockList.tsx         # ブロック一覧表示
+│   │   ├── TerminalHeader.tsx    # ヘッダー（接続状態）
+│   │   ├── ShortcutBar.tsx       # Ctrl/Esc/Tab等のショートカットバー（Terminalタブ専用）
 │   │   └── FullscreenTerminal.tsx
-│   ├── input/
-│   │   ├── CommandInput.tsx      # コマンド入力（音声入力 + 画像添付 + オートコンプリート）
-│   │   ├── ShortcutBar.tsx       # Ctrl/Esc/Tab等のショートカットバー
-│   │   └── AutocompleteDropdown.tsx
 │   ├── multi-pane/
-│   │   ├── MultiPaneContainer.tsx  # マルチペインのコンテナ
-│   │   ├── PaneSlot.tsx            # 各ペイン（ヘッダー + コンテンツ + セレクタ）
-│   │   ├── PaneSelector.tsx        # タブ切り替えモーダル
+│   │   ├── MultiPaneContainer.tsx  # マルチペインのコンテナ（ワイド画面用）
+│   │   ├── PaneSlot.tsx            # 各ペイン
 │   │   └── pane-registry.ts        # ペインのコンポーネント登録
 │   ├── CommandPalette.tsx     # Ctrl+Shift+P コマンドパレット
-│   ├── QuickTerminal.tsx      # ドロップダウンターミナル
 │   ├── Onboarding.tsx         # 初回起動チュートリアル
-│   └── SetupWizard.tsx        # Termuxセットアップウィザード（スキップ可能）
+│   └── SetupWizard.tsx        # Termuxセットアップウィザード（2択分岐 + 5ステップ）
 ├── lib/
 │   ├── input-router.ts        # 4層+4.5層入力ルーティング（軽量タスク直送）
 │   ├── local-llm.ts           # ローカルLLMオーケストレーション

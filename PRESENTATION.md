@@ -2,9 +2,152 @@
 
 ## Overview
 
-Shelly is a full-featured terminal IDE built entirely with React Native / Expo, designed to run on Android smartphones. It bridges the gap between mobile devices and real development environments by integrating Termux (Android's Linux terminal emulator) with multiple AI agents, a project generation engine, and a polished touch-optimized UI.
+Shelly is a chat-first terminal IDE for Android. It wraps Termux (Linux terminal emulator) in a familiar chat interface — like ChatGPT or Claude, but with real shell execution behind every message.
 
-The entire app — every line of code — was developed on-device using Termux and Claude Code running on a Samsung Galaxy Z Fold6.
+Users type natural language. The AI picks the right tool, runs commands in Termux, and translates the results back into chat bubbles. No terminal knowledge required.
+
+For power users, a raw terminal tab gives full shell access — with Japanese input support that Termux alone cannot provide.
+
+**The entire app was developed on-device using Termux + Claude Code on a Samsung Galaxy Z Fold6.**
+
+---
+
+## Core Concept
+
+```
+User: "ポートフォリオ作って"
+         |
+    Chat UI (natural language)
+         |
+    Input Router (intent classification)
+         |
+    AI Agent Selection (Claude Code / Gemini CLI / Local LLM)
+         |
+    Termux Bridge (real shell execution)
+         |
+    Chat UI (results as chat bubbles)
+```
+
+What makes Shelly different from ChatGPT/Claude apps:
+- **Real execution.** Not just conversation — commands actually run on the device.
+- **Multiple AI backends.** Claude Code, Gemini CLI, Perplexity, Local LLM, Codex — auto-selected or @mentioned.
+- **Terminal access.** When you need it, raw shell is one tab away.
+
+What makes Shelly different from Termux:
+- **Japanese input.** Termux can't handle Gboard/Japanese IME properly. Shelly can.
+- **Chat UI.** No need to know bash. Talk naturally, get results.
+- **AI translation.** Command outputs are summarized in plain Japanese.
+
+---
+
+## App Structure (4 Tabs)
+
+| Tab | Role | Target User |
+|-----|------|-------------|
+| **Projects** | Project folders + chat history. Like GPT/Claude's left sidebar, but as a tab (mobile-friendly). | Everyone |
+| **Chat** | Main screen. Right: user bubbles, Left: AI bubbles. Commands execute behind the scenes. | Everyone |
+| **Terminal** | Raw TTY terminal. Full shell access with Japanese input via Shelly's keyboard. | Power users |
+| **Settings** | AI config, Termux Bridge, snippets, Obsidian RAG, themes, backup. | Everyone (initial setup) |
+
+### Why 4 tabs?
+
+Previous design had 8 tabs (Chat, TTY, Snippets, Creator, Browser, Obsidian, Search, Settings). This was overwhelming for new users and blurred the line between "chat app" and "terminal app".
+
+New design: GPT/Claude users see a familiar interface. Terminal users get a dedicated tab. Everything else lives in Settings or Projects.
+
+**Migration:**
+| Old Tab | New Location |
+|---------|-------------|
+| TTY | Terminal tab (renamed) |
+| Creator | Chat (say "アプリ作って" — AI handles project creation) |
+| Snippets | Settings > Snippets (or `/` slash command in Chat) |
+| Browser | Removed (use device browser) |
+| Obsidian | Settings > Obsidian RAG |
+| Search | Projects tab (chat history search) |
+
+---
+
+## Chat Tab — Detailed Design
+
+```
++------------------------------+
+| <<  Shelly           [>_]    |  << = Projects drawer, >_ = Terminal shortcut
++------------------------------+
+|                              |
+|        こんにちは    [User] >|  Right-aligned user bubble
+|                              |
+|< [AI]  こんにちは！          |  Left-aligned AI bubble
+|        何か作りましょうか？   |
+|                              |
+|   ポートフォリオ作って [User]>|
+|                              |
+|< [AI]  Claude Codeで         |
+|        作成します。          |
+|   +-- Executing -----------+ |
+|   | mkdir portfolio        | |  Command execution inside bubble
+|   | npm init -y            | |
+|   | Creating files...      | |  Collapsible for long output
+|   | Done (3 files)         | |
+|   +------------------------+ |
+|                              |
++------------------------------+
+| [+] メッセージを入力...  [>] |  GPT-style input bar
++------------------------------+
+```
+
+**Key behaviors:**
+- User input → right bubble (blue/green)
+- AI response → left bubble with avatar
+- Command execution → embedded in AI bubble, collapsible
+- Dangerous commands → red warning bubble with confirm/cancel
+- @mention → routes to specific AI (e.g., `@claude`, `@gemini`, `@local`)
+- `/` prefix → slash commands (snippets, settings shortcuts)
+- Long outputs → auto-collapsed, tap to expand
+- Streaming → typing indicator with token/s stats
+
+---
+
+## Projects Tab — Detailed Design
+
+```
++------------------------------+
+| Projects            [+ New]  |
++------------------------------+
+| [Search...]                  |
++------------------------------+
+| [folder] portfolio-site      |
+|    ~/dev/portfolio            |
+|    3 hours ago  |  12 msgs   |
++------------------------------+
+| [folder] shelly-bridge       |
+|    ~/shelly-bridge            |
+|    Yesterday  |  8 msgs      |
++------------------------------+
+| [chat] 雑談                  |
+|    (no project folder)        |
+|    2 days ago  |  3 msgs     |
++------------------------------+
+| -- Older ------------------- |
+| [folder] timer-app  ...      |
++------------------------------+
+```
+
+**Key behaviors:**
+- Each chat session can be linked to a project folder (cwd)
+- Tap → switch to that chat in Chat tab
+- Swipe left → delete
+- New chat → optional project folder selection
+- Search → full-text search across all chat history
+- Folder-less chats = casual conversation (like "New chat" in GPT)
+
+---
+
+## Terminal Tab
+
+Full TTY terminal powered by ttyd WebView. Same as current TTY tab, but now:
+- Japanese input works (Shelly's keyboard layer intercepts IME)
+- Shortcut bar (Ctrl, Esc, Tab, arrows) shown here only
+- Copy/paste integration with Chat tab
 
 ---
 
@@ -16,369 +159,138 @@ The entire app — every line of code — was developed on-device using Termux a
 | Platform | Expo (New Architecture) | SDK 54 |
 | Language | TypeScript | Strict mode |
 | State Management | Zustand | 5.0.11 |
-| Animation | React Native Reanimated | v4 (~4.1.6) |
-| Gestures | React Native Gesture Handler | ~2.28.0 |
+| Animation | React Native Reanimated | v4 |
 | Styling | NativeWind + Tailwind CSS | 4.2.1 / 3.4.17 |
-| Audio | Expo Audio | ~1.1.0 |
 | Navigation | Expo Router (file-based) | v6 |
-| RPC | tRPC | 11.7.2 |
-| Validation | Zod | 4.2.1 |
 | Storage | AsyncStorage + Expo SecureStore | Latest |
 
 ---
 
-## Architecture
-
-### App Structure (8 Tabs)
-
-```
-Shelly
-├── Terminal      — Main shell interface (command blocks + AI blocks)
-├── TTY           — Full ttyd WebView terminal
-├── Snippets      — Saved command management (swipe gestures)
-├── Creator       — AI-powered project generation (4-lane workflow)
-├── Browser       — In-app web browser
-├── Obsidian      — Knowledge base / RAG integration
-├── Search        — Cross-session search
-└── Settings      — 38 configuration sections (advanced toggle for power users)
-```
-
-### Core Data Flow
+## Input Routing (5 Layers)
 
 ```
 User Input
-    │
-    ▼
-5-Layer Input Router (lib/input-router.ts)
-    │
-    ├── Layer 1:   @mention        → Direct AI routing (@claude, @gemini, @local, @team, @git, etc.)
-    ├── Layer 2:   NL + Tool       → Keyword detection ("claudeで", "検索して", "ollamaで")
-    ├── Layer 3:   Natural Lang    → Tool suggestions with confidence scores
-    ├── Layer 4:   Shell Command   → Pattern detection (pipes, paths, known CLIs)
-    └── Layer 4.5: Lightweight NL  → Simple NL→shell shortcut ("ファイル一覧"→ls, "今どこ"→pwd) — no API call
-    │
-    ▼
+    |
+    v
+Layer 1: @mention        -> Direct AI routing (@claude, @gemini, @local, @team, @git)
+Layer 2: NL + Tool        -> Keyword detection ("claudeで", "検索して")
+Layer 3: Natural Language  -> LLM intent classification (chat/code/research/file_ops)
+Layer 4: Shell Command     -> Pattern detection (pipes, paths, known CLIs)
+Layer 4.5: Lightweight NL  -> Simple NL->shell shortcut ("ファイル一覧"->ls) — no API call
+    |
+    v
 Target Execution
-    ├── Termux WebSocket Bridge → Real shell execution
-    ├── Claude Code CLI         → Code generation / complex tasks
-    ├── Gemini CLI              → Research / information gathering
-    ├── Local LLM (Ollama)      → Offline chat / facilitation
-    ├── Perplexity API          → Web search with citations
-    ├── @team Table             → Multi-agent parallel consensus
-    ├── @git Guide              → Natural language Git tutoring
-    └── Browser                 → In-app web navigation
+    +-- Termux Bridge       -> Real shell execution (WebSocket)
+    +-- Claude Code CLI     -> Code generation, complex tasks
+    +-- Gemini CLI          -> Research, information gathering
+    +-- Local LLM (Ollama)  -> Offline chat, intent routing
+    +-- Perplexity API      -> Web search with citations
+    +-- @team Table         -> Multi-agent parallel consensus
+    +-- @git Guide          -> Natural language Git tutoring
 ```
 
 ---
 
-## Key Features
+## Multi-AI Integration
 
-### 1. Termux WebSocket Bridge
+5 AI backends with instant switching via @mention:
 
-Real bidirectional communication with Termux via WebSocket (ws://127.0.0.1:8765).
-
-**Protocol (JSON over WebSocket):**
-- Client → Server: `run`, `cancel`, `ping`
-- Server → Client: `stdout`, `stderr`, `exit`, `cancelled`, `error`, `pong`, `ready`, `projectCreated`
-
-**Reliability:**
-- FIFO command queue with request IDs
-- Auto-reconnect with exponential backoff (max 5 attempts, cap 30s)
-- Foreground resume triggers reconnect (AppState listener)
-- Cancel timeout fallback (5s) for force-finalize
-- Battery-friendly retry strategy
-
-### 2. Multi-AI Integration
-
-5 AI backends with instant switching via @mention syntax:
-
-| Agent | Method | Routing | Use Case |
+| Agent | Method | Trigger | Use Case |
 |-------|--------|---------|----------|
-| Claude Code | CLI (subscription) | `@claude` | Code generation, complex reasoning |
+| Claude Code | CLI | `@claude` | Code generation, complex reasoning |
 | Gemini | CLI + API | `@gemini` | Research, information gathering |
-| Local LLM | Ollama HTTP API | `@local` / `@ai` | Offline chat, task classification |
-| Perplexity | Sonar API | `@perplexity` / `@search` | Web search with source citations |
+| Local LLM | llama-server | `@local` / `@ai` | Offline chat, task classification |
+| Perplexity | Sonar API | `@perplexity` / `@search` | Web search with citations |
 | Codex | CLI | `@codex` | Code assistance (optional) |
 
-**Local LLM (Ollama) Details:**
-- Default endpoint: http://127.0.0.1:11434
-- Default model: llama3.2:3b
-- Task classification: chat → local, code → Claude, research → Gemini, file_ops → Termux
-- Full streaming support
-- OpenAI-compatible API fallback (llama-server at port 8080)
+**Default agent (no @mention):**
+- Local LLM enabled → Local LLM handles chat, delegates code/research to CLI
+- Local LLM disabled → Gemini CLI (free tier, easy setup, natural language)
 
-### 3. @team Table — Multi-Agent Consensus
-
-Sends the same prompt to all enabled AI agents in parallel, collects responses, and has a facilitator AI generate a unified summary. Results display facilitator summary first, followed by individual agent responses.
-
-**Supported Members:**
-- Claude (CLI, yellow), Gemini (CLI, blue), Codex (CLI, optional)
-- Perplexity (API, teal), Local LLM (local, purple)
-
-**Facilitation:**
-- Auto-selected facilitator priority: Local → Claude → Gemini → Codex → Perplexity
-- Callback-based streaming: each agent's response appears as it arrives
-- Facilitator generates integrated summary after all responses collected
-
-### 4. Command Safety System
-
-Pre-execution risk analysis with 5 danger levels:
-
-| Level | Action | Examples |
-|-------|--------|---------|
-| CRITICAL | Always block + confirm | `rm -rf /`, fork bomb, `dd` to block devices, `mkfs` |
-| HIGH | Confirmation dialog | `curl \| bash`, `sudo`, socket access |
-| MEDIUM | Warning only | Reversible side effects |
-| LOW | Pass | Normal operations |
-| SAFE | Pass | Read-only commands |
-
-Pattern-based detection with ~20 regex rules covering:
-- Recursive deletion of system directories
-- Fork bomb patterns
-- Direct storage device writes
-- Pipe-to-interpreter attacks
-- Privilege escalation attempts
-
-**Post-Execution Recovery Suggestions:**
-- `rm` → git checkout / git restore guidance
-- `git reset --hard` → reflog recovery steps
-- `git push --force` → force-with-lease recommendation
-- `chmod 777` → correct permission values (755/644)
-- `DROP TABLE / TRUNCATE` → backup restore procedures
-
-### 5. Creator Engine — AI Project Generation
-
-4-lane workflow for generating complete projects from natural language:
-
-```
-CommandLane → PlanLane → BuildLane → ResultLane
-(Input)       (AI Plan)  (Execute)   (Output)
-```
-
-- Generates project plans with file estimates
-- Step-by-step build execution with progress tracking
-- Real file creation in Termux filesystem
-- Project types: web (HTML/CSS/JS), script (Node/Python), document (MD/JSON)
-- Project history with clone, improve, delete operations
-- Save as recipe (reusable snippet template)
-- **1-tap Task Templates:** Node API, Static Site, CLI Tool, Python Script — preset prompts for instant project creation
-
-### 6. LLM Output Interpreter
-
-Translates terminal command outputs to natural language using Local LLM:
-
-- **Success:** "What happened" explanation (1-3 sentences)
-- **Error:** Cause analysis + suggested fix command
-- Streaming response with animated cursor
-- Configurable model (default: qwen2.5-3b-instruct-q4_k_m)
-
-### 7. Git Assistant
-
-Natural language Git tutoring triggered by `@git`:
-
-**Core Intents (5):** commit, push, status, diff, help — full guided workflow with action buttons
-
-**Advanced Intents (11):** branch, merge, undo, pull, stash, clone, init, conflict, tag, remote, log — delegated to AI agents (@claude, @gemini) with a status-check command as fallback
-
-**Workflow:**
-1. Detect intent from Japanese/English natural language
-2. Core intents: Run `git status`, generate beginner-friendly guide, present action buttons
-3. Advanced intents: Suggest AI agent delegation with example prompts
-
-### 8. Snippet Management
-
-- Swipe-right to run, swipe-left to delete (gesture-based)
-- Long-press to edit
-- Sort by: last used, frequency, creation date
-- Scope: global or session-specific
-- Run modes: insert only / insert and auto-execute
-- Import/export to JSON backup
-- Recipe system for Creator Engine templates
-
-### 9. Obsidian RAG Integration
-
-- Configure Obsidian vault path
-- Auto-collect notes on schedule (daily, configurable time)
-- RAG-enhanced AI responses with vault context
-- Configurable: max chunks (3-30), days back window (7-90)
-- Target specific AI mentions for RAG injection
-
-### 10. Dotfiles Sync
-
-- GitHub Gist-based sync via Personal Access Token
-- Push/pull configuration to cloud
-- Last sync timestamp tracking
+**Recommended Local LLM:** Gemma 3 4B IT (Q4_K_M) — best Japanese instruction-following in the 3-4B class.
 
 ---
 
-## UI/UX System
+## Command Safety System
 
-### Animation Engine
+Pre-execution risk analysis with 5 danger levels + post-execution recovery suggestions:
 
-All animations use React Native Reanimated v4 running on the UI thread (worklets).
+| Level | Action | Recovery |
+|-------|--------|----------|
+| CRITICAL | Block + confirm | N/A (prevented) |
+| HIGH | Confirmation dialog | git reflog, force-with-lease tips |
+| MEDIUM | Warning | Permission fix guides |
+| LOW/SAFE | Pass | N/A |
 
-**Spring Presets:**
-| Name | Damping | Stiffness | Mass | Use Case |
-|------|---------|-----------|------|----------|
-| snappy | 15 | 200 | 0.8 | Buttons, toggles |
-| gentle | 20 | 120 | 1.0 | Panels, modals |
-| bouncy | 10 | 180 | 0.6 | Success effects |
-| quick | 18 | 300 | 0.5 | Micro-interactions |
+---
 
-**Timing Presets:**
-| Name | Duration | Easing |
-|------|----------|--------|
-| fast | 150ms | cubic out |
-| normal | 250ms | cubic out |
-| slow | 400ms | cubic out |
-| enter | 300ms | back(1.2) out |
-| exit | 200ms | cubic in |
+## Git Assistant
 
-**Component Animations:**
-- ShortcutBar: Key press scale (0.92 spring), toast spring + translateY
-- CommandInput: Send button pulse (0.85→1 sequence), mode switch (0.8→1.1→1), recording dot pulse
-- QuickTerminal: Spring slide-down, swipe-up-to-close gesture (Pan), backdrop opacity
-- TerminalBlock: FadeInDown entrance, exit code badge bounce, 3-dot running indicator, copy button bounce, collapse icon rotation
-- AiBlock: FadeInDown entrance, streaming cursor shimmer (0.4→1 opacity)
-- TerminalHeader: Blinking cursor (500ms), tab switch bounce, bridge dot pulse, badge scale
-- BlockList: Welcome banner FadeIn, scroll-to-bottom spring button
+Natural language Git tutoring via `@git`:
 
-**Accessibility:**
-- `useReducedMotion()` — All animations skip to target value when system reduce-motion is ON
-- Sounds disabled when reduce-motion is active
+- **5 Core Intents** (commit, push, status, diff, help): Full guided workflow with action buttons
+- **11 Advanced Intents** (branch, merge, undo, etc.): Delegated to AI agents with example prompts
 
-### Sound System
+---
 
-14 UI feedback sounds with frequency/duration metadata (stub for WAV assets):
+## @team Table — Multi-Agent Consensus
 
-| Sound | Frequency | Duration | Trigger |
-|-------|-----------|----------|---------|
-| send | 880 Hz | 80ms | Command submission |
-| success | 1047 Hz | 120ms | Exit code 0 |
-| error | 220 Hz | 150ms | Non-zero exit |
-| tab_switch | 660 Hz | 60ms | Tab navigation |
-| key_press | 1200 Hz | 40ms | Shortcut key tap |
-| ctrl_c | 440 Hz | 100ms | Interrupt signal |
-| copy | 1320 Hz | 70ms | Copy to clipboard |
-| ai_start | 523 Hz | 150ms | AI streaming begins |
-| ai_complete | 784 Hz | 200ms | AI response done |
-| connect | 587 Hz | 180ms | Bridge connected |
-| disconnect | 330 Hz | 150ms | Bridge lost |
-| mode_switch | 698 Hz | 90ms | Connection mode change |
-| quick_open | 740 Hz | 120ms | Quick terminal opens |
-| quick_close | 494 Hz | 100ms | Quick terminal closes |
+Sends the same prompt to all enabled AI agents in parallel. Facilitator AI generates unified summary shown first, individual responses shown after.
 
-**Controls:** Global enable/disable, volume (0-100%), Zustand store
+---
 
-### Theme System
-
-30 color tokens in `theme.config.ts` with `as const` type safety:
-
-**Categories:**
-- Structural: background (#0D0D0D), backgroundDeep (#0A0A0A), surface (#1A1A1A), surfaceHigh (#111111)
-- Text: foreground (#E8E8E8), foregroundDim (#D1D5DB), muted (#6B7280), inactive (#4B5563)
-- Borders: border (#2D2D2D), borderLight (#2A2A2A), borderHeavy (#333333)
-- Status: success (#4ADE80), warning (#FBBF24), error (#F87171)
-- Semantic: accent (#00D4AA), command (#93C5FD), link (#60A5FA)
-- AI: aiPurple (#8B5CF6), interpretPurple (#A78BFA), interpretText (#C4B5FD)
-
-**Utilities:**
-- `withAlpha(hex, alpha)` → rgba string (e.g., `withAlpha('#00D4AA', 0.13)`)
-- `adjustBrightness(hex, percent)` → lighter/darker hex
-- `useTheme()` hook for component consumption
-
-### Haptic Feedback
-
-Unified across all interactions:
-- Light: Key press, navigation
-- Medium: Ctrl+C, long press, mode switch
-- Success: Copy, command success
-- Warning: Error, safety alert
-
-### Responsive Design
+## Responsive Design
 
 Optimized for Samsung Galaxy Z Fold6:
-- Cover screen (narrow): Single-column, touch targets ≥44dp
-- Inner screen (wide): Multi-pane layout (2-3 panes)
-- Foldable detection via `useDeviceLayout()`
-- Keyboard shortcuts for physical keyboards (Ctrl+Shift+P, Cmd+K, etc.)
+
+| Layout | Width | Behavior |
+|--------|-------|----------|
+| Compact | < 380dp | Cover screen, small phones. Single column. |
+| Standard | 380-599dp | Regular phones. Single column. |
+| Wide | >= 600dp | Tablets, Fold6 inner screen. Multi-pane available. |
 
 ---
 
-## Settings (38 Sections)
+## Why Shelly Exists
 
-| Category | Settings |
-|----------|----------|
-| Display | Font size (12-24), line height (0.8x-2.0x) |
-| Glass Background | Wallpaper, opacity (10-100%), blur intensity (0-100) |
-| Theme | Theme variant selection (visual grid), WezTerm-style theme engine |
-| Cursor | Block / underline / bar (visual preview) |
-| Behavior | Haptic feedback, auto-scroll, high contrast output (OLED) |
-| Sound | Effects ON/OFF, volume (0-100%) |
-| Termux Bridge | WS URL, auto-reconnect, timeout, TTY URL, connection test |
-| Local LLM | Enable, URL, model name, connection test |
-| llama.cpp | Model management, installation UI |
-| Perplexity | API key (masked), model selection |
-| Gemini | API key (masked), model selection |
-| @team Table | Member enable/disable (5 agents), Codex CLI config |
-| Command Safety | Enable, confirm level (CRITICAL/HIGH/MEDIUM) |
-| Obsidian RAG | Vault path, auto-collect schedule, chunk limits |
-| Snippets | Run mode, auto-return to terminal |
-| Backup | Snippet export/import, project export/import |
-| Data | Session log export, clear all history |
-| Language | English / Japanese (i18n) |
-| Dotfiles | GitHub PAT, Gist sync |
-| Package Manager | Termux pkg GUI |
+**The problem:** Mobile development never took off — not because of hardware limits, but because of UX.
+
+1. **Input:** Typing code on a phone keyboard is painful. Shelly solves this — talk naturally, AI writes code.
+2. **Terminal access:** Termux exists but is unusable for non-developers. Can't even type Japanese. Shelly wraps it in a chat UI.
+3. **The idea itself:** "Develop on a phone" sounded absurd until local LLMs fit in 4GB RAM. Shelly is built for this moment.
+
+**Resource usage:**
+
+| Component | RAM | Notes |
+|-----------|-----|-------|
+| Shelly APK | ~40MB | UI only |
+| Termux + Node Bridge | ~130MB | Idle |
+| + Gemini CLI | ~150-200MB | On demand |
+| + Claude Code | ~200-300MB | On demand |
+| + Local LLM (4B) | ~5GB | Always loaded |
+
+Without local LLM: ~500MB total. Works on 4GB RAM phones.
+With local LLM: ~5.5GB. Needs 8GB+ RAM.
 
 ---
 
 ## Development Environment
 
 ```
-Device:     Samsung Galaxy Z Fold6
+Device:     Samsung Galaxy Z Fold6 (RAM 12GB)
 OS:         Android 14
-Terminal:   Termux (proot-distro or native)
+Terminal:   Termux
 Editor:     Claude Code (CLI) running in Termux
-Runtime:    Node.js (via Termux)
-Package Mgr: pnpm 9.12.0
-Build:      Expo Development Build (EAS)
-TypeScript: Strict mode, npx tsc --noEmit = 0 errors
+Runtime:    Node.js 22
+Package:    pnpm 9.12
+Build:      GitHub Actions (EAS Build)
+TypeScript: Strict mode, 0 errors
 ```
-
-The app is self-referential: Shelly is a terminal IDE, built inside a terminal (Termux), using an AI coding assistant (Claude Code), on the same device it's designed to run on.
-
----
-
-## Metrics
-
-- **Version:** 4.2.0
-- **Codebase:** ~50+ TypeScript files
-- **Dependencies:** 40+ packages
-- **AI Integrations:** 5 backends (Claude, Gemini, Perplexity, Ollama, Codex)
-- **Settings:** 38 configuration sections
-- **Theme Tokens:** 30 color definitions
-- **Sound Effects:** 14 feedback sounds
-- **Animation Presets:** 9 (4 spring + 5 timing)
-- **Keyboard Shortcuts:** 8+ physical key bindings
-- **Git Intents:** 5 core + 11 AI-delegated
-- **Safety Patterns:** ~20 danger detection rules
-- **Supported Languages:** Japanese / English
 
 ---
 
 ## Summary
 
-Shelly is not just a terminal emulator — it's a mobile-first development environment that combines real shell access, multi-AI orchestration, project scaffolding, command safety, and a polished UI with spring physics animations. Every component uses a centralized theme system, every interaction has haptic and audio feedback, and every animation respects system accessibility settings.
+Shelly = ChatGPT UI + real terminal execution.
 
-### 11. Setup Wizard — 2-Choice Onboarding
-
-New users are presented with two paths before the 5-step setup wizard:
-
-- **おすすめ構成 (Recommended):** Sets Gemini CLI as default agent, skips AI tool selection step. One-tap to start.
-- **カスタム構成 (Custom):** Full 5-step wizard with manual AI tool selection.
-
-This reduces initial friction for beginners while preserving flexibility for power users.
-
----
-
-Built entirely on a smartphone, for smartphones.
+Chat for beginners. Terminal for pros. Both connected to the same AI backbone and the same Linux filesystem. Built entirely on a phone, for phones.
