@@ -5,7 +5,7 @@
  * Right-aligned for user, left-aligned for assistant.
  */
 
-import React, { memo, useState, useCallback } from 'react';
+import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Share } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
@@ -59,8 +59,13 @@ type Props = {
 export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14 }: Props) {
   const { colors } = useTheme();
   const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isUser = message.role === 'user';
   const agentColor = getAgentColor(message.agent);
+
+  useEffect(() => {
+    return () => { if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current); };
+  }, []);
 
   const handleCopy = useCallback(async () => {
     const text = message.content || message.streamingText || '';
@@ -68,7 +73,8 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14 }: P
     await Clipboard.setStringAsync(text);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
   }, [message.content, message.streamingText]);
 
   const handleShare = useCallback(async () => {
@@ -243,7 +249,7 @@ function CommandExecView({ exec, colors }: { exec: { command: string; output: st
         )}
       </TouchableOpacity>
       {!collapsed && exec.output && (
-        <Text style={styles.execOutput} selectable numberOfLines={collapsed ? 5 : undefined}>
+        <Text style={styles.execOutput} selectable>
           {exec.output}
         </Text>
       )}

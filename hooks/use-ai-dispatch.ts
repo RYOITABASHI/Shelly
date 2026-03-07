@@ -56,11 +56,11 @@ function toOllamaHistory(messages: ChatMessage[], maxPairs = 4): OllamaMessage[]
   return history;
 }
 
-/** Build file context string from attachments */
+/** Build file context string from attachments (wrapped in code blocks to prevent prompt injection) */
 function buildFileContext(files: FileAttachment[]): string {
   return files
     .filter((f) => f.content)
-    .map((f) => `--- ${f.name} ---\n${f.content}`)
+    .map((f) => `--- ${f.name} ---\n\`\`\`\n${f.content}\n\`\`\``)
     .join('\n\n');
 }
 
@@ -225,6 +225,8 @@ export function useAIDispatch() {
               });
             }
           },
+          undefined, // default model
+          signal,
         );
         if (!result.success && !accumulated) {
           updateMessage(chatSessionId, msgId, {
@@ -287,7 +289,7 @@ export function useAIDispatch() {
         if (result.delegatedCommand) {
           const toolLabel = result.handledBy === 'gemini' ? 'Gemini CLI' : result.handledBy === 'codex' ? 'Codex CLI' : 'Claude Code';
           updateMessage(chatSessionId, msgId, {
-            content: `${toolLabel}に委譲しました。\n理由: ${(result as any).reasoning || ''}`,
+            content: `${toolLabel}に委譲しました。\n理由: ${result.reasoning || ''}`,
             agent: mapTargetToAgent(result.handledBy ?? '') ?? 'local',
             isStreaming: false,
           });
@@ -296,8 +298,8 @@ export function useAIDispatch() {
           } else {
             terminalRunCommand(result.delegatedCommand);
           }
-        } else if ((result as any).response) {
-          updateMessage(chatSessionId, msgId, { content: (result as any).response, isStreaming: false });
+        } else if (result.response) {
+          updateMessage(chatSessionId, msgId, { content: result.response, isStreaming: false });
         } else {
           updateMessage(chatSessionId, msgId, {
             content: '',
@@ -346,7 +348,7 @@ export function useAIDispatch() {
               tokenCount: Math.round(accumulated.length / 4), citations,
             });
           }
-        }, settings.perplexityModel ?? undefined, pplxHistory);
+        }, settings.perplexityModel ?? undefined, pplxHistory, signal);
       } catch (err) {
         if (!signal.aborted) {
           updateMessage(chatSessionId, msgId, {
@@ -394,7 +396,7 @@ export function useAIDispatch() {
               tokenCount: Math.round(accumulated.length / 4),
             });
           }
-        }, settings.geminiModel ?? 'gemini-2.0-flash', geminiHistory);
+        }, settings.geminiModel ?? 'gemini-2.0-flash', geminiHistory, signal);
         if (!result.success && !accumulated) {
           updateMessage(chatSessionId, msgId, {
             content: '', error: `Geminiエラー: ${result.error ?? '不明なエラー'}`,

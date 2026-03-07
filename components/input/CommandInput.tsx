@@ -70,7 +70,7 @@ export type CommandInputHandle = {
 
 const MAX_IMAGES = 4;
 const MAX_FILE_SIZE = 100 * 1024; // 100KB
-const SENSITIVE_PATTERNS = /\.(env|pem|key|p12|pfx|jks|keystore|credentials|secret)$/i;
+const SENSITIVE_PATTERNS = /\.(env(\.\w+)?|pem|key|p12|pfx|jks|keystore|credentials|secret|ppk)$|^(id_rsa|id_ed25519|\.htpasswd|\.pgpass|\.netrc|\.npmrc|\.pypirc)$/i;
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -332,9 +332,10 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
           try {
             const fileSize = asset.size || 0;
             if (fileSize > MAX_FILE_SIZE) {
-              // Read only first 100KB and warn
-              file.content = await FileSystem.readAsStringAsync(asset.uri, { length: MAX_FILE_SIZE });
-              file.content += `\n\n... (${Math.round(fileSize / 1024)}KB中、先頭100KBのみ読み込み)`;
+              // Read full content then truncate (readAsStringAsync doesn't support length option)
+              const fullContent = await FileSystem.readAsStringAsync(asset.uri);
+              file.content = fullContent.slice(0, MAX_FILE_SIZE) +
+                `\n\n... (${Math.round(fileSize / 1024)}KB中、先頭100KBのみ読み込み)`;
             } else {
               file.content = await FileSystem.readAsStringAsync(asset.uri);
             }

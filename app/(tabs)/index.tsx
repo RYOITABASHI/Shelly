@@ -85,6 +85,9 @@ export default function ChatScreen() {
   // Get current chat session messages
   const messages = chatSession?.messages ?? [];
   const chatSessionId = chatSession?.id ?? '';
+  // Keep messages in ref to avoid handleSend re-creation on every message
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   // ── Bridge ──
   const { sendCommand, cancelCurrent, isConnected: isBridgeConnected, runCommand: bridgeRunCommand } = useTermuxBridge();
@@ -212,7 +215,7 @@ export default function ChatScreen() {
     addMessage(chatSessionId, msg);
 
     // Auto-name session from first user message
-    if (messages.length === 0 && chatSession?.title === 'New Chat') {
+    if (messagesRef.current.length === 0 && chatSession?.title === 'New Chat') {
       const title = text.length > 40 ? text.slice(0, 40) + '...' : text;
       useChatStore.setState((state) => ({
         sessions: state.sessions.map((s) =>
@@ -222,7 +225,7 @@ export default function ChatScreen() {
     }
 
     return msg.id;
-  }, [chatSessionId, addMessage, messages.length, chatSession?.title]);
+  }, [chatSessionId, addMessage, chatSession?.title]);
 
   const addAssistantMessage = useCallback((agent?: ChatAgent, content?: string): string => {
     if (!chatSessionId) return '';
@@ -292,7 +295,7 @@ export default function ChatScreen() {
           const chunk = demoText.slice(0, Math.min(i + 8, demoText.length));
           updateMessage(chatSessionId, msgId, { streamingText: chunk, isStreaming: true });
           i += 8;
-          demoTimerRef.current = setTimeout(streamDemo, 20);
+          demoTimerRef.current = setTimeout(streamDemo, 50);
         } else {
           updateMessage(chatSessionId, msgId, { content: demoText, streamingText: undefined, isStreaming: false });
           demoTimerRef.current = null;
@@ -305,7 +308,7 @@ export default function ChatScreen() {
     // ── Image-attached → dispatch to Gemini multimodal ──
     if (images && images.length > 0) {
       addUserMessage(input);
-      await aiDispatch({ target: 'gemini', prompt: parsed.prompt, chatSessionId, messages, images, files });
+      await aiDispatch({ target: 'gemini', prompt: parsed.prompt, chatSessionId, messages: messagesRef.current, images, files });
       return;
     }
 
@@ -422,7 +425,7 @@ export default function ChatScreen() {
     }
 
     // Dispatch to AI agent (with conversation context + file attachments)
-    const result = await aiDispatch({ target, prompt: parsed.prompt, chatSessionId, messages, files });
+    const result = await aiDispatch({ target, prompt: parsed.prompt, chatSessionId, messages: messagesRef.current, files });
     if (!result.handled) {
       const msgId = addAssistantMessage(undefined);
       updateMessage(chatSessionId, msgId, {
@@ -430,11 +433,15 @@ export default function ChatScreen() {
         isStreaming: false,
       });
     }
-  }, [chatSessionId, connectionMode, sendCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext, messages, aiDispatch, isBridgeConnected]);
+  }, [chatSessionId, connectionMode, sendCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext, aiDispatch, isBridgeConnected]);
 
   const handleCancel = useCallback(() => {
     cancelCurrent();
     cancelStreaming();
+    if (demoTimerRef.current) {
+      clearTimeout(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
   }, [cancelCurrent, cancelStreaming]);
 
   const handleHistoryUp = useCallback((): string => {

@@ -64,6 +64,7 @@ export async function geminiChatStream(
   onChunk: (text: string, done: boolean) => void,
   model: string = GEMINI_DEFAULT_MODEL,
   history: GeminiMessage[] = [],
+  externalSignal?: AbortSignal,
 ): Promise<GeminiResult> {
   if (!apiKey || apiKey.trim() === '') {
     return {
@@ -97,6 +98,10 @@ export async function geminiChatStream(
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60000);
+    if (externalSignal) {
+      if (externalSignal.aborted) { clearTimeout(timer); controller.abort(); }
+      else { externalSignal.addEventListener('abort', () => { clearTimeout(timer); controller.abort(); }, { once: true }); }
+    }
 
     const res = await fetch(url, {
       method: 'POST',
@@ -126,7 +131,6 @@ export async function geminiChatStream(
       if (res.status === 429) {
         return { success: false, error: 'レート制限に達しました。しばらく待ってから再試行してください。' };
       }
-      // エラーメッセージをJSONから抽出
       try {
         const errJson = JSON.parse(errText);
         const msg = errJson?.error?.message ?? errText.slice(0, 100);
@@ -144,8 +148,9 @@ export async function geminiChatStream(
     const decoder = new TextDecoder();
     let buffer = '';
     let fullContent = '';
+    let finished = false;
 
-    while (true) {
+    while (!finished) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -159,11 +164,10 @@ export async function geminiChatStream(
 
         const jsonStr = trimmed.slice(5).trim();
         if (jsonStr === '[DONE]') {
-          onChunk('', true);
+          if (!finished) { onChunk('', true); finished = true; }
           break;
         }
 
-        // Reject abnormally large chunks
         if (jsonStr.length > MAX_CHUNK_SIZE) continue;
 
         try {
@@ -176,12 +180,14 @@ export async function geminiChatStream(
 
           if (text) {
             fullContent += text;
-            onChunk(text, isDone);
           }
 
           if (isDone) {
-            onChunk('', true);
+            onChunk(text || '', true);
+            finished = true;
             break;
+          } else if (text) {
+            onChunk(text, false);
           }
         } catch {
           // JSON parse error, skip
@@ -189,15 +195,14 @@ export async function geminiChatStream(
       }
     }
 
-    // ストリーム終端で確実にdone=trueを送信
-    if (fullContent && !fullContent.endsWith('\n')) {
+    // Ensure done=true is sent if stream ended without explicit finish
+    if (!finished && fullContent) {
       onChunk('', true);
     }
 
     return { success: true, content: fullContent };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Sanitize: never include API key in error messages
     const sanitized = message.includes('key=') ? sanitizeUrl(message) : message;
     const isTimeout = sanitized.includes('abort') || sanitized.includes('timeout');
     return {
@@ -224,6 +229,7 @@ export async function geminiMultimodalStream(
   images: Array<{ base64: string; mimeType: string }>,
   onChunk: (text: string, done: boolean) => void,
   model: string = GEMINI_DEFAULT_MODEL,
+  externalSignal?: AbortSignal,
 ): Promise<GeminiResult> {
   if (!apiKey || apiKey.trim() === '') {
     return {
@@ -265,6 +271,10 @@ export async function geminiMultimodalStream(
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60000);
+    if (externalSignal) {
+      if (externalSignal.aborted) { clearTimeout(timer); controller.abort(); }
+      else { externalSignal.addEventListener('abort', () => { clearTimeout(timer); controller.abort(); }, { once: true }); }
+    }
 
     const res = await fetch(url, {
       method: 'POST',
@@ -311,8 +321,9 @@ export async function geminiMultimodalStream(
     const decoder = new TextDecoder();
     let buffer = '';
     let fullContent = '';
+    let finished = false;
 
-    while (true) {
+    while (!finished) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -326,11 +337,10 @@ export async function geminiMultimodalStream(
 
         const jsonStr = trimmed.slice(5).trim();
         if (jsonStr === '[DONE]') {
-          onChunk('', true);
+          if (!finished) { onChunk('', true); finished = true; }
           break;
         }
 
-        // Reject abnormally large chunks
         if (jsonStr.length > MAX_CHUNK_SIZE) continue;
 
         try {
@@ -343,12 +353,14 @@ export async function geminiMultimodalStream(
 
           if (text) {
             fullContent += text;
-            onChunk(text, isDone);
           }
 
           if (isDone) {
-            onChunk('', true);
+            onChunk(text || '', true);
+            finished = true;
             break;
+          } else if (text) {
+            onChunk(text, false);
           }
         } catch {
           // JSON parse error, skip
@@ -356,7 +368,7 @@ export async function geminiMultimodalStream(
       }
     }
 
-    if (fullContent && !fullContent.endsWith('\n')) {
+    if (!finished && fullContent) {
       onChunk('', true);
     }
 

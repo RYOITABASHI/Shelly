@@ -60,6 +60,7 @@ export async function perplexitySearchStream(
   onChunk: (text: string, done: boolean, citations?: PerplexityCitation[]) => void,
   model: string = PERPLEXITY_DEFAULT_MODEL,
   history?: Array<{ role: string; content: string }>,
+  externalSignal?: AbortSignal,
 ): Promise<PerplexityResult> {
   if (!apiKey || apiKey.trim() === '') {
     return { success: false, error: 'Perplexity APIキーが設定されていません。設定画面で入力してください。' };
@@ -85,6 +86,11 @@ export async function perplexitySearchStream(
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60000);
+    // Link external AbortSignal to internal controller
+    if (externalSignal) {
+      if (externalSignal.aborted) { clearTimeout(timer); controller.abort(); }
+      else { externalSignal.addEventListener('abort', () => { clearTimeout(timer); controller.abort(); }, { once: true }); }
+    }
 
     const res = await fetch(`${PERPLEXITY_API_BASE}/chat/completions`, {
       method: 'POST',
@@ -97,10 +103,10 @@ export async function perplexitySearchStream(
         messages,
         stream: true,
         max_tokens: 2048,
-        temperature: 0.2, // 低めに設定して事実性を高める
+        temperature: 0.2,
         return_citations: true,
         return_related_questions: false,
-        search_recency_filter: 'month', // 直近1ヶ月の情報を優先
+        search_recency_filter: 'month',
       }),
       signal: controller.signal,
     });
@@ -127,8 +133,9 @@ export async function perplexitySearchStream(
     let buffer = '';
     let fullContent = '';
     let finalCitations: PerplexityCitation[] = [];
+    let finished = false;
 
-    while (true) {
+    while (!finished) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -142,7 +149,7 @@ export async function perplexitySearchStream(
 
         const jsonStr = trimmed.slice(5).trim();
         if (jsonStr === '[DONE]') {
-          onChunk('', true, finalCitations);
+          if (!finished) { onChunk('', true, finalCitations); finished = true; }
           break;
         }
 
@@ -161,12 +168,14 @@ export async function perplexitySearchStream(
 
           if (content) {
             fullContent += content;
-            onChunk(content, isDone, isDone ? finalCitations : undefined);
           }
 
           if (isDone) {
-            onChunk('', true, finalCitations);
+            onChunk(content || '', true, finalCitations);
+            finished = true;
             break;
+          } else if (content) {
+            onChunk(content, false);
           }
         } catch {
           // JSON parse error, skip
