@@ -64,7 +64,7 @@ export default function TabLayout() {
         useTerminalStore.getState().clearSession();
         break;
       case 'search':
-        router.push('/(tabs)/search' as any);
+        router.push('/(tabs)/projects' as any);
         break;
       case 'next_tab':
       case 'prev_tab':
@@ -128,7 +128,16 @@ export default function TabLayout() {
           },
         }}
       >
-        {/* ── Core 4 tabs ─────────────────────────────────────────── */}
+        {/* ── Core 4 tabs (Projects / Chat / Terminal / Settings) ── */}
+        <Tabs.Screen
+          name="projects"
+          options={{
+            title: "Projects",
+            tabBarIcon: ({ color }) => (
+              <MaterialIcons name="folder" size={22} color={color} />
+            ),
+          }}
+        />
         <Tabs.Screen
           name="index"
           options={{
@@ -139,20 +148,11 @@ export default function TabLayout() {
           }}
         />
         <Tabs.Screen
-          name="creator"
+          name="terminal"
           options={{
-            title: "Creator",
+            title: "Terminal",
             tabBarIcon: ({ color }) => (
-              <MaterialIcons name="auto-awesome" size={22} color={color} />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="snippets"
-          options={{
-            title: "Snippets",
-            tabBarIcon: ({ color }) => (
-              <MaterialIcons name="bookmark" size={22} color={color} />
+              <MaterialIcons name="terminal" size={22} color={color} />
             ),
           }}
         />
@@ -165,13 +165,13 @@ export default function TabLayout() {
             ),
           }}
         />
-        {/* ── Hidden tabs (accessible via navigation, not tab bar) ── */}
+        {/* ── Hidden tabs (legacy, accessible via navigation only) ── */}
         <Tabs.Screen
-          name="projects"
+          name="creator"
           options={{ href: null }}
         />
         <Tabs.Screen
-          name="terminal"
+          name="snippets"
           options={{ href: null }}
         />
         <Tabs.Screen

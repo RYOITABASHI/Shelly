@@ -1,39 +1,68 @@
-import React, { useEffect, useCallback, useState, useContext } from 'react';
+/**
+ * app/(tabs)/index.tsx
+ *
+ * Chat-first UI — GPT/Claude style.
+ * User messages on right, AI responses on left.
+ * Shell commands also routed through chat bubbles.
+ */
+
+import React, { useEffect, useCallback, useState, useRef } from 'react';
 import {
   View,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
   StatusBar,
-  ImageBackground,
   Modal,
   Text,
   Pressable,
   ActivityIndicator,
 } from 'react-native';
-import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
-import { checkCommandSafety, needsConfirmation, dangerLevelColor } from '@/lib/command-safety';
-import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useTerminalStore, useActiveSession } from '@/store/terminal-store';
-import { useRef } from 'react';
 import { useRouter } from 'expo-router';
-import { TerminalHeader } from '@/components/terminal/TerminalHeader';
-import { BlockList } from '@/components/terminal/BlockList';
+import { useTerminalStore, useActiveSession } from '@/store/terminal-store';
+import { useChatStore, type ChatMessage, type ChatAgent } from '@/store/chat-store';
+import { ChatMessageList } from '@/components/chat/ChatMessageList';
+import { ChatHeader } from '@/components/chat/ChatHeader';
 import { CommandInput, type ImageAttachment } from '@/components/input/CommandInput';
-import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { parseInput, buildRoutingDetail } from '@/lib/input-router';
 import { orchestrateTask, orchestrateChatStream } from '@/lib/local-llm';
-import { shouldShowHint } from '@/lib/hint-tracker';
 import { interpretTermuxOutput, explainCommandIntent } from '@/lib/llm-interpreter';
 import { loadProjectContext, generateProjectContext, clearProjectContextCache } from '@/lib/project-context';
 import { loadUserProfile, learnFromCommand, learnFromAgentUse, learnFromUserInput, learnFromProject, formatProfileForPrompt } from '@/lib/user-profile';
 import { requestNotificationPermission } from '@/lib/command-notifier';
+import { checkCommandSafety, needsConfirmation, dangerLevelColor } from '@/lib/command-safety';
 import { detectGitIntent, generateGuide } from '@/lib/git-assistant';
-import type { AiBlock } from '@/store/types';
+import { useTheme } from '@/hooks/use-theme';
 
-export default function TerminalScreen() {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function mapTargetToAgent(target: string): ChatAgent | undefined {
+  const agentMap: Record<string, ChatAgent> = {
+    claude: 'claude',
+    gemini: 'gemini',
+    local: 'local',
+    perplexity: 'perplexity',
+    team: 'team',
+    git: 'git',
+    codex: 'codex',
+  };
+  return agentMap[target];
+}
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
+export default function ChatScreen() {
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+
+  // ── Terminal store (settings, bridge config) ──
   const {
     runCommand,
     navigateHistory,
@@ -41,37 +70,43 @@ export default function TerminalScreen() {
     connectionMode,
     pendingCommand,
     settings,
-    addAiBlock,
-    updateAiBlock,
-    updateBlockInterpretation,
     setLastInputMode,
   } = useTerminalStore();
-
-  // ガラス背景設定
-  const hasWallpaper = !!settings.wallpaperUri;
-  const bgOpacity = settings.backgroundOpacity ?? 1.0;
-  const blurIntensity = settings.blurIntensity ?? 0;
-  const rootBgColor = `rgba(10,10,10,${bgOpacity})`;
-
-  // CommandInput ref for pre-filling pending commands from Snippets (insert-only mode)
-  const commandInputRef = useRef<{ setText: (t: string) => void } | null>(null);
-
-  useEffect(() => {
-    if (pendingCommand) {
-      commandInputRef.current?.setText(pendingCommand);
-      useTerminalStore.setState({ pendingCommand: null });
-    }
-  }, [pendingCommand]);
   const activeSession = useActiveSession();
-  const layout = useDeviceLayout();
-  const insets = useSafeAreaInsets();
-  const paneCtx = useContext(MultiPaneContext);
-  const router = useRouter();
 
-  // Termux bridge — always mounted so WS lifecycle follows connectionMode
+  // ── Chat store ──
+  const {
+    load: loadChat,
+    isLoaded: chatLoaded,
+    createSession: createChatSession,
+    addMessage,
+    updateMessage,
+  } = useChatStore();
+  // Reactive selector for active session (re-renders when session/messages change)
+  const chatSession = useChatStore((s) =>
+    s.sessions.find((sess) => sess.id === s.activeSessionId) ?? null
+  );
+
+  // Load chat store on mount
+  useEffect(() => {
+    loadChat();
+  }, []);
+
+  // Ensure there's always an active chat session
+  useEffect(() => {
+    if (!chatLoaded) return;
+    if (!chatSession) {
+      createChatSession('New Chat');
+    }
+  }, [chatLoaded, chatSession]);
+
+  // Get current chat session messages
+  const messages = chatSession?.messages ?? [];
+  const chatSessionId = chatSession?.id ?? '';
+
+  // ── Bridge ──
   const { sendCommand, cancelCurrent, isConnected: isBridgeConnected, runCommand: bridgeRunCommand } = useTermuxBridge();
 
-  // Adapter: bridge runCommand → CommandRunner型 (Promise<string>)
   const execForContext = useCallback(
     async (cmd: string): Promise<string> => {
       const result = await bridgeRunCommand(cmd);
@@ -80,51 +115,32 @@ export default function TerminalScreen() {
     [bridgeRunCommand],
   );
 
-  // Whether any block in the active session is currently running (for Ctrl+C state)
-  const isRunning = activeSession.blocks.some(
-    (b) => b.isRunning || b.blockStatus === 'cancelling'
-  );
+  // ── Refs ──
+  const commandInputRef = useRef<{ setText: (t: string) => void } | null>(null);
+  const userProfileRef = useRef<string>('');
+  const projectContextRef = useRef<string>('');
 
+  // ── Init ──
   useEffect(() => {
     loadSettings();
     requestNotificationPermission();
   }, []);
 
-  // ── Auth URL auto-detection: open browser for OAuth/login URLs from CLI tools ──
-  const openedAuthUrlsRef = useRef<Set<string>>(new Set());
-
   useEffect(() => {
-    // Check running blocks for auth URLs in their output
-    for (const block of activeSession.blocks) {
-      if (!block.isRunning && !block.output?.length) continue;
-      const output = block.output?.map((o) => o.text).join('') ?? '';
-      // Match URLs from CLI tool auth flows (Claude Code, Gemini, Codex, GitHub, etc.)
-      const urlPattern = /https?:\/\/[^\s"'<>]*(?:auth|login|oauth|consent|accounts\.google|github\.com\/login|anthropic\.com\/|signin|device\/activate|verify|callback|token)[^\s"'<>]*/gi;
-      const matches = output.match(urlPattern);
-      if (!matches) continue;
-      for (const url of matches) {
-        if (openedAuthUrlsRef.current.has(url)) continue;
-        openedAuthUrlsRef.current.add(url);
-        // Open in Shelly's browser tab
-        useTerminalStore.setState({ pendingBrowserUrl: url } as any);
-        router.push('/(tabs)/browser' as any);
-        break; // Only open one at a time
-      }
+    if (pendingCommand) {
+      commandInputRef.current?.setText(pendingCommand);
+      useTerminalStore.setState({ pendingCommand: null });
     }
-  }, [activeSession.blocks, router]);
+  }, [pendingCommand]);
 
-  // ── ユーザープロファイル（自動学習）─────────────────────────────────────────
-  const userProfileRef = useRef<string>('');
-
+  // ── User profile ──
   useEffect(() => {
     loadUserProfile().then((p) => {
       userProfileRef.current = formatProfileForPrompt(p);
     });
   }, []);
 
-  // ── プロジェクトコンテキスト（ローカルLLM強化用）───────────────────────────
-  const projectContextRef = useRef<string>('');
-
+  // ── Project context ──
   useEffect(() => {
     if (!isBridgeConnected || !settings.localLlmEnabled) return;
     const cwd = activeSession.currentDir;
@@ -132,14 +148,12 @@ export default function TerminalScreen() {
       if (ctx) {
         projectContextRef.current = ctx;
       } else {
-        // context.mdがない場合、package.json等があれば自動生成
         const hasProject = await execForContext(
           `test -f "${cwd}/package.json" -o -f "${cwd}/Cargo.toml" -o -f "${cwd}/go.mod" -o -f "${cwd}/pyproject.toml" -o -f "${cwd}/Makefile" && echo "yes" || echo "no"`,
         );
         if (hasProject.trim() === 'yes') {
           const generated = await generateProjectContext(cwd, execForContext);
           projectContextRef.current = generated;
-          // プロジェクトアクセスを学習
           const projName = cwd.split('/').pop() ?? cwd;
           learnFromProject(cwd, projName).catch(() => {});
         }
@@ -147,79 +161,7 @@ export default function TerminalScreen() {
     });
   }, [isBridgeConnected, settings.localLlmEnabled, activeSession.currentDir]);
 
-  // ── LLM通訳: Termuxブロック完了時に自動トリガー ──────────────────────────
-  const interpretedBlocksRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!settings.localLlmEnabled) return;
-
-    for (const block of activeSession.blocks) {
-      // 完了済み・Termuxブロック・未通訳・キャンセルでない
-      if (
-        !block.isRunning &&
-        block.connectionMode === 'termux' &&
-        block.exitCode !== null &&
-        block.blockStatus !== 'cancelled' &&
-        !block.isInterpreting &&
-        !block.llmInterpretation &&
-        !interpretedBlocksRef.current.has(block.id)
-      ) {
-        interpretedBlocksRef.current.add(block.id);
-
-        const config = {
-          baseUrl: settings.localLlmUrl,
-          model: settings.localLlmModel,
-          enabled: settings.localLlmEnabled,
-        };
-
-        updateBlockInterpretation(block.id, { isInterpreting: true });
-
-        const verbosity = (settings.experienceMode ?? 'learning') === 'learning' ? 'verbose' : 'minimal';
-
-        interpretTermuxOutput(
-          block.command,
-          block.output,
-          block.exitCode,
-          config,
-          (chunk) => {
-            // ストリーミング中: llmInterpretationStreamingに追記
-            const current = useTerminalStore.getState().sessions
-              .flatMap((s) => s.blocks)
-              .find((b) => b.id === block.id);
-            updateBlockInterpretation(block.id, {
-              llmInterpretationStreaming: (current?.llmInterpretationStreaming ?? '') + chunk,
-            });
-          },
-          { verbosity, projectContext: projectContextRef.current },
-        ).then((result) => {
-          if (result.text) {
-            updateBlockInterpretation(block.id, {
-              isInterpreting: false,
-              llmInterpretation: result.text,
-              llmInterpretationStreaming: undefined,
-              llmSuggestedCommand: result.suggestedCommand,
-              interpretType: result.type,
-            });
-          } else {
-            // 通訳結果が空（LLM未起動等）はフィールドをクリア
-            updateBlockInterpretation(block.id, {
-              isInterpreting: false,
-              llmInterpretationStreaming: undefined,
-            });
-          }
-        });
-      }
-    }
-  }, [activeSession.blocks, settings.localLlmEnabled, settings.localLlmUrl, settings.localLlmModel, settings.experienceMode]);
-
-  /**
-   * Unified input handler with 4-layer routing:
-   *   1. @mention → direct CLI routing
-   *   2. Natural language + tool name → detected tool routing + hint
-   *   3. Natural language only → AI tool suggestion cards
-   *   4. Shell command → Termux direct execution
-   */
-  // コマンド安全確認ダイアログの状態
+  // ── Safety dialog state ──
   const [safetyDialog, setSafetyDialog] = useState<{
     visible: boolean;
     message: string;
@@ -230,7 +172,6 @@ export default function TerminalScreen() {
   const [intentExplanation, setIntentExplanation] = useState<string>('');
   const [isExplainingIntent, setIsExplainingIntent] = useState(false);
 
-  // ── ダイアログ表示時にLLMで意図説明をストリーミング取得 ─────────────────────
   useEffect(() => {
     if (!safetyDialog?.visible) {
       setIntentExplanation('');
@@ -269,10 +210,50 @@ export default function TerminalScreen() {
     }
   }, [connectionMode, sendCommand, runCommand]);
 
+  // ── Chat message helpers ──
+  const addUserMessage = useCallback((text: string): string => {
+    if (!chatSessionId) return '';
+    const msg: ChatMessage = {
+      id: generateId(),
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
+    };
+    addMessage(chatSessionId, msg);
+
+    // Auto-name session from first user message
+    if (messages.length === 0 && chatSession?.title === 'New Chat') {
+      const title = text.length > 40 ? text.slice(0, 40) + '...' : text;
+      useChatStore.setState((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === chatSessionId ? { ...s, title } : s
+        ),
+      }));
+    }
+
+    return msg.id;
+  }, [chatSessionId, addMessage, messages.length, chatSession?.title]);
+
+  const addAssistantMessage = useCallback((agent?: ChatAgent, content?: string): string => {
+    if (!chatSessionId) return '';
+    const msg: ChatMessage = {
+      id: generateId(),
+      role: 'assistant',
+      content: content ?? '',
+      timestamp: Date.now(),
+      agent,
+      isStreaming: !content,
+    };
+    addMessage(chatSessionId, msg);
+    return msg.id;
+  }, [chatSessionId, addMessage]);
+
+  // ── handleSend: unified input handler ──
   const handleSend = useCallback(async (input: string, images?: ImageAttachment[]) => {
+    if (!chatSessionId) return;
     const parsed = parseInput(input);
 
-    // ── 自動学習（バックグラウンド、UIブロックしない）──────────────────────
+    // Auto-learn (background)
     if (parsed.layer === 'command') {
       learnFromCommand(parsed.prompt).catch(() => {});
     } else {
@@ -281,126 +262,89 @@ export default function TerminalScreen() {
         learnFromAgentUse(parsed.target).catch(() => {});
       }
     }
-    // プロファイルサマリーを非同期更新
     loadUserProfile().then((p) => {
       userProfileRef.current = formatProfileForPrompt(p);
     });
 
-    // Set input mode for UI switching
     setLastInputMode(parsed.layer === 'command' ? 'shell' : 'natural');
 
-    // ── Image-attached input → Gemini multimodal ─────────────────────────────────
+    // ── Image-attached → Gemini multimodal ──
     if (images && images.length > 0) {
-      const blockId = `ai-${Date.now()}`;
-      const aiBlock: AiBlock = {
-        id: blockId,
-        sessionId: activeSession.id,
-        blockType: 'ai',
-        input: parsed.raw,
-        target: 'gemini',
-        layer: 'mention',
-        logSummary: `[Gemini] 画像分析 (${images.length}枚)`,
-        showHint: false,
-        timestamp: Date.now(),
-      };
-      addAiBlock(aiBlock);
+      addUserMessage(input);
+      const msgId = addAssistantMessage('gemini');
 
       const apiKey = settings.geminiApiKey ?? '';
       if (!apiKey) {
-        updateAiBlock(blockId, {
-          response: 'Gemini APIキーが設定されていません。\n画像分析にはGemini APIが必要です。\nhttps://aistudio.google.com/app/apikey で無料取得できます。',
+        updateMessage(chatSessionId, msgId, {
+          content: 'Gemini APIキーが設定されていません。\nhttps://aistudio.google.com/app/apikey で無料取得できます。',
           isStreaming: false,
-          logSummary: '[Gemini] APIキー未設定',
+          error: 'APIキー未設定',
         });
         return;
       }
 
-      const geminiStreamStart = Date.now();
-      let geminiAccumulated = '';
-      let geminiTokenCount = 0;
-      updateAiBlock(blockId, {
-        isStreaming: true,
-        streamingText: '',
-        tokenCount: 0,
-        streamingStartTime: geminiStreamStart,
-      });
+      let accumulated = '';
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
 
       const { geminiMultimodalStream } = await import('@/lib/gemini');
-      const geminiResult = await geminiMultimodalStream(
-        apiKey,
-        input,
+      const result = await geminiMultimodalStream(
+        apiKey, input,
         images.map((img) => ({ base64: img.base64, mimeType: img.mimeType })),
         (chunk, done) => {
           if (chunk) {
-            geminiAccumulated += chunk;
-            geminiTokenCount = Math.round(geminiAccumulated.length / 4);
-            updateAiBlock(blockId, {
-              streamingText: geminiAccumulated,
-              tokenCount: geminiTokenCount,
+            accumulated += chunk;
+            updateMessage(chatSessionId, msgId, {
+              streamingText: accumulated,
+              tokenCount: Math.round(accumulated.length / 4),
               isStreaming: !done,
             });
           }
           if (done) {
-            updateAiBlock(blockId, {
-              response: geminiAccumulated,
+            updateMessage(chatSessionId, msgId, {
+              content: accumulated,
               streamingText: undefined,
               isStreaming: false,
-              tokenCount: geminiTokenCount,
-              logSummary: `[Gemini] 画像分析完了 (${images.length}枚)`,
+              tokenCount: Math.round(accumulated.length / 4),
             });
           }
         },
         settings.geminiModel ?? 'gemini-2.0-flash',
       );
-      if (!geminiResult.success && !geminiAccumulated) {
-        updateAiBlock(blockId, {
-          response: `Geminiエラー: ${geminiResult.error ?? '不明なエラー'}`,
+      if (!result.success && !accumulated) {
+        updateMessage(chatSessionId, msgId, {
+          content: '',
+          error: `Geminiエラー: ${result.error ?? '不明なエラー'}`,
           isStreaming: false,
-          logSummary: '[Gemini] エラー',
         });
       }
       return;
     }
 
-    // ── Built-in: shelly context ────────────────────────────────────────────────
+    // ── shelly context ──
     if (parsed.layer === 'command' && /^shelly\s+context/i.test(parsed.prompt.trim())) {
-      const cwd = activeSession.currentDir;
-      const blockId = `ai-${Date.now()}`;
-      const aiBlock: AiBlock = {
-        id: blockId,
-        sessionId: activeSession.id,
-        blockType: 'ai',
-        input: parsed.raw,
-        target: 'local',
-        layer: 'command',
-        logSummary: '[Shelly] context.md 自動生成中...',
-        showHint: false,
-        timestamp: Date.now(),
-      };
-      addAiBlock(aiBlock);
-      updateAiBlock(blockId, { isStreaming: true, streamingText: '解析中...' });
-
+      addUserMessage(input);
+      const msgId = addAssistantMessage('local');
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '解析中...' });
       try {
+        const cwd = activeSession.currentDir;
         const ctx = await generateProjectContext(cwd, execForContext);
         projectContextRef.current = ctx;
-        updateAiBlock(blockId, {
-          response: `.shelly/context.md を生成しました (${ctx.length}文字)\nLLMが自動でプロジェクト情報を参照します。\n\n---\n${ctx.slice(0, 1500)}${ctx.length > 1500 ? '\n...(省略)' : ''}`,
+        updateMessage(chatSessionId, msgId, {
+          content: `.shelly/context.md を生成しました (${ctx.length}文字)\n\n${ctx.slice(0, 1500)}${ctx.length > 1500 ? '\n...(省略)' : ''}`,
           isStreaming: false,
-          logSummary: '[Shelly] context.md 生成完了',
         });
       } catch (err) {
-        updateAiBlock(blockId, {
-          response: `context.md の生成に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+        updateMessage(chatSessionId, msgId, {
+          content: '',
+          error: `context.md 生成失敗: ${err instanceof Error ? err.message : String(err)}`,
           isStreaming: false,
-          logSummary: '[Shelly] context生成エラー',
         });
       }
       return;
     }
 
-    // ── Layer 4: Shell command → direct execution ──────────────────────────────────
+    // ── Shell command → direct execution ──
     if (parsed.layer === 'command') {
-      // 安全チェック
       if (settings.enableCommandSafety) {
         const safety = checkCommandSafety(parsed.prompt);
         const effectiveMode = settings.experienceMode ?? 'learning';
@@ -420,66 +364,58 @@ export default function TerminalScreen() {
           return;
         }
       }
-      executeCommandSafely(parsed.prompt);
+
+      // Add user message for the command, then add assistant message with execution result
+      addUserMessage(`$ ${parsed.prompt}`);
+      const msgId = addAssistantMessage(undefined);
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '実行中...' });
+
+      if (connectionMode === 'termux') {
+        try {
+          const result = await bridgeRunCommand(parsed.prompt);
+          const output = result.stdout || '';
+          const stderr = result.stderr ? `\n--- stderr ---\n${result.stderr}` : '';
+          updateMessage(chatSessionId, msgId, {
+            content: output + stderr,
+            isStreaming: false,
+            executions: [{
+              command: parsed.prompt,
+              output: output + stderr,
+              exitCode: result.exitCode,
+              isCollapsed: (output + stderr).split('\n').length > 10,
+            }],
+          });
+        } catch (err) {
+          updateMessage(chatSessionId, msgId, {
+            content: '',
+            error: `実行エラー: ${err instanceof Error ? err.message : String(err)}`,
+            isStreaming: false,
+          });
+        }
+      } else {
+        updateMessage(chatSessionId, msgId, {
+          content: 'Termuxに接続してください。',
+          isStreaming: false,
+          error: '未接続',
+        });
+      }
       return;
-    }    // ── Layer 1-3: AI routing → create AiBlock ────────────────────────
-    const blockId = `ai-${Date.now()}`;
-    const showHint = parsed.mentionHint
-      ? await shouldShowHint(parsed.mentionHint.key)
-      : false;
-
-    const aiBlock: AiBlock = {
-      id: blockId,
-      sessionId: activeSession.id,
-      blockType: 'ai',
-      input: parsed.raw,
-      target: parsed.target,
-      layer: parsed.layer,
-      logSummary: parsed.logSummary,
-      routingDetail: buildRoutingDetail(parsed),
-      toolSuggestions: parsed.suggestions?.map((s) => ({
-        target: s.target as 'claude' | 'gemini' | 'local' | 'perplexity',
-        label: s.label,
-        reason: s.reason,
-        mentionExample: s.mentionExample,
-        confidence: s.confidence,
-      })),
-      mentionHint: parsed.mentionHint,
-      showHint,
-      timestamp: Date.now(),
-    };
-
-    addAiBlock(aiBlock);
-
-    // ── Creator detection: project creation keywords → offer Creator shortcut ─
-    const creatorKeywords = /(?:プロジェクト|アプリ|ウェブサイト|サイト|ポートフォリオ|ランディングページ|LP).*(?:作|つく|生成|ビルド|build|create)/i;
-    const creatorKeywordsEn = /(?:create|build|make|generate|scaffold)\s+(?:a\s+)?(?:project|app|website|portfolio|landing\s*page)/i;
-    if (parsed.layer === 'natural' && (creatorKeywords.test(parsed.raw) || creatorKeywordsEn.test(parsed.raw))) {
-      updateAiBlock(blockId, {
-        response: `プロジェクト作成を検知しました。\n\nCreatorタブで自動生成できます。Creatorタブに移動して「${parsed.prompt}」を入力すると、ファイル構成・コード・設定を自動で生成します。\n\n※ このままチャットで続けることもできます。`,
-        isStreaming: false,
-        logSummary: `[Creator提案] ${parsed.prompt.slice(0, 40)}`,
-      });
-      // Don't return — let AI also process the request if LLM is available
     }
 
-    // ── Layer 3: Natural language → route directly to Local LLM (if enabled) ─
-    // No more suggestion cards — just send it straight to the LLM
+    // ── AI routing (layers 1-3) ──
+    addUserMessage(input);
+
     let target = parsed.target;
+    const agent = mapTargetToAgent(target) ?? 'local';
+
+    // Natural language → default to local LLM
     if (parsed.layer === 'natural') {
       if (settings.localLlmEnabled) {
         target = 'local';
-        updateAiBlock(blockId, {
-          target: 'local',
-          logSummary: `[Local LLM] ${parsed.prompt.slice(0, 60)}${parsed.prompt.length > 60 ? '…' : ''}`,
-          routingDetail: undefined,
-          toolSuggestions: undefined,
-          mentionHint: undefined,
-        });
       } else {
-        // Local LLM disabled — show brief hint instead of suggestion cards
-        updateAiBlock(blockId, {
-          response: '@mentionでツールを指定してください。例: @claude, @gemini, @local',
+        const msgId = addAssistantMessage(undefined);
+        updateMessage(chatSessionId, msgId, {
+          content: '@mentionでツールを指定してください。例: @claude, @gemini, @local',
           isStreaming: false,
         });
         return;
@@ -487,45 +423,38 @@ export default function TerminalScreen() {
     }
 
     if (target === 'local') {
-      // Local LLM — use streaming orchestration
+      const msgId = addAssistantMessage('local');
       const config = {
         baseUrl: settings.localLlmUrl,
         model: settings.localLlmModel,
         enabled: settings.localLlmEnabled,
       };
 
-      const streamStartTime = Date.now();
       let accumulatedText = '';
-      let tokenCount = 0;
-
-      updateAiBlock(blockId, {
+      updateMessage(chatSessionId, msgId, {
         isStreaming: true,
         streamingText: '',
         tokenCount: 0,
-        streamingStartTime: streamStartTime,
+        streamingStartTime: Date.now(),
       });
 
       const result = await orchestrateChatStream(
-        parsed.prompt,
-        config,
+        parsed.prompt, config,
         (chunk, done) => {
           if (chunk) {
             accumulatedText += chunk;
-            // Rough token count: ~4 chars per token
-            tokenCount = Math.round(accumulatedText.length / 4);
-            updateAiBlock(blockId, {
+            updateMessage(chatSessionId, msgId, {
               streamingText: accumulatedText,
-              tokenCount,
+              tokenCount: Math.round(accumulatedText.length / 4),
               isStreaming: !done,
             });
           }
           if (done) {
-            updateAiBlock(blockId, {
-              response: accumulatedText,
+            updateMessage(chatSessionId, msgId, {
+              content: accumulatedText,
               streamingText: undefined,
               isStreaming: false,
-              tokenCount,
-              logSummary: `[Local LLM] ${parsed.prompt.slice(0, 50)}${parsed.prompt.length > 50 ? '…' : ''}`,
+              tokenCount: Math.round(accumulatedText.length / 4),
             });
           }
         },
@@ -535,14 +464,12 @@ export default function TerminalScreen() {
       );
 
       if (result.handledBy !== 'local_llm') {
-        // Fallback to CLI (code/research/file_ops or error)
-        updateAiBlock(blockId, { isStreaming: false, streamingText: undefined });
+        updateMessage(chatSessionId, msgId, { isStreaming: false, streamingText: undefined });
         if (result.delegatedCommand) {
-          // CLI委譲先の情報をブロックに表示
           const toolLabel = result.handledBy === 'gemini' ? 'Gemini CLI' : result.handledBy === 'codex' ? 'Codex CLI' : 'Claude Code';
-          updateAiBlock(blockId, {
-            logSummary: `[${toolLabel}] ${parsed.prompt.slice(0, 50)}${parsed.prompt.length > 50 ? '…' : ''}`,
-            response: `${toolLabel}に委譲しました。\n理由: ${(result as any).reasoning || ''}`,
+          updateMessage(chatSessionId, msgId, {
+            content: `${toolLabel}に委譲しました。\n理由: ${(result as any).reasoning || ''}`,
+            agent: mapTargetToAgent(result.handledBy ?? '') ?? 'local',
             isStreaming: false,
           });
           if (connectionMode === 'termux') {
@@ -551,128 +478,98 @@ export default function TerminalScreen() {
             runCommand(result.delegatedCommand);
           }
         } else if ((result as any).response) {
-          // orchestrateTaskがresponseを返した場合（setupMessage等）
-          updateAiBlock(blockId, {
-            response: (result as any).response,
+          updateMessage(chatSessionId, msgId, {
+            content: (result as any).response,
             isStreaming: false,
           });
         } else {
-          updateAiBlock(blockId, {
-            response: 'Local LLMに接続できませんでした。Settingsで接続を確認してください。',
+          updateMessage(chatSessionId, msgId, {
+            content: '',
+            error: 'Local LLMに接続できませんでした。Settingsで接続を確認してください。',
             isStreaming: false,
           });
         }
       }
     } else if (target === 'perplexity') {
-      // Perplexity Sonar API — ストリーミング検索
+      const msgId = addAssistantMessage('perplexity');
       const apiKey = settings.perplexityApiKey ?? '';
-
       if (!apiKey) {
-        updateAiBlock(blockId, {
-          response: 'Perplexity APIキーが設定されていません。\n設定画面 → Perplexity APIキーで入力してください。\nhttps://www.perplexity.ai/settings/api で取得できます。',
+        updateMessage(chatSessionId, msgId, {
+          content: 'Perplexity APIキーが設定されていません。\nhttps://www.perplexity.ai/settings/api で取得できます。',
           isStreaming: false,
-          logSummary: `[Perplexity] APIキー未設定`,
+          error: 'APIキー未設定',
         });
         return;
       }
 
-      const pxStreamStart = Date.now();
-      let pxAccumulated = '';
-      let pxTokenCount = 0;
-      let pxCitations: Array<{ url: string; title?: string }> = [];
-
-      updateAiBlock(blockId, {
-        isStreaming: true,
-        streamingText: '',
-        tokenCount: 0,
-        streamingStartTime: pxStreamStart,
-      });
+      let accumulated = '';
+      let citations: Array<{ url: string; title?: string }> = [];
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
 
       const { perplexitySearchStream } = await import('@/lib/perplexity');
-      await perplexitySearchStream(
-        apiKey,
-        parsed.prompt,
-        (chunk, done, citations) => {
-          if (chunk) {
-            pxAccumulated += chunk;
-            pxTokenCount = Math.round(pxAccumulated.length / 4);
-            updateAiBlock(blockId, {
-              streamingText: pxAccumulated,
-              tokenCount: pxTokenCount,
-              isStreaming: !done,
-            });
-          }
-          if (citations && citations.length > 0) {
-            pxCitations = citations;
-          }
-          if (done) {
-            updateAiBlock(blockId, {
-              response: pxAccumulated,
-              streamingText: undefined,
-              isStreaming: false,
-              tokenCount: pxTokenCount,
-              citations: pxCitations,
-              logSummary: `[Perplexity] ${parsed.prompt.slice(0, 50)}${parsed.prompt.length > 50 ? '…' : ''}`,
-            });
-          }
-        },
-        settings.perplexityModel ?? undefined,
-      );
-     } else if (target === 'gemini') {
-      // Gemini API — 直接ストリーミング呼び出し
+      await perplexitySearchStream(apiKey, parsed.prompt, (chunk, done, cits) => {
+        if (chunk) {
+          accumulated += chunk;
+          updateMessage(chatSessionId, msgId, {
+            streamingText: accumulated,
+            tokenCount: Math.round(accumulated.length / 4),
+            isStreaming: !done,
+          });
+        }
+        if (cits && cits.length > 0) citations = cits;
+        if (done) {
+          updateMessage(chatSessionId, msgId, {
+            content: accumulated,
+            streamingText: undefined,
+            isStreaming: false,
+            tokenCount: Math.round(accumulated.length / 4),
+            citations,
+          });
+        }
+      }, settings.perplexityModel ?? undefined);
+    } else if (target === 'gemini') {
+      const msgId = addAssistantMessage('gemini');
       const apiKey = settings.geminiApiKey ?? '';
       if (!apiKey) {
-        updateAiBlock(blockId, {
-          response: 'Gemini APIキーが設定されていません。\n設定画面 → Gemini API → APIキーで入力してください。\nhttps://aistudio.google.com/app/apikey で無料取得できます。',
+        updateMessage(chatSessionId, msgId, {
+          content: 'Gemini APIキーが設定されていません。\nhttps://aistudio.google.com/app/apikey で無料取得できます。',
           isStreaming: false,
-          logSummary: '[Gemini] APIキー未設定',
+          error: 'APIキー未設定',
         });
         return;
       }
-      const geminiStreamStart = Date.now();
-      let geminiAccumulated = '';
-      let geminiTokenCount = 0;
-      updateAiBlock(blockId, {
-        isStreaming: true,
-        streamingText: '',
-        tokenCount: 0,
-        streamingStartTime: geminiStreamStart,
-      });
+
+      let accumulated = '';
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
+
       const { geminiChatStream } = await import('@/lib/gemini');
-      const geminiResult = await geminiChatStream(
-        apiKey,
-        parsed.prompt,
-        (chunk, done) => {
-          if (chunk) {
-            geminiAccumulated += chunk;
-            geminiTokenCount = Math.round(geminiAccumulated.length / 4);
-            updateAiBlock(blockId, {
-              streamingText: geminiAccumulated,
-              tokenCount: geminiTokenCount,
-              isStreaming: !done,
-            });
-          }
-          if (done) {
-            updateAiBlock(blockId, {
-              response: geminiAccumulated,
-              streamingText: undefined,
-              isStreaming: false,
-              tokenCount: geminiTokenCount,
-              logSummary: `[Gemini] ${parsed.prompt.slice(0, 50)}${parsed.prompt.length > 50 ? '…' : ''}`,
-            });
-          }
-        },
-        settings.geminiModel ?? 'gemini-2.0-flash',
-      );
-      if (!geminiResult.success && !geminiAccumulated) {
-        updateAiBlock(blockId, {
-          response: `Geminiエラー: ${geminiResult.error ?? '不明なエラー'}`,
+      const result = await geminiChatStream(apiKey, parsed.prompt, (chunk, done) => {
+        if (chunk) {
+          accumulated += chunk;
+          updateMessage(chatSessionId, msgId, {
+            streamingText: accumulated,
+            tokenCount: Math.round(accumulated.length / 4),
+            isStreaming: !done,
+          });
+        }
+        if (done) {
+          updateMessage(chatSessionId, msgId, {
+            content: accumulated,
+            streamingText: undefined,
+            isStreaming: false,
+            tokenCount: Math.round(accumulated.length / 4),
+          });
+        }
+      }, settings.geminiModel ?? 'gemini-2.0-flash');
+      if (!result.success && !accumulated) {
+        updateMessage(chatSessionId, msgId, {
+          content: '',
+          error: `Geminiエラー: ${result.error ?? '不明なエラー'}`,
           isStreaming: false,
-          logSummary: '[Gemini] エラー',
         });
       }
     } else if (target === 'team') {
-      // @team Table — 複数AI並列呼び出し + ファシリサマリー
+      const msgId = addAssistantMessage('team');
       const { runTeamRoundtable } = await import('@/lib/team-roundtable');
       const teamMembers = settings.teamMembers ?? { claude: true, gemini: true, codex: false, perplexity: true, local: true };
       const teamSettingsObj = {
@@ -688,76 +585,65 @@ export default function TerminalScreen() {
       };
       const enabledCount = [teamSettingsObj.claudeEnabled, teamSettingsObj.geminiEnabled, teamSettingsObj.codexEnabled, teamSettingsObj.perplexityEnabled, teamSettingsObj.localEnabled].filter(Boolean).length;
       if (enabledCount === 0) {
-        updateAiBlock(blockId, {
-          response: '@team に参加できるエージェントがいません。\n設定画面 → @team メンバー設定でエージェントを有効化してください。',
+        updateMessage(chatSessionId, msgId, {
+          content: '@team に参加できるエージェントがいません。\n設定画面でエージェントを有効化してください。',
           isStreaming: false,
-          logSummary: '[@team] メンバー未設定',
         });
         return;
       }
-      let teamAccumulated = `[@team] ${enabledCount}名のエージェントに質問中...\n\n`;
-      updateAiBlock(blockId, {
-        isStreaming: true,
-        streamingText: teamAccumulated,
-        tokenCount: 0,
-        streamingStartTime: Date.now(),
-        logSummary: `[@team] ${parsed.prompt.slice(0, 50)}${parsed.prompt.length > 50 ? '...' : ''}`,
-      });
+
+      let teamAccumulated = `${enabledCount}名のエージェントに質問中...\n\n`;
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: teamAccumulated, streamingStartTime: Date.now() });
+
       try {
-        const result = await runTeamRoundtable(
-          parsed.prompt,
-          teamSettingsObj,
-          {
-            runCommand: (cmd: string) => new Promise((resolve) => {
-              if (connectionMode === 'termux') {
-                sendCommand(cmd);
-                setTimeout(() => resolve('(CLI実行中 - Termux出力を確認してください)'), 3000);
-              } else {
-                resolve(`[Disconnected] 実行コマンド: ${cmd}`);
-              }
-            }),
-            perplexityApiKey: settings.perplexityApiKey,
-            perplexityModel: settings.perplexityModel,
-            geminiApiKey: settings.geminiApiKey,
-            geminiModel: settings.geminiModel,
-            localLlmUrl: settings.localLlmUrl,
-            localLlmModel: settings.localLlmModel,
-            onMemberResult: (memberResult) => {
-              teamAccumulated += `\n\n--- ${memberResult.label} ---\n${memberResult.response}`;
-              updateAiBlock(blockId, { streamingText: teamAccumulated });
-            },
-            onFacilitatorChunk: (chunk: string) => {
-              teamAccumulated += chunk;
-              updateAiBlock(blockId, { streamingText: teamAccumulated });
-            },
+        const teamResult = await runTeamRoundtable(parsed.prompt, teamSettingsObj, {
+          runCommand: (cmd: string) => new Promise((resolve) => {
+            if (connectionMode === 'termux') {
+              sendCommand(cmd);
+              setTimeout(() => resolve('(CLI実行中)'), 3000);
+            } else {
+              resolve(`[Disconnected] ${cmd}`);
+            }
+          }),
+          perplexityApiKey: settings.perplexityApiKey,
+          perplexityModel: settings.perplexityModel,
+          geminiApiKey: settings.geminiApiKey,
+          geminiModel: settings.geminiModel,
+          localLlmUrl: settings.localLlmUrl,
+          localLlmModel: settings.localLlmModel,
+          onMemberResult: (memberResult) => {
+            teamAccumulated += `\n\n--- ${memberResult.label} ---\n${memberResult.response}`;
+            updateMessage(chatSessionId, msgId, { streamingText: teamAccumulated });
           },
-        );
-        const facilitatorLabel = result.facilitator?.label ?? 'ファシリ';
-        // ファシリサマリーを先頭に、個別回答を後ろに配置
-        const memberDetails = result.members
+          onFacilitatorChunk: (chunk: string) => {
+            teamAccumulated += chunk;
+            updateMessage(chatSessionId, msgId, { streamingText: teamAccumulated });
+          },
+        });
+        const facilitatorLabel = teamResult.facilitator?.label ?? 'ファシリ';
+        const memberDetails = teamResult.members
           .filter(m => !m.isFacilitator)
           .map(m => `\n--- ${m.label} ---\n${m.response}`)
           .join('\n');
-        const finalText = `=== まとめ (${facilitatorLabel}) ===\n${result.facilitatorSummary}\n\n──── 各エージェントの回答 ────${memberDetails}`;
-        updateAiBlock(blockId, {
-          response: finalText,
+        const finalText = `=== まとめ (${facilitatorLabel}) ===\n${teamResult.facilitatorSummary}\n\n──── 各エージェントの回答 ────${memberDetails}`;
+        updateMessage(chatSessionId, msgId, {
+          content: finalText,
           streamingText: undefined,
           isStreaming: false,
           tokenCount: Math.round(finalText.length / 4),
-          logSummary: `[@team] Table完了 (${result.members.length}名参加)`,
         });
       } catch (err) {
-        updateAiBlock(blockId, {
-          response: `@teamエラー: ${err instanceof Error ? err.message : String(err)}`,
+        updateMessage(chatSessionId, msgId, {
+          content: '',
+          error: `@teamエラー: ${err instanceof Error ? err.message : String(err)}`,
           isStreaming: false,
-          logSummary: '[@team] エラー',
         });
       }
     } else if (target === 'claude') {
-      // Claude CLI — execute via bridge and stream output into AiBlock
+      const msgId = addAssistantMessage('claude');
       if (connectionMode !== 'termux') {
-        updateAiBlock(blockId, {
-          response: 'Termuxに接続してください。Claude Codeの実行にはTermuxブリッジが必要です。',
+        updateMessage(chatSessionId, msgId, {
+          content: 'Termuxに接続してください。Claude Codeの実行にはTermuxブリッジが必要です。',
           isStreaming: false,
         });
         return;
@@ -767,83 +653,63 @@ export default function TerminalScreen() {
       const autoApprove = settings.autoApproveLevel ?? 'safe';
       const cliCommand = buildChatModeClaudeCommand(parsed.prompt, autoApprove);
 
-      let cliAccumulated = '';
-      let cliTokenCount = 0;
-      updateAiBlock(blockId, {
+      updateMessage(chatSessionId, msgId, {
         isStreaming: true,
         streamingText: `$ ${cliCommand}\n\n`,
-        tokenCount: 0,
         streamingStartTime: Date.now(),
-        logSummary: `[Claude Code] ${parsed.prompt.slice(0, 50)}${parsed.prompt.length > 50 ? '...' : ''}`,
       });
 
       try {
         const result = await bridgeRunCommand(cliCommand);
-        cliAccumulated = result.stdout || '';
-        if (result.stderr) {
-          cliAccumulated += `\n--- stderr ---\n${result.stderr}`;
-        }
-        cliTokenCount = Math.round(cliAccumulated.length / 4);
-        const exitLabel = result.exitCode === 0 ? 'completed' : `exit ${result.exitCode}`;
-        updateAiBlock(blockId, {
-          response: cliAccumulated,
+        let output = result.stdout || '';
+        if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
+        updateMessage(chatSessionId, msgId, {
+          content: output,
           streamingText: undefined,
           isStreaming: false,
-          tokenCount: cliTokenCount,
-          logSummary: `[Claude Code] ${exitLabel} - ${parsed.prompt.slice(0, 40)}`,
+          tokenCount: Math.round(output.length / 4),
+          executions: [{
+            command: cliCommand,
+            output,
+            exitCode: result.exitCode,
+            isCollapsed: output.split('\n').length > 10,
+          }],
         });
       } catch (err) {
-        updateAiBlock(blockId, {
-          response: `Claude Code実行エラー: ${err instanceof Error ? err.message : String(err)}`,
+        updateMessage(chatSessionId, msgId, {
+          content: '',
+          error: `Claude Code実行エラー: ${err instanceof Error ? err.message : String(err)}`,
           isStreaming: false,
-          logSummary: '[Claude Code] エラー',
         });
       }
     } else if (target === 'git') {
-      // @git — 自然言語Gitアシスタント
+      const msgId = addAssistantMessage('git');
       const intent = detectGitIntent(parsed.prompt);
       const guide = generateGuide(intent, parsed.prompt);
-
-      // prereqCommandがあれば自動実行してから結果を表示
       if (guide.prereqCommand && connectionMode === 'termux') {
         sendCommand(guide.prereqCommand);
       }
-
-      // ガイドをJSON形式でresponseに格納（GitGuideBlockでパース）
-      updateAiBlock(blockId, {
-        response: JSON.stringify(guide),
+      const stepsText = guide.steps?.map((s) =>
+        s.type === 'command' ? `\`${s.command}\`\n${s.explanation}` : s.explanation
+      ).join('\n\n') ?? '';
+      updateMessage(chatSessionId, msgId, {
+        content: `## ${guide.title}\n\n${guide.overview ?? ''}\n\n${stepsText}`,
         isStreaming: false,
-        logSummary: `[Git Guide] ${guide.title}`,
       });
     } else if (target === 'browser') {
-      // @open <URL> — BrowserタブでURLを開く
       const url = parsed.prompt.trim();
-      useTerminalStore.setState({ pendingCommand: null });
-      updateAiBlock(blockId, {
-        response: `ブラウザで開きます: ${url}`,
+      addUserMessage(`@open ${url}`);
+      const msgId = addAssistantMessage(undefined);
+      updateMessage(chatSessionId, msgId, {
+        content: `ブラウザで開きます: ${url}`,
         isStreaming: false,
-        logSummary: `[Browser] ${url}`,
       });
-      // BrowserタブのURLを設定してタブ遷移
       useTerminalStore.setState({ pendingBrowserUrl: url } as any);
       router.push('/(tabs)/browser' as any);
     }
-  }, [connectionMode, sendCommand, runCommand, activeSession.id, settings, addAiBlock, updateAiBlock, setLastInputMode, router]);
+  }, [chatSessionId, connectionMode, sendCommand, runCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext]);
 
-  /**
-   * Handle tool suggestion card tap — pre-fill input with @mention command
-   */
-  const handleSelectTool = useCallback((mentionExample: string) => {
-    commandInputRef.current?.setText(mentionExample);
-  }, []);
-
-  const handleCancel = useCallback((_blockId: string) => {
-    // Cancel the currently running Termux command
-    cancelCurrent();
-  }, [cancelCurrent]);
-
-  // Ctrl+C from ShortcutBar or physical keyboard
-  const handleCtrlC = useCallback(() => {
+  const handleCancel = useCallback(() => {
     cancelCurrent();
   }, [cancelCurrent]);
 
@@ -855,11 +721,10 @@ export default function TerminalScreen() {
     return navigateHistory('down');
   }, [navigateHistory]);
 
-  // ── Single-pane layout (all screens) ─────────────────────────────────────
-  // Multi-pane is handled by MultiPaneContainer overlay in _layout.tsx
-  const portraitContent = (
-    <View style={[styles.rootInner, { paddingTop: insets.top, backgroundColor: rootBgColor }]}>
-      {/* コマンド安全確認ダイアログ */}
+  // ── Render ──
+  return (
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: colors.background }]}>
+      {/* Safety confirmation dialog */}
       {safetyDialog && (
         <Modal
           transparent
@@ -868,108 +733,112 @@ export default function TerminalScreen() {
           onRequestClose={() => setSafetyDialog(null)}
         >
           <View style={styles.safetyOverlay}>
-            <View style={styles.safetyDialog}>
+            <View style={[styles.safetyDialog, { backgroundColor: colors.surfaceHigh }]}>
               <View style={[styles.safetyHeader, { borderLeftColor: safetyDialog.color }]}>
                 <Text style={[styles.safetyLevel, { color: safetyDialog.color }]}>
-                  ⚠️ {safetyDialog.level} RISK
+                  {safetyDialog.level} RISK
                 </Text>
-                <Text style={styles.safetyTitle}>実行前に確認</Text>
+                <Text style={[styles.safetyTitle, { color: colors.foreground }]}>
+                  実行前に確認
+                </Text>
               </View>
-              <Text style={styles.safetyMessage}>{safetyDialog.message}</Text>
-              {/* LLM意図説明ボックス（学習モード + LLM有効時のみ） */}
+              <Text style={[styles.safetyMessage, { color: colors.muted }]}>
+                {safetyDialog.message}
+              </Text>
               {(settings.experienceMode ?? 'learning') === 'learning' && settings.localLlmEnabled && (intentExplanation || isExplainingIntent) && (
-                <View style={styles.intentExplanationBox}>
+                <View style={styles.intentBox}>
                   {isExplainingIntent && !intentExplanation && (
                     <ActivityIndicator size="small" color="#A78BFA" style={{ marginRight: 8 }} />
                   )}
-                  <Text style={styles.intentExplanationText}>
+                  <Text style={styles.intentText}>
                     {intentExplanation || '解析中...'}
                   </Text>
                 </View>
               )}
-              <View style={styles.safetyCommandBox}>
-                <Text style={styles.safetyCommandLabel}>$ </Text>
-                <Text style={styles.safetyCommand}>{safetyDialog.command}</Text>
+              <View style={[styles.commandBox, { borderColor: colors.border }]}>
+                <Text style={styles.commandPrompt}>$ </Text>
+                <Text style={[styles.commandText, { color: colors.foreground }]}>
+                  {safetyDialog.command}
+                </Text>
               </View>
               <View style={styles.safetyButtons}>
                 <Pressable
-                  style={[styles.safetyBtn, styles.safetyBtnCancel]}
+                  style={[styles.safetyBtn, { backgroundColor: colors.surface }]}
                   onPress={() => setSafetyDialog(null)}
                 >
-                  <Text style={styles.safetyBtnCancelText}>キャンセル</Text>
+                  <Text style={[styles.safetyBtnText, { color: colors.muted }]}>キャンセル</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.safetyBtn, { backgroundColor: safetyDialog.color }]}
                   onPress={() => {
                     const cmd = safetyDialog.command;
+                    const level = safetyDialog.level;
+                    const warning = safetyDialog.message;
                     setSafetyDialog(null);
+                    // Record safety warning + execution in chat
+                    if (chatSessionId) {
+                      addMessage(chatSessionId, {
+                        id: generateId(),
+                        role: 'system',
+                        content: `⚠️ ${level} RISK: ${warning}`,
+                        timestamp: Date.now(),
+                        dangerLevel: level as ChatMessage['dangerLevel'],
+                      });
+                    }
+                    addUserMessage(`$ ${cmd}`);
                     executeCommandSafely(cmd);
                   }}
                 >
-                  <Text style={styles.safetyBtnExecText}>実行する</Text>
+                  <Text style={[styles.safetyBtnText, { color: '#FFFFFF', fontWeight: '700' }]}>実行する</Text>
                 </Pressable>
               </View>
             </View>
           </View>
         </Modal>
       )}
+
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-      <TerminalHeader />
+      <ChatHeader />
+
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}
       >
-        {/* Terminal output — takes all available space above input */}
-        <View style={styles.terminalArea}>
-          <BlockList
-            blocks={activeSession.blocks}
-            entries={activeSession.entries}
-            currentDir={activeSession.currentDir}
-            onRerun={handleSend}
-            onCancel={handleCancel}
-            onSelectTool={handleSelectTool}
+        <View style={styles.chatArea}>
+          <ChatMessageList
+            messages={messages}
+            fontSize={settings.fontSize ?? 14}
+            onSampleTap={(text) => commandInputRef.current?.setText(text)}
           />
         </View>
 
-        {/* Input area — pinned to bottom, above keyboard */}
         <CommandInput
           ref={commandInputRef}
           onSend={handleSend}
           onHistoryUp={handleHistoryUp}
           onHistoryDown={handleHistoryDown}
-          onCtrlC={handleCtrlC}
-          isRunning={isRunning}
+          onCtrlC={handleCancel}
+          isRunning={messages.some(m => m.isStreaming)}
           isBridgeConnected={isBridgeConnected}
         />
       </KeyboardAvoidingView>
     </View>
   );
-  return hasWallpaper ? (
-    <ImageBackground source={{ uri: settings.wallpaperUri! }} style={styles.root} resizeMode="cover">
-      {blurIntensity > 0 && <BlurView intensity={blurIntensity} style={StyleSheet.absoluteFill} tint="dark" />}
-      {portraitContent}
-    </ImageBackground>
-  ) : portraitContent;
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   root: {
-    flex: 1,
-    backgroundColor: '#0A0A0A',
-  },
-  rootInner: {
     flex: 1,
   },
   flex: {
     flex: 1,
   },
-  // Portrait: terminal area fills all space above input
-  terminalArea: {
+  chatArea: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
   },
-  // コマンド安全確認ダイアログ
   safetyOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.75)',
@@ -979,7 +848,6 @@ const styles = StyleSheet.create({
   },
   safetyDialog: {
     width: '100%',
-    backgroundColor: '#1A1A1A',
     borderRadius: 12,
     padding: 20,
     borderWidth: 1,
@@ -999,31 +867,44 @@ const styles = StyleSheet.create({
   safetyTitle: {
     fontSize: 17,
     fontWeight: '600',
-    color: '#ECEDEE',
     marginTop: 2,
   },
   safetyMessage: {
     fontSize: 13,
-    color: '#9BA1A6',
     lineHeight: 20,
     marginBottom: 12,
   },
-  safetyCommandBox: {
+  intentBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#A78BFA15',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#A78BFA30',
+    padding: 10,
+    marginBottom: 12,
+  },
+  intentText: {
+    color: '#C4B5FD',
+    fontSize: 13,
+    lineHeight: 19,
+    flex: 1,
+    fontFamily: 'monospace',
+  },
+  commandBox: {
     flexDirection: 'row',
     backgroundColor: '#0D0D0D',
     borderRadius: 6,
     padding: 10,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#2A2A2A',
   },
-  safetyCommandLabel: {
+  commandPrompt: {
     color: '#00D4AA',
     fontFamily: 'monospace',
     fontSize: 13,
   },
-  safetyCommand: {
-    color: '#ECEDEE',
+  commandText: {
     fontFamily: 'monospace',
     fontSize: 13,
     flex: 1,
@@ -1039,34 +920,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
-  safetyBtnCancel: {
-    backgroundColor: '#2A2A2A',
-  },
-  safetyBtnCancelText: {
-    color: '#9BA1A6',
+  safetyBtnText: {
     fontSize: 15,
     fontWeight: '600',
-  },
-  safetyBtnExecText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  intentExplanationBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#A78BFA15',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#A78BFA30',
-    padding: 10,
-    marginBottom: 12,
-  },
-  intentExplanationText: {
-    color: '#C4B5FD',
-    fontSize: 13,
-    lineHeight: 19,
-    flex: 1,
-    fontFamily: 'monospace',
   },
 });

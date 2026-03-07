@@ -21,6 +21,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -44,8 +46,16 @@ export type ImageAttachment = {
   height: number;
 };
 
+export type FileAttachment = {
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  content?: string; // text content (for text files)
+};
+
 type Props = {
-  onSend: (command: string, images?: ImageAttachment[]) => void;
+  onSend: (command: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   onHistoryUp: () => string;
   onHistoryDown: () => string;
   onCtrlC?: () => void;
@@ -73,6 +83,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
   const [inputText, setInputText] = useState('');
   const [inputHeight, setInputHeight] = useState(40);
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const inputRef = useRef<TextInput>(null);
 
   // Speech input hook
@@ -126,13 +137,13 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
   const detectedMode = useMemo((): { label: string; color: string } | null => {
     const trimmed = inputText.trim();
     if (!trimmed) return null;
-    if (trimmed.startsWith('@claude')) return { label: 'Claude', color: '#00D4AA' };
-    if (trimmed.startsWith('@gemini')) return { label: 'Gemini', color: '#60A5FA' };
-    if (trimmed.startsWith('@local')) return { label: 'Local LLM', color: '#FBBF24' };
-    if (trimmed.startsWith('@perplexity')) return { label: 'Perplexity', color: '#A78BFA' };
-    if (trimmed.startsWith('@team')) return { label: 'Team', color: '#F472B6' };
-    if (trimmed.startsWith('@git')) return { label: 'Git', color: '#F87171' };
-    if (trimmed.startsWith('@open')) return { label: 'Browser', color: '#60A5FA' };
+    if (trimmed.startsWith('@claude')) return { label: 'Claude', color: '#F59E0B' };
+    if (trimmed.startsWith('@gemini')) return { label: 'Gemini', color: '#3B82F6' };
+    if (trimmed.startsWith('@local')) return { label: 'Local LLM', color: '#8B5CF6' };
+    if (trimmed.startsWith('@perplexity')) return { label: 'Perplexity', color: '#14B8A6' };
+    if (trimmed.startsWith('@team')) return { label: 'Team', color: '#EC4899' };
+    if (trimmed.startsWith('@git')) return { label: 'Git', color: '#F97316' };
+    if (trimmed.startsWith('@open')) return { label: 'Browser', color: '#3B82F6' };
     if (trimmed.startsWith('@')) return { label: 'AI', color: '#8B5CF6' };
     if (!isShellCommand(trimmed)) return { label: 'AI', color: '#8B5CF6' };
     return { label: 'Shell', color: '#93C5FD' };
@@ -196,7 +207,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
   // Send animation + sound
   const handleSend = useCallback(() => {
     const cmd = inputText.trim();
-    if (!cmd && attachedImages.length === 0) return;
+    if (!cmd && attachedImages.length === 0 && attachedFiles.length === 0) return;
     if (settings.hapticFeedback) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -207,11 +218,16 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     );
     playSound('send');
 
-    onSend(cmd, attachedImages.length > 0 ? attachedImages : undefined);
+    onSend(
+      cmd,
+      attachedImages.length > 0 ? attachedImages : undefined,
+      attachedFiles.length > 0 ? attachedFiles : undefined,
+    );
     setInputText('');
     setInputHeight(40);
     setAttachedImages([]);
-  }, [inputText, attachedImages, onSend, settings.hapticFeedback, sendScale]);
+    setAttachedFiles([]);
+  }, [inputText, attachedImages, attachedFiles, onSend, settings.hapticFeedback, sendScale]);
 
   const handlePaste = useCallback(async () => {
     try {
@@ -277,6 +293,37 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     setAttachedImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  const pickFile = useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+      });
+      if (result.canceled || !result.assets) return;
+      const newFiles: FileAttachment[] = [];
+      for (const asset of result.assets.slice(0, 4 - attachedFiles.length)) {
+        const file: FileAttachment = {
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType || 'application/octet-stream',
+          size: asset.size || 0,
+        };
+        // Read text content for text-based files
+        if (asset.mimeType?.startsWith('text/') || /\.(txt|md|json|js|ts|tsx|jsx|py|sh|yml|yaml|toml|xml|csv|log|conf|cfg|env|html|css|sql)$/i.test(asset.name)) {
+          try {
+            file.content = await FileSystem.readAsStringAsync(asset.uri);
+          } catch { /* binary file, skip content */ }
+        }
+        newFiles.push(file);
+      }
+      setAttachedFiles((prev) => [...prev, ...newFiles].slice(0, 4));
+    } catch { /* ignore */ }
+  }, [attachedFiles.length]);
+
+  const removeFile = useCallback((index: number) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleMicToggle = useCallback(async () => {
     if (speechState.status === 'recording') {
       stopRecording();
@@ -334,7 +381,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
 
-  const isActive = inputText.trim().length > 0 || attachedImages.length > 0;
+  const isActive = inputText.trim().length > 0 || attachedImages.length > 0 || attachedFiles.length > 0;
   const promptSymbol = isNaturalMode ? 'AI' : '$';
   const promptColor = isNaturalMode ? colors.aiPurple : colors.accent;
   const placeholder = isNaturalMode ? '\u8CEA\u554F\u3084\u6307\u793A\u3092\u5165\u529B...' : '\u30B3\u30DE\u30F3\u30C9\u3092\u5165\u529B...';
@@ -387,6 +434,30 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
                 activeOpacity={0.7}
               >
                 <MaterialIcons name="close" size={12} color="#FFF" />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </ScrollView>
+      )}
+
+      {attachedFiles.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={[styles.thumbnailStrip, { borderBottomColor: colors.surface }]}
+          contentContainerStyle={styles.thumbnailStripContent}
+        >
+          {attachedFiles.map((file, i) => (
+            <View key={`file-${i}`} style={[styles.fileChip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <MaterialIcons name="attach-file" size={12} color={colors.muted} />
+              <Text style={[styles.fileChipName, { color: colors.foreground }]} numberOfLines={1}>
+                {file.name}
+              </Text>
+              <Text style={[styles.fileChipSize, { color: colors.inactive }]}>
+                {file.size < 1024 ? `${file.size}B` : file.size < 1048576 ? `${(file.size / 1024).toFixed(0)}KB` : `${(file.size / 1048576).toFixed(1)}MB`}
+              </Text>
+              <TouchableOpacity onPress={() => removeFile(i)} activeOpacity={0.7}>
+                <MaterialIcons name="close" size={14} color={colors.inactive} />
               </TouchableOpacity>
             </View>
           ))}
@@ -456,6 +527,14 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
               disabled={attachedImages.length >= MAX_IMAGES}
             >
               <MaterialIcons name="photo-library" size={15} color={attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.muted} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={pickFile}
+              activeOpacity={0.7}
+              style={[styles.smallBtn, { backgroundColor: colors.surface, borderColor: colors.border }, attachedFiles.length >= 4 && styles.btnDisabled]}
+              disabled={attachedFiles.length >= 4}
+            >
+              <MaterialIcons name="attach-file" size={15} color={attachedFiles.length >= 4 ? colors.borderHeavy : colors.muted} />
             </TouchableOpacity>
             <TouchableOpacity
               onPress={handleMicToggle}
@@ -657,5 +736,24 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     fontSize: 11,
     fontWeight: '600',
+  },
+  fileChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    maxWidth: 200,
+  },
+  fileChipName: {
+    fontSize: 11,
+    fontFamily: 'monospace',
+    flex: 1,
+  },
+  fileChipSize: {
+    fontSize: 9,
+    fontFamily: 'monospace',
   },
 });

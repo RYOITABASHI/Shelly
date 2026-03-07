@@ -1,31 +1,36 @@
 /**
- * app/(tabs)/projects.tsx — v1.0
+ * app/(tabs)/projects.tsx
  *
- * Projects タブ: プロジェクトフォルダ管理・ファイルブラウザ。
- * - 開発ディレクトリの一覧表示
- * - プロジェクトの作成履歴（Creator storeと連携）
- * - ファイルツリー表示
- * - git status / package.json 情報
+ * Projects tab — Chat history + Project folders.
+ * GPT/Claude left-panel equivalent, as a tab for mobile.
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
+  FlatList,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
+  TextInput,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import * as Haptics from 'expo-haptics';
+import { useChatStore, type ChatSession } from '@/store/chat-store';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { useTerminalStore } from '@/store/terminal-store';
-import { useCreatorStore } from '@/store/creator-store';
-import { useTheme } from '@/lib/theme-engine';
+import { useTheme } from '@/hooks/use-theme';
+import { withAlpha } from '@/lib/theme-utils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+type Tab = 'chats' | 'projects';
 
 interface ProjectEntry {
   name: string;
@@ -34,57 +39,53 @@ interface ProjectEntry {
   hasPackageJson: boolean;
 }
 
-interface FileEntry {
-  name: string;
-  isDirectory: boolean;
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ProjectsScreen() {
   const insets = useSafeAreaInsets();
-  const theme = useTheme();
-  const c = theme.colors;
+  const { colors: c } = useTheme();
+  const router = useRouter();
+
+  const [activeTab, setActiveTab] = useState<Tab>('chats');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // ── Chat Store ──
+  const {
+    sessions,
+    activeSessionId,
+    isLoaded,
+    load: loadChat,
+    createSession,
+    deleteSession,
+    setActiveSession,
+    searchSessions,
+  } = useChatStore();
+
+  useEffect(() => {
+    if (!isLoaded) loadChat();
+  }, [isLoaded]);
+
+  // ── Project scanning ──
   const { bridgeStatus } = useTerminalStore();
   const { runCommand } = useTermuxBridge();
-  const { projects: creatorProjects } = useCreatorStore();
   const isConnected = bridgeStatus === 'connected';
-
   const [projectDirs, setProjectDirs] = useState<ProjectEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [currentPath, setCurrentPath] = useState<string | null>(null);
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
-  const [projectInfo, setProjectInfo] = useState<{
-    gitBranch?: string;
-    gitStatus?: string;
-    packageName?: string;
-    packageVersion?: string;
-  } | null>(null);
-
-  // ── Helper: runCommandでstdoutを取得 ──────────────────────────────────────
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
 
   const exec = useCallback(async (cmd: string): Promise<string | null> => {
     try {
       const result = await runCommand(cmd);
       if (result.exitCode !== 0 && !result.stdout) return null;
       return result.stdout || null;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }, [runCommand]);
-
-  // ── プロジェクトディレクトリの走査 ─────────────────────────────────────────
 
   const scanProjects = useCallback(async () => {
     if (!isConnected) return;
-    setIsLoading(true);
-
+    setIsLoadingProjects(true);
     try {
       const scanDirs = ['~/dev', '~/projects', '~/Shelly', '~/storage/shared/Documents/development'];
       const entries: ProjectEntry[] = [];
-
       for (const dir of scanDirs) {
         const listing = await exec(`ls -1 ${dir} 2>/dev/null | head -20`);
         if (!listing) continue;
@@ -97,174 +98,224 @@ export default function ProjectsScreen() {
           if (!checks) continue;
           const lines = checks.split('\n');
           if (lines[0] !== 'dir') continue;
-          entries.push({
-            name: item,
-            path: fullPath,
-            isGit: lines[1] === 'git',
-            hasPackageJson: lines[2] === 'pkg',
-          });
+          entries.push({ name: item, path: fullPath, isGit: lines[1] === 'git', hasPackageJson: lines[2] === 'pkg' });
         }
       }
-
-      // scanDirs自体もプロジェクトかチェック
-      for (const dir of scanDirs) {
-        const checks = await exec(
-          `[ -d "${dir}" ] && echo "dir" || echo "nodir"; [ -d "${dir}/.git" ] && echo "git" || echo "nogit"; [ -f "${dir}/package.json" ] && echo "pkg" || echo "nopkg"`,
-        );
-        if (!checks) continue;
-        const lines = checks.split('\n');
-        if (lines[0] !== 'dir') continue;
-        if (lines[1] === 'git' || lines[2] === 'pkg') {
-          const name = dir.split('/').pop() || dir;
-          if (!entries.find((e) => e.path === dir)) {
-            entries.push({
-              name,
-              path: dir,
-              isGit: lines[1] === 'git',
-              hasPackageJson: lines[2] === 'pkg',
-            });
-          }
-        }
-      }
-
       setProjectDirs(entries);
-    } catch {
-      // ignore
-    } finally {
-      setIsLoading(false);
-      setRefreshing(false);
-    }
+    } catch { /* ignore */ }
+    setIsLoadingProjects(false);
   }, [isConnected, exec]);
 
   useEffect(() => {
-    if (isConnected) scanProjects();
-  }, [isConnected]);
+    if (isConnected && activeTab === 'projects') scanProjects();
+  }, [isConnected, activeTab]);
 
-  // ── ファイル一覧の取得 ──────────────────────────────────────────────────
+  // ── Debounced search (300ms) ──
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const debounceTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    debounceTimer.current = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(debounceTimer.current);
+  }, [searchQuery]);
 
-  const openProject = useCallback(async (path: string) => {
-    if (!isConnected) return;
-    setCurrentPath(path);
-    setIsLoadingFiles(true);
-    setProjectInfo(null);
+  const filteredSessions = debouncedQuery
+    ? searchSessions(debouncedQuery)
+    : sessions;
 
-    try {
-      const listing = await exec(`ls -1Ap "${path}" 2>/dev/null | head -50`);
-      if (listing) {
-        const items = listing.split('\n').filter(Boolean).map((name): FileEntry => ({
-          name: name.replace(/\/$/, ''),
-          isDirectory: name.endsWith('/'),
-        }));
-        setFiles(items);
-      }
+  // ── Handlers ──
+  const handleNewChat = useCallback(() => {
+    createSession('New Chat');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push('/(tabs)/' as any);
+  }, [createSession, router]);
 
-      const gitInfo = await exec(
-        `cd "${path}" && git branch --show-current 2>/dev/null; echo "---"; git status --short 2>/dev/null | head -5`,
-      );
-      if (gitInfo) {
-        const [branch, , ...statusLines] = gitInfo.split('\n');
-        const cleanBranch = branch?.trim();
-        const statusSummary = statusLines.filter(Boolean).join(', ');
-        if (cleanBranch) {
-          setProjectInfo((prev) => ({
-            ...prev,
-            gitBranch: cleanBranch,
-            gitStatus: statusSummary || 'clean',
-          }));
-        }
-      }
+  const handleSelectChat = useCallback((session: ChatSession) => {
+    setActiveSession(session.id);
+    router.push('/(tabs)/' as any);
+  }, [setActiveSession, router]);
 
-      const pkgInfo = await exec(
-        `cat "${path}/package.json" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('name','')); print(d.get('version',''))" 2>/dev/null`,
-      );
-      if (pkgInfo) {
-        const [name, version] = pkgInfo.split('\n');
-        if (name) {
-          setProjectInfo((prev) => ({
-            ...prev,
-            packageName: name,
-            packageVersion: version,
-          }));
-        }
-      }
-    } catch {
-      // ignore
-    } finally {
-      setIsLoadingFiles(false);
-    }
-  }, [isConnected, exec]);
+  const handleDeleteChat = useCallback((session: ChatSession) => {
+    Alert.alert(
+      'チャットを削除',
+      `「${session.title}」を削除しますか？`,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '削除', style: 'destructive', onPress: () => deleteSession(session.id) },
+      ],
+    );
+  }, [deleteSession]);
 
-  const goBack = useCallback(() => {
-    if (!currentPath) return;
-    const parent = currentPath.replace(/\/[^/]+$/, '');
-    if (parent && parent !== currentPath) {
-      openProject(parent);
-    } else {
-      setCurrentPath(null);
-      setFiles([]);
-      setProjectInfo(null);
-    }
-  }, [currentPath, openProject]);
+  const handleOpenProject = useCallback((path: string) => {
+    // Create a new chat session linked to this project
+    const name = path.split('/').pop() ?? path;
+    createSession(name, path);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push('/(tabs)/' as any);
+  }, [createSession, router]);
 
-  const navigateToFile = useCallback((entry: FileEntry) => {
-    if (entry.isDirectory && currentPath) {
-      openProject(`${currentPath}/${entry.name}`);
-    }
-  }, [currentPath, openProject]);
+  // ── Chat list item ──
+  const renderChatItem = useCallback(({ item }: { item: ChatSession }) => {
+    const isActive = item.id === activeSessionId;
+    const lastMsg = item.messages[item.messages.length - 1];
+    const preview = lastMsg?.content?.slice(0, 60) || 'No messages';
+    const timeAgo = formatTimeAgo(item.updatedAt);
 
-  // ── Render ──────────────────────────────────────────────────────────────
+    return (
+      <TouchableOpacity
+        style={[
+          styles.chatItem,
+          { backgroundColor: isActive ? withAlpha(c.accent, 0.08) : 'transparent', borderColor: c.border },
+        ]}
+        onPress={() => handleSelectChat(item)}
+        onLongPress={() => handleDeleteChat(item)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.chatItemContent}>
+          <View style={styles.chatItemHeader}>
+            <Text style={[styles.chatTitle, { color: isActive ? c.accent : c.foreground }]} numberOfLines={1}>
+              {item.title}
+            </Text>
+            <Text style={[styles.chatTime, { color: c.inactive }]}>{timeAgo}</Text>
+          </View>
+          <Text style={[styles.chatPreview, { color: c.muted }]} numberOfLines={2}>
+            {preview}
+          </Text>
+          <View style={styles.chatMeta}>
+            <Text style={[styles.chatMsgCount, { color: c.inactive }]}>
+              {item.messages.length} messages
+            </Text>
+            {item.projectPath && (
+              <View style={[styles.projectBadge, { backgroundColor: withAlpha(c.accent, 0.1) }]}>
+                <MaterialIcons name="folder" size={10} color={c.accent} />
+                <Text style={[styles.projectBadgeText, { color: c.accent }]}>
+                  {item.projectPath.split('/').pop()}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  }, [activeSessionId, c, handleSelectChat, handleDeleteChat]);
 
-  const renderProjectList = () => (
-    <ScrollView
-      style={styles.scrollView}
-      contentContainerStyle={{ paddingBottom: 80 }}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={() => { setRefreshing(true); scanProjects(); }}
-          tintColor={c.accent}
+  return (
+    <View style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top }]}>
+      {/* Header */}
+      <View style={[styles.header, { borderBottomColor: c.border }]}>
+        <Text style={[styles.headerTitle, { color: c.foreground }]}>Projects</Text>
+        <TouchableOpacity onPress={handleNewChat} style={[styles.newBtn, { backgroundColor: withAlpha(c.accent, 0.1) }]}>
+          <MaterialIcons name="add" size={18} color={c.accent} />
+          <Text style={[styles.newBtnText, { color: c.accent }]}>New Chat</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Tab switcher */}
+      <View style={[styles.tabRow, { borderBottomColor: c.border }]}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'chats' && { borderBottomColor: c.accent, borderBottomWidth: 2 }]}
+          onPress={() => setActiveTab('chats')}
+        >
+          <MaterialIcons name="chat" size={16} color={activeTab === 'chats' ? c.accent : c.inactive} />
+          <Text style={[styles.tabText, { color: activeTab === 'chats' ? c.accent : c.inactive }]}>
+            Chats ({sessions.length})
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'projects' && { borderBottomColor: c.accent, borderBottomWidth: 2 }]}
+          onPress={() => setActiveTab('projects')}
+        >
+          <MaterialIcons name="folder" size={16} color={activeTab === 'projects' ? c.accent : c.inactive} />
+          <Text style={[styles.tabText, { color: activeTab === 'projects' ? c.accent : c.inactive }]}>
+            Folders {projectDirs.length > 0 ? `(${projectDirs.length})` : ''}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Search */}
+      {activeTab === 'chats' && (
+        <View style={[styles.searchRow, { borderBottomColor: c.border }]}>
+          <MaterialIcons name="search" size={18} color={c.inactive} />
+          <TextInput
+            style={[styles.searchInput, { color: c.foreground }]}
+            placeholder="Search chats..."
+            placeholderTextColor={c.inactive}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <MaterialIcons name="close" size={16} color={c.inactive} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* Content */}
+      {activeTab === 'chats' ? (
+        <FlatList
+          data={filteredSessions}
+          renderItem={renderChatItem}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <View style={styles.emptyBox}>
+              <MaterialIcons name="chat-bubble-outline" size={40} color={c.inactive} />
+              <Text style={[styles.emptyText, { color: c.muted }]}>
+                {searchQuery ? 'No matching chats' : 'No chats yet.\nTap + New Chat to start.'}
+              </Text>
+            </View>
+          }
         />
-      }
-    >
-      {!isConnected && (
-        <View style={[styles.emptyBox, { borderColor: c.border }]}>
-          <MaterialIcons name="link-off" size={32} color="#4B5563" />
-          <Text style={styles.emptyText}>
-            Termux Bridgeに接続するとプロジェクトフォルダを表示できます
-          </Text>
-        </View>
-      )}
+      ) : (
+        <ScrollView
+          style={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={isLoadingProjects}
+              onRefresh={scanProjects}
+              tintColor={c.accent}
+            />
+          }
+        >
+          {!isConnected && (
+            <View style={styles.emptyBox}>
+              <MaterialIcons name="link-off" size={40} color={c.inactive} />
+              <Text style={[styles.emptyText, { color: c.muted }]}>
+                Termuxに接続するとプロジェクトフォルダが表示されます
+              </Text>
+            </View>
+          )}
 
-      {isLoading && (
-        <View style={styles.loadingBox}>
-          <ActivityIndicator size="small" color={c.accent} />
-          <Text style={styles.loadingText}>プロジェクトを走査中...</Text>
-        </View>
-      )}
+          {isConnected && isLoadingProjects && (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="small" color={c.accent} />
+              <Text style={[styles.loadingText, { color: c.muted }]}>Scanning...</Text>
+            </View>
+          )}
 
-      {isConnected && !isLoading && projectDirs.length > 0 && (
-        <>
-          <Text style={[styles.sectionLabel, { color: c.foreground }]}>
-            Detected Projects ({projectDirs.length})
-          </Text>
-          {projectDirs.map((proj) => (
+          {isConnected && !isLoadingProjects && projectDirs.map((proj) => (
             <TouchableOpacity
               key={proj.path}
-              style={[styles.projectCard, { backgroundColor: '#111318', borderColor: c.border }]}
-              onPress={() => openProject(proj.path)}
+              style={[styles.projectCard, { backgroundColor: c.surfaceHigh, borderColor: c.border }]}
+              onPress={() => handleOpenProject(proj.path)}
               activeOpacity={0.7}
             >
-              <View style={styles.projectIcon}>
+              <View style={[styles.projectIcon, { backgroundColor: withAlpha(proj.isGit ? '#60A5FA' : '#FBBF24', 0.15) }]}>
                 <MaterialIcons
                   name={proj.isGit ? 'source' : 'folder'}
-                  size={24}
+                  size={22}
                   color={proj.isGit ? '#60A5FA' : '#FBBF24'}
                 />
               </View>
               <View style={styles.projectInfo}>
-                <Text style={styles.projectName}>{proj.name}</Text>
-                <Text style={styles.projectPath}>{proj.path.replace(/^~\//, '')}</Text>
-                <View style={styles.projectBadges}>
+                <Text style={[styles.projectName, { color: c.foreground }]}>{proj.name}</Text>
+                <Text style={[styles.projectPath, { color: c.muted }]}>
+                  {proj.path.replace(/^~\//, '')}
+                </Text>
+                <View style={styles.badgeRow}>
                   {proj.isGit && (
                     <View style={[styles.badge, { backgroundColor: '#60A5FA20' }]}>
                       <Text style={[styles.badgeText, { color: '#60A5FA' }]}>git</Text>
@@ -277,155 +328,40 @@ export default function ProjectsScreen() {
                   )}
                 </View>
               </View>
-              <MaterialIcons name="chevron-right" size={20} color="#4B5563" />
+              <MaterialIcons name="chevron-right" size={20} color={c.inactive} />
             </TouchableOpacity>
           ))}
-        </>
-      )}
 
-      {creatorProjects.length > 0 && (
-        <>
-          <Text style={[styles.sectionLabel, { color: c.foreground, marginTop: 20 }]}>
-            Created Projects ({creatorProjects.length})
-          </Text>
-          {creatorProjects.slice(0, 10).map((proj) => (
-            <TouchableOpacity
-              key={proj.id}
-              style={[styles.projectCard, { backgroundColor: '#111318', borderColor: c.border }]}
-              onPress={() => {
-                if (proj.path) openProject(proj.path);
-              }}
-              activeOpacity={0.7}
-              disabled={!proj.path}
-            >
-              <View style={styles.projectIcon}>
-                <MaterialIcons name="auto-awesome" size={24} color="#A78BFA" />
-              </View>
-              <View style={styles.projectInfo}>
-                <Text style={styles.projectName}>{proj.name}</Text>
-                <Text style={styles.projectPath}>{proj.userInput?.slice(0, 50)}</Text>
-                <View style={styles.projectBadges}>
-                  <View style={[styles.badge, { backgroundColor: '#A78BFA20' }]}>
-                    <Text style={[styles.badgeText, { color: '#A78BFA' }]}>
-                      {proj.status === 'done' ? 'complete' : proj.status}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-              {proj.path && (
-                <MaterialIcons name="chevron-right" size={20} color="#4B5563" />
-              )}
-            </TouchableOpacity>
-          ))}
-        </>
-      )}
-
-      {isConnected && !isLoading && projectDirs.length === 0 && creatorProjects.length === 0 && (
-        <View style={[styles.emptyBox, { borderColor: c.border }]}>
-          <MaterialIcons name="create-new-folder" size={32} color="#4B5563" />
-          <Text style={styles.emptyText}>
-            プロジェクトが見つかりません{'\n'}
-            ~/dev/ や ~/projects/ にフォルダを作成してください
-          </Text>
-        </View>
-      )}
-    </ScrollView>
-  );
-
-  const renderFileDetail = () => (
-    <ScrollView style={styles.scrollView} contentContainerStyle={{ paddingBottom: 80 }}>
-      <View style={styles.navBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={goBack}>
-          <MaterialIcons name="arrow-back" size={20} color={c.accent} />
-          <Text style={[styles.backText, { color: c.accent }]}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.currentPathText} numberOfLines={1}>
-          {currentPath?.replace(/^\/data\/data\/com\.termux\/files\/home\//, '~/')}
-        </Text>
-      </View>
-
-      {projectInfo && (
-        <View style={[styles.infoBox, { borderColor: c.border }]}>
-          {projectInfo.packageName && (
-            <View style={styles.infoRow}>
-              <MaterialIcons name="inventory-2" size={14} color="#34D399" />
-              <Text style={styles.infoText}>
-                {projectInfo.packageName}
-                {projectInfo.packageVersion ? ` v${projectInfo.packageVersion}` : ''}
+          {isConnected && !isLoadingProjects && projectDirs.length === 0 && (
+            <View style={styles.emptyBox}>
+              <MaterialIcons name="create-new-folder" size={40} color={c.inactive} />
+              <Text style={[styles.emptyText, { color: c.muted }]}>
+                {'~/dev/ や ~/projects/ に\nフォルダがありません'}
               </Text>
             </View>
           )}
-          {projectInfo.gitBranch && (
-            <View style={styles.infoRow}>
-              <MaterialIcons name="source" size={14} color="#60A5FA" />
-              <Text style={styles.infoText}>
-                {projectInfo.gitBranch}
-                {projectInfo.gitStatus && projectInfo.gitStatus !== 'clean'
-                  ? ` (${projectInfo.gitStatus})`
-                  : ' (clean)'}
-              </Text>
-            </View>
-          )}
-        </View>
+          <View style={{ height: 80 }} />
+        </ScrollView>
       )}
-
-      {isLoadingFiles ? (
-        <View style={styles.loadingBox}>
-          <ActivityIndicator size="small" color={c.accent} />
-        </View>
-      ) : (
-        files.map((file) => (
-          <TouchableOpacity
-            key={file.name}
-            style={styles.fileRow}
-            onPress={() => navigateToFile(file)}
-            disabled={!file.isDirectory}
-            activeOpacity={file.isDirectory ? 0.7 : 1}
-          >
-            <MaterialIcons
-              name={file.isDirectory ? 'folder' : fileIcon(file.name)}
-              size={18}
-              color={file.isDirectory ? '#FBBF24' : '#6B7280'}
-            />
-            <Text style={[
-              styles.fileName,
-              file.isDirectory && styles.fileNameDir,
-              !file.isDirectory && styles.fileNameFile,
-            ]}>
-              {file.name}
-            </Text>
-          </TouchableOpacity>
-        ))
-      )}
-    </ScrollView>
-  );
-
-  return (
-    <View style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top }]}>
-      <View style={[styles.header, { borderBottomColor: c.border }]}>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Projects</Text>
-        {isConnected && !currentPath && (
-          <TouchableOpacity onPress={scanProjects} disabled={isLoading}>
-            <MaterialIcons name="refresh" size={22} color={c.accent} />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {currentPath ? renderFileDetail() : renderProjectList()}
     </View>
   );
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fileIcon(name: string): 'code' | 'description' | 'image' | 'insert-drive-file' {
-  if (/\.(ts|tsx|js|jsx|py|rb|go|rs|java|kt|swift|c|cpp|h)$/.test(name)) return 'code';
-  if (/\.(md|txt|json|yml|yaml|toml|xml|csv)$/.test(name)) return 'description';
-  if (/\.(png|jpg|jpeg|gif|svg|webp|ico)$/.test(name)) return 'image';
-  return 'insert-drive-file';
+function formatTimeAgo(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return new Date(timestamp).toLocaleDateString();
 }
 
-// ─── Styles ────────────────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -434,7 +370,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
   },
   headerTitle: {
@@ -442,49 +378,140 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontFamily: 'monospace',
   },
-  scrollView: {
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingTop: 12,
+  newBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
   },
-  sectionLabel: {
+  newBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+  },
+  tabRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+  },
+  tabText: {
     fontSize: 12,
     fontWeight: '600',
     fontFamily: 'monospace',
-    marginBottom: 8,
-    paddingHorizontal: 4,
   },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: 'monospace',
+    paddingVertical: 4,
+  },
+  listContent: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  // Chat items
+  chatItem: {
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 6,
+    overflow: 'hidden',
+  },
+  chatItemContent: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  chatItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  chatTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+    flex: 1,
+  },
+  chatTime: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    marginLeft: 8,
+  },
+  chatPreview: {
+    fontSize: 11,
+    fontFamily: 'monospace',
+    lineHeight: 16,
+    marginBottom: 6,
+  },
+  chatMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chatMsgCount: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+  projectBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  projectBadgeText: {
+    fontSize: 9,
+    fontFamily: 'monospace',
+    fontWeight: '600',
+  },
+  // Project items
   projectCard: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
     marginBottom: 8,
   },
   projectIcon: {
     width: 40,
     height: 40,
-    borderRadius: 8,
-    backgroundColor: '#1F2937',
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
   },
   projectInfo: { flex: 1 },
   projectName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#E5E7EB',
+    fontSize: 13,
+    fontWeight: '700',
     fontFamily: 'monospace',
   },
   projectPath: {
-    fontSize: 11,
-    color: '#6B7280',
+    fontSize: 10,
     fontFamily: 'monospace',
     marginTop: 2,
   },
-  projectBadges: {
+  badgeRow: {
     flexDirection: 'row',
     gap: 4,
     marginTop: 4,
@@ -495,25 +522,21 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   badgeText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
     fontFamily: 'monospace',
   },
+  // Empty / Loading
   emptyBox: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 40,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: 12,
-    marginTop: 20,
+    paddingVertical: 60,
+    gap: 12,
   },
   emptyText: {
-    fontSize: 13,
-    color: '#6B7280',
+    fontSize: 12,
     fontFamily: 'monospace',
     textAlign: 'center',
-    marginTop: 12,
     lineHeight: 20,
   },
   loadingBox: {
@@ -521,71 +544,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 20,
+    paddingVertical: 30,
   },
   loadingText: {
     fontSize: 12,
-    color: '#6B7280',
     fontFamily: 'monospace',
-  },
-  navBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    gap: 8,
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  backText: {
-    fontSize: 13,
-    fontWeight: '600',
-    fontFamily: 'monospace',
-  },
-  currentPathText: {
-    fontSize: 12,
-    color: '#6B7280',
-    fontFamily: 'monospace',
-    flex: 1,
-  },
-  infoBox: {
-    backgroundColor: '#111318',
-    borderRadius: 8,
-    borderWidth: 1,
-    padding: 10,
-    marginBottom: 12,
-    gap: 6,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  infoText: {
-    fontSize: 12,
-    color: '#D1D5DB',
-    fontFamily: 'monospace',
-  },
-  fileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#1F2937',
-  },
-  fileName: {
-    fontSize: 13,
-    fontFamily: 'monospace',
-  },
-  fileNameDir: {
-    color: '#FBBF24',
-    fontWeight: '600',
-  },
-  fileNameFile: {
-    color: '#9CA3AF',
   },
 });
