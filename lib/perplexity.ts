@@ -59,6 +59,7 @@ export async function perplexitySearchStream(
   query: string,
   onChunk: (text: string, done: boolean, citations?: PerplexityCitation[]) => void,
   model: string = PERPLEXITY_DEFAULT_MODEL,
+  history?: Array<{ role: string; content: string }>,
 ): Promise<PerplexityResult> {
   if (!apiKey || apiKey.trim() === '') {
     return { success: false, error: 'Perplexity APIキーが設定されていません。設定画面で入力してください。' };
@@ -74,8 +75,9 @@ export async function perplexitySearchStream(
         '回答は構造化して、要点を箇条書きでまとめてください。' +
         '最新の研究動向も含めて回答してください。',
     },
+    ...(history ?? []).map((m) => ({ role: m.role as PerplexityMessage['role'], content: m.content })),
     {
-      role: 'user',
+      role: 'user' as const,
       content: query,
     },
   ];

@@ -6,7 +6,7 @@
  */
 
 import React, { memo, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Share } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -70,6 +70,15 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14 }: P
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }, [message.content, message.streamingText]);
+
+  const handleShare = useCallback(async () => {
+    const text = message.content || message.streamingText || '';
+    if (!text) return;
+    const agentLabel = message.agent ? getAgentLabel(message.agent) : 'AI';
+    try {
+      await Share.share({ message: `${text}\n\n— via Shelly (${agentLabel})` });
+    } catch { /* cancelled */ }
+  }, [message.content, message.streamingText, message.agent]);
 
   const displayText = message.isStreaming ? (message.streamingText || '') : message.content;
 
@@ -182,13 +191,18 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14 }: P
         {/* Actions + Timestamp */}
         <View style={styles.bottomRow}>
           {!message.isStreaming && displayText ? (
-            <TouchableOpacity onPress={handleCopy} activeOpacity={0.7} style={styles.copyBtn} accessibilityRole="button" accessibilityLabel="Copy message">
-              <MaterialIcons
-                name={copied ? 'check' : 'content-copy'}
-                size={12}
-                color={copied ? colors.accent : colors.inactive}
-              />
-            </TouchableOpacity>
+            <View style={styles.actionGroup}>
+              <TouchableOpacity onPress={handleCopy} activeOpacity={0.7} style={styles.copyBtn} accessibilityRole="button" accessibilityLabel="Copy message">
+                <MaterialIcons
+                  name={copied ? 'check' : 'content-copy'}
+                  size={12}
+                  color={copied ? colors.accent : colors.inactive}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleShare} activeOpacity={0.7} style={styles.copyBtn} accessibilityRole="button" accessibilityLabel="Share message">
+                <MaterialIcons name="share" size={12} color={colors.inactive} />
+              </TouchableOpacity>
+            </View>
           ) : <View />}
           <Text style={[styles.timestamp, { color: colors.inactive }]}>
             {message.tokenCount ? `${message.tokenCount} tok · ` : ''}
@@ -332,6 +346,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingBottom: 6,
+  },
+  actionGroup: {
+    flexDirection: 'row',
+    gap: 2,
   },
   copyBtn: {
     padding: 8,

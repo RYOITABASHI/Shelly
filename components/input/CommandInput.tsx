@@ -26,6 +26,7 @@ import * as FileSystem from 'expo-file-system';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
+import { Alert } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
 import { isShellCommand } from '@/lib/input-router';
@@ -68,6 +69,8 @@ export type CommandInputHandle = {
 };
 
 const MAX_IMAGES = 4;
+const MAX_FILE_SIZE = 100 * 1024; // 100KB
+const SENSITIVE_PATTERNS = /\.(env|pem|key|p12|pfx|jks|keystore|credentials|secret)$/i;
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -84,6 +87,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
   const [inputHeight, setInputHeight] = useState(40);
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const inputRef = useRef<TextInput>(null);
 
   // Speech input hook
@@ -302,16 +306,38 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
       if (result.canceled || !result.assets) return;
       const newFiles: FileAttachment[] = [];
       for (const asset of result.assets.slice(0, 4 - attachedFiles.length)) {
+        // Sensitive file warning
+        if (SENSITIVE_PATTERNS.test(asset.name)) {
+          const confirmed = await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              '機密ファイルの検出',
+              `${asset.name} は機密情報を含む可能性があります。\nAIに送信してもよろしいですか？`,
+              [
+                { text: 'キャンセル', style: 'cancel', onPress: () => resolve(false) },
+                { text: '添付する', style: 'destructive', onPress: () => resolve(true) },
+              ],
+            );
+          });
+          if (!confirmed) continue;
+        }
+
         const file: FileAttachment = {
           uri: asset.uri,
           name: asset.name,
           mimeType: asset.mimeType || 'application/octet-stream',
           size: asset.size || 0,
         };
-        // Read text content for text-based files
+        // Read text content for text-based files (with size limit)
         if (asset.mimeType?.startsWith('text/') || /\.(txt|md|json|js|ts|tsx|jsx|py|sh|yml|yaml|toml|xml|csv|log|conf|cfg|env|html|css|sql)$/i.test(asset.name)) {
           try {
-            file.content = await FileSystem.readAsStringAsync(asset.uri);
+            const fileSize = asset.size || 0;
+            if (fileSize > MAX_FILE_SIZE) {
+              // Read only first 100KB and warn
+              file.content = await FileSystem.readAsStringAsync(asset.uri, { length: MAX_FILE_SIZE });
+              file.content += `\n\n... (${Math.round(fileSize / 1024)}KB中、先頭100KBのみ読み込み)`;
+            } else {
+              file.content = await FileSystem.readAsStringAsync(asset.uri);
+            }
           } catch { /* binary file, skip content */ }
         }
         newFiles.push(file);
@@ -474,6 +500,66 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
         </View>
       )}
 
+      {/* Attach popup menu */}
+      {showAttachMenu && (
+        <View style={[styles.attachMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <TouchableOpacity
+            style={[styles.attachMenuItem, { borderBottomColor: colors.border }]}
+            onPress={() => { setShowAttachMenu(false); pickImageFromGallery(); }}
+            activeOpacity={0.7}
+            disabled={attachedImages.length >= MAX_IMAGES}
+            accessibilityRole="button"
+            accessibilityLabel="Pick image from gallery"
+          >
+            <MaterialIcons name="photo-library" size={18} color={attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.accent} />
+            <Text style={[styles.attachMenuLabel, { color: attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.foreground }]}>Gallery</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachMenuItem, { borderBottomColor: colors.border }]}
+            onPress={() => { setShowAttachMenu(false); pickImageFromCamera(); }}
+            activeOpacity={0.7}
+            disabled={attachedImages.length >= MAX_IMAGES}
+            accessibilityRole="button"
+            accessibilityLabel="Take photo"
+          >
+            <MaterialIcons name="camera-alt" size={18} color={attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.accent} />
+            <Text style={[styles.attachMenuLabel, { color: attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.foreground }]}>Camera</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachMenuItem, { borderBottomColor: colors.border }]}
+            onPress={() => { setShowAttachMenu(false); pickFile(); }}
+            activeOpacity={0.7}
+            disabled={attachedFiles.length >= 4}
+            accessibilityRole="button"
+            accessibilityLabel="Attach file"
+          >
+            <MaterialIcons name="attach-file" size={18} color={attachedFiles.length >= 4 ? colors.borderHeavy : colors.accent} />
+            <Text style={[styles.attachMenuLabel, { color: attachedFiles.length >= 4 ? colors.borderHeavy : colors.foreground }]}>File</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachMenuItem, { borderBottomColor: colors.border }]}
+            onPress={() => { setShowAttachMenu(false); handlePaste(); }}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Paste from clipboard"
+          >
+            <MaterialIcons name="content-paste" size={18} color={colors.accent} />
+            <Text style={[styles.attachMenuLabel, { color: colors.foreground }]}>Paste</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.attachMenuItem}
+            onPress={() => { setShowAttachMenu(false); handleMicToggle(); }}
+            activeOpacity={0.7}
+            disabled={speechState.status === 'transcribing'}
+            accessibilityRole="button"
+            accessibilityLabel="Voice input"
+          >
+            <MaterialIcons name="mic" size={18} color={speechState.status === 'recording' ? '#FF4444' : colors.accent} />
+            <Text style={[styles.attachMenuLabel, { color: colors.foreground }]}>Voice</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={styles.inputRow}>
         {/* Prompt indicator with mode-switch animation */}
         <Animated.Text style={[
@@ -519,70 +605,36 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
         />
 
         <View style={styles.actionButtons}>
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              onPress={pickImageFromGallery}
-              activeOpacity={0.7}
-              style={[styles.smallBtn, { backgroundColor: colors.surface, borderColor: colors.border }, attachedImages.length >= MAX_IMAGES && styles.btnDisabled]}
-              disabled={attachedImages.length >= MAX_IMAGES}
-            >
-              <MaterialIcons name="photo-library" size={15} color={attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.muted} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={pickFile}
-              activeOpacity={0.7}
-              style={[styles.smallBtn, { backgroundColor: colors.surface, borderColor: colors.border }, attachedFiles.length >= 4 && styles.btnDisabled]}
-              disabled={attachedFiles.length >= 4}
-            >
-              <MaterialIcons name="attach-file" size={15} color={attachedFiles.length >= 4 ? colors.borderHeavy : colors.muted} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleMicToggle}
-              activeOpacity={0.7}
-              style={[
-                styles.smallBtn,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-                speechState.status === 'recording' && { borderColor: '#FF4444', backgroundColor: withAlpha(colors.error, 0.1) },
-              ]}
-              disabled={speechState.status === 'transcribing'}
-            >
-              {speechState.status === 'transcribing' ? (
-                <ActivityIndicator size={14} color={colors.aiPurple} />
-              ) : speechState.status === 'recording' ? (
-                <Animated.View style={recordingAnimStyle}>
-                  <MaterialIcons name="mic" size={15} color="#FF4444" />
-                </Animated.View>
-              ) : (
-                <MaterialIcons name="mic" size={15} color={colors.muted} />
-              )}
-            </TouchableOpacity>
-          </View>
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              onPress={handlePaste}
-              activeOpacity={0.7}
-              style={[styles.smallBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            >
-              <MaterialIcons name="content-paste" size={15} color={colors.muted} />
-            </TouchableOpacity>
-            <AnimatedTouchable
-              onPress={handleSend}
-              activeOpacity={0.7}
-              style={[
-                styles.sendBtn,
-                sendAnimStyle,
-                isActive
-                  ? { backgroundColor: colors.accent }
-                  : { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-              ]}
-            >
-              <MaterialIcons
-                name="send"
-                size={15}
-                color={isActive ? colors.background : colors.inactive}
-              />
-            </AnimatedTouchable>
-          </View>
+          {/* "+" attach menu toggle */}
+          <TouchableOpacity
+            onPress={() => setShowAttachMenu((v) => !v)}
+            activeOpacity={0.7}
+            style={[styles.smallBtn, { backgroundColor: showAttachMenu ? withAlpha(colors.accent, 0.15) : colors.surface, borderColor: showAttachMenu ? colors.accent : colors.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Attach menu"
+          >
+            <MaterialIcons name={showAttachMenu ? 'close' : 'add'} size={17} color={showAttachMenu ? colors.accent : colors.muted} />
+          </TouchableOpacity>
+          {/* Send button */}
+          <AnimatedTouchable
+            onPress={handleSend}
+            activeOpacity={0.7}
+            style={[
+              styles.sendBtn,
+              sendAnimStyle,
+              isActive
+                ? { backgroundColor: colors.accent }
+                : { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+          >
+            <MaterialIcons
+              name="send"
+              size={15}
+              color={isActive ? colors.background : colors.inactive}
+            />
+          </AnimatedTouchable>
         </View>
       </View>
 
@@ -689,21 +741,38 @@ const styles = StyleSheet.create({
     minHeight: 40,
     maxHeight: 140,
   },
+  attachMenu: {
+    borderWidth: 1,
+    borderRadius: 10,
+    marginHorizontal: 10,
+    marginBottom: 4,
+    overflow: 'hidden',
+  },
+  attachMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    minHeight: 44,
+  },
+  attachMenuLabel: {
+    fontSize: 13,
+    fontFamily: 'monospace',
+    fontWeight: '500',
+  },
   actionButtons: {
     flexDirection: 'column',
-    gap: 3,
+    gap: 5,
     alignItems: 'center',
     justifyContent: 'flex-end',
     paddingBottom: 2,
   },
-  actionRow: {
-    flexDirection: 'row',
-    gap: 3,
-  },
   smallBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 6,
+    width: 44,
+    height: 44,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
@@ -712,9 +781,9 @@ const styles = StyleSheet.create({
     opacity: 0.3,
   },
   sendBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 6,
+    width: 44,
+    height: 44,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },

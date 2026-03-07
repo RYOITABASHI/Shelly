@@ -30,6 +30,17 @@ if ! pgrep -x ttyd > /dev/null; then
   ttyd -W -p 7681 bash &>/dev/null &
 fi`;
 
+// One-tap setup: installs ttyd + configures .bashrc in a single command
+const ONE_TAP_SETUP = `pkg update -y && pkg install -y ttyd && mkdir -p ~/.shelly && cat >> ~/.bashrc << 'SHELLY_EOF'
+
+# Shelly auto-start
+if ! pgrep -x ttyd > /dev/null; then
+  ttyd -W -p 7681 bash &>/dev/null &
+fi
+SHELLY_EOF
+echo "Setup complete! Restart Termux to activate."`;
+
+
 type ConnectionState = 'connecting' | 'connected' | 'error';
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
@@ -57,20 +68,24 @@ export default function TerminalScreen() {
     webViewRef.current?.reload();
   };
 
-  // Send text to terminal via ttyd WebSocket (Bracketed Paste Mode)
+  // Send text to terminal via xterm.js paste() API (Bracketed Paste Mode)
   const sendToTerminal = useCallback((text: string) => {
     if (!webViewRef.current || !text) return;
     // Use JSON.stringify for safe JS string escaping (prevents XSS injection)
     const safeText = JSON.stringify(text);
-    // Use ttyd's terminal write API via injected JS
     const js = `
       (function() {
         var text = ${safeText};
         var term = window.term || document.querySelector('.xterm')?.xterm;
-        if (term && term._core && term._core._coreService) {
+        if (term && typeof term.paste === 'function') {
+          // Official xterm.js API — handles bracketed paste mode automatically
+          term.paste(text);
+        } else if (term && term._core && term._core._coreService) {
+          // Fallback for older xterm.js without paste()
           var data = '\\x1b[200~' + text + '\\x1b[201~';
           term._core._coreService.triggerDataEvent(data, true);
         } else if (window.socket && window.socket.send) {
+          // Last resort: send directly via ttyd WebSocket
           window.socket.send('0' + text);
         }
       })();
@@ -227,11 +242,22 @@ function StatusBadge({ state, retryCount, colors: c }: { state: ConnectionState;
 
 function SetupGuide({ url, onRetry, colors: c }: { url: string; onRetry: () => void; colors: any }) {
   const [copied, setCopied] = useState(false);
+  const [oneTapCopied, setOneTapCopied] = useState(false);
 
   const handleCopy = async () => {
     await Clipboard.setStringAsync(BASHRC_SCRIPT);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleOneTapSetup = async () => {
+    await Clipboard.setStringAsync(ONE_TAP_SETUP);
+    setOneTapCopied(true);
+    // Open Termux so user can paste
+    Linking.openURL('com.termux://').catch(() => {
+      Linking.openURL('https://play.google.com/store/apps/details?id=com.termux').catch(() => {});
+    });
+    setTimeout(() => setOneTapCopied(false), 3000);
   };
 
   const handleOpenTermux = () => {
@@ -249,8 +275,26 @@ function SetupGuide({ url, onRetry, colors: c }: { url: string; onRetry: () => v
         以下の手順でセットアップしてください。
       </Text>
 
+      {/* One-tap setup button */}
+      <Pressable
+        style={[styles.oneTapBtn, { backgroundColor: c.accent }]}
+        onPress={handleOneTapSetup}
+        accessibilityRole="button"
+        accessibilityLabel="One-tap setup"
+      >
+        <MaterialIcons name={oneTapCopied ? 'check' : 'flash-on'} size={22} color="#0A0A0A" />
+        <View>
+          <Text style={styles.oneTapBtnTitle}>
+            {oneTapCopied ? 'コピーしました! Termuxで貼り付けてください' : 'ワンタップセットアップ'}
+          </Text>
+          <Text style={styles.oneTapBtnDesc}>コマンドをコピー → Termuxで貼り付け → 完了</Text>
+        </View>
+      </Pressable>
+
+      <Text style={[styles.orDivider, { color: c.muted }]}>— または手動で —</Text>
+
       <View style={[styles.stepsCard, { backgroundColor: c.surfaceHigh, borderColor: c.border }]}>
-        <Text style={[styles.stepHeader, { color: c.accent }]}>Setup</Text>
+        <Text style={[styles.stepHeader, { color: c.accent }]}>手動セットアップ</Text>
 
         <View style={styles.step}>
           <Text style={[styles.stepNumber, { color: c.accent }]}>1</Text>
@@ -380,6 +424,10 @@ const styles = StyleSheet.create({
   guideContent: { alignItems: 'center', padding: 24, gap: 16 },
   guideTitle: { fontSize: 18, fontWeight: '700', fontFamily: 'monospace' },
   guideSubtitle: { fontSize: 13, fontFamily: 'monospace', textAlign: 'center', lineHeight: 20 },
+  oneTapBtn: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12 },
+  oneTapBtnTitle: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'monospace' },
+  oneTapBtnDesc: { color: '#0A0A0Aaa', fontSize: 11, fontFamily: 'monospace', marginTop: 2 },
+  orDivider: { fontSize: 12, fontFamily: 'monospace' },
   stepsCard: { width: '100%', borderRadius: 12, borderWidth: 1, padding: 16, gap: 16 },
   stepHeader: { fontSize: 13, fontWeight: '700', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: 1 },
   step: { flexDirection: 'row', gap: 12 },

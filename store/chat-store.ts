@@ -70,11 +70,9 @@ type ChatStore = {
   searchSessions: (query: string) => ChatSession[];
 };
 
-const STORAGE_KEY = 'shelly_chats';
+import { generateId } from '@/lib/id';
 
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
+const STORAGE_KEY = 'shelly_chats';
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   sessions: [],
@@ -83,7 +81,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   load: async () => {
     try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      let raw = await AsyncStorage.getItem(STORAGE_KEY);
+      // Strip legacy encryption prefix if present (XOR encryption removed)
+      if (raw?.startsWith('ENC:')) raw = null;
       if (raw) {
         const data = JSON.parse(raw);
         set({

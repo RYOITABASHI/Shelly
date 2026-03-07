@@ -24,36 +24,18 @@ import { useTerminalStore, useActiveSession } from '@/store/terminal-store';
 import { useChatStore, type ChatMessage, type ChatAgent } from '@/store/chat-store';
 import { ChatMessageList } from '@/components/chat/ChatMessageList';
 import { ChatHeader } from '@/components/chat/ChatHeader';
-import { CommandInput, type ImageAttachment } from '@/components/input/CommandInput';
+import { CommandInput, type ImageAttachment, type FileAttachment } from '@/components/input/CommandInput';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
-import { parseInput, buildRoutingDetail } from '@/lib/input-router';
-import { orchestrateTask, orchestrateChatStream } from '@/lib/local-llm';
-import { interpretTermuxOutput, explainCommandIntent } from '@/lib/llm-interpreter';
-import { loadProjectContext, generateProjectContext, clearProjectContextCache } from '@/lib/project-context';
+import { useAIDispatch } from '@/hooks/use-ai-dispatch';
+import { parseInput } from '@/lib/input-router';
+import { explainCommandIntent } from '@/lib/llm-interpreter';
+import { loadProjectContext, generateProjectContext } from '@/lib/project-context';
 import { loadUserProfile, learnFromCommand, learnFromAgentUse, learnFromUserInput, learnFromProject, formatProfileForPrompt } from '@/lib/user-profile';
 import { requestNotificationPermission } from '@/lib/command-notifier';
 import { checkCommandSafety, needsConfirmation, dangerLevelColor } from '@/lib/command-safety';
-import { detectGitIntent, generateGuide } from '@/lib/git-assistant';
 import { useTheme } from '@/hooks/use-theme';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function mapTargetToAgent(target: string): ChatAgent | undefined {
-  const agentMap: Record<string, ChatAgent> = {
-    claude: 'claude',
-    gemini: 'gemini',
-    local: 'local',
-    perplexity: 'perplexity',
-    team: 'team',
-    git: 'git',
-    codex: 'codex',
-  };
-  return agentMap[target];
-}
+import { generateId } from '@/lib/id';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -107,6 +89,9 @@ export default function ChatScreen() {
   // ── Bridge ──
   const { sendCommand, cancelCurrent, isConnected: isBridgeConnected, runCommand: bridgeRunCommand } = useTermuxBridge();
 
+  // ── AI dispatch (extracted from handleSend) ──
+  const { dispatch: aiDispatch, cancelStreaming } = useAIDispatch();
+
   const execForContext = useCallback(
     async (cmd: string): Promise<string> => {
       const result = await bridgeRunCommand(cmd);
@@ -119,11 +104,16 @@ export default function ChatScreen() {
   const commandInputRef = useRef<{ setText: (t: string) => void } | null>(null);
   const userProfileRef = useRef<string>('');
   const projectContextRef = useRef<string>('');
+  const demoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Init ──
   useEffect(() => {
     loadSettings();
     requestNotificationPermission();
+    return () => {
+      // Clean up demo timer on unmount
+      if (demoTimerRef.current) clearTimeout(demoTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -249,7 +239,7 @@ export default function ChatScreen() {
   }, [chatSessionId, addMessage]);
 
   // ── handleSend: unified input handler ──
-  const handleSend = useCallback(async (input: string, images?: ImageAttachment[]) => {
+  const handleSend = useCallback(async (input: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
     if (!chatSessionId) return;
     const parsed = parseInput(input);
 
@@ -268,55 +258,54 @@ export default function ChatScreen() {
 
     setLastInputMode(parsed.layer === 'command' ? 'shell' : 'natural');
 
-    // ── Image-attached → Gemini multimodal ──
+    // ── Demo mode: mock responses when Termux & AI are unavailable ──
+    const hasAnyApi = settings.geminiApiKey || settings.localLlmEnabled || settings.perplexityApiKey;
+    const isDemoMention = !isBridgeConnected && !hasAnyApi && parsed.layer === 'mention';
+    if (!isBridgeConnected && !hasAnyApi && (parsed.layer !== 'mention' || isDemoMention)) {
+      // Determine agent for demo AI mocks
+      const demoAgent: ChatAgent | undefined = isDemoMention
+        ? (parsed.target === 'claude' ? 'claude' : parsed.target === 'gemini' ? 'gemini' : parsed.target === 'perplexity' ? 'perplexity' : parsed.target === 'local' ? 'local' : undefined)
+        : undefined;
+      addUserMessage(input);
+      const msgId = addAssistantMessage(demoAgent, undefined);
+
+      const demoResponses: Record<string, string> = {
+        'ls': '```\nDocuments/  Downloads/  Pictures/  Music/\npackage.json  README.md  .gitignore\n```\n\n*Demo mode* — Termuxに接続するとリアルなコマンドが実行できます',
+        'git status': '```\nOn branch main\nYour branch is up to date with \'origin/main\'.\n\nnothing to commit, working tree clean\n```\n\n*Demo mode*',
+        'pwd': '```\n/home/user/projects\n```\n\n*Demo mode*',
+      };
+      const aiDemoResponses: Record<string, string> = {
+        claude: `こんにちは！Claude AIです。\n\nこれは**デモモード**の応答です。実際に使用するには:\n- **Termux**をインストールしてClaude Codeをセットアップ\n\n\`@claude コードをレビューして\` のように質問できます。\n\n*Demo mode*`,
+        gemini: `こんにちは！Gemini AIです。\n\nこれは**デモモード**の応答です。実際に使用するには:\n- **Settings** → Gemini APIキーを設定\n- https://aistudio.google.com/app/apikey で無料取得\n\n画像添付でマルチモーダル分析もできます。\n\n*Demo mode*`,
+        perplexity: `こんにちは！Perplexity AIです。\n\nこれは**デモモード**の応答です。実際に使用するには:\n- **Settings** → Perplexity APIキーを設定\n\nWeb検索ベースの回答と論文引用が特徴です。\n\n*Demo mode*`,
+        local: `こんにちは！Local LLMです。\n\nこれは**デモモード**の応答です。実際に使用するには:\n- **Ollama**をセットアップ（\`ollama serve\`）\n- **Settings**でLocal LLMを有効化\n\nプライベートなオフラインAIとして動作します。\n\n*Demo mode*`,
+      };
+      const demoText = (isDemoMention && demoAgent && aiDemoResponses[demoAgent])
+        ? aiDemoResponses[demoAgent]
+        : demoResponses[parsed.prompt.trim()]
+          ?? `Shellyへようこそ! 🐚\n\n現在 **デモモード** で動作中です。\n\n実際に使うには:\n1. **Termux** をインストール\n2. **Terminal** タブでセットアップ\n3. AIを使うには **Settings** でAPIキーを設定\n\n入力例:\n- \`ls\` — ファイル一覧\n- \`@claude 質問\` — Claude AI\n- \`@gemini 質問\` — Gemini AI`;
+
+      // Simulate streaming for demo feel (with cleanup ref)
+      let i = 0;
+      const streamDemo = () => {
+        if (i < demoText.length) {
+          const chunk = demoText.slice(0, Math.min(i + 8, demoText.length));
+          updateMessage(chatSessionId, msgId, { streamingText: chunk, isStreaming: true });
+          i += 8;
+          demoTimerRef.current = setTimeout(streamDemo, 20);
+        } else {
+          updateMessage(chatSessionId, msgId, { content: demoText, streamingText: undefined, isStreaming: false });
+          demoTimerRef.current = null;
+        }
+      };
+      streamDemo();
+      return;
+    }
+
+    // ── Image-attached → dispatch to Gemini multimodal ──
     if (images && images.length > 0) {
       addUserMessage(input);
-      const msgId = addAssistantMessage('gemini');
-
-      const apiKey = settings.geminiApiKey ?? '';
-      if (!apiKey) {
-        updateMessage(chatSessionId, msgId, {
-          content: 'Gemini APIキーが設定されていません。\nhttps://aistudio.google.com/app/apikey で無料取得できます。',
-          isStreaming: false,
-          error: 'APIキー未設定',
-        });
-        return;
-      }
-
-      let accumulated = '';
-      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
-
-      const { geminiMultimodalStream } = await import('@/lib/gemini');
-      const result = await geminiMultimodalStream(
-        apiKey, input,
-        images.map((img) => ({ base64: img.base64, mimeType: img.mimeType })),
-        (chunk, done) => {
-          if (chunk) {
-            accumulated += chunk;
-            updateMessage(chatSessionId, msgId, {
-              streamingText: accumulated,
-              tokenCount: Math.round(accumulated.length / 4),
-              isStreaming: !done,
-            });
-          }
-          if (done) {
-            updateMessage(chatSessionId, msgId, {
-              content: accumulated,
-              streamingText: undefined,
-              isStreaming: false,
-              tokenCount: Math.round(accumulated.length / 4),
-            });
-          }
-        },
-        settings.geminiModel ?? 'gemini-2.0-flash',
-      );
-      if (!result.success && !accumulated) {
-        updateMessage(chatSessionId, msgId, {
-          content: '',
-          error: `Geminiエラー: ${result.error ?? '不明なエラー'}`,
-          isStreaming: false,
-        });
-      }
+      await aiDispatch({ target: 'gemini', prompt: parsed.prompt, chatSessionId, messages, images, files });
       return;
     }
 
@@ -365,7 +354,6 @@ export default function ChatScreen() {
         }
       }
 
-      // Add user message for the command, then add assistant message with execution result
       addUserMessage(`$ ${parsed.prompt}`);
       const msgId = addAssistantMessage(undefined);
       updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '実行中...' });
@@ -402,316 +390,52 @@ export default function ChatScreen() {
       return;
     }
 
-    // ── AI routing (layers 1-3) ──
+    // ── AI routing → dispatch to useAIDispatch hook ──
     addUserMessage(input);
 
     let target = parsed.target;
-    const agent = mapTargetToAgent(target) ?? 'local';
 
-    // Natural language → default to local LLM
+    // Natural language → default to local LLM or show hint
     if (parsed.layer === 'natural') {
       if (settings.localLlmEnabled) {
         target = 'local';
+      } else if (settings.geminiApiKey) {
+        target = 'gemini';
       } else {
         const msgId = addAssistantMessage(undefined);
         updateMessage(chatSessionId, msgId, {
-          content: '@mentionでツールを指定してください。例: @claude, @gemini, @local',
+          content: 'AIが未設定です。@mentionでツールを指定するか、Settingsでセットアップしてください。\n\n例: `@gemini 質問`, `@local 質問`',
           isStreaming: false,
         });
         return;
       }
     }
 
-    if (target === 'local') {
-      const msgId = addAssistantMessage('local');
-      const config = {
-        baseUrl: settings.localLlmUrl,
-        model: settings.localLlmModel,
-        enabled: settings.localLlmEnabled,
-      };
-
-      let accumulatedText = '';
-      updateMessage(chatSessionId, msgId, {
-        isStreaming: true,
-        streamingText: '',
-        tokenCount: 0,
-        streamingStartTime: Date.now(),
-      });
-
-      const result = await orchestrateChatStream(
-        parsed.prompt, config,
-        (chunk, done) => {
-          if (chunk) {
-            accumulatedText += chunk;
-            updateMessage(chatSessionId, msgId, {
-              streamingText: accumulatedText,
-              tokenCount: Math.round(accumulatedText.length / 4),
-              isStreaming: !done,
-            });
-          }
-          if (done) {
-            updateMessage(chatSessionId, msgId, {
-              content: accumulatedText,
-              streamingText: undefined,
-              isStreaming: false,
-              tokenCount: Math.round(accumulatedText.length / 4),
-            });
-          }
-        },
-        [],
-        projectContextRef.current,
-        userProfileRef.current,
-      );
-
-      if (result.handledBy !== 'local_llm') {
-        updateMessage(chatSessionId, msgId, { isStreaming: false, streamingText: undefined });
-        if (result.delegatedCommand) {
-          const toolLabel = result.handledBy === 'gemini' ? 'Gemini CLI' : result.handledBy === 'codex' ? 'Codex CLI' : 'Claude Code';
-          updateMessage(chatSessionId, msgId, {
-            content: `${toolLabel}に委譲しました。\n理由: ${(result as any).reasoning || ''}`,
-            agent: mapTargetToAgent(result.handledBy ?? '') ?? 'local',
-            isStreaming: false,
-          });
-          if (connectionMode === 'termux') {
-            sendCommand(result.delegatedCommand);
-          } else {
-            runCommand(result.delegatedCommand);
-          }
-        } else if ((result as any).response) {
-          updateMessage(chatSessionId, msgId, {
-            content: (result as any).response,
-            isStreaming: false,
-          });
-        } else {
-          updateMessage(chatSessionId, msgId, {
-            content: '',
-            error: 'Local LLMに接続できませんでした。Settingsで接続を確認してください。',
-            isStreaming: false,
-          });
-        }
-      }
-    } else if (target === 'perplexity') {
-      const msgId = addAssistantMessage('perplexity');
-      const apiKey = settings.perplexityApiKey ?? '';
-      if (!apiKey) {
-        updateMessage(chatSessionId, msgId, {
-          content: 'Perplexity APIキーが設定されていません。\nhttps://www.perplexity.ai/settings/api で取得できます。',
-          isStreaming: false,
-          error: 'APIキー未設定',
-        });
-        return;
-      }
-
-      let accumulated = '';
-      let citations: Array<{ url: string; title?: string }> = [];
-      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
-
-      const { perplexitySearchStream } = await import('@/lib/perplexity');
-      await perplexitySearchStream(apiKey, parsed.prompt, (chunk, done, cits) => {
-        if (chunk) {
-          accumulated += chunk;
-          updateMessage(chatSessionId, msgId, {
-            streamingText: accumulated,
-            tokenCount: Math.round(accumulated.length / 4),
-            isStreaming: !done,
-          });
-        }
-        if (cits && cits.length > 0) citations = cits;
-        if (done) {
-          updateMessage(chatSessionId, msgId, {
-            content: accumulated,
-            streamingText: undefined,
-            isStreaming: false,
-            tokenCount: Math.round(accumulated.length / 4),
-            citations,
-          });
-        }
-      }, settings.perplexityModel ?? undefined);
-    } else if (target === 'gemini') {
-      const msgId = addAssistantMessage('gemini');
-      const apiKey = settings.geminiApiKey ?? '';
-      if (!apiKey) {
-        updateMessage(chatSessionId, msgId, {
-          content: 'Gemini APIキーが設定されていません。\nhttps://aistudio.google.com/app/apikey で無料取得できます。',
-          isStreaming: false,
-          error: 'APIキー未設定',
-        });
-        return;
-      }
-
-      let accumulated = '';
-      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
-
-      const { geminiChatStream } = await import('@/lib/gemini');
-      const result = await geminiChatStream(apiKey, parsed.prompt, (chunk, done) => {
-        if (chunk) {
-          accumulated += chunk;
-          updateMessage(chatSessionId, msgId, {
-            streamingText: accumulated,
-            tokenCount: Math.round(accumulated.length / 4),
-            isStreaming: !done,
-          });
-        }
-        if (done) {
-          updateMessage(chatSessionId, msgId, {
-            content: accumulated,
-            streamingText: undefined,
-            isStreaming: false,
-            tokenCount: Math.round(accumulated.length / 4),
-          });
-        }
-      }, settings.geminiModel ?? 'gemini-2.0-flash');
-      if (!result.success && !accumulated) {
-        updateMessage(chatSessionId, msgId, {
-          content: '',
-          error: `Geminiエラー: ${result.error ?? '不明なエラー'}`,
-          isStreaming: false,
-        });
-      }
-    } else if (target === 'team') {
-      const msgId = addAssistantMessage('team');
-      const { runTeamRoundtable } = await import('@/lib/team-roundtable');
-      const teamMembers = settings.teamMembers ?? { claude: true, gemini: true, codex: false, perplexity: true, local: true };
-      const teamSettingsObj = {
-        claudeEnabled: teamMembers.claude,
-        geminiEnabled: teamMembers.gemini,
-        codexEnabled: teamMembers.codex,
-        perplexityEnabled: teamMembers.perplexity && !!settings.perplexityApiKey,
-        localEnabled: teamMembers.local && settings.localLlmEnabled,
-        facilitatorPriority: settings.teamFacilitatorPriority ?? ['local', 'claude', 'gemini', 'codex', 'perplexity'],
-        codexCmd: settings.codexCmd ?? 'codex',
-        claudeCmd: 'claude',
-        geminiCmd: 'gemini',
-      };
-      const enabledCount = [teamSettingsObj.claudeEnabled, teamSettingsObj.geminiEnabled, teamSettingsObj.codexEnabled, teamSettingsObj.perplexityEnabled, teamSettingsObj.localEnabled].filter(Boolean).length;
-      if (enabledCount === 0) {
-        updateMessage(chatSessionId, msgId, {
-          content: '@team に参加できるエージェントがいません。\n設定画面でエージェントを有効化してください。',
-          isStreaming: false,
-        });
-        return;
-      }
-
-      let teamAccumulated = `${enabledCount}名のエージェントに質問中...\n\n`;
-      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: teamAccumulated, streamingStartTime: Date.now() });
-
-      try {
-        const teamResult = await runTeamRoundtable(parsed.prompt, teamSettingsObj, {
-          runCommand: (cmd: string) => new Promise((resolve) => {
-            if (connectionMode === 'termux') {
-              sendCommand(cmd);
-              setTimeout(() => resolve('(CLI実行中)'), 3000);
-            } else {
-              resolve(`[Disconnected] ${cmd}`);
-            }
-          }),
-          perplexityApiKey: settings.perplexityApiKey,
-          perplexityModel: settings.perplexityModel,
-          geminiApiKey: settings.geminiApiKey,
-          geminiModel: settings.geminiModel,
-          localLlmUrl: settings.localLlmUrl,
-          localLlmModel: settings.localLlmModel,
-          onMemberResult: (memberResult) => {
-            teamAccumulated += `\n\n--- ${memberResult.label} ---\n${memberResult.response}`;
-            updateMessage(chatSessionId, msgId, { streamingText: teamAccumulated });
-          },
-          onFacilitatorChunk: (chunk: string) => {
-            teamAccumulated += chunk;
-            updateMessage(chatSessionId, msgId, { streamingText: teamAccumulated });
-          },
-        });
-        const facilitatorLabel = teamResult.facilitator?.label ?? 'ファシリ';
-        const memberDetails = teamResult.members
-          .filter(m => !m.isFacilitator)
-          .map(m => `\n--- ${m.label} ---\n${m.response}`)
-          .join('\n');
-        const finalText = `=== まとめ (${facilitatorLabel}) ===\n${teamResult.facilitatorSummary}\n\n──── 各エージェントの回答 ────${memberDetails}`;
-        updateMessage(chatSessionId, msgId, {
-          content: finalText,
-          streamingText: undefined,
-          isStreaming: false,
-          tokenCount: Math.round(finalText.length / 4),
-        });
-      } catch (err) {
-        updateMessage(chatSessionId, msgId, {
-          content: '',
-          error: `@teamエラー: ${err instanceof Error ? err.message : String(err)}`,
-          isStreaming: false,
-        });
-      }
-    } else if (target === 'claude') {
-      const msgId = addAssistantMessage('claude');
-      if (connectionMode !== 'termux') {
-        updateMessage(chatSessionId, msgId, {
-          content: 'Termuxに接続してください。Claude Codeの実行にはTermuxブリッジが必要です。',
-          isStreaming: false,
-        });
-        return;
-      }
-
-      const { buildChatModeClaudeCommand } = await import('@/lib/cli-permission-proxy');
-      const autoApprove = settings.autoApproveLevel ?? 'safe';
-      const cliCommand = buildChatModeClaudeCommand(parsed.prompt, autoApprove);
-
-      updateMessage(chatSessionId, msgId, {
-        isStreaming: true,
-        streamingText: `$ ${cliCommand}\n\n`,
-        streamingStartTime: Date.now(),
-      });
-
-      try {
-        const result = await bridgeRunCommand(cliCommand);
-        let output = result.stdout || '';
-        if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
-        updateMessage(chatSessionId, msgId, {
-          content: output,
-          streamingText: undefined,
-          isStreaming: false,
-          tokenCount: Math.round(output.length / 4),
-          executions: [{
-            command: cliCommand,
-            output,
-            exitCode: result.exitCode,
-            isCollapsed: output.split('\n').length > 10,
-          }],
-        });
-      } catch (err) {
-        updateMessage(chatSessionId, msgId, {
-          content: '',
-          error: `Claude Code実行エラー: ${err instanceof Error ? err.message : String(err)}`,
-          isStreaming: false,
-        });
-      }
-    } else if (target === 'git') {
-      const msgId = addAssistantMessage('git');
-      const intent = detectGitIntent(parsed.prompt);
-      const guide = generateGuide(intent, parsed.prompt);
-      if (guide.prereqCommand && connectionMode === 'termux') {
-        sendCommand(guide.prereqCommand);
-      }
-      const stepsText = guide.steps?.map((s) =>
-        s.type === 'command' ? `\`${s.command}\`\n${s.explanation}` : s.explanation
-      ).join('\n\n') ?? '';
-      updateMessage(chatSessionId, msgId, {
-        content: `## ${guide.title}\n\n${guide.overview ?? ''}\n\n${stepsText}`,
-        isStreaming: false,
-      });
-    } else if (target === 'browser') {
+    // Browser target — handle locally (not an AI dispatch)
+    if (target === 'browser') {
       const url = parsed.prompt.trim();
-      addUserMessage(`@open ${url}`);
       const msgId = addAssistantMessage(undefined);
-      updateMessage(chatSessionId, msgId, {
-        content: `ブラウザで開きます: ${url}`,
-        isStreaming: false,
-      });
+      updateMessage(chatSessionId, msgId, { content: `ブラウザで開きます: ${url}`, isStreaming: false });
       useTerminalStore.setState({ pendingBrowserUrl: url } as any);
       router.push('/(tabs)/browser' as any);
+      return;
     }
-  }, [chatSessionId, connectionMode, sendCommand, runCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext]);
+
+    // Dispatch to AI agent (with conversation context + file attachments)
+    const result = await aiDispatch({ target, prompt: parsed.prompt, chatSessionId, messages, files });
+    if (!result.handled) {
+      const msgId = addAssistantMessage(undefined);
+      updateMessage(chatSessionId, msgId, {
+        content: `未対応のエージェントです: @${target}\n\n対応エージェント: @claude, @gemini, @local, @perplexity, @team, @git`,
+        isStreaming: false,
+      });
+    }
+  }, [chatSessionId, connectionMode, sendCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext, messages, aiDispatch, isBridgeConnected]);
 
   const handleCancel = useCallback(() => {
     cancelCurrent();
-  }, [cancelCurrent]);
+    cancelStreaming();
+  }, [cancelCurrent, cancelStreaming]);
 
   const handleHistoryUp = useCallback((): string => {
     return navigateHistory('up');
