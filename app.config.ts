@@ -44,7 +44,7 @@ const config: ExpoConfig = {
     policy: "appVersion",
   },
   orientation: "default",
-  icon: undefined,
+  icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
   newArchEnabled: true,
@@ -56,7 +56,10 @@ const config: ExpoConfig = {
       }
   },
   android: {
-    adaptiveIcon: undefined,
+    adaptiveIcon: {
+      foregroundImage: "./assets/images/adaptive-icon.png",
+      backgroundColor: "#000000",
+    },
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
@@ -78,7 +81,7 @@ const config: ExpoConfig = {
   web: {
     bundler: "metro",
     output: "static",
-    favicon: undefined,
+    favicon: "./assets/images/favicon.png",
   },
   plugins: [
     "expo-dev-client",
