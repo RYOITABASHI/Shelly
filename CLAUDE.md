@@ -136,6 +136,21 @@ Shelly/
 
 ---
 
+## Architecture Decisions (変更時は必ず更新)
+
+| 判断 | 理由 | 影響範囲 |
+|------|------|----------|
+| localLlmModel はファイル名ベース | カタログ ID だと llama-server API の model 名と不一致 | terminal-store.ts, settings.tsx |
+| 推奨モデル = Gemma 3 4B Q4_K_M | 3-4B で日本語最強、Z Fold6 RAM 12GB で余裕 | llamacpp-setup.ts |
+| サウンドは Web Audio + expo-audio WAV | SoundPool 代替、ネイティブ依存なし | sounds.ts |
+| セッション復元は AsyncStorage | blocks/entries を JSON、最新 50 件に制限 | terminal-store.ts |
+| テーマ 30 種 | 6 種では選択肢不足 | theme-engine.ts |
+| Bridge 経由で Termux コマンド実行 | WebSocket で shelly-bridge/server.js に接続 | use-termux-bridge.ts |
+| handleSelectModel でファイル名保存 | model.id ではなく filename.replace('.gguf','') を localLlmModel に | settings.tsx |
+| 推奨モデルをカタログで初期展開 | ダウンロードボタンがすぐ見えるように | LlamaCppSection.tsx |
+
+---
+
 ## 最近の変更履歴（2026-03-05セッション）
 
 ### 実施済み

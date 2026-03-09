@@ -12,6 +12,10 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { orchestrateChatStream } from '@/lib/local-llm';
 import { detectGitIntent, generateGuide } from '@/lib/git-assistant';
+import { loadProjectContext } from '@/lib/project-context';
+import { loadUserProfile, formatProfileForPrompt } from '@/lib/user-profile';
+import { loadCustomContext } from '@/lib/shelly-system-prompt';
+import { getDecisionLogForPrompt, autoLogFromResponse } from '@/lib/decision-log';
 import type { ImageAttachment, FileAttachment } from '@/components/input/CommandInput';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { OllamaMessage } from '@/lib/local-llm';
@@ -298,7 +302,21 @@ export function useAIDispatch() {
       let accumulatedText = '';
       updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', tokenCount: 0, streamingStartTime: Date.now() });
 
+      // Load all context layers in parallel
       const ollamaHistory = toOllamaHistory(messages);
+      const activeSession = useTerminalStore.getState().sessions.find(
+        (s) => s.id === useTerminalStore.getState().activeSessionId,
+      );
+      const cwd = activeSession?.currentDir || '';
+      const [projectCtx, userProfile, customCtx, decisionLog] = await Promise.all([
+        cwd ? loadProjectContext(cwd, (cmd: string) =>
+          bridgeRunCommand(cmd, {}).then((r) => r.stdout ?? '').catch(() => ''),
+        ).catch(() => '') : Promise.resolve(''),
+        loadUserProfile().then((p) => p ? formatProfileForPrompt(p) : '').catch(() => ''),
+        loadCustomContext().catch(() => ''),
+        getDecisionLogForPrompt().catch(() => ''),
+      ]);
+
       const result = await orchestrateChatStream(
         promptWithFiles, config,
         (chunk, done) => {
@@ -318,12 +336,15 @@ export function useAIDispatch() {
               isStreaming: false,
               tokenCount: estimateTokens(accumulatedText),
             });
+            // Auto-log important decisions from AI response
+            autoLogFromResponse(accumulatedText).catch(() => {});
           }
         },
         ollamaHistory,
-        undefined, // projectContext
-        undefined, // userProfileSummary
-        undefined, // customContext
+        projectCtx || undefined,
+        userProfile || undefined,
+        // Combine custom context + decision log into single context string
+        [customCtx, decisionLog ? `\n# 過去の設計判断\n${decisionLog}` : ''].filter(Boolean).join('\n') || undefined,
         undefined, // toolStatuses
         undefined, // defaultAgent
         signal,

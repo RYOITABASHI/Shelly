@@ -59,16 +59,28 @@ const STEPS: StepConfig[] = [
 
 function buildInstallCommand(): string {
   // Single command: install nodejs-lts + create bridge directory + write server.js
-  // Uses BRIDGE_SERVER_JS from bridge-bundle.ts
   const serverContent = BRIDGE_SERVER_JS;
 
-  // If the bundle is a stub, use a wget-based approach
   if (serverContent.length < 200) {
     return `pkg install -y nodejs-lts && mkdir -p ~/shelly-bridge && echo "nodejs installed & bridge directory ready"`;
   }
 
-  // Full embedded approach: write server.js content via heredoc
+  // Full embedded: write server.js via heredoc
   return `pkg install -y nodejs-lts && mkdir -p ~/shelly-bridge && cat << 'SHELLY_EOF' > ~/shelly-bridge/server.js\n${serverContent}\nSHELLY_EOF`;
+}
+
+/**
+ * 1コマンドでインストール+起動まで完了する。
+ * コピペ1回で済むので5分以内にセットアップ完了できる。
+ */
+function buildOneStepCommand(): string {
+  const serverContent = BRIDGE_SERVER_JS;
+
+  if (serverContent.length < 200) {
+    return `pkg install -y nodejs-lts && mkdir -p ~/shelly-bridge && echo "bridge ready" && node ~/shelly-bridge/server.js`;
+  }
+
+  return `pkg install -y nodejs-lts && mkdir -p ~/shelly-bridge && cat << 'SHELLY_EOF' > ~/shelly-bridge/server.js\n${serverContent}\nSHELLY_EOF\nnode ~/shelly-bridge/server.js`;
 }
 
 const START_COMMAND = 'node ~/shelly-bridge/server.js';
@@ -155,6 +167,44 @@ export function SetupWizard({ visible, onComplete }: Props) {
     };
   }, [visible, step]);
 
+  // Shimmer animation for active progress segment
+  const shimmer = useSharedValue(0.4);
+  useEffect(() => {
+    if (!visible) return;
+    shimmer.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.4, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+    return () => { shimmer.value = 0.4; };
+  }, [visible, step]);
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: shimmer.value,
+  }));
+
+  // Waiting dots animation for hint text
+  const dotOpacity = useSharedValue(0);
+  useEffect(() => {
+    if (!visible) return;
+    dotOpacity.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.2, { duration: 800, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1,
+      false,
+    );
+    return () => { dotOpacity.value = 0; };
+  }, [visible]);
+
+  const waitingDotStyle = useAnimatedStyle(() => ({
+    opacity: dotOpacity.value,
+  }));
+
   const iconAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: iconScale.value }],
   }));
@@ -189,6 +239,9 @@ export function SetupWizard({ visible, onComplete }: Props) {
   useEffect(() => {
     if (step !== 2 || !visible) return;
 
+    // Auto-check immediately when entering this step (bridge may already be running)
+    const initialCheck = setTimeout(() => runConnectionTest(), 500);
+
     const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
@@ -198,16 +251,20 @@ export function SetupWizard({ visible, onComplete }: Props) {
       }
     });
 
-    return () => subscription.remove();
+    return () => {
+      clearTimeout(initialCheck);
+      subscription.remove();
+    };
   }, [step, visible, runConnectionTest]);
 
   // ── Copy to clipboard ────────────────────────────────────────────────────
 
   const handleCopyInstall = useCallback(async () => {
-    await Clipboard.setStringAsync(buildInstallCommand());
+    // quickMode: 1コマンドでインストール+起動まで完了
+    await Clipboard.setStringAsync(quickMode ? buildOneStepCommand() : buildInstallCommand());
     setCopied(true);
     setTimeout(() => setCopied(false), 3000);
-  }, []);
+  }, [quickMode]);
 
   const handleCopyStart = useCallback(async () => {
     await Clipboard.setStringAsync(START_COMMAND);
@@ -334,12 +391,18 @@ export function SetupWizard({ visible, onComplete }: Props) {
 
   const renderStep2 = () => (
     <Animated.View entering={FadeInDown.duration(400)} key="step2">
-      <Text style={styles.description}>{t('setup.step2_desc')}</Text>
+      <Text style={styles.description}>
+        {quickMode
+          ? 'コマンドをコピーしてTermuxに貼り付けるだけ。\nインストールからブリッジ起動まで自動で完了します。'
+          : t('setup.step2_desc')}
+      </Text>
 
       {/* Command preview */}
       <View style={styles.codeBlock}>
         <Text style={styles.codeText} numberOfLines={3}>
-          pkg install -y nodejs-lts && mkdir -p ~/shelly-bridge ...
+          {quickMode
+            ? 'pkg install ... && node ~/shelly-bridge/server.js'
+            : 'pkg install -y nodejs-lts && mkdir -p ~/shelly-bridge ...'}
         </Text>
       </View>
 
@@ -360,35 +423,56 @@ export function SetupWizard({ visible, onComplete }: Props) {
         <Text style={styles.secondaryBtnText}>{t('setup.step2_open_termux')}</Text>
       </Pressable>
 
-      <Text style={styles.hint}>{t('setup.step2_paste_hint')}</Text>
+      <Text style={styles.hint}>
+        {quickMode
+          ? 'Termuxに貼り付けて実行 → Shellyに戻ると自動接続します'
+          : t('setup.step2_paste_hint')}
+      </Text>
     </Animated.View>
   );
 
   const renderStep3 = () => (
     <Animated.View entering={FadeInDown.duration(400)} key="step3">
-      <Text style={styles.description}>{t('setup.step3_desc')}</Text>
+      <Text style={styles.description}>
+        {quickMode
+          ? 'Termuxでコマンド実行後、Shellyに戻ると自動で接続を確認します。'
+          : t('setup.step3_desc')}
+      </Text>
 
-      {/* Start command preview */}
-      <View style={styles.codeBlock}>
-        <Text style={styles.codeText}>{START_COMMAND}</Text>
-      </View>
+      {/* Start command (hide in quickMode — already included in one-step) */}
+      {!quickMode && (
+        <>
+          <View style={styles.codeBlock}>
+            <Text style={styles.codeText}>{START_COMMAND}</Text>
+          </View>
 
-      {/* Copy start command */}
-      <Pressable
-        style={[styles.actionBtn, { backgroundColor: copiedStart ? '#4ADE80' : '#60A5FA' }]}
-        onPress={handleCopyStart}
-      >
-        <MaterialIcons name={copiedStart ? 'check' : 'content-copy'} size={18} color="#000" />
-        <Text style={styles.actionBtnText}>
-          {copiedStart ? t('setup.step2_copied') : t('setup.step3_copy_start')}
-        </Text>
-      </Pressable>
+          <Pressable
+            style={[styles.actionBtn, { backgroundColor: copiedStart ? '#4ADE80' : '#60A5FA' }]}
+            onPress={handleCopyStart}
+          >
+            <MaterialIcons name={copiedStart ? 'check' : 'content-copy'} size={18} color="#000" />
+            <Text style={styles.actionBtnText}>
+              {copiedStart ? t('setup.step2_copied') : t('setup.step3_copy_start')}
+            </Text>
+          </Pressable>
 
-      {/* Open Termux */}
-      <Pressable style={styles.secondaryBtn} onPress={openTermux}>
-        <MaterialIcons name="launch" size={16} color="#9CA3AF" />
-        <Text style={styles.secondaryBtnText}>{t('setup.step3_open_termux')}</Text>
-      </Pressable>
+          <Pressable style={styles.secondaryBtn} onPress={openTermux}>
+            <MaterialIcons name="launch" size={16} color="#9CA3AF" />
+            <Text style={styles.secondaryBtnText}>{t('setup.step3_open_termux')}</Text>
+          </Pressable>
+        </>
+      )}
+
+      {/* Manual retry button for quickMode */}
+      {quickMode && connectionStatus !== 'checking' && connectionStatus !== 'success' && (
+        <Pressable
+          style={[styles.actionBtn, { backgroundColor: '#60A5FA' }]}
+          onPress={runConnectionTest}
+        >
+          <MaterialIcons name="wifi-find" size={18} color="#000" />
+          <Text style={styles.actionBtnText}>接続を確認</Text>
+        </Pressable>
+      )}
 
       {/* Connection status */}
       <View style={styles.statusContainer}>
@@ -540,27 +624,45 @@ export function SetupWizard({ visible, onComplete }: Props) {
       <View style={styles.backdrop}>
         <View style={styles.card}>
           {/* Progress bar (hide during mode select) */}
-          {!showModeSelect && (
-            <View style={styles.progressRow}>
-              {STEPS.map((s, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.progressSegment,
-                    {
-                      backgroundColor: i <= step ? current.color : '#333',
-                      flex: 1,
-                    },
-                  ]}
-                />
-              ))}
-            </View>
-          )}
+          {!showModeSelect && (() => {
+            // quickMode: 4 steps (Termux, Install+Start, Connect, Done) — skip AI tool step
+            const displaySteps = quickMode
+              ? STEPS.filter((_, i) => i !== 3)
+              : STEPS;
+            const displayIndex = quickMode && step >= 3 ? step - 1 : step;
+            return (
+              <View style={styles.progressRow}>
+                {displaySteps.map((s, i) => (
+                  i === displayIndex ? (
+                    <Animated.View
+                      key={i}
+                      style={[
+                        styles.progressSegment,
+                        { backgroundColor: current.color, flex: 1 },
+                        shimmerStyle,
+                      ]}
+                    />
+                  ) : (
+                    <View
+                      key={i}
+                      style={[
+                        styles.progressSegment,
+                        {
+                          backgroundColor: i < displayIndex ? current.color : '#333',
+                          flex: 1,
+                        },
+                      ]}
+                    />
+                  )
+                ))}
+              </View>
+            );
+          })()}
 
           {/* Step indicator */}
           {!showModeSelect && (
             <Text style={styles.stepIndicator}>
-              {step + 1} / {STEPS.length}
+              {quickMode ? (step >= 3 ? step : step + 1) : step + 1} / {quickMode ? STEPS.length - 1 : STEPS.length}
             </Text>
           )}
 
