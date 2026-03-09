@@ -29,7 +29,7 @@ import { BRIDGE_SERVER_JS, BRIDGE_SERVER_VERSION } from '@/lib/bridge-bundle';
 import { CursorShape, ThemeVariant, BridgeStatus } from '@/store/types';
 import { LlamaCppSection } from '@/components/settings/LlamaCppSection';
 import { McpSection } from '@/components/settings/McpSection';
-import { LlamaCppModel, buildStartAllScript, getRecommendedModel } from '@/lib/llamacpp-setup';
+import { LlamaCppModel, MODEL_CATALOG, buildStartAllScript, getRecommendedModel } from '@/lib/llamacpp-setup';
 import { useTranslation } from '@/lib/i18n';
 import { useI18n, AVAILABLE_LOCALES, type Locale } from '@/lib/i18n';
 import { useTheme, useThemeStore, BUILTIN_THEMES, getAllThemes, type Theme } from '@/lib/theme-engine';
@@ -161,8 +161,13 @@ export default function SettingsScreen() {
   const [isTestingLlm, setIsTestingLlm] = useState(false);
   const [llmTestResult, setLlmTestResult] = useState<'success' | 'fail' | null>(null);
 
-  // llama.cpp model management state
-  const [activeModelId, setActiveModelId] = useState<string | null>(settings.localLlmModel ?? null);
+  // llama.cpp model management state — resolve catalog ID from stored filename
+  const [activeModelId, setActiveModelId] = useState<string | null>(() => {
+    const stored = settings.localLlmModel;
+    if (!stored) return null;
+    const match = MODEL_CATALOG.find((m) => m.filename.replace('.gguf', '') === stored || m.id === stored);
+    return match?.id ?? null;
+  });
   const [installedModelIds, setInstalledModelIds] = useState<Set<string>>(new Set());
 
   // Custom context for LLM system prompt
@@ -282,8 +287,10 @@ export default function SettingsScreen() {
   }, [diagResults, connectionMode, termuxSettings.wsUrl, settings.localLlmUrl]);
 
   const handleSelectModel = (model: LlamaCppModel) => {
+    const modelName = model.filename.replace('.gguf', '');
     setActiveModelId(model.id);
-    updateSettings({ localLlmModel: model.id });
+    setLlmModelInput(modelName);
+    updateSettings({ localLlmModel: modelName });
   };
 
   const handleRunCommandForSetup = async (
@@ -361,6 +368,9 @@ export default function SettingsScreen() {
       return;
     }
     updateSettings({ localLlmModel: trimmed });
+    // Sync activeModelId if the name matches a catalog entry
+    const match = MODEL_CATALOG.find((m) => m.filename.replace('.gguf', '') === trimmed || m.id === trimmed);
+    if (match) setActiveModelId(match.id);
     Alert.alert('保存完了', `モデルを更新しました: ${trimmed}`);
   };
 

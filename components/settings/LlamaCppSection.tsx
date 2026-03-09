@@ -53,7 +53,8 @@ export function LlamaCppSection({
   onRunCommand,
   onUpdateLocalLlmUrl,
 }: LlamaCppSectionProps) {
-  const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
+  const recommended = getRecommendedModel();
+  const [expandedModelId, setExpandedModelId] = useState<string | null>(recommended?.id ?? null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'running' | 'stopped'>('unknown');
   const [isSettingUp, setIsSettingUp] = useState(false);
@@ -177,7 +178,6 @@ export function LlamaCppSection({
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  const recommended = getRecommendedModel();
   const installedModels = MODEL_CATALOG.filter((m) => installedModelIds.has(m.id));
   const notInstalledModels = MODEL_CATALOG.filter((m) => !installedModelIds.has(m.id));
 

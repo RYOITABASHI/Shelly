@@ -74,7 +74,6 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     downloadUrl:
       'https://huggingface.co/google/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf',
     recommended: true,
-    badge: '推奨',
   },
   {
     id: 'qwen3-8b-q3',

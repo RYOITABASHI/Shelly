@@ -33,7 +33,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   // Local LLM (Ollama) — disabled by default until user sets up Ollama in Termux
   localLlmEnabled: false,
   localLlmUrl: 'http://127.0.0.1:8080',
-  localLlmModel: 'gemma-3-4b-it-q4_k_m',
+  localLlmModel: 'gemma-3-4b-it-Q4_K_M',
   // ガラス背景 — デフォルトは不透明ブラック
   backgroundOpacity: 1.0,
   blurIntensity: 0,
