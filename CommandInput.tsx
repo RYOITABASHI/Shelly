@@ -402,63 +402,54 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
           onSubmitEditing={undefined}
         />
 
-        <View style={styles.actionButtons}>
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              onPress={pickImageFromGallery}
+        {/* Right side: attach (top) + send/mic (bottom) stacked vertically, matching input height */}
+        <View style={[styles.sideColumn, { height: Math.max(40, inputHeight) }]}>
+          {/* Attach — top half */}
+          <TouchableOpacity
+            onPress={pickImageFromGallery}
+            onLongPress={pickImageFromCamera}
+            activeOpacity={0.7}
+            style={[styles.halfBtn, { backgroundColor: colors.surface, borderColor: colors.border }, attachedImages.length >= MAX_IMAGES && styles.btnDisabled]}
+            disabled={attachedImages.length >= MAX_IMAGES}
+          >
+            <MaterialIcons name="add" size={18} color={attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.muted} />
+          </TouchableOpacity>
+
+          {/* Send / Mic — bottom half */}
+          {isActive ? (
+            <AnimatedTouchable
+              onPress={handleSend}
               activeOpacity={0.7}
-              style={[styles.smallBtn, { backgroundColor: colors.surface, borderColor: colors.border }, attachedImages.length >= MAX_IMAGES && styles.btnDisabled]}
-              disabled={attachedImages.length >= MAX_IMAGES}
+              style={[
+                styles.halfBtn,
+                sendAnimStyle,
+                { backgroundColor: colors.accent, borderColor: colors.accent },
+              ]}
             >
-              <MaterialIcons name="photo-library" size={15} color={attachedImages.length >= MAX_IMAGES ? colors.borderHeavy : colors.muted} />
-            </TouchableOpacity>
+              <MaterialIcons name="send" size={18} color={colors.background} />
+            </AnimatedTouchable>
+          ) : (
             <TouchableOpacity
               onPress={handleMicToggle}
               activeOpacity={0.7}
               style={[
-                styles.smallBtn,
+                styles.halfBtn,
                 { backgroundColor: colors.surface, borderColor: colors.border },
                 speechState.status === 'recording' && { borderColor: '#FF4444', backgroundColor: withAlpha(colors.error, 0.1) },
               ]}
               disabled={speechState.status === 'transcribing'}
             >
               {speechState.status === 'transcribing' ? (
-                <ActivityIndicator size={14} color={colors.aiPurple} />
+                <ActivityIndicator size={16} color={colors.aiPurple} />
               ) : speechState.status === 'recording' ? (
                 <Animated.View style={recordingAnimStyle}>
-                  <MaterialIcons name="mic" size={15} color="#FF4444" />
+                  <MaterialIcons name="mic" size={18} color="#FF4444" />
                 </Animated.View>
               ) : (
-                <MaterialIcons name="mic" size={15} color={colors.muted} />
+                <MaterialIcons name="mic" size={18} color={colors.muted} />
               )}
             </TouchableOpacity>
-          </View>
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              onPress={handlePaste}
-              activeOpacity={0.7}
-              style={[styles.smallBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            >
-              <MaterialIcons name="content-paste" size={15} color={colors.muted} />
-            </TouchableOpacity>
-            <AnimatedTouchable
-              onPress={handleSend}
-              activeOpacity={0.7}
-              style={[
-                styles.sendBtn,
-                sendAnimStyle,
-                isActive
-                  ? { backgroundColor: colors.accent }
-                  : { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-              ]}
-            >
-              <MaterialIcons
-                name="send"
-                size={15}
-                color={isActive ? colors.background : colors.inactive}
-              />
-            </AnimatedTouchable>
-          </View>
+          )}
         </View>
       </View>
 
@@ -515,7 +506,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingTop: 5,
     paddingBottom: 6,
-    gap: 5,
+    gap: 6,
     minHeight: 52,
   },
   promptText: {
@@ -540,34 +531,20 @@ const styles = StyleSheet.create({
     minHeight: 40,
     maxHeight: 140,
   },
-  actionButtons: {
+  sideColumn: {
     flexDirection: 'column',
-    gap: 3,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingBottom: 2,
-  },
-  actionRow: {
-    flexDirection: 'row',
+    width: 38,
     gap: 3,
   },
-  smallBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 6,
+  halfBtn: {
+    flex: 1,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
   },
   btnDisabled: {
     opacity: 0.3,
-  },
-  sendBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   recordingIndicator: {
     flexDirection: 'row',

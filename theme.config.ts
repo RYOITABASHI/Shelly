@@ -1,9 +1,9 @@
 export const themeColors = {
   primary: { light: '#00D4AA', dark: '#00D4AA' },
-  background: { light: '#0D0D0D', dark: '#0D0D0D' },
-  backgroundDeep: { light: '#0A0A0A', dark: '#0A0A0A' },
-  surface: { light: '#1A1A1A', dark: '#1A1A1A' },
-  surfaceHigh: { light: '#111111', dark: '#111111' },
+  background: { light: '#000000', dark: '#000000' },
+  backgroundDeep: { light: '#000000', dark: '#000000' },
+  surface: { light: '#141414', dark: '#141414' },
+  surfaceHigh: { light: '#0A0A0A', dark: '#0A0A0A' },
   surface2: { light: '#242424', dark: '#242424' },
   foreground: { light: '#E8E8E8', dark: '#E8E8E8' },
   foregroundDim: { light: '#D1D5DB', dark: '#D1D5DB' },

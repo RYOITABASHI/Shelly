@@ -133,6 +133,9 @@ function handleRun(ws, requestId, command, opts) {
     return;
   }
   const execEnv = opts && opts.env ? { ...process.env, ...opts.env, TERM: 'xterm-256color' } : { ...process.env, TERM: 'xterm-256color' };
+  // Remove Claude Code nesting guard — bridge spawns independent processes, not nested sessions
+  delete execEnv.CLAUDECODE;
+  delete execEnv.CLAUDE_CODE_SESSION;
 
   console.log(\`[shelly-bridge] [\${requestId}] RUN: \${command} (cwd: \${execCwd})\`);
 
