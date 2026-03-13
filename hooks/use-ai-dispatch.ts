@@ -16,6 +16,7 @@ import { loadProjectContext } from '@/lib/project-context';
 import { loadUserProfile, formatProfileForPrompt } from '@/lib/user-profile';
 import { loadCustomContext } from '@/lib/shelly-system-prompt';
 import { getDecisionLogForPrompt, autoLogFromResponse } from '@/lib/decision-log';
+import { getActiveLlmLabel } from '@/hooks/use-tool-discovery';
 import type { ImageAttachment, FileAttachment } from '@/components/input/CommandInput';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { OllamaMessage } from '@/lib/local-llm';
@@ -335,6 +336,7 @@ export function useAIDispatch() {
               streamingText: undefined,
               isStreaming: false,
               tokenCount: estimateTokens(accumulatedText),
+              llmModelLabel: getActiveLlmLabel(),
             });
             // Auto-log important decisions from AI response
             autoLogFromResponse(accumulatedText).catch(() => {});

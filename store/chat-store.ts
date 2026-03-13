@@ -39,6 +39,8 @@ export type ChatMessage = {
   error?: string;
   /** Safety warning level */
   dangerLevel?: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  /** ローカルLLM応答時のモデル名+ポート (例: "gemma-3-4b-it (:8080)") */
+  llmModelLabel?: string;
 };
 
 export type ChatSession = {

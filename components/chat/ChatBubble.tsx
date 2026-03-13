@@ -142,13 +142,18 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
         {/* Accent bar */}
         <View style={[styles.accentBar, { backgroundColor: agentColor }]} />
 
-        {/* Agent label */}
+        {/* Agent label + LLM model name */}
         {message.agent && (
           <View style={styles.agentRow}>
             <View style={[styles.agentDot, { backgroundColor: agentColor }]} />
             <Text style={[styles.agentLabel, { color: agentColor }]}>
               {getAgentLabel(message.agent)}
             </Text>
+            {message.agent === 'local' && message.llmModelLabel && (
+              <Text style={[styles.llmModelLabel, { color: withAlpha(agentColor, 0.6) }]}>
+                {message.llmModelLabel}
+              </Text>
+            )}
             {message.isStreaming && (
               <ActivityIndicator size="small" color={agentColor} style={{ marginLeft: 4 }} />
             )}
@@ -359,6 +364,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: 'monospace',
     fontWeight: '700',
+  },
+  llmModelLabel: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    fontWeight: '400',
+    marginLeft: 6,
   },
 
   // Markdown wrapper

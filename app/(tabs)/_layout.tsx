@@ -17,11 +17,11 @@ import { useI18n } from "@/lib/i18n";
 import { useTheme, useThemeStore } from "@/lib/theme-engine";
 import { useA11yStore } from "@/lib/accessibility";
 import { usePluginStore } from "@/lib/plugin-api";
-import { useLlmDiscovery } from "@/hooks/use-llm-discovery";
+import { useToolDiscovery } from "@/hooks/use-tool-discovery";
 
 export default function TabLayout() {
-  // LLM自動検出ポーリング
-  useLlmDiscovery();
+  // CLI + LLM自動検出ポーリング
+  useToolDiscovery();
   const layout = useDeviceLayout();
   const router = useRouter();
   const { isMultiPane, disableMultiPane, setMaxPanes, toggleMultiPane } = useMultiPaneStore();

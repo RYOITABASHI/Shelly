@@ -126,6 +126,8 @@ export type AiBlock = {
   citations?: Array<{ url: string; title?: string }>;
   /** エラー時のメッセージ */
   error?: string;
+  /** ローカルLLM応答時のモデル名+ポート (例: "gemma-3-4b-it (:8080)") */
+  llmModelLabel?: string;
 };
 
 /** ターミナルに表示するブロックの共用型 */
