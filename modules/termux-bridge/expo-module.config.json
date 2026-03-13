@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["TermuxBridgeModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.termuxbridge.TermuxBridgeModule"]
+  }
+}

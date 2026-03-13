@@ -251,6 +251,7 @@ const en: Record<string, string> = {
   'setup2.install_tasker_desc': 'Auto-setup plugin (required)',
   'setup2.install_boot': 'Termux:Boot',
   'setup2.install_boot_desc': 'Auto-start on reboot (recommended)',
+  'setup2.installed': 'Installed',
   'setup2.install_fdroid': 'Get from F-Droid (free)',
   'setup2.install_playstore': 'Get from Google Play',
   'setup2.start_setup': 'Start Setup',

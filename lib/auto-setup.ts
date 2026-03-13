@@ -1,17 +1,17 @@
 /**
  * lib/auto-setup.ts — 自動セットアップオーケストレーター
  *
- * RUN_COMMAND Intent経由でTermux上のセットアップを自動実行する。
- * ユーザーはアニメーションを見ているだけで完了する。
+ * TermuxBridge native module経由でTermux RunCommandServiceを直接呼び、
+ * ユーザーにTermuxを見せずにバックグラウンドでセットアップを完了する。
  *
  * フロー:
  * 1. pkg install nodejs-lts ttyd
  * 2. bridge設置 (server.js書き込み)
- * 3. boot script設置 (~/.termux/boot/start-shelly.sh)
+ * 3. boot script設置
  * 4. ttyd起動
  * 5. bridge起動
  * 6. 接続確認 (WS + HTTP)
- * 7. LLM検出 (オプション、失敗してもスルー)
+ * 7. LLM検出 (オプション)
  */
 
 import { runTermuxCommand } from './termux-intent';
@@ -82,16 +82,9 @@ function calcPercent(currentStep: SetupStep): number {
 
 function buildBootScript(): string {
   return `#!/data/data/com.termux/files/usr/bin/sh
-# Shelly auto-start script — managed by Shelly app
-# Do not edit manually
-
-# Wait for network
+# Shelly auto-start script
 sleep 3
-
-# Start ttyd (terminal web UI)
 ttyd -p 7681 bash &
-
-# Start Shelly bridge (WebSocket)
 node ~/shelly-bridge/server.js &
 `;
 }
@@ -160,10 +153,6 @@ async function retry<T>(
 
 // ── Main orchestrator ──────────────────────────────────────────────────────────
 
-/**
- * 自動セットアップを実行する。
- * 各ステップの進捗をコールバックで通知する。
- */
 export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ success: boolean; llmDetected: boolean; error?: string }> {
   const { termuxSettings, settings } = useTerminalStore.getState();
   const wsUrl = termuxSettings.wsUrl;
@@ -171,36 +160,32 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
   let llmDetected = false;
 
   try {
-    // ── Step 1: Install packages ──────────────────────────────────────────
+    // ── Step 1: Install packages ──────────────────────────────────────
     onProgress({ step: 'installing_packages', percent: calcPercent('installing_packages') });
 
     const installResult = await runTermuxCommand({
       command: 'pkg install -y nodejs-lts ttyd 2>&1',
     });
     if (!installResult.success) {
-      // RUN_COMMAND失敗 → フォールバック情報を返す
       onProgress({ step: 'error', percent: 0, error: installResult.error });
       return { success: false, llmDetected: false, error: installResult.error };
     }
 
-    // pkg installは時間がかかるのでポーリングで待つ
-    // (RUN_COMMANDはfire-and-forgetなので、接続確認で完了を判断する)
-    // 中間進捗を出す
+    // RUN_COMMAND is fire-and-forget; poll progress with delays
     await new Promise((r) => setTimeout(r, 2000));
     onProgress({ step: 'installing_packages', percent: 10 });
     await new Promise((r) => setTimeout(r, 3000));
     onProgress({ step: 'installing_packages', percent: 20 });
 
-    // ── Step 2: Write bridge server.js ────────────────────────────────────
+    // ── Step 2: Write bridge server.js ────────────────────────────────
     onProgress({ step: 'writing_bridge', percent: calcPercent('writing_bridge') });
 
-    const escapedBridge = BRIDGE_SERVER_JS.replace(/'/g, "'\\''");
     await runTermuxCommand({
       command: `mkdir -p ~/shelly-bridge && cat << 'SHELLY_EOF' > ~/shelly-bridge/server.js\n${BRIDGE_SERVER_JS}\nSHELLY_EOF`,
     });
     await new Promise((r) => setTimeout(r, 1000));
 
-    // ── Step 3: Write boot script ─────────────────────────────────────────
+    // ── Step 3: Write boot script ─────────────────────────────────────
     onProgress({ step: 'writing_boot_script', percent: calcPercent('writing_boot_script') });
 
     const bootScript = buildBootScript();
@@ -209,7 +194,7 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
     });
     await new Promise((r) => setTimeout(r, 500));
 
-    // ── Step 4: Start ttyd ────────────────────────────────────────────────
+    // ── Step 4: Start ttyd ────────────────────────────────────────────
     onProgress({ step: 'starting_ttyd', percent: calcPercent('starting_ttyd') });
 
     await runTermuxCommand({
@@ -217,7 +202,7 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
     });
     await new Promise((r) => setTimeout(r, 2000));
 
-    // ── Step 5: Start bridge ──────────────────────────────────────────────
+    // ── Step 5: Start bridge ──────────────────────────────────────────
     onProgress({ step: 'starting_bridge', percent: calcPercent('starting_bridge') });
 
     await runTermuxCommand({
@@ -225,14 +210,14 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
     });
     await new Promise((r) => setTimeout(r, 2000));
 
-    // ── Step 6: Verify bridge connection ──────────────────────────────────
+    // ── Step 6: Verify bridge connection ──────────────────────────────
     onProgress({ step: 'connecting_bridge', percent: calcPercent('connecting_bridge') });
 
     const bridgeOk = await retry(
       () => testBridgeConnection(wsUrl),
       (ok) => ok,
-      10,  // 最大10回リトライ
-      3000, // 3秒間隔 (= 最大30秒待ち)
+      10,
+      3000,
     );
 
     if (!bridgeOk) {
@@ -240,32 +225,32 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
       return { success: false, llmDetected: false, error: 'BRIDGE_CONNECTION_FAILED' };
     }
 
-    // ブリッジ接続成功 → storeに反映
     useTerminalStore.getState().setConnectionMode('termux');
 
-    // ── Step 7: Verify TTY connection ─────────────────────────────────────
+    // ── Step 7: Verify TTY connection ─────────────────────────────────
     onProgress({ step: 'connecting_tty', percent: calcPercent('connecting_tty') });
 
-    const ttyOk = await retry(
+    await retry(
       () => testTtyConnection(ttyUrl),
       (ok) => ok,
       5,
       2000,
     );
-    // TTY失敗は致命的ではない（ブリッジがあれば基本機能は使える）
 
-    // ── Step 8: Detect LLM (optional) ─────────────────────────────────────
+    // ── Step 8: Detect LLM (optional) ─────────────────────────────────
     onProgress({ step: 'detecting_llm', percent: calcPercent('detecting_llm') });
 
-    const llmUrl = settings.localLlmUrl || 'http://127.0.0.1:8080';
-    const llmResult = await checkOllamaConnection(llmUrl);
-    if (llmResult.available) {
-      llmDetected = true;
-      useTerminalStore.getState().updateSettings({ localLlmEnabled: true });
+    for (const port of ['8080', '11434']) {
+      const url = `http://127.0.0.1:${port}`;
+      const llmResult = await checkOllamaConnection(url);
+      if (llmResult.available) {
+        llmDetected = true;
+        useTerminalStore.getState().updateSettings({ localLlmEnabled: true, localLlmUrl: url });
+        break;
+      }
     }
-    // LLM未検出でもエラーにしない
 
-    // ── Complete ──────────────────────────────────────────────────────────
+    // ── Complete ──────────────────────────────────────────────────────
     onProgress({ step: 'complete', percent: 100 });
     return { success: true, llmDetected };
 

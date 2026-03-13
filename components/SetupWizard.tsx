@@ -38,7 +38,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTranslation } from '@/lib/i18n';
 import { runAutoSetup, type SetupStep, type SetupProgress } from '@/lib/auto-setup';
-import { getStoreUrl } from '@/lib/termux-intent';
+import { getStoreUrl, checkTermuxPackages } from '@/lib/termux-intent';
 
 const SETUP_WIZARD_KEY = '@shelly/setup_wizard_complete';
 
@@ -111,6 +111,19 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
   const [setupResult, setSetupResult] = useState<{ llmDetected: boolean } | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const slideTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Detect installed apps via native module
+  const [installedApps, setInstalledApps] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!visible || wizardStep !== 'install') return;
+    checkTermuxPackages().then((result) => {
+      setInstalledApps({
+        termux: result.termuxInstalled,
+        tasker: result.taskerInstalled,
+        boot: result.bootInstalled,
+      });
+    });
+  }, [visible, wizardStep]);
 
   // ── Animations ─────────────────────────────────────────────────────────────
 
@@ -240,32 +253,43 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         {/* App install cards */}
         {apps.map((app) => {
           const urls = getStoreUrl(app.key);
+          const isInstalled = installedApps[app.key] === true;
           return (
-            <View key={app.key} style={styles.installCard}>
+            <View key={app.key} style={[styles.installCard, isInstalled && { borderColor: '#00D4AA33' }]}>
               <View style={styles.installCardLeft}>
-                <MaterialIcons name={app.icon as any} size={24} color={app.required ? '#00D4AA' : '#6B7280'} />
+                <MaterialIcons
+                  name={isInstalled ? 'check-circle' : (app.icon as any)}
+                  size={24}
+                  color={isInstalled ? '#00D4AA' : app.required ? '#00D4AA' : '#6B7280'}
+                />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.installName}>
                     {t(app.nameKey)}
                     {!app.required && <Text style={styles.installOptional}> (optional)</Text>}
                   </Text>
-                  <Text style={styles.installDesc}>{t(app.descKey)}</Text>
+                  <Text style={styles.installDesc}>
+                    {isInstalled ? t('setup2.installed') : t(app.descKey)}
+                  </Text>
                 </View>
               </View>
-              <View style={styles.installButtons}>
-                <Pressable
-                  style={styles.installBtn}
-                  onPress={() => Linking.openURL(urls.fdroid)}
-                >
-                  <Text style={styles.installBtnText}>F-Droid</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.installBtn, { borderColor: '#333' }]}
-                  onPress={() => Linking.openURL(urls.playStore)}
-                >
-                  <Text style={[styles.installBtnText, { color: '#6B7280' }]}>Play</Text>
-                </Pressable>
-              </View>
+              {!isInstalled && (
+                <View style={styles.installButtons}>
+                  <Pressable
+                    style={styles.installBtn}
+                    onPress={() => Linking.openURL(urls.fdroid)}
+                  >
+                    <Text style={styles.installBtnText}>F-Droid</Text>
+                  </Pressable>
+                  {urls.playStore != null && (
+                    <Pressable
+                      style={[styles.installBtn, { borderColor: '#333' }]}
+                      onPress={() => Linking.openURL(urls.playStore!)}
+                    >
+                      <Text style={[styles.installBtnText, { color: '#6B7280' }]}>Play</Text>
+                    </Pressable>
+                  )}
+                </View>
+              )}
             </View>
           );
         })}

@@ -1,0 +1,18 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.termuxbridge'
+version = '0.7.9'
+
+android {
+  namespace "expo.modules.termuxbridge"
+  defaultConfig {
+    versionCode 1
+    versionName "0.7.9"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}

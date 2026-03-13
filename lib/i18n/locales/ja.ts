@@ -251,6 +251,7 @@ const ja: Record<string, string> = {
   'setup2.install_tasker_desc': '自動セットアップ用（必須）',
   'setup2.install_boot': 'Termux:Boot',
   'setup2.install_boot_desc': '再起動時の自動起動（推奨）',
+  'setup2.installed': 'インストール済み',
   'setup2.install_fdroid': 'F-Droidで取得（無料）',
   'setup2.install_playstore': 'Google Playで取得',
   'setup2.start_setup': 'セットアップ開始',
