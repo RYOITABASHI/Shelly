@@ -207,17 +207,18 @@ export async function checkOllamaConnection(baseUrl: string): Promise<{
     if (apiType === 'openai') {
       // llama-server: /health エンドポイント
       const res = await fetch(`${baseUrl}/health`, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) return { available: false, models: [], error: `HTTP ${res.status}` };
-      // /v1/models からモデル一覧を取得
+      if (!res.ok) { clearTimeout(timer); return { available: false, models: [], error: `HTTP ${res.status}` }; }
+      // /v1/models からモデル一覧を取得（同じcontrollerを再利用してタイムアウトを共有）
       try {
-        const modelsRes = await fetch(`${baseUrl}/v1/models`, { signal: new AbortController().signal });
+        const modelsRes = await fetch(`${baseUrl}/v1/models`, { signal: controller.signal });
+        clearTimeout(timer);
         if (modelsRes.ok) {
           const data = await modelsRes.json();
           const models = (data.data ?? []).map((m: { id: string }) => m.id);
           return { available: true, models };
         }
       } catch {
+        clearTimeout(timer);
         // /v1/models が失敗してもhealthがOKなら接続成功
       }
       return { available: true, models: [] };
@@ -328,9 +329,9 @@ export async function ollamaChatStream(
   timeoutMs = 120000,
   externalSignal?: AbortSignal,
 ): Promise<{ success: boolean; error?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     if (externalSignal) {
       if (externalSignal.aborted) { clearTimeout(timer); controller.abort(); }
       else { externalSignal.addEventListener('abort', () => { clearTimeout(timer); controller.abort(); }, { once: true }); }
@@ -367,9 +368,9 @@ export async function ollamaChatStream(
       body,
       signal: controller.signal,
     });
-    clearTimeout(timer);
 
     if (!res.ok) {
+      clearTimeout(timer);
       return { success: false, error: `HTTP ${res.status}: ${res.statusText}` };
     }
 
@@ -377,17 +378,25 @@ export async function ollamaChatStream(
     // Return error so orchestrateChatStream can fall back to non-streaming ollamaChat
     const reader = res.body?.getReader?.();
     if (!reader) {
+      clearTimeout(timer);
       return { success: false, error: 'ReadableStream not supported (React Native)' };
     }
 
     const decoder = new TextDecoder();
     let buffer = '';
+    const MAX_BUFFER_SIZE = 102400; // 100KB safety limit
 
+    try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
+      // バッファが上限を超えたら不完全な行を破棄
+      if (buffer.length > MAX_BUFFER_SIZE) {
+        const lastNewline = buffer.lastIndexOf('\n');
+        buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 1) : '';
+      }
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
@@ -424,9 +433,13 @@ export async function ollamaChatStream(
         }
       }
     }
+    } finally {
+      clearTimeout(timer);
+    }
 
     return { success: true };
   } catch (err) {
+    clearTimeout(timer);
     const message = err instanceof Error ? err.message : String(err);
     const isTimeout = message.includes('abort') || message.includes('timeout');
     return {

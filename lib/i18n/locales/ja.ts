@@ -207,7 +207,7 @@ const ja: Record<string, string> = {
   'workflow.variable_input': '変数の値を入力してください',
   'workflow.execute': '実行',
 
-  // ── Setup Wizard ───────────────────────────────────────────────
+  // ── Setup Wizard (legacy keys kept for compat) ─────────────────
   'setup.step1_title': 'Termuxを準備しよう',
   'setup.step1_desc': 'ShellyはTermuxを通じてコマンドを実行します。\nTermuxがインストールされていることを確認してください。',
   'setup.step1_get_playstore': 'Google Playで取得',
@@ -239,6 +239,68 @@ const ja: Record<string, string> = {
   'setup.next': '次へ',
   'setup.skip': 'スキップ',
   'settings.rerun_setup': 'セットアップを再実行',
+
+  // ── New Setup Wizard (v2 — auto setup) ─────────────────────────
+  // Step 1: Welcome
+  'setup2.welcome_title': 'Shellyへようこそ',
+  'setup2.welcome_desc': 'Shellyがすべて自動で準備します。\n下のアプリをインストールして「セットアップ開始」をタップしてください。',
+  // Install targets
+  'setup2.install_termux': 'Termux',
+  'setup2.install_termux_desc': 'Linux環境（必須）',
+  'setup2.install_tasker': 'Termux:Tasker',
+  'setup2.install_tasker_desc': '自動セットアップ用（必須）',
+  'setup2.install_boot': 'Termux:Boot',
+  'setup2.install_boot_desc': '再起動時の自動起動（推奨）',
+  'setup2.install_fdroid': 'F-Droidで取得（無料）',
+  'setup2.install_playstore': 'Google Playで取得',
+  'setup2.start_setup': 'セットアップ開始',
+  'setup2.all_installed': '必要なアプリはすべてインストール済み',
+  'setup2.missing_apps': '上のアプリを先にインストールしてください',
+  // Step 2: Auto setup (progress)
+  'setup2.progress_title': 'セットアップ中',
+  'setup2.progress_wait': '初回のみ少し時間がかかります。',
+  'setup2.step_packages': 'パッケージを導入中',
+  'setup2.step_bridge': 'ブリッジを設置中',
+  'setup2.step_boot': '自動起動を設定中',
+  'setup2.step_ttyd': 'ターミナルを起動中',
+  'setup2.step_bridge_start': 'ブリッジを起動中',
+  'setup2.step_connect_bridge': 'ブリッジに接続中',
+  'setup2.step_connect_tty': 'ターミナルに接続中',
+  'setup2.step_detect_llm': 'ローカルAIを検出中',
+  'setup2.step_done': '完了',
+  'setup2.step_error': 'エラー',
+  // Step 3: Complete
+  'setup2.complete_title': '準備完了！',
+  'setup2.complete_desc': 'Shellyが使えるようになりました。\nもうTermuxを触る必要はありません。',
+  'setup2.result_bridge': 'ブリッジ',
+  'setup2.result_tty': 'ターミナル',
+  'setup2.result_llm': 'ローカルAI',
+  'setup2.result_connected': '接続済み',
+  'setup2.result_not_found': '未検出（後から追加可）',
+  'setup2.result_boot': '自動起動',
+  'setup2.result_boot_ok': '設定済み',
+  'setup2.get_started': 'はじめる',
+  // Error
+  'setup2.error_title': 'セットアップ失敗',
+  'setup2.error_permission': 'Termux:Taskerにコマンド実行の権限が必要です。\nTermuxを一度開いてから、もう一度お試しください。',
+  'setup2.error_not_installed': 'Termux:Taskerがインストールされていません。\nインストールしてから再度お試しください。',
+  'setup2.error_bridge': 'ブリッジに接続できませんでした。\nTermuxが起動しているか確認してください。',
+  'setup2.error_generic': '問題が発生しました。もう一度お試しください。',
+  'setup2.retry': 'もう一度試す',
+  // Slides (feature showcase during setup)
+  'setup2.slide1_title': '話しかけるだけ',
+  'setup2.slide1_desc': '自然な日本語で入力すると\nShellyが適切なコマンドに変換します。',
+  'setup2.slide1_example': '「ファイル一覧を見せて」→ ls -la',
+  'setup2.slide2_title': 'AIが自動で選ばれる',
+  'setup2.slide2_desc': 'Claude・Gemini・ローカルAI —\nタスクに最適なAIを自動選択します。',
+  'setup2.slide3_title': '言葉でファイル整理',
+  'setup2.slide3_desc': '「写真を日付順に並べて」\nファイル操作も自然言語でOK。',
+  'setup2.slide4_title': '音声チャット',
+  'setup2.slide4_desc': 'Shellyに話しかけてAIの応答を聞く。\nハンズフリーでターミナル操作。',
+  'setup2.slide5_title': 'プロジェクト作成',
+  'setup2.slide5_desc': '「Todoアプリを作って」\nAIがプロジェクトを自動生成します。',
+  'setup2.slide6_title': '安全設計',
+  'setup2.slide6_desc': '危険なコマンドは実行前に確認。\n常にあなたがコントロール。',
 };
 
 export default ja;

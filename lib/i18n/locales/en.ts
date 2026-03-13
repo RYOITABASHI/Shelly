@@ -207,7 +207,7 @@ const en: Record<string, string> = {
   'workflow.variable_input': 'Enter values for variables',
   'workflow.execute': 'Execute',
 
-  // ── Setup Wizard ───────────────────────────────────────────────
+  // ── Setup Wizard (legacy keys kept for compat) ─────────────────
   'setup.step1_title': 'Prepare Termux',
   'setup.step1_desc': 'Shelly runs commands through Termux.\nMake sure Termux is installed on your device.',
   'setup.step1_get_playstore': 'Get on Google Play',
@@ -239,6 +239,68 @@ const en: Record<string, string> = {
   'setup.next': 'Next',
   'setup.skip': 'Skip',
   'settings.rerun_setup': 'Re-run Setup Wizard',
+
+  // ── New Setup Wizard (v2 — auto setup) ─────────────────────────
+  // Step 1: Welcome
+  'setup2.welcome_title': 'Welcome to Shelly',
+  'setup2.welcome_desc': 'Shelly will set everything up for you.\nJust install the apps below and tap "Start Setup".',
+  // Install targets
+  'setup2.install_termux': 'Termux',
+  'setup2.install_termux_desc': 'Linux environment (required)',
+  'setup2.install_tasker': 'Termux:Tasker',
+  'setup2.install_tasker_desc': 'Auto-setup plugin (required)',
+  'setup2.install_boot': 'Termux:Boot',
+  'setup2.install_boot_desc': 'Auto-start on reboot (recommended)',
+  'setup2.install_fdroid': 'Get from F-Droid (free)',
+  'setup2.install_playstore': 'Get from Google Play',
+  'setup2.start_setup': 'Start Setup',
+  'setup2.all_installed': 'All required apps installed',
+  'setup2.missing_apps': 'Install the apps above first',
+  // Step 2: Auto setup (progress)
+  'setup2.progress_title': 'Setting Up',
+  'setup2.progress_wait': 'This only takes a minute on first setup.',
+  'setup2.step_packages': 'Installing packages',
+  'setup2.step_bridge': 'Setting up bridge',
+  'setup2.step_boot': 'Configuring auto-start',
+  'setup2.step_ttyd': 'Starting terminal',
+  'setup2.step_bridge_start': 'Starting bridge',
+  'setup2.step_connect_bridge': 'Connecting bridge',
+  'setup2.step_connect_tty': 'Connecting terminal',
+  'setup2.step_detect_llm': 'Detecting local AI',
+  'setup2.step_done': 'Done',
+  'setup2.step_error': 'Error',
+  // Step 3: Complete
+  'setup2.complete_title': 'All Set!',
+  'setup2.complete_desc': 'Shelly is ready. You never need to touch Termux again.',
+  'setup2.result_bridge': 'Bridge',
+  'setup2.result_tty': 'Terminal',
+  'setup2.result_llm': 'Local AI',
+  'setup2.result_connected': 'Connected',
+  'setup2.result_not_found': 'Not found (optional)',
+  'setup2.result_boot': 'Auto-start',
+  'setup2.result_boot_ok': 'Configured',
+  'setup2.get_started': 'Get Started',
+  // Error
+  'setup2.error_title': 'Setup Failed',
+  'setup2.error_permission': 'Termux:Tasker needs permission to run commands.\nOpen Termux once, then try again.',
+  'setup2.error_not_installed': 'Termux:Tasker is not installed.\nInstall it and try again.',
+  'setup2.error_bridge': 'Could not connect to the bridge.\nMake sure Termux is running.',
+  'setup2.error_generic': 'Something went wrong. Please try again.',
+  'setup2.retry': 'Try Again',
+  // Slides (feature showcase during setup)
+  'setup2.slide1_title': 'Just Talk to It',
+  'setup2.slide1_desc': 'Type in natural language.\nShelly converts it to the right command.',
+  'setup2.slide1_example': '"Show me all files" → ls -la',
+  'setup2.slide2_title': 'Smart AI Selection',
+  'setup2.slide2_desc': 'Claude, Gemini, or local AI —\nShelly automatically picks the best one.',
+  'setup2.slide3_title': 'Organize with Words',
+  'setup2.slide3_desc': '"Sort my photos by date"\nFile management in plain language.',
+  'setup2.slide4_title': 'Voice Chat',
+  'setup2.slide4_desc': 'Speak to Shelly and hear AI responses.\nHands-free terminal control.',
+  'setup2.slide5_title': 'Create Projects',
+  'setup2.slide5_desc': '"Make a Todo app"\nAI generates the whole project for you.',
+  'setup2.slide6_title': 'Safe by Design',
+  'setup2.slide6_desc': 'Dangerous commands are flagged\nbefore execution. Always in control.',
 };
 
 export default en;

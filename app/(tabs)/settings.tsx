@@ -35,7 +35,7 @@ import { useI18n, AVAILABLE_LOCALES, type Locale } from '@/lib/i18n';
 import { useTheme, useThemeStore, BUILTIN_THEMES, getAllThemes, type Theme } from '@/lib/theme-engine';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { resetOnboarding } from '@/components/Onboarding';
-import { resetSetupWizard } from '@/components/SetupWizard';
+import { resetSetupWizard, SetupWizard } from '@/components/SetupWizard';
 import { PackageManager as PackageManagerModal } from '@/components/PackageManager';
 import { saveCustomContext, loadCustomContext, DEFAULT_CUSTOM_CONTEXT } from '@/lib/shelly-system-prompt';
 
@@ -154,6 +154,7 @@ export default function SettingsScreen() {
   const [isUpdatingBridge, setIsUpdatingBridge] = useState(false);
   const [bridgeUpdateResult, setBridgeUpdateResult] = useState<'success' | 'fail' | null>(null);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // Local LLM state
   const [llmUrlInput, setLlmUrlInput] = useState(settings.localLlmUrl);
@@ -1686,14 +1687,13 @@ export default function SettingsScreen() {
         </Pressable>
 
         <Pressable
-          onPress={async () => {
-            await resetSetupWizard();
-            Alert.alert('OK', t('settings.rerun_setup'));
-          }}
-          style={styles.actionButton}
+          onPress={() => setShowSetupWizard(true)}
+          style={[styles.actionButton, { borderColor: '#60A5FA33' }]}
         >
           <MaterialIcons name="build" size={18} color="#60A5FA" />
-          <Text style={[styles.actionButtonText, { color: '#60A5FA' }]}>{t('settings.rerun_setup')}</Text>
+          <Text style={[styles.actionButtonText, { color: '#60A5FA' }]}>
+            {bridgeStatus === 'connected' ? 'セットアップウィザード（再設定）' : 'セットアップウィザードを開く'}
+          </Text>
           <MaterialIcons name="chevron-right" size={18} color="#6B7280" />
         </Pressable>
 
@@ -1786,6 +1786,12 @@ export default function SettingsScreen() {
           }}
         />
       )}
+      {/* Setup Wizard (re-setup from settings) */}
+      <SetupWizard
+        visible={showSetupWizard}
+        onComplete={() => setShowSetupWizard(false)}
+        isResetup
+      />
     </View>
   );
 }
