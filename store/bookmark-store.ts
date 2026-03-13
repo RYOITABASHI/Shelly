@@ -24,7 +24,7 @@ type BookmarkStore = {
   getBookmarkByUrl: (url: string) => Bookmark | undefined;
 };
 
-const STORAGE_KEY = 'ghosty_bookmarks';
+const STORAGE_KEY = 'shelly_bookmarks';
 
 export const useBookmarkStore = create<BookmarkStore>((set, get) => ({
   bookmarks: [],

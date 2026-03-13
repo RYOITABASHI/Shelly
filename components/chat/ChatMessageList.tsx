@@ -32,9 +32,9 @@ type Props = {
 
 export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate, onEdit, onDelete, onStopGenerating, isStreaming }: Props) {
   const { colors } = useTheme();
-  const { width: screenWidth } = useWindowDimensions();
-  // Bucket width to avoid unnecessary re-renders on minor dimension changes
-  const widthBucket = Math.round(screenWidth / 50);
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  // Force re-mount when screen dimensions change significantly (fold/unfold)
+  const layoutKey = `${Math.round(screenWidth / 40)}-${Math.round(screenHeight / 40)}`;
   const listRef = useRef<FlatList>(null);
   const prevCount = useRef(messages.length);
 
@@ -63,7 +63,6 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
   if (messages.length === 0) {
     return (
       <View style={styles.emptyContainer}>
-        <Text style={[styles.emptyIcon]}>🐚</Text>
         <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Shelly</Text>
         <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
           何でも聞いてください{'\n'}
@@ -108,7 +107,7 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
 
   return (
     <FlatList
-      key={`chat-list-${widthBucket}`}
+      key={`chat-list-${layoutKey}`}
       ref={listRef}
       data={messages}
       renderItem={renderItem}
@@ -132,10 +131,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 32,
     gap: 8,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 8,
   },
   emptyTitle: {
     fontSize: 24,

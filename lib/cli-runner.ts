@@ -5,7 +5,7 @@
  *
  * 設計方針:
  * - 対話型UIを前提にしない（1回実行で完結する形を優先）
- * - APIキー等の秘密情報はGhosty内に保存しない
+ * - APIキー等の秘密情報はShelly内に保存しない
  * - ログに現れたキーらしき文字列は自動マスク
  * - 依存未導入時は自然言語で案内し、セットアップコマンドを提案
  */
@@ -227,8 +227,8 @@ export function interpretCheckResult(
 
   if (needsAuth) {
     const authGuide = tool === 'claude'
-      ? 'Claude Codeの認証が必要だよ。\nTermuxで `claude auth login` を実行するか、\n環境変数 ANTHROPIC_API_KEY を設定してね。\n（APIキーはGhostyには保存しないよ。Termux側で管理してね。）'
-      : 'Gemini CLIの認証が必要だよ。\nTermuxで `gemini auth login` を実行するか、\n環境変数 GEMINI_API_KEY を設定してね。\n（APIキーはGhostyには保存しないよ。Termux側で管理してね。）';
+      ? 'Claude Codeの認証が必要だよ。\nTermuxで `claude auth login` を実行するか、\n環境変数 ANTHROPIC_API_KEY を設定してね。\n（APIキーはShellyには保存しないよ。Termux側で管理してね。）'
+      : 'Gemini CLIの認証が必要だよ。\nTermuxで `gemini auth login` を実行するか、\n環境変数 GEMINI_API_KEY を設定してね。\n（APIキーはShellyには保存しないよ。Termux側で管理してね。）';
 
     return {
       available: true,

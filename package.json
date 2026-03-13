@@ -1,6 +1,13 @@
 {
   "name": "shelly-terminal",
   "version": "4.2.0",
+  "description": "AI-powered terminal IDE for Android",
+  "license": "MIT",
+  "author": "RYO ITABASHI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RYOITABASHI/Shelly"
+  },
   "private": true,
   "main": "expo-router/entry",
   "scripts": {

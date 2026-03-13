@@ -1,5 +1,5 @@
 /**
- * Browser Screen — Ghosty AI Browser
+ * Browser Screen — Shelly AI Browser
  * WebView ベースのインアプリブラウザ
  * - アドレスバー（URL入力・移動）
  * - 進む / 戻る / 更新 / ホーム

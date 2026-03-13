@@ -38,7 +38,7 @@ describe('pseudo-shell executeCommand', () => {
   it('cat reads file content', () => {
     const result = executeCommand('cat README.md', defaultState);
     expect(result.lines.length).toBeGreaterThan(0);
-    expect(result.lines.some(l => l.text.includes('Ghosty'))).toBe(true);
+    expect(result.lines.some(l => l.text.includes('Shelly'))).toBe(true);
   });
 
   it('cat non-existent file returns error', () => {

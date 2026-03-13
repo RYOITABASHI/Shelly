@@ -69,7 +69,7 @@ const webTemplate: ProjectTemplate = {
     </main>
 
     <footer>
-      <p>Created with Ghosty Creator · ${ctx.createdAt}</p>
+      <p>Created with Shelly Creator · ${ctx.createdAt}</p>
     </footer>
   </div>
   <script src="app.js"></script>
@@ -219,7 +219,7 @@ README.md
 ## 作成情報
 
 - 作成日: ${ctx.createdAt}
-- 作成ツール: Ghosty Creator Engine
+- 作成ツール: Shelly Creator Engine
 `,
     },
   ],
@@ -344,7 +344,7 @@ README.md
 ## 作成情報
 
 - 作成日: ${ctx.createdAt}
-- 作成ツール: Ghosty Creator Engine
+- 作成ツール: Shelly Creator Engine
 `,
     },
   ],
@@ -396,7 +396,7 @@ const documentTemplate: ProjectTemplate = {
 
 ---
 
-*作成日: ${ctx.createdAt} — Ghosty Creator Engine*
+*作成日: ${ctx.createdAt} — Shelly Creator Engine*
 `,
     },
     {

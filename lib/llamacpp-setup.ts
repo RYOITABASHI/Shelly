@@ -295,7 +295,7 @@ export function getRecommendedModel(): LlamaCppModel {
 }
 
 /**
- * llama.cppのGhosty向けLocal LLM設定を返す。
+ * llama.cppのShelly向けLocal LLM設定を返す。
  * llama-serverはOpenAI互換APIを提供する。
  */
 export function getLlamaCppLocalLlmConfig(model: LlamaCppModel): {
@@ -318,9 +318,9 @@ export function estimateTotalSetupTime(steps: LlamaCppSetupStep[]): number {
 }
 
 /**
- * ghosty-bridge + llama-server を1コマンドで起動するスクリプトを生成する。
+ * shelly-bridge + llama-server を1コマンドで起動するスクリプトを生成する。
  * Termuxのマルチウィンドウ不要。llama-serverをnohupでバックグラウンド起動後、
- * ghosty-bridgeをフォアグラウンドで起動する（Ctrl+Cで両方停止）。
+ * shelly-bridgeをフォアグラウンドで起動する（Ctrl+Cで両方停止）。
  */
 export function buildStartAllScript(model: LlamaCppModel): string {
   const logFile = `${MODELS_DIR}/llama-server.log`;
@@ -329,8 +329,8 @@ export function buildStartAllScript(model: LlamaCppModel): string {
 
   return [
     `#!/data/data/com.termux/files/usr/bin/bash`,
-    `# Ghosty 一括起動スクリプト`,
-    `# llama-server + ghosty-bridge を1コマンドで起動`,
+    `# Shelly 一括起動スクリプト`,
+    `# llama-server + shelly-bridge を1コマンドで起動`,
     ``,
     `# 1. 既存プロセスを停止`,
     `pkill -f llama-server 2>/dev/null || true`,
@@ -353,13 +353,13 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     `  sleep 1`,
     `done`,
     ``,
-    `# 4. ghosty-bridgeをフォアグラウンドで起動`,
-    `echo "[2/2] ghosty-bridgeを起動中..."`,
+    `# 4. shelly-bridgeをフォアグラウンドで起動`,
+    `echo "[2/2] shelly-bridgeを起動中..."`,
     `echo "Ctrl+C で両方停止できます"`,
-    `node ~/ghosty-bridge/server.js`,
+    `node ~/shelly-bridge/server.js`,
     ``,
     `# 5. bridge停止時にllama-serverも停止`,
-    `echo "ghosty-bridge stopped. Stopping llama-server..."`,
+    `echo "shelly-bridge stopped. Stopping llama-server..."`,
     `pkill -f llama-server 2>/dev/null || true`,
     `echo "All stopped."`,
   ].join('\n');

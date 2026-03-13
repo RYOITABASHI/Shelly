@@ -330,7 +330,7 @@ describe('Tools exec allowlist (v2.4.2)', () => {
   function isAllowedForExec(cmd: string): boolean {
     if (!cmd || typeof cmd !== 'string') return false;
     const firstToken = cmd.trim().split(/\s+/)[0];
-    // Block absolute paths — Ghosty must never directly execute Termux-internal paths
+    // Block absolute paths — Shelly must never directly execute Termux-internal paths
     if (firstToken.startsWith('/') || firstToken.startsWith('./') || firstToken.startsWith('../')) {
       return false;
     }
@@ -357,7 +357,7 @@ describe('Tools exec allowlist (v2.4.2)', () => {
   });
 
   it('blocks Termux direct path execution (CRITICAL: no /data/data/com.termux/ direct calls)', () => {
-    // GhostyプロセスからTermuxパスを直接実行しようとしてもallowlistで弾かれる
+    // ShellyプロセスからTermuxパスを直接実行しようとしてもallowlistで弾かれる
     expect(isAllowedForExec('/data/data/com.termux/files/usr/bin/claude')).toBe(false);
     expect(isAllowedForExec('/data/data/com.termux/files/usr/bin/node')).toBe(false);
     expect(isAllowedForExec('/data/data/com.termux/files/usr/bin/python3')).toBe(false);

@@ -203,9 +203,9 @@ describe('serializeProjectPayload', () => {
 });
 
 describe('projectExportFilename', () => {
-  it('returns a filename starting with ghosty-projects-', () => {
+  it('returns a filename starting with shelly-projects-', () => {
     const name = projectExportFilename();
-    expect(name).toMatch(/^ghosty-projects-\d{8}\.json$/);
+    expect(name).toMatch(/^shelly-projects-\d{8}\.json$/);
   });
 });
 

@@ -113,9 +113,9 @@ describe('serializePayload', () => {
 // ─── exportFilename ───────────────────────────────────────────────────────────
 
 describe('exportFilename', () => {
-  it('should match ghosty-snippets-YYYYMMDD.json pattern', () => {
+  it('should match shelly-snippets-YYYYMMDD.json pattern', () => {
     const filename = exportFilename();
-    expect(filename).toMatch(/^ghosty-snippets-\d{8}\.json$/);
+    expect(filename).toMatch(/^shelly-snippets-\d{8}\.json$/);
   });
 });
 

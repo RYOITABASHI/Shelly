@@ -18,6 +18,8 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  Keyboard,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -45,6 +47,9 @@ export default function ChatScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  // Force full re-mount of layout tree when screen dimensions change significantly (fold/unfold)
+  const layoutKey = `${Math.round(screenWidth / 40)}-${Math.round(screenHeight / 40)}`;
 
   // ── Terminal store (settings, bridge config) ──
   const {
@@ -258,6 +263,7 @@ export default function ChatScreen() {
   // ── handleSend: unified input handler ──
   const handleSend = useCallback(async (input: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
     if (!chatSessionId) return;
+    Keyboard.dismiss();
     const parsed = parseInput(input);
 
     // Auto-learn (background)
@@ -612,6 +618,7 @@ export default function ChatScreen() {
       <ChatHeader onVoiceChat={() => setShowVoiceChat(true)} />
 
       <KeyboardAvoidingView
+        key={`kav-${layoutKey}`}
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}

@@ -1,5 +1,5 @@
 /**
- * Ghosty v2.4.1 — Output Visibility Tests
+ * Shelly v2.4.1 — Output Visibility Tests
  *
  * Ensures that stdout/stderr colors always meet minimum contrast requirements
  * against the terminal block background (#1A1A1A) on OLED displays (Z Fold6).

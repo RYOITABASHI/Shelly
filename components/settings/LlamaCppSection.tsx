@@ -65,7 +65,7 @@ export function LlamaCppSection({
 
   const handleSetup = useCallback(async () => {
     if (!isConnected) {
-      Alert.alert('未接続', 'Termux Bridgeを先に接続してください。\nTermuxで ghosty-bridge を起動してください。');
+      Alert.alert('未接続', 'Termux Bridgeを先に接続してください。\nTermuxで shelly-bridge を起動してください。');
       return;
     }
 
@@ -82,10 +82,10 @@ export function LlamaCppSection({
           onPress: async () => {
             setIsSettingUp(true);
             setShowSetupLog(true);
-            setSetupLog(['[ghosty] llama.cpp セットアップ開始...']);
+            setSetupLog(['[shelly] llama.cpp セットアップ開始...']);
 
             for (const step of steps) {
-              setSetupLog((prev) => [...prev, `[ghosty] ${step.label}...`]);
+              setSetupLog((prev) => [...prev, `[shelly] ${step.label}...`]);
               const result = await onRunCommand(step.command, step.label);
               if (!result.success && step.critical) {
                 setSetupLog((prev) => [...prev, `[ERROR] ${step.label} 失敗。セットアップを中断しました。`]);
@@ -97,7 +97,7 @@ export function LlamaCppSection({
               }
             }
 
-            setSetupLog((prev) => [...prev, '[ghosty] セットアップ完了！']);
+            setSetupLog((prev) => [...prev, '[shelly] セットアップ完了！']);
             setIsSettingUp(false);
             onUpdateLocalLlmUrl('http://127.0.0.1:8080');
           },

@@ -685,13 +685,13 @@ export function ToolsLane({
           <Text style={styles.setupGuideTitle}>📱 Termuxで以下を実行してください</Text>
           <Text style={styles.setupGuideStep}>1. Termuxを開く</Text>
           <View style={styles.setupGuideCmd}>
-            <Text style={styles.setupGuideCmdText}>cd ~/ghosty-bridge && node server.js</Text>
+            <Text style={styles.setupGuideCmdText}>cd ~/shelly-bridge && node server.js</Text>
           </View>
           <Text style={styles.setupGuideNote}>
             初回はまずセットアップが必要です：
           </Text>
           <View style={styles.setupGuideCmd}>
-            <Text style={styles.setupGuideCmdText}>{'pkg install nodejs && mkdir -p ~/ghosty-bridge && cp -r /sdcard/ghosty-bridge/* ~/ghosty-bridge/ && cd ~/ghosty-bridge && npm install'}</Text>
+            <Text style={styles.setupGuideCmdText}>{'pkg install nodejs && mkdir -p ~/shelly-bridge && cp -r /sdcard/shelly-bridge/* ~/shelly-bridge/ && cd ~/shelly-bridge && npm install'}</Text>
           </View>
           <Text style={styles.setupGuideNote}>
             起動後、Settings → Termux Bridge URL で

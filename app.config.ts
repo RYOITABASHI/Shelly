@@ -30,7 +30,7 @@ const env = {
   appSlug: "shelly-terminal",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "https://private-us-east-1.manuscdn.com/sessionFile/VBxfNdxAD9p6tyd4emsVhF/sandbox/9fhTw7VlOo0lUQN0BQ0JUF-img-1_1771947224000_na1fn_Z2hvc3R5LWljb24.png",
+  logoUrl: "",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
