@@ -34,7 +34,6 @@ import { useTranslation } from '@/lib/i18n';
 import { useI18n, AVAILABLE_LOCALES, type Locale } from '@/lib/i18n';
 import { useTheme, useThemeStore, BUILTIN_THEMES, getAllThemes, type Theme } from '@/lib/theme-engine';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
-import { resetOnboarding } from '@/components/Onboarding';
 import { resetSetupWizard, SetupWizard } from '@/components/SetupWizard';
 import { PackageManager as PackageManagerModal } from '@/components/PackageManager';
 import { saveCustomContext, loadCustomContext, DEFAULT_CUSTOM_CONTEXT } from '@/lib/shelly-system-prompt';
@@ -1673,19 +1672,7 @@ export default function SettingsScreen() {
           <MaterialIcons name="chevron-right" size={18} color="#6B7280" />
         </Pressable>
 
-        {/* ── Onboarding / Setup Reset ──────────────────────────────────── */}
-        <Pressable
-          onPress={async () => {
-            await resetOnboarding();
-            Alert.alert('OK', 'Onboarding will show on next launch.');
-          }}
-          style={styles.actionButton}
-        >
-          <MaterialIcons name="replay" size={18} color="#6B7280" />
-          <Text style={[styles.actionButtonText, { color: '#6B7280' }]}>Reset Onboarding</Text>
-          <MaterialIcons name="chevron-right" size={18} color="#6B7280" />
-        </Pressable>
-
+        {/* ── Setup Reset ──────────────────────────────────── */}
         <Pressable
           onPress={() => setShowSetupWizard(true)}
           style={[styles.actionButton, { borderColor: '#60A5FA33' }]}

@@ -241,8 +241,16 @@ const ja: Record<string, string> = {
   'settings.rerun_setup': 'セットアップを再実行',
 
   // ── New Setup Wizard (v2 — auto setup) ─────────────────────────
-  // Step 1: Welcome
-  'setup2.welcome_title': 'Shellyへようこそ',
+  // Hero (welcome screen)
+  'setup2.hero_title': 'Shellyへようこそ',
+  'setup2.hero_desc': 'AI搭載のAndroidターミナル。\n話しかけるだけで操作できます。',
+  'setup2.hero_feat1': '自然な言葉でコマンド実行',
+  'setup2.hero_feat2': 'Claude・Gemini・ローカルAIを自動選択',
+  'setup2.hero_feat3': '音声入力でハンズフリー操作',
+  'setup2.hero_feat4': '危険なコマンドは実行前に確認',
+  'setup2.hero_next': 'セットアップへ進む',
+  // Step 1: Install apps
+  'setup2.welcome_title': 'アプリをインストール',
   'setup2.welcome_desc': 'Shellyがすべて自動で準備します。\n下のアプリをインストールして「セットアップ開始」をタップしてください。',
   // Install targets
   'setup2.install_termux': 'Termux',

@@ -102,8 +102,8 @@ type Props = {
 
 export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
   const { t } = useTranslation();
-  const [wizardStep, setWizardStep] = useState<'install' | 'progress' | 'complete' | 'error'>(
-    isResetup ? 'progress' : 'install'
+  const [wizardStep, setWizardStep] = useState<'welcome' | 'install' | 'progress' | 'complete' | 'error'>(
+    isResetup ? 'progress' : 'welcome'
   );
   const [slideIndex, setSlideIndex] = useState(0);
   const [progress, setProgress] = useState<SetupProgress>({ step: 'installing_packages', percent: 0 });
@@ -231,6 +231,35 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     await AsyncStorage.setItem(SETUP_WIZARD_KEY, 'true').catch(() => {});
     onComplete();
   }, [onComplete]);
+
+  // ── Render: Welcome ────────────────────────────────────────────────────────
+
+  const renderWelcomeStep = () => (
+    <Animated.View entering={FadeInDown.duration(400)} style={styles.stepContainer}>
+      <View style={[styles.iconCircle, { backgroundColor: '#FBBF2420' }]}>
+        <MaterialIcons name="waving-hand" size={48} color="#FBBF24" />
+      </View>
+
+      <Text style={[styles.title, { color: '#FBBF24' }]}>{t('setup2.hero_title')}</Text>
+      <Text style={styles.description}>{t('setup2.hero_desc')}</Text>
+
+      {/* Feature highlights */}
+      <View style={styles.featureList}>
+        <FeatureRow icon="chat-bubble-outline" color="#00D4AA" labelKey="setup2.hero_feat1" />
+        <FeatureRow icon="auto-awesome" color="#60A5FA" labelKey="setup2.hero_feat2" />
+        <FeatureRow icon="mic" color="#F472B6" labelKey="setup2.hero_feat3" />
+        <FeatureRow icon="shield" color="#4ADE80" labelKey="setup2.hero_feat4" />
+      </View>
+
+      <Pressable
+        style={[styles.primaryBtn, { backgroundColor: '#FBBF24' }]}
+        onPress={() => setWizardStep('install')}
+      >
+        <Text style={styles.primaryBtnText}>{t('setup2.hero_next')}</Text>
+        <MaterialIcons name="arrow-forward" size={18} color="#000" />
+      </Pressable>
+    </Animated.View>
+  );
 
   // ── Render: Step 1 — Install apps ──────────────────────────────────────────
 
@@ -478,6 +507,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     <Modal visible={visible} transparent animationType="fade" statusBarTranslucent>
       <View style={styles.backdrop}>
         <View style={styles.card}>
+          {wizardStep === 'welcome' && renderWelcomeStep()}
           {wizardStep === 'install' && renderInstallStep()}
           {wizardStep === 'progress' && renderProgressStep()}
           {wizardStep === 'complete' && renderCompleteStep()}
@@ -489,6 +519,18 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
+
+function FeatureRow({ icon, color, labelKey }: { icon: string; color: string; labelKey: string }) {
+  const { t } = useTranslation();
+  return (
+    <View style={styles.featureRow}>
+      <View style={[styles.featureIcon, { backgroundColor: color + '18' }]}>
+        <MaterialIcons name={icon as any} size={18} color={color} />
+      </View>
+      <Text style={styles.featureLabel}>{t(labelKey)}</Text>
+    </View>
+  );
+}
 
 function ResultRow({ icon, label, value, color }: { icon: string; label: string; value: string; color: string }) {
   return (
@@ -559,6 +601,31 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: 'center',
     marginBottom: 20,
+  },
+
+  // ── Feature list (welcome) ───────────────────────────────────────────
+  featureList: {
+    width: '100%',
+    gap: 10,
+    marginBottom: 8,
+  },
+  featureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  featureIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  featureLabel: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    fontFamily: 'monospace',
+    flex: 1,
   },
 
   // ── Install cards ────────────────────────────────────────────────────

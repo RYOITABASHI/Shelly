@@ -10,7 +10,6 @@ import { matchKeybinding, type KeyAction } from "@/lib/keybindings";
 import { MultiPaneContainer } from "@/components/multi-pane/MultiPaneContainer";
 import { CommandPalette } from "@/components/CommandPalette";
 import { QuickTerminal } from "@/components/QuickTerminal";
-import { Onboarding, isOnboardingComplete } from "@/components/Onboarding";
 import { SetupWizard, isSetupWizardComplete } from "@/components/SetupWizard";
 import { useTerminalStore } from "@/store/terminal-store";
 import { useI18n } from "@/lib/i18n";
@@ -27,7 +26,6 @@ export default function TabLayout() {
   const { isMultiPane, disableMultiPane, setMaxPanes, toggleMultiPane } = useMultiPaneStore();
   const theme = useTheme();
   const c = theme.colors;
-  const [showOnboarding, setShowOnboarding] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // Initialize global stores on mount
@@ -36,15 +34,8 @@ export default function TabLayout() {
     useThemeStore.getState().loadTheme();
     useA11yStore.getState().loadConfig();
     usePluginStore.getState().loadPlugins();
-    isOnboardingComplete().then((done) => {
-      if (!done) {
-        setShowOnboarding(true);
-      } else {
-        // Onboarding done — check setup wizard
-        isSetupWizardComplete().then((wizardDone) => {
-          if (!wizardDone) setShowSetupWizard(true);
-        });
-      }
+    isSetupWizardComplete().then((done) => {
+      if (!done) setShowSetupWizard(true);
     });
   }, []);
 
@@ -200,19 +191,7 @@ export default function TabLayout() {
       {/* Quick Terminal (drop-down overlay) */}
       <QuickTerminal />
 
-      {/* Onboarding (first launch) */}
-      <Onboarding
-        visible={showOnboarding}
-        onComplete={() => {
-          setShowOnboarding(false);
-          // After onboarding, show setup wizard
-          isSetupWizardComplete().then((done) => {
-            if (!done) setShowSetupWizard(true);
-          });
-        }}
-      />
-
-      {/* Termux Setup Wizard (after onboarding) */}
+      {/* Setup Wizard (first launch — includes welcome screen) */}
       <SetupWizard
         visible={showSetupWizard}
         onComplete={() => setShowSetupWizard(false)}
