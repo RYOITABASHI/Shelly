@@ -35,7 +35,7 @@ export function QuickTerminal() {
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   const [input, setInput] = useState('');
-  const [history, setHistory] = useState<Array<{ cmd: string; output: string }>>([]);
+  const [history, setHistory] = useState<{ cmd: string; output: string }[]>([]);
 
   const { connectionMode, runCommand } = useTerminalStore();
   const { sendCommand, isConnected } = useTermuxBridge();

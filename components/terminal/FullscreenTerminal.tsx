@@ -6,7 +6,7 @@
  * shelly-bridge の WebSocket に直接接続する。
  */
 
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   Platform,
-  StatusBar,
 } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

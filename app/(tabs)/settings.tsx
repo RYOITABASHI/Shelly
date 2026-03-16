@@ -31,10 +31,10 @@ import { LlamaCppSection } from '@/components/settings/LlamaCppSection';
 import { McpSection } from '@/components/settings/McpSection';
 import { LlamaCppModel, MODEL_CATALOG, buildStartAllScript, getRecommendedModel } from '@/lib/llamacpp-setup';
 import { useTranslation, t } from '@/lib/i18n';
-import { useI18n, AVAILABLE_LOCALES, type Locale } from '@/lib/i18n';
-import { useTheme, useThemeStore, BUILTIN_THEMES, getAllThemes, type Theme } from '@/lib/theme-engine';
+import { useI18n, AVAILABLE_LOCALES } from '@/lib/i18n';
+import { useTheme, useThemeStore, getAllThemes } from '@/lib/theme-engine';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
-import { resetSetupWizard, SetupWizard } from '@/components/SetupWizard';
+import { SetupWizard } from '@/components/SetupWizard';
 import { PackageManager as PackageManagerModal } from '@/components/PackageManager';
 import { saveCustomContext, loadCustomContext, DEFAULT_CUSTOM_CONTEXT } from '@/lib/shelly-system-prompt';
 import { AuthWizard } from '@/components/AuthWizard';
@@ -131,7 +131,7 @@ export default function SettingsScreen() {
   const { t } = useTranslation();
 
   // Theme engine
-  const currentTheme = useTheme();
+  const _currentTheme = useTheme();
   const { currentThemeId, setTheme: setEngineTheme } = useThemeStore();
   const allThemes = getAllThemes();
 
@@ -170,7 +170,7 @@ export default function SettingsScreen() {
     const match = MODEL_CATALOG.find((m) => m.filename.replace('.gguf', '') === stored || m.id === stored);
     return match?.id ?? null;
   });
-  const [installedModelIds, setInstalledModelIds] = useState<Set<string>>(new Set());
+  const [installedModelIds, _setInstalledModelIds] = useState<Set<string>>(new Set());
 
   // Custom context for LLM system prompt
   const [customContextText, setCustomContextText] = useState('');
@@ -387,7 +387,7 @@ export default function SettingsScreen() {
       clearTimeout(timer);
       if (res && res.ok) {
         const data = await res.json().catch(() => null);
-        const models: string[] = (data?.models ?? []).map((m: { name: string }) => m.name);
+        const _models: string[] = (data?.models ?? []).map((m: { name: string }) => m.name);
         setLlmTestResult('success');
         Alert.alert(
           t('settings.llm_success_title'),
@@ -491,7 +491,7 @@ export default function SettingsScreen() {
         setBridgeUpdateResult('fail');
         Alert.alert(t('settings.update_failed'), t('settings.update_failed_msg', { error: result.error ?? '' }));
       }
-    } catch (e) {
+    } catch (_e) {
       setBridgeUpdateResult('fail');
       Alert.alert(t('settings.update_failed'), t('settings.unexpected_error'));
     } finally {
@@ -1400,7 +1400,7 @@ export default function SettingsScreen() {
               returnKeyType="done"
             />
           </View>
-          <Text style={styles.wsUrlHint}>Codex command name in Termux (usually just "codex")</Text>
+          <Text style={styles.wsUrlHint}>Codex command name in Termux (usually just &quot;codex&quot;)</Text>
         </View>
         {/* ── Obsidian ────────────────────────────────────────────── */}
         <SectionHeader title="Obsidian" subtitle="Auto-collection & knowledge management settings" />

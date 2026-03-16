@@ -25,7 +25,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { WebView, type WebViewNavigation } from 'react-native-webview';

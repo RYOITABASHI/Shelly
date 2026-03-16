@@ -20,7 +20,7 @@ import Animated, {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { CommandBlock, OutputLine, BlockStatus } from '@/store/types';
+import { CommandBlock, BlockStatus } from '@/store/types';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { getOutputColor } from '@/lib/output-colors';
@@ -207,7 +207,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
 
   // Collapse icon rotation
   const collapseRotation = useSharedValue(0);
-  const collapseAnimStyle = useAnimatedStyle(() => ({
+  const _collapseAnimStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${collapseRotation.value}deg` }],
   }));
 

@@ -62,6 +62,24 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 
+  const listFooter = useMemo(() => {
+    if (!isStreaming || !onStopGenerating) return null;
+    return (
+      <View style={styles.stopRow}>
+        <TouchableOpacity
+          style={[styles.stopBtn, { borderColor: colors.border, backgroundColor: colors.surfaceHigh }]}
+          onPress={onStopGenerating}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={t('chat.stop_generating')}
+        >
+          <View style={[styles.stopIcon, { backgroundColor: colors.inactive }]} />
+          <Text style={[styles.stopText, { color: colors.foreground }]}>{t('chat.stop_generating')}</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }, [isStreaming, onStopGenerating, colors]);
+
   if (messages.length === 0) {
     return (
       <View style={styles.emptyContainer}>
@@ -87,24 +105,6 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
       </View>
     );
   }
-
-  const listFooter = useMemo(() => {
-    if (!isStreaming || !onStopGenerating) return null;
-    return (
-      <View style={styles.stopRow}>
-        <TouchableOpacity
-          style={[styles.stopBtn, { borderColor: colors.border, backgroundColor: colors.surfaceHigh }]}
-          onPress={onStopGenerating}
-          activeOpacity={0.7}
-          accessibilityRole="button"
-          accessibilityLabel={t('chat.stop_generating')}
-        >
-          <View style={[styles.stopIcon, { backgroundColor: colors.inactive }]} />
-          <Text style={[styles.stopText, { color: colors.foreground }]}>{t('chat.stop_generating')}</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }, [isStreaming, onStopGenerating, colors]);
 
   return (
     <FlatList

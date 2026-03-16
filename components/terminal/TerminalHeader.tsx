@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect , useState } from 'react';
 import { View, Text, Pressable, StyleSheet, Alert } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -11,8 +11,7 @@ import Animated, {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { useState } from 'react';
-import { useTerminalStore, useActiveSession } from '@/store/terminal-store';
+import { useTerminalStore } from '@/store/terminal-store';
 import { ConnectionMode, BridgeStatus } from '@/store/types';
 import { FullscreenTerminal } from './FullscreenTerminal';
 import { useDeviceLayout } from '@/hooks/use-device-layout';

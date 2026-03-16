@@ -1,7 +1,7 @@
 import React, { memo, useState, useCallback } from 'react';
 import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { parseDiff, type DiffFile, type DiffLineType } from '@/lib/diff-parser';
+import { parseDiff, type DiffLineType } from '@/lib/diff-parser';
 
 const ACCENT = '#00D4AA';
 

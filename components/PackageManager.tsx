@@ -27,7 +27,7 @@ import {
 
 const ACCENT = '#00D4AA';
 
-const FILTER_TABS: Array<{ key: PackageFilter; labelKey: string }> = [
+const FILTER_TABS: { key: PackageFilter; labelKey: string }[] = [
   { key: 'installed', labelKey: 'pkg.installed' },
   { key: 'all', labelKey: 'pkg.available' },
   { key: 'upgradable', labelKey: 'pkg.upgradable' },

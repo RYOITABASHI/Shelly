@@ -21,7 +21,6 @@ import {
   ScrollView,
   ActivityIndicator,
   StyleSheet,
-  Platform,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -95,7 +94,7 @@ export function ImportModal({ visible, onClose }: Props) {
 
       setPayload(validation.payload);
       setStep('preview');
-    } catch (e) {
+    } catch (_e) {
       setErrorMsg('ファイルの読み込みに失敗しました');
       setStep('error');
     }

@@ -30,7 +30,7 @@ import { useTranslation } from '@/lib/i18n';
 
 // ─── Sort options ─────────────────────────────────────────────────────────────
 
-const SORT_KEYS: Array<{ key: SnippetSortOrder; labelKey: string }> = [
+const SORT_KEYS: { key: SnippetSortOrder; labelKey: string }[] = [
   { key: 'lastUsed', labelKey: 'snippets.sort_recent' },
   { key: 'useCount', labelKey: 'snippets.sort_frequency' },
   { key: 'createdAt', labelKey: 'snippets.sort_created' },

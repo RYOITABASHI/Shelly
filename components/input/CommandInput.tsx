@@ -10,7 +10,7 @@ import {
   TextInputKeyPressEventData,
   ScrollView,
   ActivityIndicator,
-} from 'react-native';
+ Alert } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -26,7 +26,6 @@ import * as FileSystem from 'expo-file-system';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { Alert } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
 import { isShellCommand } from '@/lib/input-router';

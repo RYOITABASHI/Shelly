@@ -72,7 +72,6 @@ export default function CreatorScreen() {
     cloneProject,
     updateProjectTags,
     touchProject,
-    setProjects,
   } = useCreatorStore();
 
   // Snippet store (for Recipe saving)

@@ -5,7 +5,7 @@
  * GPT/Claude left-panel equivalent, as a tab for mobile.
  */
 
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,

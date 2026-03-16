@@ -34,8 +34,6 @@ type Props = {
   onSelectTool?: (mentionExample: string) => void;
 };
 
-const ESTIMATED_ITEM_HEIGHT = 72;
-
 function isAiBlock(entry: TerminalEntry): entry is AiBlockType {
   return 'blockType' in entry && entry.blockType === 'ai';
 }

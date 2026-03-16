@@ -17,7 +17,6 @@ import {
   FlatList,
   TouchableOpacity,
   TextInput,
-  Pressable,
   ActivityIndicator,
   Alert,
   Clipboard,
@@ -26,7 +25,7 @@ import {
 import { ScreenContainer } from '@/components/screen-container';
 import { useObsidianStore } from '@/store/obsidian-store';
 import { useTerminalStore } from '@/store/terminal-store';
-import { collectBriefing, loadBriefingCache } from '@/lib/obsidian-collector';
+import { collectBriefing } from '@/lib/obsidian-collector';
 import { geminiChatStream } from '@/lib/gemini';
 import { perplexitySearchStream } from '@/lib/perplexity';
 import type { BriefingItem } from '@/lib/obsidian-collector';
@@ -252,7 +251,7 @@ function BriefingListView() {
           <Text style={styles.emptyIcon}>📭</Text>
           <Text style={styles.emptyTitle}>No briefing for today</Text>
           <Text style={styles.emptyDesc}>
-            Tap "Collect" to fetch{'\n'}the latest STEAM/EdTech updates
+            Tap &quot;Collect&quot; to fetch{'\n'}the latest STEAM/EdTech updates
           </Text>
           <TouchableOpacity style={styles.emptyBtn} onPress={handleCollect}>
             <Text style={styles.emptyBtnText}>Collect now</Text>
@@ -541,9 +540,9 @@ Question/Discussion: ${input.trim()}`;
             <Text style={styles.chatEmptyText}>
               Ask questions or discuss this article/paper freely.{'\n\n'}
               Examples:{'\n'}
-              "What are the limitations of this study?"{'\n'}
-              "How could this apply in practice?"{'\n'}
-              "What related prior research exists?"
+              &quot;What are the limitations of this study?&quot;{'\n'}
+              &quot;How could this apply in practice?&quot;{'\n'}
+              &quot;What related prior research exists?&quot;
             </Text>
           </View>
         )}
@@ -736,7 +735,7 @@ Requirements:
         {!currentContent && !isGeneratingSns ? (
           <View style={styles.snsEmpty}>
             <Text style={styles.snsEmptyText}>
-              Tap "Generate" to create{'\n'}
+              Tap &quot;Generate&quot; to create{'\n'}
               drafts for X, Threads, and note at once
             </Text>
           </View>
@@ -910,7 +909,7 @@ Summary: ${selectedItem.summary}`,
         ) : !isGenerating ? (
           <View style={styles.snsEmpty}>
             <Text style={styles.snsEmptyText}>
-              Select a task and tap "Generate"
+              Select a task and tap &quot;Generate&quot;
             </Text>
           </View>
         ) : (

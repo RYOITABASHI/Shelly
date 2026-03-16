@@ -34,7 +34,6 @@ import {
   maskSecrets,
 } from '@/lib/cli-runner';
 import {
-  classifyTask,
   orchestrateTask,
   getCategoryLabel,
   getHandlerLabel,
@@ -115,7 +114,7 @@ export function ToolsLane({
   const [currentPlan, setCurrentPlan] = useState<CliRunPlan | null>(null);
   const cancelledRef = useRef(false);
   const [bridgeCheckStatus, setBridgeCheckStatus] = useState<'idle' | 'checking' | 'ok' | 'fail'>('idle');
-  const [orchestrationResult, setOrchestrationResult] = useState<OrchestrationResult | null>(null);
+  const [_orchestrationResult, setOrchestrationResult] = useState<OrchestrationResult | null>(null);
   const [localLlmStatus, setLocalLlmStatus] = useState<'idle' | 'thinking' | 'done' | 'error'>('idle');
   const [conversationHistory, setConversationHistory] = useState<OllamaMessage[]>([]);
 
@@ -144,7 +143,7 @@ export function ToolsLane({
 
   // ── Local LLM Orchestration ─────────────────────────────────────────────────
 
-  const handleOrchestrate = useCallback(async () => {
+  const _handleOrchestrate = useCallback(async () => {
     const input = userInput.trim();
     if (!input) return;
 
@@ -695,7 +694,7 @@ export function ToolsLane({
           </View>
           <Text style={styles.setupGuideNote}>
             After starting, go to Settings → Termux Bridge URL,
-            set ws://127.0.0.1:8765 and tap 'Check connection'.
+            set ws://127.0.0.1:8765 and tap &apos;Check connection&apos;.
           </Text>
         </View>
       )}
