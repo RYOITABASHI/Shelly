@@ -246,6 +246,7 @@ export async function ollamaChat(
   messages: OllamaMessage[],
   timeoutMs = 60000,
   externalSignal?: AbortSignal,
+  maxTokens = 512,
 ): Promise<{ success: boolean; content: string; error?: string }> {
   try {
     const controller = new AbortController();
@@ -267,7 +268,7 @@ export async function ollamaChat(
         messages,
         stream: false,
         temperature: 0.7,
-        max_tokens: 512,
+        max_tokens: maxTokens,
       };
       body = JSON.stringify(req);
     } else {
@@ -277,7 +278,7 @@ export async function ollamaChat(
         model: config.model,
         messages,
         stream: false,
-        options: { temperature: 0.7, num_predict: 1024 },
+        options: { temperature: 0.7, num_predict: maxTokens },
       };
       body = JSON.stringify(req);
     }
@@ -321,6 +322,9 @@ export async function ollamaChat(
  * チャットリクエストを送信（ストリーミング）。
  * llama-server（OpenAI互換 SSE）とOllama両方に対応。
  * onChunk: 各チャンクのテキストを受け取るコールバック
+ *
+ * React Native環境ではXMLHttpRequest + onprogressを使用。
+ * Web環境ではfetch + ReadableStreamを使用。
  */
 export async function ollamaChatStream(
   config: LocalLlmConfig,
@@ -329,37 +333,45 @@ export async function ollamaChatStream(
   timeoutMs = 120000,
   externalSignal?: AbortSignal,
 ): Promise<{ success: boolean; error?: string }> {
+  const apiType = detectApiType(config.baseUrl);
+  const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
+
+  let url: string;
+  let body: string;
+
+  if (apiType === 'openai') {
+    url = `${config.baseUrl}/v1/chat/completions`;
+    const req: OpenAIChatRequest = {
+      model: config.model,
+      messages,
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 2048,
+    };
+    body = JSON.stringify(req);
+  } else {
+    url = `${config.baseUrl}/api/chat`;
+    const req: OllamaChatRequest = {
+      model: config.model,
+      messages,
+      stream: true,
+      options: { temperature: 0.7, num_predict: 2048 },
+    };
+    body = JSON.stringify(req);
+  }
+
+  // React Native: XMLHttpRequest でストリーミング
+  if (isReactNative) {
+    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal);
+  }
+
+  // Web: fetch + ReadableStream
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     if (externalSignal) {
       if (externalSignal.aborted) { clearTimeout(timer); controller.abort(); }
       else { externalSignal.addEventListener('abort', () => { clearTimeout(timer); controller.abort(); }, { once: true }); }
-    }
-    const apiType = detectApiType(config.baseUrl);
-
-    let url: string;
-    let body: string;
-
-    if (apiType === 'openai') {
-      url = `${config.baseUrl}/v1/chat/completions`;
-      const req: OpenAIChatRequest = {
-        model: config.model,
-        messages,
-        stream: true,
-        temperature: 0.7,
-        max_tokens: 2048,
-      };
-      body = JSON.stringify(req);
-    } else {
-      url = `${config.baseUrl}/api/chat`;
-      const req: OllamaChatRequest = {
-        model: config.model,
-        messages,
-        stream: true,
-        options: { temperature: 0.7, num_predict: 2048 },
-      };
-      body = JSON.stringify(req);
     }
 
     const res = await fetch(url, {
@@ -374,17 +386,15 @@ export async function ollamaChatStream(
       return { success: false, error: `HTTP ${res.status}: ${res.statusText}` };
     }
 
-    // React Native's fetch doesn't support ReadableStream.getReader()
-    // Return error so orchestrateChatStream can fall back to non-streaming ollamaChat
     const reader = res.body?.getReader?.();
     if (!reader) {
       clearTimeout(timer);
-      return { success: false, error: 'ReadableStream not supported (React Native)' };
+      return { success: false, error: 'ReadableStream not supported' };
     }
 
     const decoder = new TextDecoder();
     let buffer = '';
-    const MAX_BUFFER_SIZE = 102400; // 100KB safety limit
+    const MAX_BUFFER_SIZE = 102400;
 
     try {
     while (true) {
@@ -392,7 +402,6 @@ export async function ollamaChatStream(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      // バッファが上限を超えたら不完全な行を破棄
       if (buffer.length > MAX_BUFFER_SIZE) {
         const lastNewline = buffer.lastIndexOf('\n');
         buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 1) : '';
@@ -401,36 +410,7 @@ export async function ollamaChatStream(
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        if (apiType === 'openai') {
-          // OpenAI SSE形式: "data: {...}" または "data: [DONE]"
-          if (!trimmed.startsWith('data:')) continue;
-          const jsonStr = trimmed.slice(5).trim();
-          if (jsonStr === '[DONE]') {
-            onChunk('', true);
-            break;
-          }
-          try {
-            const chunk = JSON.parse(jsonStr) as OpenAIStreamChunk;
-            const content = chunk.choices?.[0]?.delta?.content ?? '';
-            const isDone = chunk.choices?.[0]?.finish_reason === 'stop';
-            if (content) onChunk(content, isDone);
-            if (isDone) break;
-          } catch {
-            // JSON parse error, skip
-          }
-        } else {
-          // Ollama形式: "{...}"
-          try {
-            const chunk = JSON.parse(trimmed) as OllamaStreamChunk;
-            onChunk(chunk.message.content, chunk.done);
-            if (chunk.done) break;
-          } catch {
-            // JSON parse error, skip
-          }
-        }
+        parseSSELine(line, apiType, onChunk);
       }
     }
     } finally {
@@ -447,6 +427,115 @@ export async function ollamaChatStream(
       error: isTimeout ? 'Timeout. The model may be too large.' : message,
     };
   }
+}
+
+/**
+ * SSE行をパースしてonChunkを呼ぶ共通ヘルパー。
+ */
+function parseSSELine(
+  line: string,
+  apiType: 'openai' | 'ollama',
+  onChunk: (text: string, done: boolean) => void,
+): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  if (apiType === 'openai') {
+    if (!trimmed.startsWith('data:')) return;
+    const jsonStr = trimmed.slice(5).trim();
+    if (jsonStr === '[DONE]') { onChunk('', true); return; }
+    try {
+      const chunk = JSON.parse(jsonStr) as OpenAIStreamChunk;
+      const content = chunk.choices?.[0]?.delta?.content ?? '';
+      const isDone = chunk.choices?.[0]?.finish_reason === 'stop';
+      if (content) onChunk(content, isDone);
+      else if (isDone) onChunk('', true);
+    } catch { /* skip */ }
+  } else {
+    try {
+      const chunk = JSON.parse(trimmed) as OllamaStreamChunk;
+      onChunk(chunk.message.content, chunk.done);
+    } catch { /* skip */ }
+  }
+}
+
+/**
+ * React Native用: XMLHttpRequest + onprogressでストリーミング。
+ * RNのXHRはresponseTextが逐次更新されるので、差分を抽出してonChunkに渡す。
+ */
+function xhrStream(
+  url: string,
+  body: string,
+  apiType: 'openai' | 'ollama',
+  onChunk: (text: string, done: boolean) => void,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<{ success: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    let lastIndex = 0;
+    let settled = false;
+
+    const finish = (result: { success: boolean; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    xhr.open('POST', url);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.timeout = timeoutMs;
+
+    if (externalSignal) {
+      if (externalSignal.aborted) { finish({ success: false, error: 'Aborted' }); return; }
+      externalSignal.addEventListener('abort', () => { xhr.abort(); }, { once: true });
+    }
+
+    xhr.onprogress = () => {
+      const text = xhr.responseText;
+      if (!text || text.length <= lastIndex) return;
+
+      const newData = text.slice(lastIndex);
+      lastIndex = text.length;
+
+      const lines = newData.split('\n');
+      for (const line of lines) {
+        parseSSELine(line, apiType, onChunk);
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        finish({ success: false, error: `HTTP ${xhr.status}` });
+        return;
+      }
+      // Process any remaining data
+      const text = xhr.responseText;
+      if (text && text.length > lastIndex) {
+        const remaining = text.slice(lastIndex);
+        const lines = remaining.split('\n');
+        for (const line of lines) {
+          parseSSELine(line, apiType, onChunk);
+        }
+      }
+      onChunk('', true);
+      finish({ success: true });
+    };
+
+    xhr.onerror = () => {
+      finish({ success: false, error: 'XHR network error' });
+    };
+
+    xhr.ontimeout = () => {
+      finish({ success: false, error: 'Timeout. The model may be too large.' });
+    };
+
+    xhr.onabort = () => {
+      finish({ success: false, error: 'Aborted' });
+    };
+
+    xhr.send(body);
+  });
 }
 
 // ─── AI Orchestrator ──────────────────────────────────────────────────────────
@@ -603,19 +692,18 @@ export async function orchestrateChatStream(
       ...conversationHistory,
       { role: 'user', content: userInput },
     ];
-    const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
-    if (!isReactNative) {
-      const result = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
-      if (result.success) {
-        return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Direct @local mention' };
-      }
+    // ストリーミング（RN: XHR, Web: ReadableStream）
+    const result = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
+    if (result.success) {
+      return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Direct @local mention' };
     }
-    const result = await ollamaChat(config, messages, 120000);
-    if (result.success && result.content) {
-      onChunk(result.content, true);
-      return { category: 'chat', handledBy: 'local_llm', response: result.content, reasoning: 'Direct @local mention' };
+    // ストリーミング失敗時は非ストリーミングにフォールバック
+    const fallback = await ollamaChat(config, messages, 60000, externalSignal);
+    if (fallback.success && fallback.content) {
+      onChunk(fallback.content, true);
+      return { category: 'chat', handledBy: 'local_llm', response: fallback.content, reasoning: 'Direct @local mention' };
     }
-    onChunk('Could not connect to local LLM. Make sure llama-server is running.', true); // Streamed to UI — caller should use t() if needed
+    onChunk('Could not connect to local LLM. Make sure llama-server is running.', true);
     return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Connection failed' };
   }
 
@@ -658,22 +746,17 @@ export async function orchestrateChatStream(
     { role: 'user', content: userInput },
   ];
 
-  // React Native's fetch doesn't support ReadableStream and will hang on SSE responses.
-  // Always use non-streaming on React Native to avoid 120s timeout.
-  const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
-
-  if (!isReactNative) {
-    const result = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
-    if (result.success) {
-      return {
-        category: 'chat',
-        handledBy: 'local_llm',
-        reasoning: `Local LLM (${config.model}) streaming response`,
-      };
-    }
+  // ストリーミング（RN: XHR, Web: ReadableStream）
+  const streamResult = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
+  if (streamResult.success) {
+    return {
+      category: 'chat',
+      handledBy: 'local_llm',
+      reasoning: `Local LLM (${config.model}) streaming response`,
+    };
   }
 
-  // Non-streaming request (always used on React Native, fallback on web)
+  // ストリーミング失敗時は非ストリーミングにフォールバック
   const fallback = await ollamaChat(config, messages, 60000, externalSignal);
   if (fallback.success && fallback.content) {
     onChunk(fallback.content, true);

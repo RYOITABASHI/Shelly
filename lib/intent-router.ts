@@ -111,7 +111,7 @@ export async function routeIntent(
     { role: 'user', content: userInput },
   ];
 
-  const result = await ollamaChat(config, messages, 15000);
+  const result = await ollamaChat(config, messages, 15000, undefined, 64);
 
   if (!result.success || !result.content) {
     return fallbackRoute(userInput, toolStatuses, defaultAgent);

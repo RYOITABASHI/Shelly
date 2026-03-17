@@ -47,7 +47,7 @@ let _logId = 0;
 
 export const useExecutionLogStore = create<ExecutionLogStore>((set, get) => ({
   entries: [],
-  isLogPanelOpen: true,
+  isLogPanelOpen: false,
   unreadCount: 0,
 
   addEntry: (entry) => {

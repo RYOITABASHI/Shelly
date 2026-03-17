@@ -13,7 +13,7 @@ import { t } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'team' | 'browser' | 'git' | 'agent';
+export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'team' | 'browser' | 'git' | 'agent' | 'codex';
 
 export type InputLayer =
   | 'mention'        // @claude / @gemini / @local
@@ -71,6 +71,7 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
   { pattern: /^@team\s*/i,         target: 'team',        label: 'Team Table' },
   { pattern: /^@table\s*/i,       target: 'team',        label: 'Team Table' },
   { pattern: /^@git\s*/i,          target: 'git',         label: 'Git Guide' },
+  { pattern: /^@codex\s*/i,        target: 'codex',       label: 'Codex CLI' },
   { pattern: /^@agent\s*/i,        target: 'agent',       label: 'AI Agent' },
   { pattern: /^@edit\s*/i,         target: 'agent',       label: 'AI Agent' },
   { pattern: /^@code\s*/i,         target: 'agent',       label: 'AI Agent' },
@@ -80,14 +81,36 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
 
 const NL_TOOL_PATTERNS: Array<{ keywords: string[]; target: RouteTarget; label: string }> = [
   {
-    keywords: ['claudeで', 'claude codeで', 'claudeに', 'claude codeに', 'claudecodeで', 'claudecodeに', 'クロードで', 'クロードに'],
+    keywords: [
+      'claudeで', 'claude codeで', 'claudeに', 'claude codeに', 'claudecodeで', 'claudecodeに',
+      'クロードで', 'クロードに', 'クロードコードで', 'クロードコードに',
+      'claudeを実行', 'claude codeを実行', 'claudecodeを実行', 'クロードを実行', 'クロードコードを実行',
+      'claudeを起動', 'claude codeを起動', 'claudecodeを起動', 'クロードを起動', 'クロードコードを起動',
+      'claude使って', 'claude code使って', 'claudecode使って', 'クロード使って',
+      'claude開いて', 'claudecode開いて', 'クロード開いて',
+    ],
     target: 'claude',
     label: 'Claude Code',
   },
   {
-    keywords: ['geminiで', 'gemini cliで', 'geminiに', 'ジェミニで', 'ジェミニに'],
+    keywords: [
+      'geminiで', 'gemini cliで', 'geminiに', 'ジェミニで', 'ジェミニに',
+      'geminiを実行', 'gemini cliを実行', 'ジェミニを実行',
+      'geminiを起動', 'gemini cliを起動', 'ジェミニを起動',
+      'gemini使って', 'gemini cli使って', 'ジェミニ使って',
+      'gemini開いて', 'ジェミニ開いて',
+    ],
     target: 'gemini',
     label: 'Gemini CLI',
+  },
+  {
+    keywords: [
+      'codexで', 'codexに', 'コデックスで', 'コデックスに',
+      'codexを実行', 'コデックスを実行', 'codexを起動', 'コデックスを起動',
+      'codex使って', 'コデックス使って', 'codex開いて', 'コデックス開いて',
+    ],
+    target: 'codex',
+    label: 'Codex CLI',
   },
   {
     keywords: ['ローカルllmで', 'local llmで', 'ollamaで', 'ローカルで', 'オフラインで'],
@@ -123,7 +146,7 @@ const SHELL_COMMAND_PREFIXES = [
   'git', 'node', 'python', 'python3', 'ruby', 'go', 'cargo', 'make', 'cmake',
   'gcc', 'g++', 'clang', 'javac', 'java',
   // AI CLI
-  'claude', 'gemini', 'ollama',
+  'claude', 'gemini', 'codex', 'ollama',
   // シェル制御
   'clear', 'history', 'which', 'whereis', 'type', 'alias', 'export', 'source',
   'chmod', 'chown', 'chgrp', 'sudo', 'su',
@@ -420,6 +443,7 @@ export function getTargetLabel(target: RouteTarget): string {
     browser: 'Browser',
     git: 'Git Guide',
     agent: 'AI Agent',
+    codex: 'Codex CLI',
   };
   return labels[target];
 }
@@ -436,6 +460,7 @@ export function getTargetColor(target: RouteTarget): string {
     browser:    '#4ADE80', // グリーン
     git:        '#F97316', // オレンジ（Git公式カラー）
     agent:      '#EF4444', // レッド（AI Agent）
+    codex:      '#10B981', // グリーン（Codex）
   };
   return colors[target];
 }

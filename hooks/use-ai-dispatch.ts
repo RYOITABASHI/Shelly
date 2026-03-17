@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
+import { Linking } from 'react-native';
 import { useChatStore, type ChatMessage, type ChatAgent } from '@/store/chat-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
@@ -24,6 +25,40 @@ import type { OllamaMessage } from '@/lib/local-llm';
 import { generateId } from '@/lib/id';
 import { t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
+
+// ─── Auth URL detection ──────────────────────────────────────────────────────
+
+/** URLs already opened in this session (avoid re-opening on every stream chunk) */
+const _openedAuthUrls = new Set<string>();
+
+/**
+ * Detect OAuth/auth URLs in CLI output and open them in external browser.
+ * Patterns: accounts.google.com, console.anthropic.com, github.com/login/device, etc.
+ */
+function detectAndOpenAuthUrls(text: string): void {
+  const urlRegex = /https?:\/\/[^\s"'<>\])\u3000-\u30FF\u4E00-\u9FFF]+/g;
+  const authDomains = [
+    'accounts.google.com',
+    'console.anthropic.com',
+    'github.com/login',
+    'login.microsoftonline.com',
+    'oauth',
+    'authorize',
+    'auth',
+    'device',
+  ];
+  const matches = text.match(urlRegex);
+  if (!matches) return;
+
+  for (const url of matches) {
+    const lower = url.toLowerCase();
+    const isAuth = authDomains.some((d) => lower.includes(d));
+    if (isAuth && !_openedAuthUrls.has(url)) {
+      _openedAuthUrls.add(url);
+      Linking.openURL(url).catch(() => {});
+    }
+  }
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -454,6 +489,48 @@ export function useAIDispatch() {
       const msgId = addAssistantMessage(chatSessionId, 'gemini');
       streamingMsgRef.current = { sessionId: chatSessionId, msgId };
       const apiKey = settings.geminiApiKey ?? '';
+
+      // APIキーなし → Gemini CLIをTermux経由で実行
+      if (!apiKey && connectionMode === 'termux') {
+        const contextualPrompt = promptWithFiles + toTextContext(messages);
+        const escaped = contextualPrompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+        const cliCommand = `gemini --prompt "${escaped}"`;
+        let accumulated = `$ ${cliCommand}\n\n`;
+        updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: accumulated, streamingStartTime: Date.now() });
+
+        try {
+          const result = await bridgeRunCommand(cliCommand, {
+            onStream: (type, data) => {
+              if (signal.aborted) return;
+              accumulated += data;
+              detectAndOpenAuthUrls(data);
+              updateMessage(chatSessionId, msgId, {
+                streamingText: accumulated,
+                tokenCount: estimateTokens(accumulated),
+              });
+            },
+          });
+          let output = result.stdout || '';
+          if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
+          updateMessage(chatSessionId, msgId, {
+            content: output, streamingText: undefined, isStreaming: false,
+            tokenCount: estimateTokens(output),
+            executions: [{ command: cliCommand, output, exitCode: result.exitCode, isCollapsed: output.split('\n').length > 10 }],
+          });
+          useExecutionLogStore.getState().addEntry({
+            source: 'ai-agent', agent: 'Gemini CLI', command: cliCommand,
+            output: output.slice(0, 500), exitCode: result.exitCode, userInput: prompt,
+          });
+        } catch (err) {
+          if (!signal.aborted) {
+            updateMessage(chatSessionId, msgId, {
+              content: '', error: `Gemini CLI error: ${err instanceof Error ? err.message : String(err)}`, isStreaming: false,
+            });
+          }
+        }
+        return { handled: true };
+      }
+
       if (!apiKey) {
         updateMessage(chatSessionId, msgId, {
           content: t('dispatch.gemini_no_key'),
@@ -590,6 +667,7 @@ export function useAIDispatch() {
           onStream: (type, data) => {
             if (signal.aborted) return;
             accumulated += data;
+            detectAndOpenAuthUrls(data);
             updateMessage(chatSessionId, msgId, {
               streamingText: accumulated,
               tokenCount: estimateTokens(accumulated),
@@ -616,6 +694,57 @@ export function useAIDispatch() {
         if (!signal.aborted) {
           updateMessage(chatSessionId, msgId, {
             content: '', error: `Claude Code error: ${err instanceof Error ? err.message : String(err)}`, isStreaming: false,
+          });
+        }
+      }
+      return { handled: true };
+    }
+
+    // ── Codex (via Termux CLI) ──
+    if (target === 'codex') {
+      const msgId = addAssistantMessage(chatSessionId, 'codex');
+      streamingMsgRef.current = { sessionId: chatSessionId, msgId };
+      if (connectionMode !== 'termux') {
+        updateMessage(chatSessionId, msgId, {
+          content: t('dispatch.claude_connect'),
+          isStreaming: false,
+        });
+        return { handled: true };
+      }
+
+      try {
+        const codexCmd = settings.codexCmd ?? 'codex';
+        const escaped = promptWithFiles.replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
+        const cliCommand = `${codexCmd} -p '${escaped}'`;
+        let accumulated = `$ ${cliCommand}\n\n`;
+        updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: accumulated, streamingStartTime: Date.now() });
+
+        const result = await bridgeRunCommand(cliCommand, {
+          onStream: (type, data) => {
+            if (signal.aborted) return;
+            accumulated += data;
+            detectAndOpenAuthUrls(data);
+            updateMessage(chatSessionId, msgId, {
+              streamingText: accumulated,
+              tokenCount: estimateTokens(accumulated),
+            });
+          },
+        });
+        let output = result.stdout || '';
+        if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
+        updateMessage(chatSessionId, msgId, {
+          content: output, streamingText: undefined, isStreaming: false,
+          tokenCount: estimateTokens(output),
+          executions: [{ command: cliCommand, output, exitCode: result.exitCode, isCollapsed: output.split('\n').length > 10 }],
+        });
+        useExecutionLogStore.getState().addEntry({
+          source: 'ai-agent', agent: 'Codex', command: cliCommand,
+          output: output.slice(0, 500), exitCode: result.exitCode, userInput: prompt,
+        });
+      } catch (err) {
+        if (!signal.aborted) {
+          updateMessage(chatSessionId, msgId, {
+            content: '', error: `Codex error: ${err instanceof Error ? err.message : String(err)}`, isStreaming: false,
           });
         }
       }

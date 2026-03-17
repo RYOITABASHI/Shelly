@@ -138,13 +138,61 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
     }
   }, [apiKeyInputs, runRawCommand, t]);
 
-  // ── Handle browser auth ───────────────────────────────────────────────────
+  // ── Handle browser/OAuth auth ────────────────────────────────────────────
+  const [oauthRunning, setOauthRunning] = useState<AuthToolId | null>(null);
+  const [oauthOutput, setOauthOutput] = useState('');
 
-  const handleBrowserAuth = useCallback((config: AuthToolConfig) => {
+  const handleBrowserAuth = useCallback(async (config: AuthToolConfig) => {
+    // If the tool has a loginCommand, run OAuth via CLI
+    if (config.loginCommand && isConnected) {
+      setOauthRunning(config.id);
+      setOauthOutput('');
+      try {
+        const runner = (cmd: string, opts?: { timeoutMs?: number; onStream?: (type: 'stdout' | 'stderr', data: string) => void }) =>
+          runRawCommand(cmd, { ...opts, reason: 'oauth-login' });
+
+        let output = '';
+        const result = await runner(config.loginCommand, {
+          timeoutMs: 60000,
+          onStream: (_type, data) => {
+            output += data;
+            setOauthOutput(output);
+            // Detect OAuth URLs in output and open in browser
+            const urlMatch = data.match(/https?:\/\/[^\s"'<>\])+]+/g);
+            if (urlMatch) {
+              for (const url of urlMatch) {
+                Linking.openURL(url).catch(() => {});
+              }
+            }
+          },
+        });
+
+        // Check if auth succeeded after login command completes
+        output += result.stdout || '';
+        const urlMatch = output.match(/https?:\/\/[^\s"'<>]+/);
+        if (urlMatch) {
+          Linking.openURL(urlMatch[0]).catch(() => {});
+        }
+
+        // Wait a moment then re-check auth status
+        setTimeout(() => {
+          refreshStatuses();
+          setOauthRunning(null);
+          setOauthOutput('');
+        }, 2000);
+      } catch (e) {
+        setOauthRunning(null);
+        setOauthOutput('');
+        Alert.alert(t('auth.error'), String(e));
+      }
+      return;
+    }
+
+    // Fallback: open API key URL
     Linking.openURL(config.apiKeyUrl).catch(() => {
       Alert.alert(t('auth.error'), t('auth.browser_failed'));
     });
-  }, [t]);
+  }, [t, isConnected, runRawCommand, refreshStatuses]);
 
   // ── Count statuses ────────────────────────────────────────────────────────
 
@@ -316,18 +364,32 @@ function ToolAuthCard({
       {/* Expanded auth options */}
       {isExpanded && canAuth && (
         <Animated.View entering={FadeIn.duration(200)} style={styles.authOptions}>
-          {/* Browser sign-in (recommended) */}
-          <Pressable style={[styles.authMethodBtn, { borderColor: config.color + '44' }]} onPress={onBrowserAuth}>
-            <MaterialIcons name="open-in-browser" size={18} color={config.color} />
+          {/* Browser/OAuth sign-in (recommended) */}
+          <Pressable
+            style={[styles.authMethodBtn, { borderColor: config.color + '44' }]}
+            onPress={onBrowserAuth}
+            disabled={oauthRunning === config.id}
+          >
+            {oauthRunning === config.id ? (
+              <ActivityIndicator size={18} color={config.color} />
+            ) : (
+              <MaterialIcons name="open-in-browser" size={18} color={config.color} />
+            )}
             <View style={styles.authMethodInfo}>
               <Text style={[styles.authMethodTitle, { color: config.color }]}>
-                {t('auth.browser_signin')}
+                {config.loginCommand ? t('auth.oauth_signin') : t('auth.browser_signin')}
               </Text>
               <Text style={styles.authMethodDesc}>
-                {t('auth.browser_signin_desc')}
+                {oauthRunning === config.id
+                  ? t('auth.oauth_waiting')
+                  : config.loginCommand
+                    ? t('auth.oauth_signin_desc')
+                    : t('auth.browser_signin_desc')}
               </Text>
             </View>
-            <MaterialIcons name="chevron-right" size={18} color="#6B7280" />
+            {oauthRunning !== config.id && (
+              <MaterialIcons name="chevron-right" size={18} color="#6B7280" />
+            )}
           </Pressable>
 
           {/* API key input */}

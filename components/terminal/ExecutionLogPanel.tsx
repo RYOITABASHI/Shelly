@@ -56,6 +56,11 @@ export function ExecutionLogPanel({ colors: c }: Props) {
           <Text style={[styles.headerCount, { color: c.muted }]}>
             {entries.length}
           </Text>
+          {!isLogPanelOpen && unreadCount > 0 && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadText}>{unreadCount}</Text>
+            </View>
+          )}
         </View>
         {isLogPanelOpen && (
           <Pressable onPress={clearEntries} hitSlop={8}>
@@ -147,7 +152,7 @@ function LogEntry({ entry, colors: c }: { entry: ExecutionLogEntry; colors: any 
 
 const styles = StyleSheet.create({
   container: {
-    maxHeight: 200,
+    maxHeight: 140,
     borderTopWidth: 1,
   },
   header: {
@@ -247,5 +252,20 @@ const styles = StyleSheet.create({
   streamingText: {
     fontSize: 10,
     fontFamily: 'monospace',
+  },
+  unreadBadge: {
+    backgroundColor: '#4ADE80',
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    paddingHorizontal: 4,
+  },
+  unreadText: {
+    fontSize: 9,
+    fontWeight: '700' as const,
+    fontFamily: 'monospace',
+    color: '#000',
   },
 });

@@ -443,7 +443,7 @@ export default function ChatScreen() {
 
     let target: string = parsed.target;
 
-    // Natural language → default to local LLM or show hint
+    // Natural language → default to local LLM (with routing) or Gemini
     if (parsed.layer === 'natural') {
       if (settings.localLlmEnabled) {
         target = 'local';
@@ -458,6 +458,9 @@ export default function ChatScreen() {
         return;
       }
     }
+
+    // nl_with_tool: パーサーがツール名を検出済み → そのtargetを使う
+    // (parseInputが既にtargetを設定してるのでここでは何もしない)
 
     // Browser target — handle locally (not an AI dispatch)
     if (target === 'browser') {

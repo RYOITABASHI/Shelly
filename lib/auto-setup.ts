@@ -251,7 +251,9 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
     // まず既に起動中のLLMサーバーをチェック
     for (const port of ['8080', '11434']) {
       const url = `http://127.0.0.1:${port}`;
+      console.log(`[auto-setup] Checking LLM at ${url}...`);
       const llmResult = await checkOllamaConnection(url);
+      console.log(`[auto-setup] LLM check result:`, JSON.stringify(llmResult));
       if (llmResult.available) {
         llmDetected = true;
         useTerminalStore.getState().updateSettings({ localLlmEnabled: true, localLlmUrl: url });
@@ -278,7 +280,7 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
               'pkill -f "llama-server" 2>/dev/null; sleep 0.5;',
               'MODEL=$((find ~/models ~/llama.cpp/models ~/storage/shared/Download -maxdepth 2 \\( -name "qwen*.gguf" -o -name "Qwen*.gguf" \\) -size +100M 2>/dev/null; find ~/models ~/llama.cpp/models ~/storage/shared/Download -maxdepth 2 -name "*.gguf" -size +100M 2>/dev/null) | awk "!seen[\\$0]++" | head -1);',
               'if [ -n "$MODEL" ] && which llama-server >/dev/null 2>&1; then',
-              '  nohup llama-server -m "$MODEL" --host 127.0.0.1 --port 8080 -ngl 0 -c 2048 -t 6 > /dev/null 2>&1 &',
+              '  nohup llama-server -m "$MODEL" --host 127.0.0.1 --port 8080 -ngl 0 -c 4096 -t 6 > /dev/null 2>&1 &',
               '  echo "STARTED";',
               'fi',
             ].join(' '),
@@ -288,8 +290,13 @@ export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ succ
           await new Promise((r) => setTimeout(r, 10000));
 
           // 再度接続確認（10回×3秒 = 最大30秒リトライ）
+          console.log('[auto-setup] Waiting for llama-server to start...');
           const llmCheck = await retry(
-            () => checkOllamaConnection('http://127.0.0.1:8080'),
+            async () => {
+              const r = await checkOllamaConnection('http://127.0.0.1:8080');
+              console.log('[auto-setup] llama-server retry check:', JSON.stringify(r));
+              return r;
+            },
             (r) => r.available,
             10,
             3000,
