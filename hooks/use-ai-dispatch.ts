@@ -23,6 +23,7 @@ import type { OllamaMessage } from '@/lib/local-llm';
 
 import { generateId } from '@/lib/id';
 import { t } from '@/lib/i18n';
+import { useExecutionLogStore } from '@/store/execution-log-store';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -343,6 +344,13 @@ export function useAIDispatch() {
               });
               // Auto-log important decisions from AI response
               autoLogFromResponse(accumulatedText).catch(() => {});
+              // Log to shared execution log (visible in Terminal tab)
+              useExecutionLogStore.getState().addEntry({
+                source: 'ai-agent',
+                agent: 'Local LLM',
+                userInput: prompt,
+                aiResponse: accumulatedText.slice(0, 200),
+              });
             }
           },
           ollamaHistory,
@@ -594,6 +602,15 @@ export function useAIDispatch() {
           content: output, streamingText: undefined, isStreaming: false,
           tokenCount: estimateTokens(output),
           executions: [{ command: cliCommand, output, exitCode: result.exitCode, isCollapsed: output.split('\n').length > 10 }],
+        });
+        // Log to shared execution log (visible in Terminal tab)
+        useExecutionLogStore.getState().addEntry({
+          source: 'ai-agent',
+          agent: 'Claude',
+          command: cliCommand,
+          output: output.slice(0, 500),
+          exitCode: result.exitCode,
+          userInput: prompt,
         });
       } catch (err) {
         if (!signal.aborted) {

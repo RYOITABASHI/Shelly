@@ -41,6 +41,7 @@ import { VoiceChat } from '@/components/VoiceChat';
 
 import { generateId } from '@/lib/id';
 import { useTranslation } from '@/lib/i18n';
+import { useExecutionLogStore } from '@/store/execution-log-store';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -412,6 +413,13 @@ export default function ChatScreen() {
               exitCode: result.exitCode,
               isCollapsed: (output + stderr).split('\n').length > 10,
             }],
+          });
+          // Log to shared execution log (visible in Terminal tab)
+          useExecutionLogStore.getState().addEntry({
+            source: 'chat',
+            command: parsed.prompt,
+            output: (output + stderr).slice(0, 500),
+            exitCode: result.exitCode,
           });
         } catch (err) {
           updateMessage(chatSessionId, msgId, {
