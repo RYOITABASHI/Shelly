@@ -491,7 +491,9 @@ function xhrStream(
       externalSignal.addEventListener('abort', () => { xhr.abort(); }, { once: true });
     }
 
-    xhr.onprogress = () => {
+    // Throttle onprogress to prevent UI thread saturation
+    let progressTimer: ReturnType<typeof setTimeout> | null = null;
+    const processNewData = () => {
       const text = xhr.responseText;
       if (!text || text.length <= lastIndex) return;
 
@@ -504,20 +506,22 @@ function xhrStream(
       }
     };
 
+    xhr.onprogress = () => {
+      if (progressTimer) return; // Already scheduled
+      progressTimer = setTimeout(() => {
+        progressTimer = null;
+        processNewData();
+      }, 80);
+    };
+
     xhr.onload = () => {
+      if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
       if (xhr.status < 200 || xhr.status >= 300) {
         finish({ success: false, error: `HTTP ${xhr.status}` });
         return;
       }
       // Process any remaining data
-      const text = xhr.responseText;
-      if (text && text.length > lastIndex) {
-        const remaining = text.slice(lastIndex);
-        const lines = remaining.split('\n');
-        for (const line of lines) {
-          parseSSELine(line, apiType, onChunk);
-        }
-      }
+      processNewData();
       onChunk('', true);
       finish({ success: true });
     };
