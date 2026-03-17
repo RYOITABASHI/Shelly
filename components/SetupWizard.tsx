@@ -471,13 +471,31 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         />
       </View>
 
+      {/* Gemini recommendation card for beginners */}
+      <View style={[styles.resultCard, { borderColor: '#3B82F620', marginTop: 12 }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <MaterialIcons name="auto-awesome" size={18} color="#3B82F6" />
+          <Text style={{ color: '#3B82F6', fontSize: 13, fontWeight: '700', fontFamily: 'monospace' }}>
+            {t('setup2.gemini_recommend_title')}
+          </Text>
+          <View style={{ backgroundColor: '#4ADE8030', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 }}>
+            <Text style={{ color: '#4ADE80', fontSize: 9, fontWeight: '700', fontFamily: 'monospace' }}>
+              {t('setup2.free_badge')}
+            </Text>
+          </View>
+        </View>
+        <Text style={{ color: '#9CA3AF', fontSize: 11, fontFamily: 'monospace', lineHeight: 16 }}>
+          {t('setup2.gemini_recommend_desc')}
+        </Text>
+      </View>
+
       {/* Auth setup button */}
       <Pressable
-        style={[styles.primaryBtn, { backgroundColor: '#60A5FA' }]}
+        style={[styles.primaryBtn, { backgroundColor: '#3B82F6', marginTop: 12 }]}
         onPress={() => setShowAuthWizard(true)}
       >
-        <MaterialIcons name="vpn-key" size={18} color="#000" />
-        <Text style={styles.primaryBtnText}>{t('auth.settings_button')}</Text>
+        <MaterialIcons name="login" size={18} color="#FFF" />
+        <Text style={[styles.primaryBtnText, { color: '#FFF' }]}>{t('setup2.setup_ai_auth')}</Text>
       </Pressable>
 
       <Pressable

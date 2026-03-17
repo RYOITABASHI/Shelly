@@ -1,12 +1,52 @@
-import React from 'react';
-import { View, StyleSheet, StatusBar } from 'react-native';
+import React, { useCallback, useRef } from 'react';
+import { View, StyleSheet, StatusBar, LayoutChangeEvent } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useMultiPaneStore, type PaneNode } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore, type PaneNode, type PaneSplit } from '@/hooks/use-multi-pane';
 import { PaneSlot } from './PaneSlot';
+
+/** Draggable divider between two panes */
+function Divider({
+  splitNode,
+  isHorizontal,
+  containerSize,
+}: {
+  splitNode: PaneSplit;
+  isHorizontal: boolean;
+  containerSize: React.MutableRefObject<number>;
+}) {
+  const { setSplitRatio } = useMultiPaneStore();
+  const startRatio = useRef(splitNode.ratio);
+
+  const pan = Gesture.Pan()
+    .onBegin(() => {
+      startRatio.current = splitNode.ratio;
+    })
+    .onUpdate((e) => {
+      const size = containerSize.current;
+      if (size <= 0) return;
+      const delta = isHorizontal ? e.translationX : e.translationY;
+      const newRatio = startRatio.current + delta / size;
+      setSplitRatio(splitNode.id, newRatio);
+    })
+    .hitSlop({ horizontal: 12, vertical: 12 });
+
+  return (
+    <GestureDetector gesture={pan}>
+      <View
+        style={[
+          isHorizontal ? styles.dividerV : styles.dividerH,
+          isHorizontal ? styles.dividerVHit : styles.dividerHHit,
+        ]}
+      />
+    </GestureDetector>
+  );
+}
 
 /** Recursively render the pane tree */
 function PaneTreeNode({ node }: { node: PaneNode }) {
   const { setLeafTab, splitPane, removePane, root, maxPanes } = useMultiPaneStore();
+  const containerSize = useRef(0);
 
   if (node.type === 'leaf') {
     const leafCount = root ? countLeavesQuick(root) : 1;
@@ -25,12 +65,25 @@ function PaneTreeNode({ node }: { node: PaneNode }) {
 
   // Split node
   const isHorizontal = node.direction === 'horizontal';
+
+  const onLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    containerSize.current = isHorizontal ? width : height;
+  }, [isHorizontal]);
+
   return (
-    <View style={[styles.split, isHorizontal ? styles.splitH : styles.splitV]}>
+    <View
+      style={[styles.split, isHorizontal ? styles.splitH : styles.splitV]}
+      onLayout={onLayout}
+    >
       <View style={{ flex: node.ratio }}>
         <PaneTreeNode node={node.children[0]} />
       </View>
-      <View style={[isHorizontal ? styles.dividerV : styles.dividerH]} />
+      <Divider
+        splitNode={node}
+        isHorizontal={isHorizontal}
+        containerSize={containerSize}
+      />
       <View style={{ flex: 1 - node.ratio }}>
         <PaneTreeNode node={node.children[1]} />
       </View>
@@ -72,11 +125,20 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
   },
   dividerV: {
-    width: 1,
+    width: 3,
     backgroundColor: '#1E1E1E',
   },
   dividerH: {
-    height: 1,
+    height: 3,
     backgroundColor: '#1E1E1E',
+  },
+  // Larger hit area for touch
+  dividerVHit: {
+    paddingHorizontal: 6,
+    marginHorizontal: -6,
+  },
+  dividerHHit: {
+    paddingVertical: 6,
+    marginVertical: -6,
   },
 });

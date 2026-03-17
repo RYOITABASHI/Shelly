@@ -342,7 +342,16 @@ function ToolAuthCard({
           <MaterialIcons name={config.icon as any} size={20} color={config.color} />
         </View>
         <View style={styles.toolInfo}>
-          <Text style={[styles.toolName, { color: config.color }]}>{config.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={[styles.toolName, { color: config.color }]}>{config.name}</Text>
+            {config.id === 'gemini-cli' && (
+              <View style={{ backgroundColor: '#4ADE8030', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 }}>
+                <Text style={{ color: '#4ADE80', fontSize: 8, fontWeight: '700', fontFamily: 'monospace' }}>
+                  {t('setup2.free_badge')}
+                </Text>
+              </View>
+            )}
+          </View>
           <View style={styles.statusBadge}>
             {status === 'checking' ? (
               <ActivityIndicator size={12} color={statusColor} />

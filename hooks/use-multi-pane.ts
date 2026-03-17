@@ -148,6 +148,8 @@ type MultiPaneActions = {
   splitPane: (leafId: string, direction: SplitDirection, newTab: PaneTab) => void;
   /** Remove a leaf pane (collapses parent split) */
   removePane: (leafId: string) => void;
+  /** Update split ratio by split node id */
+  setSplitRatio: (splitId: string, ratio: number) => void;
   /** Update maxPanes */
   setMaxPanes: (max: number) => void;
 
@@ -236,6 +238,17 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
         set({ isMultiPane: false, root: null });
       } else {
         set({ root: result });
+      }
+    },
+
+    setSplitRatio: (splitId, ratio) => {
+      const { root } = get();
+      if (!root) return;
+      const newRoot = cloneTree(root);
+      const found = findNode(newRoot, splitId);
+      if (found && found.node.type === 'split') {
+        found.node.ratio = Math.max(0.15, Math.min(0.85, ratio));
+        set({ root: newRoot });
       }
     },
 

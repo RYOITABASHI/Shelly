@@ -289,6 +289,10 @@ const en: Record<string, string> = {
   'setup2.result_boot': 'Auto-start',
   'setup2.result_boot_ok': 'Configured',
   'setup2.get_started': 'Get Started',
+  'setup2.gemini_recommend_title': 'Start with Gemini CLI',
+  'setup2.gemini_recommend_desc': 'Free with your Google account. Just sign in with your browser. No API key needed.',
+  'setup2.free_badge': 'FREE',
+  'setup2.setup_ai_auth': 'Set up AI authentication',
   // Error
   'setup2.error_title': 'Setup Failed',
   'setup2.error_permission': 'Termux:Tasker needs permission to run commands.\nOpen Termux once, then try again.',

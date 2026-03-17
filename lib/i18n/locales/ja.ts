@@ -289,6 +289,10 @@ const ja: Record<string, string> = {
   'setup2.result_boot': '自動起動',
   'setup2.result_boot_ok': '設定済み',
   'setup2.get_started': 'はじめる',
+  'setup2.gemini_recommend_title': 'まずはGemini CLIがおすすめ',
+  'setup2.gemini_recommend_desc': 'Googleアカウントがあれば無料で使えます。ブラウザでログインするだけ。APIキー不要です。',
+  'setup2.free_badge': '無料',
+  'setup2.setup_ai_auth': 'AIツールの認証をセットアップ',
   // Error
   'setup2.error_title': 'セットアップ失敗',
   'setup2.error_permission': 'Termux:Taskerにコマンド実行の権限が必要です。\nTermuxを一度開いてから、もう一度お試しください。',
