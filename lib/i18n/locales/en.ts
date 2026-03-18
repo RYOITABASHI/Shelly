@@ -8,7 +8,6 @@ const en: Record<string, string> = {
   'tab.chat': 'Chat',
   'tab.terminal': 'Terminal',
   'tab.snippets': 'Snippets',
-  'tab.browser': 'Browser',
   'tab.obsidian': 'Obsidian',
   'tab.search': 'Search',
   'tab.settings': 'Settings',
@@ -197,17 +196,7 @@ const en: Record<string, string> = {
   'a11y.expand': 'Expand details',
   'a11y.collapse': 'Collapse details',
 
-  // ── Workflow ──────────────────────────────────────────────────────
-  'workflow.title': 'Workflows',
-  'workflow.new': 'New Workflow',
-  'workflow.run': 'Run',
-  'workflow.edit': 'Edit',
-  'workflow.delete': 'Delete',
-  'workflow.step': 'Step {{n}}',
-  'workflow.variable_input': 'Enter values for variables',
-  'workflow.execute': 'Execute',
-
-  // ── Setup Wizard (legacy keys kept for compat) ─────────────────
+// ── Setup Wizard (legacy keys kept for compat) ─────────────────
   'setup.step1_title': 'Prepare Termux',
   'setup.step1_desc': 'Shelly runs commands through Termux.\nMake sure Termux is installed on your device.',
   'setup.step1_get_playstore': 'Get on Google Play',
@@ -435,32 +424,7 @@ const en: Record<string, string> = {
   'intent.needs_setup': '{{id}} needs to be set up. Start installation?',
   'intent.delegated': 'Delegated to {{label}}.\nReason: {{reason}}',
 
-  // ── Browser ─────────────────────────────────────────────────────
-  'browser.enter_url': 'Enter URL or search',
-  'browser.home': 'Home',
-  'browser.saved': 'Saved',
-  'browser.save': 'Save',
-  'browser.list': 'List',
-  'browser.share': 'Share',
-  'browser.copy': 'Copy',
-  'browser.bookmarks': 'Bookmarks',
-  'browser.no_bookmarks': 'No bookmarks',
-  'browser.no_bookmarks_hint': 'Use "Save" in toolbar to add bookmarks',
-  'browser.bookmark_added': 'Bookmark added',
-  'browser.bookmark_added_msg': 'Saved "{{title}}"',
-  'browser.bookmark_removed': 'Bookmark removed',
-  'browser.bookmark_removed_msg': 'Removed "{{title}}"',
-  'browser.copied': 'Copied',
-  'browser.copied_url': 'URL copied to clipboard',
-  'browser.ai_summary': 'AI Summary',
-  'browser.ai_searching': 'Searching with Perplexity...',
-  'browser.ai_gemini': 'Summarizing with Gemini...',
-  'browser.ai_local': 'Summarizing with Local LLM...',
-  'browser.ai_no_provider': 'To use AI, set up a Perplexity/Gemini API key or enable Local LLM in Settings.',
-  'browser.copy_summary': 'Copy summary',
-  'browser.summary_copied': 'Summary copied to clipboard',
-
-  // ── Terminal Screen ─────────────────────────────────────────────
+// ── Terminal Screen ─────────────────────────────────────────────
   'terminal.connecting_ttyd': 'Connecting to ttyd...',
   'terminal.retry_count': 'Retry {{count}} / 5',
   'terminal.connected': 'Connected',

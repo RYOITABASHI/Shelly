@@ -4,17 +4,16 @@
  */
 const ja: Record<string, string> = {
   // ── Tabs ──────────────────────────────────────────────────────────
-  'tab.projects': 'Projects',
-  'tab.chat': 'Chat',
-  'tab.terminal': 'Terminal',
-  'tab.snippets': 'Snippets',
-  'tab.browser': 'Browser',
+  'tab.projects': 'プロジェクト',
+  'tab.chat': 'チャット',
+  'tab.terminal': 'ターミナル',
+  'tab.snippets': 'スニペット',
   'tab.obsidian': 'Obsidian',
-  'tab.search': 'Search',
-  'tab.settings': 'Settings',
+  'tab.search': '検索',
+  'tab.settings': '設定',
 
   // ── Welcome banner ────────────────────────────────────────────────
-  'welcome.subtitle': 'Shelly (Unofficial) — Android Terminal Prototype',
+  'welcome.subtitle': 'Shelly — AI搭載Androidターミナル',
   'welcome.hint_help': "Type 'help' for available commands",
   'welcome.hint_ai': '@claude / @gemini / @local でAIに直接指示',
   'welcome.hint_natural': '自然言語で入力するとAIがツールを提案します',
@@ -197,15 +196,6 @@ const ja: Record<string, string> = {
   'a11y.expand': '詳細を展開',
   'a11y.collapse': '詳細を折りたたむ',
 
-  // ── Workflow ──────────────────────────────────────────────────────
-  'workflow.title': 'ワークフロー',
-  'workflow.new': '新規ワークフロー',
-  'workflow.run': '実行',
-  'workflow.edit': '編集',
-  'workflow.delete': '削除',
-  'workflow.step': 'ステップ {{n}}',
-  'workflow.variable_input': '変数の値を入力してください',
-  'workflow.execute': '実行',
 
   // ── Setup Wizard (legacy keys kept for compat) ─────────────────
   'setup.step1_title': 'Termuxを準備しよう',
@@ -435,30 +425,6 @@ const ja: Record<string, string> = {
   'intent.needs_setup': '{{id}}のセットアップが必要です。インストールを開始しますか？',
   'intent.delegated': '{{label}}に委譲しました。\n理由: {{reason}}',
 
-  // ── Browser ─────────────────────────────────────────────────────
-  'browser.enter_url': 'URLを入力または検索',
-  'browser.home': 'ホーム',
-  'browser.saved': '保存済',
-  'browser.save': '保存',
-  'browser.list': '一覧',
-  'browser.share': '共有',
-  'browser.copy': 'コピー',
-  'browser.bookmarks': 'ブックマーク',
-  'browser.no_bookmarks': 'ブックマークがありません',
-  'browser.no_bookmarks_hint': 'ツールバーの「保存」でブックマークを追加できます',
-  'browser.bookmark_added': 'ブックマーク追加',
-  'browser.bookmark_added_msg': '「{{title}}」を保存しました',
-  'browser.bookmark_removed': 'ブックマーク削除',
-  'browser.bookmark_removed_msg': '「{{title}}」を削除しました',
-  'browser.copied': 'コピー完了',
-  'browser.copied_url': 'URLをクリップボードにコピーしました',
-  'browser.ai_summary': 'AI要約',
-  'browser.ai_searching': 'Perplexityで検索中...',
-  'browser.ai_gemini': 'Geminiで要約中...',
-  'browser.ai_local': 'ローカルLLMで要約中...',
-  'browser.ai_no_provider': 'AIを使うには、Perplexity/GeminiのAPIキーを設定するか、ローカルLLMを有効にしてください。',
-  'browser.copy_summary': '要約をコピー',
-  'browser.summary_copied': '要約をクリップボードにコピーしました',
 
   // ── Terminal Screen ─────────────────────────────────────────────
   'terminal.connecting_ttyd': 'ttydに接続中...',
