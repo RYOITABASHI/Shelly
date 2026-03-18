@@ -598,9 +598,9 @@ export default function SettingsScreen() {
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
 
         {/* ── Display ──────────────────────────────────────────────────────── */}
-        <SectionHeader title="Display" />
+        <SectionHeader title={t('settings.display_title')} />
 
-        <SettingRow label="Font size" description={`Current: ${settings.fontSize}px`}>
+        <SettingRow label={t('settings.font_size_label')} description={t('settings.font_size_desc', { size: settings.fontSize })}>
           <View style={styles.stepper}>
             <Pressable onPress={() => handleFontSizeChange(-1)} style={styles.stepBtn}>
               <Text style={styles.stepBtnText}>−</Text>
@@ -612,7 +612,7 @@ export default function SettingsScreen() {
           </View>
         </SettingRow>
 
-        <SettingRow label="Line height" description={`Current: ${settings.lineHeight.toFixed(1)}x`}>
+        <SettingRow label={t('settings.line_height_label')} description={t('settings.line_height_desc', { height: settings.lineHeight.toFixed(1) })}>
           <View style={styles.stepper}>
             <Pressable onPress={() => handleLineHeightChange(-0.1)} style={styles.stepBtn}>
               <Text style={styles.stepBtnText}>−</Text>
@@ -625,7 +625,7 @@ export default function SettingsScreen() {
         </SettingRow>
 
               {/* ── Glass Background ────────────────────────────────────── */}
-        <SectionHeader title="Glass background" subtitle="Customize terminal with wallpaper and opacity" />
+        <SectionHeader title={t('settings.glass_title')} subtitle={t('settings.glass_subtitle')} />
         {/* 壁紙選択 */}
         <View style={styles.wsUrlRow}>
           <Text style={styles.wsUrlLabel}>Wallpaper</Text>
@@ -704,7 +704,7 @@ export default function SettingsScreen() {
           </View>
         </SettingRow>
         {/* ── Theme ──────────────────────────────────────────────────── */}
-        <SectionHeader title="Theme" />
+        <SectionHeader title={t('settings.theme_title')} />
         <View style={styles.themeOptions}>
           {THEME_OPTIONS.map((theme) => (
             <Pressable
@@ -726,7 +726,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* ── Cursor ───────────────────────────────────────────────────────── */}
-        <SectionHeader title="Cursor shape" />
+        <SectionHeader title={t('settings.cursor_title')} />
         <View style={styles.cursorOptions}>
           {CURSOR_OPTIONS.map((cursor) => (
             <Pressable
@@ -754,9 +754,9 @@ export default function SettingsScreen() {
         </View>
 
         {/* ── Behavior ─────────────────────────────────────────────────────── */}
-        <SectionHeader title="Behavior" />
+        <SectionHeader title={t('settings.behavior_title')} />
 
-        <SettingRow label="Tap vibration" description="Vibrate on button press">
+        <SettingRow label={t('settings.haptic_label')} description={t('settings.haptic_desc')}>
           <Switch
             value={settings.hapticFeedback}
             onValueChange={(v) => updateSettings({ hapticFeedback: v })}
@@ -765,7 +765,7 @@ export default function SettingsScreen() {
           />
         </SettingRow>
 
-        <SettingRow label="Auto-scroll" description="Scroll to bottom after output">
+        <SettingRow label={t('settings.auto_scroll_label')} description={t('settings.auto_scroll_desc')}>
           <Switch
             value={settings.autoScroll}
             onValueChange={(v) => updateSettings({ autoScroll: v })}
@@ -810,9 +810,9 @@ export default function SettingsScreen() {
         </SettingRow>
 
         {/* ── Sound & Effects ─────────────────────────────────────────────── */}
-        <SectionHeader title="Sound & Effects" />
+        <SectionHeader title={t('settings.sound_title')} />
 
-        <SettingRow label="Sound effects" description="Sound feedback on UI actions">
+        <SettingRow label={t('settings.sound_label')} description={t('settings.sound_desc')}>
           <Switch
             value={settings.soundEffects ?? true}
             onValueChange={(v) => updateSettings({ soundEffects: v })}
@@ -846,7 +846,7 @@ export default function SettingsScreen() {
         >
           <MaterialIcons name={showAdvanced ? 'expand-less' : 'expand-more'} size={18} color="#6B7280" />
           <Text style={[styles.actionButtonText, { color: '#9CA3AF' }]}>
-            {showAdvanced ? 'Hide advanced settings' : 'Show advanced settings'}
+            {showAdvanced ? t('settings.advanced_hide') : t('settings.advanced_show')}
           </Text>
           <MaterialIcons name="settings" size={16} color="#6B7280" />
         </Pressable>
@@ -854,8 +854,8 @@ export default function SettingsScreen() {
         {showAdvanced && (<>
         {/* ── Termux Bridge ─────────────────────────────────────────────────── */}
         <SectionHeader
-          title="Termux Integration"
-          subtitle="Connect to Termux shell via WebSocket"
+          title={t('settings.termux_title')}
+          subtitle={t('settings.termux_subtitle')}
         />
 
         {/* Status row */}
@@ -1056,8 +1056,8 @@ export default function SettingsScreen() {
         <ProGate>
         {/* ── Local LLM (Ollama) ─────────────────────────────────────────── */}
         <SectionHeader
-          title="Local LLM (llama-server)"
-          subtitle="Experimental & advanced — uses 3-4GB RAM. Uses llama-server on Termux for AI chat"
+          title={t('settings.local_llm_title')}
+          subtitle={t('settings.local_llm_subtitle')}
         />
 
         <SettingRow
@@ -1166,8 +1166,8 @@ export default function SettingsScreen() {
 
         {/* ── MCP Servers ─────────────────────────────────────────────────── */}
         <SectionHeader
-          title="MCP Servers"
-          subtitle="Server plugins to enhance Claude Code context"
+          title={t('settings.mcp_title')}
+          subtitle={t('settings.mcp_subtitle')}
         />
         <McpSection
           isConnected={bridgeStatus === 'connected'}
@@ -1176,7 +1176,7 @@ export default function SettingsScreen() {
 
         {/* ── Custom Context ────────────────────────────────────────────── */}
         <SectionHeader
-          title="Custom Context"
+          title={t('settings.custom_context_title')}
           subtitle="Markdown auto-injected into Local LLM. Write design principles or rules"
         />
         <View style={styles.wsUrlRow}>
@@ -1214,8 +1214,8 @@ export default function SettingsScreen() {
 
         {/* ── CLI Auto-Approve ──────────────────────────────────────────── */}
         <SectionHeader
-          title="CLI Auto-Approve"
-          subtitle="Permission approval when using Claude Code/Gemini via Chat tab"
+          title={t('settings.cli_approve_title')}
+          subtitle={t('settings.cli_approve_subtitle')}
         />
         <View style={styles.wsUrlRow}>
           {(['none', 'safe', 'all'] as const).map((level) => {
@@ -1252,8 +1252,8 @@ export default function SettingsScreen() {
 
         {/* ── Default Agent ──────────────────────────────────────────────── */}
         <SectionHeader
-          title="Default Agent"
-          subtitle="Preferred CLI when Local LLM is not in use"
+          title={t('settings.default_agent_title')}
+          subtitle={t('settings.default_agent_subtitle')}
         />
         <View style={styles.wsUrlRow}>
           {(['gemini-cli', 'claude-code', 'codex'] as const).map((agent) => {
@@ -1292,8 +1292,8 @@ export default function SettingsScreen() {
         <ProGate>
             {/* ── Groq API ──────────────────────────────────────────────────── */}
         <SectionHeader
-          title="Groq API"
-          subtitle="Ultra-fast chat & Whisper transcription (Llama 3.3 70B)"
+          title={t('settings.groq_title')}
+          subtitle={t('settings.groq_subtitle')}
         />
 
         <View style={styles.wsUrlRow}>
@@ -1340,8 +1340,8 @@ export default function SettingsScreen() {
 
             {/* ── Perplexity API ─────────────────────────────────────────────── */}
         <SectionHeader
-          title="Perplexity API"
-          subtitle="Paper & web search. Invoke with @perplexity"
+          title={t('settings.perplexity_title')}
+          subtitle={t('settings.perplexity_subtitle')}
         />
 
         <View style={styles.wsUrlRow}>
@@ -1388,8 +1388,8 @@ export default function SettingsScreen() {
 
         {/* ── Gemini API ─────────────────────────────────────────────── */}
         <SectionHeader
-          title="Gemini API"
-          subtitle="Google AI. Invoke with @gemini"
+          title={t('settings.gemini_api_title')}
+          subtitle={t('settings.gemini_api_subtitle')}
         />
         <View style={styles.wsUrlRow}>
           <Text style={styles.wsUrlLabel}>API Key</Text>
@@ -1432,7 +1432,7 @@ export default function SettingsScreen() {
           </Text>
         </View>
            {/* ── @team Table ────────────────────────────────────────── */}
-        <SectionHeader title="@team Table" subtitle="Ask multiple AIs the same question, local LLM synthesizes results" />
+        <SectionHeader title={t('settings.team_title')} subtitle={t('settings.team_subtitle')} />
         <View style={styles.wsUrlRow}>
           <View style={{ gap: 12 }}>
             {([
@@ -1478,7 +1478,7 @@ export default function SettingsScreen() {
           <Text style={styles.wsUrlHint}>Codex command name in Termux (usually just &quot;codex&quot;)</Text>
         </View>
         {/* ── Obsidian ────────────────────────────────────────────── */}
-        <SectionHeader title="Obsidian" subtitle="Auto-collection & knowledge management settings" />
+        <SectionHeader title={t('settings.obsidian_title')} subtitle={t('settings.obsidian_subtitle')} />
         <View style={styles.wsUrlRow}>
           <Text style={styles.wsUrlLabel}>Vault Path</Text>
           <View style={styles.wsUrlInputRow}>
@@ -1548,7 +1548,7 @@ export default function SettingsScreen() {
         </ProGate>
 
         {/* ── Snippets ────────────────────────────────────────────────── */}
-        <SectionHeader title="Snippets" subtitle="Configure how command snippets are executed" />
+        <SectionHeader title={t('settings.snippets_title')} subtitle={t('settings.snippets_subtitle')} />
 
         <SettingRow
           label="Run mode"
@@ -1625,7 +1625,7 @@ export default function SettingsScreen() {
         </>)}
 
         {/* ── Data ─────────────────────────────────────────────────────────── */}
-        <SectionHeader title="Data" />
+        <SectionHeader title={t('settings.data_title')} />
 
         <Pressable onPress={handleExportLog} style={styles.actionButton}>
           <MaterialIcons name="share" size={18} color="#00D4AA" />
@@ -1777,7 +1777,7 @@ export default function SettingsScreen() {
         </Pressable>
 
         {/* ── Diagnostics ──────────────────────────────────────────────────── */}
-        <SectionHeader title="Diagnostics" subtitle="Check connection status and installed tools at once" />
+        <SectionHeader title={t('settings.diagnostics_title')} subtitle={t('settings.diagnostics_subtitle')} />
 
         <Pressable
           onPress={runDiagnostics}
@@ -1828,7 +1828,7 @@ export default function SettingsScreen() {
         )}
 
         {/* ── About ────────────────────────────────────────────────────────── */}
-        <SectionHeader title="About" />
+        <SectionHeader title={t('settings.about_title')} />
         <View style={styles.aboutCard}>
           <Text style={styles.aboutTitle}>Shelly (Unofficial)</Text>
           <Text style={styles.aboutVersion}>Version 4.2.0 — Termux Bridge + Local LLM + @team + Browser</Text>
