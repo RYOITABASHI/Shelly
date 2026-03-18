@@ -36,7 +36,7 @@ const env = {
   androidPackage: bundleId,
 };
 
-const config: ExpoConfig = {
+const config: ExpoConfig & { android?: any } = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",
@@ -63,7 +63,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    usesCleartextTraffic: true,
+    usesCleartextTraffic: true as any, // Required for localhost HTTP (ttyd/bridge)
     permissions: ["POST_NOTIFICATIONS"],
     intentFilters: [
       {

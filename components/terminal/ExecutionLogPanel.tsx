@@ -22,7 +22,7 @@ interface Props {
 }
 
 export function ExecutionLogPanel({ colors: c }: Props) {
-  const { entries, isLogPanelOpen, toggleLogPanel, clearEntries, resetUnread } = useExecutionLogStore();
+  const { entries, isLogPanelOpen, toggleLogPanel, clearEntries, resetUnread, unreadCount } = useExecutionLogStore();
   const scrollRef = useRef<ScrollView>(null);
 
   // Auto-scroll to bottom on new entries

@@ -269,6 +269,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
                   onBrowserAuth={() => handleBrowserAuth(config)}
                   isSaving={savingTool === config.id}
                   isConnected={isConnected}
+                  oauthRunning={oauthRunning}
                 />
               ))}
 
@@ -303,6 +304,7 @@ function ToolAuthCard({
   onBrowserAuth,
   isSaving,
   isConnected,
+  oauthRunning,
 }: {
   config: AuthToolConfig;
   status: AuthStatus;
@@ -314,6 +316,7 @@ function ToolAuthCard({
   onBrowserAuth: () => void;
   isSaving: boolean;
   isConnected: boolean;
+  oauthRunning: AuthToolId | null;
 }) {
   const { t } = useTranslation();
 
