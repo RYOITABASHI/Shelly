@@ -444,14 +444,20 @@ export default function ChatScreen() {
 
     let target: string = parsed.target;
 
-    // Natural language → Groq (fast chat) > Local LLM (routing) > Gemini > error
+    // Natural language → route to user's default CLI agent
+    // Groq is reserved for intent classification, Whisper, and CLI output interpretation
     if (parsed.layer === 'natural') {
-      if (settings.groqApiKey) {
-        target = 'groq';
+      const defaultCli = settings.defaultAgent || 'gemini-cli';
+      const cliTargetMap: Record<string, string> = {
+        'claude-code': 'claude',
+        'gemini-cli': 'gemini',
+        'codex': 'codex',
+      };
+      const cliTarget = cliTargetMap[defaultCli];
+      if (cliTarget) {
+        target = cliTarget;
       } else if (settings.localLlmEnabled) {
         target = 'local';
-      } else if (settings.geminiApiKey) {
-        target = 'gemini';
       } else {
         const msgId = addAssistantMessage(undefined);
         updateMessage(chatSessionId, msgId, {

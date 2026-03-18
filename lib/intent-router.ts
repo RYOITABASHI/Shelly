@@ -236,15 +236,12 @@ function fallbackRoute(
   const defaultLabel = defaultAgent === 'claude-code' ? 'Claude Code'
     : defaultAgent === 'codex' ? 'Codex CLI' : 'Gemini CLI';
 
-  // Chat tasks: prefer groq (fast API) if key available
-  const chatTool: RoutingTool = hasGroqKey ? 'groq' : defaultAgent;
-  const chatLabel = hasGroqKey ? 'Groq' : defaultLabel;
-
+  // Chat tasks: route to user's default CLI (not Groq — Groq is for intent classification & interpretation)
   // Code tasks: prefer claude-code if available
   const codeTool: RoutingTool = hasClaude ? 'claude-code' : defaultAgent;
 
   const categoryToTool: Record<TaskCategory, RoutingTool> = {
-    chat: chatTool,
+    chat: defaultAgent,
     code: codeTool,
     research: 'gemini-cli',
     file_ops: 'termux',
@@ -252,7 +249,7 @@ function fallbackRoute(
   };
 
   const categoryReasons: Record<TaskCategory, string> = {
-    chat: `Responding via ${chatLabel}`,
+    chat: `Responding via ${defaultLabel}`,
     code: hasClaude ? 'Code task — delegating to Claude Code' : `Code task — using ${defaultLabel}`,
     research: 'Research task — delegating to Gemini CLI',
     file_ops: 'File operation — executing directly',
