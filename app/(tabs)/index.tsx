@@ -19,6 +19,7 @@ import {
   ActivityIndicator,
   Alert,
   Keyboard,
+  Linking,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -464,13 +465,12 @@ export default function ChatScreen() {
     // nl_with_tool: パーサーがツール名を検出済み → そのtargetを使う
     // (parseInputが既にtargetを設定してるのでここでは何もしない)
 
-    // Browser target — handle locally (not an AI dispatch)
+    // Browser target — open in system browser
     if (target === 'browser') {
       const url = parsed.prompt.trim();
       const msgId = addAssistantMessage(undefined);
       updateMessage(chatSessionId, msgId, { content: t('chat.opening_browser', { url }), isStreaming: false });
-      useTerminalStore.setState({ pendingBrowserUrl: url } as any);
-      router.push('/(tabs)/browser' as any);
+      Linking.openURL(url).catch(() => {});
       return;
     }
 

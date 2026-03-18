@@ -8,7 +8,6 @@ export type PaneTab =
   | 'projects'
   | 'snippets'
   | 'creator'
-  | 'browser'
   | 'obsidian'
   | 'search'
   | 'settings';

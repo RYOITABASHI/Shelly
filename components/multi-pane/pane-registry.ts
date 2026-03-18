@@ -33,12 +33,7 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
     icon: 'auto-awesome',
     getComponent: () => require('@/app/(tabs)/creator').default,
   },
-  browser: {
-    title: 'Browser',
-    icon: 'public',
-    getComponent: () => require('@/app/(tabs)/browser').default,
-  },
-  obsidian: {
+obsidian: {
     title: 'Obsidian',
     icon: 'psychology',
     getComponent: () => require('@/app/(tabs)/obsidian').default,

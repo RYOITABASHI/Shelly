@@ -175,11 +175,7 @@ export default function TabLayout() {
           name="snippets"
           options={{ href: null }}
         />
-        <Tabs.Screen
-          name="browser"
-          options={{ href: null }}
-        />
-        <Tabs.Screen
+<Tabs.Screen
           name="obsidian"
           options={{ href: null }}
         />
