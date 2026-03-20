@@ -1,17 +1,12 @@
 /**
- * lib/auto-setup.ts — 自動セットアップオーケストレーター
+ * lib/auto-setup.ts — 2フェーズ自動セットアップオーケストレーター
  *
- * TermuxBridge native module経由でTermux RunCommandServiceを直接呼び、
- * ユーザーにTermuxを見せずにバックグラウンドでセットアップを完了する。
+ * Phase 1: RUN_COMMAND Intentで&&チェインの一括コマンドを送信
+ *          pkg install → ws install → server.js書き込み → bridge起動
+ *          WebSocket接続成功をポーリングで検知
  *
- * フロー:
- * 1. pkg install nodejs-lts ttyd
- * 2. bridge設置 (server.js書き込み)
- * 3. boot script設置
- * 4. ttyd起動
- * 5. bridge起動
- * 6. 接続確認 (WS + HTTP)
- * 7. LLM検出 (オプション)
+ * Phase 2: bridge WebSocket経由で残作業を実行（結果確認付き）
+ *          boot script設置 / ttyd起動 / CLI検出 / LLM検出
  */
 
 import { runTermuxCommand } from './termux-intent';
@@ -19,82 +14,42 @@ import { BRIDGE_SERVER_JS } from './bridge-bundle';
 import { useTerminalStore } from '@/store/terminal-store';
 import { checkOllamaConnection } from './local-llm';
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// ── Phase 1 Types ───────────────────────────────────────────────────────────
 
-export type SetupStep =
-  | 'installing_packages'
-  | 'writing_bridge'
-  | 'writing_boot_script'
-  | 'starting_ttyd'
-  | 'starting_bridge'
-  | 'connecting_bridge'
-  | 'connecting_tty'
-  | 'detecting_llm'
-  | 'complete'
-  | 'error';
+export type Phase1Step = 'sending_command' | 'waiting_bridge' | 'connected' | 'timeout' | 'permission_error';
 
-export interface SetupProgress {
-  step: SetupStep;
-  /** 0-100 */
-  percent: number;
-  error?: string;
-}
-
-type ProgressCallback = (progress: SetupProgress) => void;
-
-// ── Step weights (for progress bar) ────────────────────────────────────────────
-
-const STEP_WEIGHTS: Record<SetupStep, number> = {
-  installing_packages: 40,
-  writing_bridge: 5,
-  writing_boot_script: 5,
-  starting_ttyd: 5,
-  starting_bridge: 5,
-  connecting_bridge: 15,
-  connecting_tty: 10,
-  detecting_llm: 10,
-  complete: 5,
-  error: 0,
+export type Phase1Progress = {
+  step: Phase1Step;
+  elapsedSeconds: number;
 };
 
-const STEPS_ORDER: SetupStep[] = [
-  'installing_packages',
-  'writing_bridge',
-  'writing_boot_script',
-  'starting_ttyd',
-  'starting_bridge',
-  'connecting_bridge',
-  'connecting_tty',
-  'detecting_llm',
-  'complete',
-];
+// ── Phase 2 Types ───────────────────────────────────────────────────────────
 
-function calcPercent(currentStep: SetupStep): number {
-  let sum = 0;
-  for (const s of STEPS_ORDER) {
-    if (s === currentStep) return sum;
-    sum += STEP_WEIGHTS[s];
-  }
-  return 100;
-}
+export type Phase2Step = 'boot_script' | 'ttyd' | 'cli_detect' | 'llm_detect' | 'complete';
 
-// ── Boot script content ────────────────────────────────────────────────────────
+export type Phase2Results = {
+  bootScript?: boolean;
+  ttyd?: boolean;
+  cli?: { claudeCode: boolean; geminiCli: boolean; codex: boolean };
+  llm?: boolean;
+};
 
-function buildBootScript(): string {
-  return `#!/data/data/com.termux/files/usr/bin/sh
-# Shelly auto-start script
-sleep 3
-ttyd -p 7681 bash &
-node ~/shelly-bridge/server.js &
-# Auto-start llama-server if model exists
-MODEL=$((find ~/models ~/llama.cpp/models -maxdepth 2 -name "qwen*.gguf" -o -name "Qwen*.gguf" -size +100M 2>/dev/null; find ~/models ~/llama.cpp/models -maxdepth 2 -name "*.gguf" -size +100M 2>/dev/null) | awk '!seen[$0]++' | head -1)
-if [ -n "$MODEL" ] && which llama-server >/dev/null 2>&1; then
-  llama-server -m "$MODEL" --host 127.0.0.1 --port 8080 -ngl 0 -c 2048 -t 6 &
-fi
-`;
-}
+export type Phase2Progress = {
+  step: Phase2Step;
+  results: Phase2Results;
+};
 
-// ── Connection testers ─────────────────────────────────────────────────────────
+export type BridgeExecutor = (
+  cmd: string,
+  opts?: { timeoutMs?: number }
+) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+
+export type BridgeFileWriter = (
+  filePath: string,
+  content: string
+) => Promise<{ ok: boolean; error?: string }>;
+
+// ── Connection tester ───────────────────────────────────────────────────────
 
 function testBridgeConnection(wsUrl: string, timeoutMs = 5000): Promise<boolean> {
   return new Promise((resolve) => {
@@ -128,205 +83,149 @@ function testBridgeConnection(wsUrl: string, timeoutMs = 5000): Promise<boolean>
   });
 }
 
-async function testTtyConnection(ttyUrl: string, timeoutMs = 5000): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(ttyUrl, { signal: controller.signal });
-    clearTimeout(timer);
-    return res.ok;
-  } catch {
-    return false;
-  }
+// ── Boot script ─────────────────────────────────────────────────────────────
+
+function buildBootScript(): string {
+  return `#!/data/data/com.termux/files/usr/bin/sh
+# Shelly auto-start script
+sleep 3
+ttyd -p 7681 bash &
+cd ~/shelly-bridge && node server.js &
+# Auto-start llama-server if model exists
+MODEL=$((find ~/models ~/llama.cpp/models -maxdepth 2 -name "qwen*.gguf" -o -name "Qwen*.gguf" -size +100M 2>/dev/null; find ~/models ~/llama.cpp/models -maxdepth 2 -name "*.gguf" -size +100M 2>/dev/null) | awk '!seen[$0]++' | head -1)
+if [ -n "$MODEL" ] && which llama-server >/dev/null 2>&1; then
+  llama-server -m "$MODEL" --host 127.0.0.1 --port 8080 -ngl 0 -c 2048 -t 6 &
+fi
+`;
 }
 
-// ── Retry helper ───────────────────────────────────────────────────────────────
+// ── Setup command builder (exported for copy button in SetupWizard) ──────
 
-async function retry<T>(
-  fn: () => Promise<T>,
-  check: (result: T) => boolean,
-  maxAttempts: number,
-  delayMs: number,
-): Promise<T> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const result = await fn();
-    if (check(result)) return result;
-    if (i < maxAttempts - 1) await new Promise((r) => setTimeout(r, delayMs));
-  }
-  return fn();
+export function buildSetupCommand(): string {
+  return [
+    'pkg install -y nodejs-lts ttyd',
+    'mkdir -p ~/shelly-bridge',
+    'cd ~/shelly-bridge',
+    'npm init -y 2>/dev/null',
+    'npm install ws 2>&1',
+    `cat << 'SHELLY_BRIDGE_EOF' > server.js\n${BRIDGE_SERVER_JS}\nSHELLY_BRIDGE_EOF`,
+    'node server.js',
+  ].join(' && ');
 }
 
-// ── Main orchestrator ──────────────────────────────────────────────────────────
+// ── Phase 1: RUN_COMMAND + WS polling ───────────────────────────────────────
 
-export type CliDetectionResult = {
-  claudeCode: boolean;
-  geminiCli: boolean;
-  codex: boolean;
-};
+const PHASE1_TIMEOUT_MS = 300_000; // 5 minutes
+const PHASE1_POLL_INTERVAL = 2000;
 
-export async function runAutoSetup(onProgress: ProgressCallback): Promise<{ success: boolean; llmDetected: boolean; ttyConnected: boolean; error?: string }> {
-  const { termuxSettings, settings } = useTerminalStore.getState();
-  const wsUrl = termuxSettings.wsUrl;
-  const ttyUrl = termuxSettings.ttyUrl || 'http://localhost:7681';
+export async function runPhase1Setup(
+  onProgress: (p: Phase1Progress) => void,
+): Promise<{ success: boolean; error?: string }> {
+  const { wsUrl } = useTerminalStore.getState().termuxSettings;
+
+  // Send the entire setup as a single && chain via RUN_COMMAND
+  onProgress({ step: 'sending_command', elapsedSeconds: 0 });
+
+  const result = await runTermuxCommand({ command: buildSetupCommand() });
+
+  if (!result.success) {
+    onProgress({ step: 'permission_error', elapsedSeconds: 0 });
+    return { success: false, error: 'PERMISSION_DENIED' };
+  }
+
+  // Poll for bridge connection
+  onProgress({ step: 'waiting_bridge', elapsedSeconds: 0 });
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < PHASE1_TIMEOUT_MS) {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    onProgress({ step: 'waiting_bridge', elapsedSeconds: elapsed });
+
+    const ok = await testBridgeConnection(wsUrl, 3000);
+    if (ok) {
+      onProgress({ step: 'connected', elapsedSeconds: elapsed });
+      useTerminalStore.getState().setConnectionMode('termux');
+      return { success: true };
+    }
+
+    await new Promise((r) => setTimeout(r, PHASE1_POLL_INTERVAL));
+  }
+
+  // Timeout
+  const elapsed = Math.floor(PHASE1_TIMEOUT_MS / 1000);
+  onProgress({ step: 'timeout', elapsedSeconds: elapsed });
+  return { success: false, error: 'TIMEOUT' };
+}
+
+// ── Phase 2: Bridge-based setup (with result verification) ──────────────────
+
+export async function runPhase2Setup(
+  exec: BridgeExecutor,
+  writeFile: BridgeFileWriter,
+  onProgress: (p: Phase2Progress) => void,
+): Promise<Phase2Results> {
+  const results: Phase2Results = {};
+
+  // 1. Boot script
+  onProgress({ step: 'boot_script', results });
+  const bootScript = buildBootScript();
+  await exec('mkdir -p ~/.termux/boot', { timeoutMs: 5000 });
+  const writeResult = await writeFile(
+    '/data/data/com.termux/files/home/.termux/boot/start-shelly.sh',
+    bootScript,
+  );
+  if (writeResult.ok) {
+    await exec('chmod +x ~/.termux/boot/start-shelly.sh', { timeoutMs: 5000 });
+    results.bootScript = true;
+  } else {
+    // Fallback: write via exec
+    const fallback = await exec(
+      `cat << 'SHELLY_EOF' > ~/.termux/boot/start-shelly.sh\n${bootScript}\nSHELLY_EOF\nchmod +x ~/.termux/boot/start-shelly.sh`,
+      { timeoutMs: 10000 },
+    );
+    results.bootScript = fallback.exitCode === 0;
+  }
+
+  // 2. ttyd
+  onProgress({ step: 'ttyd', results });
+  const ttydCheck = await exec(
+    'pgrep -f ttyd >/dev/null 2>&1 || (ttyd -p 7681 bash &); sleep 1; pgrep -f ttyd >/dev/null 2>&1 && echo OK || echo FAIL',
+    { timeoutMs: 10000 },
+  );
+  results.ttyd = ttydCheck.stdout.includes('OK') || ttydCheck.exitCode === 0;
+
+  // 3. CLI detection
+  onProgress({ step: 'cli_detect', results });
+  const cliResult = await exec(
+    'echo "CC:$(which claude 2>/dev/null && echo 1 || echo 0):GC:$(which gemini 2>/dev/null && echo 1 || echo 0):CX:$(which codex 2>/dev/null && echo 1 || echo 0)"',
+    { timeoutMs: 10000 },
+  );
+  const cliOut = cliResult.stdout;
+  results.cli = {
+    claudeCode: cliOut.includes('CC:1'),
+    geminiCli: cliOut.includes('GC:1'),
+    codex: cliOut.includes('CX:1'),
+  };
+
+  // 4. LLM detection
+  onProgress({ step: 'llm_detect', results });
   let llmDetected = false;
-
-  try {
-    // ── Step 1: Install packages ──────────────────────────────────────
-    onProgress({ step: 'installing_packages', percent: calcPercent('installing_packages') });
-
-    const installResult = await runTermuxCommand({
-      command: 'pkg install -y nodejs-lts ttyd 2>&1',
-    });
-    if (!installResult.success) {
-      onProgress({ step: 'error', percent: 0, error: installResult.error });
-      return { success: false, llmDetected: false, ttyConnected: false, error: installResult.error };
-    }
-
-    // RUN_COMMAND is fire-and-forget; poll progress with delays
-    await new Promise((r) => setTimeout(r, 2000));
-    onProgress({ step: 'installing_packages', percent: 10 });
-    await new Promise((r) => setTimeout(r, 3000));
-    onProgress({ step: 'installing_packages', percent: 20 });
-
-    // ── Step 2: Write bridge server.js ────────────────────────────────
-    onProgress({ step: 'writing_bridge', percent: calcPercent('writing_bridge') });
-
-    await runTermuxCommand({
-      command: `mkdir -p ~/shelly-bridge && cat << 'SHELLY_EOF' > ~/shelly-bridge/server.js\n${BRIDGE_SERVER_JS}\nSHELLY_EOF`,
-    });
-    await new Promise((r) => setTimeout(r, 1000));
-
-    // ── Step 3: Write boot script ─────────────────────────────────────
-    onProgress({ step: 'writing_boot_script', percent: calcPercent('writing_boot_script') });
-
-    const bootScript = buildBootScript();
-    await runTermuxCommand({
-      command: `mkdir -p ~/.termux/boot && cat << 'SHELLY_EOF' > ~/.termux/boot/start-shelly.sh\n${bootScript}\nSHELLY_EOF\nchmod +x ~/.termux/boot/start-shelly.sh`,
-    });
-    await new Promise((r) => setTimeout(r, 500));
-
-    // ── Step 4: Start ttyd ────────────────────────────────────────────
-    onProgress({ step: 'starting_ttyd', percent: calcPercent('starting_ttyd') });
-
-    await runTermuxCommand({
-      command: 'pkill -f "ttyd" 2>/dev/null; sleep 0.5; ttyd -p 7681 bash &',
-    });
-    await new Promise((r) => setTimeout(r, 2000));
-
-    // ── Step 5: Start bridge ──────────────────────────────────────────
-    onProgress({ step: 'starting_bridge', percent: calcPercent('starting_bridge') });
-
-    await runTermuxCommand({
-      command: 'pkill -f "shelly-bridge/server.js" 2>/dev/null; sleep 0.5; node ~/shelly-bridge/server.js &',
-    });
-    // Node.js startup can take 3-10 seconds on some devices
-    await new Promise((r) => setTimeout(r, 8000));
-
-    // ── Step 6: Verify bridge connection ──────────────────────────────
-    onProgress({ step: 'connecting_bridge', percent: calcPercent('connecting_bridge') });
-
-    const bridgeOk = await retry(
-      () => testBridgeConnection(wsUrl),
-      (ok) => ok,
-      15,     // more retries
-      2000,   // every 2 seconds (total: 30s)
-    );
-
-    if (!bridgeOk) {
-      onProgress({ step: 'error', percent: calcPercent('connecting_bridge'), error: 'BRIDGE_CONNECTION_FAILED' });
-      return { success: false, llmDetected: false, ttyConnected: false, error: 'BRIDGE_CONNECTION_FAILED' };
-    }
-
-    useTerminalStore.getState().setConnectionMode('termux');
-
-    // ── Step 7: Verify TTY connection ─────────────────────────────────
-    onProgress({ step: 'connecting_tty', percent: calcPercent('connecting_tty') });
-
-    const ttyOk = await retry(
-      () => testTtyConnection(ttyUrl),
-      (ok) => ok,
-      10,     // more retries (was 5)
-      2000,
-    );
-    // TTY failure is non-fatal (user can start ttyd manually later)
-    // but we log it for the complete screen to show accurate status
-
-    // ── Step 8: Detect & Start LLM ─────────────────────────────────────
-    onProgress({ step: 'detecting_llm', percent: calcPercent('detecting_llm') });
-
-    // まず既に起動中のLLMサーバーをチェック
-    for (const port of ['8080', '11434']) {
-      const url = `http://127.0.0.1:${port}`;
-      console.log(`[auto-setup] Checking LLM at ${url}...`);
+  for (const port of ['8080', '11434']) {
+    const url = `http://127.0.0.1:${port}`;
+    try {
       const llmResult = await checkOllamaConnection(url);
-      console.log(`[auto-setup] LLM check result:`, JSON.stringify(llmResult));
       if (llmResult.available) {
         llmDetected = true;
-        useTerminalStore.getState().updateSettings({ localLlmEnabled: true, localLlmUrl: url });
+        useTerminalStore.getState().updateSettings({
+          localLlmEnabled: true,
+          localLlmUrl: url,
+        });
         break;
       }
-    }
-
-    // 未検出なら llama-server + GGUFモデルを探して自動起動
-    if (!llmDetected) {
-      const detectResult = await runTermuxCommand({
-        command: 'which llama-server 2>/dev/null && echo "LLAMA_SERVER_FOUND" || echo "LLAMA_SERVER_NOT_FOUND"',
-      });
-
-      if (detectResult.success) {
-        // GGUFモデルを検索（gemma優先、~/models/, ~/llama.cpp/models/, ~/Downloads/）
-        const modelResult = await runTermuxCommand({
-          command: '(find ~/models ~/llama.cpp/models ~/storage/shared/Download -maxdepth 2 \\( -name "qwen*.gguf" -o -name "Qwen*.gguf" \\) -size +100M 2>/dev/null; find ~/models ~/llama.cpp/models ~/storage/shared/Download -maxdepth 2 -name "*.gguf" -size +100M 2>/dev/null) | awk "!seen[$0]++" | head -1',
-        });
-
-        // llama-serverが存在すればモデルを指定して起動
-        if (modelResult.success) {
-          await runTermuxCommand({
-            command: [
-              'pkill -f "llama-server" 2>/dev/null; sleep 0.5;',
-              'MODEL=$((find ~/models ~/llama.cpp/models ~/storage/shared/Download -maxdepth 2 \\( -name "qwen*.gguf" -o -name "Qwen*.gguf" \\) -size +100M 2>/dev/null; find ~/models ~/llama.cpp/models ~/storage/shared/Download -maxdepth 2 -name "*.gguf" -size +100M 2>/dev/null) | awk "!seen[\\$0]++" | head -1);',
-              'if [ -n "$MODEL" ] && which llama-server >/dev/null 2>&1; then',
-              '  nohup llama-server -m "$MODEL" --host 127.0.0.1 --port 8080 -ngl 0 -c 4096 -t 6 > /dev/null 2>&1 &',
-              '  echo "STARTED";',
-              'fi',
-            ].join(' '),
-          });
-
-          // llama-serverの起動を待つ（モデルロードに30秒以上かかることがある）
-          await new Promise((r) => setTimeout(r, 10000));
-
-          // 再度接続確認（10回×3秒 = 最大30秒リトライ）
-          console.log('[auto-setup] Waiting for llama-server to start...');
-          const llmCheck = await retry(
-            async () => {
-              const r = await checkOllamaConnection('http://127.0.0.1:8080');
-              console.log('[auto-setup] llama-server retry check:', JSON.stringify(r));
-              return r;
-            },
-            (r) => r.available,
-            10,
-            3000,
-          );
-          if (llmCheck.available) {
-            llmDetected = true;
-            const model = llmCheck.models[0] || 'default';
-            useTerminalStore.getState().updateSettings({
-              localLlmEnabled: true,
-              localLlmUrl: 'http://127.0.0.1:8080',
-              localLlmModel: model,
-            });
-          }
-        }
-      }
-    }
-
-    // ── Complete ──────────────────────────────────────────────────────
-    onProgress({ step: 'complete', percent: 100 });
-    return { success: true, llmDetected, ttyConnected: ttyOk };
-
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    onProgress({ step: 'error', percent: 0, error: message });
-    return { success: false, llmDetected: false, ttyConnected: false, error: message };
+    } catch {}
   }
+  results.llm = llmDetected;
+
+  onProgress({ step: 'complete', results });
+  return results;
 }
