@@ -29,7 +29,7 @@
  *   { type: "ready" }
  */
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
 import { notifyCommandComplete } from '@/lib/command-notifier';
@@ -121,6 +121,7 @@ export function useTermuxBridge() {
   const reconnectAttemptsRef = useRef(0);
   const cancelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef<AppStateStatus>('active');
+  const [isReconnectExhausted, setIsReconnectExhausted] = useState(false);
 
   // ── Request-specific message handlers (EventEmitter pattern) ─────────────
   const requestHandlersRef = useRef<Map<string, (msg: ServerMessage) => void>>(new Map());
@@ -188,6 +189,7 @@ export function useTermuxBridge() {
     ws.onopen = () => {
       clearTimeout(connTimeout);
       reconnectAttemptsRef.current = 0;
+      setIsReconnectExhausted(false);
       setBridgeStatus('connected');
     };
 
@@ -265,7 +267,10 @@ export function useTermuxBridge() {
 
     // Battery guard: only reconnect when in foreground, mode is termux, autoReconnect is on
     if (!autoReconnect || mode !== 'termux') return;
-    if (reconnectAttemptsRef.current >= MAX_RECONNECT) return;
+    if (reconnectAttemptsRef.current >= MAX_RECONNECT) {
+      setIsReconnectExhausted(true);
+      return;
+    }
     if (appStateRef.current !== 'active') return; // don't reconnect in background
 
     // Exponential back-off: 1s, 2s, 4s, 8s, 16s (capped at 30s)
@@ -888,6 +893,14 @@ export function useTermuxBridge() {
     []
   );
 
+  // ── Public: reset reconnect counter (for recovery banner) ──────────────
+
+  const resetReconnect = useCallback(() => {
+    reconnectAttemptsRef.current = 0;
+    setIsReconnectExhausted(false);
+    connect();
+  }, [connect]);
+
   return {
     sendCommand,
     sendStdin,
@@ -903,8 +916,10 @@ export function useTermuxBridge() {
     runRawCommand,
     connect,
     disconnect,
+    resetReconnect,
     isConnected: bridgeStatus === 'connected',
     isConnecting: bridgeStatus === 'connecting',
+    isReconnectExhausted,
     hasActiveCommand: activeItemRef.current !== null,
   };
 }
