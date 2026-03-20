@@ -53,7 +53,9 @@ export function useTtydConnection() {
     }
   }, [ttyUrl]);
 
-  // Auto-launch ttyd via TermuxBridge if not running
+  // Auto-launch ttyd via RUN_COMMAND (fire-and-forget fallback).
+  // Primary ttyd launch happens in Phase 2 setup via bridge WebSocket.
+  // This is a best-effort fallback when Termux is running but bridge is unavailable.
   const autoLaunchTtyd = useCallback(async () => {
     if (_ttydLaunchAttempted) return;
     _ttydLaunchAttempted = true;
@@ -62,9 +64,8 @@ export function useTtydConnection() {
         command: 'pkill -f "ttyd" 2>/dev/null; sleep 0.5; ttyd -W -p 7681 bash &',
       });
     } catch {
-      // Best-effort: native module may not be available
+      // Best-effort: RUN_COMMAND may fail if Termux is not running
     }
-    // Reset flag after 30s so we can retry if needed
     setTimeout(() => { _ttydLaunchAttempted = false; }, 30000);
   }, []);
 
