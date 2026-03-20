@@ -284,8 +284,6 @@ const ja: Record<string, string> = {
   'setup2.setup_ai_auth': 'AIツールの認証をセットアップ',
   // Error
   'setup2.error_title': 'セットアップ失敗',
-  'setup2.error_permission': 'Termux:Taskerにコマンド実行の権限が必要です。\nTermuxを一度開いてから、もう一度お試しください。',
-  'setup2.error_not_installed': 'Termux:Taskerがインストールされていません。\nインストールしてから再度お試しください。',
   'setup2.error_bridge': 'ブリッジに接続できませんでした。\nTermuxを開いてブリッジサーバーを手動で起動してください。',
   'setup2.error_generic': '問題が発生しました。もう一度お試しください。',
   'setup2.retry': 'もう一度試す',

@@ -24,20 +24,18 @@ export interface RunCommandOptions {
 
 export async function checkTermuxPackages(): Promise<{
   termuxInstalled: boolean;
-  taskerInstalled: boolean;
   bootInstalled: boolean;
 }> {
   if (Platform.OS !== 'android') {
-    return { termuxInstalled: false, taskerInstalled: false, bootInstalled: false };
+    return { termuxInstalled: false, bootInstalled: false };
   }
 
-  const [termuxInstalled, taskerInstalled, bootInstalled] = await Promise.all([
+  const [termuxInstalled, bootInstalled] = await Promise.all([
     TermuxBridgeModule.isPackageInstalled('com.termux'),
-    TermuxBridgeModule.isPackageInstalled('com.termux.tasker'),
     TermuxBridgeModule.isPackageInstalled('com.termux.boot'),
   ]);
 
-  return { termuxInstalled, taskerInstalled, bootInstalled };
+  return { termuxInstalled, bootInstalled };
 }
 
 // ── RUN_COMMAND ────────────────────────────────────────────────────────────────
@@ -76,15 +74,11 @@ export async function openTermux(): Promise<void> {
 
 // ── Store URLs ──────────────────────────────────────────────────────────────────
 
-export function getStoreUrl(pkg: 'termux' | 'tasker' | 'boot'): { fdroid: string; playStore: string | null } {
+export function getStoreUrl(pkg: 'termux' | 'boot'): { fdroid: string; playStore: string | null } {
   const map: Record<string, { fdroid: string; playStore: string | null }> = {
     termux: {
       fdroid: 'https://f-droid.org/packages/com.termux/',
       playStore: 'https://play.google.com/store/apps/details?id=com.termux',
-    },
-    tasker: {
-      fdroid: 'https://f-droid.org/packages/com.termux.tasker/',
-      playStore: null,
     },
     boot: {
       fdroid: 'https://f-droid.org/packages/com.termux.boot/',

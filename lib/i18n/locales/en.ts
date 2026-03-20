@@ -283,8 +283,6 @@ const en: Record<string, string> = {
   'setup2.setup_ai_auth': 'Set up AI authentication',
   // Error
   'setup2.error_title': 'Setup Failed',
-  'setup2.error_permission': 'Termux:Tasker needs permission to run commands.\nOpen Termux once, then try again.',
-  'setup2.error_not_installed': 'Termux:Tasker is not installed.\nInstall it and try again.',
   'setup2.error_bridge': 'Could not connect to the bridge.\nOpen Termux and run the bridge server manually.',
   'setup2.error_generic': 'Something went wrong. Please try again.',
   'setup2.retry': 'Try Again',
