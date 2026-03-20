@@ -1,14 +1,16 @@
 /**
- * SetupWizard.tsx — v2.1: Fully automated Termux setup + Auth
+ * SetupWizard.tsx — v3.0: 2-phase setup with reliable bridge connection
  *
- * 4-step wizard:
- * 1. Install apps (Termux + Termux:Tasker + Termux:Boot)
- * 2. Auto-setup (animated progress + feature slideshow)
- * 3. Complete (summary + auth prompt)
- * 4. Auth (optional — AuthWizard modal for API keys)
+ * 5-step wizard:
+ * 1. Welcome — feature intro
+ * 2. Install apps — Termux + Termux:Boot (Tasker removed)
+ * 3. Init — RUN_COMMAND sends && chain, polls WebSocket until connected
+ * 4. Auto — bridge-based setup (boot script, ttyd, CLI/LLM detection)
+ * 5. Complete — summary + auth prompt
  *
  * Design philosophy: Non-engineers should complete setup
- * by tapping "Next" a few times. No copy-paste. No Termux interaction.
+ * by tapping buttons. No copy-paste unless Phase 1 times out.
+ * Engineers can skip or dismiss anything.
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
@@ -25,26 +27,28 @@ import Animated, {
   FadeIn,
   FadeInRight,
   FadeOutLeft,
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withSequence,
-  withTiming,
-  withSpring,
-  Easing,
-  interpolateColor,
-  runOnJS,
 } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '@/lib/i18n';
-import { runAutoSetup, type SetupStep, type SetupProgress, type CliDetectionResult } from '@/lib/auto-setup';
-import { getStoreUrl, checkTermuxPackages, runTermuxCommand } from '@/lib/termux-intent';
+import {
+  runPhase1Setup,
+  runPhase2Setup,
+  buildSetupCommand,
+  type Phase1Progress,
+  type Phase2Progress,
+  type Phase2Results,
+  type BridgeExecutor,
+  type BridgeFileWriter,
+} from '@/lib/auto-setup';
+import { getStoreUrl, checkTermuxPackages } from '@/lib/termux-intent';
+import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { AuthWizard } from '@/components/AuthWizard';
 
 const SETUP_WIZARD_KEY = '@shelly/setup_wizard_complete';
 
-// ── Slide configuration ────────────────────────────────────────────────────────
+// ── Slide configuration (feature showcase during init wait) ────────────────
 
 interface Slide {
   titleKey: string;
@@ -63,107 +67,81 @@ const SLIDES: Slide[] = [
   { titleKey: 'setup2.slide6_title', descKey: 'setup2.slide6_desc', icon: 'shield', color: '#4ADE80' },
 ];
 
-const SLIDE_INTERVAL = 6000; // 6s per slide
+const SLIDE_INTERVAL = 6000;
 
-// ── Step status mapping ────────────────────────────────────────────────────────
+// ── Phase 2 step display config ───────────────────────────────────────────
 
-const STEP_LABEL_KEYS: Record<string, string> = {
-  installing_packages: 'setup2.step_packages',
-  writing_bridge: 'setup2.step_bridge',
-  writing_boot_script: 'setup2.step_boot',
-  starting_ttyd: 'setup2.step_ttyd',
-  starting_bridge: 'setup2.step_bridge_start',
-  connecting_bridge: 'setup2.step_connect_bridge',
-  connecting_tty: 'setup2.step_connect_tty',
-  detecting_llm: 'setup2.step_detect_llm',
-  complete: 'setup2.step_done',
-  error: 'setup2.step_error',
-};
+const PHASE2_STEPS = [
+  { key: 'boot_script', labelKey: 'setup2.auto_step_boot' },
+  { key: 'ttyd', labelKey: 'setup2.auto_step_ttyd' },
+  { key: 'cli_detect', labelKey: 'setup2.auto_step_cli' },
+  { key: 'llm_detect', labelKey: 'setup2.auto_step_llm' },
+] as const;
 
-const STEP_ORDER: SetupStep[] = [
-  'installing_packages',
-  'writing_bridge',
-  'writing_boot_script',
-  'starting_ttyd',
-  'starting_bridge',
-  'connecting_bridge',
-  'connecting_tty',
-  'detecting_llm',
-];
-
-// ── Props ──────────────────────────────────────────────────────────────────────
+// ── Props ──────────────────────────────────────────────────────────────────
 
 type Props = {
   visible: boolean;
   onComplete: () => void;
-  /** 設定画面から再セットアップとして開く場合true */
   isResetup?: boolean;
 };
 
-// ── Main Component ─────────────────────────────────────────────────────────────
+type CliDetectionResult = {
+  claudeCode: boolean;
+  geminiCli: boolean;
+  codex: boolean;
+};
+
+// ── Main Component ─────────────────────────────────────────────────────────
 
 export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
   const { t } = useTranslation();
-  const [wizardStep, setWizardStep] = useState<'welcome' | 'install' | 'progress' | 'complete' | 'error'>(
-    isResetup ? 'progress' : 'welcome'
+  const { runRawCommand, writeFile } = useTermuxBridge();
+
+  type WizardStep = 'welcome' | 'install' | 'init' | 'auto' | 'complete' | 'error';
+  const [wizardStep, setWizardStep] = useState<WizardStep>(
+    isResetup ? 'init' : 'welcome',
   );
-  const [slideIndex, setSlideIndex] = useState(0);
-  const [progress, setProgress] = useState<SetupProgress>({ step: 'installing_packages', percent: 0 });
-  const [completedSteps, setCompletedSteps] = useState<Set<SetupStep>>(new Set());
+
+  // Install step
+  const [installedApps, setInstalledApps] = useState<Record<string, boolean>>({});
+
+  // Init step (Phase 1)
+  const [phase1Progress, setPhase1Progress] = useState<Phase1Progress | null>(null);
+  const [showManualFallback, setShowManualFallback] = useState(false);
+  const [initCopied, setInitCopied] = useState(false);
+
+  // Auto step (Phase 2)
+  const [phase2Progress, setPhase2Progress] = useState<Phase2Progress | null>(null);
+
+  // Complete step
   const [setupResult, setSetupResult] = useState<{ llmDetected: boolean; ttyConnected: boolean } | null>(null);
   const [cliDetected, setCliDetected] = useState<CliDetectionResult>({ claudeCode: false, geminiCli: false, codex: false });
   const [geminiInstalling, setGeminiInstalling] = useState(false);
   const [geminiInstalled, setGeminiInstalled] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [showAuthWizard, setShowAuthWizard] = useState(false);
+
+  // Slideshow (during init wait)
+  const [slideIndex, setSlideIndex] = useState(0);
   const slideTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Detect installed apps via native module
-  const [installedApps, setInstalledApps] = useState<Record<string, boolean>>({});
+  // ── Detect installed apps ────────────────────────────────────────────────
+
   useEffect(() => {
     if (!visible || wizardStep !== 'install') return;
     checkTermuxPackages().then((result) => {
       setInstalledApps({
         termux: result.termuxInstalled,
-        tasker: result.taskerInstalled,
         boot: result.bootInstalled,
       });
-    }).catch((e) => {
-      console.warn('[SetupWizard] checkTermuxPackages failed:', e);
-    });
+    }).catch(() => {});
   }, [visible, wizardStep]);
 
-  // ── Animations ─────────────────────────────────────────────────────────────
-
-  // Progress bar animation
-  const progressAnim = useSharedValue(0);
-  const progressStyle = useAnimatedStyle(() => ({
-    width: `${progressAnim.value}%` as any,
-  }));
-
-  // Pulse for active step indicator
-  const pulse = useSharedValue(0.4);
-  useEffect(() => {
-    if (wizardStep !== 'progress') return;
-    pulse.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-        withTiming(0.4, { duration: 800, easing: Easing.inOut(Easing.ease) }),
-      ),
-      -1,
-      false,
-    );
-    return () => { pulse.value = 0.4; };
-  }, [wizardStep]);
-
-  const pulseStyle = useAnimatedStyle(() => ({
-    opacity: pulse.value,
-  }));
-
-  // ── Slideshow ──────────────────────────────────────────────────────────────
+  // ── Slideshow during init ────────────────────────────────────────────────
 
   useEffect(() => {
-    if (wizardStep !== 'progress') {
+    if (wizardStep !== 'init') {
       if (slideTimerRef.current) clearInterval(slideTimerRef.current);
       return;
     }
@@ -175,100 +153,105 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     };
   }, [wizardStep]);
 
-  // ── Update progress ────────────────────────────────────────────────────────
+  // ── Phase 1: RUN_COMMAND + WS polling ──────────────────────────────────
 
-  const handleProgress = useCallback((p: SetupProgress) => {
-    setProgress(p);
-    progressAnim.value = withTiming(p.percent, { duration: 500 });
+  const startPhase1 = useCallback(async () => {
+    setShowManualFallback(false);
+    setPhase1Progress(null);
 
-    // Track completed steps
-    const idx = STEP_ORDER.indexOf(p.step);
-    if (idx > 0) {
-      setCompletedSteps((prev) => {
-        const next = new Set(prev);
-        for (let i = 0; i < idx; i++) next.add(STEP_ORDER[i]);
-        return next;
-      });
+    const result = await runPhase1Setup((p) => {
+      setPhase1Progress(p);
+      if (p.step === 'timeout') {
+        setShowManualFallback(true);
+      }
+    });
+
+    if (result.success) {
+      setWizardStep('auto');
+    } else if (result.error === 'PERMISSION_DENIED') {
+      setShowManualFallback(true);
+      setPhase1Progress({ step: 'permission_error', elapsedSeconds: 0 });
+    } else if (result.error === 'TIMEOUT') {
+      setShowManualFallback(true);
     }
   }, []);
 
-  // ── Run setup ──────────────────────────────────────────────────────────────
-
-  const startSetup = useCallback(async () => {
-    setWizardStep('progress');
-    setCompletedSteps(new Set());
-    setProgress({ step: 'installing_packages', percent: 0 });
-    progressAnim.value = 0;
-
-    const result = await runAutoSetup(handleProgress);
-
-    if (result.success) {
-      setSetupResult({ llmDetected: result.llmDetected, ttyConnected: result.ttyConnected });
-      setWizardStep('complete');
-      progressAnim.value = withTiming(100, { duration: 300 });
-    } else {
-      // Map error to user-friendly message
-      let errKey = 'setup2.error_generic';
-      if (result.error === 'PERMISSION_DENIED') errKey = 'setup2.error_permission';
-      else if (result.error === 'TASKER_NOT_INSTALLED') errKey = 'setup2.error_not_installed';
-      else if (result.error === 'BRIDGE_CONNECTION_FAILED') errKey = 'setup2.error_bridge';
-      setErrorMessage(t(errKey));
-      setWizardStep('error');
+  // Auto-start Phase 1 when entering init step
+  useEffect(() => {
+    if (wizardStep === 'init') {
+      startPhase1();
     }
-  }, [handleProgress, t]);
+  }, [wizardStep, startPhase1]);
+
+  // Keep polling even during manual fallback (user might paste command and it connects)
+  useEffect(() => {
+    if (wizardStep !== 'init' || !showManualFallback) return;
+    // Continue polling in background
+    const interval = setInterval(async () => {
+      const { useTerminalStore } = await import('@/store/terminal-store');
+      const { wsUrl } = useTerminalStore.getState().termuxSettings;
+      try {
+        const ws = new WebSocket(wsUrl);
+        const timeout = setTimeout(() => { try { ws.close(); } catch {} }, 3000);
+        ws.onopen = () => ws.send(JSON.stringify({ type: 'ping' }));
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data as string);
+            if (msg.type === 'pong' || msg.type === 'ready') {
+              clearTimeout(timeout);
+              try { ws.close(); } catch {}
+              clearInterval(interval);
+              useTerminalStore.getState().setConnectionMode('termux');
+              setWizardStep('auto');
+            }
+          } catch {}
+        };
+        ws.onerror = () => { clearTimeout(timeout); };
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [wizardStep, showManualFallback]);
+
+  // ── Phase 2: Bridge-based setup ──────────────────────────────────────────
+
+  const startPhase2 = useCallback(async () => {
+    const exec: BridgeExecutor = (cmd, opts) =>
+      runRawCommand(cmd, { timeoutMs: opts?.timeoutMs, reason: 'auto-setup' });
+    const writer: BridgeFileWriter = (path, content) =>
+      writeFile(path, content);
+
+    try {
+      const results = await runPhase2Setup(exec, writer, (p) => {
+        setPhase2Progress(p);
+      });
+
+      setSetupResult({
+        llmDetected: results.llm ?? false,
+        ttyConnected: results.ttyd ?? false,
+      });
+      setCliDetected(results.cli ?? { claudeCode: false, geminiCli: false, codex: false });
+      setWizardStep('complete');
+    } catch (err) {
+      // Phase 2 failure is non-fatal — still show complete with partial results
+      setSetupResult({ llmDetected: false, ttyConnected: false });
+      setWizardStep('complete');
+    }
+  }, [runRawCommand, writeFile]);
+
+  useEffect(() => {
+    if (wizardStep === 'auto') {
+      startPhase2();
+    }
+  }, [wizardStep, startPhase2]);
 
   // Auto-start if isResetup
   useEffect(() => {
     if (isResetup && visible) {
-      startSetup();
+      setWizardStep('init');
     }
   }, [isResetup, visible]);
 
-  // ── CLI detection (via bridge, after setup completes) ────────────────────
-  useEffect(() => {
-    if (wizardStep !== 'complete') return;
-    // Use bridge WebSocket to detect CLI tools
-    const detect = async () => {
-      try {
-        const { termuxSettings } = (await import('@/store/terminal-store')).useTerminalStore.getState();
-        const wsUrl = termuxSettings.wsUrl;
-        const ws = new WebSocket(wsUrl);
-        const detected: CliDetectionResult = { claudeCode: false, geminiCli: false, codex: false };
-
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => { ws.close(); resolve(); }, 8000);
-          ws.onopen = () => {
-            ws.send(JSON.stringify({
-              type: 'exec',
-              command: 'echo "CC:$(which claude 2>/dev/null && echo 1 || echo 0):GC:$(which gemini 2>/dev/null && echo 1 || echo 0):CX:$(which codex 2>/dev/null && echo 1 || echo 0)"',
-            }));
-          };
-          ws.onmessage = (e) => {
-            try {
-              const data = JSON.parse(e.data);
-              const out = data.stdout || data.output || data.data || '';
-              if (out.includes('CC:') && out.includes('GC:')) {
-                detected.claudeCode = out.includes('CC:1');
-                detected.geminiCli = out.includes('GC:1');
-                detected.codex = out.includes('CX:1');
-                clearTimeout(timeout);
-                ws.close();
-                resolve();
-              }
-            } catch {}
-          };
-          ws.onerror = () => { clearTimeout(timeout); resolve(); };
-        });
-
-        setCliDetected(detected);
-      } catch {
-        // CLI detection failure is non-fatal
-      }
-    };
-    detect();
-  }, [wizardStep]);
-
-  // ── Done ───────────────────────────────────────────────────────────────────
+  // ── Done / Skip ──────────────────────────────────────────────────────────
 
   const handleDone = useCallback(async () => {
     if (!isResetup) {
@@ -277,14 +260,12 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     onComplete();
   }, [onComplete, isResetup]);
 
-  // ── Skip ───────────────────────────────────────────────────────────────────
-
   const handleSkip = useCallback(async () => {
     await AsyncStorage.setItem(SETUP_WIZARD_KEY, 'true').catch(() => {});
     onComplete();
   }, [onComplete]);
 
-  // ── Render: Welcome ────────────────────────────────────────────────────────
+  // ── Render: Welcome ────────────────────────────────────────────────────
 
   const renderWelcomeStep = () => (
     <Animated.View entering={FadeInDown.duration(400)} style={styles.stepContainer}>
@@ -295,7 +276,6 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
       <Text style={[styles.title, { color: '#FBBF24' }]}>{t('setup2.hero_title')}</Text>
       <Text style={styles.description}>{t('setup2.hero_desc')}</Text>
 
-      {/* Feature highlights */}
       <View style={styles.featureList}>
         <FeatureRow icon="chat-bubble-outline" color="#00D4AA" labelKey="setup2.hero_feat1" />
         <FeatureRow icon="auto-awesome" color="#60A5FA" labelKey="setup2.hero_feat2" />
@@ -313,12 +293,11 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     </Animated.View>
   );
 
-  // ── Render: Step 1 — Install apps ──────────────────────────────────────────
+  // ── Render: Step 2 — Install apps ──────────────────────────────────────
 
   const renderInstallStep = () => {
     const apps = [
       { key: 'termux' as const, nameKey: 'setup2.install_termux', descKey: 'setup2.install_termux_desc', icon: 'terminal', required: true },
-      { key: 'tasker' as const, nameKey: 'setup2.install_tasker', descKey: 'setup2.install_tasker_desc', icon: 'extension', required: true },
       { key: 'boot' as const, nameKey: 'setup2.install_boot', descKey: 'setup2.install_boot_desc', icon: 'power-settings-new', required: false },
     ];
 
@@ -331,7 +310,6 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         <Text style={styles.title}>{t('setup2.welcome_title')}</Text>
         <Text style={styles.description}>{t('setup2.welcome_desc')}</Text>
 
-        {/* App install cards */}
         {apps.map((app) => {
           const urls = getStoreUrl(app.key);
           const isInstalled = installedApps[app.key] === true;
@@ -375,16 +353,17 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
           );
         })}
 
-        {/* Start button */}
+        {/* Bootstrap hint */}
+        <Text style={styles.bootstrapHint}>{t('setup2.install_termux_bootstrap')}</Text>
+
         <Pressable
           style={[styles.primaryBtn, { backgroundColor: '#00D4AA' }]}
-          onPress={startSetup}
+          onPress={() => setWizardStep('init')}
         >
           <MaterialIcons name="play-arrow" size={20} color="#000" />
           <Text style={styles.primaryBtnText}>{t('setup2.start_setup')}</Text>
         </Pressable>
 
-        {/* Skip */}
         <Pressable style={styles.skipBtn} onPress={handleSkip}>
           <Text style={styles.skipBtnText}>{t('setup.skip')}</Text>
         </Pressable>
@@ -392,69 +371,153 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     );
   };
 
-  // ── Render: Step 2 — Progress + Slideshow ──────────────────────────────────
+  // ── Render: Step 3 — Init (Phase 1) ────────────────────────────────────
 
   const currentSlide = SLIDES[slideIndex];
 
-  const renderProgressStep = () => (
+  const renderInitStep = () => (
     <Animated.View entering={FadeInDown.duration(400)} style={styles.stepContainer}>
-      {/* Feature slideshow (top half) */}
-      <Animated.View
-        key={`slide-${slideIndex}`}
-        entering={FadeInRight.duration(500)}
-        exiting={FadeOutLeft.duration(300)}
-        style={styles.slideContainer}
-      >
-        <View style={[styles.slideIconCircle, { backgroundColor: currentSlide.color + '20' }]}>
-          <MaterialIcons name={currentSlide.icon as any} size={36} color={currentSlide.color} />
-        </View>
-        <Text style={[styles.slideTitle, { color: currentSlide.color }]}>
-          {t(currentSlide.titleKey)}
-        </Text>
-        <Text style={styles.slideDesc}>{t(currentSlide.descKey)}</Text>
-        {currentSlide.exampleKey && (
-          <View style={styles.slideExample}>
-            <Text style={styles.slideExampleText}>{t(currentSlide.exampleKey)}</Text>
+      {!showManualFallback ? (
+        <>
+          {/* Feature slideshow while waiting */}
+          <Animated.View
+            key={`slide-${slideIndex}`}
+            entering={FadeInRight.duration(500)}
+            exiting={FadeOutLeft.duration(300)}
+            style={styles.slideContainer}
+          >
+            <View style={[styles.slideIconCircle, { backgroundColor: currentSlide.color + '20' }]}>
+              <MaterialIcons name={currentSlide.icon as any} size={36} color={currentSlide.color} />
+            </View>
+            <Text style={[styles.slideTitle, { color: currentSlide.color }]}>
+              {t(currentSlide.titleKey)}
+            </Text>
+            <Text style={styles.slideDesc}>{t(currentSlide.descKey)}</Text>
+            {currentSlide.exampleKey && (
+              <View style={styles.slideExample}>
+                <Text style={styles.slideExampleText}>{t(currentSlide.exampleKey)}</Text>
+              </View>
+            )}
+          </Animated.View>
+
+          {/* Slide dots */}
+          <View style={styles.slideDots}>
+            {SLIDES.map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.slideDot,
+                  i === slideIndex && { backgroundColor: currentSlide.color, width: 16 },
+                ]}
+              />
+            ))}
           </View>
-        )}
-      </Animated.View>
 
-      {/* Slide dots */}
-      <View style={styles.slideDots}>
-        {SLIDES.map((_, i) => (
-          <View
-            key={i}
-            style={[
-              styles.slideDot,
-              i === slideIndex && { backgroundColor: currentSlide.color, width: 16 },
-            ]}
-          />
-        ))}
+          {/* Waiting indicator */}
+          <View style={styles.waitingContainer}>
+            <ActivityIndicator size="small" color="#60A5FA" />
+            <Text style={styles.waitingText}>
+              {t('setup2.init_waiting')}
+              {phase1Progress?.elapsedSeconds != null && phase1Progress.elapsedSeconds > 0
+                ? ` (${phase1Progress.elapsedSeconds}s)`
+                : ''}
+            </Text>
+          </View>
+
+          <Text style={styles.hint}>{t('setup2.init_waiting_desc')}</Text>
+        </>
+      ) : (
+        <>
+          {/* Manual fallback — show command to copy */}
+          <View style={[styles.iconCircle, { backgroundColor: '#FBBF2420' }]}>
+            <MaterialIcons name="terminal" size={48} color="#FBBF24" />
+          </View>
+
+          <Text style={[styles.title, { color: '#FBBF24' }]}>
+            {phase1Progress?.step === 'permission_error'
+              ? t('setup2.init_permission_failed').split('\n')[0]
+              : t('setup2.init_timeout_title')}
+          </Text>
+          <Text style={styles.description}>{t('setup2.init_timeout_desc')}</Text>
+
+          <View style={styles.commandBox}>
+            <Text style={styles.commandText} selectable numberOfLines={8}>
+              pkg install -y nodejs-lts ttyd{'\n'}
+              && mkdir -p ~/shelly-bridge{'\n'}
+              && cd ~/shelly-bridge{'\n'}
+              && npm init -y && npm install ws{'\n'}
+              && node server.js
+            </Text>
+          </View>
+
+          <Pressable
+            style={[styles.primaryBtn, { backgroundColor: '#60A5FA' }]}
+            onPress={async () => {
+              // Copy a simplified version (without server.js content — full command is too long)
+              // User needs server.js to exist already, so we include the curl fallback
+              await Clipboard.setStringAsync(
+                'pkg install -y nodejs-lts ttyd && mkdir -p ~/shelly-bridge && cd ~/shelly-bridge && npm init -y 2>/dev/null && npm install ws 2>&1 && node server.js'
+              );
+              setInitCopied(true);
+              setTimeout(() => setInitCopied(false), 2000);
+            }}
+          >
+            <MaterialIcons name="content-copy" size={18} color="#000" />
+            <Text style={styles.primaryBtnText}>
+              {initCopied ? t('setup2.init_copied') : t('setup2.init_copy')}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.primaryBtn, { backgroundColor: '#4ADE80', marginTop: 8 }]}
+            onPress={async () => {
+              try { await Linking.openURL('com.termux://'); } catch {}
+            }}
+          >
+            <MaterialIcons name="open-in-new" size={18} color="#000" />
+            <Text style={styles.primaryBtnText}>{t('setup2.init_open_termux')}</Text>
+          </Pressable>
+
+          {/* Still polling in background */}
+          <View style={[styles.waitingContainer, { marginTop: 12 }]}>
+            <ActivityIndicator size="small" color="#6B7280" />
+            <Text style={[styles.waitingText, { color: '#6B7280' }]}>
+              {t('setup2.init_waiting_desc').split('\n')[1]}
+            </Text>
+          </View>
+        </>
+      )}
+
+      <Pressable style={styles.skipBtn} onPress={handleSkip}>
+        <Text style={styles.skipBtnText}>{t('setup.skip')}</Text>
+      </Pressable>
+    </Animated.View>
+  );
+
+  // ── Render: Step 4 — Auto (Phase 2) ──────────────────────────────────
+
+  const renderAutoStep = () => (
+    <Animated.View entering={FadeInDown.duration(400)} style={styles.stepContainer}>
+      <View style={[styles.iconCircle, { backgroundColor: '#4ADE8020' }]}>
+        <ActivityIndicator size="large" color="#4ADE80" />
       </View>
 
-      {/* Progress bar */}
-      <View style={styles.progressBarContainer}>
-        <View style={styles.progressBarBg}>
-          <Animated.View style={[styles.progressBarFill, progressStyle]} />
-        </View>
-        <Text style={styles.progressPercent}>{Math.round(progress.percent)}%</Text>
-      </View>
+      <Text style={[styles.title, { color: '#4ADE80' }]}>{t('setup2.auto_title')}</Text>
+      <Text style={styles.description}>{t('setup2.auto_desc')}</Text>
 
-      {/* Step status list */}
       <View style={styles.stepList}>
-        {STEP_ORDER.map((step) => {
-          const isActive = progress.step === step;
-          const isDone = completedSteps.has(step);
-          const labelKey = STEP_LABEL_KEYS[step] || step;
+        {PHASE2_STEPS.map(({ key, labelKey }) => {
+          const currentIdx = PHASE2_STEPS.findIndex(s => s.key === phase2Progress?.step);
+          const thisIdx = PHASE2_STEPS.findIndex(s => s.key === key);
+          const isDone = thisIdx < currentIdx || phase2Progress?.step === 'complete';
+          const isActive = key === phase2Progress?.step;
 
           return (
-            <View key={step} style={styles.stepRow}>
+            <View key={key} style={styles.stepRow}>
               {isDone ? (
                 <MaterialIcons name="check-circle" size={16} color="#4ADE80" />
               ) : isActive ? (
-                <Animated.View style={pulseStyle}>
-                  <ActivityIndicator size="small" color="#60A5FA" style={{ transform: [{ scale: 0.7 }] }} />
-                </Animated.View>
+                <ActivityIndicator size="small" color="#60A5FA" style={{ transform: [{ scale: 0.7 }] }} />
               ) : (
                 <MaterialIcons name="radio-button-unchecked" size={16} color="#333" />
               )}
@@ -471,12 +534,10 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
           );
         })}
       </View>
-
-      <Text style={styles.hint}>{t('setup2.progress_wait')}</Text>
     </Animated.View>
   );
 
-  // ── Render: Step 3 — Complete ──────────────────────────────────────────────
+  // ── Render: Step 5 — Complete ──────────────────────────────────────────
 
   const renderCompleteStep = () => (
     <Animated.View entering={FadeInDown.duration(400)} style={styles.stepContainer}>
@@ -490,7 +551,6 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
       <Text style={[styles.title, { color: '#4ADE80' }]}>{t('setup2.complete_title')}</Text>
       <Text style={styles.description}>{t('setup2.complete_desc')}</Text>
 
-      {/* Results summary */}
       <View style={styles.resultCard}>
         <ResultRow
           icon="cable"
@@ -518,11 +578,10 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         />
       </View>
 
-      {/* CLI detection results & Gemini CLI setup */}
+      {/* CLI detection & Gemini install */}
       {(() => {
         const hasCli = cliDetected?.claudeCode || cliDetected?.geminiCli || cliDetected?.codex || geminiInstalled;
         return hasCli ? (
-          /* CLI detected — show status + auth button */
           <>
             <View style={[styles.resultCard, { borderColor: '#4ADE8020', marginTop: 12 }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -536,7 +595,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
                   cliDetected?.claudeCode && 'Claude Code',
                   (cliDetected?.geminiCli || geminiInstalled) && 'Gemini CLI',
                   cliDetected?.codex && 'Codex',
-                ].filter(Boolean).join(' / ')} detected. Authenticate to start using.
+                ].filter(Boolean).join(' / ')} detected.
               </Text>
             </View>
             <Pressable
@@ -548,7 +607,6 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
             </Pressable>
           </>
         ) : (
-          /* No CLI detected — guide Gemini CLI installation */
           <>
             <View style={[styles.resultCard, { borderColor: '#3B82F620', marginTop: 12 }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -580,19 +638,15 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
               onPress={async () => {
                 setGeminiInstalling(true);
                 try {
-                  const result = await runTermuxCommand({
-                    command: 'npm install -g @anthropic-ai/gemini-cli 2>&1 && which gemini && echo "GEMINI_INSTALL_OK"',
-                  });
-                  // Wait for npm install to finish (fire-and-forget via RUN_COMMAND)
-                  await new Promise((r) => setTimeout(r, 15000));
-                  // Verify installation
-                  const check = await runTermuxCommand({ command: 'which gemini 2>/dev/null && echo "OK" || echo "FAIL"' });
-                  await new Promise((r) => setTimeout(r, 2000));
-                  setGeminiInstalled(true);
-                  setGeminiInstalling(false);
-                  // Auto-open auth wizard for Gemini login
-                  setShowAuthWizard(true);
-                } catch {
+                  const result = await runRawCommand(
+                    'npm install -g @google/gemini-cli 2>&1',
+                    { timeoutMs: 120_000, reason: 'gemini-cli-install' },
+                  );
+                  if (result.exitCode === 0) {
+                    setGeminiInstalled(true);
+                    setShowAuthWizard(true);
+                  }
+                } catch {} finally {
                   setGeminiInstalling(false);
                 }
               }}
@@ -616,7 +670,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     </Animated.View>
   );
 
-  // ── Render: Error ──────────────────────────────────────────────────────────
+  // ── Render: Error ──────────────────────────────────────────────────────
 
   const renderErrorStep = () => (
     <Animated.View entering={FadeInDown.duration(400)} style={styles.stepContainer}>
@@ -629,7 +683,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
 
       <Pressable
         style={[styles.primaryBtn, { backgroundColor: '#F87171' }]}
-        onPress={startSetup}
+        onPress={() => setWizardStep('init')}
       >
         <MaterialIcons name="refresh" size={18} color="#000" />
         <Text style={styles.primaryBtnText}>{t('setup2.retry')}</Text>
@@ -641,7 +695,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     </Animated.View>
   );
 
-  // ── Main render ────────────────────────────────────────────────────────────
+  // ── Main render ────────────────────────────────────────────────────────
 
   return (
     <Modal visible={visible} transparent animationType="fade" statusBarTranslucent>
@@ -649,12 +703,12 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         <View style={styles.card}>
           {wizardStep === 'welcome' && renderWelcomeStep()}
           {wizardStep === 'install' && renderInstallStep()}
-          {wizardStep === 'progress' && renderProgressStep()}
+          {wizardStep === 'init' && renderInitStep()}
+          {wizardStep === 'auto' && renderAutoStep()}
           {wizardStep === 'complete' && renderCompleteStep()}
           {wizardStep === 'error' && renderErrorStep()}
         </View>
       </View>
-      {/* Auth Wizard (launched from complete step) */}
       <AuthWizard
         visible={showAuthWizard}
         onComplete={() => setShowAuthWizard(false)}
@@ -663,7 +717,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
   );
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
+// ── Sub-components ─────────────────────────────────────────────────────────
 
 function FeatureRow({ icon, color, labelKey }: { icon: string; color: string; labelKey: string }) {
   const { t } = useTranslation();
@@ -687,7 +741,7 @@ function ResultRow({ icon, label, value, color }: { icon: string; label: string;
   );
 }
 
-// ── Utility exports ────────────────────────────────────────────────────────────
+// ── Utility exports ────────────────────────────────────────────────────────
 
 export async function isSetupWizardComplete(): Promise<boolean> {
   const val = await AsyncStorage.getItem(SETUP_WIZARD_KEY);
@@ -698,7 +752,7 @@ export async function resetSetupWizard(): Promise<void> {
   await AsyncStorage.removeItem(SETUP_WIZARD_KEY);
 }
 
-// ── Styles ─────────────────────────────────────────────────────────────────────
+// ── Styles ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   backdrop: {
@@ -719,282 +773,99 @@ const styles = StyleSheet.create({
     paddingVertical: 28,
     maxHeight: '85%',
   },
-  stepContainer: {
-    alignItems: 'center',
-  },
+  stepContainer: { alignItems: 'center' },
   iconCircle: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+    width: 88, height: 88, borderRadius: 44,
     backgroundColor: '#00D4AA20',
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
     marginBottom: 16,
   },
   title: {
-    fontSize: 22,
-    fontWeight: '800',
-    fontFamily: 'monospace',
-    color: '#00D4AA',
-    textAlign: 'center',
-    marginBottom: 8,
+    fontSize: 22, fontWeight: '800', fontFamily: 'monospace',
+    color: '#00D4AA', textAlign: 'center', marginBottom: 8,
   },
   description: {
-    color: '#9CA3AF',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    lineHeight: 20,
-    textAlign: 'center',
-    marginBottom: 20,
+    color: '#9CA3AF', fontSize: 13, fontFamily: 'monospace',
+    lineHeight: 20, textAlign: 'center', marginBottom: 20,
   },
 
-  // ── Feature list (welcome) ───────────────────────────────────────────
-  featureList: {
-    width: '100%',
-    gap: 10,
-    marginBottom: 8,
-  },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  featureIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  featureLabel: {
-    color: '#D1D5DB',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    flex: 1,
-  },
+  // Feature list
+  featureList: { width: '100%', gap: 10, marginBottom: 8 },
+  featureRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  featureIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  featureLabel: { color: '#D1D5DB', fontSize: 13, fontFamily: 'monospace', flex: 1 },
 
-  // ── Install cards ────────────────────────────────────────────────────
+  // Install cards
   installCard: {
-    width: '100%',
-    backgroundColor: '#1A1A1A',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    padding: 12,
-    marginBottom: 8,
+    width: '100%', backgroundColor: '#1A1A1A', borderRadius: 12,
+    borderWidth: 1, borderColor: '#2A2A2A', padding: 12, marginBottom: 8,
   },
-  installCardLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 8,
-  },
-  installName: {
-    color: '#E8E8E8',
-    fontSize: 14,
-    fontFamily: 'monospace',
-    fontWeight: '700',
-  },
-  installOptional: {
-    color: '#6B7280',
-    fontSize: 11,
-    fontWeight: '400',
-  },
-  installDesc: {
-    color: '#6B7280',
-    fontSize: 11,
-    fontFamily: 'monospace',
-  },
-  installButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  installCardLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  installName: { color: '#E8E8E8', fontSize: 14, fontFamily: 'monospace', fontWeight: '700' },
+  installOptional: { color: '#6B7280', fontSize: 11, fontWeight: '400' },
+  installDesc: { color: '#6B7280', fontSize: 11, fontFamily: 'monospace' },
+  installButtons: { flexDirection: 'row', gap: 8 },
   installBtn: {
-    flex: 1,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#00D4AA44',
-    alignItems: 'center',
+    flex: 1, paddingVertical: 6, borderRadius: 8,
+    borderWidth: 1, borderColor: '#00D4AA44', alignItems: 'center',
   },
-  installBtnText: {
-    color: '#00D4AA',
-    fontSize: 12,
-    fontFamily: 'monospace',
-    fontWeight: '600',
+  installBtnText: { color: '#00D4AA', fontSize: 12, fontFamily: 'monospace', fontWeight: '600' },
+
+  // Bootstrap hint
+  bootstrapHint: {
+    color: '#FBBF24', fontSize: 11, fontFamily: 'monospace',
+    textAlign: 'center', marginBottom: 8, lineHeight: 18,
   },
 
-  // ── Primary button ───────────────────────────────────────────────────
+  // Primary button
   primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 12,
-    width: '100%',
-    marginTop: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingHorizontal: 24, paddingVertical: 14,
+    borderRadius: 12, width: '100%', marginTop: 16,
   },
-  primaryBtnText: {
-    color: '#000',
-    fontSize: 15,
-    fontFamily: 'monospace',
-    fontWeight: '800',
-  },
-  skipBtn: {
-    paddingVertical: 10,
-    marginTop: 8,
-  },
-  skipBtnText: {
-    color: '#6B7280',
-    fontSize: 12,
-    fontFamily: 'monospace',
-  },
+  primaryBtnText: { color: '#000', fontSize: 15, fontFamily: 'monospace', fontWeight: '800' },
+  skipBtn: { paddingVertical: 10, marginTop: 8 },
+  skipBtnText: { color: '#6B7280', fontSize: 12, fontFamily: 'monospace' },
 
-  // ── Slideshow ────────────────────────────────────────────────────────
-  slideContainer: {
-    alignItems: 'center',
-    minHeight: 160,
-    marginBottom: 12,
-  },
-  slideIconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 10,
-  },
-  slideTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    fontFamily: 'monospace',
-    textAlign: 'center',
-    marginBottom: 6,
-  },
-  slideDesc: {
-    color: '#9CA3AF',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    lineHeight: 20,
-    textAlign: 'center',
-  },
-  slideExample: {
-    backgroundColor: '#0D0D0D',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginTop: 8,
-  },
-  slideExampleText: {
-    color: '#00D4AA',
-    fontSize: 12,
-    fontFamily: 'monospace',
-  },
-  slideDots: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 16,
-    justifyContent: 'center',
-  },
-  slideDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#333',
-  },
+  // Slideshow
+  slideContainer: { alignItems: 'center', minHeight: 160, marginBottom: 12 },
+  slideIconCircle: { width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  slideTitle: { fontSize: 18, fontWeight: '800', fontFamily: 'monospace', textAlign: 'center', marginBottom: 6 },
+  slideDesc: { color: '#9CA3AF', fontSize: 13, fontFamily: 'monospace', lineHeight: 20, textAlign: 'center' },
+  slideExample: { backgroundColor: '#0D0D0D', borderRadius: 8, borderWidth: 1, borderColor: '#2A2A2A', paddingHorizontal: 12, paddingVertical: 6, marginTop: 8 },
+  slideExampleText: { color: '#00D4AA', fontSize: 12, fontFamily: 'monospace' },
+  slideDots: { flexDirection: 'row', gap: 6, marginBottom: 16, justifyContent: 'center' },
+  slideDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#333' },
 
-  // ── Progress bar ─────────────────────────────────────────────────────
-  progressBarContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    width: '100%',
-    marginBottom: 14,
-  },
-  progressBarBg: {
-    flex: 1,
-    height: 6,
-    backgroundColor: '#1E1E1E',
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#00D4AA',
-    borderRadius: 3,
-  },
-  progressPercent: {
-    color: '#6B7280',
-    fontSize: 12,
-    fontFamily: 'monospace',
-    fontWeight: '600',
-    minWidth: 36,
-    textAlign: 'right',
-  },
+  // Waiting
+  waitingContainer: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 8 },
+  waitingText: { color: '#60A5FA', fontSize: 13, fontFamily: 'monospace' },
+  hint: { color: '#6B7280', fontSize: 11, fontFamily: 'monospace', textAlign: 'center', marginTop: 4, lineHeight: 18 },
 
-  // ── Step list ────────────────────────────────────────────────────────
-  stepList: {
-    width: '100%',
-    gap: 6,
-    marginBottom: 8,
+  // Command box (manual fallback)
+  commandBox: {
+    width: '100%', backgroundColor: '#0D0D0D', borderRadius: 8,
+    borderWidth: 1, borderColor: '#2A2A2A', padding: 12, marginVertical: 12,
   },
-  stepRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 22,
-  },
-  stepLabel: {
-    color: '#4B5563',
-    fontSize: 12,
-    fontFamily: 'monospace',
-  },
-  hint: {
-    color: '#6B7280',
-    fontSize: 11,
-    fontFamily: 'monospace',
-    textAlign: 'center',
-    marginTop: 4,
-  },
+  commandText: { color: '#00D4AA', fontSize: 11, fontFamily: 'monospace', lineHeight: 18 },
 
-  // ── Results ──────────────────────────────────────────────────────────
+  // Step list (Phase 2)
+  stepList: { width: '100%', gap: 6, marginBottom: 8 },
+  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 22 },
+  stepLabel: { color: '#4B5563', fontSize: 12, fontFamily: 'monospace' },
+
+  // Results
   resultCard: {
-    width: '100%',
-    backgroundColor: '#1A1A1A',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    padding: 14,
-    gap: 10,
+    width: '100%', backgroundColor: '#1A1A1A', borderRadius: 12,
+    borderWidth: 1, borderColor: '#2A2A2A', padding: 14, gap: 10,
   },
-  resultRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  resultLabel: {
-    color: '#9CA3AF',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    flex: 1,
-  },
-  resultValue: {
-    fontSize: 12,
-    fontFamily: 'monospace',
-    fontWeight: '700',
-  },
+  resultRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  resultLabel: { color: '#9CA3AF', fontSize: 13, fontFamily: 'monospace', flex: 1 },
+  resultValue: { fontSize: 12, fontFamily: 'monospace', fontWeight: '700' },
 
-  // ── Error ────────────────────────────────────────────────────────────
+  // Error
   errorMessage: {
-    color: '#F87171',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    lineHeight: 20,
-    textAlign: 'center',
-    marginBottom: 12,
+    color: '#F87171', fontSize: 13, fontFamily: 'monospace',
+    lineHeight: 20, textAlign: 'center', marginBottom: 12,
   },
 });
