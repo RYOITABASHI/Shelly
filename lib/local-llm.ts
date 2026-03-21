@@ -388,8 +388,25 @@ export async function ollamaChatStream(
 
     const reader = res.body?.getReader?.();
     if (!reader) {
+      // Fallback: ReadableStream not available (React Native)
       clearTimeout(timer);
-      return { success: false, error: 'ReadableStream not supported' };
+      const text = await res.text();
+      let fullContent = '';
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const json = JSON.parse(trimmed);
+          // Ollama format: { message: { content: "..." } }
+          const content = json.message?.content ?? json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
+          if (content) fullContent += content;
+        } catch {}
+      }
+      if (fullContent) {
+        onChunk(fullContent, true);
+        return { success: true, content: fullContent };
+      }
+      return { success: false, error: 'ReadableStream not supported and fallback parse failed' };
     }
 
     const decoder = new TextDecoder();
