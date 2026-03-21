@@ -251,10 +251,10 @@ export function getRecoverySuggestion(command: string): string | undefined {
     return [
       'ファイルを削除してしまった場合の復旧方法:',
       '  1. gitリポジトリ内なら: git checkout -- <ファイル名>',
-      '  2. git管理外なら: 復元は困難です',
-      '  3. コミット済みなら: git log で確認 → git restore --source=<コミットID> <ファイル>',
+      '  2. コミット済みなら: git log で確認 → git restore --source=<コミットID> <ファイル>',
+      '  3. git管理外のファイルは復元が困難です',
       '',
-      'ヒント: こまめに git commit しておくと安心です。',
+      '※ まず git status で現在地がgitリポジトリかどうか確認してください。',
     ].join('\n');
   }
 

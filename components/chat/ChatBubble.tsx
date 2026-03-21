@@ -264,6 +264,8 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
 
 function CommandExecView({ exec, colors }: { exec: { command: string; output: string; exitCode: number | null; isCollapsed: boolean }; colors: ThemeColorPalette }) {
   const [collapsed, setCollapsed] = useState(exec.isCollapsed);
+  // Sync with prop when parent updates (e.g. streaming → finalized)
+  useEffect(() => { setCollapsed(exec.isCollapsed); }, [exec.isCollapsed]);
   const isError = exec.exitCode !== null && exec.exitCode !== 0;
   const outputLines = exec.output.split('\n');
   const shouldCollapse = outputLines.length > 5;

@@ -13,6 +13,9 @@ import Constants from 'expo-constants';
 /** Build-time Pro flag from app.config.ts extra.shellyPro */
 const BUILD_PRO = Constants.expoConfig?.extra?.shellyPro === true;
 
+/** GitHub Sponsors URL — single source of truth */
+export const SPONSOR_URL = 'https://github.com/sponsors/RYOITABASHI';
+
 /** Runtime override (set by unlockPro, loaded on startup) */
 let runtimeOverride: boolean | null = null;
 
@@ -35,8 +38,8 @@ export async function loadProStatus(): Promise<void> {
     if (stored === 'true') {
       runtimeOverride = true;
     }
-  } catch {
-    // Non-fatal
+  } catch (e) {
+    console.warn('[Pro] Failed to load Pro status:', e);
   }
 }
 

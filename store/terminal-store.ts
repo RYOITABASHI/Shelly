@@ -264,8 +264,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       connectionMode,
     };
 
+    // Truncate overly long commands in history (keep first 500 chars)
+    const historyCmd = command.length > 500 ? command.slice(0, 500) + '…' : command;
     const newHistory = command.trim()
-      ? [command, ...session.commandHistory.filter((c) => c !== command)].slice(0, 100)
+      ? [historyCmd, ...session.commandHistory.filter((c) => c !== command && c !== historyCmd)].slice(0, 100)
       : session.commandHistory;
 
     set((state) => ({

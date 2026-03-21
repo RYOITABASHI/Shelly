@@ -38,7 +38,7 @@ import { SetupWizard } from '@/components/SetupWizard';
 import { PackageManager as PackageManagerModal } from '@/components/PackageManager';
 import { saveCustomContext, loadCustomContext, DEFAULT_CUSTOM_CONTEXT } from '@/lib/shelly-system-prompt';
 import { AuthWizard } from '@/components/AuthWizard';
-import { isPro } from '@/lib/pro';
+import { isPro, SPONSOR_URL } from '@/lib/pro';
 
 const THEME_OPTIONS: { value: ThemeVariant; label: string; bg: string }[] = [
   { value: 'black', label: 'Black', bg: '#0D0D0D' },
@@ -75,7 +75,7 @@ function ProGate({ children }: { children: React.ReactNode }) {
             justifyContent: 'center', alignItems: 'center',
           }}
           pointerEvents="box-only"
-          onPress={() => Alert.alert('Pro Feature', 'Sponsor Shelly on GitHub to unlock.\nhttps://github.com/sponsors/RYOITABASHI')}
+          onPress={() => Alert.alert('Pro Feature', `Sponsor Shelly on GitHub to unlock.\n${SPONSOR_URL}`)}
         />
       )}
       {children}
