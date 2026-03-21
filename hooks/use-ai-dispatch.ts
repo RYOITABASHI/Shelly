@@ -439,12 +439,13 @@ export function useAIDispatch() {
     if (target === 'cerebras') {
       const cerebrasKey = settings.cerebrasApiKey ?? '';
       if (!cerebrasKey) {
+        // No key — fall through to next provider (don't create empty bubble)
         return { handled: false };
       }
 
       const { cerebrasChatStream } = await import('@/lib/cerebras');
       type CerebrasMsg = { role: 'system' | 'user' | 'assistant'; content: string };
-      const msgId = addAssistantMessage(chatSessionId, 'cerebras' as any);
+      const msgId = addAssistantMessage(chatSessionId, 'cerebras');
       streamingMsgRef.current = { sessionId: chatSessionId, msgId };
 
       try {

@@ -10,7 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type ChatAgent = 'claude' | 'gemini' | 'local' | 'groq' | 'perplexity' | 'team' | 'git' | 'codex';
+export type ChatAgent = 'claude' | 'gemini' | 'local' | 'groq' | 'cerebras' | 'perplexity' | 'team' | 'git' | 'codex';
 
 export type CommandExecution = {
   command: string;

@@ -312,8 +312,10 @@ const en: Record<string, string> = {
   // Cerebras
   'settings.cerebras_title': 'Cerebras API',
   'settings.cerebras_key': 'Cerebras API Key',
-  'settings.cerebras_key_desc': 'Get from cloud.cerebras.ai (free)',
+  'settings.cerebras_key_desc': 'Chat AI — get from cloud.cerebras.ai (free)',
   'settings.cerebras_model': 'Cerebras Model',
+  'settings.cerebras_configured': 'Cerebras configured ✓',
+  'settings.cerebras_hint': 'Free: 1M tokens/day. Sign up at cloud.cerebras.ai',
 
   // Bridge recovery banner
   'bridge.disconnected_title': 'Termux bridge disconnected',

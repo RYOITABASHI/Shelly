@@ -1338,6 +1338,54 @@ export default function SettingsScreen() {
           </Text>
         </View>
 
+            {/* ── Cerebras API ──────────────────────────────────────────────── */}
+        <SectionHeader
+          title={t('settings.cerebras_title')}
+          subtitle={t('settings.cerebras_key_desc')}
+        />
+
+        <View style={styles.wsUrlRow}>
+          <Text style={styles.wsUrlLabel}>{t('settings.api_key')}</Text>
+          <View style={styles.wsUrlInputRow}>
+            <TextInput
+              style={[styles.wsUrlInput, { color: '#A78BFA' }]}
+              value={settings.cerebrasApiKey ?? ''}
+              onChangeText={(v) => updateSettings({ cerebrasApiKey: v.trim() })}
+              placeholder="csk-xxxxxxxxxxxxxxxxxxxx"
+              placeholderTextColor="#4B5563"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              returnKeyType="done"
+            />
+          </View>
+          <Text style={styles.wsUrlHint}>
+            {settings.cerebrasApiKey
+              ? t('settings.cerebras_configured')
+              : t('settings.cerebras_hint')
+            }
+          </Text>
+        </View>
+
+        <View style={styles.wsUrlRow}>
+          <Text style={styles.wsUrlLabel}>{t('settings.model')}</Text>
+          <View style={styles.wsUrlInputRow}>
+            <TextInput
+              style={[styles.wsUrlInput, { color: '#A78BFA' }]}
+              value={settings.cerebrasModel ?? 'qwen-3-235b-a22b-instruct-2507'}
+              onChangeText={(v) => updateSettings({ cerebrasModel: v.trim() || 'qwen-3-235b-a22b-instruct-2507' })}
+              placeholder="qwen-3-235b-a22b-instruct-2507"
+              placeholderTextColor="#4B5563"
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="done"
+            />
+          </View>
+          <Text style={styles.wsUrlHint}>
+            qwen-3-235b-a22b-instruct-2507 (default)
+          </Text>
+        </View>
+
             {/* ── Perplexity API ─────────────────────────────────────────────── */}
         <SectionHeader
           title={t('settings.perplexity_title')}

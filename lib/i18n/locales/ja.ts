@@ -313,8 +313,10 @@ const ja: Record<string, string> = {
   // Cerebras
   'settings.cerebras_title': 'Cerebras API',
   'settings.cerebras_key': 'Cerebras APIキー',
-  'settings.cerebras_key_desc': 'cloud.cerebras.ai から取得（無料）',
+  'settings.cerebras_key_desc': 'チャットAI — cloud.cerebras.ai から取得（無料）',
   'settings.cerebras_model': 'Cerebrasモデル',
+  'settings.cerebras_configured': 'Cerebras 設定済み ✓',
+  'settings.cerebras_hint': '無料: 1日100万トークン。cloud.cerebras.ai で登録',
 
   // ブリッジ復帰バナー
   'bridge.disconnected_title': 'Termuxブリッジが切断されています',
