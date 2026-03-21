@@ -8,7 +8,6 @@ import { useCommandPaletteStore } from "@/hooks/use-command-palette";
 import { useQuickTerminalStore } from "@/hooks/use-quick-terminal";
 import { matchKeybinding, type KeyAction } from "@/lib/keybindings";
 import { MultiPaneContainer } from "@/components/multi-pane/MultiPaneContainer";
-import { MultiPaneToggle } from "@/components/multi-pane/MultiPaneToggle";
 import { CommandPalette } from "@/components/CommandPalette";
 import { QuickTerminal } from "@/components/QuickTerminal";
 import { SetupWizard, isSetupWizardComplete } from "@/components/SetupWizard";
@@ -186,9 +185,6 @@ export default function TabLayout() {
           options={{ href: null }}
         />
       </Tabs>
-
-      {/* Multi-pane toggle FAB (only on wide screens) */}
-      {layout.isWide && <MultiPaneToggle />}
 
       {/* Multi-pane overlay (covers entire screen when active) */}
       {showMultiPane && <MultiPaneContainer />}
