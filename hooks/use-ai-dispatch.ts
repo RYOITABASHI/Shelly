@@ -443,16 +443,15 @@ export function useAIDispatch() {
         return { handled: false };
       }
 
-      const { cerebrasChatStream } = await import('@/lib/cerebras');
-      type CerebrasMsg = { role: 'system' | 'user' | 'assistant'; content: string };
       const msgId = addAssistantMessage(chatSessionId, 'cerebras');
       streamingMsgRef.current = { sessionId: chatSessionId, msgId };
 
       try {
+        const { cerebrasChatStream } = await import('@/lib/cerebras');
         let accumulatedText = '';
         updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', tokenCount: 0, streamingStartTime: Date.now() });
 
-        const cerebrasHistory: CerebrasMsg[] = messages.slice(-6).map((m) => ({
+        const cerebrasHistory = messages.slice(-6).map((m: ChatMessage) => ({
           role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
           content: m.content,
         }));
