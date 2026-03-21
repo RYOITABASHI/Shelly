@@ -186,13 +186,18 @@ export async function runPhase2Setup(
     results.bootScript = fallback.exitCode === 0;
   }
 
-  // 2. ttyd
+  // 2. ttyd (install if missing, then start)
   onProgress({ step: 'ttyd', results });
+  const ttydInstalled = await exec('which ttyd >/dev/null 2>&1 && echo YES || echo NO', { timeoutMs: 5000 });
+  if (ttydInstalled.stdout.includes('NO')) {
+    // ttyd not installed — try to install
+    await exec('pkg install -y ttyd 2>&1', { timeoutMs: 120000 });
+  }
   const ttydCheck = await exec(
     'pgrep -f ttyd >/dev/null 2>&1 || (ttyd -p 7681 bash &); sleep 1; pgrep -f ttyd >/dev/null 2>&1 && echo OK || echo FAIL',
     { timeoutMs: 10000 },
   );
-  results.ttyd = ttydCheck.stdout.includes('OK') || ttydCheck.exitCode === 0;
+  results.ttyd = ttydCheck.stdout.includes('OK');
 
   // 3. CLI detection
   onProgress({ step: 'cli_detect', results });
