@@ -196,10 +196,10 @@ export async function runPhase2Setup(
     await exec('pkg install -y ttyd 2>&1', { timeoutMs: 120000 });
   }
   const ttydCheck = await exec(
-    'pgrep -f "ttyd.*7681" >/dev/null 2>&1 || (nohup ttyd -p 7681 bash > /dev/null 2>&1 & disown); sleep 2; curl -s -o /dev/null -w "%{http_code}" http://localhost:7681',
+    'pgrep -f "ttyd.*7681" >/dev/null 2>&1 && echo ALREADY || (nohup ttyd -p 7681 -W bash > /dev/null 2>&1 & sleep 2 && curl -s -o /dev/null -w "%{http_code}" http://localhost:7681)',
     { timeoutMs: 15000 },
   );
-  results.ttyd = ttydCheck.stdout.includes('200');
+  results.ttyd = ttydCheck.stdout.includes('200') || ttydCheck.stdout.includes('ALREADY');
 
   // 3. CLI detection
   onProgress({ step: 'cli_detect', results });

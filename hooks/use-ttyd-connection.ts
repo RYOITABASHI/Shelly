@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
-import { runTermuxCommand } from '@/lib/termux-intent';
+import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 
 type TtydStatus = 'connecting' | 'connected' | 'error';
 
@@ -21,6 +21,7 @@ let _ttydLaunchAttempted = false;
 
 export function useTtydConnection() {
   const { termuxSettings } = useTerminalStore();
+  const { runRawCommand, isConnected: bridgeConnected } = useTermuxBridge();
   const ttyUrl = termuxSettings.ttyUrl || 'http://localhost:7681';
 
   const [status, setStatus] = useState<TtydStatus>('connecting');
@@ -53,21 +54,23 @@ export function useTtydConnection() {
     }
   }, [ttyUrl]);
 
-  // Auto-launch ttyd via RUN_COMMAND (fire-and-forget fallback).
-  // Primary ttyd launch happens in Phase 2 setup via bridge WebSocket.
-  // This is a best-effort fallback when Termux is running but bridge is unavailable.
+  // Auto-launch ttyd via bridge WebSocket (reliable) or fallback
   const autoLaunchTtyd = useCallback(async () => {
     if (_ttydLaunchAttempted) return;
     _ttydLaunchAttempted = true;
     try {
-      await runTermuxCommand({
-        command: 'pkill -f "ttyd" 2>/dev/null; sleep 0.5; ttyd -W -p 7681 bash &',
-      });
+      if (bridgeConnected) {
+        // Bridge available — use nohup + sleep pattern for reliable background launch
+        await runRawCommand(
+          'nohup ttyd -p 7681 -W bash > /dev/null 2>&1 & sleep 2 && echo OK',
+          { timeoutMs: 10000, reason: 'ttyd-auto-launch' },
+        );
+      }
     } catch {
-      // Best-effort: RUN_COMMAND may fail if Termux is not running
+      // Best-effort
     }
     setTimeout(() => { _ttydLaunchAttempted = false; }, 30000);
-  }, []);
+  }, [bridgeConnected, runRawCommand]);
 
   const startRetryLoop = useCallback(() => {
     clearTimer();
