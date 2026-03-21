@@ -108,6 +108,7 @@ export function buildSetupCommand(): string {
     'npm init -y 2>/dev/null',
     'npm install ws 2>&1',
     `cat << 'SHELLY_BRIDGE_EOF' > server.js\n${BRIDGE_SERVER_JS}\nSHELLY_BRIDGE_EOF`,
+    'ttyd -p 7681 -W bash &',  // Start ttyd in background before bridge
     'node server.js',
   ].join(' && ');
 }

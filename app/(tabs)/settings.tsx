@@ -177,6 +177,7 @@ export default function SettingsScreen() {
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
   const [showAuthWizard, setShowAuthWizard] = useState(false);
+  const [showAllThemes, setShowAllThemes] = useState(false);
 
   // Local LLM state
   const [llmUrlInput, setLlmUrlInput] = useState(settings.localLlmUrl);
@@ -1687,10 +1688,10 @@ export default function SettingsScreen() {
           <MaterialIcons name="chevron-right" size={18} color="#6B7280" />
         </Pressable>
 
-        {/* ── Theme Engine (New) ──────────────────────────────────────────── */}
+        {/* ── Theme Engine ─────────────────────────────────────────────── */}
         <SectionHeader title={t('settings.theme') + ' (Engine)'} subtitle="WezTerm-style full color themes" />
         <View style={styles.themeOptions}>
-          {allThemes.map((th) => (
+          {(showAllThemes ? allThemes : allThemes.slice(0, 6)).map((th) => (
             <Pressable
               key={th.id}
               onPress={() => setEngineTheme(th.id)}
@@ -1708,6 +1709,13 @@ export default function SettingsScreen() {
             </Pressable>
           ))}
         </View>
+        {allThemes.length > 6 && (
+          <Pressable onPress={() => setShowAllThemes(!showAllThemes)} style={{ paddingVertical: 8, alignItems: 'center' }}>
+            <Text style={{ color: '#00D4AA', fontSize: 12, fontFamily: 'monospace' }}>
+              {showAllThemes ? `▲ ${allThemes.length - 6} themes hidden` : `▼ +${allThemes.length - 6} more themes`}
+            </Text>
+          </Pressable>
+        )}
 
         {/* ── Language / i18n ──────────────────────────────────────────────── */}
         <SectionHeader title={t('settings.language')} subtitle={t('settings.language_desc')} />
