@@ -160,7 +160,9 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
 
   // @mention detection: show dropdown when input starts with @ (no space yet after trigger)
   const mentionState = useMemo(() => {
-    const trimmed = inputText.trimStart();
+    let trimmed = inputText.trimStart();
+    // Support fullwidth @ (Japanese keyboards)
+    if (trimmed.startsWith('＠')) trimmed = '@' + trimmed.slice(1);
     if (!trimmed.startsWith('@')) return null;
     // If there's a space after the @word, mention is already "committed"
     const firstSpace = trimmed.indexOf(' ');

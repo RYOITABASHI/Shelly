@@ -13,7 +13,7 @@ import { t } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'groq' | 'team' | 'browser' | 'git' | 'agent' | 'codex';
+export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex';
 
 export type InputLayer =
   | 'mention'        // @claude / @gemini / @local
@@ -72,6 +72,7 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
   { pattern: /^@table\s*/i,       target: 'team',        label: 'Team Table' },
   { pattern: /^@git\s*/i,          target: 'git',         label: 'Git Guide' },
   { pattern: /^@codex\s*/i,        target: 'codex',       label: 'Codex CLI' },
+  { pattern: /^@cerebras\s*/i,    target: 'cerebras',    label: 'Cerebras' },
   { pattern: /^@agent\s*/i,        target: 'agent',       label: 'AI Agent' },
   { pattern: /^@edit\s*/i,         target: 'agent',       label: 'AI Agent' },
   { pattern: /^@code\s*/i,         target: 'agent',       label: 'AI Agent' },

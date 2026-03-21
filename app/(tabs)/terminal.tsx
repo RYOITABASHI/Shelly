@@ -249,13 +249,13 @@ function SetupGuide({ url, onRetry, colors: c }: { url: string; onRetry: () => v
   const [oneTapCopied, setOneTapCopied] = useState(false);
 
   const handleCopy = async () => {
-    await Clipboard.setStringAsync(BASHRC_SCRIPT);
+    try { await Clipboard.setStringAsync(BASHRC_SCRIPT); } catch {}
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleOneTapSetup = async () => {
-    await Clipboard.setStringAsync(ONE_TAP_SETUP);
+    try { await Clipboard.setStringAsync(ONE_TAP_SETUP); } catch {}
     setOneTapCopied(true);
     // Open Termux so user can paste
     Linking.openURL('com.termux://').catch(() => {

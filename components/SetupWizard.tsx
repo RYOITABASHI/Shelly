@@ -304,14 +304,14 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
                 <View style={styles.installButtons}>
                   <Pressable
                     style={styles.installBtn}
-                    onPress={() => Linking.openURL(urls.fdroid)}
+                    onPress={() => Linking.openURL(urls.fdroid).catch(() => {})}
                   >
                     <Text style={styles.installBtnText}>F-Droid</Text>
                   </Pressable>
                   {urls.playStore != null && (
                     <Pressable
                       style={[styles.installBtn, { borderColor: '#333' }]}
-                      onPress={() => Linking.openURL(urls.playStore!)}
+                      onPress={() => Linking.openURL(urls.playStore!).catch(() => {})}
                     >
                       <Text style={[styles.installBtnText, { color: '#6B7280' }]}>Play</Text>
                     </Pressable>

@@ -93,7 +93,7 @@ export function ChatOnboarding({ step, onStepChange }: Props) {
         <Text style={styles.message}>{t('onboarding.cerebras_prompt')}</Text>
         <Pressable
           style={styles.linkBtn}
-          onPress={() => Linking.openURL('https://cloud.cerebras.ai')}
+          onPress={() => Linking.openURL('https://cloud.cerebras.ai').catch(() => {})}
         >
           <MaterialIcons name="open-in-new" size={14} color="#A78BFA" />
           <Text style={styles.linkText}>{t('onboarding.open_browser')}</Text>
@@ -144,7 +144,7 @@ export function ChatOnboarding({ step, onStepChange }: Props) {
         <Text style={styles.message}>{t('onboarding.groq_prompt')}</Text>
         <Pressable
           style={styles.linkBtn}
-          onPress={() => Linking.openURL('https://console.groq.com')}
+          onPress={() => Linking.openURL('https://console.groq.com').catch(() => {})}
         >
           <MaterialIcons name="open-in-new" size={14} color="#F97316" />
           <Text style={[styles.linkText, { color: '#F97316' }]}>{t('onboarding.open_browser')}</Text>
