@@ -13,6 +13,7 @@ import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useTerminalStore } from '@/store/terminal-store';
 import { ConnectionMode, BridgeStatus } from '@/store/types';
+import { StatusIndicator } from '@/components/StatusIndicator';
 import { FullscreenTerminal } from './FullscreenTerminal';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -297,6 +298,7 @@ export function TerminalHeader() {
         wsUrl={useTerminalStore.getState().termuxSettings.wsUrl || 'ws://127.0.0.1:8765'}
         onClose={() => setFullscreenVisible(false)}
       />
+      <StatusIndicator />
     </View>
   );
 }
