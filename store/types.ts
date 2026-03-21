@@ -310,10 +310,15 @@ export type AppSettings = {
   /** Geminiに使用するモデル (default: gemini-2.0-flash) */
   geminiModel?: string;
   // ─── Groq API ─────────────────────────────────────────────────────────────────
-  /** Groq API キー (https://console.groq.com) */
+  /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
   groqApiKey?: string;
   /** Groqに使用するモデル (default: llama-3.3-70b-versatile) */
   groqModel?: string;
+  // ─── Cerebras API ──────────────────────────────────────────────────────────────
+  /** Cerebras API キー (https://cloud.cerebras.ai) */
+  cerebrasApiKey?: string;
+  /** Cerebrasに使用するモデル (default: qwen-3-235b-a22b-instruct-2507) */
+  cerebrasModel?: string;
   // ─── ガラス背景・壁紙 ────────────────────────────────────────────────────────────
   /** 背景の透明度 (0.0=完全透明 〜 1.0=不透明, default: 1.0) */
   backgroundOpacity: number;

@@ -308,6 +308,12 @@ const en: Record<string, string> = {
   'setup2.auto_step_cli': 'Detecting AI tools',
   'setup2.auto_step_llm': 'Detecting local AI',
 
+  // Cerebras
+  'settings.cerebras_title': 'Cerebras API',
+  'settings.cerebras_key': 'Cerebras API Key',
+  'settings.cerebras_key_desc': 'Get from cloud.cerebras.ai (free)',
+  'settings.cerebras_model': 'Cerebras Model',
+
   // Bridge recovery banner
   'bridge.disconnected_title': 'Termux bridge disconnected',
   'bridge.restart_termux': 'Restart in Termux',

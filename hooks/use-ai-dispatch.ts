@@ -435,7 +435,126 @@ export function useAIDispatch() {
       return { handled: true };
     }
 
-    // ── Groq (fast chat, offline → local LLM fallback) ──
+    // ── Cerebras (fastest frontier chat, Qwen3-235B, offline → local LLM fallback) ──
+    if (target === 'cerebras') {
+      const cerebrasKey = settings.cerebrasApiKey ?? '';
+      if (!cerebrasKey) {
+        return { handled: false };
+      }
+
+      const { cerebrasChatStream } = await import('@/lib/cerebras');
+      type CerebrasMsg = { role: 'system' | 'user' | 'assistant'; content: string };
+      const msgId = addAssistantMessage(chatSessionId, 'cerebras' as any);
+      streamingMsgRef.current = { sessionId: chatSessionId, msgId };
+
+      try {
+        let accumulatedText = '';
+        updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', tokenCount: 0, streamingStartTime: Date.now() });
+
+        const cerebrasHistory: CerebrasMsg[] = messages.slice(-6).map((m) => ({
+          role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+          content: m.content,
+        }));
+
+        const result = await cerebrasChatStream(
+          cerebrasKey,
+          promptWithFiles,
+          (chunk, done) => {
+            if (signal.aborted) return;
+            if (chunk) {
+              accumulatedText += chunk;
+              updateMessage(chatSessionId, msgId, {
+                streamingText: accumulatedText,
+                tokenCount: estimateTokens(accumulatedText),
+                isStreaming: !done,
+              });
+            }
+            if (done) {
+              updateMessage(chatSessionId, msgId, {
+                content: accumulatedText,
+                streamingText: undefined,
+                isStreaming: false,
+                tokenCount: estimateTokens(accumulatedText),
+              });
+              useExecutionLogStore.getState().addEntry({
+                source: 'ai-agent',
+                agent: 'Cerebras',
+                userInput: prompt,
+                aiResponse: accumulatedText.slice(0, 200),
+              });
+            }
+          },
+          settings.cerebrasModel || 'qwen-3-235b-a22b-instruct-2507',
+          cerebrasHistory,
+          signal,
+        );
+
+        // Offline fallback: try local LLM
+        if (!result.success && result.networkError && settings.localLlmEnabled) {
+          updateMessage(chatSessionId, msgId, {
+            content: '',
+            streamingText: 'オフライン検出 — ローカルLLMにフォールバック中...',
+            isStreaming: true,
+          });
+
+          accumulatedText = '';
+          const { ollamaChatStream } = await import('@/lib/local-llm');
+          const config = {
+            baseUrl: settings.localLlmUrl,
+            model: settings.localLlmModel,
+            enabled: settings.localLlmEnabled,
+          };
+          const ollamaHistory: OllamaMessage[] = messages.slice(-6).map((m) => ({
+            role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+            content: m.content,
+          }));
+          const ollamaMessages: OllamaMessage[] = [
+            ...ollamaHistory,
+            { role: 'user', content: promptWithFiles },
+          ];
+          await ollamaChatStream(
+            config, ollamaMessages,
+            (chunk, done) => {
+              if (signal.aborted) return;
+              if (chunk) {
+                accumulatedText += chunk;
+                updateMessage(chatSessionId, msgId, {
+                  streamingText: accumulatedText,
+                  tokenCount: estimateTokens(accumulatedText),
+                  isStreaming: !done,
+                });
+              }
+              if (done) {
+                updateMessage(chatSessionId, msgId, {
+                  content: accumulatedText,
+                  streamingText: undefined,
+                  isStreaming: false,
+                  tokenCount: estimateTokens(accumulatedText),
+                  llmModelLabel: `${settings.localLlmModel} (offline fallback)`,
+                });
+              }
+            },
+            120000,
+            signal,
+          );
+        } else if (!result.success && !accumulatedText) {
+          updateMessage(chatSessionId, msgId, {
+            content: '', error: result.error ?? 'Cerebras error',
+            isStreaming: false,
+          });
+        }
+      } catch (err) {
+        if (!signal.aborted) {
+          updateMessage(chatSessionId, msgId, {
+            content: '', error: `Cerebras error: ${err instanceof Error ? err.message : String(err)}`,
+            isStreaming: false,
+          });
+        }
+      }
+      return { handled: true };
+    }
+
+    // ── Groq (fast chat fallback, offline → local LLM fallback) ──
     if (target === 'groq') {
       const groqKey = settings.groqApiKey ?? '';
       if (!groqKey) {

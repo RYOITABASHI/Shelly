@@ -443,13 +443,17 @@ export default function ChatScreen() {
 
     let target: string = parsed.target;
 
-    // Natural language → route by priority: Groq > Local LLM > default CLI agent
-    // Groq handles conversational chat (fastest, free 1000 req/day)
-    // Local LLM handles offline chat
-    // CLI agents (Claude/Gemini/Codex) handle code-related tasks
+    // Natural language → route by priority: Cerebras > Groq > Local LLM > default CLI agent
+    // Cerebras Qwen3-235B: fastest frontier model, 1M tokens/day free
+    // Groq: fast fallback (also handles Whisper STT separately)
+    // Local LLM: offline fallback
+    // CLI agents: code-related tasks only
     if (parsed.layer === 'natural') {
-      if (settings.groqApiKey) {
-        // Groq: fastest, best for conversational chat
+      if (settings.cerebrasApiKey) {
+        // Cerebras: fastest, Qwen3-235B, best for conversational chat
+        target = 'cerebras';
+      } else if (settings.groqApiKey) {
+        // Groq: fast fallback
         target = 'groq';
       } else if (settings.localLlmEnabled) {
         // Local LLM: offline fallback for chat

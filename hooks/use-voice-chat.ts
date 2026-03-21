@@ -172,8 +172,29 @@ export function useVoiceChat() {
       abortRef.current = new AbortController();
       let response = '';
 
-      if (groqKey && groqKey.trim().length >= 10) {
-        // Use Groq for voice chat response (fast)
+      const cerebrasKey = settings.cerebrasApiKey ?? '';
+      if (cerebrasKey && cerebrasKey.trim().length >= 10) {
+        // Use Cerebras for voice chat response (fastest, Qwen3-235B)
+        const { cerebrasChatStream } = await import('@/lib/cerebras');
+        const chatHistory = conversationRef.current.slice(0, -1).map((m) => ({
+          role: (m.role === 'model' ? 'assistant' : m.role) as 'user' | 'assistant',
+          content: m.parts[0]?.text ?? '',
+        }));
+        const result = await cerebrasChatStream(
+          cerebrasKey,
+          transcript,
+          () => {}, // no streaming UI for voice chat
+          settings.cerebrasModel || 'qwen-3-235b-a22b-instruct-2507',
+          chatHistory,
+          abortRef.current.signal,
+        );
+        if (!result.success) {
+          setState((s) => ({ ...s, status: 'idle', error: result.error }));
+          return;
+        }
+        response = result.content ?? '';
+      } else if (groqKey && groqKey.trim().length >= 10) {
+        // Groq fallback for voice chat response
         const { groqChatStream } = await import('@/lib/groq');
         const groqHistory = conversationRef.current.slice(0, -1).map((m) => ({
           role: (m.role === 'model' ? 'assistant' : m.role) as 'user' | 'assistant',
@@ -182,7 +203,7 @@ export function useVoiceChat() {
         const result = await groqChatStream(
           groqKey,
           transcript,
-          () => {}, // no streaming UI for voice chat
+          () => {},
           settings.groqModel || 'llama-3.3-70b-versatile',
           groqHistory,
           abortRef.current.signal,

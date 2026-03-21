@@ -309,6 +309,12 @@ const ja: Record<string, string> = {
   'setup2.auto_step_cli': 'AIツールを検出中',
   'setup2.auto_step_llm': 'ローカルAIを検出中',
 
+  // Cerebras
+  'settings.cerebras_title': 'Cerebras API',
+  'settings.cerebras_key': 'Cerebras APIキー',
+  'settings.cerebras_key_desc': 'cloud.cerebras.ai から取得（無料）',
+  'settings.cerebras_model': 'Cerebrasモデル',
+
   // ブリッジ復帰バナー
   'bridge.disconnected_title': 'Termuxブリッジが切断されています',
   'bridge.restart_termux': 'Termuxで再起動',
