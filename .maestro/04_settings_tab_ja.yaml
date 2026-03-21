@@ -1,0 +1,11 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# 設定タブ E2E テスト (日本語版)
+
+- launchApp
+- tapOn: "Settings"
+- assertVisible:
+    text: "設定"
+    optional: true
+- assertVisible: "表示"
+- assertVisible: "テーマ"

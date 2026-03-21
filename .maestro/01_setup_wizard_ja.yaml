@@ -1,0 +1,54 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# セットアップウィザード E2E テスト (日本語版)
+# 前提条件: アプリが初期状態（セットアップ未完了）
+
+- launchApp
+
+# Step 1: ようこそ画面
+- assertVisible: "Shellyへようこそ"
+- assertVisible: "セットアップへ進む"
+- tapOn: "セットアップへ進む"
+
+# Step 2: アプリのインストール画面
+- assertVisible: "アプリをインストール"
+- assertVisible: "Termux"
+
+# Termuxがインストール済みの場合、「セットアップ開始」ボタンが有効になる
+- tapOn:
+    text: "セットアップ開始"
+    enabled: true
+
+# 画面遷移を待つ
+- waitForAnimationToEnd
+
+# Step 3: Termuxの初期化（スキップされる場合がある）
+- assertVisible:
+    text: "Termuxの初期化"
+    optional: true
+
+# 初期化画面が表示された場合のみセットアップ開始をタップ
+- tapOn:
+    text: "セットアップ開始"
+    optional: true
+
+# セットアップ処理を待つ
+- waitForAnimationToEnd
+
+# Step 4: 完了画面
+# セットアップが完了するまで待機
+- waitForAnimationToEnd
+
+- assertVisible: "準備完了！"
+- assertVisible: "はじめる"
+- tapOn: "はじめる"
+
+# 画面遷移を待つ
+- waitForAnimationToEnd
+
+# セットアップ完了後、チャットタブに遷移
+# タブバーは英語表示になっている
+- assertVisible: "Chat"
+- assertVisible: "Projects"
+- assertVisible: "Terminal"
+- assertVisible: "Settings"

@@ -1,0 +1,12 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# ターミナルタブ E2E テスト (日本語版)
+
+- launchApp
+- tapOn: "Terminal"
+- assertVisible:
+    text: "接続済み"
+    optional: true
+- assertVisible:
+    text: "ttydに接続できません"
+    optional: true

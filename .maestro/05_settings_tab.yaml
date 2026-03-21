@@ -1,0 +1,108 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# Settings Tab E2E Test Flow
+# Tests the settings screen display and basic navigation
+# Prerequisites: Setup wizard completed
+
+- launchApp
+
+# Navigate to Settings tab
+- tapOn: "Settings"
+- waitForAnimationToEnd
+
+# Verify Settings screen loaded
+- assertVisible: "Settings"
+
+# Check basic sections are visible
+- assertVisible: "Display"
+- assertVisible: "Theme"
+- assertVisible: "Behavior"
+
+# Scroll down to see more sections
+- scroll
+
+- assertVisible:
+    text: "Sound & Effects"
+    optional: true
+
+# Test advanced settings toggle
+- tapOn: "Show advanced settings"
+- waitForAnimationToEnd
+
+# Advanced sections should now be visible
+- scroll
+
+- assertVisible:
+    text: "Termux Integration"
+    timeout: 3000
+    optional: true
+
+- assertVisible:
+    text: "Local LLM (llama-server)"
+    timeout: 3000
+    optional: true
+
+# Hide advanced settings
+- scroll
+
+- tapOn: "Hide advanced settings"
+- waitForAnimationToEnd
+
+# Test theme selection
+- scroll
+- tapOn: "Theme"
+- waitForAnimationToEnd
+
+# Theme options should appear
+- assertVisible:
+    text: "Tokyo Night"
+    optional: true
+
+- assertVisible:
+    text: "Dracula"
+    optional: true
+
+# Close theme selection (tap outside or back)
+- pressKey: Back
+  optional: true
+
+# Test language setting
+- scroll
+
+- tapOn:
+    text: "Language"
+    optional: true
+- waitForAnimationToEnd
+
+# Language options
+- assertVisible:
+    text: "English"
+    timeout: 3000
+    optional: true
+
+- assertVisible:
+    text: "日本語"
+    timeout: 3000
+    optional: true
+
+# Go back
+- pressKey: Back
+  optional: true
+
+# Scroll to bottom to check all sections loaded
+- scroll
+- scroll
+
+# Check About section
+- assertVisible:
+    text: "About"
+    timeout: 3000
+    optional: true
+
+# Return to top
+- scroll
+- scroll
+
+# Navigate back to Chat
+- tapOn: "Chat"
+- assertVisible: "Chat"

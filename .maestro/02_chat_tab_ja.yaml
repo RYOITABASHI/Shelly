@@ -1,0 +1,13 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# チャットタブ E2E テスト (日本語版)
+
+- launchApp
+- assertVisible: "Chat"
+- assertVisible: "Shelly"
+- tapOn:
+    text: "何でも聞いてください..."
+    optional: true
+- inputText: "pwd"
+- pressKey: Enter
+- waitForAnimationToEnd

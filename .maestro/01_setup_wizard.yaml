@@ -1,0 +1,57 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# SetupWizard E2E Test Flow
+# Tests the complete setup wizard flow from welcome to completion
+# Note: This test assumes the app is in a fresh state (no prior setup)
+
+- launchApp
+
+# Step 1: Hero/Welcome Screen
+- assertVisible: "Welcome to Shelly"
+- assertVisible: "Continue to Setup"
+- tapOn: "Continue to Setup"
+- waitForAnimationToEnd
+
+# Step 2: Install Apps Screen
+- assertVisible: "Install Apps"
+- assertVisible: "Termux"
+- assertVisible: "Termux:Boot"
+# Note: In real testing, Termux should be installed
+# For now, we'll check if the button state changes when apps are detected
+- waitForAnimationToEnd
+
+# Skip to next step if Termux is already installed
+- tapOn:
+    text: "Start Setup"
+    enabled: true
+- waitForAnimationToEnd
+
+# Step 3: Initialize Termux Screen
+- assertVisible: "Initialize Termux"
+- tapOn: "Start Setup"
+- waitForAnimationToEnd
+
+# During initialization, feature slides should appear
+- waitForAnimationToEnd:
+    timeout: 10000
+
+# Step 4: Auto Setup (Finishing Setup)
+# This runs via bridge connection
+# Wait for completion (may take some time)
+- waitForAnimationToEnd:
+    timeout: 30000
+
+# Step 5: Complete Screen
+- assertVisible: "All Set!"
+- assertVisible: "Get Started"
+- tapOn: "Get Started"
+
+# After completing setup, should land on Chat tab
+- assertVisible:
+    text: "Chat"
+- assertVisible:
+    text: "Projects"
+- assertVisible:
+    text: "Terminal"
+- assertVisible:
+    text: "Settings"

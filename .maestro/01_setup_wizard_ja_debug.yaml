@@ -1,0 +1,69 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# セットアップウィザード E2E テスト (日本語版・デバッグ用)
+# 各ステップでスクリーンショットを撮影
+
+- launchApp
+- takeScreenshot: 01_launch
+
+# Step 1: ようこそ画面
+- assertVisible: "Shellyへようこそ"
+- takeScreenshot: 02_welcome
+
+- assertVisible: "セットアップへ進む"
+- tapOn: "セットアップへ進む"
+- takeScreenshot: 03_after_welcome_tap
+
+# Step 2: アプリのインストール画面
+- assertVisible: "アプリをインストール"
+- takeScreenshot: 04_install_screen
+
+- assertVisible: "Termux"
+
+# Termuxがインストール済みの場合、「セットアップ開始」ボタンが有効になる
+- tapOn:
+    text: "セットアップ開始"
+    enabled: true
+- takeScreenshot: 05_after_setup_start_tap
+
+# 画面遷移を待つ
+- waitForAnimationToEnd
+- takeScreenshot: 06_after_animation
+
+# Step 3: Termuxの初期化
+- assertVisible: "Termuxの初期化"
+- takeScreenshot: 07_init_screen
+
+- tapOn: "セットアップ開始"
+- takeScreenshot: 08_after_init_tap
+
+# セットアップ処理を待つ
+- waitForAnimationToEnd
+- takeScreenshot: 09_setup_processing
+
+# 初期化中にスライドが表示される
+# 数秒待つ
+- waitForAnimationToEnd
+- takeScreenshot: 10_waiting_complete
+
+# Step 4: セットアップの仕上げ（ブリッジ経由）
+# この処理には時間がかかる場合がある
+
+# Step 5: 完了画面
+# 待機時間を確保
+- waitForAnimationToEnd
+- takeScreenshot: 11_final_wait
+
+- assertVisible: "準備完了！"
+- takeScreenshot: 12_complete_screen
+
+- assertVisible: "はじめる"
+- tapOn: "はじめる"
+- takeScreenshot: 13_after_start_tap
+
+# セットアップ完了後、チャットタブに遷移
+- assertVisible: "チャット"
+- assertVisible: "プロジェクト"
+- assertVisible: "ターミナル"
+- assertVisible: "設定"
+- takeScreenshot: 14_main_tabs

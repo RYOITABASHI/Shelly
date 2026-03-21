@@ -1,0 +1,23 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# Settings Tab E2E Test Flow (Simplified)
+
+- launchApp
+
+# Navigate to Settings tab
+- tapOn: "Settings"
+
+# Verify Settings screen loaded
+- assertVisible: "Settings"
+
+# Check basic sections are visible
+- assertVisible: "Display"
+- assertVisible: "Theme"
+- assertVisible: "Behavior"
+
+# Scroll down
+- scroll
+
+# Navigate back to Chat
+- tapOn: "Chat"
+- assertVisible: "Chat"

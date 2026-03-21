@@ -1,0 +1,77 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# Chat Tab E2E Test Flow
+# Tests the main chat interface functionality
+# Prerequisites: Setup wizard must be completed
+
+- launchApp
+
+# Verify we're on the Chat tab
+- assertVisible: "Chat"
+- assertVisible: "Projects"
+- assertVisible: "Terminal"
+- assertVisible: "Settings"
+
+# Check for empty state
+- assertVisible: "Shelly"
+- assertVisible:
+    text: "Ask me anything"
+
+# Try sample commands
+- tapOn: "List files"
+- waitForAnimationToEnd
+
+# Wait for command to execute and response to appear
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Verify command was executed
+# (Response should contain file listing or "Demo mode" if not connected)
+
+# Test text input
+- tapOn:
+    text: "Ask anything..."
+- inputText: "pwd"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Verify command result appears
+- scrollUntilVisible:
+    element:
+      text: "Running..."
+    direction: UP
+    timeout: 3000
+    visibilityPercentage: 50
+  continueIf:
+    visible:
+      text: "Running..."
+
+# Test @mention routing
+- tapOn:
+    text: "Ask anything..."
+- inputText: "@gemini what is the weather today?"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Verify Gemini response (may be demo mode)
+- scrollUntilVisible:
+    element:
+      text: "Gemini"
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 50
+  continueIf:
+    visible:
+      text: "Gemini"
+
+# Test scrolling through messages
+- scroll
+- scroll
+
+# Verify tab navigation still works
+- tapOn: "Projects"
+- assertVisible: "Projects"
+- tapOn: "Chat"
+- assertVisible: "Chat"

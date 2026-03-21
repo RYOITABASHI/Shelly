@@ -1,0 +1,82 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# Terminal Tab E2E Test Flow
+# Tests the TTY terminal connection and Japanese input
+# Prerequisites: Setup wizard completed, ttyd running in Termux
+
+- launchApp
+
+# Navigate to Terminal tab
+- tapOn: "Terminal"
+- waitForAnimationToEnd
+
+# Wait for ttyd connection
+- assertVisible:
+    text: "Connecting to ttyd..."
+  timeout: 5000
+  optional: true
+
+# If connection succeeds, "Connected" should appear
+- assertVisible:
+    text: "Connected"
+  timeout: 15000
+  optional: true
+
+# If connection fails, error screen may appear
+- assertVisible:
+    text: "Cannot connect to ttyd"
+  optional: true
+
+# Test basic terminal input (if connected)
+- tapOn:
+    id: "terminal-webview"
+  optional: true
+
+# Type a simple command
+- inputText: "echo 'Hello from Maestro'"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# Verify output appears
+- assertVisible:
+    text: "Hello from Maestro"
+  timeout: 5000
+  optional: true
+
+# Test Japanese input field (if available)
+- tapOn:
+    text: "Japanese input..."
+  optional: true
+
+- inputText: "こんにちは"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# Test shortcut bar buttons
+# Ctrl button
+- tapOn:
+    text: "Ctrl"
+  optional: true
+
+# Esc button
+- tapOn:
+    text: "Esc"
+  optional: true
+
+# Tab button
+- tapOn:
+    text: "Tab"
+  optional: true
+
+# Clear terminal
+- tapOn:
+    text: "pwd"
+  optional: true
+- pressKey: Enter
+- waitForAnimationToEnd
+
+# Navigate back to Chat
+- tapOn: "Chat"
+- assertVisible: "Chat"

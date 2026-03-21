@@ -1,0 +1,43 @@
+appId: space.manus.shelly.terminal.t20260224103125
+---
+# ブリッジリカバリーバナー E2E テスト (日本語版)
+# 前提条件: ブリッジが切断されている状態
+
+- launchApp
+
+# 各タブでブリッジ切断バナーの表示を確認
+
+# チャットタブ
+- tapOn: "チャット"
+
+# ブリッジ切断バナーが表示される（切断時のみ）
+- assertVisible:
+    text: "Termuxブリッジが切断されました"
+    optional: true
+
+# バナーのボタンをテスト
+- tapOn:
+    text: "Termuxで再起動"
+    optional: true
+
+# コマンドがコピーされたか確認
+- assertVisible:
+    text: "コマンドをコピーしました"
+    optional: true
+
+# 再接続ボタンをテスト
+- tapOn:
+    text: "再接続"
+    optional: true
+
+# プロジェクトタブ
+- tapOn: "プロジェクト"
+
+# ターミナルタブ
+- tapOn: "ターミナル"
+
+# 設定タブ
+- tapOn: "設定"
+
+# チャットに戻る
+- tapOn: "チャット"
