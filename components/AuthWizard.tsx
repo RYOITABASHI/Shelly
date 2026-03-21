@@ -13,7 +13,7 @@
  * - SetupWizard (after tool installation)
  * - Settings screen (re-authenticate)
  */
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -67,6 +67,12 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [savingTool, setSavingTool] = useState<AuthToolId | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // Filter tools to show
   const toolsToShow = AUTH_TOOL_CONFIGS.filter(
@@ -158,7 +164,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
             output += data;
             setOauthOutput(output);
             // Detect OAuth URLs in output and open in browser
-            const urlMatch = data.match(/https?:\/\/[^\s"'<>\])+]+/g);
+            const urlMatch = data.match(/https?:\/\/[^\s"'<>]+/g);
             if (urlMatch) {
               for (const url of urlMatch) {
                 Linking.openURL(url).catch(() => {});
@@ -176,6 +182,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
 
         // Wait a moment then re-check auth status
         setTimeout(() => {
+          if (!mountedRef.current) return;
           refreshStatuses();
           setOauthRunning(null);
           setOauthOutput('');
