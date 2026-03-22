@@ -26,7 +26,7 @@ import { generateId } from '@/lib/id';
 import { t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { groqChatStream, type GroqMessage } from '@/lib/groq';
-import { hasTerminalReference } from '@/lib/input-router';
+import { hasTerminalReference, getTerminalIntent, type TerminalIntent } from '@/lib/input-router';
 
 // ─── Auth URL detection ──────────────────────────────────────────────────────
 
@@ -160,7 +160,11 @@ function toPerplexityHistory(messages: ChatMessage[], maxPairs = 4): Array<{ rol
 
 // ─── Cross-pane terminal context injection ──────────────────────────────────
 
-const TERMINAL_CONTEXT_SUFFIX = '\n---\nThe user is referring to the terminal output shown above. Analyze it and respond to their request.\nIf your response includes commands or code that can fix the issue, format them as fenced code blocks (```) so the user can execute them directly.';
+const TERMINAL_CONTEXT_SUFFIXES: Record<TerminalIntent, string> = {
+  'reference': '\n---\nThe user is referring to the terminal output shown above. Analyze it and respond to their request.\nIf your response includes commands or code that can fix the issue, format them as fenced code blocks (```) so the user can execute them directly.',
+  'second-opinion': '\n---\nThe user wants a second opinion on what is happening in the terminal. Review the approach, code, or process shown above. Point out potential issues, suggest improvements, or confirm the approach is sound. Be objective and constructive.',
+  'session-summary': '\n---\nThe user wants a summary of their terminal session. Based on the output above, summarize: what commands were run, what was accomplished, and what the current state is. Be concise and organized.',
+};
 
 /**
  * Build terminal output context for AI injection.
@@ -171,13 +175,15 @@ const TERMINAL_CONTEXT_SUFFIX = '\n---\nThe user is referring to the terminal ou
  * Empty output: always fallback to normal response
  */
 function getTerminalContextForPrompt(prompt: string, isWide: boolean): string {
-  const shouldInject = isWide || hasTerminalReference(prompt);
+  const intent = getTerminalIntent(prompt);
+  const shouldInject = isWide || intent !== null;
   if (!shouldInject) return '';
 
   const termOutput = useExecutionLogStore.getState().getRecentOutput(50);
   if (!termOutput) return '';
 
-  return `\n\n--- Terminal Output (last 50 lines) ---\n${termOutput}${TERMINAL_CONTEXT_SUFFIX}`;
+  const suffix = TERMINAL_CONTEXT_SUFFIXES[intent ?? 'reference'];
+  return `\n\n--- Terminal Output (last 50 lines) ---\n${termOutput}${suffix}`;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────

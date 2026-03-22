@@ -226,6 +226,18 @@ const TERMINAL_REFERENCE_PATTERNS = [
   /(fix|explain|what('s| is))\s*(the|this)\s*(error|output|result)/i,
   /terminal\s*(output|error|result|log)/i,
   /(look at|check|see|read)\s*(the\s*)?(terminal|right)/i,
+  // セカンドオピニオン (5-3)
+  /右で(やってる|やっている)こと(を|)(レビュー|評価|確認|チェック)/,
+  /Claudeが(やってる|やっている)こと(どう|どう思う)/,
+  /(別の|他の)AI(に|で)(聞|確認|レビュー)/,
+  /review what('s| is) (happening|going on) (on the|in the) (right|terminal)/i,
+  /second opinion/i,
+  /what do you think (about|of) (the|this) (approach|code|change)/i,
+  // セッションサマリー (5-4)
+  /さっきの作業(を|)(まとめ|要約|サマリ)/,
+  /作業(内容|ログ|履歴)(を|)(まとめ|教えて)/,
+  /summarize (the|this|my) (session|work|changes)/i,
+  /what did (I|we) (do|change|modify)/i,
 ];
 
 /**
@@ -234,6 +246,35 @@ const TERMINAL_REFERENCE_PATTERNS = [
  */
 export function hasTerminalReference(input: string): boolean {
   return TERMINAL_REFERENCE_PATTERNS.some((p) => p.test(input));
+}
+
+export type TerminalIntent = 'reference' | 'second-opinion' | 'session-summary';
+
+const SECOND_OPINION_PATTERNS = [
+  /右で(やってる|やっている)こと(を|)(レビュー|評価|確認|チェック)/,
+  /Claudeが(やってる|やっている)こと(どう|どう思う)/,
+  /(別の|他の)AI(に|で)(聞|確認|レビュー)/,
+  /review what('s| is) (happening|going on) (on the|in the) (right|terminal)/i,
+  /second opinion/i,
+  /what do you think (about|of) (the|this) (approach|code|change)/i,
+];
+
+const SESSION_SUMMARY_PATTERNS = [
+  /さっきの作業(を|)(まとめ|要約|サマリ)/,
+  /作業(内容|ログ|履歴)(を|)(まとめ|教えて)/,
+  /summarize (the|this|my) (session|work|changes)/i,
+  /what did (I|we) (do|change|modify)/i,
+];
+
+/**
+ * ターミナル参照のインテントを判定する。
+ * セカンドオピニオンやサマリーは異なるシステムプロンプトを使うため。
+ */
+export function getTerminalIntent(input: string): TerminalIntent | null {
+  if (SECOND_OPINION_PATTERNS.some((p) => p.test(input))) return 'second-opinion';
+  if (SESSION_SUMMARY_PATTERNS.some((p) => p.test(input))) return 'session-summary';
+  if (hasTerminalReference(input)) return 'reference';
+  return null;
 }
 
 // ─── 自然言語タスク分類（ツール提案用） ──────────────────────────────────────
