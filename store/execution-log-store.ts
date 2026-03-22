@@ -41,6 +41,15 @@ type ExecutionLogStore = {
   clearEntries: () => void;
   toggleLogPanel: () => void;
   resetUnread: () => void;
+
+  /** 直近100行のターミナル出力（ANSIストリップ済み） */
+  terminalOutput: string[];
+  /** ターミナル出力を追加（100行超でFIFO破棄） */
+  addTerminalOutput: (line: string) => void;
+  /** 直近N行を結合して返す（デフォルト50行） */
+  getRecentOutput: (lines?: number) => string;
+  /** ターミナル出力をクリア */
+  clearTerminalOutput: () => void;
 };
 
 let _logId = 0;
@@ -49,6 +58,7 @@ export const useExecutionLogStore = create<ExecutionLogStore>((set, get) => ({
   entries: [],
   isLogPanelOpen: false,
   unreadCount: 0,
+  terminalOutput: [],
 
   addEntry: (entry) => {
     const id = `elog-${++_logId}-${Date.now()}`;
@@ -77,4 +87,17 @@ export const useExecutionLogStore = create<ExecutionLogStore>((set, get) => ({
   toggleLogPanel: () => set((state) => ({ isLogPanelOpen: !state.isLogPanelOpen })),
 
   resetUnread: () => set({ unreadCount: 0 }),
+
+  addTerminalOutput: (line) => {
+    set((state) => ({
+      terminalOutput: [...state.terminalOutput, line].slice(-100),
+    }));
+  },
+
+  getRecentOutput: (lines = 50) => {
+    const { terminalOutput } = get();
+    return terminalOutput.slice(-lines).join('\n');
+  },
+
+  clearTerminalOutput: () => set({ terminalOutput: [] }),
 }));
