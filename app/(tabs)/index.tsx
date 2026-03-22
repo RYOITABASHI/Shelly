@@ -297,6 +297,7 @@ export default function ChatScreen() {
     const effectiveMode = settings.experienceMode ?? 'learning';
     if (effectiveMode === 'fast') return;
     if (!settings.localLlmEnabled) return;
+    if (!settings.llmInterpreterEnabled) return;
 
     setIsExplainingIntent(true);
     setIntentExplanation('');
@@ -863,7 +864,7 @@ export default function ChatScreen() {
           onStdin={hasActiveCommand ? sendStdin : undefined}
           isRunning={isAnyStreaming || hasActiveCommand}
           isBridgeConnected={isBridgeConnected}
-          showShortcutBar={false}
+          showShortcutBar={settings.externalKeyboardShortcuts ?? false}
         />
       </KeyboardAvoidingView>
 

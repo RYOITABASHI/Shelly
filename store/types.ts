@@ -363,4 +363,8 @@ export type AppSettings = {
   defaultAgent: 'gemini-cli' | 'claude-code' | 'codex';
   /** リアルタイム翻訳ON/OFF（デフォルト: false） */
   realtimeTranslateEnabled?: boolean;
+  /** LLM出力通訳（学習モード）ON/OFF（デフォルト: false） */
+  llmInterpreterEnabled?: boolean;
+  /** 外部キーボードのショートカット表示（デフォルト: false） */
+  externalKeyboardShortcuts?: boolean;
 };

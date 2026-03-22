@@ -53,7 +53,9 @@ export default function TabLayout() {
         useCommandPaletteStore.getState().toggle();
         break;
       case 'quick_terminal':
-        useQuickTerminalStore.getState().toggle();
+        if (!layout.isWide) {
+          useQuickTerminalStore.getState().toggle();
+        }
         break;
       case 'multi_pane_toggle':
         if (layout.isWide) toggleMultiPane();
