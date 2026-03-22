@@ -213,6 +213,29 @@ function matchLightweightTask(input: string): LightweightMatch | null {
   return null;
 }
 
+// ─── ターミナル参照パターン（クロスペインインテリジェンス） ─────────────────────
+
+const TERMINAL_REFERENCE_PATTERNS = [
+  // 日本語
+  /右の(画面|エラー|出力)/,
+  /ターミナル(の|にある|に出てる)(エラー|出力|結果|ログ)/,
+  /さっきの(エラー|出力|結果)/,
+  /このエラー(を|)(直して|修正して|説明して|教えて)/,
+  // 英語
+  /right\s*(panel|screen|side|pane)/i,
+  /(fix|explain|what('s| is))\s*(the|this)\s*(error|output|result)/i,
+  /terminal\s*(output|error|result|log)/i,
+  /(look at|check|see|read)\s*(the\s*)?(terminal|right)/i,
+];
+
+/**
+ * ユーザー入力がターミナル出力を参照しているかチェック。
+ * クロスペインインテリジェンスの起点。
+ */
+export function hasTerminalReference(input: string): boolean {
+  return TERMINAL_REFERENCE_PATTERNS.some((p) => p.test(input));
+}
+
 // ─── 自然言語タスク分類（ツール提案用） ──────────────────────────────────────
 
 /**
