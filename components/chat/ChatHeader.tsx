@@ -14,6 +14,7 @@ import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { StatusIndicator } from '@/components/StatusIndicator';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { SaveBadge } from '@/components/SaveBadge';
 
 type ChatHeaderProps = {
   onVoiceChat?: () => void;
@@ -39,6 +40,7 @@ export function ChatHeader({ onVoiceChat }: ChatHeaderProps = {}) {
             {session?.title ?? 'Shelly'}
           </Text>
           <View style={[styles.statusDot, { backgroundColor: isConnected ? '#4ADE80' : colors.inactive }]} />
+          <SaveBadge />
         </View>
         <View style={styles.rightActions}>
           {layout.isWide && (
