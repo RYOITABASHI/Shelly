@@ -332,7 +332,7 @@ export async function ollamaChatStream(
   onChunk: (text: string, done: boolean) => void,
   timeoutMs = 120000,
   externalSignal?: AbortSignal,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; content?: string; error?: string }> {
   const apiType = detectApiType(config.baseUrl);
   const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
 

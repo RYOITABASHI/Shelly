@@ -446,6 +446,7 @@ export function getTargetLabel(target: RouteTarget): string {
     agent: 'AI Agent',
     codex: 'Codex CLI',
     groq: 'Groq',
+    cerebras: 'Cerebras',
   };
   return labels[target];
 }
@@ -464,6 +465,7 @@ export function getTargetColor(target: RouteTarget): string {
     git:        '#F97316', // オレンジ（Git公式カラー）
     agent:      '#EF4444', // レッド（AI Agent）
     codex:      '#10B981', // グリーン（Codex）
+    cerebras:   '#FF6B35', // オレンジレッド（Cerebras）
   };
   return colors[target];
 }

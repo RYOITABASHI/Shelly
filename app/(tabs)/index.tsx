@@ -95,6 +95,10 @@ export default function ChatScreen() {
     loadChat();
   }, []);
 
+  // Get current chat session messages
+  const messages = chatSession?.messages ?? [];
+  const chatSessionId = chatSession?.id ?? '';
+
   // Ensure there's always an active chat session
   useEffect(() => {
     if (!chatLoaded) return;
@@ -120,10 +124,6 @@ export default function ChatScreen() {
       }
     });
   }, [chatLoaded, chatSessionId]);
-
-  // Get current chat session messages
-  const messages = chatSession?.messages ?? [];
-  const chatSessionId = chatSession?.id ?? '';
   // Keep messages in ref to avoid handleSend re-creation on every message
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -367,7 +367,7 @@ export default function ChatScreen() {
         perplexity: t('chat.demo_perplexity'),
         local: t('chat.demo_local'),
       };
-      const demoText = (isDemoMention && demoAgent && aiDemoResponses[demoAgent])
+      const demoText = (demoAgent && aiDemoResponses[demoAgent])
         ? aiDemoResponses[demoAgent]
         : demoResponses[parsed.prompt.trim()]
           ?? t('chat.demo_welcome');
