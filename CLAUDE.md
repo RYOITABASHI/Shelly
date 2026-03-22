@@ -159,6 +159,10 @@ Shelly/
 | Pro機能: API統合, Local LLM, MCP, @team, Obsidian | CLIベースの基本機能は無料 | settings.tsx (ProGate) |
 | Browser タブ廃止 | WebViewはシステムブラウザに勝てない | 2026-03-19 削除 |
 | Workflow Editor 廃止 | Snippetsで代替可能 | 2026-03-19 削除 |
+| クロスペインインテリジェンス: 出力キャプチャ | WebView onMessage + xterm.js buffer観察 (baseY+cursorY) | terminal.tsx, execution-log-store.ts |
+| クロスペインインテリジェンス: ターミナル参照検出 | input-router.ts内で正規表現マッチ（日英8パターン） | input-router.ts |
+| クロスペインインテリジェンス: 出力注入方式 | Local LLM=customCtx内、外部API=ユーザーメッセージ末尾 | use-ai-dispatch.ts |
+| クロスペインインテリジェンス: 有効条件 | Wide=常時注入、Single=パターンマッチ時のみ、空=フォールバック | use-ai-dispatch.ts, index.tsx |
 
 ---
 
