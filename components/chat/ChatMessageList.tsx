@@ -22,9 +22,11 @@ type Props = {
   onDelete?: (messageId: string) => void;
   onStopGenerating?: () => void;
   isStreaming?: boolean;
+  projectDir?: string;
+  runCommand?: (cmd: string) => Promise<{ stdout: string; exitCode: number }>;
 };
 
-export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate, onEdit, onDelete, onStopGenerating, isStreaming }: Props) {
+export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate, onEdit, onDelete, onStopGenerating, isStreaming, projectDir, runCommand }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
 
@@ -57,8 +59,10 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
       onRegenerate={onRegenerate}
       onEdit={onEdit}
       onDelete={onDelete}
+      projectDir={projectDir}
+      runCommand={runCommand}
     />
-  ), [fontSize, onRegenerate, onEdit, onDelete]);
+  ), [fontSize, onRegenerate, onEdit, onDelete, projectDir, runCommand]);
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 

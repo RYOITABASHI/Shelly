@@ -45,6 +45,8 @@ import { useTranslation } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { ChatOnboarding } from '@/components/ChatOnboarding';
 import { type OnboardingStep, getOnboardingStep, setOnboardingStep, isOnboardingDone } from '@/lib/chat-onboarding';
+import { checkAndSave, initGitIfNeeded, isFileChangingCommand } from '@/lib/auto-savepoint';
+import { useSavepointStore } from '@/store/savepoint-store';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -142,6 +144,62 @@ export default function ChatScreen() {
     },
     [bridgeRunCommand],
   );
+
+  // ── Savepoint helpers ──
+  const savepointExec = useCallback(
+    async (cmd: string) => {
+      const result = await bridgeRunCommand(cmd);
+      return { stdout: result.stdout ?? '', exitCode: result.exitCode ?? 1 };
+    },
+    [bridgeRunCommand],
+  );
+
+  const currentDir = activeSession?.currentDir ?? '';
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    if (!currentDir || !isBridgeConnected) return;
+    idleTimerRef.current = setTimeout(async () => {
+      if (!useSavepointStore.getState().isEnabled) return;
+      await initGitIfNeeded(currentDir, savepointExec);
+      const result = await checkAndSave(currentDir, savepointExec);
+      if (result) {
+        useSavepointStore.getState().flashBadge();
+      }
+    }, 30000);
+  }, [currentDir, isBridgeConnected, savepointExec]);
+
+  // Cleanup idle timer
+  useEffect(() => {
+    return () => { if (idleTimerRef.current) clearTimeout(idleTimerRef.current); };
+  }, []);
+
+  // ── Auto-savepoint: trigger after AI response completes ──
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    const wasStreaming = prevStreamingRef.current;
+    prevStreamingRef.current = isAnyStreaming;
+
+    // Streaming just ended → AI response completed
+    if (wasStreaming && !isAnyStreaming && currentDir && isBridgeConnected) {
+      resetIdleTimer();
+      const doSave = async () => {
+        if (!useSavepointStore.getState().isEnabled) return;
+        await initGitIfNeeded(currentDir, savepointExec);
+        const result = await checkAndSave(currentDir, savepointExec);
+        if (result) {
+          // Find the last assistant message to attach savepoint
+          const lastMsg = messages.filter(m => m.role === 'assistant').pop();
+          if (lastMsg) {
+            useSavepointStore.getState().recordSavepoint(lastMsg.id, result);
+          }
+          useSavepointStore.getState().flashBadge();
+        }
+      };
+      doSave();
+    }
+  }, [isAnyStreaming, currentDir, isBridgeConnected, savepointExec, resetIdleTimer, messages]);
 
   // ── Refs ──
   const commandInputRef = useRef<{ setText: (t: string) => void } | null>(null);
@@ -761,6 +819,8 @@ export default function ChatScreen() {
             onDelete={handleDelete}
             onStopGenerating={handleCancel}
             isStreaming={isAnyStreaming}
+            projectDir={currentDir || undefined}
+            runCommand={isBridgeConnected ? savepointExec : undefined}
           />
         </View>
 
