@@ -61,6 +61,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoApproveLevel: 'safe' as const,
   // ペルソナB向けデフォルトエージェント — Gemini CLI（無料枠・低ハードル）
   defaultAgent: 'gemini-cli' as const,
+  realtimeTranslateEnabled: false,
 };
 
 const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {

@@ -361,4 +361,6 @@ export type AppSettings = {
   // ─── Default Agent ─────────────────────────────────────────────────────────
   /** ローカルLLM無効時のデフォルトエージェント (default: 'gemini-cli') */
   defaultAgent: 'gemini-cli' | 'claude-code' | 'codex';
+  /** リアルタイム翻訳ON/OFF（デフォルト: false） */
+  realtimeTranslateEnabled?: boolean;
 };
