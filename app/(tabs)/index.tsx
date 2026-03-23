@@ -124,7 +124,18 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!chatLoaded || onboardingChecked.current) return;
     onboardingChecked.current = true;
-    getOnboardingStep().then((step) => {
+    getOnboardingStep().then(async (step) => {
+      // If setup wizard is already complete, skip chat onboarding entirely
+      // (prevents "let's set up AI" messages in subsequent sessions)
+      if (step === 'welcome') {
+        const { isSetupWizardComplete } = await import('@/components/SetupWizard');
+        const wizardDone = await isSetupWizardComplete();
+        if (wizardDone) {
+          setOnboardingStep('complete');
+          setOnboardingStepState('complete');
+          return;
+        }
+      }
       setOnboardingStepState(step);
       // Auto-add welcome message if onboarding just starting
       if (step === 'welcome' && chatSessionId && messages.length === 0) {
@@ -654,7 +665,7 @@ export default function ChatScreen() {
         console.error('[handleSend] Failed to display error:', innerErr);
       }
     }
-  }, [chatSessionId, connectionMode, sendCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext, aiDispatch, isBridgeConnected]);
+  }, [chatSessionId, connectionMode, sendCommand, activeSession.id, activeSession.currentDir, settings, addMessage, updateMessage, setLastInputMode, router, addUserMessage, addAssistantMessage, bridgeRunCommand, execForContext, aiDispatch, isBridgeConnected, activeCliSession, setActiveCliSession]);
 
   // ── Regenerate: re-send the user message that preceded an assistant message ──
   const handleRegenerate = useCallback((assistantMsgId: string) => {

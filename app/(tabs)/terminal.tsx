@@ -25,6 +25,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation, t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { stripAnsi } from '@/lib/strip-ansi';
+import { useDeviceLayout } from '@/hooks/use-device-layout';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,7 @@ export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
   const { t } = useTranslation();
+  const layout = useDeviceLayout();
   const webViewRef = useRef<WebView>(null);
   const inputRef = useRef<TextInput>(null);
   const {
@@ -200,14 +202,25 @@ export default function TerminalScreen() {
   // Track actual WebView render success (distinct from HTTP HEAD check)
   const [webViewFailed, setWebViewFailed] = useState(false);
 
+  // Adaptive terminal font size for small screens (Z Fold6 cover = compact)
+  const termFontSize = layout.isCompact ? 16 : layout.isWide ? 14 : 15;
+
   const handleWebViewLoad = useCallback(() => {
     setWebViewFailed(false);
     onWebViewLoad();
-    // Inject terminal output capture after xterm.js initializes
+    // Inject terminal output capture + font size after xterm.js initializes
     setTimeout(() => {
       webViewRef.current?.injectJavaScript(CAPTURE_INJECT_JS);
+      // Adjust xterm.js font size for readability on small screens
+      webViewRef.current?.injectJavaScript(`
+        (function() {
+          var term = window.term || document.querySelector('.xterm')?.xterm;
+          if (term) { term.options.fontSize = ${termFontSize}; }
+        })();
+        true;
+      `);
     }, 1000);
-  }, [onWebViewLoad]);
+  }, [onWebViewLoad, termFontSize]);
 
   const handleWebViewError2 = useCallback(() => {
     setWebViewFailed(true);
