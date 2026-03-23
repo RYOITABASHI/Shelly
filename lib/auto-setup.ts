@@ -121,13 +121,13 @@ const PHASE1_TIMEOUT_MS = 300_000; // 5 minutes
 /**
  * Phase 1: Poll for bridge connection.
  *
- * The setup command must be executed by the user in Termux (copy-paste).
- * RUN_COMMAND is NOT used — it requires allow-external-apps=true which
- * contradicts the "Termuxless" design philosophy (user shouldn't configure Termux).
+ * SetupWizard first attempts auto-execution via Native Module (RUN_COMMAND).
+ * If that fails (allow-external-apps not set), falls back to manual copy-paste.
+ * This function only handles the polling — execution is done by SetupWizard.
  *
  * Flow:
- * 1. SetupWizard copies setup command to clipboard and opens Termux
- * 2. User pastes and presses Enter in Termux
+ * 1. SetupWizard tries runTermuxCommand() (Native Module) — no user interaction
+ * 2. If failed: shows manual copy-paste button as fallback
  * 3. This function polls ws://127.0.0.1:8765 until bridge connects
  */
 export async function runPhase1Setup(

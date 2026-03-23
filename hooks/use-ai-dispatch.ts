@@ -62,6 +62,51 @@ function detectAndOpenAuthUrls(text: string): void {
   }
 }
 
+// ─── CLI output filtering ───────────────────────────────────────────────────
+
+/** Lines to strip from CLI streaming output (internal context, warnings) */
+const CLI_OUTPUT_FILTER_PATTERNS = [
+  /^\[Conversation Context\]$/,
+  /^User: .{0,500}$/,
+  /^Assistant: .{0,500}$/,
+  /^Warning: no stdin data received in \d+s/,
+  /^Warning:.*redirect stdin explicitly/,
+  /^--- stderr ---$/,
+];
+
+/**
+ * Filter internal context and warnings from CLI output displayed to user.
+ * Strips [Conversation Context] blocks and stdin warnings.
+ */
+function filterCliOutput(text: string): string {
+  const lines = text.split('\n');
+  let inContextBlock = false;
+  const filtered: string[] = [];
+
+  for (const line of lines) {
+    // Detect start of [Conversation Context] block
+    if (/^\[Conversation Context\]/.test(line.trim())) {
+      inContextBlock = true;
+      continue;
+    }
+    // End of context block: empty line after context entries
+    if (inContextBlock) {
+      if (line.trim() === '' || line.trim() === '"') {
+        inContextBlock = false;
+        continue;
+      }
+      // Skip User:/Assistant: lines within context block
+      if (/^(User|Assistant):/.test(line.trim())) continue;
+      // Non-context line — end the block and keep this line
+      inContextBlock = false;
+    }
+    // Filter individual warning patterns
+    if (CLI_OUTPUT_FILTER_PATTERNS.some((p) => p.test(line.trim()))) continue;
+    filtered.push(line);
+  }
+  return filtered.join('\n');
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function mapTargetToAgent(target: string): ChatAgent | undefined {
@@ -804,13 +849,17 @@ export function useAIDispatch() {
               accumulated += data;
               detectAndOpenAuthUrls(data);
               updateMessage(chatSessionId, msgId, {
-                streamingText: accumulated,
+                streamingText: filterCliOutput(accumulated),
                 tokenCount: estimateTokens(accumulated),
               });
             },
           });
           let output = result.stdout || '';
-          if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
+          if (result.stderr) {
+            const filteredStderr = filterCliOutput(result.stderr).trim();
+            if (filteredStderr) output += `\n--- stderr ---\n${filteredStderr}`;
+          }
+          output = filterCliOutput(output);
           updateMessage(chatSessionId, msgId, {
             content: output, streamingText: undefined, isStreaming: false,
             tokenCount: estimateTokens(output),
@@ -971,13 +1020,18 @@ export function useAIDispatch() {
             accumulated += data;
             detectAndOpenAuthUrls(data);
             updateMessage(chatSessionId, msgId, {
-              streamingText: accumulated,
+              streamingText: filterCliOutput(accumulated),
               tokenCount: estimateTokens(accumulated),
             });
           },
         });
         let output = result.stdout || '';
-        if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
+        if (result.stderr) {
+          // Filter stderr warnings before appending
+          const filteredStderr = filterCliOutput(result.stderr).trim();
+          if (filteredStderr) output += `\n--- stderr ---\n${filteredStderr}`;
+        }
+        output = filterCliOutput(output);
         updateMessage(chatSessionId, msgId, {
           content: output, streamingText: undefined, isStreaming: false,
           tokenCount: estimateTokens(output),
@@ -1027,13 +1081,17 @@ export function useAIDispatch() {
             accumulated += data;
             detectAndOpenAuthUrls(data);
             updateMessage(chatSessionId, msgId, {
-              streamingText: accumulated,
+              streamingText: filterCliOutput(accumulated),
               tokenCount: estimateTokens(accumulated),
             });
           },
         });
         let output = result.stdout || '';
-        if (result.stderr) output += `\n--- stderr ---\n${result.stderr}`;
+        if (result.stderr) {
+          const filteredStderr = filterCliOutput(result.stderr).trim();
+          if (filteredStderr) output += `\n--- stderr ---\n${filteredStderr}`;
+        }
+        output = filterCliOutput(output);
         updateMessage(chatSessionId, msgId, {
           content: output, streamingText: undefined, isStreaming: false,
           tokenCount: estimateTokens(output),

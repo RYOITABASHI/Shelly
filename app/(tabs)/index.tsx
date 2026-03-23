@@ -103,6 +103,15 @@ export default function ChatScreen() {
   const messages = chatSession?.messages ?? [];
   const chatSessionId = chatSession?.id ?? '';
 
+  // Clear terminal output buffer when switching chat sessions (prevents old context leaking)
+  const prevSessionIdRef = useRef(chatSessionId);
+  useEffect(() => {
+    if (chatSessionId && chatSessionId !== prevSessionIdRef.current) {
+      useExecutionLogStore.getState().clearTerminalOutput();
+      prevSessionIdRef.current = chatSessionId;
+    }
+  }, [chatSessionId]);
+
   // Ensure there's always an active chat session
   useEffect(() => {
     if (!chatLoaded) return;

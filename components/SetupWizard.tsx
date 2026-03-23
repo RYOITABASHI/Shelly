@@ -42,7 +42,7 @@ import {
   type BridgeExecutor,
   type BridgeFileWriter,
 } from '@/lib/auto-setup';
-import { getStoreUrl, checkTermuxPackages } from '@/lib/termux-intent';
+import { getStoreUrl, checkTermuxPackages, runTermuxCommand } from '@/lib/termux-intent';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { AuthWizard } from '@/components/AuthWizard';
 
@@ -153,22 +153,34 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
     };
   }, [wizardStep]);
 
-  // ── Phase 1: Copy command + open Termux + poll for bridge ────────────
+  // ── Phase 1: Auto-execute via Native Module, fallback to manual ────
 
   const handleCopyAndOpenTermux = useCallback(async () => {
+    // Already attempted auto — this is the manual fallback button
     await Clipboard.setStringAsync(buildSetupCommand());
     setInitCopied(true);
     setTimeout(() => setInitCopied(false), 3000);
     try { await Linking.openURL('com.termux://'); } catch {}
   }, []);
 
-  // Start polling when entering init step
+  // Start polling when entering init step — try auto-execute first
   useEffect(() => {
     if (wizardStep !== 'init') return;
 
-    // Start Phase 1 polling (no RUN_COMMAND — user pastes command in Termux)
     let cancelled = false;
-    const poll = async () => {
+
+    const startSetup = async () => {
+      // Try Native Module auto-execution first (no user interaction needed)
+      const setupCmd = buildSetupCommand();
+      const autoResult = await runTermuxCommand({ command: setupCmd, background: false });
+
+      if (!autoResult.success) {
+        // Auto-execution failed (likely allow-external-apps not set)
+        // Show manual fallback after a short delay
+        if (!cancelled) setShowManualFallback(true);
+      }
+
+      // Poll for bridge connection regardless (works for both auto and manual paths)
       const result = await runPhase1Setup((p) => {
         if (!cancelled) setPhase1Progress(p);
       });
@@ -176,7 +188,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         setWizardStep('auto');
       }
     };
-    poll();
+    startSetup();
 
     return () => { cancelled = true; };
   }, [wizardStep]);
@@ -351,26 +363,33 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
       </View>
 
       <Text style={[styles.title, { color: '#60A5FA' }]}>{t('setup2.init_title')}</Text>
-      <Text style={styles.description}>{t('setup2.init_desc')}</Text>
+      <Text style={styles.description}>
+        {showManualFallback ? t('setup2.init_desc') : t('setup2.init_auto_desc') || 'Termuxを自動セットアップ中...'}
+      </Text>
 
-      {/* Main action: copy + open Termux in one tap */}
-      <Pressable
-        style={[styles.primaryBtn, { backgroundColor: '#00D4AA' }]}
-        onPress={handleCopyAndOpenTermux}
-      >
-        <MaterialIcons name="content-paste-go" size={20} color="#000" />
-        <Text style={styles.primaryBtnText}>
-          {initCopied ? t('setup2.init_copied') : t('setup2.init_start')}
-        </Text>
-      </Pressable>
-
-      <Text style={styles.hint}>{t('setup2.init_paste_hint')}</Text>
+      {/* Manual fallback: only shown when auto-execute fails */}
+      {showManualFallback && (
+        <>
+          <Pressable
+            style={[styles.primaryBtn, { backgroundColor: '#00D4AA' }]}
+            onPress={handleCopyAndOpenTermux}
+          >
+            <MaterialIcons name="content-paste-go" size={20} color="#000" />
+            <Text style={styles.primaryBtnText}>
+              {initCopied ? t('setup2.init_copied') : t('setup2.init_start')}
+            </Text>
+          </Pressable>
+          <Text style={styles.hint}>{t('setup2.init_paste_hint')}</Text>
+        </>
+      )}
 
       {/* Polling indicator */}
       <View style={[styles.waitingContainer, { marginTop: 16 }]}>
         <ActivityIndicator size="small" color="#60A5FA" />
         <Text style={styles.waitingText}>
-          {t('setup2.init_waiting')}
+          {showManualFallback
+            ? t('setup2.init_waiting')
+            : t('setup2.init_auto_waiting') || 'Termuxをセットアップ中...'}
           {phase1Progress?.elapsedSeconds != null && phase1Progress.elapsedSeconds > 0
             ? ` (${phase1Progress.elapsedSeconds}s)`
             : ''}

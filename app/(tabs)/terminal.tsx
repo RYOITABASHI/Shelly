@@ -197,13 +197,22 @@ export default function TerminalScreen() {
     }
   }, [addTerminalOutput]);
 
+  // Track actual WebView render success (distinct from HTTP HEAD check)
+  const [webViewFailed, setWebViewFailed] = useState(false);
+
   const handleWebViewLoad = useCallback(() => {
+    setWebViewFailed(false);
     onWebViewLoad();
     // Inject terminal output capture after xterm.js initializes
     setTimeout(() => {
       webViewRef.current?.injectJavaScript(CAPTURE_INJECT_JS);
     }, 1000);
   }, [onWebViewLoad]);
+
+  const handleWebViewError2 = useCallback(() => {
+    setWebViewFailed(true);
+    onWebViewError();
+  }, [onWebViewError]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, backgroundColor: c.background }]}>
@@ -212,7 +221,7 @@ export default function TerminalScreen() {
         <View style={styles.statusLeft}>
           <MaterialIcons name="terminal" size={18} color={c.accent} />
           <Text style={[styles.statusTitle, { color: c.foreground }]}>Terminal</Text>
-          <StatusBadge state={status} retryCount={retryCount} colors={c} />
+          <StatusBadge state={webViewFailed ? 'error' : status} retryCount={retryCount} colors={c} />
         </View>
         <View style={styles.statusRight}>
           <TouchableOpacity
@@ -253,8 +262,8 @@ export default function TerminalScreen() {
         javaScriptEnabled
         domStorageEnabled
         onLoadEnd={handleWebViewLoad}
-        onError={onWebViewError}
-        onHttpError={onWebViewError}
+        onError={handleWebViewError2}
+        onHttpError={handleWebViewError2}
         onMessage={handleWebViewMessage}
       />
 
@@ -293,7 +302,7 @@ export default function TerminalScreen() {
       )}
 
       {/* Error: Setup Guide */}
-      {status === 'error' && <SetupGuide url={ttyUrl} onRetry={retry} colors={c} />}
+      {(status === 'error' || webViewFailed) && <SetupGuide url={ttyUrl} onRetry={() => { setWebViewFailed(false); retry(); }} colors={c} />}
     </View>
   );
 }
