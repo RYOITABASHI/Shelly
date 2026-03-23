@@ -232,8 +232,8 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
       const { root } = get();
       if (!root) return;
       const result = removeLeaf(root, leafId);
-      if (!result || (result.type === 'leaf' && countLeaves(root) <= 1)) {
-        // Last pane removed — exit multi-pane
+      if (!result || (result.type === 'leaf' && countLeaves(result) <= 1)) {
+        // Last pane remaining or removed — exit multi-pane
         set({ isMultiPane: false, root: null });
       } else {
         set({ root: result });
