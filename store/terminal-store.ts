@@ -105,9 +105,9 @@ type TerminalState = {
   /** Last input mode: 'shell' for commands, 'natural' for natural language */
   lastInputMode: 'shell' | 'natural';
 
-  /** Active CLI session — when set, all natural language input goes to this CLI */
-  activeCliSession: 'claude' | 'codex' | 'gemini' | null;
-  setActiveCliSession: (session: 'claude' | 'codex' | 'gemini' | null) => void;
+  /** Active agent session — when set, all natural language input routes to this agent. Cleared by "ログアウト" / "/exit". */
+  activeCliSession: string | null;
+  setActiveCliSession: (session: string | null) => void;
 
   // Actions — sessions
   addSession: () => void;

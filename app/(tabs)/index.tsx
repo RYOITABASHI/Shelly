@@ -399,26 +399,33 @@ export default function ChatScreen() {
 
     try {
 
-    // ── CLI session control ──
+    // ── Agent session control ──
     // Exit session: "ログアウト", "/exit", "@exit"
     const exitPatterns = /^(ログアウト|\/exit|@exit|exit session|セッション終了)$/i;
     if (exitPatterns.test(input.trim()) && activeCliSession) {
       const prev = activeCliSession;
       setActiveCliSession(null);
+      const labelMap: Record<string, string> = {
+        claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI',
+        cerebras: 'Cerebras', groq: 'Groq', local: 'Local LLM',
+        perplexity: 'Perplexity', team: '@team',
+      };
       addMessage(chatSessionId, {
-        id: generateId(), role: 'assistant', content: `${prev === 'claude' ? 'Claude Code' : prev === 'codex' ? 'Codex' : 'Gemini CLI'} セッションを終了しました。`, timestamp: Date.now(),
+        id: generateId(), role: 'assistant',
+        content: `${labelMap[prev] ?? prev} セッションを終了しました。`,
+        timestamp: Date.now(),
       });
       return;
     }
 
-    // @mention for CLI → start session
-    if (parsed.layer === 'mention' && ['claude', 'codex', 'gemini'].includes(parsed.target)) {
-      setActiveCliSession(parsed.target as 'claude' | 'codex' | 'gemini');
+    // @mention → start sticky session (all agents)
+    if (parsed.layer === 'mention') {
+      setActiveCliSession(parsed.target);
     }
 
-    // Active CLI session: override natural language routing
+    // Active agent session: override natural language routing
     if (parsed.layer === 'natural' && activeCliSession) {
-      parsed = { ...parsed, layer: 'mention' as any, target: activeCliSession };
+      parsed = { ...parsed, layer: 'mention' as any, target: activeCliSession as any };
     }
 
     // Auto-learn (background)

@@ -211,15 +211,43 @@ export default function TerminalScreen() {
     // Inject terminal output capture + font size after xterm.js initializes
     setTimeout(() => {
       webViewRef.current?.injectJavaScript(CAPTURE_INJECT_JS);
-      // Adjust xterm.js font size for readability on small screens
-      webViewRef.current?.injectJavaScript(`
-        (function() {
-          var term = window.term || document.querySelector('.xterm')?.xterm;
-          if (term) { term.options.fontSize = ${termFontSize}; }
-        })();
-        true;
-      `);
     }, 1000);
+    // Font size injection — retry with polling since xterm.js may init late
+    const fontJs = `
+      (function() {
+        var attempts = 0;
+        function applyFontSize() {
+          // ttyd exposes terminal as window.term or via .xterm element
+          var term = window.term;
+          if (!term) {
+            var el = document.querySelector('.xterm');
+            if (el && el.xterm) term = el.xterm;
+          }
+          if (term && term.options) {
+            term.options.fontSize = ${termFontSize};
+            // Force xterm.js to re-render with new font size
+            if (typeof term.refresh === 'function') {
+              term.refresh(0, term.rows - 1);
+            }
+            // fit addon recalculates cols/rows for new font size
+            if (window.fitAddon && typeof window.fitAddon.fit === 'function') {
+              window.fitAddon.fit();
+            } else if (term._addonManager) {
+              // Try to find fit addon in addon manager
+              try { term._addonManager._addons.forEach(function(a) { if (a.instance && a.instance.fit) a.instance.fit(); }); } catch(e) {}
+            }
+          } else if (attempts < 10) {
+            attempts++;
+            setTimeout(applyFontSize, 500);
+          }
+        }
+        applyFontSize();
+      })();
+      true;
+    `;
+    setTimeout(() => {
+      webViewRef.current?.injectJavaScript(fontJs);
+    }, 1500);
   }, [onWebViewLoad, termFontSize]);
 
   const handleWebViewError2 = useCallback(() => {
