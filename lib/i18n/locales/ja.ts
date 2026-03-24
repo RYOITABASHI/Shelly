@@ -436,6 +436,9 @@ const ja: Record<string, string> = {
   'chat.sample_ask_claude': 'Claudeに聞く',
   'chat.sample_ask_gemini': 'Geminiに聞く',
   'chat.sample_git_status': 'Git状態',
+  'chat.sample_files': 'ファイル一覧',
+  'chat.sample_hello': 'こんにちは',
+  'chat.sample_build': 'アプリ作って',
   'chat.stop_generating': '生成を停止',
 
   // ── Chat Bubble ─────────────────────────────────────────────────

@@ -883,9 +883,9 @@ export default function ChatScreen() {
         {messages.length === 0 && !isAnyStreaming && onboardingStep === 'complete' && (
           <View style={styles.suggestRow}>
             {[
-              { label: '📂 ファイル一覧', cmd: 'ファイル一覧' },
-              { label: '💬 こんにちは', cmd: 'こんにちは' },
-              { label: '🚀 アプリ作って', cmd: 'アプリ作って' },
+              { label: `📂 ${t('chat.sample_files')}`, cmd: t('chat.sample_files') },
+              { label: `💬 ${t('chat.sample_hello')}`, cmd: t('chat.sample_hello') },
+              { label: `🚀 ${t('chat.sample_build')}`, cmd: t('chat.sample_build') },
               { label: '@claude', cmd: '@claude ' },
             ].map((s) => (
               <Pressable key={s.cmd} style={styles.suggestChip} onPress={() => handleSend(s.cmd)}>

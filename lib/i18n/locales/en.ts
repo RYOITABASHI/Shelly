@@ -435,6 +435,9 @@ const en: Record<string, string> = {
   'chat.sample_ask_claude': 'Ask Claude',
   'chat.sample_ask_gemini': 'Ask Gemini',
   'chat.sample_git_status': 'Git status',
+  'chat.sample_files': 'List files',
+  'chat.sample_hello': 'Hello',
+  'chat.sample_build': 'Build me an app',
   'chat.stop_generating': 'Stop generating',
 
   // ── Chat Bubble ─────────────────────────────────────────────────
