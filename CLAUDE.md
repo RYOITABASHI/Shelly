@@ -246,34 +246,29 @@ Shelly/
 
 ---
 
-## ★ 次期開発: Cross-Pane Intelligence
+## ★ Cross-Pane Intelligence（実装済み）
 
 **仕様書**: `docs/superpowers/specs/2026-03-23-cross-pane-intelligence-design.md`
-**実装計画**: `docs/superpowers/plans/2026-03-23-cross-pane-intelligence-phase1-3.md`
 
-### 概要
-ChatがTerminalの出力を「見て」、コピペ不要でエラー修正・コマンド実行できる機能。
-「右のエラー直して」→ AI がTerminal出力を読み→修正コマンド生成→[▶ 実行]でTerminalに送信。
+### 実装状況（全8フェーズ完了）
 
-### Phase一覧（全8フェーズ）
+| Phase | 内容 | 状態 | 主要ファイル |
+|-------|------|------|------------|
+| 1 | Terminal整理（純粋TTYのみに） | ✅ | `app/(tabs)/terminal.tsx` |
+| 2 | 出力キャプチャ（ttyd WebView → hotBuffer 100行 + sessionBuffer 1000行） | ✅ | `store/execution-log-store.ts`, `terminal.tsx` |
+| 3 | クロスペイン参照検出 + 全AIプロバイダー注入 | ✅ | `lib/input-router.ts`, `hooks/use-ai-dispatch.ts` |
+| 4 | ActionBlock（コードブロックに[▶ 実行]ボタン） | ✅ | `lib/parse-code-blocks.ts`, `components/chat/ActionBlock.tsx`, `ChatBubble.tsx` |
+| 5 | CLI Co-Pilot（リアルタイム翻訳・承認プロンプト） | ✅ | `lib/realtime-translate.ts`, `components/chat/TranslateOverlay.tsx` |
+| 6 | 「Terminalで開く」ボタン | ✅ | `components/chat/ChatBubble.tsx` |
+| 7 | 機能整理（Quick Terminal非表示、LLM interpreter/ShortcutBarトグル） | ✅ | `app/(tabs)/_layout.tsx`, `settings.tsx` |
+| 8 | ドキュメント更新 | ✅ | `README.md`, `CLAUDE.md` |
 
-| Phase | 内容 | 主要ファイル |
-|-------|------|------------|
-| 1 | Terminal整理（純粋TTYのみに） | `app/(tabs)/terminal.tsx` |
-| 2 | 出力キャプチャ（ttyd WebView → FIFO 100行） | `store/execution-log-store.ts`, `terminal.tsx` |
-| 3 | クロスペイン参照検出（「右のエラー」等のパターンマッチ） | `lib/input-router.ts` |
-| 4 | ActionBlock（コードブロックに[▶ 実行]ボタン） | `components/chat/ChatBubble.tsx`, 新規: `parse-code-blocks.ts`, `ActionBlock.tsx` |
-| 5 | CLI Co-Pilot（リアルタイム翻訳・承認プロンプト・セカンドオピニオン） | 新規: `components/TranslateOverlay.tsx`, `lib/realtime-translate.ts` |
-| 6 | 「Terminalで開く」ボタン | `components/chat/CommandExecBubble.tsx` |
-| 7 | 機能整理（Quick Terminal非表示等） | `_layout.tsx` |
-| 8 | ドキュメント更新 | `README.md`, `CLAUDE.md` |
-
-### 実装ガイドライン
-- セッション1: Phase 1-3（Terminal整理+出力キャプチャ+クロスペイン基盤）
-- セッション2: Phase 4-5（ActionBlock+CLI Co-Pilot）
-- セッション3: Phase 6-8（仕上げ）
-- 各Phase完了ごとにコミット。Termuxが落ちても引き継げるように
-- ADBデバッグ活用可能: `adb shell screencap` + `ffmpeg resize` + `Read tool`
+### アーキテクチャ
+- **出力キャプチャ**: WebView onMessage + xterm.js buffer観察 (baseY+cursorY)、500msポーリング
+- **ターミナル参照検出**: `getTerminalIntent()` — reference/second-opinion/session-summary の3インテント
+- **注入方式**: `getTerminalContextForPrompt()` — Wide=常時、Single=パターンマッチ時のみ
+- **ActionBlock**: ChatBubble内でコードブロック分離レンダリング。ストリーミング完了後のみパース
+- **リアルタイム翻訳**: Cerebras→Groq→Local LLMフォールバック。1sデバウンス、10s自動消去
 
 ---
 

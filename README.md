@@ -77,13 +77,11 @@ This works because Shelly's Chat pane is aware of what's happening in the Termin
 
 ## Features
 
-### Cross-Pane Intelligence *(Coming Soon)*
+### Cross-Pane Intelligence
 - **"Fix the error on the right"** — AI reads terminal output and responds with executable fixes
 - **ActionBlock** — Code blocks in AI responses have [▶ Run] buttons that execute directly in Terminal
-- **Real-time terminal awareness** — Chat AI always knows what's happening in Terminal
-- **CLI Co-Pilot** — Real-time translation of terminal output, approval prompt explanations
-
-### Implemented Now
+- **Real-time terminal awareness** — Chat AI always knows what's happening in Terminal (wide mode: automatic, single pane: on reference)
+- **CLI Co-Pilot** — Real-time translation of terminal output, approval prompt explanations, second opinions, session summaries
 - **Auto-savepoint timeline** — Game-like save/load system. Every change is auto-committed. Revert to any point with one tap.
 
 ### Chat-First Development
