@@ -87,6 +87,7 @@ const config: ExpoConfig & { android?: any } = {
   plugins: [
     "expo-dev-client",
     "expo-router",
+    "./plugins/with-multi-window",
     [
       "expo-audio",
       {

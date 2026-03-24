@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Tabs, useRouter } from "expo-router";
-import { Platform, View } from "react-native";
+import { Platform, View, useWindowDimensions } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useDeviceLayout } from "@/hooks/use-device-layout";
 import { useMultiPaneStore } from "@/hooks/use-multi-pane";
@@ -27,6 +27,8 @@ export default function TabLayout() {
   useToolDiscovery();
   const layout = useDeviceLayout();
   const router = useRouter();
+  // Track window dimensions to force Tabs re-mount on multi-window resize
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
   const { isMultiPane, disableMultiPane, setMaxPanes, toggleMultiPane } = useMultiPaneStore();
   const theme = useTheme();
   const c = theme.colors;
@@ -113,6 +115,7 @@ export default function TabLayout() {
     <View style={{ flex: 1, backgroundColor: c.background }}>
       {!showSetupWizard && <BridgeRecoveryBanner />}
       <Tabs
+        key={`tabs-${winWidth}-${winHeight}`}
         screenOptions={{
           headerShown: false,
           tabBarActiveTintColor: c.accent,
