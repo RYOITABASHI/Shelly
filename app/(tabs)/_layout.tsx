@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Tabs, useRouter } from "expo-router";
 import { Platform, View, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useDeviceLayout } from "@/hooks/use-device-layout";
 import { useMultiPaneStore } from "@/hooks/use-multi-pane";
@@ -32,6 +33,7 @@ export default function TabLayout() {
   const { isMultiPane, disableMultiPane, setMaxPanes, toggleMultiPane } = useMultiPaneStore();
   const theme = useTheme();
   const c = theme.colors;
+  const insets = useSafeAreaInsets();
   const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // Initialize global stores on mount
@@ -126,8 +128,8 @@ export default function TabLayout() {
                 backgroundColor: c.background,
                 borderTopColor: c.border,
                 borderTopWidth: 1,
-                paddingBottom: Platform.OS === "android" ? 4 : 0,
-                height: Platform.OS === "android" ? 56 : 50,
+                paddingBottom: Math.max(insets.bottom, 4),
+                height: 56 + Math.max(insets.bottom - 4, 0),
               },
           tabBarLabelStyle: {
             fontSize: 10,

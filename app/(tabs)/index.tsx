@@ -98,13 +98,16 @@ export default function ChatScreen() {
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKbHeight(e.endCoordinates.height);
+      // Subtract navigation bar inset to avoid double-padding
+      const raw = e.endCoordinates.height;
+      const adjusted = Math.max(0, raw - insets.bottom);
+      setKbHeight(adjusted);
     });
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       setKbHeight(0);
     });
     return () => { showSub.remove(); hideSub.remove(); };
-  }, []);
+  }, [insets.bottom]);
 
   // ── Onboarding ──
   const [onboardingStep, setOnboardingStepState] = useState<OnboardingStep>('complete');
