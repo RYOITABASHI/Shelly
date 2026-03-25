@@ -6,7 +6,7 @@
 type RunCommandFn = (cmd: string) => Promise<{ stdout: string; exitCode: number }>;
 
 /** Shell-escape a string for safe use in single-quoted arguments */
-function shellEscape(s: string): string {
+export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
