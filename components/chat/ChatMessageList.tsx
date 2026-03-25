@@ -6,7 +6,7 @@
  */
 
 import React, { useRef, useCallback, useEffect, useMemo } from 'react';
-import { FlatList, View, Text, StyleSheet, TouchableOpacity, useWindowDimensions } from 'react-native';
+import { FlatList, View, Text, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions } from 'react-native';
 import { ChatBubble } from './ChatBubble';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
@@ -98,7 +98,7 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
 
   if (messages.length === 0) {
     return (
-      <View style={styles.emptyContainer}>
+      <ScrollView contentContainerStyle={styles.emptyContainer} keyboardShouldPersistTaps="handled">
         <Text style={[styles.emptyTitle, { color: colors.foreground }]}>{t('chat.empty_title')}</Text>
         <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
           {t('chat.empty_subtitle')}
@@ -118,7 +118,7 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
             </TouchableOpacity>
           ))}
         </View>
-      </View>
+      </ScrollView>
     );
   }
 
@@ -143,10 +143,12 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   emptyContainer: {
-    flex: 1,
+    flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 32,
+    paddingTop: 24,
+    paddingBottom: 24,
     gap: 8,
   },
   emptyTitle: {
