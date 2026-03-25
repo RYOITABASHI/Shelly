@@ -1106,8 +1106,8 @@ export default function ChatScreen() {
           />
         </View>
 
-        {/* Suggestion chips when chat is empty */}
-        {messages.length === 0 && !isAnyStreaming && onboardingStep === 'complete' && (
+        {/* Suggestion chips when chat is empty (hide in multi-pane to avoid overlap) */}
+        {messages.length === 0 && !isAnyStreaming && onboardingStep === 'complete' && !isWide && (
           <View style={styles.suggestRow}>
             {[
               { label: `📂 ${t('chat.sample_files')}`, cmd: t('chat.sample_files') },

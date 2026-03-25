@@ -191,7 +191,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
   }, [isNaturalMode]);
 
   const ctrlHeld = useRef(false);
-  const bottomPad = Platform.OS === 'android' ? Math.max(insets.bottom, 0) : insets.bottom;
+  const bottomPad = Platform.OS === 'android' ? Math.max(insets.bottom, 8) : insets.bottom;
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
