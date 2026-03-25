@@ -239,10 +239,9 @@ Shelly/
 
 ### 未完了・リマインド
 
-1. **★ Cross-Pane Intelligence実装**: 最優先。仕様書完成済み。→ 下記「次期開発」セクション参照
-2. **実機テスト**: ワイヤレスADB方式でTermux完結。スプリットビュー（左Shelly、右Termux）で自律デバッグ可能
-3. **スクショ・PR動画**: アプリ安定後に撮影
-4. **i18n構造の単純化**: en.tsをベース、ja.tsは差分のみに
+1. **★ GitHub Actions設定ウィザード**: チャット内対話形式でCI設定。下記「次期開発」セクション参照
+2. **OSS用デモスクショ・動画撮影**: 英語UI、全修正ビルドで撮影。台本はClaude別セッションで作成予定
+3. **i18n構造の単純化**: en.tsをベース、ja.tsは差分のみに
 
 ---
 
@@ -263,7 +262,50 @@ Shelly/
 | 7 | 機能整理（Quick Terminal非表示、LLM interpreter/ShortcutBarトグル） | ✅ | `app/(tabs)/_layout.tsx`, `settings.tsx` |
 | 8 | ドキュメント更新 | ✅ | `README.md`, `CLAUDE.md` |
 
-### アーキテクチャ
+### GitHub連携（実装済み: Phase 1-3, 5。Phase 4ウィザードは未実装）
+
+| Phase | 内容 | 状態 | 主要ファイル |
+|-------|------|------|------------|
+| 1 | Git Advisor（push提案ロジック） | ✅ | `lib/git-advisor.ts` |
+| 2 | PAT認証（SecureStore保存） | ✅ | `lib/github-auth.ts` |
+| 3 | Push処理（リポジトリ作成+push） | ✅ | `lib/github-push.ts` |
+| 4 | Actions設定ウィザード | **未実装** | `lib/github-actions.ts`（ロジックのみ）|
+| 5 | i18n（32キー） | ✅ | `en.ts`, `ja.ts` |
+
+### ★ 次期開発: GitHub Actions設定ウィザード
+
+**現状**: `lib/github-actions.ts`にワークフロー生成ロジック + `input-router.ts`にインテント検出あり。
+**不足**: Chat内の対話型ウィザードUI。
+
+**仕様（ユーザー確定済み）:**
+```
+ユーザー: 「CIをセットアップして」
+
+AI: 「どの自動化を設定しますか？（複数選択OK）」
+    [✅ ビルド確認]  [✅ テスト実行]  [デプロイ]  [リリース作成]
+
+AI: 「いつ実行しますか？」
+    [● pushするたび]  [○ 1日1回]  [○ 手動のみ]
+
+AI: 「確認です:
+     ・pushするたびにビルドとテストを自動実行
+     ・結果はShellyのチャットに通知
+     [設定する]  [やり直す]」
+```
+
+**実装ポイント:**
+- 選択肢はボタンUI（ChatBubble内にインラインレンダリング）
+- YAMLの中身はユーザーに見せない
+- マルチステップ状態管理（what → when → confirm）
+- `generateWorkflow()`の引数を対話結果から構築
+- 生成後: git add + commit + push まで自動
+- 結果取得: `getLatestWorkflowRun()` → Chat表示
+
+**新規コンポーネント案:**
+- `components/chat/ActionsWizardBubble.tsx` — 3ステップウィザード（what/when/confirm）
+- Chat store にウィザード状態を持たせるか、コンポーネントローカルstateか要判断
+
+### アーキテクチャ（Cross-Pane）
 - **出力キャプチャ**: WebView onMessage + xterm.js buffer観察 (baseY+cursorY)、500msポーリング
 - **ターミナル参照検出**: `getTerminalIntent()` — reference/second-opinion/session-summary の3インテント
 - **注入方式**: `getTerminalContextForPrompt()` — Wide=常時、Single=パターンマッチ時のみ
