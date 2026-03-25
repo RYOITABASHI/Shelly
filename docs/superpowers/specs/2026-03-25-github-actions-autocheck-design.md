@@ -152,8 +152,31 @@ type ActionsWizardData = {
 - EN: "Want to automatically check if your code is working every time you save to GitHub?"
 - JA: "GitHubに保存するたびに、コードが壊れてないか自動でチェックできます。"
 
+## ワークフロー結果通知
+
+push成功時、CI設定済み（AsyncStorage `shelly_autocheck_offered` = `'true'`）なら自動ポーリング開始。
+
+**フロー**:
+```
+git push 成功
+  → CI設定済み？
+    → YES: ポーリング開始
+      → 「コードをチェック中...」（ストリーミング表示）
+      → 90秒待機（GitHub Actionsの起動待ち）
+      → 15秒間隔で getLatestWorkflowRun() をポーリング（最大10回）
+      → completed検知:
+        → success → 「✅ チェック完了 — 問題ありませんでした！」
+        → failure → 「❌ 問題が見つかりました [詳しく見る](url)」
+        → timeout → 「まだ実行中です。あとでGitHubで確認できます。」
+    → NO: AutoCheckProposal表示
+```
+
+**ポーリング関数**: `pollWorkflowResult()` in `lib/github-actions.ts`
+- owner/repo は `git remote get-url origin` から自動抽出（`parseGitHubRemote()`）
+- PAT は SecureStore から取得
+- AbortController対応（画面遷移時にキャンセル可能）
+
 ## 未実装（次期）
 
-- `getLatestWorkflowRun()` 結果のチャット内ポーリング → 結果通知バブル
 - ビルド失敗時の自動修正提案（AI連携）
 - 複数ワークフロー管理（ci.yml以外）

@@ -809,9 +809,11 @@ const en: Record<string, string> = {
   'autocheck.setting_up': 'Setting up auto-check...',
   'autocheck.done': 'Auto-check is on! Every time you save to GitHub, it\'ll check your code and let you know right here.',
   'autocheck.error': 'Couldn\'t set up auto-check: {error}',
-  'autocheck.result_pass': 'Auto-check: Everything looks good!',
-  'autocheck.result_fail': 'Auto-check: Something went wrong',
+  'autocheck.result_pass': 'Auto-check complete — everything looks good!',
+  'autocheck.result_fail': 'Auto-check found a problem',
   'autocheck.view_details': 'See details',
+  'autocheck.polling': 'Checking your code...',
+  'autocheck.timeout': 'Auto-check is still running. You can check results on GitHub later.',
 
   // ── Advanced CI wizard (Settings) ──────────────────────────────
   'wizard.actions_title': 'Auto-check Settings',

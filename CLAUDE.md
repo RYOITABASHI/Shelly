@@ -298,8 +298,10 @@ git push 成功
 - `store/chat-store.ts` — `AutoCheckState`, `ActionsWizardData`, `WizardType` 型定義
 - `app/(tabs)/index.tsx` — push成功検出、提案挿入、Enable/Dismissハンドラ
 
-**未実装（次期）:**
-- `getLatestWorkflowRun()` 結果のチャット内表示（push後に自動ポーリング → 結果通知）
+**ワークフロー結果通知（v1.0）:**
+- push成功後、CI設定済みなら `pollWorkflowResult()` を開始（90秒待機 → 15秒間隔 × 最大10回）
+- 完了検知 → 「✅ チェック通りました」/ 「❌ 問題が見つかりました [詳しく見る]」をチャットに表示
+- ポーリング中は「コードをチェック中...」ストリーミング表示
 
 ### アーキテクチャ（Cross-Pane）
 - **出力キャプチャ**: WebView onMessage + xterm.js buffer観察 (baseY+cursorY)、500msポーリング

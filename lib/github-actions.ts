@@ -6,6 +6,7 @@
  */
 
 import type { ActionsWizardData } from '@/store/chat-store';
+import { getGitHubPAT } from '@/lib/github-auth';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -442,4 +443,95 @@ export async function getWorkflowLogs(params: {
   } catch {
     return null;
   }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Extract owner/repo from a GitHub remote URL.
+ * Supports https and git@ formats.
+ */
+export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
+  // https://github.com/OWNER/REPO.git or https://<pat>@github.com/OWNER/REPO.git
+  const httpsMatch = url.match(/github\.com[/:]([^/]+)\/([^/\s]+?)(?:\.git)?$/);
+  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  return null;
+}
+
+// ─── Workflow result polling ──────────────────────────────────────────────────
+
+export type WorkflowPollResult = {
+  status: 'success' | 'failure' | 'timeout' | 'error';
+  url?: string;
+  conclusion?: string | null;
+};
+
+/**
+ * Poll GitHub Actions for the latest workflow run result.
+ *
+ * Starts after `initialDelayMs` (default 90s), then checks every `intervalMs`
+ * (default 15s) up to `maxAttempts` (default 10) times.
+ *
+ * Returns as soon as the run completes, or 'timeout' if still in progress.
+ */
+export async function pollWorkflowResult(params: {
+  projectDir: string;
+  runCommand: (cmd: string) => Promise<{ stdout: string; exitCode: number | null }>;
+  initialDelayMs?: number;
+  intervalMs?: number;
+  maxAttempts?: number;
+  signal?: AbortSignal;
+}): Promise<WorkflowPollResult> {
+  const {
+    projectDir,
+    runCommand,
+    initialDelayMs = 90_000,
+    intervalMs = 15_000,
+    maxAttempts = 10,
+    signal,
+  } = params;
+
+  // Get PAT
+  const pat = await getGitHubPAT();
+  if (!pat) return { status: 'error' };
+
+  // Get remote URL → owner/repo
+  const dir = JSON.stringify(projectDir);
+  const { stdout: remoteUrl, exitCode } = await runCommand(
+    `git -C ${dir} remote get-url origin 2>/dev/null`,
+  );
+  if (exitCode !== 0 || !remoteUrl.trim()) return { status: 'error' };
+
+  const parsed = parseGitHubRemote(remoteUrl.trim());
+  if (!parsed) return { status: 'error' };
+
+  // Wait for Actions to start
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, initialDelayMs);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(undefined); });
+  });
+
+  // Poll
+  for (let i = 0; i < maxAttempts; i++) {
+    if (signal?.aborted) return { status: 'error' };
+
+    const run = await getLatestWorkflowRun({ owner: parsed.owner, repo: parsed.repo, pat });
+    if (run && run.status === 'completed') {
+      return {
+        status: run.conclusion === 'success' ? 'success' : 'failure',
+        url: run.url,
+        conclusion: run.conclusion,
+      };
+    }
+
+    // Wait before next attempt
+    if (i < maxAttempts - 1) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, intervalMs);
+        signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(undefined); });
+      });
+    }
+  }
+
+  return { status: 'timeout' };
 }

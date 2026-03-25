@@ -51,7 +51,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { checkAndSave, initGitIfNeeded, isFileChangingCommand } from '@/lib/auto-savepoint';
 import { useSavepointStore } from '@/store/savepoint-store';
 import type { ActionsWizardData } from '@/store/chat-store';
-import { detectProjectTypeFromDir, generateWorkflowFromWizard, commitAndPushWorkflow } from '@/lib/github-actions';
+import { detectProjectTypeFromDir, generateWorkflowFromWizard, commitAndPushWorkflow, pollWorkflowResult } from '@/lib/github-actions';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -595,9 +595,15 @@ export default function ChatScreen() {
             exitCode: result.exitCode,
           });
 
-          // ── Auto-check proposal after successful git push ──
+          // ── Auto-check: propose or poll after successful git push ──
           if (result.exitCode === 0 && /^git\s+push\b/.test(parsed.prompt)) {
-            maybeShowAutoCheckProposal();
+            const offered = await AsyncStorage.getItem('shelly_autocheck_offered').catch(() => null);
+            if (offered === 'true') {
+              // CI already configured — poll for results
+              startWorkflowPoll();
+            } else {
+              maybeShowAutoCheckProposal();
+            }
           }
         } catch (err) {
           updateMessage(chatSessionId, msgId, {
@@ -894,6 +900,67 @@ export default function ChatScreen() {
     updateMessage(chatSessionId, messageId, { autoCheckState: 'dismissed' });
     await AsyncStorage.setItem('shelly_autocheck_offered', 'true');
   }, [chatSessionId, updateMessage]);
+
+  // ── Poll workflow result after push (when CI is configured) ──
+  const pollAbortRef = useRef<AbortController | null>(null);
+
+  const startWorkflowPoll = useCallback(() => {
+    if (!chatSessionId) return;
+
+    // Abort any existing poll
+    pollAbortRef.current?.abort();
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+
+    // Add polling indicator message
+    const pollMsgId = generateId();
+    addMessage(chatSessionId, {
+      id: pollMsgId,
+      role: 'assistant',
+      content: t('autocheck.polling'),
+      timestamp: Date.now(),
+      agent: 'git',
+      isStreaming: true,
+      streamingText: t('autocheck.polling'),
+    });
+
+    // Run poll in background
+    pollWorkflowResult({
+      projectDir: activeSession.currentDir,
+      runCommand: async (cmd) => {
+        const res = await bridgeRunCommand(cmd);
+        return { stdout: res.stdout, exitCode: res.exitCode };
+      },
+      signal: controller.signal,
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+
+      if (result.status === 'success') {
+        updateMessage(chatSessionId, pollMsgId, {
+          content: t('autocheck.result_pass'),
+          isStreaming: false,
+        });
+      } else if (result.status === 'failure') {
+        const detailLink = result.url ? `\n\n[${t('autocheck.view_details')}](${result.url})` : '';
+        updateMessage(chatSessionId, pollMsgId, {
+          content: t('autocheck.result_fail') + detailLink,
+          isStreaming: false,
+          error: result.conclusion || undefined,
+        });
+      } else if (result.status === 'timeout') {
+        updateMessage(chatSessionId, pollMsgId, {
+          content: t('autocheck.timeout'),
+          isStreaming: false,
+        });
+      } else {
+        // Error or no PAT — silently remove the polling message
+        updateMessage(chatSessionId, pollMsgId, {
+          content: '',
+          isStreaming: false,
+        });
+      }
+    });
+  }, [chatSessionId, addMessage, updateMessage, activeSession.currentDir, bridgeRunCommand, t]);
 
   const handleHistoryUp = useCallback((): string => {
     return navigateHistory('up');

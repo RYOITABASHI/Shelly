@@ -811,9 +811,11 @@ const ja: Record<string, string> = {
   'autocheck.setting_up': '自動チェックを設定中...',
   'autocheck.done': '自動チェックをオンにしました！GitHubに保存するたびに、コードをチェックしてここでお知らせします。',
   'autocheck.error': '自動チェックの設定に失敗しました: {error}',
-  'autocheck.result_pass': '自動チェック: 問題なし！',
-  'autocheck.result_fail': '自動チェック: エラーがありました',
+  'autocheck.result_pass': '自動チェック完了 — 問題ありませんでした！',
+  'autocheck.result_fail': '自動チェックで問題が見つかりました',
   'autocheck.view_details': '詳しく見る',
+  'autocheck.polling': 'コードをチェック中...',
+  'autocheck.timeout': '自動チェックがまだ実行中です。結果はあとでGitHubで確認できます。',
 
   // ── Advanced CI wizard (Settings) ──────────────────────────────
   'wizard.actions_title': '自動チェックの設定',
