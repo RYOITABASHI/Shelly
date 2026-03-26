@@ -1,14 +1,12 @@
 /**
- * useTtydConnection — TTYタブ用の接続管理フック
+ * useTtydConnection — TTYタブ用の接続管理フック（マルチセッション対応）
  *
- * ttydへのfetch HEAD接続チェックを行い、失敗時はTermuxBridge経由で
- * ttydを自動起動してからリトライする。手動接続は不要。
- * AppState連携でフォアグラウンド復帰時にリトライカウンターをリセットして再接続。
+ * セッションごとのttyUrlを受け取り、HEAD接続チェック→失敗時はTermuxBridge経由で
+ * ttydを自動起動してリトライ。AppState連携でフォアグラウンド復帰時に検証。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { useTerminalStore } from '@/store/terminal-store';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 
 type TtydStatus = 'connecting' | 'connected' | 'error';
@@ -16,13 +14,11 @@ type TtydStatus = 'connecting' | 'connected' | 'error';
 const RETRY_INTERVAL = 3000;
 const MAX_RETRIES = 10;
 
-// Module-level flag to avoid launching ttyd multiple times
-let _ttydLaunchAttempted = false;
+// Per-URL launch tracking (shared across all hook instances)
+const _ttydLaunchAttempted = new Map<string, boolean>();
 
-export function useTtydConnection() {
-  const { termuxSettings } = useTerminalStore();
+export function useTtydConnection(ttyUrl: string = 'http://localhost:7681') {
   const { runRawCommand, isConnected: bridgeConnected } = useTermuxBridge();
-  const ttyUrl = termuxSettings.ttyUrl || 'http://localhost:7681';
 
   const [status, setStatus] = useState<TtydStatus>('connecting');
   const [retryCount, setRetryCount] = useState(0);
@@ -56,23 +52,32 @@ export function useTtydConnection() {
     }
   }, [ttyUrl]);
 
-  // Auto-launch ttyd via bridge WebSocket (reliable) or fallback
+  // Extract port from ttyUrl for auto-launch command
+  const getPort = useCallback((): string => {
+    try {
+      return new URL(ttyUrl).port || '7681';
+    } catch {
+      return '7681';
+    }
+  }, [ttyUrl]);
+
+  // Auto-launch ttyd via bridge WebSocket
   const autoLaunchTtyd = useCallback(async () => {
-    if (_ttydLaunchAttempted) return;
-    _ttydLaunchAttempted = true;
+    if (_ttydLaunchAttempted.get(ttyUrl)) return;
+    _ttydLaunchAttempted.set(ttyUrl, true);
     try {
       if (bridgeConnected) {
-        // Bridge available — use nohup + sleep pattern for reliable background launch
+        const port = getPort();
         await runRawCommand(
-          'nohup ttyd -p 7681 -W bash > /dev/null 2>&1 & sleep 2 && echo OK',
+          `nohup ttyd -p ${port} -W bash > /dev/null 2>&1 & sleep 2 && echo OK`,
           { timeoutMs: 10000, reason: 'ttyd-auto-launch' },
         );
       }
     } catch {
       // Best-effort
     }
-    setTimeout(() => { _ttydLaunchAttempted = false; }, 30000);
-  }, [bridgeConnected, runRawCommand]);
+    setTimeout(() => { _ttydLaunchAttempted.set(ttyUrl, false); }, 30000);
+  }, [bridgeConnected, runRawCommand, ttyUrl, getPort]);
 
   const startRetryLoop = useCallback(() => {
     clearTimer();
@@ -118,9 +123,9 @@ export function useTtydConnection() {
 
   // Manual retry — reset counters and restart
   const retry = useCallback(() => {
-    _ttydLaunchAttempted = false; // Allow re-launch on manual retry
+    _ttydLaunchAttempted.set(ttyUrl, false);
     startRetryLoop();
-  }, [startRetryLoop]);
+  }, [startRetryLoop, ttyUrl]);
 
   // Called by WebView onLoadEnd — mark connected
   const onWebViewLoad = useCallback(() => {
@@ -135,7 +140,7 @@ export function useTtydConnection() {
     startRetryLoop();
   }, [startRetryLoop]);
 
-  // Start on mount
+  // Start on mount or when ttyUrl changes (session switch)
   useEffect(() => {
     mountedRef.current = true;
     startRetryLoop();
@@ -152,23 +157,20 @@ export function useTtydConnection() {
       appStateRef.current = nextState;
 
       if (nextState === 'active' && prev !== 'active') {
-        // Already connected — just verify with a quick HEAD check
         if (statusRef.current === 'connected') {
           const ok = await checkConnection();
           if (!ok && mountedRef.current) {
-            // Connection lost while backgrounded — retry
-            _ttydLaunchAttempted = false;
+            _ttydLaunchAttempted.set(ttyUrl, false);
             startRetryLoop();
           }
           return;
         }
-        // Not connected — full retry
-        _ttydLaunchAttempted = false;
+        _ttydLaunchAttempted.set(ttyUrl, false);
         startRetryLoop();
       }
     });
     return () => sub.remove();
-  }, [startRetryLoop, checkConnection]);
+  }, [startRetryLoop, checkConnection, ttyUrl]);
 
   return {
     status,
