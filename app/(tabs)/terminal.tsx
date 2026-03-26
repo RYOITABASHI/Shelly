@@ -216,14 +216,15 @@ export default function TerminalScreen() {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'terminal-output' && data.text) {
         const lines = stripAnsi(data.text).split('\n').filter((l: string) => l.trim());
+        const sid = activeSession?.id;
         for (const line of lines) {
-          addTerminalOutput(line);
+          addTerminalOutput(line, sid);
         }
       }
     } catch {
       // Ignore parse errors
     }
-  }, [addTerminalOutput]);
+  }, [addTerminalOutput, activeSession?.id]);
 
   // Adaptive terminal font size for small screens (Z Fold6 cover ≈ 373dp)
   // Adaptive font size: compact cover screen needs bigger text due to high DPI

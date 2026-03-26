@@ -224,11 +224,13 @@ function getTerminalContextForPrompt(prompt: string, isWide: boolean): string {
   const shouldInject = isWide || intent !== null;
   if (!shouldInject) return '';
 
-  const termOutput = useExecutionLogStore.getState().getRecentOutput(50);
+  // Read output from the active terminal session
+  const activeSessionId = useTerminalStore.getState().activeSessionId;
+  const termOutput = useExecutionLogStore.getState().getRecentOutput(50, 5, activeSessionId);
   if (!termOutput) return '';
 
   const suffix = TERMINAL_CONTEXT_SUFFIXES[intent ?? 'reference'];
-  return `\n\n--- Terminal Output (last 50 lines) ---\n${termOutput}${suffix}`;
+  return `\n\n--- Terminal Output (Session: ${activeSessionId}, last 50 lines) ---\n${termOutput}${suffix}`;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────

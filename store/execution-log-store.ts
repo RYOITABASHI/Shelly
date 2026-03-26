@@ -47,6 +47,8 @@ export type TerminalOutputLine = {
   text: string;
   timestamp: number;
   isError: boolean;
+  /** Which terminal session produced this line */
+  sessionId?: string;
 };
 
 const HOT_BUFFER_SIZE = 100;
@@ -89,9 +91,9 @@ type ExecutionLogStore = {
   addEntry: (entry: Omit<ExecutionLogEntry, 'id' | 'timestamp'>) => void;
   updateEntry: (id: string, updates: Partial<ExecutionLogEntry>) => void;
   /** ターミナル出力行を2層バッファに追加 */
-  addTerminalOutput: (line: string) => void;
-  /** エラー行の前後contextLines行を含む直近出力を取得 */
-  getRecentOutput: (lines?: number, contextLines?: number) => string;
+  addTerminalOutput: (line: string, sessionId?: string) => void;
+  /** エラー行の前後contextLines行を含む直近出力を取得。sessionIdでフィルタ可能 */
+  getRecentOutput: (lines?: number, contextLines?: number, sessionId?: string) => string;
   /** ターミナル出力をクリア */
   clearTerminalOutput: () => void;
   clearEntries: () => void;
@@ -131,11 +133,12 @@ export const useExecutionLogStore = create<ExecutionLogStore>((set, get) => ({
     }));
   },
 
-  addTerminalOutput: (text: string) => {
+  addTerminalOutput: (text: string, sessionId?: string) => {
     const line: TerminalOutputLine = {
       text,
       timestamp: Date.now(),
       isError: isErrorLine(text),
+      sessionId,
     };
     set((state) => {
       const newHot = [...state.hotBuffer.slice(-(HOT_BUFFER_SIZE - 1)), line];
@@ -147,9 +150,12 @@ export const useExecutionLogStore = create<ExecutionLogStore>((set, get) => ({
     });
   },
 
-  getRecentOutput: (lines = 50, contextLines = 5) => {
+  getRecentOutput: (lines = 50, contextLines = 5, sessionId?: string) => {
     const { sessionBuffer } = get();
-    const recent = sessionBuffer.slice(-lines);
+    const filtered = sessionId
+      ? sessionBuffer.filter((l) => l.sessionId === sessionId)
+      : sessionBuffer;
+    const recent = filtered.slice(-lines);
     if (contextLines <= 0 || recent.length === 0) {
       return recent.map((l) => l.text).join('\n');
     }
