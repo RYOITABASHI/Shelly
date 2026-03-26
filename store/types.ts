@@ -147,6 +147,10 @@ export type TabSession = {
   entries: TerminalEntry[];
   commandHistory: string[];
   historyIndex: number;
+  /** 現在実行中のCLI（復帰用） */
+  activeCli: 'claude' | 'gemini' | 'codex' | 'cody' | null;
+  /** 対応するtmuxセッション名 */
+  tmuxSession: string;
 };
 
 // ─── Snippets ─────────────────────────────────────────────────────────────────

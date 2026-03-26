@@ -22,6 +22,8 @@ type PersistedSession = {
   outputBuffer: string[];
   createdAt: string;
   lastActiveAt: string;
+  activeCli: 'claude' | 'gemini' | 'codex' | 'cody' | null;
+  tmuxSession: string;
 };
 
 const MAX_OUTPUT_LINES = 200;
@@ -41,6 +43,8 @@ function sessionToJson(session: TabSession, outputLines: string[]): PersistedSes
     outputBuffer: outputLines.slice(-MAX_OUTPUT_LINES),
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),
+    activeCli: session.activeCli ?? null,
+    tmuxSession: session.tmuxSession ?? '',
   };
 }
 

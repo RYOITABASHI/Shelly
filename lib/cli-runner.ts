@@ -12,7 +12,7 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type CliTool = 'claude' | 'gemini' | 'custom';
+export type CliTool = 'claude' | 'gemini' | 'codex' | 'cody' | 'custom';
 
 export interface CliToolConfig {
   id: CliTool;
@@ -88,6 +88,29 @@ export const CLI_TOOLS: Record<CliTool, CliToolConfig> = {
     setupCommands: ['npm install -g @google/gemini-cli'],
     isInteractive: true,
     nonInteractiveFlag: '--prompt',
+  },
+  codex: {
+    id: 'codex',
+    label: 'Codex CLI',
+    description: 'OpenAIのAI CLIツール',
+    checkCommand: 'which codex',
+    installGuide:
+      'Codex CLIがインストールされていないよ。\n' +
+      'Termuxで以下を実行してインストールしてね：\n' +
+      'npm install -g @openai/codex',
+    setupCommands: ['npm install -g @openai/codex'],
+    isInteractive: true,
+  },
+  cody: {
+    id: 'cody',
+    label: 'Cody CLI',
+    description: 'SourcegraphのAI CLIツール',
+    checkCommand: 'which cody',
+    installGuide:
+      'Cody CLIがインストールされていないよ。\n' +
+      'インストール方法はSourcegraphの公式ドキュメントを確認してね。',
+    setupCommands: [],
+    isInteractive: true,
   },
   custom: {
     id: 'custom',

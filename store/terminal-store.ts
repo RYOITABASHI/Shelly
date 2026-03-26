@@ -15,6 +15,9 @@ import { executeCommand } from '@/lib/pseudo-shell';
 import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys } from '@/lib/secure-store';
 import { useSoundStore } from '@/lib/sounds';
 
+/** Pending tmux sessions to kill (consumed by useTermuxBridge on next tick) */
+export const _pendingTmuxKills: string[] = [];
+
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -99,6 +102,8 @@ function createSession(id: string, name: string, port: number = TTYD_PORT_BASE):
     entries: [],
     commandHistory: [],
     historyIndex: -1,
+    activeCli: null,
+    tmuxSession: `shelly-${port - TTYD_PORT_BASE + 1}`,
   };
 }
 
@@ -124,6 +129,8 @@ type TerminalState = {
   /** Active agent session — when set, all natural language input routes to this agent. Cleared by "ログアウト" / "/exit". */
   activeCliSession: string | null;
   setActiveCliSession: (session: string | null) => void;
+  /** Set the active CLI for the current session (for recovery) */
+  setActiveCli: (cli: TabSession['activeCli']) => void;
 
   // Actions — sessions
   addSession: () => void;
@@ -211,6 +218,16 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   activeCliSession: null,
   setActiveCliSession: (session) => set({ activeCliSession: session }),
 
+  setActiveCli: (cli) => {
+    const { sessions, activeSessionId } = get();
+    set({
+      sessions: sessions.map((s) =>
+        s.id === activeSessionId ? { ...s, activeCli: cli } : s
+      ),
+    });
+    get().saveSessionState();
+  },
+
   // ── Session management ──────────────────────────────────────────────────────
 
   addSession: () => {
@@ -230,6 +247,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   removeSession: (id: string) => {
     const { sessions, activeSessionId } = get();
     if (sessions.length <= 1) return;
+    const removed = sessions.find((s) => s.id === id);
+    if (removed?.tmuxSession) {
+      _pendingTmuxKills.push(removed.tmuxSession);
+    }
     const newSessions = sessions.filter((s) => s.id !== id);
     const newActive = activeSessionId === id ? newSessions[0].id : activeSessionId;
     set({ sessions: newSessions, activeSessionId: newActive });
@@ -650,6 +671,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
             isStreaming: false,
             streamingText: undefined, // clear partial streaming text
           })),
+        activeCli: s.activeCli ?? null,
+        tmuxSession: s.tmuxSession ?? `shelly-${s.port - TTYD_PORT_BASE + 1}`,
       }));
       await AsyncStorage.setItem('shelly_terminal_sessions', JSON.stringify({
         sessions: serializable,
@@ -673,6 +696,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         commandHistory: s.commandHistory || [],
         blocks: (s.blocks || []).map((b: any) => ({ ...b, isRunning: false })),
         entries: (s.entries || []).map((e: any) => ({ ...e, isStreaming: false })),
+        activeCli: s.activeCli ?? null,
+        tmuxSession: s.tmuxSession ?? `shelly-${(s.port || TTYD_PORT_BASE + index) - TTYD_PORT_BASE + 1}`,
       }));
       const activeId = data.activeSessionId && restored.some((s: TabSession) => s.id === data.activeSessionId)
         ? data.activeSessionId

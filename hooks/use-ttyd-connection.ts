@@ -68,8 +68,10 @@ export function useTtydConnection(ttyUrl: string = 'http://localhost:7681') {
     try {
       if (bridgeConnected) {
         const port = getPort();
+        const n = parseInt(port, 10) - 7681 + 1;
+        const sessionName = `shelly-${n}`;
         await runRawCommand(
-          `nohup ttyd -p ${port} -W bash > /dev/null 2>&1 & sleep 2 && echo OK`,
+          `tmux has-session -t "${sessionName}" 2>/dev/null || tmux new-session -d -s "${sessionName}"; nohup ttyd -p ${port} -W tmux attach-session -t "${sessionName}" > /dev/null 2>&1 & sleep 2 && echo OK`,
           { timeoutMs: 10000, reason: 'ttyd-auto-launch' },
         );
       }

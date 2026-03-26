@@ -37,9 +37,20 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { AppState, AppStateStatus, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useTerminalStore, _pendingTmuxKills } from '@/store/terminal-store';
 import { notifyCommandComplete } from '@/lib/command-notifier';
 import { runTermuxCommand } from '@/lib/termux-intent';
+import { isSessionAlive, ensureSession, sendKeysToSession, buildRecoveryCommand, killSession as killTmuxSession } from '@/lib/tmux-manager';
+
+/** コマンド文字列からCLI種別を検出する */
+function detectCli(command: string): 'claude' | 'gemini' | 'codex' | 'cody' | null {
+  const trimmed = command.trim();
+  if (/^claude(\s|$)/.test(trimmed)) return 'claude';
+  if (/^gemini(\s|$)/.test(trimmed)) return 'gemini';
+  if (/^codex(\s|$)/.test(trimmed)) return 'codex';
+  if (/^cody(\s|$)/.test(trimmed)) return 'cody';
+  return null;
+}
 
 /** Generate a collision-resistant request ID */
 function genRequestId(prefix: string): string {
@@ -372,13 +383,29 @@ export function useTermuxBridge() {
       connect();
 
       // Check if connected after a short delay
-      autoRecoveryTimerRef.current = setTimeout(() => {
+      autoRecoveryTimerRef.current = setTimeout(async () => {
         const { bridgeStatus: currentStatus } = useTerminalStore.getState();
         if (currentStatus === 'connected') {
           // Recovery succeeded!
           setIsAutoRecovering(false);
           setAutoRecoveryFailed(false);
           setIsReconnectExhausted(false);
+
+          // === Layer 2: CLI session recovery ===
+          const { sessions } = useTerminalStore.getState();
+          for (const session of sessions) {
+            const tmuxName = session.tmuxSession || `shelly-${session.port - 7681 + 1}`;
+            const alive = await isSessionAlive(tmuxName, runRawCommand);
+            if (!alive && (session.activeCli || session.currentDir !== '/home/user')) {
+              // tmux died — create new session and auto-resume
+              await ensureSession(tmuxName, runRawCommand);
+              const recoveryCmd = buildRecoveryCommand(session.currentDir, session.activeCli);
+              if (recoveryCmd) {
+                await sendKeysToSession(tmuxName, recoveryCmd, runRawCommand);
+              }
+            }
+          }
+
           return;
         }
         // Not connected yet, keep polling
@@ -449,6 +476,12 @@ export function useTermuxBridge() {
             notifyCommandComplete(active.command, msg.code, duration);
             delete blockStartTimeRef.current[active.blockId];
           }
+          // Clear activeCli when the CLI process exits
+          const { sessions: exitSessions, activeSessionId: exitActiveId } = useTerminalStore.getState();
+          const exitSession = exitSessions.find((s) => s.id === exitActiveId);
+          if (exitSession?.activeCli && active.command.trim().startsWith(exitSession.activeCli)) {
+            useTerminalStore.getState().setActiveCli(null);
+          }
         }
         activeItemRef.current = null;
         processQueue();
@@ -470,6 +503,12 @@ export function useTermuxBridge() {
   // ── Queue processing ───────────────────────────────────────────────────────
 
   const processQueue = useCallback(() => {
+    // Clean up tmux sessions for removed tabs
+    while (_pendingTmuxKills.length > 0) {
+      const name = _pendingTmuxKills.shift()!;
+      killTmuxSession(name, runRawCommand);
+    }
+
     if (activeItemRef.current) return; // busy
     if (queueRef.current.length === 0) return;
 
@@ -494,6 +533,13 @@ export function useTermuxBridge() {
 
     blockStartTimeRef.current[blockId] = Date.now();
     queueRef.current.push({ requestId, command, blockId });
+
+    // Detect CLI launch and track for recovery
+    const cli = detectCli(command);
+    if (cli) {
+      useTerminalStore.getState().setActiveCli(cli);
+    }
+
     processQueue();
 
     return blockId;
