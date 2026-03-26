@@ -13,6 +13,9 @@ function withMultiWindow(config) {
     const application = manifest.manifest.application?.[0];
     if (!application) return config;
 
+    // Enable largeHeap to reduce WebView process kills under memory pressure
+    application.$["android:largeHeap"] = "true";
+
     const activities = application.activity;
     if (!activities?.length) return config;
 

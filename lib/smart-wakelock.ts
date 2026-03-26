@@ -2,19 +2,17 @@
  * smart-wakelock.ts — Intelligent wakelock management for Termux
  *
  * Auto-acquires wakelock when terminal sessions are active (ttyd running).
- * Auto-releases when all sessions are idle for IDLE_TIMEOUT.
- * Prevents unnecessary battery drain while keeping long-running processes alive.
+ * Keeps wakelock held while sessions exist — no idle timeout.
+ * Released only on explicit stopSmartWakelock() call (app exit).
  */
 
 import { AppState, type AppStateStatus } from 'react-native';
 
 type RunCommand = (cmd: string, opts: { timeoutMs: number; reason: string }) => Promise<any>;
 
-const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const CHECK_INTERVAL = 30_000; // 30 seconds
 
 let _checkTimer: ReturnType<typeof setInterval> | null = null;
-let _idleTimer: ReturnType<typeof setTimeout> | null = null;
 let _appStateSub: ReturnType<typeof AppState.addEventListener> | null = null;
 let _wakelockHeld = false;
 let _runCommand: RunCommand | null = null;
@@ -57,28 +55,14 @@ async function releaseWakelock(runRawCommand: RunCommand): Promise<void> {
   }
 }
 
-/** Periodic check: acquire if active, start idle timer if not */
+/** Periodic check: acquire if active, keep held while sessions exist */
 async function checkAndManage(runRawCommand: RunCommand): Promise<void> {
   const active = await hasActiveProcesses(runRawCommand);
-
-  if (active) {
-    // Clear idle timer, ensure wakelock
-    if (_idleTimer) {
-      clearTimeout(_idleTimer);
-      _idleTimer = null;
-    }
+  if (active && !_wakelockHeld) {
     await acquireWakelock(runRawCommand);
-  } else if (_wakelockHeld && !_idleTimer) {
-    // Start idle countdown
-    _idleTimer = setTimeout(async () => {
-      _idleTimer = null;
-      // Double-check before releasing
-      const stillActive = await hasActiveProcesses(runRawCommand);
-      if (!stillActive) {
-        await releaseWakelock(runRawCommand);
-      }
-    }, IDLE_TIMEOUT);
   }
+  // Don't release on idle — user expects processes to survive app switches
+  // Wakelock is only released when stopSmartWakelock() is called (app exit)
 }
 
 /** Start smart wakelock management */
@@ -107,10 +91,6 @@ export function stopSmartWakelock(): void {
   if (_checkTimer) {
     clearInterval(_checkTimer);
     _checkTimer = null;
-  }
-  if (_idleTimer) {
-    clearTimeout(_idleTimer);
-    _idleTimer = null;
   }
   if (_appStateSub) {
     _appStateSub.remove();

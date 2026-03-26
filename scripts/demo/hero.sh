@@ -1,63 +1,56 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# hero.sh — Material 1: Hero GIF (12 seconds)
+# hero.sh — 素材1: ヒーローGIF（12秒）フルオート版
 #
-# Cross-Pane Intelligence demo:
-#   Terminal has build error → Chat: "fix the error on the right"
-#   → AI responds → ActionBlock [▶ Run] → Terminal executes → Auto-save
+# クロスペインインテリジェンス:
+#   Terminal にエラー → Chat で「fix the error on the right」
+#   → AI応答待ち → ActionBlock [▶ Run] → 自動セーブ
 #
-# Prerequisites:
-#   - Shelly open in multi-pane mode (Chat + Terminal)
-#   - Terminal showing a build error (run the failing command beforehand)
-#   - Language: English
+# 前提: マルチペイン(Chat+Terminal)、Terminal にエラー表示済み、英語UI
 
 source "$(dirname "$0")/common.sh"
 
-banner "Hero GIF — Cross-Pane Intelligence (12s)"
+banner "素材1: ヒーローGIF — クロスペイン（12秒）"
 
-echo "📋 Prerequisites:"
-echo "   1. Shelly in multi-pane (Chat left, Terminal right)"
-echo "   2. Terminal showing an error, e.g.:"
-echo "      \$ npm run build"
-echo "      Error: Cannot find module './utils'"
-echo "   3. Language set to English"
-echo "   4. Chat input field visible"
+echo "📋 前提確認:"
+echo "   1. マルチペイン（左: Chat、右: Terminal）"
+echo "   2. Terminal にエラーが表示済み"
+echo "   3. 英語UI"
 echo ""
 
-# ── Prepare the error ──
-wait_for "Make sure Terminal has a visible error. Ready?"
+# Terminal にエラーを表示（まだなければ）
+wait_for "Terminal にエラーが出てる？なければ先に表示してね。準備OK？"
 
-# ── Take 1 (or 2 or 3) ──
-echo "🎬 Starting take. 3 takes recommended."
 countdown 3
 
-# Step 1: Start recording
+# ── 録画開始 ──
 start_recording "hero"
 
-# Step 2: Tap the chat input field
-wait_for "Tap the Chat input field (Nacre keyboard should appear)"
+# 1秒間エラーを見せる
+wait_sec 1 "エラー画面表示中"
 
-# Step 3: Type the prompt
-echo "⌨️  Typing: fix the error on the right"
-type_text "fix the error on the right" 0.05
-sleep 0.5
+# Chat 入力欄をタップ → テキスト入力
+echo "⌨️  入力中: fix the error on the right"
+type_in_chat "fix the error on the right" 0.05
 
-# Step 4: Send
-wait_for "Tap the Send button"
+wait_sec 1 "入力確認"
 
-# Step 5: Wait for AI response + ActionBlock
-wait_for "Wait for AI response with ActionBlock [▶ Run] to appear"
+# 送信
+echo "📤 送信"
+send_message
 
-# Step 6: Run the command
-wait_for "Tap [▶ Run] on the ActionBlock"
+# AI応答を待つ（セミオート: 応答+ActionBlock表示を目視）
+wait_for "AI応答 + ActionBlock [▶ Run] が表示されたら Enter"
 
-# Step 7: Wait for execution + auto-save badge
-wait_for "Wait for Terminal execution + 💾 save badge (about 2-3 seconds)"
+# ActionBlock の [▶ Run] をタップ
+# ActionBlock は Chat 左側の中央付近に表示される（メッセージ位置による）
+# ここはセミオート: 位置が動的なので手動タップ
+wait_for "[▶ Run] をタップしたら Enter"
 
-# Step 8: Stop recording
-sleep 1
+# 実行完了 + セーブバッジ待ち
+wait_sec 3 "Terminal 実行 + 💾 セーブバッジ待ち"
+
+# ── 録画停止 ──
 stop_recording "hero"
 
 echo ""
-echo "✅ Take complete! File: $DEMO_DIR/hero.mp4"
-echo "   Run this script again for additional takes."
-echo "   Rename files to hero_take2.mp4, hero_take3.mp4 etc."
+echo "✅ テイク完了！ $DEMO_DIR/hero.mp4"

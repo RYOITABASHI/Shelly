@@ -33,7 +33,7 @@ const XTERM_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; background: #0D0D0D; overflow: hidden; }
+  html, body { width: 100%; height: 100%; background: #000000; overflow: hidden; }
   #terminal { width: 100%; height: 100%; }
   .xterm { height: 100%; }
   .xterm-viewport { overflow-y: auto !important; }
@@ -62,16 +62,16 @@ const XTERM_HTML = `<!DOCTYPE html>
       fontSize: 13,
       lineHeight: 1.3,
       theme: {
-        background: '#0D0D0D',
+        background: '#000000',
         foreground: '#E0E0E0',
         cursor: '#00D4AA',
-        cursorAccent: '#0D0D0D',
+        cursorAccent: '#000000',
         selectionBackground: '#00D4AA44',
-        black:   '#1A1A1A', red:     '#F87171',
-        green:   '#4ADE80', yellow:  '#FBBF24',
-        blue:    '#60A5FA', magenta: '#A78BFA',
+        black:   '#1A1A1A', red:     '#FF6B6B',
+        green:   '#4ADE80', yellow:  '#FFD93D',
+        blue:    '#6CB4FF', magenta: '#B48EFF',
         cyan:    '#00D4AA', white:   '#E0E0E0',
-        brightBlack:   '#4B5563', brightRed:     '#FCA5A5',
+        brightBlack:   '#6B7280', brightRed:     '#FCA5A5',
         brightGreen:   '#86EFAC', brightYellow:  '#FDE68A',
         brightBlue:    '#93C5FD', brightMagenta: '#C4B5FD',
         brightCyan:    '#67E8F9', brightWhite:   '#F9FAFB',
@@ -310,7 +310,7 @@ export function FullscreenTerminal({ visible, wsUrl, onClose }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0D0D0D',
+    backgroundColor: '#000000',
   },
   header: {
     flexDirection: 'row',
@@ -368,7 +368,7 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
-    backgroundColor: '#0D0D0D',
+    backgroundColor: '#000000',
   },
   bottomBar: {
     paddingHorizontal: 14,

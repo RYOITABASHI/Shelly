@@ -215,6 +215,14 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
       const { root, maxPanes } = get();
       if (!root) return;
       if (countLeaves(root) >= maxPanes) return;
+      // Cap terminal panes at 2 (Android phantom process killer limit)
+      if (newTab === 'terminal') {
+        const countTerminalLeaves = (node: PaneNode): number => {
+          if (node.type === 'leaf') return node.tab === 'terminal' ? 1 : 0;
+          return countTerminalLeaves(node.children[0]) + countTerminalLeaves(node.children[1]);
+        };
+        if (countTerminalLeaves(root) >= 2) return;
+      }
       const oldLeaf = makeLeaf(
         (() => {
           const f = findNode(root, leafId);

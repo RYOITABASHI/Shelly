@@ -5,8 +5,9 @@
  * Auto-scrolls to bottom on new messages.
  */
 
-import React, { useRef, useCallback, useEffect, useMemo } from 'react';
-import { FlatList, View, Text, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions } from 'react-native';
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { FlatList, View, Text, ScrollView, StyleSheet, TouchableOpacity, Pressable, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ChatBubble } from './ChatBubble';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
@@ -47,6 +48,17 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
   const layoutKey = `${Math.round(screenWidth / 40)}-${Math.round(screenHeight / 40)}`;
   const listRef = useRef<FlatList>(null);
   const prevCount = useRef(messages.length);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
+  const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const distFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    setShowScrollBtn(distFromBottom > 200);
+  }, []);
+
+  const handleScrollToBottom = useCallback(() => {
+    listRef.current?.scrollToEnd({ animated: true });
+  }, []);
 
   // Auto-scroll on new message
   useEffect(() => {
@@ -123,18 +135,32 @@ export function ChatMessageList({ messages, fontSize, onSampleTap, onRegenerate,
   }
 
   return (
-    <FlatList
-      key={`chat-list-${layoutKey}`}
-      ref={listRef}
-      data={messages}
-      renderItem={renderItem}
-      keyExtractor={keyExtractor}
-      contentContainerStyle={styles.listContent}
-      showsVerticalScrollIndicator={false}
-      keyboardDismissMode="interactive"
-      keyboardShouldPersistTaps="handled"
-      ListFooterComponent={listFooter ?? undefined}
-    />
+    <View style={{ flex: 1 }}>
+      <FlatList
+        key={`chat-list-${layoutKey}`}
+        ref={listRef}
+        data={messages}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        ListFooterComponent={listFooter ?? undefined}
+        onScroll={handleScroll}
+        scrollEventThrottle={100}
+      />
+      {showScrollBtn && (
+        <Pressable
+          onPress={handleScrollToBottom}
+          style={[styles.scrollToBottomFab, { backgroundColor: colors.surfaceHigh, borderColor: colors.border }]}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to bottom"
+        >
+          <MaterialIcons name="keyboard-arrow-down" size={22} color={colors.accent} />
+        </Pressable>
+      )}
+    </View>
   );
 }
 
@@ -210,5 +236,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'monospace',
     fontWeight: '600',
+  },
+  scrollToBottomFab: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
   },
 });

@@ -1,58 +1,51 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# cross-pane-single.sh — Material 2: Single-Pane Cross-Pane Reference (10s)
+# cross-pane-single.sh — 素材2: シングルペインのクロスペイン参照（10秒）
 #
-# Shows cross-pane intelligence works even in single-pane mode:
-#   Terminal tab: python error → Switch to Chat tab
-#   → "さっきのエラー直して" (Japanese) → AI responds → ActionBlock → Run
-#
-# Prerequisites:
-#   - Shelly in single-pane mode (phone or folded)
-#   - Terminal tab showing a Python test error
-#   - Language: Japanese (to demo i18n)
+# Terminal タブでエラー → Chat タブに切り替え
+# → 「さっきのエラー直して」→ AI応答 → ActionBlock → Run
 
 source "$(dirname "$0")/common.sh"
 
-banner "Feature GIF — Single-Pane Cross-Pane (10s)"
+banner "素材2: シングルペイン クロスペイン（10秒）"
 
-echo "📋 Prerequisites:"
-echo "   1. Single-pane mode (or folded Z Fold6)"
-echo "   2. Currently on Terminal tab with an error visible:"
+echo "📋 事前準備:"
+echo "   1. シングルペインモード（折りたたみ or 縦表示）"
+echo "   2. Terminal タブにエラーが表示されている:"
 echo "      \$ python test.py"
 echo "      AssertionError: expected 200, got 404"
-echo "   3. Language: Japanese"
+echo "   3. 言語: 日本語"
 echo ""
 
-wait_for "Terminal tab showing the error. Ready?"
+wait_for "Terminal タブにエラーが出ている？準備OK？"
 countdown 3
 
 start_recording "cross-pane-single"
 
-# Step 1: Show the terminal error for 2 seconds
+# ステップ1: Terminal のエラーを2秒見せる
 sleep 2
 
-# Step 2: Switch to Chat tab
-wait_for "Tap the Chat tab to switch"
+# ステップ2: Chat タブに切り替え
+wait_for "Chat タブをタップして切り替え"
 
-# Step 3: Type Japanese prompt
+# ステップ3: 日本語入力
 sleep 0.5
-wait_for "Tap the Chat input field"
-echo "⌨️  Typing: さっきのエラー直して"
-# Japanese text via paste (adb input text doesn't handle CJK well)
+wait_for "Chat の入力欄をタップ"
+echo "⌨️  入力中: さっきのエラー直して"
 paste_text "さっきのエラー直して"
 sleep 0.5
 
-# Step 4: Send
-wait_for "Tap Send"
+# ステップ4: 送信
+wait_for "送信ボタンをタップ"
 
-# Step 5: Wait for AI response
-wait_for "Wait for AI response with ActionBlock to appear"
+# ステップ5: AI応答を待つ
+wait_for "AI の応答 + ActionBlock が表示されるまで待つ"
 
-# Step 6: Run
-wait_for "Tap [▶ Run] on the ActionBlock"
+# ステップ6: 実行
+wait_for "ActionBlock の [▶ Run] をタップ"
 
-# Step 7: Done
+# ステップ7: 完了
 sleep 1
 stop_recording "cross-pane-single"
 
 echo ""
-echo "✅ Take complete! File: $DEMO_DIR/cross-pane-single.mp4"
+echo "✅ テイク完了！ファイル: $DEMO_DIR/cross-pane-single.mp4"

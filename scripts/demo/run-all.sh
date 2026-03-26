@@ -1,8 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# run-all.sh — Run all demo recording scripts in sequence.
-#
-# Recommended order: multi-pane first (1, 5), then single-pane (2, 3, 4, 6).
-# After recording, run post-process.sh to convert to GIF.
+# run-all.sh — 全デモ素材を順番に撮影
 
 set -euo pipefail
 
@@ -10,78 +7,78 @@ SCRIPT_DIR="$(dirname "$0")"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║        Shelly Demo — Full Recording Session         ║"
+echo "║         Shelly デモ — 撮影セッション開始            ║"
 echo "╠══════════════════════════════════════════════════════╣"
 echo "║                                                      ║"
-echo "║  Checklist before starting:                          ║"
-echo "║  □ Wireless ADB connected                           ║"
-echo "║  □ Shelly running with Bridge connected             ║"
-echo "║  □ Do Not Disturb ON                                ║"
-echo "║  □ Battery > 80%                                    ║"
-echo "║  □ GitHub PAT configured                            ║"
-echo "║  □ AsyncStorage 'shelly_autocheck_offered' cleared  ║"
+echo "║  開始前チェック:                                     ║"
+echo "║  □ ワイヤレスADB 接続済み                           ║"
+echo "║  □ Shelly 起動中 + Bridge 接続済み                  ║"
+echo "║  □ おやすみモード ON                                ║"
+echo "║  □ バッテリー 80% 以上                              ║"
+echo "║  □ GitHub PAT 設定済み                              ║"
+echo "║  □ shelly_autocheck_offered クリア済み               ║"
 echo "║                                                      ║"
-echo "║  Recording order (efficient for screen mode):        ║"
-echo "║  1. hero.sh          (multi-pane)                    ║"
-echo "║  2. cli-copilot.sh   (multi-pane)                   ║"
-echo "║  3. cross-pane-single.sh (single-pane, Japanese)    ║"
-echo "║  4. team.sh          (single-pane)                   ║"
-echo "║  5. savepoint.sh     (single-pane)                   ║"
-echo "║  6. github-sync.sh   (single-pane)                   ║"
-echo "║  7. screenshots.sh   (mixed)                         ║"
+echo "║  撮影順（画面モードでまとめて効率化）:               ║"
+echo "║  1. hero.sh          （マルチペイン）               ║"
+echo "║  2. cli-copilot.sh   （マルチペイン）               ║"
+echo "║  3. cross-pane-single.sh（シングル、日本語）        ║"
+echo "║  4. team.sh          （シングルペイン）             ║"
+echo "║  5. savepoint.sh     （シングルペイン）             ║"
+echo "║  6. github-sync.sh   （シングルペイン）             ║"
+echo "║  7. screenshots.sh   （混合）                       ║"
 echo "║                                                      ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
-read -r -p "Ready to start the full session? [Enter to begin, Ctrl+C to cancel] "
+read -r -p "撮影セッションを開始する？ [Enter で開始 / Ctrl+C でキャンセル] "
 
-# ── Multi-pane recordings ──
+# ── マルチペイン撮影 ──
 echo ""
-echo "▶ Phase 1: Multi-pane recordings"
-echo "  Switch to multi-pane mode (unfold Z Fold6)"
-read -r -p "  [Enter when in multi-pane mode] "
+echo "▶ フェーズ1: マルチペイン撮影"
+echo "  Z Fold6 を展開して、マルチペインモードにして"
+read -r -p "  [マルチペインになったら Enter] "
 
 bash "$SCRIPT_DIR/hero.sh"
 echo ""
-read -r -p "Continue to CLI Co-Pilot? [Enter] "
+read -r -p "CLI Co-Pilot に進む？ [Enter] "
 bash "$SCRIPT_DIR/cli-copilot.sh"
 
-# ── Single-pane recordings ──
+# ── シングルペイン撮影 ──
 echo ""
-echo "▶ Phase 2: Single-pane recordings"
-echo "  Switch to single-pane mode (fold or resize)"
-read -r -p "  [Enter when in single-pane mode] "
+echo "▶ フェーズ2: シングルペイン撮影"
+echo "  シングルペインモードにして（折りたたみ or リサイズ）"
+read -r -p "  [シングルペインになったら Enter] "
 
-echo "  Switching language to Japanese for cross-pane-single..."
-read -r -p "  [Enter when language is Japanese] "
+echo "  言語を日本語に切り替えて（素材2用）"
+read -r -p "  [日本語になったら Enter] "
 bash "$SCRIPT_DIR/cross-pane-single.sh"
 
 echo ""
-echo "  Switching language back to English..."
-read -r -p "  [Enter when language is English] "
+echo "  言語を英語に戻して"
+read -r -p "  [英語になったら Enter] "
 
 bash "$SCRIPT_DIR/team.sh"
 echo ""
-read -r -p "Continue to Savepoint? [Enter] "
+read -r -p "セーブポイントに進む？ [Enter] "
 bash "$SCRIPT_DIR/savepoint.sh"
 echo ""
-read -r -p "Continue to GitHub Sync? [Enter] "
+read -r -p "GitHub Sync に進む？ [Enter] "
 bash "$SCRIPT_DIR/github-sync.sh"
 
-# ── Screenshots ──
+# ── スクリーンショット ──
 echo ""
-echo "▶ Phase 3: Screenshots"
+echo "▶ フェーズ3: スクリーンショット"
 bash "$SCRIPT_DIR/screenshots.sh"
 
-# ── Post-processing ──
+# ── 後処理 ──
 echo ""
-echo "▶ Phase 4: Post-processing (MP4 → GIF + subtitles)"
-read -r -p "Run post-processing now? [Enter to proceed, Ctrl+C to skip] "
+echo "▶ フェーズ4: 後処理（MP4 → GIF + 字幕）"
+read -r -p "後処理を実行する？ [Enter で実行 / Ctrl+C でスキップ] "
 bash "$SCRIPT_DIR/post-process.sh"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║           All done! Review your assets:             ║"
+echo "║           全部完了！素材を確認してね:               ║"
 echo "║           ~/shelly-demo/                            ║"
 echo "║           docs/images/                              ║"
 echo "╚══════════════════════════════════════════════════════╝"

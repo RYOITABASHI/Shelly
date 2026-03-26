@@ -138,6 +138,9 @@ export default function TerminalScreen() {
   // Voice dialog mode state
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
 
+  // Recovery state — shown while WebView reloads after render process kill
+  const [isRecovering, setIsRecovering] = useState(false);
+
   // Clean up WebView on unmount (e.g. when multi-pane → single-pane)
   useEffect(() => {
     return () => {
@@ -398,6 +401,7 @@ export default function TerminalScreen() {
 
   const handleWebViewLoad = useCallback(() => {
     setWebViewFailed(false);
+    setIsRecovering(false);
     onWebViewLoad();
     // Inject terminal output capture after xterm.js initializes
     setTimeout(() => {
@@ -455,16 +459,33 @@ export default function TerminalScreen() {
   }, [onWebViewError]);
 
   // WebView render process killed (split-screen, memory pressure, etc.)
-  // Automatically reload instead of showing blank screen
+  // Show recovery splash while WebView reloads — ttyd/tmux are still alive
   const handleRenderProcessGone = useCallback(() => {
-    console.warn('[Terminal] WebView render process gone — reloading');
+    console.warn('[Terminal] WebView render process gone — recovering');
+    setIsRecovering(true);
     setWebViewFailed(false);
-    // Small delay to let Android reclaim resources before reload
     setTimeout(() => {
       webViewRef.current?.reload();
       retry();
-    }, 500);
+    }, 300);
   }, [retry]);
+
+  // Scroll xterm.js to bottom
+  const scrollToBottom = useCallback(() => {
+    if (!webViewRef.current) return;
+    const js = `
+      (function() {
+        var term = window.term || (window.lib && window.lib.terminal) || window.tty;
+        if (!term) {
+          var el = document.querySelector('.xterm');
+          if (el) term = el._xterm || el.xterm;
+        }
+        if (term && term.scrollToBottom) term.scrollToBottom();
+      })();
+      true;
+    `;
+    webViewRef.current.injectJavaScript(js);
+  }, []);
 
   // Handle session removal with ttyd cleanup
   const handleRemoveSession = useCallback(async (sessionId: string) => {
@@ -528,6 +549,16 @@ export default function TerminalScreen() {
         onMessage={handleWebViewMessage}
       />
 
+      {/* Recovery splash — shown while WebView reloads after render process kill */}
+      {isRecovering && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
+          <ActivityIndicator size="small" color="#00D4AA" />
+          <Text style={{ color: '#4B5563', fontFamily: 'monospace', fontSize: 11, marginTop: 8 }}>
+            Restoring session...
+          </Text>
+        </View>
+      )}
+
       {/* Japanese Input Proxy */}
       {status === 'connected' && showJpInput && (
         <View style={[styles.jpInputBar, { backgroundColor: c.surfaceHigh, borderTopColor: c.border }]}>
@@ -569,6 +600,18 @@ export default function TerminalScreen() {
           sendText={sendToTerminal}
           isCompact={layout.isCompact || layout.width < 400}
         />
+      )}
+
+      {/* Scroll to bottom FAB */}
+      {status === 'connected' && (
+        <Pressable
+          onPress={scrollToBottom}
+          style={styles.scrollToBottomFab}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to bottom"
+        >
+          <MaterialIcons name="keyboard-arrow-down" size={22} color="#00D4AA" />
+        </Pressable>
       )}
 
       {/* Action Bar (Attach + Voice) */}
@@ -815,4 +858,18 @@ const styles = StyleSheet.create({
   termuxBtnText: { color: '#0A0A0A', fontSize: 13, fontFamily: 'monospace', fontWeight: '700' },
   retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
   retryBtnText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'monospace' },
+  scrollToBottomFab: {
+    position: 'absolute',
+    right: 12,
+    bottom: 120,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderWidth: 1,
+    borderColor: '#00D4AA44',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+  },
 });

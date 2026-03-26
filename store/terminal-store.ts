@@ -79,7 +79,7 @@ const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {
 // ─── Multi-session port pool ─────────────────────────────────────────────────
 
 const TTYD_PORT_BASE = 7681;
-const MAX_SESSIONS = 6;
+const MAX_SESSIONS = 2;
 const TTYD_PORTS = Array.from({ length: MAX_SESSIONS }, (_, i) => TTYD_PORT_BASE + i);
 
 function allocatePort(sessions: TabSession[]): number | null {

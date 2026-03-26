@@ -1,47 +1,39 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# cli-copilot.sh — Material 5: CLI Co-Pilot Real-time Translation (8s)
+# cli-copilot.sh — 素材5: CLI Co-Pilot リアルタイム翻訳（8秒）
 #
-# Multi-pane: Terminal running claude → Chat overlay shows Japanese translation
-# + permission prompt risk display.
-#
-# Prerequisites:
-#   - Multi-pane mode (Chat + Terminal)
-#   - Terminal about to run or already running `claude`
-#   - Cerebras or Groq API key configured (for fast translation)
-#   - Language: Japanese (translation target)
+# マルチペイン: Terminal で claude 実行 → Chat に翻訳オーバーレイ表示
+# + 承認プロンプトのリスク表示
 
 source "$(dirname "$0")/common.sh"
 
-banner "Feature GIF — CLI Co-Pilot Translation (8s)"
+banner "素材5: CLI Co-Pilot リアルタイム翻訳（8秒）"
 
-echo "📋 Prerequisites:"
-echo "   1. Multi-pane: Chat left, Terminal right"
-echo "   2. Terminal ready to launch 'claude'"
-echo "   3. Cerebras/Groq configured for fast translation"
-echo "   4. Language: Japanese"
+echo "📋 事前準備:"
+echo "   1. マルチペイン: 左 Chat、右 Terminal"
+echo "   2. Terminal で claude を起動する準備"
+echo "   3. Cerebras/Groq の API キーが設定済み（高速翻訳用）"
+echo "   4. 言語: 日本語"
 echo ""
 
-wait_for "Multi-pane ready. Ready to start claude in Terminal?"
+wait_for "マルチペイン準備OK？Terminal で claude を起動する？"
 countdown 3
 
 start_recording "cli-copilot"
 
-# Step 1: Launch claude in terminal
-wait_for "Type 'claude' in Terminal and press Enter. Wait for claude to respond with something."
+# ステップ1: claude を起動
+wait_for "Terminal で 'claude' と入力して Enter。何か応答が出るまで待つ。"
 
-# Step 2: Wait for translation overlay
-wait_for "Translation overlay should appear on Chat side. Wait for it."
+# ステップ2: 翻訳オーバーレイ
+wait_for "Chat 側に翻訳オーバーレイが表示されるまで待つ"
 
-# Step 3: Wait for permission prompt
-wait_for "Wait for claude to show an 'Allow editing?' prompt in Terminal.
-         Chat side should show the ⚠️ risk alert."
+# ステップ3: 承認プロンプト
+wait_for "claude が 'Allow editing?' の承認プロンプトを出すまで待つ。
+         Chat 側に ⚠️ リスク表示が出るはず。
+         （出ない場合: 'edit src/app.ts to add a comment' と指示してみて）"
 
-# Step 4: Hold for 2 seconds
+# ステップ4: 2秒ホールド
 sleep 2
 stop_recording "cli-copilot"
 
 echo ""
-echo "✅ Take complete! File: $DEMO_DIR/cli-copilot.mp4"
-echo ""
-echo "💡 Tip: If claude doesn't show a permission prompt naturally,"
-echo "   ask it to edit a file: 'edit src/app.ts to add a comment'"
+echo "✅ テイク完了！ファイル: $DEMO_DIR/cli-copilot.mp4"

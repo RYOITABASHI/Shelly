@@ -1,49 +1,43 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# savepoint.sh — Material 4: Auto-Savepoint + Undo (8s)
+# savepoint.sh — 素材4: 自動セーブポイント + 元に戻す（8秒）
 #
-# SavepointBubble → View Changes (diff) → Undo.
-# Shows the game-like auto-save UX.
-#
-# Prerequisites:
-#   - Chat tab with a recent AI operation that modified files
-#   - SavepointBubble visible: "📁 Modified N files" [Undo] [View changes]
-#   - Language: English
+# SavepointBubble → 変更を見る（diff）→ 元に戻す
 
 source "$(dirname "$0")/common.sh"
 
-banner "Feature GIF — Auto-Savepoint + Undo (8s)"
+banner "素材4: 自動セーブポイント + 元に戻す（8秒）"
 
-echo "📋 Prerequisites:"
-echo "   1. Chat tab open"
-echo "   2. SavepointBubble visible under a recent AI message"
-echo "      (run an AI command that modifies files first)"
-echo "   3. Language: English"
+echo "📋 事前準備:"
+echo "   1. Chat タブを開いている"
+echo "   2. AI操作後の SavepointBubble が見えている"
+echo "      「📁 Modified N files」[Undo] [View changes]"
+echo "   3. 言語: 英語"
 echo ""
 
-wait_for "SavepointBubble is visible in chat. Ready?"
+wait_for "SavepointBubble が見えている？準備OK？"
 countdown 3
 
 start_recording "savepoint"
 
-# Step 1: Show the SavepointBubble for 1 second
+# ステップ1: SavepointBubble を1秒見せる
 sleep 1
 
-# Step 2: View changes
-wait_for "Tap [View changes] on the SavepointBubble"
+# ステップ2: 変更を見る
+wait_for "[View changes] をタップ"
 
-# Step 3: Show diff modal
-wait_for "DiffViewer modal is showing. Wait 2 seconds for viewer."
+# ステップ3: Diff モーダル表示
+wait_for "DiffViewer モーダルが開いた。2秒待って。"
 sleep 2
 
-# Step 4: Close modal
-wait_for "Close the DiffViewer modal (tap outside or back)"
+# ステップ4: モーダルを閉じる
+wait_for "DiffViewer を閉じる（外側タップ or 戻るボタン）"
 
-# Step 5: Undo
-wait_for "Tap [Undo] on the SavepointBubble"
+# ステップ5: 元に戻す
+wait_for "[Undo] をタップ"
 
-# Step 6: Show revert result
+# ステップ6: 結果表示
 sleep 1.5
 stop_recording "savepoint"
 
 echo ""
-echo "✅ Take complete! File: $DEMO_DIR/savepoint.mp4"
+echo "✅ テイク完了！ファイル: $DEMO_DIR/savepoint.mp4"

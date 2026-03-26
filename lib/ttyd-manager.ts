@@ -1,28 +1,27 @@
 /**
  * ttyd-manager — launch/kill ttyd processes per session port
  *
- * Each Shelly terminal session runs its own ttyd on ports 7681-7686.
+ * Each Shelly terminal session runs its own ttyd on ports 7681-7682.
  * This module provides lifecycle management for those processes.
+ * Limited to 2 sessions to avoid Android's phantom process killer (32 child process limit).
  */
 
 const TTYD_PORT_BASE = 7681;
-const MAX_SESSIONS = 6;
+const MAX_SESSIONS = 2;
 
 type RunCommand = (cmd: string, opts: { timeoutMs: number; reason: string }) => Promise<any>;
 
-/** Launch ttyd on a specific port (idempotent — skips if already running) */
+/** Launch ttyd on a specific port via tmux (idempotent — skips if already running) */
 export async function launchTtyd(port: number, runRawCommand: RunCommand): Promise<boolean> {
   try {
-    const check = await runRawCommand(
-      `pgrep -f "ttyd -p ${port}" > /dev/null 2>&1 && echo RUNNING || echo STOPPED`,
-      { timeoutMs: 5000, reason: 'ttyd-check' },
-    );
-    const output = typeof check === 'string' ? check : check?.output || '';
-    if (output.includes('RUNNING')) return true;
+    const running = await isTtydRunning(port, runRawCommand);
+    if (running) return true;
 
+    const n = port - TTYD_PORT_BASE + 1;
+    const sessionName = `shelly-${n}`;
     await runRawCommand(
-      `nohup ttyd -p ${port} -W bash > /dev/null 2>&1 &`,
-      { timeoutMs: 5000, reason: 'ttyd-launch' },
+      `tmux has-session -t "${sessionName}" 2>/dev/null || tmux new-session -d -s "${sessionName}"; nohup ttyd -p ${port} -W tmux attach-session -t "${sessionName}" > /dev/null 2>&1 &`,
+      { timeoutMs: 10000, reason: 'ttyd-launch' },
     );
     await new Promise((r) => setTimeout(r, 1500));
     return true;

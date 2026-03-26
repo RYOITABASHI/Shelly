@@ -1,72 +1,58 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# github-sync.sh — Material 6: GitHub Sync + Auto-Check (12s)
+# github-sync.sh — 素材6: GitHub連携 + 自動チェック（12秒）
 #
-# AI suggests sync → user taps Sync → push completes
-# → AutoCheckProposal appears → user taps "Turn on"
-# → CI configured.
-#
-# Prerequisites:
-#   - Chat tab open
-#   - GitHub PAT configured
-#   - Project has remote origin
-#   - AsyncStorage 'shelly_autocheck_offered' DELETED (for fresh proposal)
-#   - Multiple savepoints accumulated (5+)
-#   - Language: English
-#
-# To reset auto-check flag before recording:
-#   In Shelly chat, run: @local clear shelly_autocheck_offered
-#   Or manually clear via adb / AsyncStorage debug
+# AI が sync 提案 → Sync タップ → push完了
+# → 自動チェック提案 → Turn on → CI設定完了
 
 source "$(dirname "$0")/common.sh"
 
-banner "Feature GIF — GitHub Sync + Auto-Check (12s)"
+banner "素材6: GitHub連携 + 自動チェック（12秒）"
 
-echo "📋 Prerequisites:"
-echo "   1. Chat tab open"
-echo "   2. GitHub PAT configured in Settings"
-echo "   3. Project has git remote origin"
-echo "   4. 5+ uncommitted/unpushed savepoints"
-echo "   5. AsyncStorage 'shelly_autocheck_offered' must be CLEARED"
-echo "   6. Language: English"
+echo "📋 事前準備:"
+echo "   1. Chat タブを開いている"
+echo "   2. GitHub PAT が設定済み"
+echo "   3. プロジェクトに git remote origin がある"
+echo "   4. 5件以上の未push セーブポイントがある"
+echo "   5. AsyncStorage 'shelly_autocheck_offered' をクリア済み"
+echo "   6. 言語: 英語"
 echo ""
-echo "⚠️  To reset the auto-check flag:"
-echo "   Open Shelly Settings → Clear Storage → or manually delete the key"
+echo "⚠️  自動チェックフラグのリセット方法:"
+echo "   Settings → ストレージクリア、または手動でキーを削除"
 echo ""
 
-wait_for "All prerequisites met. Ready?"
+wait_for "全部準備OK？"
 countdown 3
 
 start_recording "github-sync"
 
-# Step 1: The sync suggestion should already be visible
-# If not, trigger it by running a command that creates a savepoint
-wait_for "Git sync suggestion bubble should be visible:
-         '💡 N savepoints not synced. Sync to GitHub?'
-         If not visible, create more savepoints first."
+# ステップ1: sync 提案バブル
+wait_for "Git sync 提案バブルが表示されている？
+         「💡 N savepoints not synced. Sync to GitHub?」
+         表示されてない場合はセーブポイントを増やして。"
 
-# Step 2: Tap Sync
-wait_for "Tap [Sync]"
+# ステップ2: Sync タップ
+wait_for "[Sync] をタップ"
 
-# Step 3: Wait for push to complete
-wait_for "Wait for 'Synced!' message to appear"
+# ステップ3: push 完了を待つ
+wait_for "「Synced!」メッセージが出るまで待つ"
 
-# Step 4: AutoCheckProposal should appear ~800ms later
-wait_for "Wait for AutoCheckProposal bubble:
-         '✓ Auto-check available'
+# ステップ4: 自動チェック提案
+wait_for "AutoCheckProposal バブルが出るまで待つ（約800ms後）:
+         「✓ Auto-check available」
          [Maybe later]  [⚡ Turn on]"
 
-# Step 5: Tap Turn on
-wait_for "Tap [⚡ Turn on]"
+# ステップ5: Turn on タップ
+wait_for "[⚡ Turn on] をタップ"
 
-# Step 6: Wait for setup
-wait_for "Wait for 'Auto-check is on!' confirmation"
+# ステップ6: 設定完了を待つ
+wait_for "「Auto-check is on!」の確認メッセージが出るまで待つ"
 
-# Step 7: Hold for 1 second
+# ステップ7: 1秒ホールド
 sleep 1
 stop_recording "github-sync"
 
 echo ""
-echo "✅ Take complete! File: $DEMO_DIR/github-sync.mp4"
+echo "✅ テイク完了！ファイル: $DEMO_DIR/github-sync.mp4"
 echo ""
-echo "⚠️  Remember: The auto-check flag is now set."
-echo "   To retake, clear 'shelly_autocheck_offered' from AsyncStorage."
+echo "⚠️  注意: 自動チェックフラグがセットされた。"
+echo "   再撮影する場合は 'shelly_autocheck_offered' を AsyncStorage からクリアして。"
