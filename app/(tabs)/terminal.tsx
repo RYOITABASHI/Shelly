@@ -131,10 +131,21 @@ export default function TerminalScreen() {
   // Clean up WebView on unmount (e.g. when multi-pane → single-pane)
   useEffect(() => {
     return () => {
-      // Stop WebView from making further requests after component unmounts
       webViewRef.current?.stopLoading();
     };
   }, []);
+
+  // Track actual WebView render success (distinct from HTTP HEAD check)
+  const [webViewFailed, setWebViewFailed] = useState(false);
+
+  // Reset state on session switch — WebView URI change triggers onLoadEnd → re-injection
+  const prevSessionIdRef = useRef(activeSession?.id);
+  useEffect(() => {
+    if (activeSession && activeSession.id !== prevSessionIdRef.current) {
+      prevSessionIdRef.current = activeSession.id;
+      setWebViewFailed(false);
+    }
+  }, [activeSession?.id]);
 
   const addTerminalOutput = useExecutionLogStore((s) => s.addTerminalOutput);
 
@@ -213,9 +224,6 @@ export default function TerminalScreen() {
       // Ignore parse errors
     }
   }, [addTerminalOutput]);
-
-  // Track actual WebView render success (distinct from HTTP HEAD check)
-  const [webViewFailed, setWebViewFailed] = useState(false);
 
   // Adaptive terminal font size for small screens (Z Fold6 cover ≈ 373dp)
   // Adaptive font size: compact cover screen needs bigger text due to high DPI
