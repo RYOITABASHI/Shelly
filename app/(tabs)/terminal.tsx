@@ -2,7 +2,7 @@
  * Terminal Screen — Raw terminal via ttyd + WebView
  * Japanese input proxy + auto-retry + setup guide
  */
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -120,6 +120,14 @@ export default function TerminalScreen() {
     onWebViewError,
     ttyUrl,
   } = useTtydConnection();
+
+  // Clean up WebView on unmount (e.g. when multi-pane → single-pane)
+  useEffect(() => {
+    return () => {
+      // Stop WebView from making further requests after component unmounts
+      webViewRef.current?.stopLoading();
+    };
+  }, []);
 
   const addTerminalOutput = useExecutionLogStore((s) => s.addTerminalOutput);
 
@@ -323,6 +331,18 @@ export default function TerminalScreen() {
     onWebViewError();
   }, [onWebViewError]);
 
+  // WebView render process killed (split-screen, memory pressure, etc.)
+  // Automatically reload instead of showing blank screen
+  const handleRenderProcessGone = useCallback(() => {
+    console.warn('[Terminal] WebView render process gone — reloading');
+    setWebViewFailed(false);
+    // Small delay to let Android reclaim resources before reload
+    setTimeout(() => {
+      webViewRef.current?.reload();
+      retry();
+    }, 500);
+  }, [retry]);
+
   return (
     <View style={[styles.container, { paddingTop: insets.top, backgroundColor: c.background }]}>
       {/* Status Bar */}
@@ -374,6 +394,7 @@ export default function TerminalScreen() {
         onLoadEnd={handleWebViewLoad}
         onError={handleWebViewError2}
         onHttpError={handleWebViewError2}
+        onRenderProcessGone={handleRenderProcessGone}
         onMessage={handleWebViewMessage}
       />
 

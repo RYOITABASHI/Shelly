@@ -31,6 +31,8 @@ export function useTtydConnection() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef<AppStateStatus>('active');
   const mountedRef = useRef(true);
+  const statusRef = useRef<TtydStatus>(status);
+  statusRef.current = status;
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
@@ -143,20 +145,30 @@ export function useTtydConnection() {
     };
   }, [ttyUrl]);
 
-  // AppState: reset retry counter on foreground resume
+  // AppState: verify connection on foreground resume (skip if already connected)
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+    const sub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
 
       if (nextState === 'active' && prev !== 'active') {
-        // Foreground resume — reset and reconnect
+        // Already connected — just verify with a quick HEAD check
+        if (statusRef.current === 'connected') {
+          const ok = await checkConnection();
+          if (!ok && mountedRef.current) {
+            // Connection lost while backgrounded — retry
+            _ttydLaunchAttempted = false;
+            startRetryLoop();
+          }
+          return;
+        }
+        // Not connected — full retry
         _ttydLaunchAttempted = false;
         startRetryLoop();
       }
     });
     return () => sub.remove();
-  }, [startRetryLoop]);
+  }, [startRetryLoop, checkConnection]);
 
   return {
     status,

@@ -284,6 +284,10 @@ export function FullscreenTerminal({ visible, wsUrl, onClose }: Props) {
           mixedContentMode="always"
           allowFileAccess
           allowUniversalAccessFromFileURLs
+          onRenderProcessGone={() => {
+            console.warn('[FullscreenTerminal] Render process gone — reloading');
+            setTimeout(() => webViewRef.current?.reload(), 500);
+          }}
         />
 
         {/* ボトムバー */}

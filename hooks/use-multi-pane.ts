@@ -185,7 +185,10 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
     },
 
     disableMultiPane: () => {
-      set({ isMultiPane: false, root: null });
+      // Two-phase teardown: hide first, then clear tree on next tick
+      // to give pane children time to unmount cleanly
+      set({ isMultiPane: false });
+      setTimeout(() => set({ root: null }), 0);
     },
 
     toggleMultiPane: () => {
@@ -229,8 +232,9 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
       if (!root) return;
       const result = removeLeaf(root, leafId);
       if (!result || (result.type === 'leaf' && countLeaves(result) <= 1)) {
-        // Last pane remaining or removed — exit multi-pane
-        set({ isMultiPane: false, root: null });
+        // Last pane remaining or removed — exit multi-pane (two-phase)
+        set({ isMultiPane: false });
+        setTimeout(() => set({ root: null }), 0);
       } else {
         set({ root: result });
       }

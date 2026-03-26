@@ -99,10 +99,10 @@ export default function TabLayout() {
 
   // Auto-disable multi-pane on non-wide screens
   useEffect(() => {
-    if (!layout.isWide) {
+    if (!layout.isWide && isMultiPane) {
       disableMultiPane();
     }
-  }, [layout.isWide]);
+  }, [layout.isWide, isMultiPane]);
 
   // Adjust maxPanes on rotation: landscape=4, portrait=2
   useEffect(() => {
