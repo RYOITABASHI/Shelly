@@ -3,6 +3,8 @@ package expo.modules.terminalview
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -40,6 +42,7 @@ class ShellyTerminalView(
     companion object {
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
+        private const val RESIZE_DEBOUNCE_MS = 300L
     }
 
     val terminalView: TerminalView = TerminalView(context, null)
@@ -47,6 +50,11 @@ class ShellyTerminalView(
     private var isViewVisible = true
     private var currentSessionId: String? = null
     private var currentShellySession: ShellyTerminalSession? = null
+
+    // Debounce onResize events to avoid rapid-fire during screen transitions
+    // (e.g. Z Fold6 main/sub/split view changes trigger multiple layout passes)
+    private val resizeHandler = Handler(Looper.getMainLooper())
+    private var pendingResizeRunnable: Runnable? = null
 
     // Event callbacks set by the Expo module
     var onOutputEvent: ((text: String, isError: Boolean) -> Unit)? = null
@@ -204,6 +212,7 @@ class ShellyTerminalView(
     // --- Cleanup ---
 
     fun destroy() {
+        pendingResizeRunnable?.let { resizeHandler.removeCallbacks(it) }
         blockDetector.destroy()
         inputHandler.resetModifiers()
         detachCurrentSession()
@@ -307,8 +316,20 @@ class ShellyTerminalView(
     override fun onEmulatorSet() {
         terminalView.invalidate()
         val emulator = terminalView.mEmulator ?: return
-        Log.i(TAG, "onEmulatorSet: cols=${emulator.mColumns}, rows=${emulator.mRows}, viewSize=${terminalView.width}x${terminalView.height}")
-        onResize(mapOf("cols" to emulator.mColumns, "rows" to emulator.mRows))
+        val cols = emulator.mColumns
+        val rows = emulator.mRows
+        Log.i(TAG, "onEmulatorSet: cols=$cols, rows=$rows, viewSize=${terminalView.width}x${terminalView.height}")
+
+        // Debounce: cancel any pending resize and schedule a new one.
+        // This prevents rapid-fire resize events during screen transitions
+        // (Z Fold6 main↔sub↔split triggers 3-5 layout passes in <100ms).
+        pendingResizeRunnable?.let { resizeHandler.removeCallbacks(it) }
+        val runnable = Runnable {
+            Log.i(TAG, "onResize (debounced): cols=$cols, rows=$rows")
+            onResize(mapOf("cols" to cols, "rows" to rows))
+        }
+        pendingResizeRunnable = runnable
+        resizeHandler.postDelayed(runnable, RESIZE_DEBOUNCE_MS)
     }
 
     // --- Logging ---
