@@ -27,7 +27,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation, t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
-import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
+import { useActiveSession, useTerminalStore, getSocatPort } from '@/store/terminal-store';
 import { TerminalHeader } from '@/components/terminal/TerminalHeader';
 import { sendKeysToSession, buildRecoveryCommand } from '@/lib/tmux-manager';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
@@ -38,6 +38,9 @@ import { startSmartWakelock, stopSmartWakelock } from '@/lib/smart-wakelock';
 import TermuxBridge from '@/modules/termux-bridge';
 import { loadSessionsFromProject, startAutoSave, stopAutoSave } from '@/lib/session-persistence';
 import { VoiceChat } from '@/components/VoiceChat';
+import { PreviewBanner } from '@/components/terminal/PreviewBanner';
+import { PreviewPanel } from '@/components/terminal/PreviewPanel';
+import { usePreviewStore } from '@/store/preview-store';
 import type { TabSession, SessionStatus } from '@/store/types';
 
 // ─── Status type for StatusBadge ─────────────────────────────────────────────
@@ -79,29 +82,35 @@ export default function TerminalScreen() {
   const connectionState = sessionStatusToConnectionState(activeSession?.sessionStatus);
   const isConnected = connectionState === 'connected';
 
-  // Create a native PTY session attached to tmux
+  // Preview state
+  const previewIsOpen = usePreviewStore((s) => s.isOpen);
+  const previewUrl = usePreviewStore((s) => s.previewUrl);
+  const bannerVisible = usePreviewStore((s) => s.bannerVisible);
+  const bannerUrl = usePreviewStore((s) => s.bannerUrl);
+  const splitRatio = usePreviewStore((s) => s.splitRatio);
+  const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
+  const showSplitPreview = previewIsOpen && previewUrl && layout.isWide;
+
+  // Create a native session connected to socat TCP bridge
   const createNativeSession = useCallback(async (session: TabSession) => {
     try {
-      // 1. Ensure tmux session exists
+      const port = getSocatPort(session.tmuxSession);
+
+      // 1. Launch socat bridge in Termux (creates tmux session + TCP relay)
       await runRawCommand(
-        `tmux has-session -t "${session.tmuxSession}" 2>/dev/null || tmux new-session -d -s "${session.tmuxSession}"`,
-        { timeoutMs: 5000, reason: 'tmux-create' }
+        `nohup ~/shelly-bridge/socat-session.sh ${port} "${session.tmuxSession}" > /dev/null 2>&1 &`,
+        { timeoutMs: 5000, reason: 'socat-start' }
       );
 
-      // 2. Configure tmux passthrough for OSC 133
-      await runRawCommand(
-        `tmux set -g allow-passthrough on 2>/dev/null; true`,
-        { timeoutMs: 3000, reason: 'tmux-config' }
-      );
+      // 2. Wait for socat to be ready
+      await new Promise(resolve => setTimeout(resolve, 800));
 
-      // 3. Create native PTY session attached to tmux
+      // 3. Create native session connected to socat TCP port
       await TerminalEmulator.createSession({
         sessionId: session.nativeSessionId,
-        cwd: session.currentDir || '/data/data/com.termux/files/home',
+        port,
         rows: 24,
         cols: 80,
-        useTmux: true,
-        tmuxSessionName: session.tmuxSession,
       });
 
       // 4. Update session status to alive
@@ -120,7 +129,7 @@ export default function TerminalScreen() {
     }
   }, [runRawCommand]);
 
-  // Recover a session after tmux dies: re-create native session + resume CLI
+  // Recover a session after tmux/socat dies: kill old socat, re-create
   const recoverSession = useCallback(async (session: TabSession) => {
     setIsRecovering(true);
 
@@ -134,7 +143,14 @@ export default function TerminalScreen() {
     // Destroy old native session
     try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
-    // Re-create (will reattach to existing tmux session)
+    // Kill old socat for this session
+    const port = getSocatPort(session.tmuxSession);
+    await runRawCommand(
+      `pkill -f "socat.*TCP-LISTEN:${port}" 2>/dev/null; true`,
+      { timeoutMs: 3000, reason: 'socat-kill' }
+    );
+
+    // Re-create (socat-session.sh will reattach to existing tmux session)
     await createNativeSession(session);
 
     // Resume CLI if it was active
@@ -300,6 +316,11 @@ export default function TerminalScreen() {
         </Pressable>
       </View>
 
+      {/* Preview Banner — slides in when localhost URL detected */}
+      {bannerVisible && bannerUrl && isConnected && (
+        <PreviewBanner url={bannerUrl} onOpen={() => openPreview()} onDismiss={dismissBanner} />
+      )}
+
       {/* Connecting Spinner */}
       {connectionState === 'connecting' && (
         <View style={styles.connectingContainer}>
@@ -310,29 +331,41 @@ export default function TerminalScreen() {
         </View>
       )}
 
-      {/* Native Terminal View */}
+      {/* Terminal + Preview Split View */}
       {activeSession && isConnected && (
-        <NativeTerminalView
-          sessionId={activeSession.nativeSessionId}
-          fontFamily={'jetbrains-mono'}
-          fontSize={termFontSize}
-          cursorShape={settings.cursorShape || 'block'}
-          cursorBlink={true}
-          style={[styles.terminalView, { flex: 1 }]}
-          onOutput={() => {
-            // Auto-scroll handled by native view
-          }}
-          onBlockCompleted={(e) => {
-            const { command, output, exitCode } = e.nativeEvent;
-            // Could integrate with block store here
-          }}
-          onUrlDetected={(e) => {
-            const { url, type } = e.nativeEvent;
-            if (type === 'url') {
-              import('expo-web-browser').then(m => m.openBrowserAsync(url)).catch(() => {});
-            }
-          }}
-        />
+        <View style={{ flex: 1, flexDirection: showSplitPreview ? 'row' : 'column' }}>
+          {/* Native Terminal View */}
+          <NativeTerminalView
+            sessionId={activeSession.nativeSessionId}
+            fontFamily={'jetbrains-mono'}
+            fontSize={termFontSize}
+            cursorShape={settings.cursorShape || 'block'}
+            cursorBlink={true}
+            style={[styles.terminalView, { flex: showSplitPreview ? splitRatio : 1 }]}
+            onOutput={() => {}}
+            onBlockCompleted={(e) => {
+              const { command, output, exitCode } = e.nativeEvent;
+            }}
+            onUrlDetected={(e) => {
+              const { url, type } = e.nativeEvent;
+              if (type === 'url') {
+                import('expo-web-browser').then(m => m.openBrowserAsync(url)).catch(() => {});
+              }
+            }}
+          />
+
+          {/* Preview Panel (side-by-side on wide screens) */}
+          {showSplitPreview && previewUrl && (
+            <View style={{ flex: 1 - splitRatio }}>
+              <PreviewPanel url={previewUrl} onClose={closePreview} />
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Preview Panel (full screen on compact, when no split) */}
+      {previewIsOpen && previewUrl && !showSplitPreview && isConnected && (
+        <PreviewPanel url={previewUrl} onClose={closePreview} />
       )}
 
       {/* Recovery splash — shown while session re-creates */}

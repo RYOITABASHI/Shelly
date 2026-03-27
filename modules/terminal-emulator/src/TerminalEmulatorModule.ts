@@ -2,11 +2,9 @@ import { NativeModule, requireNativeModule } from 'expo-modules-core';
 
 export interface SessionConfig {
   sessionId: string;
-  cwd?: string;
+  port: number;
   rows?: number;
   cols?: number;
-  useTmux?: boolean;
-  tmuxSessionName?: string;
 }
 
 declare class TerminalEmulatorModuleType extends NativeModule {
