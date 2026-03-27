@@ -35,7 +35,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
 import { TerminalActionBar } from '@/components/terminal/TerminalActionBar';
 import { startSmartWakelock, stopSmartWakelock } from '@/lib/smart-wakelock';
-import { startPhantomGuard, stopPhantomGuard, monitorPort, unmonitorPort, showPhantomKillerRecovery } from '@/lib/phantom-process-guard';
+import { startPhantomGuard, stopPhantomGuard, monitorPort, unmonitorPort, showPhantomKillerRecovery, pauseMonitorForRecovery, resumeMonitorAfterRecovery } from '@/lib/phantom-process-guard';
 import { loadSessionsFromProject, startAutoSave, stopAutoSave } from '@/lib/session-persistence';
 import { VoiceChat } from '@/components/VoiceChat';
 
@@ -151,13 +151,13 @@ export default function TerminalScreen() {
 
   // Recover a session after phantom process killer: re-launch ttyd+tmux, resume CLI
   const recoverSession = useCallback(async (killed: typeof sessions[number]) => {
+    // Pause phantom guard during recovery to prevent re-triggering
+    pauseMonitorForRecovery(killed.port);
     // 1. Re-launch ttyd (which also re-creates tmux session if dead)
     await launchTtyd(killed.port, runRawCommand);
-    // 2. Re-monitor the port
-    monitorPort(killed.port);
-    // 3. Retry WebView connection
+    // 2. Retry WebView connection
     retry();
-    // 4. If a CLI was active (claude/gemini), send resume command after ttyd is ready
+    // 3. If a CLI was active (claude/gemini), send resume command after ttyd is ready
     if (killed.activeCli) {
       const recoveryCmd = buildRecoveryCommand(killed.currentDir, killed.activeCli);
       if (recoveryCmd) {
@@ -167,6 +167,10 @@ export default function TerminalScreen() {
         }, 3000);
       }
     }
+    // 4. Resume monitoring after ttyd has had time to start
+    setTimeout(() => {
+      resumeMonitorAfterRecovery(killed.port);
+    }, 10_000);
   }, [runRawCommand, retry]);
 
   // Start smart wakelock + phantom process guard on mount
