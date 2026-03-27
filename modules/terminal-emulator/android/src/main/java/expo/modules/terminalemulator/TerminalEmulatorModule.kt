@@ -19,7 +19,7 @@ class TerminalEmulatorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
 
-        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell")
+        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize")
 
         AsyncFunction("createSession") { config: Map<String, Any?> ->
             val sessionId = config["sessionId"] as? String

@@ -39,6 +39,13 @@ export interface TitleChangedEvent {
   };
 }
 
+export interface ResizeEvent {
+  nativeEvent: {
+    cols: number;
+    rows: number;
+  };
+}
+
 export interface NativeTerminalViewProps extends ViewProps {
   sessionId: string;
   fontFamily: FontFamily;
@@ -51,6 +58,7 @@ export interface NativeTerminalViewProps extends ViewProps {
   onUrlDetected?: (event: UrlDetectedEvent) => void;
   onBell?: () => void;
   onTitleChanged?: (event: TitleChangedEvent) => void;
+  onResize?: (event: ResizeEvent) => void;
 }
 
 export const NativeTerminalView =

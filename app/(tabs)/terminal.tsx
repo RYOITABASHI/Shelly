@@ -103,15 +103,26 @@ export default function TerminalScreen() {
       );
 
       // 2. Wait for socat to be ready
-      await new Promise(resolve => setTimeout(resolve, 800));
+      await new Promise(resolve => setTimeout(resolve, 1500));
 
-      // 3. Create native session connected to socat TCP port
-      await TerminalEmulator.createSession({
-        sessionId: session.nativeSessionId,
-        port,
-        rows: 24,
-        cols: 80,
-      });
+      // 3. Create native session connected to socat TCP port (with retry)
+      try {
+        await TerminalEmulator.createSession({
+          sessionId: session.nativeSessionId,
+          port,
+          rows: 24,
+          cols: 80,
+        });
+      } catch (firstErr) {
+        console.warn('[Terminal] createSession failed, retrying in 1s:', firstErr);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await TerminalEmulator.createSession({
+          sessionId: session.nativeSessionId,
+          port,
+          rows: 24,
+          cols: 80,
+        });
+      }
 
       // 4. Update session status to alive
       useTerminalStore.setState((state) => ({
@@ -350,6 +361,15 @@ export default function TerminalScreen() {
               const { url, type } = e.nativeEvent;
               if (type === 'url') {
                 import('expo-web-browser').then(m => m.openBrowserAsync(url)).catch(() => {});
+              }
+            }}
+            onResize={(e) => {
+              const { cols, rows } = e.nativeEvent;
+              if (activeSession) {
+                runRawCommand(
+                  `tmux resize-window -t "${activeSession.tmuxSession}" -x ${cols} -y ${rows} 2>/dev/null; true`,
+                  { timeoutMs: 3000, reason: 'tmux-resize' }
+                );
               }
             }}
           />

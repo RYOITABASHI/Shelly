@@ -13,6 +13,7 @@ import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import expo.modules.kotlin.AppContext
+import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import expo.modules.terminalemulator.ShellyTerminalSession
 
@@ -275,8 +276,14 @@ class ShellyTerminalView(
         return inputHandler.onCodePoint(codePoint, ctrlDown, session)
     }
 
+    // Expo EventDispatcher — auto-wired to React Native's onResize prop
+    private val onResize by EventDispatcher()
+
     override fun onEmulatorSet() {
         terminalView.invalidate()
+        // Notify React Native of the new terminal size so it can resize tmux
+        val emulator = terminalView.mEmulator ?: return
+        onResize(mapOf("cols" to emulator.mColumns, "rows" to emulator.mRows))
     }
 
     // --- Logging ---
