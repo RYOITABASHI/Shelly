@@ -135,13 +135,12 @@ export type TerminalEntry = CommandBlock | AiBlock;
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
+export type SessionStatus = 'starting' | 'alive' | 'exited' | 'recovering';
+
 export type TabSession = {
   id: string;
   name: string;
-  connectionStatus: ConnectionStatus;
   currentDir: string;
-  port: number;          // ttyd port (7681-7686)
-  ttyUrl: string;        // "http://localhost:{port}"
   blocks: CommandBlock[];
   /** AI応答ブロック（CommandBlockと混在して表示） */
   entries: TerminalEntry[];
@@ -151,6 +150,12 @@ export type TabSession = {
   activeCli: 'claude' | 'gemini' | 'codex' | 'cody' | null;
   /** 対応するtmuxセッション名 */
   tmuxSession: string;
+  /** Native terminal session identifier */
+  nativeSessionId: string;
+  /** Session lifecycle status */
+  sessionStatus: SessionStatus;
+  /** Whether the session process is alive */
+  isAlive: boolean;
 };
 
 // ─── Snippets ─────────────────────────────────────────────────────────────────

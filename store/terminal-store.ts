@@ -79,34 +79,33 @@ const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {
   ttyUrl: 'http://localhost:7681',
 };
 
-// ─── Multi-session port pool ─────────────────────────────────────────────────
+// ─── Multi-session tmux pool ────────────────────────────────────────────────
 
-const TTYD_PORT_BASE = 7681;
-const MAX_SESSIONS = 2;
-const TTYD_PORTS = Array.from({ length: MAX_SESSIONS }, (_, i) => TTYD_PORT_BASE + i);
+const MAX_SESSIONS = 4;
+const TMUX_NAMES = ['shelly-1', 'shelly-2', 'shelly-3', 'shelly-4'];
 
-function allocatePort(sessions: TabSession[]): number | null {
-  const usedPorts = new Set(sessions.map((s) => s.port));
-  for (const port of TTYD_PORTS) {
-    if (!usedPorts.has(port)) return port;
+function allocateTmuxName(sessions: TabSession[]): string | null {
+  const used = new Set(sessions.map((s) => s.tmuxSession));
+  for (const name of TMUX_NAMES) {
+    if (!used.has(name)) return name;
   }
   return null;
 }
 
-function createSession(id: string, name: string, port: number = TTYD_PORT_BASE): TabSession {
+function createSession(id: string, name: string, tmuxName: string = TMUX_NAMES[0]): TabSession {
   return {
     id,
     name,
-    connectionStatus: 'local',
-    currentDir: '/home/user',
-    port,
-    ttyUrl: `http://localhost:${port}`,
+    currentDir: '/data/data/com.termux/files/home',
     blocks: [],
     entries: [],
     commandHistory: [],
     historyIndex: -1,
     activeCli: null,
-    tmuxSession: `shelly-${port - TTYD_PORT_BASE + 1}`,
+    tmuxSession: tmuxName,
+    nativeSessionId: tmuxName,
+    sessionStatus: 'starting',
+    isAlive: false,
   };
 }
 
@@ -236,12 +235,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   addSession: () => {
     const { sessions } = get();
     if (sessions.length >= MAX_SESSIONS) return;
-    const port = allocatePort(sessions);
-    if (!port) return;
+    const tmuxName = allocateTmuxName(sessions);
+    if (!tmuxName) return;
     const id = `session-${Date.now()}`;
     const name = `Terminal ${sessions.length + 1}`;
     set((state) => ({
-      sessions: [...state.sessions, createSession(id, name, port)],
+      sessions: [...state.sessions, createSession(id, name, tmuxName)],
       activeSessionId: id,
     }));
     get().saveSessionState();
@@ -663,8 +662,6 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         id: s.id,
         name: s.name,
         currentDir: s.currentDir,
-        port: s.port,
-        ttyUrl: s.ttyUrl,
         commandHistory: s.commandHistory.slice(0, 100),
         blocks: s.blocks
           .filter((b) => !b.isRunning) // skip running blocks
@@ -685,7 +682,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
             streamingText: undefined, // clear partial streaming text
           })),
         activeCli: s.activeCli ?? null,
-        tmuxSession: s.tmuxSession ?? `shelly-${s.port - TTYD_PORT_BASE + 1}`,
+        tmuxSession: s.tmuxSession ?? 'shelly-1',
+        nativeSessionId: s.nativeSessionId ?? s.tmuxSession ?? 'shelly-1',
+        sessionStatus: 'starting',
+        isAlive: false,
       }));
       await AsyncStorage.setItem('shelly_terminal_sessions', JSON.stringify({
         sessions: serializable,
@@ -700,20 +700,37 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     try {
       const raw = await AsyncStorage.getItem('shelly_terminal_sessions');
       if (!raw) return;
-      const data = JSON.parse(raw);
-      if (!data.sessions || !Array.isArray(data.sessions) || data.sessions.length === 0) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed.sessions || !Array.isArray(parsed.sessions) || parsed.sessions.length === 0) return;
+
+      // Migration: detect old format by presence of ttyUrl field
+      if (parsed.sessions[0]?.ttyUrl !== undefined) {
+        parsed.sessions = parsed.sessions.map((s: any) => {
+          const { port, ttyUrl, connectionStatus, ...rest } = s;
+          return {
+            ...rest,
+            nativeSessionId: rest.tmuxSession || 'shelly-1',
+            sessionStatus: 'starting' as const,
+            isAlive: false,
+          };
+        });
+      }
+
       // Restore sessions with defaults for missing fields
-      const restored: TabSession[] = data.sessions.map((s: any, index: number) => ({
-        ...createSession(s.id, s.name, s.port || TTYD_PORT_BASE + index),
-        currentDir: s.currentDir || '/home/user',
+      const restored: TabSession[] = parsed.sessions.map((s: any, index: number) => ({
+        ...createSession(s.id, s.name, s.tmuxSession || TMUX_NAMES[index] || 'shelly-1'),
+        currentDir: s.currentDir || '/data/data/com.termux/files/home',
         commandHistory: s.commandHistory || [],
         blocks: (s.blocks || []).map((b: any) => ({ ...b, isRunning: false })),
         entries: (s.entries || []).map((e: any) => ({ ...e, isStreaming: false })),
         activeCli: s.activeCli ?? null,
-        tmuxSession: s.tmuxSession ?? `shelly-${(s.port || TTYD_PORT_BASE + index) - TTYD_PORT_BASE + 1}`,
+        tmuxSession: s.tmuxSession || TMUX_NAMES[index] || 'shelly-1',
+        nativeSessionId: s.nativeSessionId || s.tmuxSession || TMUX_NAMES[index] || 'shelly-1',
+        sessionStatus: 'starting' as const,
+        isAlive: false,
       }));
-      const activeId = data.activeSessionId && restored.some((s: TabSession) => s.id === data.activeSessionId)
-        ? data.activeSessionId
+      const activeId = parsed.activeSessionId && restored.some((s: TabSession) => s.id === parsed.activeSessionId)
+        ? parsed.activeSessionId
         : restored[0].id;
       set({ sessions: restored, activeSessionId: activeId });
     } catch (e) {
