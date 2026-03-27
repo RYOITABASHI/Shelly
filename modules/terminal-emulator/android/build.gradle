@@ -8,10 +8,12 @@ version = '0.1.0'
 
 android {
   namespace "expo.modules.terminalemulator"
+  ndkVersion "26.1.10909125"
 
   defaultConfig {
     externalNativeBuild {
       cmake {
+        cppFlags ""
         abiFilters "armeabi-v7a", "arm64-v8a"
       }
     }
