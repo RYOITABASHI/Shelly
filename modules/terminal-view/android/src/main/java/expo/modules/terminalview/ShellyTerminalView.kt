@@ -84,6 +84,12 @@ class ShellyTerminalView(
         terminalView.setTypeface(defaultTypeface)
     }
 
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        // Ensure TerminalView fills the entire ExpoView frame
+        terminalView.layout(0, 0, right - left, bottom - top)
+    }
+
     // --- Session Management ---
 
     fun attachShellySession(shellySession: ShellyTerminalSession, sessionId: String) {
