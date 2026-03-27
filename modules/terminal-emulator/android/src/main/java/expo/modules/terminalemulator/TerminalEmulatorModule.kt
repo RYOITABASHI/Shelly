@@ -5,7 +5,12 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 class TerminalEmulatorModule : Module() {
 
-    private val sessions = mutableMapOf<String, ShellyTerminalSession>()
+    companion object {
+        /** Global session registry — TerminalViewModule reads from this to attach views */
+        val sessionRegistry = mutableMapOf<String, ShellyTerminalSession>()
+    }
+
+    private val sessions get() = sessionRegistry
 
     private fun emitEvent(name: String, body: Map<String, Any?>) {
         sendEvent(name, body)

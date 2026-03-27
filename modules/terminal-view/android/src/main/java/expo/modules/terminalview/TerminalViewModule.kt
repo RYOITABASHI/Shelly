@@ -4,17 +4,15 @@ import android.util.Log
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.ShellyTerminalSession
+import expo.modules.terminalemulator.TerminalEmulatorModule
 
 class TerminalViewModule : Module() {
 
     companion object {
         private const val TAG = "TerminalViewModule"
 
-        /**
-         * Global session registry shared between TerminalEmulatorModule and TerminalViewModule.
-         * TerminalEmulatorModule registers sessions here after creation so the view can look them up.
-         */
-        val sessionRegistry = mutableMapOf<String, ShellyTerminalSession>()
+        /** Alias for the session registry in TerminalEmulatorModule */
+        val sessionRegistry get() = TerminalEmulatorModule.sessionRegistry
     }
 
     override fun definition() = ModuleDefinition {
