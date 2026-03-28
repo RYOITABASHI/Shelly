@@ -186,24 +186,29 @@ export default function TerminalScreen() {
     setIsRecovering(false);
   }, [createNativeSession, runRawCommand]);
 
-  // Initialize native sessions on mount
-  useEffect(() => {
-    for (const session of sessions) {
-      if (session.sessionStatus === 'starting') {
-        createNativeSession(session);
-      }
-    }
-  }, []); // Only on mount
-
-  // Auto-recover exited sessions when bridge reconnects
+  // Initialize native sessions on mount.
+  // Sessions persisted as 'alive' need re-creation since the native socat
+  // process died when the app was killed by Android.
   useEffect(() => {
     if (bridgeStatus !== 'connected') return;
     for (const session of sessions) {
-      if (session.sessionStatus === 'exited') {
+      if (session.sessionStatus === 'starting' || session.sessionStatus === 'alive') {
+        // Verify native session actually exists; if not, recreate
+        TerminalEmulator.isSessionAlive(session.nativeSessionId)
+          .then((alive) => {
+            if (!alive) {
+              createNativeSession(session);
+            }
+          })
+          .catch(() => {
+            // Native session doesn't exist — recreate
+            createNativeSession(session);
+          });
+      } else if (session.sessionStatus === 'exited') {
         recoverSession(session);
       }
     }
-  }, [bridgeStatus]); // Re-run when bridge status changes
+  }, [bridgeStatus]); // Re-run when bridge connects/reconnects
 
   // Start smart wakelock + foreground service + session monitor on mount
   useEffect(() => {
