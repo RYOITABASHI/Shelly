@@ -209,10 +209,19 @@ export default function TerminalScreen() {
     }
   }, [bridgeStatus, sessions, createNativeSession, recoverSession]);
 
-  // Run on bridge connect/reconnect
+  // Run on bridge connect/reconnect AND on initial mount (covers Split View
+  // where a new TerminalScreen instance mounts while sessions are already alive)
   useEffect(() => {
     ensureNativeSessions();
   }, [bridgeStatus]);
+
+  // Also run on mount — Split View creates a fresh TerminalScreen instance
+  // but bridgeStatus doesn't change, so the above effect won't fire.
+  useEffect(() => {
+    if (bridgeStatus === 'connected') {
+      ensureNativeSessions();
+    }
+  }, []);
 
   // Run on foreground resume — handles app switch, home button, split view toggle
   useEffect(() => {
