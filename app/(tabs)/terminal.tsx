@@ -2,7 +2,7 @@
  * Terminal Screen — Native terminal view via PTY + tmux
  * Japanese input proxy + session monitor + setup guide
  */
-import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo, useContext } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -29,6 +29,7 @@ import { useExecutionLogStore } from '@/store/execution-log-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useActiveSession, useTerminalStore, getSocatPort } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import { TerminalHeader } from '@/components/terminal/TerminalHeader';
 import { sendKeysToSession, buildRecoveryCommand } from '@/lib/tmux-manager';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
@@ -71,7 +72,11 @@ export default function TerminalScreen() {
   const bridgeStatus = useTerminalStore((s) => s.bridgeStatus);
   const { runRawCommand } = useTermuxBridge();
   const isMultiPane = useMultiPaneStore((s) => s.isMultiPane);
-  const isHiddenBehindMultiPane = isMultiPane && layout.isWide;
+  // Detect if this instance is rendered inside MultiPaneContainer (via PaneSlot context)
+  // vs. rendered by the Tabs navigator (hidden underneath the overlay)
+  const multiPaneCtx = useContext(MultiPaneContext);
+  const isRenderedInMultiPane = multiPaneCtx !== null;
+  const isHiddenBehindMultiPane = !isRenderedInMultiPane && isMultiPane && layout.isWide;
 
   // Bridge terminal output events to execution-log-store
   useTerminalOutput();
