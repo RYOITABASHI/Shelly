@@ -141,7 +141,10 @@ class ShellyTerminalView(
     }
 
     fun setFontSizeDp(size: Int) {
-        terminalView.setTextSize(size)
+        // Convert dp to px — TerminalRenderer uses Paint.setTextSize which expects px.
+        // Without this, 14dp on a 2.9x density screen renders as 14px (~4.8dp) = unreadably small.
+        val px = (size * context.resources.displayMetrics.density).toInt()
+        terminalView.setTextSize(px)
     }
 
     fun setCursorShape(shape: String) {

@@ -266,7 +266,13 @@ export default function TerminalScreen() {
   const [showJpInput, setShowJpInput] = useState(false);
 
   // Adaptive terminal font size for small screens (Z Fold6 cover ~ 373dp)
-  const termFontSize = layout.isCompact ? 20 : layout.width < 500 ? 18 : layout.isWide ? 14 : 16;
+  // Terminal font size in dp (converted to px in native ShellyTerminalView).
+  // Balanced for readability vs column count:
+  //   Compact (cover ~370dp): 11dp → ~29px → ~33 cols
+  //   Standard (phone ~400dp): 12dp → ~34px → ~31 cols
+  //   Wide/split (928px pane):  11dp → ~32px → ~80 cols ← sweet spot
+  //   Wide/full (1856px):       11dp → ~32px → ~160 cols
+  const termFontSize = layout.isCompact ? 11 : layout.width < 500 ? 12 : layout.isWide ? 11 : 12;
 
   // Debounced tmux resize — only send the final stable size after 500ms
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
