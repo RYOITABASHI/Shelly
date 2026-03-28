@@ -416,17 +416,15 @@ export default function TerminalScreen() {
             onResize={(e) => {
               const { cols, rows } = e.nativeEvent;
               if (!activeSession) return;
-              // Debounce: cancel previous timer, only send final size after 500ms
-              if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+              // Kotlin side already debounces (500ms); no JS debounce needed.
+              // Skip only if identical to last emitted size.
               const last = lastResizeRef.current;
               if (last && last.cols === cols && last.rows === rows) return;
-              resizeTimerRef.current = setTimeout(() => {
-                lastResizeRef.current = { cols, rows };
-                runRawCommand(
-                  `tmux resize-window -t "${activeSession.tmuxSession}" -x ${cols} -y ${rows} 2>/dev/null; true`,
-                  { timeoutMs: 3000, reason: 'tmux-resize' }
-                );
-              }, 500);
+              lastResizeRef.current = { cols, rows };
+              runRawCommand(
+                `tmux resize-window -t "${activeSession.tmuxSession}" -x ${cols} -y ${rows} 2>/dev/null; true`,
+                { timeoutMs: 3000, reason: 'tmux-resize' }
+              );
             }}
           />
 
