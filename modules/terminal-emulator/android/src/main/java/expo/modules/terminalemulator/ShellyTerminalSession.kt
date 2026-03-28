@@ -83,7 +83,16 @@ class ShellyTerminalSession(
     }
 
     fun isAlive(): Boolean {
-        return socket?.isConnected == true && !(socket?.isClosed ?: true)
+        val sock = socket ?: return false
+        if (sock.isClosed) return false
+        // Socket.isConnected stays true even after remote closes.
+        // Actually test by attempting a zero-byte write via sendUrgentData.
+        return try {
+            sock.sendUrgentData(0xFF)
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     fun destroy() {
