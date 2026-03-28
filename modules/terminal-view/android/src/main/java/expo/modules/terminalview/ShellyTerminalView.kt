@@ -354,8 +354,10 @@ class ShellyTerminalView(
             }
             context.startService(intent)
             Log.i(TAG, "syncTmuxSize: sent tmux resize -t $tmuxName -x $cols -y $rows")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "syncTmuxSize PERMISSION DENIED: ${e.message} — RUN_COMMAND permission missing from APK?")
         } catch (e: Exception) {
-            Log.w(TAG, "syncTmuxSize failed: ${e.message}")
+            Log.w(TAG, "syncTmuxSize failed (${e.javaClass.simpleName}): ${e.message}")
         }
     }
 

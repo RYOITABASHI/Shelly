@@ -106,6 +106,15 @@ export default function TerminalScreen() {
     try {
       const port = getSocatPort(session.tmuxSession);
 
+      // 0. Destroy any stale native session before re-creating
+      try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
+
+      // 0.5. Kill any old socat process for this port
+      await runRawCommand(
+        `pkill -f "socat.*TCP-LISTEN:${port}" 2>/dev/null; true`,
+        { timeoutMs: 3000, reason: 'socat-cleanup' }
+      ).catch(() => {});
+
       // 1. Launch socat bridge in Termux (creates tmux session + TCP relay)
       await runRawCommand(
         `nohup ~/shelly-bridge/socat-session.sh ${port} "${session.tmuxSession}" > /dev/null 2>&1 &`,
@@ -198,12 +207,15 @@ export default function TerminalScreen() {
         try {
           const alive = await TerminalEmulator.isSessionAlive(session.nativeSessionId);
           if (!alive) {
+            console.log('[Terminal] ensureNativeSessions: session not alive, re-creating:', session.nativeSessionId);
             await createNativeSession(session);
           }
         } catch {
+          console.log('[Terminal] ensureNativeSessions: isSessionAlive threw, re-creating:', session.nativeSessionId);
           await createNativeSession(session);
         }
       } else if (session.sessionStatus === 'exited') {
+        console.log('[Terminal] ensureNativeSessions: session exited, recovering:', session.nativeSessionId);
         recoverSession(session);
       }
     }
@@ -217,9 +229,14 @@ export default function TerminalScreen() {
 
   // Also run on mount — Split View creates a fresh TerminalScreen instance
   // but bridgeStatus doesn't change, so the above effect won't fire.
+  // Use a small delay to let the layout settle before reconnecting.
   useEffect(() => {
     if (bridgeStatus === 'connected') {
+      // Immediate check
       ensureNativeSessions();
+      // Delayed retry — sometimes socat needs time to be ready in Split View
+      const timer = setTimeout(() => ensureNativeSessions(), 2000);
+      return () => clearTimeout(timer);
     }
   }, []);
 
@@ -283,9 +300,11 @@ export default function TerminalScreen() {
   //   Wide/full (1856px):       11dp → ~32px → ~160 cols
   const termFontSize = layout.isCompact ? 11 : layout.width < 500 ? 12 : layout.isWide ? 11 : 12;
 
-  // Debounced tmux resize — only send the final stable size after 500ms
-  // tmux resize is now handled directly in Kotlin (syncTmuxSize via RunCommandService).
-  // No JS-side resize refs needed.
+  // tmux resize: primary path is Kotlin syncTmuxSize via RunCommandService.
+  // JS-side fallback ensures resize works even if the Kotlin path fails
+  // (e.g., permission issues, service not reachable).
+  const lastResizeRef = useRef<string>('');
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Send text to terminal via native PTY
   const sendToTerminal = useCallback((text: string) => {
@@ -423,9 +442,24 @@ export default function TerminalScreen() {
                 import('expo-web-browser').then(m => m.openBrowserAsync(url)).catch(() => {});
               }
             }}
-            onResize={() => {
-              // tmux resize is now handled directly in Kotlin (syncTmuxSize).
-              // This callback is kept for any future JS-side size tracking.
+            onResize={(e) => {
+              // JS-side tmux resize fallback: if Kotlin syncTmuxSize fails
+              // (permission denied, service not reachable), this ensures
+              // tmux gets resized. Debounced to avoid spamming during
+              // rapid layout changes (fold/unfold, split view transitions).
+              const { cols, rows } = e.nativeEvent;
+              const tmux = activeSession?.tmuxSession;
+              if (!tmux || cols <= 0 || rows <= 0) return;
+              const key = `${cols}x${rows}`;
+              if (key === lastResizeRef.current) return;
+              lastResizeRef.current = key;
+              if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+              resizeTimerRef.current = setTimeout(() => {
+                runRawCommand(
+                  `tmux resize-window -t "${tmux}" -x ${cols} -y ${rows} 2>/dev/null; true`,
+                  { timeoutMs: 3000, reason: 'tmux-resize-fallback' }
+                ).catch(() => {});
+              }, 300);
             }}
           />
 
