@@ -42,7 +42,10 @@ class ShellyTerminalView(
     companion object {
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
-        private const val RESIZE_DEBOUNCE_MS = 300L
+        // 500ms debounce covers keyboard animation (~300ms) and Z Fold6 screen
+        // transitions (3-5 layout passes in <100ms). Only the final stable size
+        // triggers an onResize event to JS/tmux.
+        private const val RESIZE_DEBOUNCE_MS = 500L
     }
 
     val terminalView: TerminalView = TerminalView(context, null)
