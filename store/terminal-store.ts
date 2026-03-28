@@ -76,7 +76,6 @@ const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {
   wsUrl: 'ws://127.0.0.1:8765',
   autoReconnect: true,
   timeoutSeconds: 30,
-  ttyUrl: 'http://localhost:7681',
 };
 
 // ─── Multi-session tmux pool ────────────────────────────────────────────────
@@ -285,7 +284,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       const { useExecutionLogStore } = require('@/store/execution-log-store');
       useExecutionLogStore.getState().clearTerminalOutput();
     } catch {}
-    // Clear tmux scrollback buffer + screen so ttyd doesn't show old output
+    // Clear tmux scrollback buffer + screen so old output doesn't persist
     if (session?.tmuxSession) {
       _pendingTmuxClears.push(session.tmuxSession);
     }

@@ -61,7 +61,7 @@ let sessionCounter = 0;
  *
  * Chat mode: CLIをバックグラウンドで実行し、出力をパースして
  *            パーミッションプロンプトを翻訳・提示する。
- * Terminal mode: コマンドをそのまま返す（呼び出し元がttydに送る）。
+ * Terminal mode: コマンドをそのまま返す（呼び出し元がターミナルに送る）。
  */
 export async function startToolSession(
   tool: ToolType,
@@ -156,7 +156,7 @@ export async function respondToPermission(
   callbacks.onOutput(session.id, `> ${response}\n`);
 
   // 注: 実際のインタラクティブCLIとの対話は
-  // ttyd/WebSocket経由で行う必要がある。
+  // bridge/WebSocket経由で行う必要がある。
   // ここではバッチ実行モードのフォールバック。
   session.status = 'completed';
   callbacks.onComplete(session.id, 0);

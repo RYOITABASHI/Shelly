@@ -24,7 +24,6 @@ export type TermuxSettings = {
   wsUrl: string;             // e.g. "ws://127.0.0.1:8765"
   autoReconnect: boolean;
   timeoutSeconds: number;    // command execution timeout
-  ttyUrl?: string;           // ttyd WebView URL (default: "http://localhost:7681")
 };
 
 // ─── Output / Blocks ─────────────────────────────────────────────────────────

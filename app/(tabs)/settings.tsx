@@ -164,7 +164,6 @@ export default function SettingsScreen() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<'success' | 'fail' | null>(null);
   const [wsUrlInput, setWsUrlInput] = useState(termuxSettings.wsUrl);
-  const [ttyUrlInput, setTtyUrlInput] = useState(termuxSettings.ttyUrl || 'http://localhost:7681');
   const [isUpdatingBridge, setIsUpdatingBridge] = useState(false);
   const [bridgeUpdateResult, setBridgeUpdateResult] = useState<'success' | 'fail' | null>(null);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
@@ -354,16 +353,6 @@ export default function SettingsScreen() {
     }
     updateTermuxSettings({ wsUrl: trimmed });
     Alert.alert(t('settings.saved'), t('settings.ws_url_updated', { url: trimmed }));
-  };
-
-  const handleTtyUrlSave = () => {
-    const trimmed = ttyUrlInput.trim();
-    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-      Alert.alert(t('settings.url_error'), t('settings.url_http_hint'));
-      return;
-    }
-    updateTermuxSettings({ ttyUrl: trimmed });
-    Alert.alert(t('settings.saved'), t('settings.tty_url_updated', { url: trimmed }));
   };
 
   const handleOpenTermux = () => {
@@ -887,32 +876,6 @@ export default function SettingsScreen() {
             </Pressable>
           </View>
         </SettingRow>
-
-        {/* TTY URL (ttyd) */}
-        <View style={styles.wsUrlRow}>
-          <Text style={styles.wsUrlLabel}>TTY URL (ttyd)</Text>
-          <View style={styles.wsUrlInputRow}>
-            <TextInput
-              style={[styles.wsUrlInput, { color: '#00D4AA' }]}
-              value={ttyUrlInput}
-              onChangeText={setTtyUrlInput}
-              placeholder="http://localhost:7681"
-              placeholderTextColor="#3D4451"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              returnKeyType="done"
-              onSubmitEditing={handleTtyUrlSave}
-            />
-            <Pressable onPress={handleTtyUrlSave} style={[styles.wsUrlSaveBtn, { borderColor: '#00D4AA44', backgroundColor: '#00D4AA18' }]}>
-              <Text style={[styles.wsUrlSaveBtnText, { color: '#00D4AA' }]}>Save</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.wsUrlHint}>
-            URL for ttyd started with: ttyd -W -p 7681 bash &.{'\n'}
-            Address shown in the TTY tab WebView.
-          </Text>
-        </View>
 
         {/* Test connection button */}
         <Pressable

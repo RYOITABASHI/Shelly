@@ -5,7 +5,7 @@
  * 1. Welcome — feature intro
  * 2. Install apps — Termux + Termux:Boot (Tasker removed)
  * 3. Init — RUN_COMMAND sends && chain, polls WebSocket until connected
- * 4. Auto — bridge-based setup (boot script, ttyd, CLI/LLM detection)
+ * 4. Auto — bridge-based setup (boot script, socat+tmux, CLI/LLM detection)
  * 5. Complete — summary + auth prompt
  *
  * Design philosophy: Non-engineers should complete setup
@@ -73,7 +73,7 @@ const SLIDE_INTERVAL = 6000;
 
 const PHASE2_STEPS = [
   { key: 'boot_script', labelKey: 'setup2.auto_step_boot' },
-  { key: 'ttyd', labelKey: 'setup2.auto_step_ttyd' },
+  { key: 'terminal', labelKey: 'setup2.auto_step_terminal' },
   { key: 'cli_detect', labelKey: 'setup2.auto_step_cli' },
   { key: 'llm_detect', labelKey: 'setup2.auto_step_llm' },
 ] as const;
@@ -115,7 +115,7 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
   const [phase2Progress, setPhase2Progress] = useState<Phase2Progress | null>(null);
 
   // Complete step
-  const [setupResult, setSetupResult] = useState<{ llmDetected: boolean; ttyConnected: boolean } | null>(null);
+  const [setupResult, setSetupResult] = useState<{ llmDetected: boolean; terminalReady: boolean } | null>(null);
   const [cliDetected, setCliDetected] = useState<CliDetectionResult>({ claudeCode: false, geminiCli: false, codex: false });
   const [geminiInstalling, setGeminiInstalling] = useState(false);
   const [geminiInstalled, setGeminiInstalled] = useState(false);
@@ -208,13 +208,13 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
 
       setSetupResult({
         llmDetected: results.llm ?? false,
-        ttyConnected: results.ttyd ?? false,
+        terminalReady: results.terminal ?? false,
       });
       setCliDetected(results.cli ?? { claudeCode: false, geminiCli: false, codex: false });
       setWizardStep('complete');
     } catch (err) {
       // Phase 2 failure is non-fatal — still show complete with partial results
-      setSetupResult({ llmDetected: false, ttyConnected: false });
+      setSetupResult({ llmDetected: false, terminalReady: false });
       setWizardStep('complete');
     }
   }, [runRawCommand, writeFile]);
@@ -494,8 +494,8 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         <ResultRow
           icon="terminal"
           label={t('setup2.result_tty')}
-          value={setupResult?.ttyConnected ? t('setup2.result_connected') : t('setup2.result_not_found')}
-          color={setupResult?.ttyConnected ? '#4ADE80' : '#FBBF24'}
+          value={setupResult?.terminalReady ? t('setup2.result_connected') : t('setup2.result_not_found')}
+          color={setupResult?.terminalReady ? '#4ADE80' : '#FBBF24'}
         />
         <ResultRow
           icon="smart-toy"

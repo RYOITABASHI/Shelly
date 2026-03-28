@@ -67,6 +67,7 @@ export default function TerminalScreen() {
   const inputRef = useRef<TextInput>(null);
   const activeSession = useActiveSession();
   const { removeSession, sessions, settings } = useTerminalStore();
+  const bridgeStatus = useTerminalStore((s) => s.bridgeStatus);
   const { runRawCommand } = useTermuxBridge();
 
   // Bridge terminal output events to execution-log-store
@@ -185,6 +186,16 @@ export default function TerminalScreen() {
       }
     }
   }, []); // Only on mount
+
+  // Auto-recover exited sessions when bridge reconnects
+  useEffect(() => {
+    if (bridgeStatus !== 'connected') return;
+    for (const session of sessions) {
+      if (session.sessionStatus === 'exited') {
+        recoverSession(session);
+      }
+    }
+  }, [bridgeStatus]); // Re-run when bridge status changes
 
   // Start smart wakelock + foreground service + session monitor on mount
   useEffect(() => {
@@ -337,7 +348,7 @@ export default function TerminalScreen() {
         <View style={styles.connectingContainer}>
           <ActivityIndicator size="large" color={c.accent} />
           <Text style={[styles.connectingText, { color: c.foreground }]}>
-            {activeSession?.sessionStatus === 'recovering' ? 'Restoring session...' : t('terminal.connecting_ttyd')}
+            {activeSession?.sessionStatus === 'recovering' ? 'Restoring session...' : t('terminal.connecting_terminal')}
           </Text>
         </View>
       )}

@@ -1,6 +1,6 @@
 /**
  * Simplified session health monitor. Replaces phantom-process-guard.ts.
- * Only checks tmux sessions (no ttyd). Runs every 60s.
+ * Only checks tmux sessions. Runs every 60s.
  */
 
 type RunCommand = (cmd: string, opts: { timeoutMs: number; reason: string }) => Promise<any>;

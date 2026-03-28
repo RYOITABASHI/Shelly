@@ -5,7 +5,7 @@
  *
  * Changes in v1.4:
  *  - Auto-recovery via TermuxBridge native module when reconnect exhausted
- *  - Attempts to restart bridge+ttyd via start-shelly.sh before showing manual banner
+ *  - Attempts to restart bridge+tmux via start-shelly.sh before showing manual banner
  *  - Session resume: tracks activeCliSession for claude --continue after recovery
  *
  * Changes in v1.3:
@@ -341,13 +341,13 @@ export function useTermuxBridge() {
     const startCmd = [
       `export PATH=${PREFIX}/bin:$PATH; `,
       `export HOME=${HOME}; `,
-      `pkill -f "node.*server.js" 2>/dev/null; `,
-      `pkill -f ttyd 2>/dev/null; `,
+      `pkill -f "node.*shelly-bridge/server.js" 2>/dev/null; `,
       `sleep 1; `,
+      `${PREFIX}/bin/tmux has-session -t shelly-1 2>/dev/null || ${PREFIX}/bin/tmux new-session -d -s shelly-1; `,
+      `${PREFIX}/bin/tmux has-session -t shelly-2 2>/dev/null || ${PREFIX}/bin/tmux new-session -d -s shelly-2; `,
       `if [ -x ${HOME}/shelly-bridge/start-shelly.sh ]; then `,
       `  nohup ${PREFIX}/bin/bash ${HOME}/shelly-bridge/start-shelly.sh > /dev/null 2>&1 & `,
       `else `,
-      `  nohup ${PREFIX}/bin/ttyd -p 7681 -W ${PREFIX}/bin/bash > /dev/null 2>&1 & `,
       `  cd ${HOME}/shelly-bridge && nohup ${PREFIX}/bin/node server.js > /dev/null 2>&1 & `,
       `fi`,
     ].join('');

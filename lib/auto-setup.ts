@@ -6,7 +6,7 @@
  *          WebSocket接続成功をポーリングで検知
  *
  * Phase 2: bridge WebSocket経由で残作業を実行（結果確認付き）
- *          boot script設置 / ttyd起動 / CLI検出 / LLM検出
+ *          boot script設置 / socat+tmux確認 / CLI検出 / LLM検出
  */
 
 import { BRIDGE_SERVER_JS } from './bridge-bundle';
@@ -24,11 +24,11 @@ export type Phase1Progress = {
 
 // ── Phase 2 Types ───────────────────────────────────────────────────────────
 
-export type Phase2Step = 'boot_script' | 'ttyd' | 'cli_detect' | 'llm_detect' | 'complete';
+export type Phase2Step = 'boot_script' | 'terminal' | 'cli_detect' | 'llm_detect' | 'complete';
 
 export type Phase2Results = {
   bootScript?: boolean;
-  ttyd?: boolean;
+  terminal?: boolean;
   cli?: { claudeCode: boolean; geminiCli: boolean; codex: boolean };
   llm?: boolean;
 };
@@ -88,7 +88,10 @@ function buildBootScript(): string {
   return `#!/data/data/com.termux/files/usr/bin/sh
 # Shelly auto-start script
 sleep 3
-ttyd -p 7681 bash &
+# Create tmux sessions (used by NativeTerminalView via socat)
+tmux has-session -t shelly-1 2>/dev/null || tmux new-session -d -s shelly-1
+tmux has-session -t shelly-2 2>/dev/null || tmux new-session -d -s shelly-2
+# Start bridge server
 cd ~/shelly-bridge && node server.js &
 # Auto-start llama-server if model exists
 MODEL=$((find ~/models ~/llama.cpp/models -maxdepth 2 -name "qwen*.gguf" -o -name "Qwen*.gguf" -size +100M 2>/dev/null; find ~/models ~/llama.cpp/models -maxdepth 2 -name "*.gguf" -size +100M 2>/dev/null) | awk '!seen[$0]++' | head -1)
@@ -103,7 +106,8 @@ fi
 export function buildSetupCommand(): string {
   // All packages a fresh Termux needs for full Shelly functionality:
   // - nodejs-lts: Node.js + npm (bridge server, CLI tools)
-  // - ttyd: WebSocket terminal server for Terminal tab
+  // - socat: TCP-PTY bridge for NativeTerminalView
+  // - tmux: session persistence across app restarts
   // - git: SavePoint, version control, Claude Code/Gemini CLI
   // - python: project templates, MCP plugins, scripting
   // - openssh: GitHub SSH auth, remote connections
@@ -112,7 +116,7 @@ export function buildSetupCommand(): string {
   // - tree: directory visualization
   // - vim/nano: fallback editors (Claude Code may invoke)
   const packages = [
-    'nodejs-lts', 'ttyd', 'git', 'python',
+    'nodejs-lts', 'socat', 'tmux', 'git', 'python',
     'openssh', 'curl', 'wget', 'jq', 'tree',
     'vim-python', 'nano',
   ].join(' ');
@@ -126,7 +130,6 @@ export function buildSetupCommand(): string {
     'npm init -y 2>/dev/null',
     'npm install ws 2>&1',
     `cat << 'SHELLY_BRIDGE_EOF' > server.js\n${BRIDGE_SERVER_JS}\nSHELLY_BRIDGE_EOF`,
-    'ttyd -p 7681 -W bash &',
     'node server.js',
   ].join(' && ');
 }
@@ -206,18 +209,21 @@ export async function runPhase2Setup(
     results.bootScript = fallback.exitCode === 0;
   }
 
-  // 2. ttyd (install if missing, then start)
-  onProgress({ step: 'ttyd', results });
-  const ttydInstalled = await exec('which ttyd >/dev/null 2>&1 && echo YES || echo NO', { timeoutMs: 5000 });
-  if (ttydInstalled.stdout.includes('NO')) {
-    // ttyd not installed — try to install
-    await exec('pkg install -y ttyd 2>&1', { timeoutMs: 120000 });
+  // 2. Terminal server (socat + tmux — socat is started on-demand by the app)
+  onProgress({ step: 'terminal', results });
+  const socatInstalled = await exec('which socat >/dev/null 2>&1 && echo YES || echo NO', { timeoutMs: 5000 });
+  if (socatInstalled.stdout.includes('NO')) {
+    await exec('pkg install -y socat 2>&1', { timeoutMs: 120000 });
   }
-  const ttydCheck = await exec(
-    'pgrep -f "ttyd.*7681" >/dev/null 2>&1 && echo ALREADY || (nohup ttyd -p 7681 -W bash > /dev/null 2>&1 & sleep 2 && curl -s -o /dev/null -w "%{http_code}" http://localhost:7681)',
-    { timeoutMs: 15000 },
-  );
-  results.ttyd = ttydCheck.stdout.includes('200') || ttydCheck.stdout.includes('ALREADY');
+  const tmuxInstalled = await exec('which tmux >/dev/null 2>&1 && echo YES || echo NO', { timeoutMs: 5000 });
+  if (tmuxInstalled.stdout.includes('NO')) {
+    await exec('pkg install -y tmux 2>&1', { timeoutMs: 120000 });
+  }
+  // Create default tmux sessions (socat attaches to these on-demand)
+  await exec('tmux has-session -t shelly-1 2>/dev/null || tmux new-session -d -s shelly-1', { timeoutMs: 5000 });
+  await exec('tmux has-session -t shelly-2 2>/dev/null || tmux new-session -d -s shelly-2', { timeoutMs: 5000 });
+  const tmuxCheck = await exec('tmux has-session -t shelly-1 2>/dev/null && echo OK || echo FAIL', { timeoutMs: 5000 });
+  results.terminal = tmuxCheck.stdout.includes('OK');
 
   // 3. CLI detection
   onProgress({ step: 'cli_detect', results });
