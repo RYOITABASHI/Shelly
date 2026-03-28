@@ -10,6 +10,8 @@ import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import com.termux.terminal.TerminalSession
@@ -21,15 +23,24 @@ import expo.modules.kotlin.views.ExpoView
 import expo.modules.terminalemulator.ShellyTerminalSession
 
 /**
- * ShellyTerminalView wraps the vendored Termux TerminalView using composition.
+ * ShellyTerminalView — Overlay Architecture
  *
- * Resize strategy:
- *   onLayout (debounced 150ms) → updateSize() → onEmulatorSet() → syncTmuxSize()
+ * The ExpoView acts as a **transparent placeholder** within React Native's
+ * Yoga layout tree. The actual TerminalView is added directly to the
+ * Activity's content frame (android.R.id.content), completely bypassing
+ * Yoga's layout engine.
  *
- * Unlike pure Termux (synchronous, single layout pass), React Native + ExpoView
- * fires 3-5 layout passes within ~100ms during fold/unfold/split transitions.
- * Without debouncing, each pass resets the emulator causing corrupted rendering.
- * The 150ms debounce ensures only the final stable layout triggers resize.
+ * This eliminates the 3-5 rapid layout passes that React Native fires
+ * during fold/unfold/split transitions on foldable devices (Z Fold6).
+ * The TerminalView receives exactly ONE layout pass from Android's native
+ * layout system — identical to how Termux handles it.
+ *
+ * Two concerns are cleanly separated:
+ *   1. Position sync — instant, every frame (margin updates only)
+ *   2. Terminal resize — debounced 200ms (emulator reset + tmux sync)
+ *
+ * Prior art: react-native-navigation (Wix) uses the same pattern for
+ * their overlay system. react-native-screens uses it for modals.
  */
 class ShellyTerminalView(
     context: Context,
@@ -39,14 +50,16 @@ class ShellyTerminalView(
     companion object {
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
-        private const val RESIZE_DEBOUNCE_MS = 150L
+        private const val RESIZE_DEBOUNCE_MS = 200L
     }
 
+    // TerminalView lives OUTSIDE the ExpoView hierarchy — added to Activity's content frame
     val terminalView: TerminalView = TerminalView(context, null)
     private val inputHandler = ShellyInputHandler()
     private var isViewVisible = true
     private var currentSessionId: String? = null
     private var currentShellySession: ShellyTerminalSession? = null
+    private var isOverlayAttached = false
 
     // tmux session name — set via prop so we can resize directly from Kotlin
     var tmuxSessionName: String? = null
@@ -55,11 +68,15 @@ class ShellyTerminalView(
     private var lastSyncedCols = -1
     private var lastSyncedRows = -1
 
-    // Debounce handler — React Native fires 3-5 layout passes in ~100ms
-    // during fold/unfold/split. Only the final stable size should trigger
-    // updateSize + syncTmuxSize.
+    // Track last overlay dimensions for debounced resize
+    private var lastOverlayWidth = -1
+    private var lastOverlayHeight = -1
+
+    // Debounce handler for terminal resize (NOT for position sync)
     private val resizeHandler = Handler(Looper.getMainLooper())
-    private var pendingResizeRunnable: Runnable? = null
+
+    // Position tracking — uses window-relative coordinates
+    private val location = IntArray(2)
 
     // Event callbacks set by the Expo module
     var onOutputEvent: ((text: String, isError: Boolean) -> Unit)? = null
@@ -81,18 +98,23 @@ class ShellyTerminalView(
 
     private val linkDetector = LinkDetector
 
+    /**
+     * OnGlobalLayoutListener — fires after every layout pass in the view tree.
+     * Syncs the overlay TerminalView's position to match this placeholder.
+     * Position updates are instant (margin changes only — no emulator reset).
+     * Size changes are debounced to avoid rapid emulator resets during transitions.
+     */
+    private val globalLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+        syncOverlayPosition()
+    }
+
     init {
-        addView(terminalView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ))
+        // ExpoView is transparent — it's just a position/size reference
+        setBackgroundColor(0x00000000)
 
         terminalView.setTerminalViewClient(this)
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
-        // Defer child TerminalView's own updateSize() — we control it via
-        // debounced onLayout to avoid 3-5 emulator resets during fold/split.
-        terminalView.mDeferUpdateSize = true
 
         // Request RUN_COMMAND permission at runtime (dangerous permission)
         ensureRunCommandPermission()
@@ -106,64 +128,140 @@ class ShellyTerminalView(
         terminalView.setTypeface(defaultTypeface)
     }
 
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-        val w = measuredWidth
-        val h = measuredHeight
-        if (w > 0 && h > 0) {
-            val exactW = View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY)
-            val exactH = View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
-            terminalView.measure(exactW, exactH)
+    // ===== Overlay Lifecycle =====
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        attachOverlay()
+        viewTreeObserver.addOnGlobalLayoutListener(globalLayoutListener)
+    }
+
+    override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnGlobalLayoutListener(globalLayoutListener)
+        detachOverlay()
+        resizeHandler.removeCallbacksAndMessages(null)
+        super.onDetachedFromWindow()
+    }
+
+    /**
+     * Add TerminalView to Activity's content frame (android.R.id.content).
+     * This places it outside React Native's Yoga layout tree.
+     */
+    private fun attachOverlay() {
+        if (isOverlayAttached) return
+        val contentFrame = getContentFrame() ?: return
+        val lp = FrameLayout.LayoutParams(0, 0).apply {
+            leftMargin = 0
+            topMargin = 0
         }
+        contentFrame.addView(terminalView, lp)
+        isOverlayAttached = true
+        Log.i(TAG, "attachOverlay: TerminalView added to content frame")
     }
 
-    // Do NOT call updateSize() here — the child TerminalView's own onSizeChanged
-    // will fire too, and React Native triggers multiple passes. We defer to
-    // onLayout with debounce instead.
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        Log.d(TAG, "onSizeChanged: ${oldw}x${oldh} → ${w}x${h}")
+    /**
+     * Remove TerminalView from Activity's content frame.
+     */
+    private fun detachOverlay() {
+        if (!isOverlayAttached) return
+        (terminalView.parent as? ViewGroup)?.removeView(terminalView)
+        isOverlayAttached = false
+        Log.i(TAG, "detachOverlay: TerminalView removed from content frame")
     }
 
-    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-        super.onLayout(changed, left, top, right, bottom)
-        val w = right - left
-        val h = bottom - top
-        terminalView.layout(0, 0, w, h)
+    /**
+     * Sync overlay position to match this ExpoView placeholder.
+     * Position updates are instant. Size changes trigger debounced resize.
+     */
+    private fun syncOverlayPosition() {
+        if (!isOverlayAttached) return
+        if (width == 0 || height == 0) return
 
-        if (w > 0 && h > 0) {
-            scheduleUpdateSize("onLayout ${w}x${h}")
+        // Get this placeholder's position relative to the window
+        getLocationInWindow(location)
+        val x = location[0]
+        val y = location[1]
+        val w = width
+        val h = height
+
+        // Update overlay position/size via LayoutParams
+        val lp = terminalView.layoutParams as? FrameLayout.LayoutParams ?: return
+        var changed = false
+        if (lp.leftMargin != x || lp.topMargin != y) {
+            lp.leftMargin = x
+            lp.topMargin = y
+            changed = true
+        }
+        if (lp.width != w || lp.height != h) {
+            lp.width = w
+            lp.height = h
+            changed = true
+        }
+        if (changed) {
+            terminalView.layoutParams = lp
+        }
+
+        // Show/hide overlay to match placeholder visibility
+        val shouldBeVisible = isShown
+        if (shouldBeVisible && terminalView.visibility != View.VISIBLE) {
+            terminalView.visibility = View.VISIBLE
+        } else if (!shouldBeVisible && terminalView.visibility == View.VISIBLE) {
+            terminalView.visibility = View.GONE
+        }
+
+        // Debounced terminal resize — only when size actually changes
+        if (w != lastOverlayWidth || h != lastOverlayHeight) {
+            lastOverlayWidth = w
+            lastOverlayHeight = h
+            scheduleTerminalResize(w, h)
         }
     }
 
     /**
-     * Schedule a debounced updateSize(). Cancel-and-reschedule ensures that
-     * only the final layout pass within RESIZE_DEBOUNCE_MS triggers the actual
-     * emulator resize + tmux sync.
+     * Debounced terminal resize. Only the final stable size triggers
+     * updateSize() + syncTmuxSize(). This fires once per fold/unfold/split
+     * transition, not 3-5 times.
      */
-    private fun scheduleUpdateSize(source: String) {
-        pendingResizeRunnable?.let { resizeHandler.removeCallbacks(it) }
-        pendingResizeRunnable = Runnable {
-            val w = terminalView.width
-            val h = terminalView.height
-            Log.i(TAG, "scheduleUpdateSize[$source]: TerminalView=${w}x${h}, triggering updateSize")
-            if (w > 0 && h > 0) {
+    private fun scheduleTerminalResize(w: Int, h: Int) {
+        resizeHandler.removeCallbacksAndMessages(null)
+        resizeHandler.postDelayed({
+            if (terminalView.width > 0 && terminalView.height > 0) {
+                Log.i(TAG, "terminalResize: ${terminalView.width}x${terminalView.height}")
                 terminalView.updateSize()
             }
-        }
-        resizeHandler.postDelayed(pendingResizeRunnable!!, RESIZE_DEBOUNCE_MS)
+        }, RESIZE_DEBOUNCE_MS)
     }
 
-    // --- Session Management ---
+    private fun getContentFrame(): FrameLayout? {
+        val activity = (context as? android.app.Activity)
+            ?: (context as? android.content.ContextWrapper)?.baseContext as? android.app.Activity
+        return activity?.findViewById(android.R.id.content)
+    }
+
+    // ===== ExpoView layout — placeholder only, does NOT drive TerminalView =====
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        // ExpoView measures normally for Yoga's benefit, but has no children to measure
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // Position sync is handled by OnGlobalLayoutListener
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        // No children to layout — TerminalView is in the content frame
+    }
+
+    // ===== Session Management =====
 
     fun attachShellySession(shellySession: ShellyTerminalSession, sessionId: String) {
         currentShellySession = shellySession
         currentSessionId = sessionId
         terminalView.attachSession(shellySession.terminalSession)
-        // attachSession calls updateSize() internally. If the view already has
-        // valid dimensions, this will trigger onEmulatorSet → syncTmuxSize.
-        // Post one additional updateSize to cover the case where layout hasn't
-        // settled yet (view width/height still 0 at attach time).
+        // Post updateSize for cases where the overlay hasn't received its final size yet
         terminalView.post {
             if (terminalView.width > 0 && terminalView.height > 0) {
                 Log.i(TAG, "attachSession.post: TerminalView=${terminalView.width}x${terminalView.height}")
@@ -178,7 +276,7 @@ class ShellyTerminalView(
         currentSessionId = null
     }
 
-    // --- Font & Appearance ---
+    // ===== Font & Appearance =====
 
     fun setFontFamily(family: String) {
         val typeface = FontManager.getTypeface(context, family)
@@ -213,34 +311,32 @@ class ShellyTerminalView(
         setTerminalCursorBlinkerRate(if (enabled) 500 else 0)
     }
 
-    // --- Visibility / Focus ---
+    // ===== Visibility / Focus =====
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
         isViewVisible = (visibility == View.VISIBLE)
-        if (isViewVisible) {
-            scheduleUpdateSize("onVisibilityChanged")
-        } else {
+        if (!isViewVisible) {
+            terminalView.visibility = View.GONE
             setTerminalCursorBlinkerRate(0)
         }
+        // Visibility sync is also handled by syncOverlayPosition
     }
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         isViewVisible = hasWindowFocus
-        if (hasWindowFocus) {
-            scheduleUpdateSize("onWindowFocusChanged")
-        }
     }
 
-    // --- Scroll Ownership ---
+    // ===== Touch — forward from placeholder to overlay =====
 
     override fun onInterceptTouchEvent(event: MotionEvent?): Boolean {
-        parent?.requestDisallowInterceptTouchEvent(true)
+        // Placeholder is transparent; touches go through to the overlay
+        // which is positioned on top via content frame
         return false
     }
 
-    // --- Output Processing ---
+    // ===== Output Processing =====
 
     fun processTerminalOutput(text: String) {
         blockDetector.processOutput(text)
@@ -251,15 +347,17 @@ class ShellyTerminalView(
         onOutputEvent?.invoke(text, false)
     }
 
-    // --- Cleanup ---
+    // ===== Cleanup =====
 
     fun destroy() {
+        detachOverlay()
+        resizeHandler.removeCallbacksAndMessages(null)
         blockDetector.destroy()
         inputHandler.resetModifiers()
         detachCurrentSession()
     }
 
-    // --- View Commands ---
+    // ===== View Commands =====
 
     fun scrollToBottomCommand() {
         terminalView.mEmulator ?: return
@@ -304,7 +402,7 @@ class ShellyTerminalView(
         terminalView.requestFocus()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.showSoftInput(terminalView, 0)
-        // Force size sync on tap — immediate (no debounce) since user explicitly tapped
+        // Immediate resize on tap — user explicitly interacted
         terminalView.updateSize()
     }
 
@@ -335,46 +433,31 @@ class ShellyTerminalView(
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean =
         inputHandler.onCodePoint(codePoint, ctrlDown, session)
 
-    // Expo EventDispatcher — still emits to JS for any UI updates that need size info
+    // Expo EventDispatcher — emits to JS for size tracking
     private val onResize by EventDispatcher()
 
     /**
      * Called by TerminalView when the emulator is (re)set after updateSize().
-     * Mirrors Termux's approach: NO debouncing. Immediately syncs tmux size
-     * from Kotlin via Runtime.exec(), bypassing the JS bridge.
+     * Syncs tmux size from Kotlin via RunCommandService Intent.
      */
     override fun onEmulatorSet() {
         terminalView.invalidate()
         val emulator = terminalView.mEmulator ?: return
         val cols = emulator.mColumns
         val rows = emulator.mRows
-        Log.i(TAG, "onEmulatorSet: cols=$cols, rows=$rows, viewSize=${terminalView.width}x${terminalView.height}")
+        Log.i(TAG, "onEmulatorSet: cols=$cols, rows=$rows, view=${terminalView.width}x${terminalView.height}")
 
         // Skip if size hasn't changed
         if (cols == lastSyncedCols && rows == lastSyncedRows) return
-
         lastSyncedCols = cols
         lastSyncedRows = rows
 
-        // 1. Sync tmux directly from Kotlin — no JS bridge, no debounce
         syncTmuxSize(cols, rows)
-
-        // 2. Also emit to JS for any UI that needs to know the size
         onResize(mapOf("cols" to cols, "rows" to rows))
     }
 
-    /**
-     * Resize tmux window directly from Kotlin via Termux RunCommandService.
-     * This is the equivalent of Termux's JNI.setPtyWindowSize() — we can't
-     * use ioctl because the PTY lives in Termux's UID, so we send an Intent
-     * to Termux's RunCommandService to execute tmux resize-window.
-     * This bypasses the JS bridge entirely for minimal latency.
-     */
-    /**
-     * Request com.termux.permission.RUN_COMMAND at runtime.
-     * This is a dangerous permission defined by Termux — uses-permission alone
-     * is not enough, the user must grant it explicitly.
-     */
+    // ===== Permissions =====
+
     private fun ensureRunCommandPermission() {
         val perm = "com.termux.permission.RUN_COMMAND"
         val activity = (context as? android.app.Activity)
@@ -387,6 +470,8 @@ class ShellyTerminalView(
             androidx.core.app.ActivityCompat.requestPermissions(activity, arrayOf(perm), 9999)
         }
     }
+
+    // ===== tmux Resize =====
 
     private fun syncTmuxSize(cols: Int, rows: Int) {
         val tmuxName = tmuxSessionName ?: return
@@ -403,31 +488,25 @@ class ShellyTerminalView(
                 putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
             }
             context.startService(intent)
-            Log.i(TAG, "syncTmuxSize: sent tmux resize -t $tmuxName -x $cols -y $rows")
+            Log.i(TAG, "syncTmuxSize: tmux resize -t $tmuxName -x $cols -y $rows")
         } catch (e: SecurityException) {
-            Log.e(TAG, "syncTmuxSize PERMISSION DENIED: ${e.message} — RUN_COMMAND permission missing from APK?")
+            Log.e(TAG, "syncTmuxSize PERMISSION DENIED: ${e.message}")
         } catch (e: Exception) {
             Log.w(TAG, "syncTmuxSize failed (${e.javaClass.simpleName}): ${e.message}")
         }
     }
 
-    // --- Logging ---
+    // ===== Logging =====
 
     override fun logError(tag: String, message: String) { Log.e(tag, message) }
     override fun logWarn(tag: String, message: String) { Log.w(tag, message) }
     override fun logInfo(tag: String, message: String) { Log.i(tag, message) }
     override fun logDebug(tag: String, message: String) { Log.d(tag, message) }
     override fun logVerbose(tag: String, message: String) { Log.v(tag, message) }
+    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) { Log.e(tag, message, e) }
+    override fun logStackTrace(tag: String, e: Exception) { Log.e(tag, "Exception", e) }
 
-    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) {
-        Log.e(tag, message, e)
-    }
-
-    override fun logStackTrace(tag: String, e: Exception) {
-        Log.e(tag, "Exception", e)
-    }
-
-    // --- Cursor blinker helper ---
+    // ===== Cursor blinker helper =====
 
     private fun setTerminalCursorBlinkerRate(rate: Int) {
         try {

@@ -975,18 +975,9 @@ public class TerminalView extends View {
      * This is called during layout when the size of this view has changed. If you were just added to the view
      * hierarchy, you're called with the old values of 0.
      */
-    /**
-     * When true, onSizeChanged will NOT call updateSize() automatically.
-     * Used by ShellyTerminalView to debounce resize during fold/unfold/split
-     * transitions where React Native fires 3-5 layout passes in ~100ms.
-     */
-    public boolean mDeferUpdateSize = false;
-
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        if (!mDeferUpdateSize) {
-            updateSize();
-        }
+        updateSize();
     }
 
     /** Check if the terminal size in rows and columns should be updated. */
