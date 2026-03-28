@@ -39,6 +39,7 @@ class ShellyTerminalView(
     companion object {
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
+        private const val RESIZE_DEBOUNCE_MS = 150L
     }
 
     val terminalView: TerminalView = TerminalView(context, null)
@@ -59,9 +60,6 @@ class ShellyTerminalView(
     // updateSize + syncTmuxSize.
     private val resizeHandler = Handler(Looper.getMainLooper())
     private var pendingResizeRunnable: Runnable? = null
-    private companion object ResizeConfig {
-        const val RESIZE_DEBOUNCE_MS = 150L
-    }
 
     // Event callbacks set by the Expo module
     var onOutputEvent: ((text: String, isError: Boolean) -> Unit)? = null
