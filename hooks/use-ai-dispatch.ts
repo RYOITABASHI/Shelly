@@ -23,6 +23,10 @@ import type { GeminiMessage } from '@/lib/gemini';
 import type { OllamaMessage } from '@/lib/local-llm';
 
 import { generateId } from '@/lib/id';
+import { parsePlanOutput } from '@/lib/parse-plan';
+import { usePlanStore } from '@/store/plan-store';
+import { useArenaStore } from '@/store/arena-store';
+import { selectArenaAgents } from '@/lib/arena-selector';
 import { t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { groqChatStream, type GroqMessage } from '@/lib/groq';
@@ -1203,6 +1207,136 @@ export function useAIDispatch() {
         content: `## ${guide.title}\n\n${guide.overview ?? ''}\n\n${stepsText}`,
         isStreaming: false,
       });
+      return { handled: true };
+    }
+
+    // ── @plan → Gemini Plan Mode or AI with plan format instruction ──
+    if (target === 'plan') {
+      const msgId = addAssistantMessage(chatSessionId, 'gemini');
+      streamingMsgRef.current = { sessionId: chatSessionId, msgId };
+
+      const planSystemPrompt = `Respond in a structured Plan format. Use a numbered list with clear steps. Include code blocks for commands. Start with "## Plan" header.
+
+Example:
+## Plan
+1. Create project structure
+   - src/index.html
+   - src/style.css
+2. Install dependencies
+   \`\`\`bash
+   npm install express
+   \`\`\`
+3. Configure build system`;
+
+      const fullPrompt = `${planSystemPrompt}\n\nUser request: ${promptWithFiles}`;
+
+      // Try Gemini CLI first (with --plan flag if available), fallback to API
+      if (connectionMode === 'termux') {
+        updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
+        let accumulated = '';
+        try {
+          const result = await bridgeRunCommand(`gemini "${fullPrompt.replace(/"/g, '\\"')}"`);
+          accumulated = result.stdout || '';
+        } catch (e) {
+          accumulated = `## Plan\n\n1. Error: Could not connect to Gemini CLI\n   - ${String(e)}`;
+        }
+
+        // Parse and store plan
+        const plan = parsePlanOutput(accumulated, 'gemini');
+        if (plan) {
+          usePlanStore.getState().setActivePlan(plan);
+        }
+
+        updateMessage(chatSessionId, msgId, {
+          content: accumulated,
+          isStreaming: false,
+        });
+      } else {
+        // Fallback: use any available LLM with plan format instruction
+        updateMessage(chatSessionId, msgId, {
+          content: `## Plan\n\n1. Connect Termux to enable Plan Mode\n   - Plan Mode requires a terminal connection to execute steps\n   - Use the Setup Wizard to connect Termux`,
+          isStreaming: false,
+        });
+      }
+      return { handled: true };
+    }
+
+    // ── @arena → Blind AI comparison ──
+    if (target === 'arena') {
+      const agents = selectArenaAgents(settings);
+      const arenaId = useArenaStore.getState().startArena(promptWithFiles, agents);
+
+      // Add arena bubble to chat
+      const arenaMsg: ChatMessage = {
+        id: generateId(),
+        role: 'system',
+        content: '',
+        timestamp: Date.now(),
+        arenaId,
+      };
+      useChatStore.getState().addMessage(chatSessionId, arenaMsg);
+
+      // Dispatch to both agents sequentially (OOM-safe for Termux)
+      for (let i = 0; i < agents.length; i++) {
+        const agent = agents[i];
+        const candidateId = `${arenaId}-${i}`;
+
+        try {
+          let accumulated = '';
+
+          if (agent === 'local' && settings.localLlmEnabled) {
+            const { ollamaChatStream } = await import('@/lib/local-llm');
+            await ollamaChatStream(
+              { baseUrl: settings.localLlmUrl, model: settings.localLlmModel, enabled: true },
+              [{ role: 'user' as const, content: promptWithFiles }],
+              (chunk: string) => {
+                accumulated += chunk;
+                useArenaStore.getState().updateCandidate(arenaId, candidateId, { response: accumulated });
+              },
+            );
+          } else if (agent === 'groq' && settings.groqApiKey) {
+            const { groqChatStream } = await import('@/lib/groq');
+            await groqChatStream(
+              settings.groqApiKey, promptWithFiles,
+              (chunk: string) => {
+                accumulated += chunk;
+                useArenaStore.getState().updateCandidate(arenaId, candidateId, { response: accumulated });
+              },
+            );
+          } else if (agent === 'cerebras' && settings.cerebrasApiKey) {
+            const { cerebrasChatStream } = await import('@/lib/cerebras');
+            await cerebrasChatStream(
+              settings.cerebrasApiKey, promptWithFiles,
+              (chunk: string) => {
+                accumulated += chunk;
+                useArenaStore.getState().updateCandidate(arenaId, candidateId, { response: accumulated });
+              },
+            );
+          } else if ((agent === 'claude' || agent === 'gemini') && connectionMode === 'termux') {
+            const cli = agent === 'claude' ? 'claude' : 'gemini';
+            try {
+              const result = await bridgeRunCommand(`${cli} "${promptWithFiles.replace(/"/g, '\\"')}"`);
+              accumulated = result.stdout || '';
+            } catch (e) {
+              accumulated = `Error: ${String(e)}`;
+            }
+          } else {
+            accumulated = `(${agent} not available)`;
+          }
+
+          useArenaStore.getState().updateCandidate(arenaId, candidateId, {
+            response: accumulated || '(no response)',
+            isStreaming: false,
+          });
+        } catch (e) {
+          useArenaStore.getState().updateCandidate(arenaId, candidateId, {
+            response: '',
+            isStreaming: false,
+            error: String(e),
+          });
+        }
+      }
+
       return { handled: true };
     }
 

@@ -13,7 +13,7 @@ import { t } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex';
+export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena';
 
 export type InputLayer =
   | 'mention'        // @claude / @gemini / @local
@@ -76,6 +76,10 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
   { pattern: /^@agent\s*/i,        target: 'agent',       label: 'AI Agent' },
   { pattern: /^@edit\s*/i,         target: 'agent',       label: 'AI Agent' },
   { pattern: /^@code\s*/i,         target: 'agent',       label: 'AI Agent' },
+  { pattern: /^@plan\s*/i,         target: 'plan',        label: 'Plan Mode' },
+  { pattern: /^@arena\s*/i,        target: 'arena',       label: 'Arena Mode' },
+  { pattern: /^@battle\s*/i,       target: 'arena',       label: 'Arena Mode' },
+  { pattern: /^@compare\s*/i,      target: 'arena',       label: 'Arena Mode' },
 ];
 
 // ─── 自然言語 + ツール名キーワード ────────────────────────────────────────────
@@ -531,6 +535,8 @@ export function getTargetLabel(target: RouteTarget): string {
     codex: 'Codex CLI',
     groq: 'Groq',
     cerebras: 'Cerebras',
+    plan: 'Plan Mode',
+    arena: 'Arena Mode',
   };
   return labels[target];
 }
@@ -550,6 +556,8 @@ export function getTargetColor(target: RouteTarget): string {
     agent:      '#EF4444', // レッド（AI Agent）
     codex:      '#10B981', // グリーン（Codex）
     cerebras:   '#FF6B35', // オレンジレッド（Cerebras）
+    plan:       '#06B6D4', // シアン（Plan Mode）
+    arena:      '#D946EF', // フューシャ（Arena Mode）
   };
   return colors[target];
 }
