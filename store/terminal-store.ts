@@ -12,71 +12,13 @@ import {
   TermuxSettings,
 } from './types';
 import { executeCommand } from '@/lib/pseudo-shell';
-import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys } from '@/lib/secure-store';
-import { useSoundStore } from '@/lib/sounds';
+import { useSettingsStore } from './settings-store';
 
 /** Pending tmux sessions to kill (consumed by useTermuxBridge on next tick) */
 export const _pendingTmuxKills: string[] = [];
 
 /** Pending tmux sessions to clear scrollback (consumed by useTermuxBridge on next tick) */
 export const _pendingTmuxClears: string[] = [];
-
-// ─── Defaults ─────────────────────────────────────────────────────────────────
-
-const DEFAULT_SETTINGS: AppSettings = {
-  fontSize: 14,
-  lineHeight: 1.4,
-  themeVariant: 'black',
-  cursorShape: 'block',
-  hapticFeedback: true,
-  autoScroll: true,
-  soundEffects: true,
-  soundVolume: 0.6,
-  snippetRunMode: 'insertAndRun',
-  snippetAutoReturn: true,
-  // Default ON: ensures stdout/stderr is always readable on OLED displays (Z Fold6)
-  highContrastOutput: true,
-  // Local LLM (Ollama) — disabled by default until user sets up Ollama in Termux
-  localLlmEnabled: false,
-  localLlmUrl: 'http://127.0.0.1:8080',
-  localLlmModel: 'Qwen2.5-3B-Instruct-Q4_K_M',
-  // Groq API — デフォルトはモデル名のみ（APIキーはSecureStoreで管理）
-  groqModel: 'llama-3.3-70b-versatile',
-  // ガラス背景 — デフォルトは不透明ブラック
-  backgroundOpacity: 1.0,
-  blurIntensity: 0,
-  // @team 首脳会談 — デフォルト設定
-  teamMembers: {
-    claude: true,
-    gemini: true,
-    codex: false,
-    perplexity: true,
-    local: true,
-  },
-  teamFacilitatorPriority: ['local', 'claude', 'gemini', 'codex', 'perplexity'],
-  // コマンド安全システム — デフォルト有効
-  enableCommandSafety: true,
-  safetyConfirmLevel: 'HIGH' as const,
-  experienceMode: 'learning' as const,
-  // Obsidian RAG — デフォルト無効（Vaultパス設定後に有効化）
-  enableObsidianRag: false,
-  obsidianVaultPath: '/storage/emulated/0/ObsidianVault',
-  ragMaxChunks: 5,
-  ragTargetMentions: ['claude', 'gemini', 'local'] as Array<'claude' | 'gemini' | 'local' | 'perplexity' | 'team'>,
-  // CLI Permission Proxy — 読み取りのみ自動承認
-  autoApproveLevel: 'safe' as const,
-  // ペルソナB向けデフォルトエージェント — Gemini CLI（無料枠・低ハードル）
-  defaultAgent: 'gemini-cli' as const,
-  realtimeTranslateEnabled: false,
-  llmInterpreterEnabled: false,
-  externalKeyboardShortcuts: false,
-};
-
-const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {
-  wsUrl: 'ws://127.0.0.1:8765',
-  autoReconnect: true,
-  timeoutSeconds: 30,
-};
 
 // ─── Multi-session tmux pool ────────────────────────────────────────────────
 
@@ -216,13 +158,14 @@ const initialSession = createSession('session-1', 'Terminal 1');
 export const useTerminalStore = create<TerminalState>((set, get) => ({
   sessions: [initialSession],
   activeSessionId: 'session-1',
-  settings: DEFAULT_SETTINGS,
+  // Settings synced from settings-store (backward compat)
+  settings: useSettingsStore.getState().settings,
   isSettingsLoaded: false,
 
   // Termux bridge
   connectionMode: 'termux',
   bridgeStatus: 'idle',
-  termuxSettings: DEFAULT_TERMUX_SETTINGS,
+  termuxSettings: useSettingsStore.getState().termuxSettings,
   pendingCommand: null,
   lastInputMode: 'shell',
   activeCliSession: null,
@@ -551,30 +494,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     set({ sessions: updatedSessions });
   },
 
-  // ── Settings ────────────────────────────────────────────────────────────────
+  // ── Settings (deprecated — use useSettingsStore directly) ────────────────
 
   updateSettings: (newSettings: Partial<AppSettings>) => {
-    set((state) => {
-      const updated = { ...state.settings, ...newSettings };
-      // Save API keys to SecureStore, strip them from AsyncStorage
-      for (const [key, value] of Object.entries(newSettings)) {
-        if (isApiKeyField(key) && typeof value === 'string') {
-          saveApiKey(key, value);
-        }
-      }
-      // Sync sound store with settings
-      if ('soundEffects' in newSettings) {
-        useSoundStore.getState().setEnabled(newSettings.soundEffects ?? true);
-      }
-      if ('soundVolume' in newSettings) {
-        useSoundStore.getState().setVolume(newSettings.soundVolume ?? 0.6);
-      }
-      const forStorage = stripApiKeys(updated);
-      AsyncStorage.setItem('shelly_settings', JSON.stringify(forStorage)).catch((e) => {
-        console.error('[Settings] persist failed — settings may be lost on restart:', e);
-      });
-      return { settings: updated };
-    });
+    useSettingsStore.getState().updateSettings(newSettings);
   },
 
   saveSnippet: (blockId: string) => {
@@ -594,30 +517,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   loadSettings: async () => {
-    try {
-      const [settingsRaw, termuxRaw, secureKeys] = await Promise.all([
-        AsyncStorage.getItem('shelly_settings'),
-        AsyncStorage.getItem('shelly_termux_settings'),
-        loadApiKeys(),
-      ]);
-      const settings = {
-        ...DEFAULT_SETTINGS,
-        ...(settingsRaw ? JSON.parse(settingsRaw) : {}),
-        ...secureKeys, // API keys from SecureStore override AsyncStorage
-      };
-      const termuxSettings = termuxRaw
-        ? { ...DEFAULT_TERMUX_SETTINGS, ...JSON.parse(termuxRaw) }
-        : DEFAULT_TERMUX_SETTINGS;
-      // Sync sound store on load
-      useSoundStore.getState().setEnabled(settings.soundEffects ?? true);
-      useSoundStore.getState().setVolume(settings.soundVolume ?? 0.6);
-      set({ settings, termuxSettings, isSettingsLoaded: true });
-      // Restore terminal sessions
-      await get().loadSessionState();
-    } catch (err) {
-      console.error('[Settings] loadSettings failed, using defaults:', err);
-      set({ settings: DEFAULT_SETTINGS, termuxSettings: DEFAULT_TERMUX_SETTINGS, isSettingsLoaded: true });
-    }
+    await useSettingsStore.getState().loadSettings();
+    // Sync loaded values to terminal-store for backward compat
+    const { settings, termuxSettings, isSettingsLoaded } = useSettingsStore.getState();
+    set({ settings, termuxSettings, isSettingsLoaded });
+    // Restore terminal sessions
+    await get().loadSessionState();
   },
 
   // ── Connection ──────────────────────────────────────────────────────────────
@@ -631,17 +536,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   updateTermuxSettings: (s: Partial<TermuxSettings>) => {
-    set((state) => {
-      const updated = { ...state.termuxSettings, ...s };
-      // Warn if non-local WebSocket URL is configured (security risk)
-      if (updated.wsUrl && !/^wss?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(updated.wsUrl)) {
-        console.warn('[Security] Non-local WebSocket URL detected:', updated.wsUrl, '— Consider using wss:// for remote connections.');
-      }
-      AsyncStorage.setItem('shelly_termux_settings', JSON.stringify(updated)).catch((e) => {
-        console.warn('[TermuxSettings] persist failed:', e);
-      });
-      return { termuxSettings: updated };
-    });
+    useSettingsStore.getState().updateTermuxSettings(s);
   },
 
   // ── Pending command (Creator / Snippet insert) ─────────────────────────────────────────
@@ -792,3 +687,12 @@ export const useActiveSession = () =>
   useTerminalStore(
     (s) => s.sessions.find((sess) => sess.id === s.activeSessionId) ?? s.sessions[0],
   );
+
+// ─── Sync settings-store → terminal-store (backward compat) ────────────────
+useSettingsStore.subscribe((state) => {
+  useTerminalStore.setState({
+    settings: state.settings,
+    termuxSettings: state.termuxSettings,
+    isSettingsLoaded: state.isSettingsLoaded,
+  });
+});
