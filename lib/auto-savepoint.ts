@@ -5,6 +5,54 @@
 
 type RunCommandFn = (cmd: string) => Promise<{ stdout: string; exitCode: number }>;
 
+// ─── Security patterns (checked before every auto-commit) ──────────────────
+
+export type SecurityIssue = { file: string; label: string; line: number };
+
+const SECURITY_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\b(api[_-]?key|secret|token|password)\s*[:=]\s*['"][^'"]{8,}/i, label: 'hardcoded secret' },
+  { pattern: /-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----/, label: 'private key' },
+  { pattern: /\bAIza[0-9A-Za-z_-]{35}\b/, label: 'Google API key' },
+  { pattern: /\bsk-[a-zA-Z0-9]{20,}\b/, label: 'OpenAI/Anthropic key' },
+  { pattern: /\bghp_[a-zA-Z0-9]{36}\b/, label: 'GitHub PAT' },
+];
+
+const SENSITIVE_FILES = /\.(env|env\.local|env\.production|pem|key|p12|jks|keystore)$/;
+
+/** Scan staged files for secrets. Returns issues found. */
+export async function scanForSecrets(
+  projectDir: string,
+  runCommand: RunCommandFn,
+): Promise<SecurityIssue[]> {
+  const dir = shellEscape(projectDir);
+  const { stdout: stagedFiles } = await runCommand(`git -C ${dir} diff --cached --name-only`);
+  if (!stagedFiles.trim()) return [];
+
+  const issues: SecurityIssue[] = [];
+  for (const file of stagedFiles.trim().split('\n')) {
+    if (!file) continue;
+    // Check filename patterns
+    if (SENSITIVE_FILES.test(file)) {
+      issues.push({ file, label: 'sensitive file', line: 0 });
+      continue;
+    }
+    // Check file content for secret patterns
+    const { stdout: content, exitCode } = await runCommand(
+      `git -C ${dir} show :${shellEscape(file)} 2>/dev/null | head -500`,
+    );
+    if (exitCode !== 0 || !content) continue;
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      for (const { pattern, label } of SECURITY_PATTERNS) {
+        if (pattern.test(lines[i])) {
+          issues.push({ file, label, line: i + 1 });
+        }
+      }
+    }
+  }
+  return issues;
+}
+
 /** Shell-escape a string for safe use in single-quoted arguments */
 export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
@@ -54,10 +102,12 @@ export async function initGitIfNeeded(
   }
 }
 
-/** Check for uncommitted changes and commit if any */
+/** Check for uncommitted changes and commit if any.
+ *  Scans for secrets before committing — skips commit if issues found. */
 export async function checkAndSave(
   projectDir: string,
   runCommand: RunCommandFn,
+  onSecurityIssues?: (issues: SecurityIssue[]) => void,
 ): Promise<SaveResult | null> {
   const dir = shellEscape(projectDir);
   const { stdout: status } = await runCommand(`git -C ${dir} status --porcelain`);
@@ -66,6 +116,16 @@ export async function checkAndSave(
   const message = generateCommitMessage(status);
 
   await runCommand(`git -C ${dir} add -A`);
+
+  // Security gate: scan staged files for secrets before committing
+  const issues = await scanForSecrets(projectDir, runCommand);
+  if (issues.length > 0) {
+    // Unstage everything and notify caller
+    await runCommand(`git -C ${dir} reset HEAD`);
+    onSecurityIssues?.(issues);
+    return null;
+  }
+
   const { exitCode } = await runCommand(
     `git -C ${dir} commit -m "${message.replace(/"/g, '\\"')}"`,
   );
