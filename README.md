@@ -56,7 +56,7 @@ WebSocket connections dropped without warning. Termux's Phantom Process Killer s
 
 So I made the decision to throw it all away and go native.
 
-Shelly now embeds a **native terminal emulator** — Kotlin code derived from Termux's own `terminal-emulator` library — directly inside an Expo/React Native app. The terminal view renders on an Android Canvas, not in a WebView. Input goes through a real PTY via socat TCP bridge, not through JavaScript event handlers.
+Shelly now embeds a **native terminal emulator** — Kotlin code derived from Termux's own `terminal-emulator` library — directly inside an Expo/React Native app. The terminal view renders on an Android Canvas, not in a WebView. Input goes through a real PTY via a custom C helper (`pty-helper`) that creates pseudo-terminals with `forkpty()` and communicates over TCP localhost — not through JavaScript event handlers.
 
 This means:
 - **No WebSocket reconnection hell.** The terminal is a native view, not a web page.
@@ -92,6 +92,22 @@ This works because Shelly's Chat pane is aware of what's happening in the Termin
 
 ---
 
+## Who is this for?
+
+- **Vibe Coders** — If you've used Lovable, Bolt, or Replit Agent, imagine that on your phone with a real terminal underneath. Say "build me a portfolio site" and watch it happen live.
+- **Mobile-first developers** — If you run Claude Code or Gemini CLI in Termux, Shelly gives you a proper UI around it: split view, real-time translation, auto-savepoints, and a chat pane that reads your terminal output.
+- **Non-engineers with ideas** — Shelly translates everything. You don't need to know what `npm install` means. The AI explains every command, and dangerous operations are blocked until you understand them.
+
+### How is this different from Claude Cowork?
+
+[Claude Cowork](https://claude.ai/) is desktop-only and requires a browser. Shelly runs on your phone, uses multiple AI providers (Claude, Gemini, Groq, Cerebras, local LLMs), and connects a native terminal to the chat — something no desktop tool does.
+
+### Voice Mode
+
+Run `claude /voice` or `gemini` with voice input in the Terminal tab for hands-free development. Shelly's Chat pane also supports voice input — tap the mic icon and speak naturally.
+
+---
+
 ## Features
 
 ### Cross-Pane Intelligence
@@ -99,7 +115,10 @@ This works because Shelly's Chat pane is aware of what's happening in the Termin
 - **ActionBlock** — Code blocks in AI responses have [▶ Run] buttons that execute directly in Terminal
 - **Real-time terminal awareness** — Chat AI always knows what's happening in Terminal (wide mode: automatic, single pane: on reference)
 - **CLI Co-Pilot** — Real-time translation of terminal output, approval prompt explanations, second opinions, session summaries
+- **Approval Proxy** — Terminal `[Y/n]` prompts become native chat buttons (Approve / Deny / Ask @team). No more typing blind 'Y'.
+- **Error Summary** — Errors are detected, translated, and surfaced as persistent chat bubbles with [Suggest Fix] buttons.
 - **Auto-savepoint timeline** — Game-like save/load system. Every change is auto-committed. Revert to any point with one tap.
+- **Pre-commit security scan** — API keys, private keys, and secrets are detected before they're committed.
 
 ### Chat-First Development
 - **Natural language execution** — Talk naturally, get real execution. Commands run behind the scenes in Termux.
@@ -112,9 +131,15 @@ This works because Shelly's Chat pane is aware of what's happening in the Termin
 - **Learning mode** — AI explains what each command does and what the output means, in your language.
 - **Onboarding wizard** — 5-minute setup from zero. Termux install, AI configuration, everything guided.
 
+### Creative Tools
+- **Plan Mode** — AI-generated plans are rendered as interactive step cards. Execute or skip each step with a tap. Non-engineers can see what will happen before it happens.
+- **Click-to-Edit** — In the preview panel, tap any element to select it. Preset buttons (enlarge, color, bold) or custom instructions modify the UI instantly.
+- **Arena Mode** — Same prompt, two AIs, blind comparison. Vote for the better response, then see which AI wrote it. Tracks win rates over time.
+- **Template Gallery** — 7 project templates (Web, API, CLI, Mobile, Static, Script, Document) with guided wizard flows. From "what do you want to build?" to running code in under a minute.
+
 ### Power Features
-- **Native Terminal Emulator** — Kotlin-based terminal rendering on Android Canvas. No WebView, no xterm.js. Derived from Termux's terminal-emulator library, connected via socat PTY-TCP bridge across UID boundaries.
-- **Immortal sessions** — tmux-backed sessions survive app switches, screen locks, and Termux restarts. Come back hours later and your Claude Code session is still running.
+- **Native Terminal Emulator** — Kotlin-based terminal rendering on Android Canvas. No WebView, no xterm.js. Derived from Termux's terminal-emulator library, connected via direct PTY helper (C, `forkpty()`) over TCP localhost across UID boundaries.
+- **Reconnectable sessions** — PTY helper supports client reconnection. Disconnect and reconnect without losing your shell session. The PTY and child process survive app transitions.
 - **Termux bridge** — Native Kotlin module for direct Termux integration. No WebSocket server required.
 - **Local LLM support** — Run Gemma/Qwen on-device via llama.cpp with guided setup wizard.
 - **Terminal tab** — Full TTY access with Japanese input support (something Termux alone can't do).
