@@ -46,7 +46,7 @@ import TermuxBridge from '@/modules/termux-bridge';
 import { loadSessionsFromProject, startAutoSave, stopAutoSave } from '@/lib/session-persistence';
 import { VoiceChat } from '@/components/VoiceChat';
 import { PreviewBanner } from '@/components/terminal/PreviewBanner';
-import { PreviewPanel } from '@/components/terminal/PreviewPanel';
+import { PreviewTabs } from '@/components/preview/PreviewTabs';
 import { usePreviewStore } from '@/store/preview-store';
 import type { TabSession, SessionStatus } from '@/store/types';
 import { useChatStore } from '@/store/chat-store';
@@ -120,12 +120,11 @@ export default function TerminalScreen() {
 
   // Preview state
   const previewIsOpen = usePreviewStore((s) => s.isOpen);
-  const previewUrl = usePreviewStore((s) => s.previewUrl);
   const bannerVisible = usePreviewStore((s) => s.bannerVisible);
   const bannerUrl = usePreviewStore((s) => s.bannerUrl);
   const splitRatio = usePreviewStore((s) => s.splitRatio);
   const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
-  const showSplitPreview = previewIsOpen && previewUrl && layout.isWide;
+  const showSplitPreview = previewIsOpen && layout.isWide;
 
   // Click-to-Edit: send edit prompt to Chat as a user message for AI dispatch
   const handleEditSubmit = useCallback((prompt: string) => {
@@ -536,17 +535,17 @@ export default function TerminalScreen() {
           />
 
           {/* Preview Panel (side-by-side on wide screens) */}
-          {showSplitPreview && previewUrl && (
+          {showSplitPreview && (
             <View style={{ flex: 1 - splitRatio }}>
-              <PreviewPanel url={previewUrl} onClose={closePreview} onEditSubmit={handleEditSubmit} />
+              <PreviewTabs onClose={closePreview} onEditSubmit={handleEditSubmit} />
             </View>
           )}
         </View>
       )}
 
       {/* Preview Panel (full screen on compact, when no split) */}
-      {previewIsOpen && previewUrl && !showSplitPreview && isConnected && (
-        <PreviewPanel url={previewUrl} onClose={closePreview} onEditSubmit={handleEditSubmit} />
+      {previewIsOpen && !showSplitPreview && isConnected && (
+        <PreviewTabs onClose={closePreview} onEditSubmit={handleEditSubmit} />
       )}
 
       {/* Recovery splash — shown while session re-creates */}
