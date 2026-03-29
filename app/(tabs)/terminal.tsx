@@ -221,12 +221,34 @@ export default function TerminalScreen() {
   }, [createNativeSession, runRawCommand]);
 
   // Ensure native sessions exist. Called on bridge connect AND on foreground resume.
-  // pty-helper processes persist in Termux, but the Unix socket connection may drop
+  // pty-helper processes persist in Termux, but the TCP connection may drop
   // when Android backgrounds the app. This silently reconnects or re-creates sessions.
   const ensureNativeSessions = useCallback(async () => {
     if (bridgeStatus !== 'connected') return;
+    // Don't run when hidden behind MultiPane — the MultiPane instance handles sessions
+    if (isHiddenBehindMultiPane) return;
+
     for (const session of sessions) {
       if (session.sessionStatus === 'starting' || session.sessionStatus === 'alive') {
+        // In MultiPane context, the tab-side instance already owns the Kotlin session.
+        // Just ensure the session status is set to alive so TerminalView renders.
+        if (isRenderedInMultiPane) {
+          try {
+            const alive = await TerminalEmulator.isSessionAlive(session.nativeSessionId);
+            if (alive) {
+              // Session exists in Kotlin registry — just make sure status is alive
+              useTerminalStore.setState((state) => ({
+                sessions: state.sessions.map((s) =>
+                  s.id === session.id ? { ...s, sessionStatus: 'alive' as const, isAlive: true } : s
+                ),
+              }));
+              continue;
+            }
+          } catch {}
+          // If not alive in MultiPane, don't try to re-create (tab-side will handle it)
+          continue;
+        }
+
         try {
           const alive = await TerminalEmulator.isSessionAlive(session.nativeSessionId);
           if (!alive) {
@@ -238,11 +260,12 @@ export default function TerminalScreen() {
           await createNativeSession(session);
         }
       } else if (session.sessionStatus === 'exited') {
+        if (isRenderedInMultiPane) continue; // Let tab-side handle recovery
         console.log('[Terminal] ensureNativeSessions: session exited, recovering:', session.nativeSessionId);
         recoverSession(session);
       }
     }
-  }, [bridgeStatus, sessions, createNativeSession, recoverSession]);
+  }, [bridgeStatus, sessions, createNativeSession, recoverSession, isHiddenBehindMultiPane, isRenderedInMultiPane]);
 
   // Run on bridge connect/reconnect AND on initial mount (covers Split View
   // where a new TerminalScreen instance mounts while sessions are already alive)
