@@ -159,6 +159,14 @@ class ShellyTerminalView(
         currentShellySession = shellySession
         currentSessionId = sessionId
         terminalView.attachSession(shellySession.terminalSession)
+
+        // Wire up screen update callback so TerminalView redraws on new output.
+        // onTextChanged is called from TerminalSession's I/O thread,
+        // so we post to main thread for safe UI update.
+        shellySession.onScreenUpdateCallback = {
+            terminalView.post { terminalView.onScreenUpdated() }
+        }
+
         // Post updateSize to ensure layout is complete
         terminalView.post {
             if (terminalView.width > 0 && terminalView.height > 0) {
@@ -170,6 +178,7 @@ class ShellyTerminalView(
     }
 
     fun detachCurrentSession() {
+        currentShellySession?.onScreenUpdateCallback = null
         currentShellySession = null
         currentSessionId = null
     }

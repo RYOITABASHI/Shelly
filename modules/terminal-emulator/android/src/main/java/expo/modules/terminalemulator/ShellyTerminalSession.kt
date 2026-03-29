@@ -134,6 +134,9 @@ class ShellyTerminalSession(
 
     // --- TerminalSessionClient implementation ---
 
+    /** Callback to notify TerminalView to redraw. Set by ShellyTerminalView.attachShellySession(). */
+    var onScreenUpdateCallback: (() -> Unit)? = null
+
     override fun onTextChanged(changedSession: TerminalSession) {
         val emulator = changedSession.emulator ?: return
         val screen = emulator.screen
@@ -147,6 +150,8 @@ class ShellyTerminalSession(
             lastTranscriptLength = currentLength
             if (fullText.isNotEmpty()) appendToOutputBuffer(fullText)
         }
+        // Notify TerminalView to redraw on the main thread
+        onScreenUpdateCallback?.invoke()
     }
 
     override fun onTitleChanged(changedSession: TerminalSession) {
