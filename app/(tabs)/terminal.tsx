@@ -49,6 +49,8 @@ import { PreviewBanner } from '@/components/terminal/PreviewBanner';
 import { PreviewPanel } from '@/components/terminal/PreviewPanel';
 import { usePreviewStore } from '@/store/preview-store';
 import type { TabSession, SessionStatus } from '@/store/types';
+import { useChatStore } from '@/store/chat-store';
+import { generateId } from '@/lib/id';
 
 // ─── Status type for StatusBadge ─────────────────────────────────────────────
 
@@ -124,6 +126,19 @@ export default function TerminalScreen() {
   const splitRatio = usePreviewStore((s) => s.splitRatio);
   const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
   const showSplitPreview = previewIsOpen && previewUrl && layout.isWide;
+
+  // Click-to-Edit: send edit prompt to Chat as a user message for AI dispatch
+  const handleEditSubmit = useCallback((prompt: string) => {
+    const chatStore = useChatStore.getState();
+    const session = chatStore.getActiveSession();
+    if (!session) return;
+    chatStore.addMessage(session.id, {
+      id: generateId(),
+      role: 'user',
+      content: prompt,
+      timestamp: Date.now(),
+    });
+  }, []);
 
   // Create or reconnect a native session to pty-helper
   const createNativeSession = useCallback(async (session: TabSession) => {
@@ -523,7 +538,7 @@ export default function TerminalScreen() {
           {/* Preview Panel (side-by-side on wide screens) */}
           {showSplitPreview && previewUrl && (
             <View style={{ flex: 1 - splitRatio }}>
-              <PreviewPanel url={previewUrl} onClose={closePreview} />
+              <PreviewPanel url={previewUrl} onClose={closePreview} onEditSubmit={handleEditSubmit} />
             </View>
           )}
         </View>
@@ -531,7 +546,7 @@ export default function TerminalScreen() {
 
       {/* Preview Panel (full screen on compact, when no split) */}
       {previewIsOpen && previewUrl && !showSplitPreview && isConnected && (
-        <PreviewPanel url={previewUrl} onClose={closePreview} />
+        <PreviewPanel url={previewUrl} onClose={closePreview} onEditSubmit={handleEditSubmit} />
       )}
 
       {/* Recovery splash — shown while session re-creates */}

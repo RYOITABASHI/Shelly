@@ -52,6 +52,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { checkAndSave, initGitIfNeeded, isFileChangingCommand, type SecurityIssue } from '@/lib/auto-savepoint';
 import { useSavepointStore } from '@/store/savepoint-store';
 import type { ActionsWizardData } from '@/store/chat-store';
+import { TemplateGallery } from '@/components/chat/TemplateGallery';
+import type { TemplateWithWizard } from '@/lib/project-templates';
+import { useCreatorStore } from '@/store/creator-store';
 import { detectProjectTypeFromDir, generateWorkflowFromWizard, commitAndPushWorkflow, pollWorkflowResult } from '@/lib/github-actions';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -1139,20 +1142,17 @@ export default function ChatScreen() {
           />
         </View>
 
-        {/* Suggestion chips when chat is empty (hide in multi-pane to avoid overlap) */}
-        {messages.length === 0 && !isAnyStreaming && onboardingStep === 'complete' && !isWide && (
-          <View style={styles.suggestRow}>
-            {[
-              { label: `📂 ${t('chat.sample_files')}`, cmd: t('chat.sample_files') },
-              { label: `💬 ${t('chat.sample_hello')}`, cmd: t('chat.sample_hello') },
-              { label: `🚀 ${t('chat.sample_build')}`, cmd: t('chat.sample_build') },
-              { label: '@claude', cmd: '@claude ' },
-            ].map((s) => (
-              <Pressable key={s.cmd} style={styles.suggestChip} onPress={() => handleSend(s.cmd)}>
-                <Text style={styles.suggestText}>{s.label}</Text>
-              </Pressable>
-            ))}
-          </View>
+        {/* Template Gallery when chat is empty */}
+        {messages.length === 0 && !isAnyStreaming && onboardingStep === 'complete' && (
+          <TemplateGallery
+            onSelectTemplate={(template: TemplateWithWizard, answers: Record<string, string>) => {
+              const answersText = Object.entries(answers).map(([k, v]) => `${k}: ${v}`).join('\n');
+              const prompt = `Create a ${template.label} project.\n${answersText}`;
+              useCreatorStore.getState().startPlanning(prompt);
+              handleSend(prompt);
+            }}
+            onFreeInput={(text: string) => handleSend(text)}
+          />
         )}
 
         <CommandInput
