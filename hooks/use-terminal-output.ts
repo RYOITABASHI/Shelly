@@ -18,11 +18,12 @@ import { detectApprovalPrompt } from '@/lib/realtime-translate';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { generateId } from '@/lib/id';
 
-// Patterns indicating file changes in PTY output
+// Patterns indicating file changes in PTY output (with capturing groups for file paths)
 const FILE_CHANGE_OUTPUT = [
-  /(?:wrote|created|saved|modified|updated|generated)\s+\S+/i,
-  /(?:^|\$\s+|#\s+)(?:vim|nano|code)\s+\S+/,
-  /(?:^|\$\s+|#\s+)(?:mv|cp|rm)\s+/,
+  /(?:wrote|created|saved|modified|updated|generated)\s+(\S+)/i,
+  /(?:^|\$\s+|#\s+)(?:vim|nano|code)\s+(\S+)/,
+  /(?:^|\$\s+|#\s+)(?:mv|cp)\s+\S+\s+(\S+)/,
+  /(?:^|\$\s+|#\s+)rm\s+(\S+)/,
   /(?:^|\$\s+|#\s+)git\s+(?:checkout|reset|merge|rebase)/,
   /(?:^|\$\s+|#\s+)(?:npm|pnpm|yarn)\s+(?:install|add|remove)/,
 ];
@@ -63,9 +64,14 @@ export function useTerminalOutput() {
           usePreviewStore.getState().offerPreview(url, 'localhost');
         }
 
-        // Detect file-changing output → request savepoint (5s debounce)
+        // Detect file-changing output → request savepoint + notify preview
         for (const pattern of FILE_CHANGE_OUTPUT) {
-          if (pattern.test(line)) {
+          const match = pattern.exec(line);
+          if (match) {
+            // Extract file path if capture group matched
+            if (match[1]) {
+              usePreviewStore.getState().notifyFileChange(match[1]);
+            }
             if (savepointDebounce.current) clearTimeout(savepointDebounce.current);
             savepointDebounce.current = setTimeout(() => {
               useSavepointStore.getState().requestSavepoint('file-change-detected');
