@@ -6,7 +6,9 @@ import React, { useRef, useState, useCallback, useEffect, useMemo, useContext } 
 import {
   ActivityIndicator,
   AppState,
+  Keyboard,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -84,6 +86,18 @@ export default function TerminalScreen() {
 
   // Voice dialog mode state
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
+
+  // Keyboard height tracking for terminal resize
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   // Recovery state — shown while session re-creates
   const [isRecovering, setIsRecovering] = useState(false);
@@ -422,7 +436,7 @@ export default function TerminalScreen() {
   }, [sessions, removeSession]);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: c.background }]}>
+    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: keyboardHeight, backgroundColor: c.background }]}>
       {/* Session Tab Header */}
       <TerminalHeader />
 

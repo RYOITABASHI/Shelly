@@ -109,30 +109,6 @@ class ShellyTerminalView(
         terminalView.setTextSize(defaultPx)
         terminalView.setTypeface(defaultTypeface)
 
-        // Listen for keyboard show/hide to adjust TerminalView height.
-        // shouldUseAndroidLayout=true bypasses Yoga, so we handle keyboard manually.
-        viewTreeObserver.addOnGlobalLayoutListener {
-            val r = android.graphics.Rect()
-            getWindowVisibleDisplayFrame(r)
-            val screenHeight = rootView.height
-            val visibleHeight = r.bottom - r.top
-            val keyboardHeight = screenHeight - r.bottom
-
-            if (keyboardHeight > screenHeight * 0.15) {
-                // Keyboard is showing — shrink TerminalView
-                val params = terminalView.layoutParams
-                params.height = visibleHeight - r.top - (top - r.top).coerceAtLeast(0)
-                terminalView.layoutParams = params
-            } else {
-                // Keyboard hidden — restore MATCH_PARENT
-                val params = terminalView.layoutParams
-                if (params.height != LinearLayout.LayoutParams.MATCH_PARENT) {
-                    params.height = LinearLayout.LayoutParams.MATCH_PARENT
-                    terminalView.layoutParams = params
-                }
-            }
-        }
-
         Log.i(TAG, "init: TerminalView added as direct child")
     }
 
