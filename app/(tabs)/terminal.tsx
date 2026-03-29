@@ -87,17 +87,21 @@ export default function TerminalScreen() {
   // Voice dialog mode state
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
 
-  // Keyboard height tracking for terminal resize
+  // Keyboard height tracking for terminal resize (same pattern as Chat screen)
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
+    if (Platform.OS !== 'android') return;
     const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKeyboardHeight(e.endCoordinates.height);
+      // Subtract navigation bar inset to avoid double-padding
+      const raw = e.endCoordinates.height;
+      const adjusted = Math.max(0, raw - insets.bottom);
+      setKeyboardHeight(adjusted);
     });
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardHeight(0);
     });
     return () => { showSub.remove(); hideSub.remove(); };
-  }, []);
+  }, [insets.bottom]);
 
   // Recovery state — shown while session re-creates
   const [isRecovering, setIsRecovering] = useState(false);
