@@ -12,7 +12,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
-import android.widget.FrameLayout
+import android.widget.LinearLayout
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
@@ -42,6 +42,9 @@ class ShellyTerminalView(
         private const val DEFAULT_FONT_SIZE = 14
         private const val RESIZE_DEBOUNCE_MS = 150L
     }
+
+    // Let Android handle layout instead of React Native's Yoga
+    override val shouldUseAndroidLayout: Boolean = true
 
     // TerminalView is a direct child of this ExpoView
     val terminalView: TerminalView = TerminalView(context, null)
@@ -93,9 +96,9 @@ class ShellyTerminalView(
         terminalView.isFocusableInTouchMode = true
 
         // Add TerminalView as direct child with MATCH_PARENT
-        addView(terminalView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
+        addView(terminalView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.MATCH_PARENT
         ))
 
         // Request RUN_COMMAND permission at runtime (dangerous permission)
@@ -110,6 +113,15 @@ class ShellyTerminalView(
         terminalView.setTypeface(defaultTypeface)
 
         Log.i(TAG, "init: TerminalView added as direct child")
+    }
+
+    // ===== Touch — prevent React Native from intercepting =====
+
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        // Tell all parent views (including React Native's touch system)
+        // to NOT intercept touch events meant for the terminal
+        parent?.requestDisallowInterceptTouchEvent(true)
+        return super.dispatchTouchEvent(ev)
     }
 
     // ===== Layout — debounce Yoga's rapid layout passes =====
