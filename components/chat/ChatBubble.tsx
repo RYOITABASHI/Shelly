@@ -29,6 +29,7 @@ import { AutoCheckProposalBubble } from '@/components/chat/AutoCheckProposalBubb
 import { ApprovalBubble } from '@/components/chat/ApprovalBubble';
 import { ErrorSummaryBubble } from '@/components/chat/ErrorSummaryBubble';
 import { PlanCardList } from '@/components/chat/PlanCardList';
+import { ArenaBubble } from '@/components/chat/ArenaBubble';
 import { isPlanOutput, parsePlanOutput } from '@/lib/parse-plan';
 import { usePlanStore } from '@/store/plan-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
@@ -134,6 +135,15 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
   }, [message.content, message.streamingText, message.agent]);
 
   const displayText = message.isStreaming ? (message.streamingText || '') : message.content;
+
+  // ── Arena Bubble ────────────────────────────────────────────────────────
+  if (message.arenaId) {
+    return (
+      <View style={styles.systemBubbleRow}>
+        <ArenaBubble arenaId={message.arenaId} isWide={isWide} />
+      </View>
+    );
+  }
 
   // ── Approval Bubble (system message with approvalData) ─────────────────
   if (message.approvalData) {

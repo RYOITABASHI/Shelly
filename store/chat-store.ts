@@ -74,6 +74,8 @@ export type ChatMessage = {
     translation: string;
     provider: string;
   };
+  /** Arena Mode 対決ID */
+  arenaId?: string;
 };
 
 export type ChatSession = {
