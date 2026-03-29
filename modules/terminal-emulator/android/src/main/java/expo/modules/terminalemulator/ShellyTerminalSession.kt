@@ -12,7 +12,8 @@ class ShellyTerminalSession(
     private val emitEvent: (name: String, body: Map<String, Any?>) -> Unit,
     private val port: Int,
     rows: Int,
-    cols: Int
+    cols: Int,
+    private val appContext: android.content.Context
 ) : TerminalSessionClient {
 
     companion object {
@@ -141,8 +142,25 @@ class ShellyTerminalSession(
         emitEvent("onSessionExit", mapOf("sessionId" to sessionId, "exitCode" to finishedSession.exitStatus))
     }
 
-    override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
-    override fun onPasteTextFromClipboard(session: TerminalSession?) {}
+    override fun onCopyTextToClipboard(session: TerminalSession, text: String) {
+        val clipboard = android.content.ClipboardManager::class.java.cast(
+            appContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+        ) ?: return
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Terminal", text))
+    }
+
+    override fun onPasteTextFromClipboard(session: TerminalSession?) {
+        val clipboard = android.content.ClipboardManager::class.java.cast(
+            appContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+        ) ?: return
+        val clip = clipboard.primaryClip ?: return
+        if (clip.itemCount > 0) {
+            val text = clip.getItemAt(0).coerceToText(appContext)
+            if (text.isNotEmpty()) {
+                terminalSession.emulator?.paste(text.toString())
+            }
+        }
+    }
     override fun onBell(session: TerminalSession) {
         emitEvent("onBell", mapOf("sessionId" to sessionId))
     }

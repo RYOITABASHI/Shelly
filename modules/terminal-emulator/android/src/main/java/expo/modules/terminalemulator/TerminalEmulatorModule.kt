@@ -41,7 +41,8 @@ class TerminalEmulatorModule : Module() {
                 emitEvent = ::emitEvent,
                 port = port,
                 rows = rows,
-                cols = cols
+                cols = cols,
+                appContext = appContext.reactContext ?: throw IllegalStateException("No React context")
             )
 
             sessions[sessionId] = session

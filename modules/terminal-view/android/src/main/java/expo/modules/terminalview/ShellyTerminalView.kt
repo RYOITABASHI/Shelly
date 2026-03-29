@@ -477,7 +477,7 @@ class ShellyTerminalView(
     private fun syncTmuxSize(cols: Int, rows: Int) {
         val tmuxName = tmuxSessionName ?: return
         try {
-            val cmd = "tmux resize-window -t \"$tmuxName\" -x $cols -y $rows 2>/dev/null; true"
+            val cmd = "tmux set-option -g window-size manual 2>/dev/null; tmux set-option -g status off 2>/dev/null; tmux resize-window -t \"$tmuxName\" -x $cols -y $rows 2>/dev/null; true"
             val intent = android.content.Intent("com.termux.RUN_COMMAND").apply {
                 component = android.content.ComponentName(
                     "com.termux",
