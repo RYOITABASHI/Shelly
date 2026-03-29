@@ -49,7 +49,7 @@ import { buildTerminalContext } from '@/lib/terminal-context';
 import { ChatOnboarding } from '@/components/ChatOnboarding';
 import { type OnboardingStep, getOnboardingStep, setOnboardingStep, isOnboardingDone } from '@/lib/chat-onboarding';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { checkAndSave, initGitIfNeeded, isFileChangingCommand } from '@/lib/auto-savepoint';
+import { checkAndSave, initGitIfNeeded, isFileChangingCommand, type SecurityIssue } from '@/lib/auto-savepoint';
 import { useSavepointStore } from '@/store/savepoint-store';
 import type { ActionsWizardData } from '@/store/chat-store';
 import { detectProjectTypeFromDir, generateWorkflowFromWizard, commitAndPushWorkflow, pollWorkflowResult } from '@/lib/github-actions';
@@ -208,15 +208,38 @@ export default function ChatScreen() {
   const currentDir = activeSession?.currentDir ?? '';
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Savepoint notification helpers (Chat system bubbles)
+  const notifySavepoint = useCallback((result: { message: string; filesChanged: number; filesCreated: number; filesDeleted: number }) => {
+    const total = result.filesChanged + result.filesCreated + result.filesDeleted;
+    const content = `💾 自動保存しました — ${total}ファイル変更`;
+    const sid = useChatStore.getState().activeSessionId;
+    useChatStore.getState().addMessage(sid, {
+      id: generateId(), role: 'system', content, timestamp: Date.now(),
+    });
+  }, []);
+
+  const notifySecurityIssues = useCallback((issues: SecurityIssue[]) => {
+    const labels = issues.map((i) => `${i.file}: ${i.label}`).join('\n');
+    const content = `🔒 コミットをスキップしました\n\n${labels}\n\nAPIキーや秘密情報がコードに含まれています。`;
+    const sid = useChatStore.getState().activeSessionId;
+    useChatStore.getState().addMessage(sid, {
+      id: generateId(), role: 'system', content, timestamp: Date.now(),
+    });
+    useSavepointStore.getState().setSecurityWarnings(issues.map((i) => `${i.file}: ${i.label}`));
+  }, []);
+
   const resetIdleTimer = useCallback(() => {
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     if (!currentDir || !isBridgeConnected) return;
     idleTimerRef.current = setTimeout(async () => {
       if (!useSavepointStore.getState().isEnabled) return;
       await initGitIfNeeded(currentDir, savepointExec);
-      const result = await checkAndSave(currentDir, savepointExec);
+      const result = await checkAndSave(currentDir, savepointExec, (issues) => {
+        notifySecurityIssues(issues);
+      });
       if (result) {
         useSavepointStore.getState().flashBadge();
+        notifySavepoint(result);
       }
     }, 30000);
   }, [currentDir, isBridgeConnected, savepointExec]);
@@ -238,7 +261,9 @@ export default function ChatScreen() {
       const doSave = async () => {
         if (!useSavepointStore.getState().isEnabled) return;
         await initGitIfNeeded(currentDir, savepointExec);
-        const result = await checkAndSave(currentDir, savepointExec);
+        const result = await checkAndSave(currentDir, savepointExec, (issues) => {
+          notifySecurityIssues(issues);
+        });
         if (result) {
           // Find the last assistant message to attach savepoint
           const lastMsg = messages.filter(m => m.role === 'assistant').pop();
@@ -246,6 +271,7 @@ export default function ChatScreen() {
             useSavepointStore.getState().recordSavepoint(lastMsg.id, result);
           }
           useSavepointStore.getState().flashBadge();
+          notifySavepoint(result);
         }
       };
       doSave();

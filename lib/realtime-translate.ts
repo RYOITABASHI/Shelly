@@ -26,6 +26,20 @@ export function detectApprovalPrompt(text: string): boolean {
   return CLI_APPROVAL_PATTERNS.some((p) => p.test(text));
 }
 
+// ─── セキュリティ出力検出 (Tier 1) ──────────────────────────────────────────
+
+const SECURITY_OUTPUT_PATTERNS = [
+  /CVE-\d{4}-\d+/,
+  /\b(vulnerability|exploit|injection|XSS|CSRF|SQL injection)\b/i,
+  /\b(critical|high|medium|low)\s+severity\b/i,
+  /\bnpm audit\b/,
+  /\bsecurity advisory\b/i,
+];
+
+export function detectSecurityOutput(text: string): boolean {
+  return SECURITY_OUTPUT_PATTERNS.some((p) => p.test(text));
+}
+
 // ─── 翻訳リクエスト ─────────────────────────────────────────────────────────
 
 export type TranslateResult = {
@@ -46,8 +60,11 @@ export async function translateTerminalOutput(
   const settings = useTerminalStore.getState().settings;
 
   const isApproval = detectApprovalPrompt(text);
+  const isSecurity = detectSecurityOutput(text);
   const systemPrompt = isApproval
     ? '以下はCLIツールの承認プロンプトです。何をしようとしているか、リスクは何かを日本語で簡潔に説明してください。'
+    : isSecurity
+    ? 'セキュリティレポートを非エンジニア向けに翻訳してください。CVE番号や専門用語は使わず、絵文字で深刻度を示してください（🔴重大 🟠高 🟡中 🟢低）。何が危険かを平易な日本語で1-3文で。修正可能なら末尾に「[修正する]」を付けてください。'
     : 'ターミナル出力を日本語で簡潔に説明してください。専門用語は噛み砕いて。1-2文で。';
 
   const fullPrompt = contextLines.length > 0
