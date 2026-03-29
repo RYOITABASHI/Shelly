@@ -437,12 +437,348 @@ const documentTemplate: ProjectTemplate = {
   ],
 };
 
+// ─── API Template ────────────────────────────────────────────────────────────
+
+const apiTemplate: ProjectTemplate = {
+  type: 'api',
+  label: 'API サーバー',
+  keywords: [
+    'api', 'server', 'サーバー', 'rest', 'express', 'fastify', 'backend',
+    'バックエンド', 'endpoint', 'エンドポイント',
+  ],
+  generate: (ctx) => [
+    {
+      path: 'package.json',
+      language: 'json',
+      content: JSON.stringify({
+        name: ctx.slug,
+        version: '1.0.0',
+        description: ctx.description,
+        main: 'src/index.js',
+        scripts: {
+          start: 'node src/index.js',
+          dev: 'node --watch src/index.js',
+        },
+        dependencies: { express: '^4.18.0', cors: '^2.8.5' },
+      }, null, 2),
+    },
+    {
+      path: 'src/index.js',
+      language: 'javascript',
+      content: `const express = require('express');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', name: '${ctx.projectName}' });
+});
+
+app.get('/api/items', (req, res) => {
+  res.json({ items: [], total: 0 });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(\`${ctx.projectName} running on http://localhost:\${PORT}\`);
+});
+`,
+    },
+    {
+      path: 'README.md',
+      language: 'markdown',
+      content: `# ${ctx.projectName}\n\n${ctx.description}\n\n## Usage\n\n\`\`\`bash\nnpm install\nnpm run dev\n\`\`\`\n`,
+    },
+  ],
+};
+
+// ─── CLI Template ────────────────────────────────────────────────────────────
+
+const cliTemplate: ProjectTemplate = {
+  type: 'cli',
+  label: 'CLI ツール',
+  keywords: [
+    'cli', 'command', 'コマンド', 'tool', 'ツール', 'terminal', 'ターミナル',
+    'commander', 'bin',
+  ],
+  generate: (ctx) => [
+    {
+      path: 'package.json',
+      language: 'json',
+      content: JSON.stringify({
+        name: ctx.slug,
+        version: '1.0.0',
+        description: ctx.description,
+        bin: { [ctx.slug]: './src/cli.js' },
+        scripts: { start: 'node src/cli.js' },
+        dependencies: { commander: '^12.0.0', chalk: '^5.3.0' },
+      }, null, 2),
+    },
+    {
+      path: 'src/cli.js',
+      language: 'javascript',
+      content: `#!/usr/bin/env node
+const { Command } = require('commander');
+
+const program = new Command();
+
+program
+  .name('${ctx.slug}')
+  .description('${ctx.description}')
+  .version('1.0.0');
+
+program
+  .command('run')
+  .description('Run the main command')
+  .option('-v, --verbose', 'Verbose output')
+  .action((options) => {
+    console.log('${ctx.projectName} is running...');
+    if (options.verbose) console.log('Verbose mode enabled');
+  });
+
+program.parse();
+`,
+    },
+    {
+      path: 'README.md',
+      language: 'markdown',
+      content: `# ${ctx.projectName}\n\n${ctx.description}\n\n## Usage\n\n\`\`\`bash\nnpm install\nnode src/cli.js run\n\`\`\`\n`,
+    },
+  ],
+};
+
+// ─── Mobile Template ─────────────────────────────────────────────────────────
+
+const mobileTemplate: ProjectTemplate = {
+  type: 'mobile',
+  label: 'モバイルアプリ',
+  keywords: [
+    'mobile', 'モバイル', 'app', 'アプリ', 'expo', 'react native',
+    'android', 'ios', 'スマホ', 'smartphone',
+  ],
+  generate: (ctx) => [
+    {
+      path: 'package.json',
+      language: 'json',
+      content: JSON.stringify({
+        name: ctx.slug,
+        version: '1.0.0',
+        main: 'expo/AppEntry.js',
+        scripts: {
+          start: 'expo start',
+          android: 'expo start --android',
+        },
+        dependencies: {
+          expo: '~54.0.0',
+          'expo-status-bar': '~2.2.0',
+          react: '19.0.0',
+          'react-native': '0.81.0',
+        },
+      }, null, 2),
+    },
+    {
+      path: 'App.js',
+      language: 'javascript',
+      content: `import { StatusBar } from 'expo-status-bar';
+import { StyleSheet, Text, View } from 'react-native';
+
+export default function App() {
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>${ctx.projectName}</Text>
+      <Text style={styles.subtitle}>${ctx.description}</Text>
+      <StatusBar style="auto" />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#111', alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 24, fontWeight: 'bold', color: '#fff', marginBottom: 8 },
+  subtitle: { fontSize: 14, color: '#888' },
+});
+`,
+    },
+    {
+      path: 'app.json',
+      language: 'json',
+      content: JSON.stringify({
+        expo: {
+          name: ctx.projectName,
+          slug: ctx.slug,
+          version: '1.0.0',
+          platforms: ['android'],
+        },
+      }, null, 2),
+    },
+  ],
+};
+
+// ─── Static Template ─────────────────────────────────────────────────────────
+
+const staticTemplate: ProjectTemplate = {
+  type: 'static',
+  label: '静的サイト',
+  keywords: [
+    'static', '静的', 'astro', 'hugo', 'blog', 'ブログ', 'jekyll',
+    'gatsby', 'ssg',
+  ],
+  generate: (ctx) => [
+    {
+      path: 'index.html',
+      language: 'html',
+      content: `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${ctx.projectName}</title>
+  <style>
+    :root { --bg: #0a0a0a; --fg: #e8e8e8; --accent: #00D4AA; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+    .hero { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; padding: 2rem; }
+    h1 { font-size: 3rem; margin-bottom: 1rem; background: linear-gradient(135deg, var(--accent), #3B82F6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    p { color: #888; max-width: 40ch; text-align: center; line-height: 1.6; }
+    .posts { max-width: 720px; margin: 0 auto; padding: 2rem; }
+    .post { border-bottom: 1px solid #222; padding: 1.5rem 0; }
+    .post h2 { font-size: 1.3rem; margin-bottom: 0.5rem; }
+    .post time { color: #666; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1>${ctx.projectName}</h1>
+    <p>${ctx.description}</p>
+  </div>
+  <section class="posts">
+    <article class="post">
+      <h2>First Post</h2>
+      <time>${ctx.createdAt}</time>
+      <p>Welcome to ${ctx.projectName}.</p>
+    </article>
+  </section>
+</body>
+</html>
+`,
+    },
+    {
+      path: 'README.md',
+      language: 'markdown',
+      content: `# ${ctx.projectName}\n\n${ctx.description}\n\nOpen \`index.html\` in a browser to preview.\n`,
+    },
+  ],
+};
+
+// ─── Wizard Step Types ───────────────────────────────────────────────────────
+
+export type WizardStepInput = 'text' | 'select';
+
+export type WizardSelectOption = {
+  label: string;
+  value: string;
+};
+
+export type WizardStep = {
+  key: string;
+  question: string;
+  inputType: WizardStepInput;
+  options?: WizardSelectOption[];
+  required: boolean;
+};
+
+export type TemplateWithWizard = ProjectTemplate & {
+  icon: string;
+  wizardSteps: WizardStep[];
+};
+
+export const TEMPLATE_GALLERY: TemplateWithWizard[] = [
+  {
+    ...webTemplate,
+    icon: 'language',
+    wizardSteps: [
+      { key: 'who_uses', question: '誰が使いますか？', inputType: 'text', required: true },
+      { key: 'main_feature', question: 'メイン機能は？', inputType: 'text', required: true },
+      { key: 'style', question: 'デザインの方向性は？', inputType: 'select', options: [
+        { label: 'モダン', value: 'modern' },
+        { label: 'ミニマル', value: 'minimal' },
+        { label: 'ポップ', value: 'playful' },
+      ], required: false },
+    ],
+  },
+  {
+    ...apiTemplate,
+    icon: 'cloud',
+    wizardSteps: [
+      { key: 'what_data', question: 'どんなデータを扱う？', inputType: 'text', required: true },
+      { key: 'auth', question: '認証は必要？', inputType: 'select', options: [
+        { label: 'なし', value: 'none' },
+        { label: 'APIキー', value: 'api-key' },
+        { label: 'JWT', value: 'jwt' },
+      ], required: false },
+    ],
+  },
+  {
+    ...cliTemplate,
+    icon: 'terminal',
+    wizardSteps: [
+      { key: 'purpose', question: '何をするCLIツール？', inputType: 'text', required: true },
+      { key: 'input', question: '入力は何？', inputType: 'select', options: [
+        { label: 'ファイル', value: 'file' },
+        { label: 'テキスト引数', value: 'args' },
+        { label: '対話式', value: 'interactive' },
+      ], required: false },
+    ],
+  },
+  {
+    ...mobileTemplate,
+    icon: 'phone-android',
+    wizardSteps: [
+      { key: 'target', question: '何のアプリ？', inputType: 'text', required: true },
+      { key: 'screens', question: '最初の画面は？', inputType: 'text', required: true },
+    ],
+  },
+  {
+    ...staticTemplate,
+    icon: 'web',
+    wizardSteps: [
+      { key: 'topic', question: 'テーマは？', inputType: 'text', required: true },
+      { key: 'pages', question: '最初に何ページ作る？', inputType: 'select', options: [
+        { label: '1ページ', value: '1' },
+        { label: '3ページ', value: '3' },
+        { label: '5ページ', value: '5' },
+      ], required: false },
+    ],
+  },
+  {
+    ...scriptTemplate,
+    icon: 'code',
+    wizardSteps: [
+      { key: 'task', question: '何をするスクリプト？', inputType: 'text', required: true },
+    ],
+  },
+  {
+    ...documentTemplate,
+    icon: 'description',
+    wizardSteps: [
+      { key: 'doctype', question: '何のドキュメント？', inputType: 'text', required: true },
+    ],
+  },
+];
+
 // ─── Registry ─────────────────────────────────────────────────────────────────
 
 export const TEMPLATES: ProjectTemplate[] = [
   webTemplate,
   scriptTemplate,
   documentTemplate,
+  apiTemplate,
+  cliTemplate,
+  mobileTemplate,
+  staticTemplate,
 ];
 
 /**

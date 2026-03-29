@@ -22,6 +22,10 @@ const TYPE_LABELS: Record<ProjectType, string> = {
   web: 'Webサイト',
   script: 'スクリプト',
   document: 'ドキュメント',
+  api: 'APIサーバー',
+  cli: 'CLIツール',
+  mobile: 'モバイルアプリ',
+  static: '静的サイト',
   unknown: 'プロジェクト',
 };
 

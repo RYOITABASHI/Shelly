@@ -210,6 +210,10 @@ export type ProjectType =
   | 'web'        // HTML + CSS + JS
   | 'script'     // Node.js or Python script
   | 'document'   // Markdown / JSON
+  | 'api'        // Express/Fastify server
+  | 'cli'        // Node.js CLI tool
+  | 'mobile'     // Expo/React Native app
+  | 'static'     // Astro/Hugo static site
   | 'unknown';
 
 /**
