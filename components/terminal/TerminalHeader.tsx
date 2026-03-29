@@ -12,6 +12,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useTerminalStore } from '@/store/terminal-store';
+import { usePreviewStore } from '@/store/preview-store';
 import { ConnectionMode, BridgeStatus } from '@/store/types';
 import { StatusIndicator } from '@/components/StatusIndicator';
 import { FullscreenTerminal } from './FullscreenTerminal';
@@ -125,6 +126,14 @@ export function TerminalHeader() {
   const layout = useDeviceLayout();
   const { isMultiPane, toggleMultiPane } = useMultiPaneStore();
   const [fullscreenVisible, setFullscreenVisible] = useState(false);
+
+  const previewOpen = usePreviewStore((s) => s.isOpen);
+  const hasNewContent = usePreviewStore((s) => s.hasNewContent);
+  const togglePreview = useCallback(() => {
+    const store = usePreviewStore.getState();
+    if (store.isOpen) store.closePreview();
+    else store.openPreview();
+  }, []);
 
   const modeConfig = MODE_CONFIG[connectionMode];
   const modeColor = colors[modeConfig.colorKey];
@@ -251,6 +260,19 @@ export function TerminalHeader() {
           />
         </Pressable>
       )}
+
+      {/* Preview button */}
+      <Pressable
+        onPress={togglePreview}
+        hitSlop={6}
+        style={[styles.previewButton, previewOpen && { backgroundColor: withAlpha(colors.accent, 0.15) }]}
+      >
+        <MaterialIcons name="open-in-new" size={14} color={previewOpen ? colors.accent : colors.muted} />
+        <Text style={[styles.previewLabel, { color: previewOpen ? colors.accent : colors.muted }]}>Preview</Text>
+        {hasNewContent && !previewOpen && (
+          <View style={styles.previewBadge} />
+        )}
+      </Pressable>
 
       {/* Fullscreen terminal button */}
       <Pressable
@@ -379,5 +401,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 5,
     marginRight: 2,
+  },
+  previewButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  previewLabel: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  previewBadge: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#22C55E',
+    position: 'absolute',
+    top: 2,
+    right: 2,
   },
 });
