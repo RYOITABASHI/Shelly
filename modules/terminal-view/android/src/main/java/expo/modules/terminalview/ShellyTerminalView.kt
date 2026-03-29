@@ -91,6 +91,9 @@ class ShellyTerminalView(
         terminalView.setTerminalViewClient(this)
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
+        terminalView.setScrollStateListener { isScrolledUp ->
+            onScrollStateChanged(mapOf("isScrolledUp" to isScrolledUp))
+        }
 
         // Add TerminalView as direct child with MATCH_PARENT
         addView(terminalView, LinearLayout.LayoutParams(
@@ -327,8 +330,9 @@ class ShellyTerminalView(
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean =
         inputHandler.onCodePoint(codePoint, ctrlDown || inputHandler.ctrlDown, session)
 
-    // Expo EventDispatcher — emits to JS for size tracking
+    // Expo EventDispatchers — emit to JS
     private val onResize by EventDispatcher()
+    private val onScrollStateChanged by EventDispatcher()
 
     /**
      * Called by TerminalView when the emulator is (re)set after updateSize().

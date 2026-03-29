@@ -6,6 +6,7 @@ import React, { useRef, useState, useCallback, useEffect, useMemo, useContext } 
 import {
   ActivityIndicator,
   AppState,
+  findNodeHandle,
   Keyboard,
   Linking,
   Platform,
@@ -22,6 +23,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { NativeTerminalView } from '@/modules/terminal-view/src';
+import TerminalViewModule from '@/modules/terminal-view/src/TerminalViewModule';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalOutput } from '@/hooks/use-terminal-output';
 import { startSessionMonitor, stopSessionMonitor } from '@/lib/terminal-session-monitor';
@@ -86,6 +88,10 @@ export default function TerminalScreen() {
 
   // Voice dialog mode state
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
+
+  // Scroll state — show FAB when user scrolls up
+  const [isScrolledUp, setIsScrolledUp] = useState(false);
+  const terminalViewRef = useRef<any>(null);
 
   // Keyboard height tracking for terminal resize (same pattern as Chat screen)
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -486,12 +492,14 @@ export default function TerminalScreen() {
         <View style={{ flex: 1, flexDirection: showSplitPreview ? 'row' : 'column' }}>
           {/* Native Terminal View */}
           <NativeTerminalView
+            ref={terminalViewRef}
             sessionId={activeSession.nativeSessionId}
             fontFamily={'jetbrains-mono'}
             fontSize={termFontSize}
             cursorShape={settings.cursorShape || 'block'}
             cursorBlink={true}
             style={[styles.terminalView, { flex: showSplitPreview ? splitRatio : 1 }]}
+            onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
             onOutput={() => {}}
             onBlockCompleted={(e) => {
               const { command, output, exitCode } = e.nativeEvent;
@@ -579,7 +587,20 @@ export default function TerminalScreen() {
         />
       )}
 
-      {/* Scroll to bottom FAB — native view handles scrolling internally */}
+      {/* Scroll to bottom FAB */}
+      {isScrolledUp && isConnected && (
+        <TouchableOpacity
+          style={styles.scrollToBottomFab}
+          onPress={() => {
+            const tag = findNodeHandle(terminalViewRef.current);
+            if (tag) TerminalViewModule.scrollToBottom(tag);
+            setIsScrolledUp(false);
+          }}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="keyboard-arrow-down" size={24} color="#fff" />
+        </TouchableOpacity>
+      )}
 
       {/* Action Bar (Attach + Voice) */}
       {isConnected && (

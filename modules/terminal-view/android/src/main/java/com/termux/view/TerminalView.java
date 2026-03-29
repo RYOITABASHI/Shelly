@@ -461,6 +461,25 @@ public class TerminalView extends View {
     /** Whether user has scrolled up during output. Reset when user scrolls back to bottom. */
     private boolean mUserScrolledUp = false;
 
+    /** Listener for scroll state changes (scrolled up / back to bottom). */
+    public interface ScrollStateListener {
+        void onScrollStateChanged(boolean isScrolledUp);
+    }
+    private ScrollStateListener mScrollStateListener;
+
+    public void setScrollStateListener(ScrollStateListener listener) {
+        mScrollStateListener = listener;
+    }
+
+    private void setUserScrolledUp(boolean scrolledUp) {
+        if (mUserScrolledUp != scrolledUp) {
+            mUserScrolledUp = scrolledUp;
+            if (mScrollStateListener != null) {
+                mScrollStateListener.onScrollStateChanged(scrolledUp);
+            }
+        }
+    }
+
     public void onScreenUpdated(boolean skipScrolling) {
         if (mEmulator == null) return;
 
@@ -596,10 +615,10 @@ public class TerminalView extends View {
                 mTopRow = Math.min(0, Math.max(-(mEmulator.getScreen().getActiveTranscriptRows()), mTopRow + (up ? -1 : 1)));
                 // Track user scroll state for output-during-scroll behavior
                 if (mTopRow < 0) {
-                    mUserScrolledUp = true;
+                    setUserScrolledUp(true);
                 } else {
                     // User scrolled back to bottom — re-enable auto-scroll
-                    mUserScrolledUp = false;
+                    setUserScrolledUp(false);
                 }
                 if (!awakenScrollBars()) invalidate();
             }

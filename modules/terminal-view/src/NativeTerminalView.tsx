@@ -46,6 +46,12 @@ export interface ResizeEvent {
   };
 }
 
+export interface ScrollStateChangedEvent {
+  nativeEvent: {
+    isScrolledUp: boolean;
+  };
+}
+
 export interface NativeTerminalViewProps extends ViewProps {
   sessionId: string;
   fontFamily: FontFamily;
@@ -59,6 +65,7 @@ export interface NativeTerminalViewProps extends ViewProps {
   onBell?: () => void;
   onTitleChanged?: (event: TitleChangedEvent) => void;
   onResize?: (event: ResizeEvent) => void;
+  onScrollStateChanged?: (event: ScrollStateChangedEvent) => void;
 }
 
 export const NativeTerminalView =

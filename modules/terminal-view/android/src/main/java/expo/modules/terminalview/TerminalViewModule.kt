@@ -28,7 +28,8 @@ class TerminalViewModule : Module() {
                 "onUrlDetected",
                 "onBell",
                 "onTitleChanged",
-                "onResize"
+                "onResize",
+                "onScrollStateChanged"
             )
 
             // --- Props ---

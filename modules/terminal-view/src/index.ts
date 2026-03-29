@@ -9,4 +9,5 @@ export {
   type SelectionChangedEvent,
   type UrlDetectedEvent,
   type TitleChangedEvent,
+  type ScrollStateChangedEvent,
 } from './NativeTerminalView';
