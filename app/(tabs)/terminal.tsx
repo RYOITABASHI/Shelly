@@ -1,6 +1,6 @@
 /**
- * Terminal Screen — Native terminal view via PTY + tmux
- * Japanese input proxy + session monitor + setup guide
+ * Terminal Screen — Native terminal view via direct PTY (pty-helper)
+ * Unix Domain Socket connection. Japanese input proxy + session monitor.
  */
 import React, { useRef, useState, useCallback, useEffect, useMemo, useContext } from 'react';
 import {
@@ -28,11 +28,11 @@ import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation, t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
-import { useActiveSession, useTerminalStore, getSocatPort } from '@/store/terminal-store';
+import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import { TerminalHeader } from '@/components/terminal/TerminalHeader';
-import { sendKeysToSession, buildRecoveryCommand } from '@/lib/tmux-manager';
+// tmux-manager kept for user-facing tmux commands (optional use)
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
@@ -101,34 +101,50 @@ export default function TerminalScreen() {
   const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
   const showSplitPreview = previewIsOpen && previewUrl && layout.isWide;
 
-  // Create a native session connected to socat TCP bridge
+  // Create a native session connected via Unix Domain Socket to pty-helper
   const createNativeSession = useCallback(async (session: TabSession) => {
+    const socketPath = `/data/data/com.termux/files/home/.shelly/pty-${session.nativeSessionId}.sock`;
     try {
-      const port = getSocatPort(session.tmuxSession);
-
       // 0. Destroy any stale native session before re-creating
       try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
-      // 0.5. Kill any old socat process for this port
+      // 0.5. Kill any old pty-helper for this session
       await runRawCommand(
-        `pkill -f "socat.*TCP-LISTEN:${port}" 2>/dev/null; true`,
-        { timeoutMs: 3000, reason: 'socat-cleanup' }
+        `pkill -f "pty-helper.*pty-${session.nativeSessionId}" 2>/dev/null; rm -f "${socketPath}"; true`,
+        { timeoutMs: 3000, reason: 'pty-cleanup' }
       ).catch(() => {});
 
-      // 1. Launch socat bridge in Termux (creates tmux session + TCP relay)
+      // 1. Launch pty-helper in Termux (creates PTY + shell + Unix socket)
       await runRawCommand(
-        `nohup ~/shelly-bridge/socat-session.sh ${port} "${session.tmuxSession}" > /dev/null 2>&1 &`,
-        { timeoutMs: 5000, reason: 'socat-start' }
+        `nohup ~/shelly-bridge/start-pty.sh "${session.nativeSessionId}" 80 24 > /dev/null 2>&1 &`,
+        { timeoutMs: 5000, reason: 'pty-start' }
       );
 
-      // 2. Wait for socat to be ready
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // 2. Wait for pty-helper to be ready (poll for socket file, max 3s)
+      let socketReady = false;
+      for (let i = 0; i < 6; i++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        try {
+          const result = await runRawCommand(
+            `test -S "${socketPath}" && echo READY || echo WAIT`,
+            { timeoutMs: 2000, reason: 'pty-wait' }
+          );
+          if (result?.stdout?.includes('READY')) {
+            socketReady = true;
+            break;
+          }
+        } catch {}
+      }
 
-      // 3. Create native session connected to socat TCP port (with retry)
+      if (!socketReady) {
+        throw new Error('pty-helper socket not ready after 3s');
+      }
+
+      // 3. Create native session connected to Unix Domain Socket (with retry)
       try {
         await TerminalEmulator.createSession({
           sessionId: session.nativeSessionId,
-          port,
+          socketPath,
           rows: 24,
           cols: 80,
         });
@@ -137,7 +153,7 @@ export default function TerminalScreen() {
         await new Promise(resolve => setTimeout(resolve, 1000));
         await TerminalEmulator.createSession({
           sessionId: session.nativeSessionId,
-          port,
+          socketPath,
           rows: 24,
           cols: 80,
         });
@@ -159,7 +175,7 @@ export default function TerminalScreen() {
     }
   }, [runRawCommand]);
 
-  // Recover a session after tmux/socat dies: kill old socat, re-create
+  // Recover a session after pty-helper dies: kill old process, re-create
   const recoverSession = useCallback(async (session: TabSession) => {
     setIsRecovering(true);
 
@@ -173,33 +189,21 @@ export default function TerminalScreen() {
     // Destroy old native session
     try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
-    // Kill old socat for this session
-    const port = getSocatPort(session.tmuxSession);
+    // Kill old pty-helper for this session
     await runRawCommand(
-      `pkill -f "socat.*TCP-LISTEN:${port}" 2>/dev/null; true`,
-      { timeoutMs: 3000, reason: 'socat-kill' }
-    );
+      `pkill -f "pty-helper.*pty-${session.nativeSessionId}" 2>/dev/null; true`,
+      { timeoutMs: 3000, reason: 'pty-kill' }
+    ).catch(() => {});
 
-    // Re-create (socat-session.sh will reattach to existing tmux session)
+    // Re-create with new pty-helper
     await createNativeSession(session);
-
-    // Resume CLI if it was active
-    if (session.activeCli) {
-      const resumeCmd = buildRecoveryCommand(session.currentDir, session.activeCli);
-      if (resumeCmd) {
-        setTimeout(async () => {
-          await sendKeysToSession(session.tmuxSession, resumeCmd, runRawCommand);
-        }, 3000);
-      }
-    }
 
     setIsRecovering(false);
   }, [createNativeSession, runRawCommand]);
 
   // Ensure native sessions exist. Called on bridge connect AND on foreground resume.
-  // tmux sessions survive in Termux, but the socat TCP socket dies when Android
-  // backgrounds/kills the app. This silently re-creates the socat+native session
-  // so the terminal appears uninterrupted (tmux preserves scrollback + running processes).
+  // pty-helper processes persist in Termux, but the Unix socket connection may drop
+  // when Android backgrounds the app. This silently reconnects or re-creates sessions.
   const ensureNativeSessions = useCallback(async () => {
     if (bridgeStatus !== 'connected') return;
     for (const session of sessions) {
@@ -234,7 +238,7 @@ export default function TerminalScreen() {
     if (bridgeStatus === 'connected') {
       // Immediate check
       ensureNativeSessions();
-      // Delayed retry — sometimes socat needs time to be ready in Split View
+      // Delayed retry — pty-helper may need time to be ready in Split View
       const timer = setTimeout(() => ensureNativeSessions(), 2000);
       return () => clearTimeout(timer);
     }
@@ -300,11 +304,8 @@ export default function TerminalScreen() {
   //   Wide/full (1856px):       11dp → ~32px → ~160 cols
   const termFontSize = layout.isCompact ? 11 : layout.width < 500 ? 12 : layout.isWide ? 11 : 12;
 
-  // tmux resize: primary path is Kotlin syncTmuxSize via RunCommandService.
-  // JS-side fallback ensures resize works even if the Kotlin path fails
-  // (e.g., permission issues, service not reachable).
-  const lastResizeRef = useRef<string>('');
-  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Resize is now handled directly by pty-helper via socket protocol.
+  // No JS-side fallback needed.
 
   // Send text to terminal via native PTY
   const sendToTerminal = useCallback((text: string) => {
@@ -426,7 +427,6 @@ export default function TerminalScreen() {
           {/* Native Terminal View */}
           <NativeTerminalView
             sessionId={activeSession.nativeSessionId}
-            tmuxSessionName={activeSession.tmuxSession}
             fontFamily={'jetbrains-mono'}
             fontSize={termFontSize}
             cursorShape={settings.cursorShape || 'block'}
@@ -443,23 +443,12 @@ export default function TerminalScreen() {
               }
             }}
             onResize={(e) => {
-              // JS-side tmux resize fallback: if Kotlin syncTmuxSize fails
-              // (permission denied, service not reachable), this ensures
-              // tmux gets resized. Debounced to avoid spamming during
-              // rapid layout changes (fold/unfold, split view transitions).
+              // Resize is handled directly by Kotlin → pty-helper via socket protocol.
+              // This callback is kept for JS-side logging/tracking only.
               const { cols, rows } = e.nativeEvent;
-              const tmux = activeSession?.tmuxSession;
-              if (!tmux || cols <= 0 || rows <= 0) return;
-              const key = `${cols}x${rows}`;
-              if (key === lastResizeRef.current) return;
-              lastResizeRef.current = key;
-              if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-              resizeTimerRef.current = setTimeout(() => {
-                runRawCommand(
-                  `tmux resize-window -t "${tmux}" -x ${cols} -y ${rows} 2>/dev/null; true`,
-                  { timeoutMs: 3000, reason: 'tmux-resize-fallback' }
-                ).catch(() => {});
-              }, 300);
+              if (cols > 0 && rows > 0) {
+                console.log(`[Terminal] resize: ${cols}x${rows}`);
+              }
             }}
           />
 

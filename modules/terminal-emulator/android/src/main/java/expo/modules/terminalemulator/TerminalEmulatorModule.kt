@@ -24,8 +24,8 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("createSession") { config: Map<String, Any?> ->
             val sessionId = config["sessionId"] as? String
                 ?: throw IllegalArgumentException("sessionId is required")
-            val port = (config["port"] as? Number)?.toInt()
-                ?: throw IllegalArgumentException("port is required")
+            val socketPath = config["socketPath"] as? String
+                ?: throw IllegalArgumentException("socketPath is required")
             val rows = (config["rows"] as? Number)?.toInt() ?: 24
             val cols = (config["cols"] as? Number)?.toInt() ?: 80
 
@@ -39,7 +39,7 @@ class TerminalEmulatorModule : Module() {
             val session = ShellyTerminalSession(
                 sessionId = sessionId,
                 emitEvent = ::emitEvent,
-                port = port,
+                socketPath = socketPath,
                 rows = rows,
                 cols = cols,
                 appContext = appContext.reactContext ?: throw IllegalStateException("No React context")

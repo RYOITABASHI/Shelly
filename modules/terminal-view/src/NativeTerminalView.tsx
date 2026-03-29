@@ -48,7 +48,6 @@ export interface ResizeEvent {
 
 export interface NativeTerminalViewProps extends ViewProps {
   sessionId: string;
-  tmuxSessionName?: string;
   fontFamily: FontFamily;
   fontSize: number;
   cursorShape?: CursorShape;

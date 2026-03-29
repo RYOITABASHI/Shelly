@@ -69,10 +69,6 @@ class TerminalViewModule : Module() {
                 view.setCursorBlinkEnabled(blink ?: false)
             }
 
-            Prop("tmuxSessionName") { view: ShellyTerminalView, name: String? ->
-                view.tmuxSessionName = name
-            }
-
             OnViewDestroys { view: ShellyTerminalView ->
                 view.destroy()
             }

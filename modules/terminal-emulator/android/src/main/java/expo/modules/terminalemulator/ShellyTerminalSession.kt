@@ -1,16 +1,17 @@
 package expo.modules.terminalemulator
 
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
-import java.net.Socket
 
 class ShellyTerminalSession(
     private val sessionId: String,
     private val emitEvent: (name: String, body: Map<String, Any?>) -> Unit,
-    private val port: Int,
+    private val socketPath: String,
     rows: Int,
     cols: Int,
     private val appContext: android.content.Context
@@ -20,6 +21,7 @@ class ShellyTerminalSession(
         private const val TAG = "ShellyTerminalSession"
         private const val BATCH_INTERVAL_MS = 16L
         private const val MAX_OUTPUT_BYTES = 64 * 1024
+        private const val RESIZE_PREFIX = "\u001bPTYR"
     }
 
     private val outputBuffer = StringBuilder()
@@ -27,26 +29,26 @@ class ShellyTerminalSession(
     @Volatile private var flushScheduled = false
     private var lastTranscriptLength = 0
 
-    private var socket: Socket? = null
+    private var localSocket: LocalSocket? = null
     val terminalSession: TerminalSession
 
     init {
-        // Create TerminalSession with dummy args — we use initializeWithFd, not fork/exec
+        // Create TerminalSession with dummy args — we use initializeWithStreams, not fork/exec
         terminalSession = TerminalSession(
             "/bin/true", "/", arrayOf(), arrayOf(), null, this
         )
 
-        // Connect TCP socket to socat bridge running in Termux
-        val sock = Socket("127.0.0.1", port)
-        sock.tcpNoDelay = true
-        socket = sock
+        // Connect to pty-helper via Unix Domain Socket
+        val sock = LocalSocket()
+        sock.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
+        localSocket = sock
 
-        // Initialize emulator with socket streams (no reflection, no fd extraction)
-        val inputStream = sock.getInputStream()
-        val outputStream = sock.getOutputStream()
+        // Initialize emulator with socket streams
+        val inputStream = sock.inputStream
+        val outputStream = sock.outputStream
         terminalSession.initializeWithStreams(inputStream, outputStream, cols, rows, 1, 1)
 
-        Log.i(TAG, "Session $sessionId connected to socat on port $port")
+        Log.i(TAG, "Session $sessionId connected to pty-helper via $socketPath")
     }
 
     private val flushRunnable = Runnable { flushOutputBuffer() }
@@ -83,14 +85,27 @@ class ShellyTerminalSession(
         terminalSession.updateSize(cols, rows, 1, 1)
     }
 
+    /**
+     * Send resize command to pty-helper via the inline escape protocol.
+     * pty-helper intercepts this and calls ioctl(TIOCSWINSZ) on the PTY fd.
+     * The command never reaches the shell.
+     */
+    fun sendResizeCommand(cols: Int, rows: Int) {
+        try {
+            val cmd = "${RESIZE_PREFIX}${cols};${rows}\n"
+            localSocket?.outputStream?.write(cmd.toByteArray(Charsets.UTF_8))
+            localSocket?.outputStream?.flush()
+            Log.i(TAG, "sendResizeCommand: ${cols}x${rows}")
+        } catch (e: Exception) {
+            Log.w(TAG, "sendResizeCommand failed: ${e.message}")
+        }
+    }
+
     fun isAlive(): Boolean {
-        val sock = socket ?: return false
-        if (sock.isClosed) return false
-        // Socket.isConnected stays true even after remote closes.
-        // Actually test by attempting a zero-byte write via sendUrgentData.
+        val sock = localSocket ?: return false
         return try {
-            sock.sendUrgentData(0xFF)
-            true
+            // LocalSocket doesn't have sendUrgentData, so check if streams are accessible
+            sock.outputStream != null && sock.inputStream != null
         } catch (e: Exception) {
             false
         }
@@ -100,8 +115,8 @@ class ShellyTerminalSession(
         batchHandler.removeCallbacks(flushRunnable)
         flushOutputBuffer()
         terminalSession.finishIfRunning()
-        try { socket?.close() } catch (_: Exception) {}
-        socket = null
+        try { localSocket?.close() } catch (_: Exception) {}
+        localSocket = null
     }
 
     fun getTitle(): String = terminalSession.title ?: ""

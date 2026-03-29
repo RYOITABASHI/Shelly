@@ -2,7 +2,7 @@ import { NativeModule, requireNativeModule } from 'expo-modules-core';
 
 export interface SessionConfig {
   sessionId: string;
-  port: number;
+  socketPath: string;
   rows?: number;
   cols?: number;
 }

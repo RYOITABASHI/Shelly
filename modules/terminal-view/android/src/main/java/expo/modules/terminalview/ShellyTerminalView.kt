@@ -53,10 +53,7 @@ class ShellyTerminalView(
     private var currentSessionId: String? = null
     private var currentShellySession: ShellyTerminalSession? = null
 
-    // tmux session name — set via prop so we can resize directly from Kotlin
-    var tmuxSessionName: String? = null
-
-    // Track last synced size to avoid redundant tmux resize calls
+    // Track last synced size to avoid redundant resize calls
     private var lastSyncedCols = -1
     private var lastSyncedRows = -1
 
@@ -326,7 +323,7 @@ class ShellyTerminalView(
 
     /**
      * Called by TerminalView when the emulator is (re)set after updateSize().
-     * Syncs tmux size from Kotlin via RunCommandService Intent.
+     * Sends resize command directly to pty-helper via Unix Domain Socket.
      */
     override fun onEmulatorSet() {
         terminalView.invalidate()
@@ -340,7 +337,8 @@ class ShellyTerminalView(
         lastSyncedCols = cols
         lastSyncedRows = rows
 
-        syncTmuxSize(cols, rows)
+        // Direct PTY resize via socket (replaces syncTmuxSize)
+        currentShellySession?.sendResizeCommand(cols, rows)
         onResize(mapOf("cols" to cols, "rows" to rows))
     }
 
@@ -356,31 +354,6 @@ class ShellyTerminalView(
         ) {
             Log.w(TAG, "RUN_COMMAND permission not granted, requesting...")
             androidx.core.app.ActivityCompat.requestPermissions(activity, arrayOf(perm), 9999)
-        }
-    }
-
-    // ===== tmux Resize =====
-
-    private fun syncTmuxSize(cols: Int, rows: Int) {
-        val tmuxName = tmuxSessionName ?: return
-        try {
-            val cmd = "tmux set-option -g window-size manual 2>/dev/null; tmux set-option -g status off 2>/dev/null; tmux resize-window -t \"$tmuxName\" -x $cols -y $rows 2>/dev/null; true"
-            val intent = android.content.Intent("com.termux.RUN_COMMAND").apply {
-                component = android.content.ComponentName(
-                    "com.termux",
-                    "com.termux.app.RunCommandService"
-                )
-                putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
-                putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
-                putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
-            }
-            context.startService(intent)
-            Log.i(TAG, "syncTmuxSize: tmux resize -t $tmuxName -x $cols -y $rows")
-        } catch (e: SecurityException) {
-            Log.e(TAG, "syncTmuxSize PERMISSION DENIED: ${e.message}")
-        } catch (e: Exception) {
-            Log.w(TAG, "syncTmuxSize failed (${e.javaClass.simpleName}): ${e.message}")
         }
     }
 

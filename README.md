@@ -48,6 +48,23 @@ Shelly fills the gap between conversation and execution. You type "make me a por
 
 For the person who wants to build things but doesn't speak terminal, Shelly translates. For the person who speaks terminal fluently, a raw shell is one tab away.
 
+### Why Native?
+
+Early versions of Shelly used ttyd and a WebView to render the terminal. It worked — until it didn't.
+
+WebSocket connections dropped without warning. Termux's Phantom Process Killer silently terminated background processes. Every time you switched apps and came back, the terminal was dead. Reconnect, reload, re-run. A dozen times a day.
+
+So I made the decision to throw it all away and go native.
+
+Shelly now embeds a **native terminal emulator** — Kotlin code derived from Termux's own `terminal-emulator` library — directly inside an Expo/React Native app. The terminal view renders on an Android Canvas, not in a WebView. Input goes through a real PTY via socat TCP bridge, not through JavaScript event handlers.
+
+This means:
+- **No WebSocket reconnection hell.** The terminal is a native view, not a web page.
+- **No ttyd dependency.** One fewer process for Android to kill.
+- **Terminal output flows directly into React Native state.** The AI can read what the terminal shows without scraping a WebView.
+
+As far as we know, this is the **only React Native app in the world** with an embedded native terminal emulator. It shouldn't be possible in Expo — but it works.
+
 ### The Copy-Paste Problem
 
 But there's a deeper pain that even experienced developers live with every day.
@@ -96,6 +113,8 @@ This works because Shelly's Chat pane is aware of what's happening in the Termin
 - **Onboarding wizard** — 5-minute setup from zero. Termux install, AI configuration, everything guided.
 
 ### Power Features
+- **Native Terminal Emulator** — Kotlin-based terminal rendering on Android Canvas. No WebView, no xterm.js. Derived from Termux's terminal-emulator library, connected via socat PTY-TCP bridge across UID boundaries.
+- **Immortal sessions** — tmux-backed sessions survive app switches, screen locks, and Termux restarts. Come back hours later and your Claude Code session is still running.
 - **Termux bridge** — Native Kotlin module for direct Termux integration. No WebSocket server required.
 - **Local LLM support** — Run Gemma/Qwen on-device via llama.cpp with guided setup wizard.
 - **Terminal tab** — Full TTY access with Japanese input support (something Termux alone can't do).
@@ -162,8 +181,8 @@ This design emerged from a non-engineer's question: *"Why do I have to know whic
 │  │  on the      │    │  module './utils'       │  │
 │  │  right"      │    │                        │  │
 │  │              │    │                        │  │
-│  │  AI: The     │◄───│  (output captured       │  │
-│  │  error is... │    │   via xterm.js buffer)  │  │
+│  │  AI: The     │◄───│  (output captured via    │  │
+│  │  error is... │    │   native terminal view)  │  │
 │  │              │    │                        │  │
 │  │  ┌────────┐  │    │                        │  │
 │  │  │▶ Run   │──┼───►│  $ mv util.ts utils.ts │  │
@@ -187,7 +206,8 @@ Chat reads Terminal. Terminal executes Chat. The user just talks.
 | API | tRPC + TanStack React Query |
 | Animation | React Native Reanimated v4 |
 | Navigation | expo-router v6 |
-| Native modules | Kotlin (Termux Bridge) |
+| Terminal | Native emulator (Kotlin, Termux-derived) + socat + tmux |
+| Native modules | Kotlin (Termux Bridge, Terminal View) |
 | i18n | expo-localization + Zustand |
 | Package manager | pnpm 9.12 |
 
@@ -246,6 +266,25 @@ This is my first open source project. I'm a designer, not a developer. The code 
 If you find something that could be better — a cleaner pattern, a performance optimization, a bug fix — **please open an issue or PR**. That's exactly why this is open source.
 
 Read the contributing guide: **[CONTRIBUTING.md](CONTRIBUTING.md)**
+
+---
+
+## Vision
+
+Mobile terminals are about to become standard. Most developers don't see it yet.
+
+Right now, even engineers working in Silicon Valley are surprised to learn that Termux exists — that you can run a full Linux shell on an Android phone. The awareness gap is enormous.
+
+But the hardware is ready. Modern mobile SoCs have NPUs pushing 40+ TOPS. Local LLMs that required a desktop GPU two years ago now run on phones. The models are getting smaller and faster every quarter. Soon, 7B-13B parameter models will run natively on mobile at acceptable speeds.
+
+When that happens, you'll have:
+- **Zero-cost AI-assisted development** — no API keys, no internet required
+- **Complete privacy** — your code never leaves your device
+- **Development anywhere** — airplanes, remote sites, commutes
+
+Shelly was built for that future. Local LLM integration (llama.cpp / Ollama) is already implemented. The native terminal is already there. The multi-agent routing already supports local models alongside cloud APIs.
+
+The question isn't whether mobile development will happen. It's who builds the tools for it first.
 
 ---
 

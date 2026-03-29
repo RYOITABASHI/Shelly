@@ -83,15 +83,6 @@ const DEFAULT_TERMUX_SETTINGS: TermuxSettings = {
 const MAX_SESSIONS = 4;
 const TMUX_NAMES = ['shelly-1', 'shelly-2', 'shelly-3', 'shelly-4'];
 
-/** Base TCP port for socat PTY bridges. Each session gets BASE + index. */
-export const SOCAT_BASE_PORT = 18200;
-
-/** Get the socat TCP port for a given tmux session name. */
-export function getSocatPort(tmuxName: string): number {
-  const idx = TMUX_NAMES.indexOf(tmuxName);
-  return SOCAT_BASE_PORT + (idx >= 0 ? idx : 0);
-}
-
 function allocateTmuxName(sessions: TabSession[]): string | null {
   const used = new Set(sessions.map((s) => s.tmuxSession));
   for (const name of TMUX_NAMES) {
