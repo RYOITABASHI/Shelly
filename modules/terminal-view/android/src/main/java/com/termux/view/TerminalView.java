@@ -7,6 +7,8 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Handler;
@@ -72,6 +74,11 @@ public class TerminalView extends View {
 
     float mScaleFactor = 1.f;
     final GestureAndScaleRecognizer mGestureRecognizer;
+
+    /** Composing (pre-edit) text from IME, displayed as overlay at cursor position. */
+    private String mComposingText = "";
+    private final Paint mComposingPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mComposingBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     /** Keep track of where mouse touch event started which we report as mouse scroll. */
     private int mMouseScrollStartX = -1, mMouseScrollStartY = -1;
@@ -308,23 +315,11 @@ public class TerminalView extends View {
         // and the alternate view was the one selected the last time.
         if (mClient.isTerminalViewSelected()) {
             if (mClient.shouldEnforceCharBasedInput()) {
-                // Some keyboards seems do not reset the internal state on TYPE_NULL.
-                // Affects mostly Samsung stock keyboards.
-                // https://github.com/termux/termux-app/issues/686
-                // However, this is not a valid value as per AOSP since `InputType.TYPE_CLASS_*` is
-                // not set and it logs a warning:
-                // W/InputAttributes: Unexpected input class: inputType=0x00080090 imeOptions=0x02000000
-                // https://cs.android.com/android/platform/superproject/+/android-11.0.0_r40:packages/inputmethods/LatinIME/java/src/com/android/inputmethod/latin/InputAttributes.java;l=79
                 outAttrs.inputType = InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
             } else {
-                // Using InputType.NULL is the most correct input type and avoids issues with other hacks.
-                //
-                // Previous keyboard issues:
-                // https://github.com/termux/termux-packages/issues/25
-                // https://github.com/termux/termux-app/issues/87.
-                // https://github.com/termux/termux-app/issues/126.
-                // https://github.com/termux/termux-app/issues/137 (japanese chars and TYPE_NULL).
-                outAttrs.inputType = InputType.TYPE_NULL;
+                // TYPE_CLASS_TEXT enables IME composing (inline preview for CJK input).
+                // Combined with FLAG_NO_SUGGESTIONS to avoid unwanted autocorrect for ASCII.
+                outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
             }
         } else {
             // Corresponds to android:inputType="text"
@@ -338,8 +333,19 @@ public class TerminalView extends View {
         return new BaseInputConnection(this, true) {
 
             @Override
+            public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
+                    mClient.logInfo(LOG_TAG, "IME: setComposingText(\"" + text + "\", " + newCursorPosition + ")");
+                }
+                mComposingText = text != null ? text.toString() : "";
+                invalidate();
+                return super.setComposingText(text, newCursorPosition);
+            }
+
+            @Override
             public boolean finishComposingText() {
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) mClient.logInfo(LOG_TAG, "IME: finishComposingText()");
+                mComposingText = "";
                 super.finishComposingText();
 
                 sendTextToTerminal(getEditable());
@@ -352,6 +358,7 @@ public class TerminalView extends View {
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
                     mClient.logInfo(LOG_TAG, "IME: commitText(\"" + text + "\", " + newCursorPosition + ")");
                 }
+                mComposingText = "";
                 super.commitText(text, newCursorPosition);
 
                 if (mEmulator == null) return true;
@@ -1029,9 +1036,55 @@ public class TerminalView extends View {
 
             mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3]);
 
+            // Draw composing (pre-edit) text overlay at cursor position
+            if (mComposingText != null && !mComposingText.isEmpty()) {
+                drawComposingText(canvas);
+            }
+
             // render the text selection handles
             renderTextSelection();
         }
+    }
+
+    /** Draw composing (IME pre-edit) text as an overlay at the cursor position. */
+    private void drawComposingText(Canvas canvas) {
+        if (mEmulator == null || mRenderer == null) return;
+
+        int cursorCol = mEmulator.getCursorCol();
+        int cursorRow = mEmulator.getCursorRow();
+        int visibleRow = cursorRow - mTopRow;
+
+        // Cursor position in pixels
+        float x = cursorCol * mRenderer.mFontWidth;
+        float y = (visibleRow + 1) * mRenderer.mFontLineSpacing + mRenderer.mFontLineSpacingAndAscent;
+
+        // Setup paint (match terminal font)
+        mComposingPaint.setTypeface(mRenderer.mTypeface);
+        mComposingPaint.setTextSize(mRenderer.mTextSize);
+        mComposingPaint.setColor(0xFFFFFFFF); // white text
+
+        mComposingBgPaint.setColor(0xCC333333); // dark semi-transparent background
+
+        float textWidth = mComposingPaint.measureText(mComposingText);
+        float padding = 4f;
+
+        // Clamp to view bounds
+        if (x + textWidth + padding * 2 > getWidth()) {
+            x = getWidth() - textWidth - padding * 2;
+        }
+        if (x < 0) x = 0;
+
+        // Background rect
+        float top = y - mRenderer.mFontLineSpacing;
+        canvas.drawRoundRect(
+            new RectF(x - padding, top - padding, x + textWidth + padding, y + padding),
+            6f, 6f, mComposingBgPaint
+        );
+
+        // Underline the composing text
+        mComposingPaint.setUnderlineText(true);
+        canvas.drawText(mComposingText, x, y - mRenderer.mFontLineSpacing + mRenderer.mFontLineSpacingAndAscent, mComposingPaint);
+        mComposingPaint.setUnderlineText(false);
     }
 
     public TerminalSession getCurrentSession() {
