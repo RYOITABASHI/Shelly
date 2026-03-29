@@ -9,19 +9,33 @@ import { withAlpha } from '@/lib/theme-utils';
 import { getClickToEditScript, buildSetEditModeMessage, type SelectedElement } from '@/lib/click-to-edit';
 import { EditSheet } from '@/components/chat/EditSheet';
 
-interface PreviewPanelProps {
-  url: string;
+interface WebTabProps {
+  url: string | null;
   onClose: () => void;
   onEditSubmit?: (prompt: string) => void;
 }
 
-export function PreviewPanel({ url, onClose, onEditSubmit }: PreviewPanelProps) {
+export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   const { colors: c } = useTheme();
   const webViewRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
+
+  // Empty state when no URL
+  if (!url) {
+    return (
+      <View style={[styles.container, { backgroundColor: c.background }]}>
+        <View style={styles.placeholder}>
+          <MaterialIcons name="language" size={32} color={c.muted} />
+          <Text style={[styles.placeholderText, { color: c.muted }]}>
+            Start a dev server or open an HTML file
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   const shortUrl = url.replace(/^https?:\/\//, '');
 
@@ -69,7 +83,7 @@ export function PreviewPanel({ url, onClose, onEditSubmit }: PreviewPanelProps) 
   }, []);
 
   return (
-    <View style={[styles.container, { backgroundColor: c.background, borderLeftColor: c.border }]}>
+    <View style={[styles.container, { backgroundColor: c.background }]}>
       {/* Header */}
       <View style={[styles.header, { backgroundColor: c.surfaceHigh, borderBottomColor: c.border }]}>
         <MaterialIcons name="language" size={14} color={c.accent} />
@@ -90,9 +104,6 @@ export function PreviewPanel({ url, onClose, onEditSubmit }: PreviewPanelProps) 
           </Pressable>
           <Pressable onPress={handleOpenExternal} hitSlop={8} style={styles.headerBtn}>
             <MaterialIcons name="open-in-new" size={16} color={c.muted} />
-          </Pressable>
-          <Pressable onPress={onClose} hitSlop={8} style={styles.headerBtn}>
-            <MaterialIcons name="close" size={16} color={c.muted} />
           </Pressable>
         </View>
       </View>
@@ -161,7 +172,6 @@ export function PreviewPanel({ url, onClose, onEditSubmit }: PreviewPanelProps) 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    borderLeftWidth: 1,
   },
   header: {
     flexDirection: 'row',
@@ -202,7 +212,7 @@ const styles = StyleSheet.create({
   },
   loadingBar: {
     position: 'absolute',
-    top: 38, // below header
+    top: 38,
     left: 0,
     right: 0,
     height: 2,
@@ -227,5 +237,15 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     fontSize: 13,
     fontWeight: '600',
+  },
+  placeholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  placeholderText: {
+    fontFamily: 'monospace',
+    fontSize: 13,
   },
 });
