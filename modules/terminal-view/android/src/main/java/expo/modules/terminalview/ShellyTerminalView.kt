@@ -43,8 +43,8 @@ class ShellyTerminalView(
         private const val RESIZE_DEBOUNCE_MS = 150L
     }
 
-    // Let Android handle layout instead of React Native's Yoga
-    override val shouldUseAndroidLayout: Boolean = true
+    // Use Yoga layout so that adjustResize (keyboard) correctly shrinks the view.
+    // TerminalView is a MATCH_PARENT child, so it follows this ExpoView's size.
 
     // TerminalView is a direct child of this ExpoView
     val terminalView: TerminalView = TerminalView(context, null)
