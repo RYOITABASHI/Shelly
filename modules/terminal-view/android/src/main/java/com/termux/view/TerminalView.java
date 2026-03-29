@@ -451,6 +451,9 @@ public class TerminalView extends View {
         onScreenUpdated(false);
     }
 
+    /** Whether user has scrolled up during output. Reset when user scrolls back to bottom. */
+    private boolean mUserScrolledUp = false;
+
     public void onScreenUpdated(boolean skipScrolling) {
         if (mEmulator == null) return;
 
@@ -479,14 +482,20 @@ public class TerminalView extends View {
         }
 
         if (!skipScrolling && mTopRow != 0) {
-            // Scroll down if not already there.
-            if (mTopRow < -3) {
-                // Awaken scroll bars only if scrolling a noticeable amount
-                // - we do not want visible scroll bars during normal typing
-                // of one row at a time.
-                awakenScrollBars();
+            // If user has manually scrolled up, keep their scroll position
+            // instead of forcing back to bottom. This allows reading output
+            // while new content is being produced (like ttyd/xterm.js behavior).
+            if (mUserScrolledUp) {
+                // Adjust mTopRow to account for new lines pushed into history
+                int rowShift = mEmulator.getScrollCounter();
+                mTopRow = Math.max(-rowsInHistory, mTopRow - rowShift);
+            } else {
+                // Auto-scroll to bottom (default behavior)
+                if (mTopRow < -3) {
+                    awakenScrollBars();
+                }
+                mTopRow = 0;
             }
-            mTopRow = 0;
         }
 
         mEmulator.clearScrollCounter();
@@ -571,7 +580,6 @@ public class TerminalView extends View {
     void doScroll(MotionEvent event, int rowsDown) {
         boolean up = rowsDown < 0;
         int amount = Math.abs(rowsDown);
-        android.util.Log.i("TerminalView", "doScroll: rowsDown=" + rowsDown + " mouseTracking=" + mEmulator.isMouseTrackingActive() + " altBuffer=" + mEmulator.isAlternateBufferActive());
         for (int i = 0; i < amount; i++) {
             if (mEmulator.isMouseTrackingActive()) {
                 sendMouseEventCode(event, up ? TerminalEmulator.MOUSE_WHEELUP_BUTTON : TerminalEmulator.MOUSE_WHEELDOWN_BUTTON, true);
@@ -579,6 +587,13 @@ public class TerminalView extends View {
                 handleKeyCode(up ? KeyEvent.KEYCODE_DPAD_UP : KeyEvent.KEYCODE_DPAD_DOWN, 0);
             } else {
                 mTopRow = Math.min(0, Math.max(-(mEmulator.getScreen().getActiveTranscriptRows()), mTopRow + (up ? -1 : 1)));
+                // Track user scroll state for output-during-scroll behavior
+                if (mTopRow < 0) {
+                    mUserScrolledUp = true;
+                } else {
+                    // User scrolled back to bottom — re-enable auto-scroll
+                    mUserScrolledUp = false;
+                }
                 if (!awakenScrollBars()) invalidate();
             }
         }
