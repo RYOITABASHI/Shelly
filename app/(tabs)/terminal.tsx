@@ -48,6 +48,9 @@ import { VoiceChat } from '@/components/VoiceChat';
 import { PreviewBanner } from '@/components/terminal/PreviewBanner';
 import { PreviewTabs } from '@/components/preview/PreviewTabs';
 import { usePreviewStore } from '@/store/preview-store';
+import { ProcessGuardModal } from '@/components/terminal/ProcessGuardModal';
+import { FirstMateOverlay, shouldShowFirstMate } from '@/components/terminal/FirstMateOverlay';
+import { isProcessKill } from '@/lib/process-guard';
 import type { TabSession, SessionStatus } from '@/store/types';
 import { useChatStore } from '@/store/chat-store';
 import { generateId } from '@/lib/id';
@@ -90,6 +93,14 @@ export default function TerminalScreen() {
 
   // Voice dialog mode state
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
+
+  // ProcessGuard: detect repeated SIGKILL (signal 9)
+  const [showProcessGuard, setShowProcessGuard] = useState(false);
+  const killCountRef = useRef(0);
+
+  // FirstMate: first-time onboarding overlay
+  const [showFirstMate, setShowFirstMate] = useState(false);
+  const firstMateChecked = useRef(false);
 
   // Scroll state — show FAB when user scrolls up
   const [isScrolledUp, setIsScrolledUp] = useState(false);
@@ -371,6 +382,29 @@ export default function TerminalScreen() {
     }
   }, [activeSession?.currentDir, runRawCommand]);
 
+  // ProcessGuard: listen for session exits with signal 9 (SIGKILL)
+  useEffect(() => {
+    const sub = TerminalEmulator.addListener('onSessionExit', (event: { sessionId: string; exitCode: number; signal: number }) => {
+      if (isProcessKill(event.signal, event.exitCode)) {
+        killCountRef.current += 1;
+        if (killCountRef.current >= 2) {
+          setShowProcessGuard(true);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // FirstMate: check on first successful connection
+  useEffect(() => {
+    if (isConnected && !firstMateChecked.current) {
+      firstMateChecked.current = true;
+      shouldShowFirstMate().then((show) => {
+        if (show) setShowFirstMate(true);
+      });
+    }
+  }, [isConnected]);
+
   // Japanese input proxy state
   const [jpInput, setJpInput] = useState('');
   const [showJpInput, setShowJpInput] = useState(false);
@@ -629,6 +663,18 @@ export default function TerminalScreen() {
       <VoiceChat
         visible={voiceChatVisible}
         onClose={() => setVoiceChatVisible(false)}
+      />
+
+      {/* ProcessGuard Modal — shown after 2+ SIGKILL detections */}
+      <ProcessGuardModal
+        visible={showProcessGuard}
+        onClose={() => { setShowProcessGuard(false); killCountRef.current = 0; }}
+      />
+
+      {/* FirstMate Overlay — first-time onboarding */}
+      <FirstMateOverlay
+        visible={showFirstMate}
+        onClose={() => setShowFirstMate(false)}
       />
 
       {/* Error: show status when session is not alive and not connecting */}
