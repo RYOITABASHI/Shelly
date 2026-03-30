@@ -101,6 +101,21 @@ class ShellyTerminalView(
             LinearLayout.LayoutParams.MATCH_PARENT
         ))
 
+        // Wire Ctrl+Shift+C/V clipboard handlers
+        inputHandler.clipboardCopy = {
+            copyToClipboardCommand()
+        }
+        inputHandler.clipboardPaste = { session ->
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            val text = clipboard?.primaryClip?.getItemAt(0)?.text?.toString()
+            if (text != null) {
+                session.write(text.toByteArray(Charsets.UTF_8), 0, text.toByteArray(Charsets.UTF_8).size)
+                true
+            } else {
+                false
+            }
+        }
+
         // Request RUN_COMMAND permission at runtime (dangerous permission)
         ensureRunCommandPermission()
 

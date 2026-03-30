@@ -1,5 +1,8 @@
 package expo.modules.terminalview
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.view.KeyEvent
 import com.termux.terminal.TerminalSession
 
@@ -12,6 +15,10 @@ class ShellyInputHandler {
     companion object {
         private const val TAG = "ShellyInputHandler"
     }
+
+    /** Set by ShellyTerminalView to enable Ctrl+Shift+C/V clipboard */
+    var clipboardCopy: (() -> Boolean)? = null
+    var clipboardPaste: ((TerminalSession) -> Boolean)? = null
 
     // Modifier key state tracking (for soft keyboard virtual modifiers)
     @Volatile var ctrlDown = false
@@ -44,6 +51,17 @@ class ShellyInputHandler {
         val effectiveCtrl = ctrlDown || event.isCtrlPressed
         val effectiveAlt = altDown || event.isAltPressed
         val effectiveShift = shiftDown || event.isShiftPressed
+
+        // Ctrl+Shift+C → clipboard copy (not SIGINT)
+        if (effectiveCtrl && effectiveShift && keyCode == KeyEvent.KEYCODE_C) {
+            clipboardCopy?.invoke()
+            return true
+        }
+        // Ctrl+Shift+V → clipboard paste
+        if (effectiveCtrl && effectiveShift && keyCode == KeyEvent.KEYCODE_V) {
+            clipboardPaste?.invoke(session)
+            return true
+        }
 
         // Handle special key combinations
         val sequence = getKeySequence(keyCode, effectiveCtrl, effectiveAlt, effectiveShift)
