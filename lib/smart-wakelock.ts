@@ -10,7 +10,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 
 type RunCommand = (cmd: string, opts: { timeoutMs: number; reason: string }) => Promise<any>;
 
-const RELEASE_GRACE_MS = 5 * 60_000; // 5 minutes
+const RELEASE_GRACE_MS = 2 * 60_000; // 2 minutes (省バッテリー: 5m→2m)
 
 let _appStateSub: ReturnType<typeof AppState.addEventListener> | null = null;
 let _wakelockHeld = false;

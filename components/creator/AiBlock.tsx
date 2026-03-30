@@ -54,11 +54,11 @@ export const AiBlock = React.memo(function AiBlock({
       );
       cursorAnim.current.start();
 
-      // 経過時間カウンター: 100ms更新
+      // 経過時間カウンター: 1秒更新（省バッテリー: 100ms→1000ms）
       const startTime = block.streamingStartTime ?? Date.now();
       elapsedTimer.current = setInterval(() => {
         setElapsedMs(Date.now() - startTime);
-      }, 100);
+      }, 1000);
     } else {
       // 停止
       cursorAnim.current?.stop();

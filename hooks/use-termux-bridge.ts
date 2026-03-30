@@ -114,8 +114,8 @@ export type CreateProjectResult =
 
 const MAX_RECONNECT = 5;
 const CANCEL_TIMEOUT_MS = 5000; // force-finalize if no 'cancelled' response in 5s
-const AUTO_RECOVERY_POLL_INTERVAL = 3000; // 3s between recovery polls
-const AUTO_RECOVERY_MAX_POLLS = 10; // 30s total recovery window
+const AUTO_RECOVERY_BASE_INTERVAL = 3000; // exponential backoff base (3s, 6s, 12s)
+const AUTO_RECOVERY_MAX_POLLS = 4; // 4 attempts max (省バッテリー: 10→4)
 
 export function useTermuxBridge() {
   const {
@@ -408,9 +408,9 @@ export function useTermuxBridge() {
 
           return;
         }
-        // Not connected yet, keep polling
+        // Not connected yet, keep polling with exponential backoff
         poll();
-      }, AUTO_RECOVERY_POLL_INTERVAL);
+      }, AUTO_RECOVERY_BASE_INTERVAL * Math.pow(2, pollCount - 1));
     };
 
     // Wait 2s for Termux to start, then begin polling

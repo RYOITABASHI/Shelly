@@ -27,7 +27,7 @@ type PersistedSession = {
 };
 
 const MAX_OUTPUT_LINES = 200;
-const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
+const AUTO_SAVE_INTERVAL = 90_000; // 90 seconds (省バッテリー: 30s→90s)
 
 let _autoSaveTimer: ReturnType<typeof setInterval> | null = null;
 let _appStateSubscription: ReturnType<typeof AppState.addEventListener> | null = null;

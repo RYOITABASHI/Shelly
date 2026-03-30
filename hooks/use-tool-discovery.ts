@@ -21,7 +21,7 @@ import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import { checkOllamaConnection } from '@/lib/local-llm';
 import type { ToolStatus } from '@/lib/shelly-system-prompt';
 
-const POLL_INTERVAL = 30000; // 30秒
+const POLL_INTERVAL = 120000; // 120秒（省バッテリー: 30s→120s）
 
 // ── CLI定義 ────────────────────────────────────────────────────────────────────
 

@@ -65,113 +65,127 @@ export function useTerminalOutput() {
   const pkgErrorAccum = useRef<string[]>([]);
   const { isWide } = useDeviceLayout();
 
+  // Batch buffer for output analysis (省バッテリー: per-line → batched)
+  const batchBuffer = useRef<string[]>([]);
+  const batchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const BATCH_INTERVAL = 50; // 50ms batching
+
   useEffect(() => {
     const sub = TerminalEmulator.addListener('onSessionOutput', (event: { sessionId: string; data: string }) => {
       if (!event.data) return;
+
+      // Always add to execution log immediately (lightweight)
       const lines = event.data.split('\n');
       for (const line of lines) {
         addTerminalOutput(line, event.sessionId);
+      }
 
-        // Detect localhost URLs for preview offers
-        const url = detectLocalhostUrl(line);
-        if (url) {
-          usePreviewStore.getState().offerPreview(url, 'localhost');
-        }
+      // Batch lines for expensive pattern analysis
+      batchBuffer.current.push(...lines);
+      if (batchTimer.current) return; // Already scheduled
+      batchTimer.current = setTimeout(() => {
+        batchTimer.current = null;
+        const batch = batchBuffer.current;
+        batchBuffer.current = [];
 
-        // Detect file-changing output → request savepoint + notify preview
-        for (const pattern of FILE_CHANGE_OUTPUT) {
-          const match = pattern.exec(line);
-          if (match) {
-            // Extract file path if capture group matched
-            if (match[1]) {
-              usePreviewStore.getState().notifyFileChange(match[1]);
-            }
-            if (savepointDebounce.current) clearTimeout(savepointDebounce.current);
-            savepointDebounce.current = setTimeout(() => {
-              useSavepointStore.getState().requestSavepoint('file-change-detected');
-            }, 5000);
-            break;
+        for (const line of batch) {
+          // Detect localhost URLs for preview offers
+          const url = detectLocalhostUrl(line);
+          if (url) {
+            usePreviewStore.getState().offerPreview(url, 'localhost');
           }
-        }
 
-        // Wide mode only: detect approval prompts → add ApprovalBubble to chat
-        if (isWide && detectApprovalPrompt(line)) {
-          if (approvalDebounce.current) clearTimeout(approvalDebounce.current);
-          approvalDebounce.current = setTimeout(() => {
-            const store = useChatStore.getState();
-            const session = store.getActiveSession();
-            if (!session) return;
-            store.addMessage(session.id, {
-              id: generateId(),
-              role: 'system',
-              content: '',
-              timestamp: Date.now(),
-              approvalData: {
-                sessionId: event.sessionId,
-                command: line.trim(),
-                translation: '',  // filled by TranslateOverlay pipeline if available
-                dangerLevel: 'MEDIUM',
-              },
-            });
-          }, 300);
-        }
-
-        // Wide mode only: detect error output → accumulate and add ErrorSummaryBubble
-        if (isWide) {
-          for (const pattern of ERROR_OUTPUT_PATTERNS) {
-            if (pattern.test(line)) {
-              errorAccum.current.push(line);
-              if (errorDebounce.current) clearTimeout(errorDebounce.current);
-              errorDebounce.current = setTimeout(() => {
-                const errorText = errorAccum.current.join('\n');
-                errorAccum.current = [];
-                const store = useChatStore.getState();
-                const session = store.getActiveSession();
-                if (!session) return;
-                store.addMessage(session.id, {
-                  id: generateId(),
-                  role: 'system',
-                  content: '',
-                  timestamp: Date.now(),
-                  errorSummaryData: {
-                    errorText,
-                    translation: '',  // will be filled async by translate pipeline
-                    provider: '',
-                  },
-                });
-              }, 2000);
+          // Detect file-changing output → request savepoint + notify preview
+          for (const pattern of FILE_CHANGE_OUTPUT) {
+            const match = pattern.exec(line);
+            if (match) {
+              if (match[1]) {
+                usePreviewStore.getState().notifyFileChange(match[1]);
+              }
+              if (savepointDebounce.current) clearTimeout(savepointDebounce.current);
+              savepointDebounce.current = setTimeout(() => {
+                useSavepointStore.getState().requestSavepoint('file-change-detected');
+              }, 5000);
               break;
             }
           }
-        }
 
-        // PackageDoctor: detect package manager errors → auto-repair suggestion
-        for (const pattern of PACKAGE_ERROR_PATTERNS) {
-          if (pattern.test(line)) {
-            pkgErrorAccum.current.push(line);
-            if (pkgErrorDebounce.current) clearTimeout(pkgErrorDebounce.current);
-            pkgErrorDebounce.current = setTimeout(() => {
-              const stderr = pkgErrorAccum.current.join('\n');
-              pkgErrorAccum.current = [];
-              const fix = diagnosePackageError(stderr);
-              if (!fix) return;
+          // Wide mode only: detect approval prompts
+          if (isWide && detectApprovalPrompt(line)) {
+            if (approvalDebounce.current) clearTimeout(approvalDebounce.current);
+            approvalDebounce.current = setTimeout(() => {
               const store = useChatStore.getState();
               const session = store.getActiveSession();
               if (!session) return;
               store.addMessage(session.id, {
                 id: generateId(),
                 role: 'system',
-                content: `🔧 **Package Doctor**: ${fix.message}\n\nSuggested fix: \`${fix.fix}\`${fix.autoRun ? '\n_(Auto-repair available)_' : ''}`,
+                content: '',
                 timestamp: Date.now(),
+                approvalData: {
+                  sessionId: event.sessionId,
+                  command: line.trim(),
+                  translation: '',
+                  dangerLevel: 'MEDIUM',
+                },
               });
-            }, 1500);
-            break;
+            }, 300);
+          }
+
+          // Wide mode only: detect error output
+          if (isWide) {
+            for (const pattern of ERROR_OUTPUT_PATTERNS) {
+              if (pattern.test(line)) {
+                errorAccum.current.push(line);
+                if (errorDebounce.current) clearTimeout(errorDebounce.current);
+                errorDebounce.current = setTimeout(() => {
+                  const errorText = errorAccum.current.join('\n');
+                  errorAccum.current = [];
+                  const store = useChatStore.getState();
+                  const session = store.getActiveSession();
+                  if (!session) return;
+                  store.addMessage(session.id, {
+                    id: generateId(),
+                    role: 'system',
+                    content: '',
+                    timestamp: Date.now(),
+                    errorSummaryData: { errorText, translation: '', provider: '' },
+                  });
+                }, 2000);
+                break;
+              }
+            }
+          }
+
+          // PackageDoctor: detect package manager errors
+          for (const pattern of PACKAGE_ERROR_PATTERNS) {
+            if (pattern.test(line)) {
+              pkgErrorAccum.current.push(line);
+              if (pkgErrorDebounce.current) clearTimeout(pkgErrorDebounce.current);
+              pkgErrorDebounce.current = setTimeout(() => {
+                const stderr = pkgErrorAccum.current.join('\n');
+                pkgErrorAccum.current = [];
+                const fix = diagnosePackageError(stderr);
+                if (!fix) return;
+                const store = useChatStore.getState();
+                const session = store.getActiveSession();
+                if (!session) return;
+                store.addMessage(session.id, {
+                  id: generateId(),
+                  role: 'system',
+                  content: `🔧 **Package Doctor**: ${fix.message}\n\nSuggested fix: \`${fix.fix}\`${fix.autoRun ? '\n_(Auto-repair available)_' : ''}`,
+                  timestamp: Date.now(),
+                });
+              }, 1500);
+              break;
+            }
           }
         }
-      }
+      }, BATCH_INTERVAL);
     });
     return () => {
       sub.remove();
+      if (batchTimer.current) clearTimeout(batchTimer.current);
       if (savepointDebounce.current) clearTimeout(savepointDebounce.current);
       if (approvalDebounce.current) clearTimeout(approvalDebounce.current);
       if (errorDebounce.current) clearTimeout(errorDebounce.current);

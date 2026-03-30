@@ -75,6 +75,8 @@ class ShellyTerminalSession(
         val data = outputBuffer.toString()
         outputBuffer.clear()
         emitEvent("onSessionOutput", mapOf("sessionId" to sessionId, "data" to data))
+        // Notify TerminalView to redraw (batched, not per-character)
+        onScreenUpdateCallback?.invoke()
     }
 
     fun write(data: String) {
@@ -150,8 +152,8 @@ class ShellyTerminalSession(
             lastTranscriptLength = currentLength
             if (fullText.isNotEmpty()) appendToOutputBuffer(fullText)
         }
-        // Notify TerminalView to redraw on the main thread
-        onScreenUpdateCallback?.invoke()
+        // Screen update is now batched with output flush (省バッテリー)
+        // onScreenUpdateCallback called from flushOutputBuffer() instead
     }
 
     override fun onTitleChanged(changedSession: TerminalSession) {
