@@ -16,10 +16,24 @@ type Props = {
   onClose: () => void;
 };
 
+const CSP_META = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:;">`;
+
+function wrapHtmlWithCSP(raw: string): string {
+  if (raw.includes('<head>')) {
+    return raw.replace('<head>', `<head>${CSP_META}`);
+  }
+  if (raw.includes('<html>')) {
+    return raw.replace('<html>', `<html><head>${CSP_META}</head>`);
+  }
+  return `<html><head>${CSP_META}</head><body>${raw}</body></html>`;
+}
+
 export function WebPreviewModal({ visible, html, onClose }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+
+  const safeHtml = wrapHtmlWithCSP(html);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -34,12 +48,15 @@ export function WebPreviewModal({ visible, html, onClose }: Props) {
             </Pressable>
           </View>
           <WebView
-            source={{ html }}
+            source={{ html: safeHtml }}
             style={styles.webview}
-            originWhitelist={['*']}
-            javaScriptEnabled
-            domStorageEnabled
+            originWhitelist={['about:blank']}
+            javaScriptEnabled={false}
+            domStorageEnabled={false}
+            allowFileAccess={false}
+            allowUniversalAccessFromFileURLs={false}
             scrollEnabled
+            onShouldStartLoadWithRequest={(req) => req.url === 'about:blank'}
           />
         </View>
       </View>

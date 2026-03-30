@@ -61,7 +61,7 @@ const config: ExpoConfig & { android?: any } = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    usesCleartextTraffic: true as any, // Required for localhost HTTP (ttyd/bridge)
+    // usesCleartextTraffic now handled by plugins/with-android-security.js (localhost only)
     permissions: ["POST_NOTIFICATIONS", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_SPECIAL_USE"],
     intentFilters: [
       {
@@ -87,6 +87,7 @@ const config: ExpoConfig & { android?: any } = {
     "expo-router",
     "./plugins/with-multi-window",
     "./plugins/with-termux-permission",
+    "./plugins/with-android-security",
     [
       "expo-audio",
       {
@@ -108,8 +109,7 @@ const config: ExpoConfig & { android?: any } = {
         android: {
           buildArchs: ["armeabi-v7a", "arm64-v8a"],
           minSdkVersion: 24,
-          // Allow ws:// cleartext traffic to localhost for Termux WebSocket bridge
-          usesCleartextTraffic: true,
+          // cleartext traffic now controlled by plugins/with-android-security.js
         },
       },
     ],

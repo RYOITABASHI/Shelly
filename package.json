@@ -2,7 +2,7 @@
   "name": "shelly-terminal",
   "version": "4.2.0",
   "description": "AI-powered terminal IDE for Android",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "author": "RYO ITABASHI",
   "homepage": "https://github.com/RYOITABASHI/Shelly#readme",
   "repository": {

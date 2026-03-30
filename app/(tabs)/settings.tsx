@@ -1276,7 +1276,20 @@ export default function SettingsScreen() {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                 }]}
-                onPress={() => updateSettings({ autoApproveLevel: level })}
+                onPress={() => {
+                  if (level === 'all') {
+                    Alert.alert(
+                      '⚠️ Security Warning',
+                      'This grants --dangerouslySkipPermissions to the CLI agent, allowing it to execute any command without confirmation. Use only if you understand the risks.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Enable', style: 'destructive', onPress: () => updateSettings({ autoApproveLevel: level }) },
+                      ],
+                    );
+                  } else {
+                    updateSettings({ autoApproveLevel: level });
+                  }
+                }}
               >
                 <View>
                   <Text style={[styles.segmentBtnText, { fontWeight: isActive ? '700' : '400' }]}>
