@@ -270,6 +270,7 @@ export function detectKeySet(lines: string[]): KeySetId | undefined {
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: BORDER_WIDTH,
+    minHeight: 52,
   },
   singleRow: {
     flexDirection: 'row',

@@ -109,11 +109,7 @@ const dotStyles = StyleSheet.create({
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-type TerminalHeaderProps = {
-  onReload?: () => void;
-};
-
-export function TerminalHeader({ onReload }: TerminalHeaderProps = {}) {
+export function TerminalHeader() {
   const { colors } = useTheme();
   const {
     sessions,
@@ -293,13 +289,6 @@ export function TerminalHeader({ onReload }: TerminalHeaderProps = {}) {
         <MaterialIcons name="open-in-full" size={14} color={colors.inactive} />
       </Pressable>
 
-      {/* Reload */}
-      {onReload && (
-        <Pressable onPress={onReload} style={styles.fullscreenButton}>
-          <MaterialIcons name="refresh" size={15} color={colors.inactive} />
-        </Pressable>
-      )}
-
       {/* Connection mode badge — compact in split view */}
       <Animated.View style={badgeAnimStyle}>
         <Pressable
@@ -336,7 +325,7 @@ export function TerminalHeader({ onReload }: TerminalHeaderProps = {}) {
         wsUrl={useTerminalStore.getState().termuxSettings.wsUrl || 'ws://127.0.0.1:8765'}
         onClose={() => setFullscreenVisible(false)}
       />
-      <StatusIndicator />
+      <StatusIndicator bridgeOnly />
     </View>
   );
 }

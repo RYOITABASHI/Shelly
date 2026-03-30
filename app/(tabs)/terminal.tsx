@@ -482,9 +482,7 @@ export default function TerminalScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: keyboardHeight, backgroundColor: c.background }]}>
       {/* Session Tab Header */}
-      <TerminalHeader
-        onReload={handleReload}
-      />
+      <TerminalHeader />
 
       {/* quickBar removed — JP input + reload now integrated into TerminalHeader */}
 

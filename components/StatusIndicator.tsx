@@ -31,12 +31,29 @@ function getActiveChat(settings: {
   return map[cli] ?? { label: 'CLI', color: '#6B7280' };
 }
 
-export function StatusIndicator() {
+type StatusIndicatorProps = {
+  /** When true, show only bridge status (used in Terminal header) */
+  bridgeOnly?: boolean;
+};
+
+export function StatusIndicator({ bridgeOnly }: StatusIndicatorProps = {}) {
   const { bridgeStatus, settings, activeCliSession } = useTerminalStore();
   const { isConnected } = useTermuxBridge();
 
   const bridgeColor = isConnected ? '#4ADE80' : bridgeStatus === 'connecting' ? '#FBBF24' : '#6B7280';
   const bridgeLabel = isConnected ? 'Bridge' : bridgeStatus === 'connecting' ? 'Connecting' : 'Offline';
+
+  if (bridgeOnly) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.item}>
+          <View style={[styles.dot, { backgroundColor: bridgeColor }]} />
+          <Text style={[styles.label, { color: bridgeColor }]}>{bridgeLabel}</Text>
+        </View>
+      </View>
+    );
+  }
+
   const chat = getActiveChat(settings);
   const llmLabel = getActiveLlmLabel();
 
