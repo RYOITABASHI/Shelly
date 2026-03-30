@@ -1,5 +1,5 @@
 import React, { memo, useMemo } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
@@ -49,7 +49,11 @@ function MentionDropdownInner({ query, onSelect }: Props) {
   if (filtered.length === 0) return null;
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.surfaceHigh, borderColor: colors.borderLight }]}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.surfaceHigh, borderColor: colors.borderLight }]}
+      keyboardShouldPersistTaps="always"
+      nestedScrollEnabled
+    >
       {filtered.map((option) => (
         <Pressable
           key={option.trigger}
@@ -64,11 +68,11 @@ function MentionDropdownInner({ query, onSelect }: Props) {
           </View>
           <View style={styles.textWrap}>
             <Text style={[styles.trigger, { color: option.color }]}>{option.trigger}</Text>
-            <Text style={[styles.desc, { color: colors.inactive }]}>{t(option.descKey)}</Text>
+            <Text style={[styles.desc, { color: colors.inactive }]} numberOfLines={1}>{t(option.descKey)}</Text>
           </View>
         </Pressable>
       ))}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -80,6 +84,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginHorizontal: 8,
     marginBottom: 4,
+    maxHeight: 240,
     overflow: 'hidden',
   },
   option: {
