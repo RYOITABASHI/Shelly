@@ -268,7 +268,9 @@ export function TerminalHeader() {
         style={[styles.previewButton, previewOpen && { backgroundColor: withAlpha(colors.accent, 0.15) }]}
       >
         <MaterialIcons name="open-in-new" size={14} color={previewOpen ? colors.accent : colors.muted} />
-        <Text style={[styles.previewLabel, { color: previewOpen ? colors.accent : colors.muted }]}>Preview</Text>
+        {!isMultiPane && (
+          <Text style={[styles.previewLabel, { color: previewOpen ? colors.accent : colors.muted }]}>Preview</Text>
+        )}
         {hasNewContent && !previewOpen && (
           <View style={styles.previewBadge} />
         )}
@@ -287,7 +289,7 @@ export function TerminalHeader() {
         <MaterialIcons name="open-in-full" size={14} color={colors.inactive} />
       </Pressable>
 
-      {/* Connection mode badge */}
+      {/* Connection mode badge — compact in split view */}
       <Animated.View style={badgeAnimStyle}>
         <Pressable
           onPress={handleModePress}
@@ -307,9 +309,11 @@ export function TerminalHeader() {
           ]}
         >
           <MaterialIcons name={modeConfig.icon} size={13} color={modeColor} />
-          <Text style={[styles.statusText, { color: modeColor }]}>
-            {modeConfig.label}
-          </Text>
+          {!isMultiPane && (
+            <Text style={[styles.statusText, { color: modeColor }]}>
+              {modeConfig.label}
+            </Text>
+          )}
           {connectionMode === 'termux' && (
             <BridgeDot status={bridgeStatus} colors={colors} />
           )}
