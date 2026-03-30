@@ -1090,9 +1090,9 @@ public class TerminalView extends View {
         int cursorRow = mEmulator.getCursorRow();
         int visibleRow = cursorRow - mTopRow;
 
-        // Cursor position in pixels
+        // Cursor position in pixels — place composing text on the cursor row
         float x = cursorCol * mRenderer.mFontWidth;
-        float y = (visibleRow + 1) * mRenderer.mFontLineSpacing + mRenderer.mFontLineSpacingAndAscent;
+        float baselineY = visibleRow * mRenderer.mFontLineSpacing + mRenderer.mFontLineSpacingAndAscent;
 
         // Setup paint (match terminal font)
         mComposingPaint.setTypeface(mRenderer.mTypeface);
@@ -1110,16 +1110,17 @@ public class TerminalView extends View {
         }
         if (x < 0) x = 0;
 
-        // Background rect
-        float top = y - mRenderer.mFontLineSpacing;
+        // Background rect — sits on cursor row
+        float bgTop = baselineY - mRenderer.mFontLineSpacingAndAscent;
+        float bgBottom = bgTop + mRenderer.mFontLineSpacing;
         canvas.drawRoundRect(
-            new RectF(x - padding, top - padding, x + textWidth + padding, y + padding),
+            new RectF(x - padding, bgTop - padding, x + textWidth + padding, bgBottom + padding),
             6f, 6f, mComposingBgPaint
         );
 
         // Underline the composing text
         mComposingPaint.setUnderlineText(true);
-        canvas.drawText(mComposingText, x, y - mRenderer.mFontLineSpacing + mRenderer.mFontLineSpacingAndAscent, mComposingPaint);
+        canvas.drawText(mComposingText, x, baselineY, mComposingPaint);
         mComposingPaint.setUnderlineText(false);
     }
 
