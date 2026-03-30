@@ -6,8 +6,8 @@
  * Auto-detect badge suggests relevant set (never auto-switches).
  */
 
-import React, { useCallback, useState, useRef } from 'react';
-import { View, Text, Pressable, StyleSheet, ScrollView, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
+import React, { useCallback, useState, useRef, useMemo } from 'react';
+import { View, Text, Pressable, StyleSheet, ScrollView, type NativeSyntheticEvent, type NativeScrollEvent, Dimensions, type LayoutChangeEvent } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -134,41 +134,38 @@ export function CommandKeyBar({ sendKey, sendText, isCompact, suggestedSet }: Pr
   }, [sendKey, sendText, settings.hapticFeedback, altActive]);
 
   const switchSet = useCallback((id: KeySetId) => {
+    const idx = SET_ORDER.indexOf(id);
     setActiveSet(id);
+    scrollRef.current?.scrollTo({ x: idx * barWidth, animated: true });
     if (settings.hapticFeedback) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-  }, [settings.hapticFeedback]);
+  }, [settings.hapticFeedback, barWidth]);
+
+  // Track container width for paging
+  const [barWidth, setBarWidth] = useState(Dimensions.get('window').width);
+  const onBarLayout = useCallback((e: LayoutChangeEvent) => {
+    setBarWidth(e.nativeEvent.layout.width);
+  }, []);
 
   const handleScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const page = Math.round(e.nativeEvent.contentOffset.x / e.nativeEvent.layoutMeasurement.width);
-    if (page >= 0 && page < SET_ORDER.length) {
+    if (page >= 0 && page < SET_ORDER.length && SET_ORDER[page] !== activeSet) {
       setActiveSet(SET_ORDER[page]);
+      if (settings.hapticFeedback) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
     }
-  }, []);
+  }, [activeSet, settings.hapticFeedback]);
 
-  return (
-    <View style={[styles.container, { backgroundColor: c.surfaceHigh, borderTopColor: c.border }]}>
-      {/* Set selector dots + suggested badge */}
-      <View style={styles.dotsRow}>
-        {SET_ORDER.map((id) => (
-          <Pressable key={id} onPress={() => switchSet(id)} hitSlop={6}>
-            <View style={[
-              styles.dot,
-              { backgroundColor: id === activeSet ? c.accent : withAlpha(c.foreground, 0.2) },
-              id === suggestedSet && id !== activeSet && styles.suggestedDot,
-              id === suggestedSet && id !== activeSet && { borderColor: c.accent },
-            ]} />
-          </Pressable>
-        ))}
-        <Text style={[styles.setLabel, { color: c.muted }]}>{currentSet.label}</Text>
-      </View>
-
-      {/* Keys */}
-      <View style={styles.keysRow}>
-        {currentSet.keys.map((key, i) => (
+  // Render a single key set page
+  const renderKeySet = useCallback((setId: KeySetId) => {
+    const keySet = KEY_SETS[setId];
+    return (
+      <View key={setId} style={[styles.keysRow, { width: barWidth }]}>
+        {keySet.keys.map((key, i) => (
           <Pressable
-            key={`${activeSet}-${i}`}
+            key={`${setId}-${i}`}
             style={[
               styles.key,
               { backgroundColor: withAlpha(c.foreground, 0.06), borderColor: c.borderLight },
@@ -194,6 +191,37 @@ export function CommandKeyBar({ sendKey, sendText, isCompact, suggestedSet }: Pr
           </Pressable>
         ))}
       </View>
+    );
+  }, [barWidth, c, altActive, isCompact, handleKeyPress]);
+
+  return (
+    <View style={[styles.container, { backgroundColor: c.surfaceHigh, borderTopColor: c.border }]} onLayout={onBarLayout}>
+      {/* Set indicator dots (tap to switch) */}
+      <View style={styles.dotsRow}>
+        {SET_ORDER.map((id) => (
+          <Pressable key={id} onPress={() => switchSet(id)} hitSlop={8}>
+            <View style={[
+              styles.dot,
+              { backgroundColor: id === activeSet ? c.accent : withAlpha(c.foreground, 0.2) },
+              id === suggestedSet && id !== activeSet && styles.suggestedDot,
+              id === suggestedSet && id !== activeSet && { borderColor: c.accent },
+            ]} />
+          </Pressable>
+        ))}
+        <Text style={[styles.setLabel, { color: c.muted }]}>{currentSet.label}</Text>
+      </View>
+
+      {/* Swipeable key sets */}
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onMomentumScrollEnd={handleScrollEnd}
+        scrollEventThrottle={16}
+      >
+        {SET_ORDER.map(renderKeySet)}
+      </ScrollView>
     </View>
   );
 }
