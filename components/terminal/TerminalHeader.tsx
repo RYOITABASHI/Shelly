@@ -295,8 +295,8 @@ export function TerminalHeader({ onToggleJpInput, onReload, jpInputActive }: Ter
         <MaterialIcons name="open-in-full" size={14} color={colors.inactive} />
       </Pressable>
 
-      {/* JP input + Reload — shown in single pane only (split pane has quickBar) */}
-      {!isMultiPane && onToggleJpInput && (
+      {/* JP input + Reload */}
+      {onToggleJpInput && (
         <Pressable
           onPress={onToggleJpInput}
           style={[
@@ -308,7 +308,7 @@ export function TerminalHeader({ onToggleJpInput, onReload, jpInputActive }: Ter
           <Text style={[styles.jpToggleText, { color: jpInputActive ? colors.accent : colors.muted }]}>あ</Text>
         </Pressable>
       )}
-      {!isMultiPane && onReload && (
+      {onReload && (
         <Pressable onPress={onReload} style={styles.fullscreenButton}>
           <MaterialIcons name="refresh" size={15} color={colors.inactive} />
         </Pressable>
@@ -364,11 +364,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: HEADER_PADDING_H,
     height: HEADER_HEIGHT,
     borderBottomWidth: BORDER_WIDTH,
+    gap: 4,
   },
   appNameContainer: {
     flexDirection: 'row',
     alignItems: 'baseline',
-    flex: 1,
+    marginRight: 'auto' as any,
   },
   appName: {
     fontSize: 14,
