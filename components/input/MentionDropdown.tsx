@@ -25,6 +25,7 @@ const MENTION_OPTIONS: MentionOption[] = [
   { trigger: '@open',       label: 'Browser',      descKey: 'mention.browser_desc',     icon: 'open-in-browser', color: '#4ADE80' },
   { trigger: '@plan',       label: 'Plan Mode',    descKey: 'mention.plan_desc',        icon: 'checklist',       color: '#10B981' },
   { trigger: '@arena',      label: 'Arena Mode',   descKey: 'mention.arena_desc',       icon: 'compare-arrows',  color: '#F43F5E' },
+  { trigger: '@actions',    label: 'GitHub Actions', descKey: 'mention.actions_desc',   icon: 'play-circle',     color: '#F97316' },
 ];
 
 type Props = {

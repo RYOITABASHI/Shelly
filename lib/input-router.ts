@@ -13,7 +13,7 @@ import { t } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena';
+export type RouteTarget = 'claude' | 'gemini' | 'local' | 'termux' | 'suggest' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena' | 'actions';
 
 export type InputLayer =
   | 'mention'        // @claude / @gemini / @local
@@ -80,6 +80,8 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
   { pattern: /^@arena\s*/i,        target: 'arena',       label: 'Arena Mode' },
   { pattern: /^@battle\s*/i,       target: 'arena',       label: 'Arena Mode' },
   { pattern: /^@compare\s*/i,      target: 'arena',       label: 'Arena Mode' },
+  { pattern: /^@actions\s*/i,      target: 'actions',     label: 'GitHub Actions' },
+  { pattern: /^@ci\s*/i,           target: 'actions',     label: 'GitHub Actions' },
 ];
 
 // ─── 自然言語 + ツール名キーワード ────────────────────────────────────────────

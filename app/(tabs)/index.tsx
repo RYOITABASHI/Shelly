@@ -700,6 +700,30 @@ export default function ChatScreen() {
     // nl_with_tool: パーサーがツール名を検出済み → そのtargetを使う
     // (parseInputが既にtargetを設定してるのでここでは何もしない)
 
+    // @actions → show GitHub Actions wizard bubble
+    if (target === 'actions') {
+      const projectType = await (async () => {
+        try {
+          const cwd = activeSession?.currentDir || '';
+          if (!cwd) return 'unknown';
+          return await detectProjectTypeFromDir(cwd, async (cmd) => {
+            const res = await bridgeRunCommand(cmd);
+            return { stdout: res.stdout, exitCode: res.exitCode };
+          });
+        } catch { return 'unknown'; }
+      })();
+      const wizardData: ActionsWizardData = {
+        step: 'what', actions: ['build', 'test'], trigger: null, projectType,
+      };
+      const msgId = addAssistantMessage(undefined);
+      updateMessage(chatSessionId, msgId, {
+        content: '',
+        isStreaming: false,
+        wizardData,
+      });
+      return;
+    }
+
     // Browser target — open in system browser
     if (target === 'browser') {
       const url = parsed.prompt.trim();

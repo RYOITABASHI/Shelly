@@ -536,6 +536,7 @@ const ja: Record<string, string> = {
   'mention.browser_desc': 'URLをブラウザで開く',
   'mention.plan_desc': 'ステップ形式の計画',
   'mention.arena_desc': 'AI同士の比較対決',
+  'mention.actions_desc': 'CI/CDを設定',
 
   // ── AI Dispatch ─────────────────────────────────────────────────
   'dispatch.gemini_no_key': 'Gemini APIキーが設定されていません。\n無料キーの取得: https://aistudio.google.com/app/apikey',
