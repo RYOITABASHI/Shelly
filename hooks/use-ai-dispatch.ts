@@ -234,7 +234,19 @@ function getTerminalContextForPrompt(prompt: string, isWide: boolean): string {
   if (!termOutput) return '';
 
   const suffix = TERMINAL_CONTEXT_SUFFIXES[intent ?? 'reference'];
-  return `\n\n--- Terminal Output (Session: ${activeSessionId}, last 50 lines) ---\n${termOutput}${suffix}`;
+
+  // Include recently changed files from preview store (Flow Awareness)
+  let fileContext = '';
+  try {
+    const { usePreviewStore } = require('@/store/preview-store');
+    const recentFiles = usePreviewStore.getState().recentFiles;
+    if (recentFiles && recentFiles.length > 0) {
+      const paths = recentFiles.slice(0, 10).map((f: { path: string }) => f.path);
+      fileContext = `\n--- Recently Changed Files ---\n${paths.join('\n')}`;
+    }
+  } catch {}
+
+  return `\n\n--- Terminal Output (Session: ${activeSessionId}, last 50 lines) ---\n${termOutput}${fileContext}${suffix}`;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
