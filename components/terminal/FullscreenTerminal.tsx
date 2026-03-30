@@ -202,7 +202,7 @@ export function FullscreenTerminal({ visible, wsUrl, onClose }: Props) {
     if (!wsUrl) return;
     webViewRef.current?.injectJavaScript(`
       window.dispatchEvent(new MessageEvent('message', {
-        data: JSON.stringify({ type: 'connect', url: '${wsUrl}' })
+        data: JSON.stringify({ type: 'connect', url: ${JSON.stringify(wsUrl)} })
       }));
       true;
     `);
@@ -275,7 +275,7 @@ export function FullscreenTerminal({ visible, wsUrl, onClose }: Props) {
           ref={webViewRef}
           style={styles.webview}
           source={{ html: XTERM_HTML }}
-          originWhitelist={['*']}
+          originWhitelist={['about:blank']}
           onLoad={handleWebViewLoad}
           onMessage={handleMessage}
           javaScriptEnabled
@@ -286,10 +286,10 @@ export function FullscreenTerminal({ visible, wsUrl, onClose }: Props) {
           overScrollMode="never"
           showsVerticalScrollIndicator={false}
           showsHorizontalScrollIndicator={false}
-          // WebSocket接続のためにローカルネットワークアクセスを許可
+          // WebSocket requires mixed content for localhost only
           mixedContentMode="always"
-          allowFileAccess
-          allowUniversalAccessFromFileURLs
+          allowFileAccess={false}
+          allowUniversalAccessFromFileURLs={false}
           onRenderProcessGone={() => {
             console.warn('[FullscreenTerminal] Render process gone — reloading');
             setTimeout(() => webViewRef.current?.reload(), 500);

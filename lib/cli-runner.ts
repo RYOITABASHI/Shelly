@@ -181,7 +181,7 @@ export function buildCliCommand(req: CliRunRequest): CliRunPlan {
 
   if (req.tool === 'claude') {
     // claude --print "<prompt>" in the target directory
-    command = `cd "${req.targetPath}" && echo "" | claude --print "${escapeShellArg(prompt)}"`;
+    command = `cd "${req.targetPath}" && echo "" | claude --print ${escapeShellArg(prompt)}`;
 
     // Claude Code may still require interactive mode for complex tasks
     if (req.userInput.length > 200 || req.userInput.includes('プロジェクト全体')) {
@@ -192,7 +192,7 @@ export function buildCliCommand(req: CliRunRequest): CliRunPlan {
     }
   } else if (req.tool === 'gemini') {
     // gemini --prompt "<prompt>" in the target directory
-    command = `cd "${req.targetPath}" && gemini --prompt "${escapeShellArg(prompt)}"`;
+    command = `cd "${req.targetPath}" && gemini --prompt ${escapeShellArg(prompt)}`;
     if (req.userInput.length > 300) {
       isInteractiveFallback = true;
       fallbackSuggestion =
@@ -329,8 +329,8 @@ function buildNaturalDescription(tool: CliTool, userInput: string, targetPath: s
 }
 
 function escapeShellArg(s: string): string {
-  // Escape double quotes and backticks for shell safety
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+  // Single-quote wrapping: the only char to handle is single-quote itself
+  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 function isDestructiveCommand(cmd: string): boolean {

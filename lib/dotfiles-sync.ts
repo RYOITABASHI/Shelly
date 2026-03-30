@@ -6,6 +6,7 @@
  */
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ const SYNCABLE_FILES: DotfileEntry[] = [
   { filename: 'shelly-workflows.json', storageKey: '@shelly/workflows', description: 'Workflows' },
 ];
 
-const STORAGE_KEY_PAT = '@shelly/github_pat';
+const SECURE_KEY_PAT = 'shelly_dotfiles_pat';
 const STORAGE_KEY_GIST = '@shelly/gist_id';
 const STORAGE_KEY_LAST_SYNC = '@shelly/last_sync';
 
@@ -54,10 +55,20 @@ export const useDotfilesStore = create<SyncState>((set, get) => ({
 
   loadConfig: async () => {
     const [pat, gistId, lastSync] = await Promise.all([
-      AsyncStorage.getItem(STORAGE_KEY_PAT),
+      SecureStore.getItemAsync(SECURE_KEY_PAT),
       AsyncStorage.getItem(STORAGE_KEY_GIST),
       AsyncStorage.getItem(STORAGE_KEY_LAST_SYNC),
     ]);
+    // Migrate from legacy AsyncStorage if present
+    if (!pat) {
+      const legacyPat = await AsyncStorage.getItem('@shelly/github_pat');
+      if (legacyPat) {
+        await SecureStore.setItemAsync(SECURE_KEY_PAT, legacyPat);
+        await AsyncStorage.removeItem('@shelly/github_pat');
+        set({ pat: legacyPat, gistId: gistId || '', lastSync: lastSync ? parseInt(lastSync, 10) : null });
+        return;
+      }
+    }
     set({
       pat: pat || '',
       gistId: gistId || '',
@@ -67,7 +78,7 @@ export const useDotfilesStore = create<SyncState>((set, get) => ({
 
   setPat: (pat) => {
     set({ pat });
-    AsyncStorage.setItem(STORAGE_KEY_PAT, pat);
+    SecureStore.setItemAsync(SECURE_KEY_PAT, pat);
   },
 
   syncToGist: async () => {

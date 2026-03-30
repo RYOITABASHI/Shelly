@@ -214,15 +214,21 @@ const LIGHTWEIGHT_PATTERNS: Array<{ pattern: RegExp; command: string; label: str
   { pattern: /^(?:(?:search|検索|探す)\s+(?:package|パッケージ)\s+)(.+)/i, command: 'pkg search $1', label: 'pkg search', hasCaptureGroup: true },
 ];
 
+/** Shell-safe character set for package names / search terms */
+const SAFE_CAPTURE_PATTERN = /^[a-zA-Z0-9._@/+ -]+$/;
+
 function matchLightweightTask(input: string): LightweightMatch | null {
   const trimmed = input.trim();
   for (const { pattern, command, label, hasCaptureGroup } of LIGHTWEIGHT_PATTERNS) {
     const match = pattern.exec(trimmed);
     if (match) {
-      const resolvedCommand = hasCaptureGroup && match[1]
-        ? command.replace('$1', match[1].trim())
-        : command;
-      return { command: resolvedCommand, label };
+      if (hasCaptureGroup && match[1]) {
+        const captured = match[1].trim();
+        // Reject (not strip) inputs containing shell metacharacters
+        if (!captured || !SAFE_CAPTURE_PATTERN.test(captured)) return null;
+        return { command: command.replace('$1', captured), label };
+      }
+      return { command, label };
     }
   }
   return null;
