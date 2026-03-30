@@ -284,7 +284,7 @@ Code comments are primarily in Japanese. English translations welcome as PRs.
 - `lib/command-safety.ts` — Risk assessment engine. Blocks dangerous commands with 5 severity levels
 - `lib/auto-savepoint.ts` — Watches for file changes and auto-commits. The "game save" system
 - `components/chat/ActionBlock.tsx` — Renders [▶ Run] / [Copy] buttons on AI-generated code blocks
-- `modules/termux-bridge/android/.../ShellyTerminalView.kt` — The native terminal renderer (Kotlin + Android Canvas)
+- `modules/terminal-view/android/.../ShellyTerminalView.kt` — The native terminal renderer (Kotlin + Android Canvas)
 
 > **Test suite:** Not yet established. Adding tests for `input-router`, `command-safety`, and `auto-savepoint` is a high-value contribution.
 

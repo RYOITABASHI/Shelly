@@ -1,6 +1,5 @@
 # Shelly PR動画 — 手動撮影台本
 
-> 撮影者: りょう（手動操作）
 > デバイス: Galaxy Z Fold6
 > 録画方法: Android標準の画面録画（通知バーから起動）
 > 目的: README用デモGIF + OSS公開用素材
