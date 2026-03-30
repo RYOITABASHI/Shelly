@@ -22,6 +22,10 @@ type Props = {
   isCompact?: boolean;
   /** Suggested key set from PTY output detection */
   suggestedSet?: KeySetId;
+  /** Attach file callback (replaces TerminalActionBar) */
+  onAttach?: () => void;
+  /** Voice input callback (replaces TerminalActionBar) */
+  onVoice?: () => void;
 };
 
 type KeyConfig = {
@@ -104,7 +108,7 @@ const KEY_SETS: Record<KeySetId, { label: string; icon: string; keys: KeyConfig[
 
 const SET_ORDER: KeySetId[] = ['default', 'vim', 'git', 'repl', 'navigate'];
 
-export function CommandKeyBar({ sendKey, sendText, isCompact, suggestedSet }: Props) {
+export function CommandKeyBar({ sendKey, sendText, isCompact, suggestedSet, onAttach, onVoice }: Props) {
   const { colors: c } = useTheme();
   const { settings } = useTerminalStore();
   const [activeSet, setActiveSet] = useState<KeySetId>('default');
@@ -196,8 +200,19 @@ export function CommandKeyBar({ sendKey, sendText, isCompact, suggestedSet }: Pr
 
   return (
     <View style={[styles.container, { backgroundColor: c.surfaceHigh, borderTopColor: c.border }]} onLayout={onBarLayout}>
-      {/* Set indicator dots (tap to switch) */}
+      {/* Set indicator dots + attach/voice shortcuts */}
       <View style={styles.dotsRow}>
+        {onAttach && (
+          <Pressable onPress={onAttach} hitSlop={6} style={styles.miniBtn}>
+            <MaterialIcons name="attach-file" size={12} color={c.muted} />
+          </Pressable>
+        )}
+        {onVoice && (
+          <Pressable onPress={onVoice} hitSlop={6} style={styles.miniBtn}>
+            <MaterialIcons name="mic" size={12} color={c.muted} />
+          </Pressable>
+        )}
+        <View style={{ flex: 1 }} />
         {SET_ORDER.map((id) => (
           <Pressable key={id} onPress={() => switchSet(id)} hitSlop={8}>
             <View style={[
@@ -252,9 +267,16 @@ const styles = StyleSheet.create({
   dotsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 6,
     paddingVertical: 2,
+    paddingHorizontal: 6,
+  },
+  miniBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dot: {
     width: 5,

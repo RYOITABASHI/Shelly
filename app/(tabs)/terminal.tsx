@@ -40,7 +40,7 @@ import { TerminalHeader } from '@/components/terminal/TerminalHeader';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
-import { TerminalActionBar } from '@/components/terminal/TerminalActionBar';
+// TerminalActionBar removed — attach/voice integrated into CommandKeyBar
 import { startSmartWakelock, stopSmartWakelock } from '@/lib/smart-wakelock';
 import TermuxBridge from '@/modules/termux-bridge';
 import { loadSessionsFromProject, startAutoSave, stopAutoSave } from '@/lib/session-persistence';
@@ -642,12 +642,23 @@ export default function TerminalScreen() {
         </View>
       )}
 
-      {/* Command Key Bar (Ctrl+C, Tab, up, down, Paste) */}
+      {/* Command Key Bar (Ctrl+C, Tab, up, down, Paste) + Attach/Voice */}
       {isConnected && (
         <CommandKeyBar
           sendKey={sendKey}
           sendText={sendToTerminal}
           isCompact={layout.isCompact || layout.width < 400}
+          onAttach={() => {
+            import('expo-document-picker').then((mod) => {
+              mod.getDocumentAsync({ copyToCacheDirectory: true }).then((result) => {
+                if (!result.canceled && result.assets?.[0]) {
+                  const asset = result.assets[0];
+                  copyFileToCwd(asset.uri, asset.name || `file-${Date.now()}`);
+                }
+              });
+            });
+          }}
+          onVoice={() => setVoiceChatVisible(true)}
         />
       )}
 
@@ -664,15 +675,6 @@ export default function TerminalScreen() {
         >
           <MaterialIcons name="keyboard-arrow-down" size={24} color="#fff" />
         </TouchableOpacity>
-      )}
-
-      {/* Action Bar (Attach + Voice) */}
-      {isConnected && (
-        <TerminalActionBar
-          copyFileToCwd={copyFileToCwd}
-          sendText={sendToTerminal}
-          onVoiceDialog={() => setVoiceChatVisible(true)}
-        />
       )}
 
       {/* Voice Dialog Mode */}
