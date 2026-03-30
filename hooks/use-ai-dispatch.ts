@@ -1210,12 +1210,19 @@ export function useAIDispatch() {
       return { handled: true };
     }
 
-    // ── @plan → Gemini Plan Mode or AI with plan format instruction ──
+    // ── @plan → Plan Mode via best available API ──
     if (target === 'plan') {
-      const msgId = addAssistantMessage(chatSessionId, 'gemini');
+      // Pick best available provider
+      const planProvider = settings.cerebrasApiKey ? 'cerebras'
+        : settings.groqApiKey ? 'groq'
+        : settings.localLlmEnabled ? 'local'
+        : connectionMode === 'termux' ? 'gemini-cli'
+        : null;
+
+      const msgId = addAssistantMessage(chatSessionId, planProvider === 'cerebras' ? 'cerebras' : planProvider === 'groq' ? 'groq' : 'gemini');
       streamingMsgRef.current = { sessionId: chatSessionId, msgId };
 
-      const planSystemPrompt = `Respond in a structured Plan format. Use a numbered list with clear steps. Include code blocks for commands. Start with "## Plan" header.
+      const planSystemPrompt = `You are a project planner. Respond ONLY in a structured Plan format. Use a numbered list with clear steps. Include code blocks for commands. Start with "## Plan" header. Respond in the same language as the user's request.
 
 Example:
 ## Plan
@@ -1230,34 +1237,52 @@ Example:
 
       const fullPrompt = `${planSystemPrompt}\n\nUser request: ${promptWithFiles}`;
 
-      // Try Gemini CLI first (with --plan flag if available), fallback to API
-      if (connectionMode === 'termux') {
-        updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
-        let accumulated = '';
-        try {
-          const result = await bridgeRunCommand(`gemini "${fullPrompt.replace(/"/g, '\\"')}"`);
+      updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', streamingStartTime: Date.now() });
+      let accumulated = '';
+
+      try {
+        if (planProvider === 'cerebras') {
+          const { cerebrasChatStream } = await import('@/lib/cerebras');
+          await cerebrasChatStream(settings.cerebrasApiKey!, fullPrompt, (chunk: string) => {
+            accumulated += chunk;
+            updateMessage(chatSessionId, msgId, { streamingText: accumulated });
+          });
+        } else if (planProvider === 'groq') {
+          const { groqChatStream } = await import('@/lib/groq');
+          await groqChatStream(settings.groqApiKey!, fullPrompt, (chunk: string) => {
+            accumulated += chunk;
+            updateMessage(chatSessionId, msgId, { streamingText: accumulated });
+          });
+        } else if (planProvider === 'local') {
+          const { ollamaChatStream } = await import('@/lib/local-llm');
+          await ollamaChatStream(
+            { baseUrl: settings.localLlmUrl, model: settings.localLlmModel, enabled: true },
+            [{ role: 'user' as const, content: fullPrompt }],
+            (chunk: string) => {
+              accumulated += chunk;
+              updateMessage(chatSessionId, msgId, { streamingText: accumulated });
+            },
+          );
+        } else if (planProvider === 'gemini-cli') {
+          const result = await bridgeRunCommand(`gemini "${fullPrompt.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`);
           accumulated = result.stdout || '';
-        } catch (e) {
-          accumulated = `## Plan\n\n1. Error: Could not connect to Gemini CLI\n   - ${String(e)}`;
+        } else {
+          accumulated = `## Plan\n\n1. No AI provider available\n   - Configure Cerebras, Groq, or Local LLM in Settings\n   - Or connect Termux for CLI access`;
         }
-
-        // Parse and store plan
-        const plan = parsePlanOutput(accumulated, 'gemini');
-        if (plan) {
-          usePlanStore.getState().setActivePlan(plan);
-        }
-
-        updateMessage(chatSessionId, msgId, {
-          content: accumulated,
-          isStreaming: false,
-        });
-      } else {
-        // Fallback: use any available LLM with plan format instruction
-        updateMessage(chatSessionId, msgId, {
-          content: `## Plan\n\n1. Connect Termux to enable Plan Mode\n   - Plan Mode requires a terminal connection to execute steps\n   - Use the Setup Wizard to connect Termux`,
-          isStreaming: false,
-        });
+      } catch (e) {
+        accumulated = accumulated || `## Plan\n\n1. Error generating plan\n   - ${String(e)}`;
       }
+
+      // Parse and store plan
+      const plan = parsePlanOutput(accumulated, planProvider || 'unknown');
+      if (plan) {
+        usePlanStore.getState().setActivePlan(plan);
+      }
+
+      updateMessage(chatSessionId, msgId, {
+        content: accumulated,
+        isStreaming: false,
+      });
       return { handled: true };
     }
 
@@ -1315,7 +1340,8 @@ Example:
           } else if ((agent === 'claude' || agent === 'gemini') && connectionMode === 'termux') {
             const cli = agent === 'claude' ? 'claude' : 'gemini';
             try {
-              const result = await bridgeRunCommand(`${cli} "${promptWithFiles.replace(/"/g, '\\"')}"`);
+              const escaped = promptWithFiles.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+              const result = await bridgeRunCommand(`${cli} "${escaped}"`);
               accumulated = result.stdout || '';
             } catch (e) {
               accumulated = `Error: ${String(e)}`;
