@@ -1,5 +1,7 @@
 package expo.modules.terminalemulator
 
+import android.content.Intent
+import android.os.Build
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -94,6 +96,27 @@ class TerminalEmulatorModule : Module() {
             val session = sessions[sessionId]
                 ?: throw IllegalArgumentException("Session $sessionId not found")
             session.getTitle()
+        }
+
+        AsyncFunction("startSessionService") {
+            val context = appContext.reactContext ?: return@AsyncFunction
+            val serviceClass = Class.forName(
+                context.packageName + ".TerminalSessionService"
+            )
+            val intent = Intent(context, serviceClass)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        AsyncFunction("stopSessionService") {
+            val context = appContext.reactContext ?: return@AsyncFunction
+            val serviceClass = Class.forName(
+                context.packageName + ".TerminalSessionService"
+            )
+            context.stopService(Intent(context, serviceClass))
         }
     }
 }

@@ -241,7 +241,10 @@ export default function TerminalScreen() {
       } catch {}
 
 
-      // 4. Update session status to alive
+      // 4. Start foreground service to prevent task-kill
+      try { await TerminalEmulator.startSessionService(); } catch {}
+
+      // 5. Update session status to alive
       useTerminalStore.setState((state) => ({
         sessions: state.sessions.map((s) =>
           s.id === session.id ? { ...s, sessionStatus: 'alive' as const, isAlive: true } : s
