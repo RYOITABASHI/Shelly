@@ -207,16 +207,50 @@ export default function TerminalScreen() {
       }
 
       // 2. Create Kotlin session connected to pty-helper TCP port (with retry)
-      try {
-        await TerminalEmulator.createSession({
-          sessionId: session.nativeSessionId,
-          port,
-          rows: 24,
-          cols: 80,
-        });
-      } catch (firstErr) {
-        console.warn('[Terminal] createSession failed, retrying in 1s:', firstErr);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      let connected = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await TerminalEmulator.createSession({
+            sessionId: session.nativeSessionId,
+            port,
+            rows: 24,
+            cols: 80,
+          });
+          connected = true;
+          break;
+        } catch (e) {
+          console.warn(`[Terminal] createSession attempt ${attempt + 1} failed:`, e);
+          // Destroy stale Kotlin session before retrying
+          try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      // Last resort: kill pty-helper and start fresh
+      if (!connected) {
+        console.warn('[Terminal] All retries failed, restarting pty-helper on port', port);
+        await runRawCommand(
+          `pkill -f "pty-helper.*${port}" 2>/dev/null; true`,
+          { timeoutMs: 3000, reason: 'pty-force-restart' }
+        ).catch(() => {});
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await runRawCommand(
+          `nohup ~/shelly-bridge/pty-helper ${port} 80 24 > /dev/null 2>&1 &`,
+          { timeoutMs: 5000, reason: 'pty-restart' }
+        );
+        // Wait for new pty-helper
+        for (let i = 0; i < 6; i++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          try {
+            const r = await runRawCommand(
+              `(echo >/dev/tcp/127.0.0.1/${port}) 2>/dev/null && echo READY || echo WAIT`,
+              { timeoutMs: 2000, reason: 'pty-restart-wait' }
+            );
+            if (r?.stdout?.includes('READY')) break;
+          } catch {}
+        }
+        // Final attempt
+        try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
         await TerminalEmulator.createSession({
           sessionId: session.nativeSessionId,
           port,
