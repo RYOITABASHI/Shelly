@@ -19,6 +19,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   getSessionTitle(sessionId: string): Promise<string>;
   startSessionService(): Promise<void>;
   stopSessionService(): Promise<void>;
+  updateSessionNotification(info: string): Promise<void>;
+  isIgnoringBatteryOptimizations(): Promise<boolean>;
+  requestBatteryOptimizationExemption(): Promise<void>;
 }
 
 export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator');

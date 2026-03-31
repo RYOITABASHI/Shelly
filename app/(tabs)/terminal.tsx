@@ -356,6 +356,18 @@ export default function TerminalScreen() {
     return () => sub.remove();
   }, [ensureNativeSessions]);
 
+  // Request battery optimization exemption on first mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const exempt = await TerminalEmulator.isIgnoringBatteryOptimizations();
+        if (!exempt) {
+          await TerminalEmulator.requestBatteryOptimizationExemption();
+        }
+      } catch {}
+    })();
+  }, []);
+
   // Start smart wakelock + foreground service + session monitor on mount
   useEffect(() => {
     startSmartWakelock(runRawCommand);

@@ -5,7 +5,7 @@
 
 type RunCommand = (cmd: string, opts: { timeoutMs: number; reason: string }) => Promise<any>;
 
-const CHECK_INTERVAL = 60_000;
+const CHECK_INTERVAL = 180_000; // 3 minutes (省バッテリー: 60s→180s)
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _onSessionDied: ((tmuxName: string) => void) | null = null;
 // Track consecutive failures to avoid false positives from transient errors

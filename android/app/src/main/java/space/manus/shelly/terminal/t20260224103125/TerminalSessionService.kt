@@ -14,6 +14,9 @@ import androidx.core.app.NotificationCompat
  * Foreground service that keeps Shelly alive when backgrounded.
  * Shows a persistent notification like Termux's "session is running".
  * Prevents Android from killing the process during task-switcher clear-all.
+ *
+ * Supports dynamic notification updates via ACTION_UPDATE_NOTIFICATION
+ * to show active session info (e.g. "Claude Code running in shelly-1").
  */
 class TerminalSessionService : Service() {
 
@@ -21,7 +24,11 @@ class TerminalSessionService : Service() {
         const val CHANNEL_ID = "shelly_terminal_session"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "space.manus.shelly.terminal.STOP_SERVICE"
+        const val ACTION_UPDATE = "space.manus.shelly.terminal.UPDATE_NOTIFICATION"
+        const val EXTRA_SESSION_INFO = "session_info"
     }
+
+    private var sessionInfo: String = "Terminal session is running"
 
     override fun onCreate() {
         super.onCreate()
@@ -29,12 +36,28 @@ class TerminalSessionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_UPDATE -> {
+                intent.getStringExtra(EXTRA_SESSION_INFO)?.let {
+                    sessionInfo = it
+                    updateNotification()
+                }
+                return START_STICKY
+            }
         }
 
+        startForeground(NOTIFICATION_ID, buildNotification())
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun buildNotification(): Notification {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, launchIntent,
@@ -49,21 +72,21 @@ class TerminalSessionService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Shelly")
-            .setContentText("Terminal session is running")
+            .setContentText(sessionInfo)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-
-        startForeground(NOTIFICATION_ID, notification)
-        return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun updateNotification() {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, buildNotification())
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

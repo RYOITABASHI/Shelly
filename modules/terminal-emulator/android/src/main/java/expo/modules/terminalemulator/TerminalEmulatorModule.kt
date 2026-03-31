@@ -1,7 +1,11 @@
 package expo.modules.terminalemulator
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -118,6 +122,42 @@ class TerminalEmulatorModule : Module() {
                 context.packageName + ".TerminalSessionService"
             )
             context.stopService(Intent(context, serviceClass))
+            null
+        }
+
+        AsyncFunction("updateSessionNotification") { info: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            val serviceClass = Class.forName(
+                context.packageName + ".TerminalSessionService"
+            )
+            val intent = Intent(context, serviceClass).apply {
+                action = "space.manus.shelly.terminal.UPDATE_NOTIFICATION"
+                putExtra("session_info", info)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            null
+        }
+
+        AsyncFunction("isIgnoringBatteryOptimizations") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(context.packageName)
+        }
+
+        AsyncFunction("requestBatteryOptimizationExemption") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }
             null
         }
     }
