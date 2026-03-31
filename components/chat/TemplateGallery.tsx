@@ -12,6 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { TEMPLATE_GALLERY, type TemplateWithWizard, type WizardStep } from '@/lib/project-templates';
+import { t } from '@/lib/i18n';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -180,8 +181,8 @@ export const TemplateGallery = memo(function TemplateGallery({ onSelectTemplate,
             activeOpacity={0.7}
           >
             <MaterialIcons name={template.icon as any} size={22} color={colors.accent} />
-            <Text style={[styles.templateLabel, { color: colors.foreground }]}>
-              {template.label}
+            <Text style={[styles.templateLabel, { color: colors.foreground }]} numberOfLines={1}>
+              {t(`template.${template.type}`) || template.label}
             </Text>
           </TouchableOpacity>
         ))}

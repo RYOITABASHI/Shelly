@@ -913,6 +913,15 @@ const ja: Record<string, string> = {
   'wizard.no_pat': '先に設定画面でGitHubを接続してください。',
   'wizard.no_remote': '先にプロジェクトをGitHubに保存してください。',
   'wizard.select_one': '1つ以上選んでください',
+
+  // ── Template Gallery ───────────────────────────────────────────
+  'template.web': 'Webアプリ',
+  'template.api': 'APIサーバ',
+  'template.cli': 'CLIツール',
+  'template.mobile': 'モバイルアプリ',
+  'template.static': '静的サイト',
+  'template.script': 'スクリプト',
+  'template.document': 'ドキュメント',
 };
 
 export default ja;

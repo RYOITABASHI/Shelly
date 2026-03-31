@@ -911,6 +911,15 @@ const en: Record<string, string> = {
   'wizard.no_pat': 'Connect to GitHub first in Settings.',
   'wizard.no_remote': 'Save your project to GitHub first.',
   'wizard.select_one': 'Pick at least one',
+
+  // ── Template Gallery ───────────────────────────────────────────
+  'template.web': 'Web App',
+  'template.api': 'API Server',
+  'template.cli': 'CLI Tool',
+  'template.mobile': 'Mobile App',
+  'template.static': 'Static Site',
+  'template.script': 'Script',
+  'template.document': 'Docs',
 };
 
 export default en;

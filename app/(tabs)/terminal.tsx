@@ -156,25 +156,15 @@ export default function TerminalScreen() {
       // 0. Destroy any stale Kotlin session before re-creating
       try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
-      // 1. Check if pty-helper is already running on this port
-      let ptyAlive = false;
-      try {
-        const check = await runRawCommand(
-          `(echo >/dev/tcp/127.0.0.1/${port}) 2>/dev/null && echo ALIVE || echo DEAD`,
-          { timeoutMs: 2000, reason: 'pty-check' }
-        );
-        ptyAlive = check?.stdout?.includes('ALIVE') ?? false;
-      } catch {}
-
-      if (!ptyAlive) {
-        // pty-helper not running — start a new one
-        console.log('[Terminal] pty-helper not running, starting on port', port);
-
-        // Kill any stale process on this port
+      // 1. Always kill stale pty-helper and start fresh to ensure latest binary is used
+      {
+        console.log('[Terminal] (re)starting pty-helper on port', port);
         await runRawCommand(
           `pkill -f "pty-helper.*${port}" 2>/dev/null; true`,
           { timeoutMs: 3000, reason: 'pty-cleanup' }
         ).catch(() => {});
+        // Brief pause to let the old process release the port
+        await new Promise(resolve => setTimeout(resolve, 300));
 
         // Launch pty-helper
         await runRawCommand(
@@ -200,11 +190,6 @@ export default function TerminalScreen() {
         if (!ready) {
           throw new Error(`pty-helper not ready on port ${port} after 3s`);
         }
-      } else {
-        // pty-helper is already running — just reconnect.
-        // Small delay to let pty-helper accept loop close the old client.
-        console.log('[Terminal] pty-helper already running on port', port, '— reconnecting');
-        await new Promise(resolve => setTimeout(resolve, 300));
       }
 
       // 2. Create Kotlin session connected to pty-helper TCP port (with retry)
