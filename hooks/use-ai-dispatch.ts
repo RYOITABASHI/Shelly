@@ -31,6 +31,7 @@ import { t } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { groqChatStream, type GroqMessage } from '@/lib/groq';
 import { hasTerminalReference, getTerminalIntent, type TerminalIntent } from '@/lib/input-router';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 // ─── Auth URL detection ──────────────────────────────────────────────────────
 
@@ -223,14 +224,23 @@ const TERMINAL_CONTEXT_SUFFIXES: Record<TerminalIntent, string> = {
  * Single pane: only when user explicitly references terminal
  * Empty output: always fallback to normal response
  */
-function getTerminalContextForPrompt(prompt: string, isWide: boolean): string {
+async function getTerminalContextForPrompt(prompt: string, isWide: boolean): Promise<string> {
   const intent = getTerminalIntent(prompt);
   const shouldInject = isWide || intent !== null;
   if (!shouldInject) return '';
 
-  // Read output from the active terminal session
+  // Primary: snapshot from native TerminalEmulator (captures pre-split output)
   const activeSessionId = useTerminalStore.getState().activeSessionId;
-  const termOutput = useExecutionLogStore.getState().getRecentOutput(50, 5, activeSessionId);
+  let termOutput = '';
+  if (activeSessionId) {
+    try {
+      termOutput = await TerminalEmulator.getTranscriptText(activeSessionId, 100);
+    } catch {}
+  }
+  // Fallback: execution-log buffer (for sessions without native emulator)
+  if (!termOutput) {
+    termOutput = useExecutionLogStore.getState().getRecentOutput(50, 5, activeSessionId);
+  }
   if (!termOutput) return '';
 
   const suffix = TERMINAL_CONTEXT_SUFFIXES[intent ?? 'reference'];
@@ -246,7 +256,7 @@ function getTerminalContextForPrompt(prompt: string, isWide: boolean): string {
     }
   } catch {}
 
-  return `\n\n--- Terminal Output (Session: ${activeSessionId}, last 50 lines) ---\n${termOutput}${fileContext}${suffix}`;
+  return `\n\n--- Terminal Output (Session: ${activeSessionId}, last 100 lines) ---\n${termOutput}${fileContext}${suffix}`;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -438,7 +448,7 @@ export function useAIDispatch() {
         updateMessage(chatSessionId, msgId, { isStreaming: true, streamingText: '', tokenCount: 0, streamingStartTime: Date.now() });
 
         // Cross-pane: inject terminal context
-        const termCtx = getTerminalContextForPrompt(prompt, isWide ?? false);
+        const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
 
         // Load all context layers in parallel
         const ollamaHistory = toOllamaHistory(messages);
@@ -560,7 +570,7 @@ export function useAIDispatch() {
         }
 
         // Cross-pane: inject terminal context
-        const termCtx = getTerminalContextForPrompt(prompt, isWide ?? false);
+        const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
         const cerebrasPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
 
         const result = await cerebrasChatStream(
@@ -688,7 +698,7 @@ export function useAIDispatch() {
         }
 
         // Cross-pane: inject terminal context
-        const termCtx = getTerminalContextForPrompt(prompt, isWide ?? false);
+        const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
         const groqPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
 
         const result = await groqChatStream(
@@ -825,7 +835,7 @@ export function useAIDispatch() {
         const { perplexitySearchStream } = await import('@/lib/perplexity');
         const pplxHistory = toPerplexityHistory(messages);
         // Cross-pane: inject terminal context
-        const termCtx = getTerminalContextForPrompt(prompt, isWide ?? false);
+        const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
         const pplxPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
         await perplexitySearchStream(apiKey, pplxPrompt, (chunk, done, cits) => {
           if (signal.aborted) return;
@@ -865,7 +875,7 @@ export function useAIDispatch() {
 
       // APIキーなし → Gemini CLIをTermux経由で実行
       if (!apiKey && connectionMode === 'termux') {
-        const termCtx = getTerminalContextForPrompt(prompt, isWide ?? false);
+        const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
         const contextualPrompt = promptWithFiles + toTextContext(messages) + termCtx;
         const escaped = contextualPrompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
         const cliCommand = `gemini --prompt "${escaped}"`;
@@ -924,7 +934,7 @@ export function useAIDispatch() {
         const { geminiChatStream } = await import('@/lib/gemini');
         const geminiHistory = toGeminiHistory(messages);
         // Cross-pane: inject terminal context
-        const termCtx = getTerminalContextForPrompt(prompt, isWide ?? false);
+        const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
         const geminiPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
         const result = await geminiChatStream(apiKey, geminiPrompt, (chunk, done) => {
           if (signal.aborted) return;
