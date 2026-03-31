@@ -125,6 +125,16 @@ class ShellyTerminalSession(
 
     fun getTitle(): String = terminalSession.title ?: ""
 
+    /**
+     * Write text directly to the terminal emulator's screen (not to pty-helper).
+     * Used to restore previous screen content on reconnection.
+     */
+    fun writeToEmulator(text: String) {
+        val emulator = terminalSession.emulator ?: return
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        emulator.append(bytes, bytes.size)
+    }
+
     fun getTranscriptText(maxLines: Int): String {
         val emulator = terminalSession.emulator ?: return ""
         val screen = emulator.screen

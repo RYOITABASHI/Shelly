@@ -153,7 +153,11 @@ export default function TerminalScreen() {
   const createNativeSession = useCallback(async (session: TabSession) => {
     const port = getPtyPort(session.tmuxSession);
     try {
-      // 0. Destroy any stale Kotlin session before re-creating
+      // 0. Save transcript before destroying, then destroy stale Kotlin session
+      let savedTranscript = '';
+      try {
+        savedTranscript = await TerminalEmulator.getTranscriptText(session.nativeSessionId, 200);
+      } catch {}
       try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
       // 1. Check if pty-helper is already running on this port
@@ -226,7 +230,12 @@ export default function TerminalScreen() {
         });
       }
 
-      // 3. Send Ctrl+L to refresh the screen (makes running programs redraw)
+      // 3. Restore previous screen content if we had a transcript, then Ctrl+L
+      if (savedTranscript) {
+        try {
+          await TerminalEmulator.writeToEmulator(session.nativeSessionId, savedTranscript + '\n');
+        } catch {}
+      }
       try {
         await TerminalEmulator.writeToSession(session.nativeSessionId, '\x0c');
       } catch {}

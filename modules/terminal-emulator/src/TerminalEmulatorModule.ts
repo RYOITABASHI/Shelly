@@ -15,6 +15,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   resizeSession(sessionId: string, rows: number, cols: number): Promise<void>;
   isSessionAlive(sessionId: string): Promise<boolean>;
   getTranscriptText(sessionId: string, maxLines: number): Promise<string>;
+  writeToEmulator(sessionId: string, text: string): Promise<void>;
   getSessionTitle(sessionId: string): Promise<string>;
 }
 
