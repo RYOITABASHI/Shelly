@@ -149,21 +149,27 @@ export function useTerminalOutput() {
                 errorAccum.current = [];
                 if (!errorText) return;
                 // Check chat history: skip if recent error bubble exists (within 10s)
-                const store = useChatStore.getState();
-                const session = store.getActiveSession();
+                let store: ReturnType<typeof useChatStore.getState>;
+                let session: ReturnType<ReturnType<typeof useChatStore.getState>['getActiveSession']>;
+                try {
+                  store = useChatStore.getState();
+                  session = store.getActiveSession();
+                } catch { return; }
                 if (!session) return;
-                const msgs = session.messages;
+                const msgs = session.messages ?? [];
                 for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 5); i--) {
                   const m = msgs[i];
-                  if (m.errorSummaryData && Date.now() - m.timestamp < 10_000) return;
+                  if (m?.errorSummaryData && Date.now() - m.timestamp < 10_000) return;
                 }
-                store.addMessage(session.id, {
-                  id: generateId(),
-                  role: 'system',
-                  content: '',
-                  timestamp: Date.now(),
-                  errorSummaryData: { errorText, translation: '', provider: '' },
-                });
+                try {
+                  store.addMessage(session.id, {
+                    id: generateId(),
+                    role: 'system',
+                    content: '',
+                    timestamp: Date.now(),
+                    errorSummaryData: { errorText, translation: '', provider: '' },
+                  });
+                } catch {}
               }, 2000);
             }
           }
