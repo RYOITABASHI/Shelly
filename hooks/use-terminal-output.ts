@@ -134,33 +134,39 @@ export function useTerminalOutput() {
             }, 300);
           }
 
-          // Wide mode only: detect error output
+          // Wide mode only: detect error output (deduplicated)
           if (isWide) {
+            let matched = false;
             for (const pattern of ERROR_OUTPUT_PATTERNS) {
-              if (pattern.test(line)) {
-                errorAccum.current.push(line);
-                if (errorDebounce.current) clearTimeout(errorDebounce.current);
-                errorDebounce.current = setTimeout(() => {
-                  const errorText = errorAccum.current.join('\n');
-                  errorAccum.current = [];
-                  // Deduplicate: skip if same error text within 10 seconds
-                  const now = Date.now();
-                  if (errorText === lastErrorText.current && now - lastErrorTime.current < 10_000) return;
-                  lastErrorText.current = errorText;
-                  lastErrorTime.current = now;
-                  const store = useChatStore.getState();
-                  const session = store.getActiveSession();
-                  if (!session) return;
-                  store.addMessage(session.id, {
-                    id: generateId(),
-                    role: 'system',
-                    content: '',
-                    timestamp: Date.now(),
-                    errorSummaryData: { errorText, translation: '', provider: '' },
-                  });
-                }, 2000);
-                break;
+              if (pattern.test(line)) { matched = true; break; }
+            }
+            if (matched) {
+              // Strip ANSI escape codes for clean comparison
+              const cleanLine = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+              if (cleanLine && !errorAccum.current.includes(cleanLine)) {
+                errorAccum.current.push(cleanLine);
               }
+              if (errorDebounce.current) clearTimeout(errorDebounce.current);
+              errorDebounce.current = setTimeout(() => {
+                const errorText = errorAccum.current.join('\n');
+                errorAccum.current = [];
+                if (!errorText) return;
+                // Deduplicate: skip if same error within 10 seconds
+                const now = Date.now();
+                if (errorText === lastErrorText.current && now - lastErrorTime.current < 10_000) return;
+                lastErrorText.current = errorText;
+                lastErrorTime.current = now;
+                const store = useChatStore.getState();
+                const session = store.getActiveSession();
+                if (!session) return;
+                store.addMessage(session.id, {
+                  id: generateId(),
+                  role: 'system',
+                  content: '',
+                  timestamp: Date.now(),
+                  errorSummaryData: { errorText, translation: '', provider: '' },
+                });
+              }, 2000);
             }
           }
 
