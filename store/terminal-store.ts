@@ -219,7 +219,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const session = get().sessions.find((s) => s.id === targetId);
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === targetId ? { ...s, blocks: [], entries: [] } : s
+        s.id === targetId ? { ...s, blocks: [], entries: [], currentDir: '/data/data/com.termux/files/home' } : s
       ),
     }));
     // Also clear the execution log buffers so stale output doesn't reappear

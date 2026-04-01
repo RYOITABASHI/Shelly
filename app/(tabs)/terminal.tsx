@@ -161,7 +161,7 @@ export default function TerminalScreen() {
       try {
         const check = await runRawCommand(
           `(echo >/dev/tcp/127.0.0.1/${port}) 2>/dev/null && echo ALIVE || echo DEAD`,
-          { timeoutMs: 2000, reason: 'pty-check' }
+          { timeoutMs: 1000, reason: 'pty-check' }
         );
         ptyAlive = check?.stdout?.includes('ALIVE') ?? false;
       } catch {}
@@ -220,7 +220,7 @@ export default function TerminalScreen() {
         } catch (e) {
           console.warn(`[Terminal] createSession attempt ${attempt + 1} failed:`, e);
           try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
       }
 
@@ -231,7 +231,7 @@ export default function TerminalScreen() {
           `pkill -f "pty-helper.*${port}" 2>/dev/null; true`,
           { timeoutMs: 3000, reason: 'pty-force-restart' }
         ).catch(() => {});
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 150));
         await runRawCommand(
           `nohup ~/shelly-bridge/pty-helper ${port} 80 24 > /dev/null 2>&1 &`,
           { timeoutMs: 5000, reason: 'pty-restart' }
