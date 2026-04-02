@@ -51,6 +51,7 @@ import { ProcessGuardModal } from '@/components/terminal/ProcessGuardModal';
 import { FirstMateOverlay, shouldShowFirstMate } from '@/components/terminal/FirstMateOverlay';
 import { isProcessKill } from '@/lib/process-guard';
 import { getTerminalTheme, type TerminalTheme } from '@/lib/terminal-theme';
+import { buildCliResumeCommand } from '@/lib/cli-recovery';
 import type { TabSession, SessionStatus } from '@/store/types';
 import { useChatStore } from '@/store/chat-store';
 import { generateId } from '@/lib/id';
@@ -293,6 +294,35 @@ export default function TerminalScreen() {
           s.id === session.id ? { ...s, sessionStatus: 'alive' as const, isAlive: true } : s
         ),
       }));
+
+      // 6. CLI auto-resume: if this was a fresh pty-helper (not reconnect),
+      // and the session had an active CLI, resume it automatically.
+      if (!ptyAlive && session.activeCli) {
+        const resumeCmd = buildCliResumeCommand(session.currentDir, session.activeCli);
+        if (resumeCmd) {
+          // Wait for shell prompt to be ready (poll transcript for prompt chars)
+          let promptDetected = false;
+          for (let i = 0; i < 12; i++) { // 12 * 250ms = 3s max
+            await new Promise(resolve => setTimeout(resolve, 250));
+            try {
+              const transcript = await TerminalEmulator.getTranscriptText(session.nativeSessionId, 5);
+              if (transcript && (transcript.includes('$ ') || transcript.includes('❯ ') || transcript.includes('% '))) {
+                promptDetected = true;
+                break;
+              }
+            } catch {}
+          }
+          try {
+            await TerminalEmulator.writeToSession(
+              session.nativeSessionId,
+              resumeCmd + '\n'
+            );
+            console.log('[Terminal] CLI auto-resume sent:', session.activeCli, promptDetected ? '(prompt detected)' : '(fallback timeout)');
+          } catch (e) {
+            console.warn('[Terminal] CLI auto-resume failed:', e);
+          }
+        }
+      }
     } catch (err) {
       console.error('[Terminal] Failed to create native session:', err);
       useTerminalStore.setState((state) => ({
