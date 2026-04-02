@@ -341,19 +341,19 @@ export function useTermuxBridge() {
     // Use absolute paths — RunCommandService doesn't source .bashrc so PATH may be bare
     const PREFIX = '/data/data/com.termux/files/usr';
     const HOME = '/data/data/com.termux/files/home';
-    // Use start-shelly.sh (handles bridge restart + stale cleanup)
-    // Then unconditionally start pty-helpers (they exit immediately if port is busy)
+    // ONLY restart the bridge (Node.js WebSocket server).
+    // pty-helper processes are managed by ensureNativeSessions() in terminal.tsx
+    // to avoid race conditions (start-shelly.sh's pkill would kill pty-helpers
+    // that ensureNativeSessions just started).
     const startCmd = [
       `export PATH=${PREFIX}/bin:$PATH; `,
       `export HOME=${HOME}; `,
       `export TERM=xterm-256color; `,
-      // start-shelly.sh kills old bridge/pty-helper, starts bridge
-      `${PREFIX}/bin/bash ${HOME}/shelly-bridge/start-shelly.sh; `,
-      // Wait for bridge to be ready
-      `sleep 2; `,
-      // Start pty-helpers (pty-helper exits if port already in use, so safe to always run)
-      `nohup ${HOME}/shelly-bridge/pty-helper 18200 80 24 > /dev/null 2>&1 & `,
-      `nohup ${HOME}/shelly-bridge/pty-helper 18201 80 24 > /dev/null 2>&1 & `,
+      // Kill old bridge only (NOT pty-helper — ensureNativeSessions handles that)
+      `pkill -f "node.*shelly-bridge/server.js" 2>/dev/null; `,
+      `sleep 1; `,
+      // Start bridge
+      `cd ${HOME}/shelly-bridge && nohup ${PREFIX}/bin/node server.js > /dev/null 2>&1 & `,
     ].join('');
 
     const result = await runTermuxCommand({ command: startCmd, background: true });
