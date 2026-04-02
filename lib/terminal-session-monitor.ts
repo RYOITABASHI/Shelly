@@ -1,6 +1,6 @@
 /**
  * Simplified session health monitor. Replaces phantom-process-guard.ts.
- * Only checks tmux sessions. Runs every 60s.
+ * Checks pty-helper TCP ports. Runs every 3 minutes.
  */
 
 type RunCommand = (cmd: string, opts: { timeoutMs: number; reason: string }) => Promise<any>;
@@ -12,13 +12,14 @@ let _onSessionDied: ((tmuxName: string) => void) | null = null;
 const _failCounts = new Map<string, number>();
 const FAIL_THRESHOLD = 3; // require 3 consecutive failures before declaring dead
 
-async function checkTmuxSession(name: string, runCmd: RunCommand): Promise<boolean> {
+async function checkSessionAlive(name: string, runCmd: RunCommand): Promise<boolean> {
   try {
+    const port = 18200 + ['shelly-1', 'shelly-2', 'shelly-3', 'shelly-4'].indexOf(name);
+    if (port < 18200) return true; // Unknown session name — assume alive
     const result = await runCmd(
-      `tmux has-session -t "${name}" 2>/dev/null && echo ALIVE || echo DEAD`,
-      { timeoutMs: 5000, reason: 'tmux-check' }
+      `(echo >/dev/tcp/127.0.0.1/${port}) 2>/dev/null && echo ALIVE || echo DEAD`,
+      { timeoutMs: 3000, reason: 'pty-health-check' }
     );
-    // runRawCommand returns { stdout, stderr, exitCode }
     const output = typeof result === 'string' ? result : result?.stdout || result?.output || '';
     return output.includes('ALIVE');
   } catch {
@@ -38,7 +39,7 @@ export function startSessionMonitor(
 
   _timer = setInterval(async () => {
     for (const name of tmuxNames) {
-      const alive = await checkTmuxSession(name, runCmd);
+      const alive = await checkSessionAlive(name, runCmd);
       if (alive) {
         _failCounts.set(name, 0);
       } else {

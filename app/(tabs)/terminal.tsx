@@ -153,8 +153,15 @@ export default function TerminalScreen() {
   const createNativeSession = useCallback(async (session: TabSession) => {
     const port = getPtyPort(session.tmuxSession);
     try {
-      // 0. Destroy any stale Kotlin session before re-creating
-      try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
+      // 0. Only destroy if session exists but has no emulator buffer
+      try {
+        const hasEmu = await TerminalEmulator.hasEmulator(session.nativeSessionId);
+        if (!hasEmu) {
+          await TerminalEmulator.destroySession(session.nativeSessionId);
+        }
+      } catch {
+        // Session doesn't exist in Kotlin registry — safe to proceed
+      }
 
       // 1. Check if pty-helper is already running on this port
       let ptyAlive = false;
@@ -256,10 +263,12 @@ export default function TerminalScreen() {
         });
       }
 
-      // 3. Send Ctrl+L to refresh shell prompt (readline redraws)
-      try {
-        await TerminalEmulator.writeToSession(session.nativeSessionId, '\x0c');
-      } catch {}
+      // 3. Send Ctrl+L only if reconnecting to existing pty-helper (not fresh start)
+      if (ptyAlive) {
+        try {
+          await TerminalEmulator.writeToSession(session.nativeSessionId, '\x0c');
+        } catch {}
+      }
 
 
       // 4. Start foreground service to prevent task-kill
@@ -301,6 +310,29 @@ export default function TerminalScreen() {
     setIsRecovering(false);
   }, [createNativeSession, runRawCommand]);
 
+  // Reset a session: kill pty-helper, destroy Kotlin session, start fresh
+  const resetSession = useCallback(async (session: TabSession) => {
+    const port = getPtyPort(session.tmuxSession);
+
+    // 1. Destroy Kotlin session (clears TerminalEmulator buffer)
+    try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
+
+    // 2. Kill pty-helper process on this port
+    await runRawCommand(
+        `pkill -f "pty-helper.*${port}" 2>/dev/null; true`,
+        { timeoutMs: 3000, reason: 'pty-reset-kill' }
+    ).catch(() => {});
+
+    // 3. Clear store state
+    useTerminalStore.getState().clearSession(session.id);
+
+    // 4. Small delay to ensure port is released
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // 5. Create fresh session (new pty-helper + new Kotlin session + new shell)
+    await createNativeSession(session);
+  }, [createNativeSession, runRawCommand]);
+
   // Ensure native sessions exist. Called on bridge connect AND on foreground resume.
   // pty-helper processes persist in Termux, but the TCP connection may drop
   // when Android backgrounds the app. This silently reconnects or re-creates sessions.
@@ -332,14 +364,20 @@ export default function TerminalScreen() {
 
         try {
           const alive = await TerminalEmulator.isSessionAlive(session.nativeSessionId);
-          if (!alive) {
-            console.log('[Terminal] ensureNativeSessions: session not alive, re-creating:', session.nativeSessionId);
-            await createNativeSession(session);
+          if (alive) {
+            // Session is alive (socket OK or reconnecting with preserved buffer) — do nothing
+            useTerminalStore.setState((state) => ({
+              sessions: state.sessions.map((s) =>
+                s.id === session.id ? { ...s, sessionStatus: 'alive' as const, isAlive: true } : s
+              ),
+            }));
+            continue;
           }
-        } catch {
-          console.log('[Terminal] ensureNativeSessions: isSessionAlive threw, re-creating:', session.nativeSessionId);
-          await createNativeSession(session);
-        }
+        } catch {}
+
+        // Session not in Kotlin registry at all — need full re-creation
+        console.log('[Terminal] ensureNativeSessions: session not alive, re-creating:', session.nativeSessionId);
+        await createNativeSession(session);
       } else if (session.sessionStatus === 'exited') {
         if (isRenderedInMultiPane) continue; // Let tab-side handle recovery
         console.log('[Terminal] ensureNativeSessions: session exited, recovering:', session.nativeSessionId);
@@ -438,6 +476,17 @@ export default function TerminalScreen() {
     });
     return () => sub.remove();
   }, []);
+
+  // Handle reset requests from TerminalHeader
+  const pendingResetId = useTerminalStore((s) => s.pendingResetSessionId);
+  useEffect(() => {
+    if (!pendingResetId) return;
+    const session = sessions.find((s) => s.id === pendingResetId);
+    if (session) {
+        useTerminalStore.getState().clearPendingReset();
+        resetSession(session);
+    }
+  }, [pendingResetId, sessions, resetSession]);
 
   // FirstMate: check on first successful connection
   useEffect(() => {

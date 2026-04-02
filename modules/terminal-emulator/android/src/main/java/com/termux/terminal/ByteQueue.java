@@ -34,6 +34,14 @@ final class ByteQueue {
         notify();
     }
 
+    /** Reopen a closed queue, resetting it to empty state. */
+    public synchronized void reopen() {
+        mOpen = true;
+        mHead = 0;
+        mStoredBytes = 0;
+        notify();
+    }
+
     public synchronized int read(byte[] buffer, boolean block) {
         while (mStoredBytes == 0 && mOpen) {
             if (block) {

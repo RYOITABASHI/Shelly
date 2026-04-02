@@ -84,6 +84,11 @@ class TerminalEmulatorModule : Module() {
             session.isAlive()
         }
 
+        AsyncFunction("hasEmulator") { sessionId: String ->
+            val session = sessions[sessionId] ?: return@AsyncFunction false
+            session.hasEmulator()
+        }
+
         AsyncFunction("getTranscriptText") { sessionId: String, maxLines: Int ->
             val session = sessions[sessionId]
                 ?: throw IllegalArgumentException("Session $sessionId not found")

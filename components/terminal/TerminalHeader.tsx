@@ -221,14 +221,7 @@ export function TerminalHeader() {
                 {
                   text: 'Reset',
                   onPress: () => {
-                    // Kill pty-helper for this session, then recover (new shell)
-                    const tmux = session.tmuxSession;
-                    const port = 18200 + ['shelly-1','shelly-2','shelly-3','shelly-4'].indexOf(tmux);
-                    useTerminalStore.setState((state) => ({
-                      sessions: state.sessions.map((s) =>
-                        s.id === session.id ? { ...s, sessionStatus: 'exited' as const, isAlive: false } : s
-                      ),
-                    }));
+                    useTerminalStore.getState().requestResetSession(session.id);
                   },
                 },
               ];

@@ -28,6 +28,12 @@ class ShellyTerminalSession(
     @Volatile private var flushScheduled = false
     private var lastTranscriptLength = 0
 
+    // Reconnection state
+    @Volatile private var isReconnecting = false
+    @Volatile private var shouldReconnect = true
+    private var reconnectThread: Thread? = null
+    private val socketLock = Any()
+
     private var socket: Socket? = null
     val terminalSession: TerminalSession
 
@@ -42,6 +48,7 @@ class ShellyTerminalSession(
         // and Unix Domain Sockets enforce file permissions + SELinux which block cross-UID access.
         val sock = Socket("127.0.0.1", port)
         sock.tcpNoDelay = true
+        sock.keepAlive = true
         socket = sock
 
         // Initialize emulator with socket streams
@@ -96,16 +103,101 @@ class ShellyTerminalSession(
     fun sendResizeCommand(cols: Int, rows: Int) {
         try {
             val cmd = "${RESIZE_PREFIX}${cols};${rows}\n"
-            socket?.getOutputStream()?.write(cmd.toByteArray(Charsets.UTF_8))
-            socket?.getOutputStream()?.flush()
+            synchronized(socketLock) {
+                socket?.getOutputStream()?.write(cmd.toByteArray(Charsets.UTF_8))
+                socket?.getOutputStream()?.flush()
+            }
             Log.i(TAG, "sendResizeCommand: ${cols}x${rows}")
         } catch (e: Exception) {
             Log.w(TAG, "sendResizeCommand failed: ${e.message}")
         }
     }
 
+    /**
+     * Reconnect to pty-helper — replaces only the TCP socket and I/O threads.
+     * The TerminalEmulator (scroll buffer) is preserved via replaceStreams().
+     */
+    private fun reconnectSocket(): Boolean {
+        synchronized(socketLock) {
+            try {
+                // Close old socket
+                try { socket?.close() } catch (_: Exception) {}
+                socket = null
+
+                val sock = Socket("127.0.0.1", port)
+                sock.tcpNoDelay = true
+                sock.keepAlive = true
+                socket = sock
+
+                val inputStream = sock.getInputStream()
+                val outputStream = sock.getOutputStream()
+
+                // Use replaceStreams — preserves TerminalEmulator buffer
+                terminalSession.replaceStreams(inputStream, outputStream)
+
+                Log.i(TAG, "Session $sessionId reconnected to pty-helper on port $port")
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Session $sessionId reconnect failed: ${e.message}")
+                try { socket?.close() } catch (_: Exception) {}
+                socket = null
+                return false
+            }
+        }
+    }
+
+    private fun startReconnectLoop() {
+        if (isReconnecting) return
+        isReconnecting = true
+
+        val thread = object : Thread("ReconnectLoop-$sessionId") {
+            override fun run() {
+                var attempts = 0
+                val maxAttempts = 30
+                val intervalMs = 1000L
+
+                while (shouldReconnect && attempts < maxAttempts && isReconnecting) {
+                    attempts++
+                    try {
+                        sleep(intervalMs)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+
+                    Log.d(TAG, "Session $sessionId: reconnect attempt $attempts/$maxAttempts")
+
+                    if (reconnectSocket()) {
+                        isReconnecting = false
+
+                        // Send Ctrl+L to refresh shell prompt on the main thread
+                        batchHandler.post {
+                            try {
+                                write("\u000c") // Ctrl+L
+                            } catch (_: Exception) {}
+                            onScreenUpdateCallback?.invoke()
+                        }
+                        return
+                    }
+                }
+
+                // All attempts exhausted — emit exit
+                isReconnecting = false
+                Log.w(TAG, "Session $sessionId: reconnect failed after $maxAttempts attempts")
+                batchHandler.post {
+                    emitEvent("onSessionExit", mapOf("sessionId" to sessionId, "exitCode" to -1))
+                }
+            }
+        }
+        thread.isDaemon = true
+        thread.start()
+        reconnectThread = thread
+    }
+
     fun isAlive(): Boolean {
-        val sock = socket ?: return false
+        // If reconnecting with a preserved emulator, report alive
+        if (isReconnecting && hasEmulator()) return true
+
+        val sock = synchronized(socketLock) { socket } ?: return false
         if (sock.isClosed) return false
         return try {
             sock.sendUrgentData(0xFF)
@@ -115,12 +207,23 @@ class ShellyTerminalSession(
         }
     }
 
+    /** Check if the TerminalEmulator instance exists (buffer is preserved in memory). */
+    fun hasEmulator(): Boolean {
+        return terminalSession.emulator != null
+    }
+
     fun destroy() {
+        shouldReconnect = false
+        isReconnecting = false
+        reconnectThread?.interrupt()
+        reconnectThread = null
         batchHandler.removeCallbacks(flushRunnable)
         flushOutputBuffer()
         terminalSession.finishIfRunning()
-        try { socket?.close() } catch (_: Exception) {}
-        socket = null
+        synchronized(socketLock) {
+            try { socket?.close() } catch (_: Exception) {}
+            socket = null
+        }
     }
 
     fun getTitle(): String = terminalSession.title ?: ""
@@ -172,6 +275,12 @@ class ShellyTerminalSession(
     }
 
     override fun onSessionFinished(finishedSession: TerminalSession) {
+        if (shouldReconnect && !isReconnecting) {
+            Log.i(TAG, "Session $sessionId: socket lost, starting reconnect loop")
+            startReconnectLoop()
+            return
+        }
+        // Only emit exit event if we're not trying to reconnect
         batchHandler.removeCallbacks(flushRunnable)
         flushOutputBuffer()
         emitEvent("onSessionExit", mapOf("sessionId" to sessionId, "exitCode" to finishedSession.exitStatus))

@@ -245,6 +245,74 @@ public final class TerminalSession extends TerminalOutput {
         }.start();
     }
 
+    /**
+     * Replace the I/O streams for a reconnection scenario.
+     * Stops old reader/writer threads by closing the queues, then reopens them
+     * and starts new threads. The TerminalEmulator is NOT recreated — the
+     * existing scroll buffer is preserved.
+     *
+     * @throws IllegalStateException if no emulator exists (must call initializeWithStreams first)
+     */
+    public void replaceStreams(InputStream inputStream, OutputStream outputStream) {
+        if (mEmulator == null) {
+            throw new IllegalStateException("Cannot replace streams before emulator is initialized");
+        }
+
+        // 1. Close queues to stop old reader/writer threads
+        mTerminalToProcessIOQueue.close();
+        mProcessToTerminalIOQueue.close();
+
+        // Give old threads a moment to exit (they check mOpen in their loops)
+        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+
+        // 2. Reopen queues for new threads
+        mProcessToTerminalIOQueue.reopen();
+        mTerminalToProcessIOQueue.reopen();
+
+        // 3. Re-mark as stream-based and running
+        mStreamBased = true;
+        mShellPid = 0;
+
+        // 4. Start new reader thread
+        new Thread("TermSessionInputReader[reconnect]") {
+            @Override
+            public void run() {
+                try {
+                    final byte[] buffer = new byte[4096];
+                    while (true) {
+                        int read = inputStream.read(buffer);
+                        if (read == -1) return;
+                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
+                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                    }
+                } catch (Exception e) {
+                    // Connection closed — signal session exit
+                    mMainThreadHandler.sendMessage(
+                        mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, 0)
+                    );
+                }
+            }
+        }.start();
+
+        // 5. Start new writer thread
+        new Thread("TermSessionOutputWriter[reconnect]") {
+            @Override
+            public void run() {
+                final byte[] buffer = new byte[4096];
+                try {
+                    while (true) {
+                        int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
+                        if (bytesToWrite == -1) return;
+                        outputStream.write(buffer, 0, bytesToWrite);
+                        outputStream.flush();
+                    }
+                } catch (IOException e) {
+                    // Ignore — connection closed
+                }
+            }
+        }.start();
+    }
+
     /** Write data to the shell process. */
     @Override
     public void write(byte[] data, int offset, int count) {

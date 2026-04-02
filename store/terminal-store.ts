@@ -135,6 +135,11 @@ type TerminalState = {
   /** Clear the pending command after it has been consumed */
   clearPendingCommand: () => void;
 
+  /** Session ID pending reset (consumed by terminal.tsx) */
+  pendingResetSessionId: string | null;
+  requestResetSession: (sessionId: string) => void;
+  clearPendingReset: () => void;
+
   // Actions — input mode
   setLastInputMode: (mode: 'shell' | 'natural') => void;
 
@@ -219,7 +224,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const session = get().sessions.find((s) => s.id === targetId);
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === targetId ? { ...s, blocks: [], entries: [], currentDir: '/data/data/com.termux/files/home' } : s
+        s.id === targetId ? { ...s, blocks: [], entries: [], commandHistory: [], currentDir: '/data/data/com.termux/files/home' } : s
       ),
     }));
     // Also clear the execution log buffers so stale output doesn't reappear
@@ -548,6 +553,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   clearPendingCommand: () => {
     set({ pendingCommand: null });
   },
+
+  // ── Session reset (consumed by terminal.tsx) ────────────────────────────────
+  pendingResetSessionId: null,
+  requestResetSession: (sessionId) => set({ pendingResetSessionId: sessionId }),
+  clearPendingReset: () => set({ pendingResetSessionId: null }),
 
   // ── Input mode ─────────────────────────────────────────────────────────────
 
