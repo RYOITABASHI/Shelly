@@ -342,15 +342,23 @@ export function useTermuxBridge() {
     const startCmd = [
       `export PATH=${PREFIX}/bin:$PATH; `,
       `export HOME=${HOME}; `,
+      // Kill old bridge
       `pkill -f "node.*shelly-bridge/server.js" 2>/dev/null; `,
+      // Kill all stale pty-helpers (they died with Termux, ports may linger)
+      `pkill -f "pty-helper" 2>/dev/null; `,
       `sleep 1; `,
-      `${PREFIX}/bin/tmux has-session -t shelly-1 2>/dev/null || ${PREFIX}/bin/tmux new-session -d -s shelly-1; `,
-      `${PREFIX}/bin/tmux has-session -t shelly-2 2>/dev/null || ${PREFIX}/bin/tmux new-session -d -s shelly-2; `,
+      // Restart bridge
       `if [ -x ${HOME}/shelly-bridge/start-shelly.sh ]; then `,
       `  nohup ${PREFIX}/bin/bash ${HOME}/shelly-bridge/start-shelly.sh > /dev/null 2>&1 & `,
       `else `,
       `  cd ${HOME}/shelly-bridge && nohup ${PREFIX}/bin/node server.js > /dev/null 2>&1 & `,
-      `fi`,
+      `fi; `,
+      // Restart pty-helper for each session port (bridge needs them alive)
+      `sleep 1; `,
+      `for p in 18200 18201; do `,
+      `  (echo >/dev/tcp/127.0.0.1/$p) 2>/dev/null || `,
+      `  nohup ${HOME}/shelly-bridge/pty-helper $p 80 24 > /dev/null 2>&1 & `,
+      `done`,
     ].join('');
 
     const result = await runTermuxCommand({ command: startCmd, background: true });
@@ -372,10 +380,13 @@ export function useTermuxBridge() {
     const poll = () => {
       pollCount++;
       if (pollCount > AUTO_RECOVERY_MAX_POLLS) {
-        // Recovery timed out — fall back to manual
+        // Recovery round timed out — retry auto-recovery after a pause
+        // (ゼロ状態ユーザーに「手動で再起動」は求めない)
         setIsAutoRecovering(false);
-        setAutoRecoveryFailed(true);
-        setIsReconnectExhausted(true);
+        autoRecoveryTimerRef.current = setTimeout(() => {
+          reconnectAttemptsRef.current = 0;
+          attemptAutoRecovery();
+        }, 10_000); // 10秒後にもう一度自動復旧を試行
         return;
       }
 

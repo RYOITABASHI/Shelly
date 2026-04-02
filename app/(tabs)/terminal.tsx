@@ -25,7 +25,7 @@ import { NativeTerminalView } from '@/modules/terminal-view/src';
 import TerminalViewModule from '@/modules/terminal-view/src/TerminalViewModule';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalOutput } from '@/hooks/use-terminal-output';
-import { startSessionMonitor, stopSessionMonitor } from '@/lib/terminal-session-monitor';
+import { startSessionMonitor, stopSessionMonitor, triggerImmediateCheck } from '@/lib/terminal-session-monitor';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation, t } from '@/lib/i18n';
@@ -189,9 +189,10 @@ export default function TerminalScreen() {
           { timeoutMs: 5000, reason: 'pty-start' }
         );
 
-        // Wait for pty-helper to be ready (poll TCP port, max 1.5s)
+        // Wait for pty-helper to be ready (poll TCP port, max 5s)
+        // Termux restart後は起動が遅いため十分な猶予を持たせる
         let ready = false;
-        for (let i = 0; i < 6; i++) {
+        for (let i = 0; i < 20; i++) {
           await new Promise(resolve => setTimeout(resolve, 250));
           try {
             const result = await runRawCommand(
@@ -205,7 +206,7 @@ export default function TerminalScreen() {
           } catch {}
         }
         if (!ready) {
-          throw new Error(`pty-helper not ready on port ${port} after 1.5s`);
+          throw new Error(`pty-helper not ready on port ${port} after 5s`);
         }
       } else {
         // pty-helper is already running — just reconnect (no wait needed)
@@ -390,6 +391,11 @@ export default function TerminalScreen() {
   // where a new TerminalScreen instance mounts while sessions are already alive)
   useEffect(() => {
     ensureNativeSessions();
+    // After bridge reconnection, kick session monitor into fast-check mode
+    // so dead pty-helpers are detected within seconds instead of 3 minutes
+    if (bridgeStatus === 'connected') {
+      triggerImmediateCheck();
+    }
   }, [bridgeStatus]);
 
   // Also run on mount — Split View creates a fresh TerminalScreen instance

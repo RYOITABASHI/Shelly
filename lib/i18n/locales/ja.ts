@@ -349,6 +349,7 @@ const ja: Record<string, string> = {
   'bridge.copied': 'コマンドをコピーしました',
   'bridge.auto_recovering': 'Termuxを自動復旧中...',
   'bridge.auto_recovery_failed': '自動復旧に失敗しました。手動で再起動してください。',
+  'bridge.auto_recovery_retrying': 'ターミナルに再接続中...',
   'bridge.session_resume_prompt': '前回のClaudeセッションを引き継ぎますか？',
   'bridge.session_resume_yes': '引き継ぐ',
   // オートセーブポイント

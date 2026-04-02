@@ -348,6 +348,7 @@ const en: Record<string, string> = {
   'bridge.copied': 'Command copied',
   'bridge.auto_recovering': 'Restarting Termux automatically...',
   'bridge.auto_recovery_failed': 'Auto-recovery failed. Please restart manually.',
+  'bridge.auto_recovery_retrying': 'Reconnecting to terminal...',
   'bridge.session_resume_prompt': 'Resume previous Claude session?',
   'bridge.session_resume_yes': 'Resume',
   // Auto savepoint

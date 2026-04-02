@@ -1,16 +1,15 @@
 /**
- * BridgeRecoveryBanner — ブリッジ切断時の復帰案内 (v2)
+ * BridgeRecoveryBanner — ブリッジ切断時の復帰案内 (v3)
  *
  * フロー:
  *   1. 自動再接続5回失敗 → Native Module経由で自動復旧試行
  *   2. 自動復旧中は「自動復旧中...」を表示
- *   3. 自動復旧失敗 → 手動ボタン表示（従来の動作）
+ *   3. 自動復旧失敗 → 10秒後に自動リトライ（手動操作不要）
  *   4. 復旧成功 + 前回CLIセッションあり → セッション引き継ぎ提案
  */
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, Pressable, StyleSheet, Linking, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Clipboard from 'expo-clipboard';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTranslation } from '@/lib/i18n';
 import { useTermuxBridge } from '@/hooks/use-termux-bridge';
@@ -29,7 +28,6 @@ export function BridgeRecoveryBanner() {
     sendCommand,
   } = useTermuxBridge();
   const [dismissed, setDismissed] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [showSessionResume, setShowSessionResume] = useState(false);
   const sessionResumeShownRef = useRef(false);
 
@@ -52,7 +50,6 @@ export function BridgeRecoveryBanner() {
   useEffect(() => {
     if (bridgeStatus === 'connected') {
       setDismissed(false);
-      setCopied(false);
     }
   }, [bridgeStatus]);
 
@@ -103,49 +100,30 @@ export function BridgeRecoveryBanner() {
     );
   }
 
-  // Show manual recovery banner (only after auto-recovery failed)
-  const shouldShowManual =
+  // Auto-recovery now retries automatically, so the "manual" banner is a
+  // gentle "still trying" message rather than asking the user to do anything.
+  // Only show if reconnect exhausted AND auto-recovery is between rounds.
+  const shouldShowRetrying =
     isDisconnected &&
-    (isReconnectExhausted || autoRecoveryFailed) &&
     !isAutoRecovering &&
     !dismissed;
 
-  if (!shouldShowManual) return null;
-
-  const handleRestart = async () => {
-    const cmd = t('bridge.recovery_command');
-    await Clipboard.setStringAsync(cmd);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    try {
-      await Linking.openURL('com.termux://');
-    } catch {
-      // Termux not installed — ignore
-    }
-  };
+  if (!shouldShowRetrying) return null;
 
   const handleReconnect = () => {
     setDismissed(false);
-    setCopied(false);
     resetReconnect();
   };
 
   return (
     <View style={[styles.container, bannerPadding]}>
       <View style={styles.content}>
-        <MaterialIcons name="warning-amber" size={18} color="#FBBF24" />
+        <ActivityIndicator size="small" color="#FBBF24" />
         <Text style={styles.text}>
-          {autoRecoveryFailed
-            ? t('bridge.auto_recovery_failed')
-            : t('bridge.disconnected_title')}
+          {t('bridge.auto_recovery_retrying')}
         </Text>
       </View>
       <View style={styles.actions}>
-        <Pressable style={styles.btn} onPress={handleRestart}>
-          <Text style={styles.btnText}>
-            {copied ? t('bridge.copied') : t('bridge.restart_termux')}
-          </Text>
-        </Pressable>
         <Pressable style={styles.btn} onPress={handleReconnect}>
           <Text style={styles.btnText}>{t('bridge.reconnect')}</Text>
         </Pressable>
