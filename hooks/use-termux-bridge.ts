@@ -147,6 +147,7 @@ export function useTermuxBridge() {
   const [autoRecoveryFailed, setAutoRecoveryFailed] = useState(false);
   const autoRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recoveredFromCrashRef = useRef(false);
+  const isAutoRecoveringRef = useRef(false); // ref mirror to avoid stale closure
 
   // ── Request-specific message handlers (EventEmitter pattern) ─────────────
   const requestHandlersRef = useRef<Map<string, (msg: ServerMessage) => void>>(new Map());
@@ -322,8 +323,9 @@ export function useTermuxBridge() {
   };
 
   const attemptAutoRecovery = useCallback(async () => {
-    // Prevent double-triggering
-    if (isAutoRecovering) return;
+    // Prevent double-triggering (use ref to avoid stale closure)
+    if (isAutoRecoveringRef.current) return;
+    isAutoRecoveringRef.current = true;
 
     setIsAutoRecovering(true);
     setAutoRecoveryFailed(false);
@@ -339,26 +341,19 @@ export function useTermuxBridge() {
     // Use absolute paths — RunCommandService doesn't source .bashrc so PATH may be bare
     const PREFIX = '/data/data/com.termux/files/usr';
     const HOME = '/data/data/com.termux/files/home';
+    // Use start-shelly.sh (handles bridge restart + stale cleanup)
+    // Then unconditionally start pty-helpers (they exit immediately if port is busy)
     const startCmd = [
       `export PATH=${PREFIX}/bin:$PATH; `,
       `export HOME=${HOME}; `,
-      // Kill old bridge
-      `pkill -f "node.*shelly-bridge/server.js" 2>/dev/null; `,
-      // Kill all stale pty-helpers (they died with Termux, ports may linger)
-      `pkill -f "pty-helper" 2>/dev/null; `,
-      `sleep 1; `,
-      // Restart bridge
-      `if [ -x ${HOME}/shelly-bridge/start-shelly.sh ]; then `,
-      `  nohup ${PREFIX}/bin/bash ${HOME}/shelly-bridge/start-shelly.sh > /dev/null 2>&1 & `,
-      `else `,
-      `  cd ${HOME}/shelly-bridge && nohup ${PREFIX}/bin/node server.js > /dev/null 2>&1 & `,
-      `fi; `,
-      // Restart pty-helper for each session port (bridge needs them alive)
-      `sleep 1; `,
-      `for p in 18200 18201; do `,
-      `  (echo >/dev/tcp/127.0.0.1/$p) 2>/dev/null || `,
-      `  nohup ${HOME}/shelly-bridge/pty-helper $p 80 24 > /dev/null 2>&1 & `,
-      `done`,
+      `export TERM=xterm-256color; `,
+      // start-shelly.sh kills old bridge/pty-helper, starts bridge
+      `${PREFIX}/bin/bash ${HOME}/shelly-bridge/start-shelly.sh; `,
+      // Wait for bridge to be ready
+      `sleep 2; `,
+      // Start pty-helpers (pty-helper exits if port already in use, so safe to always run)
+      `nohup ${HOME}/shelly-bridge/pty-helper 18200 80 24 > /dev/null 2>&1 & `,
+      `nohup ${HOME}/shelly-bridge/pty-helper 18201 80 24 > /dev/null 2>&1 & `,
     ].join('');
 
     const result = await runTermuxCommand({ command: startCmd, background: true });
@@ -383,6 +378,7 @@ export function useTermuxBridge() {
         // Recovery round timed out — retry auto-recovery after a pause
         // (ゼロ状態ユーザーに「手動で再起動」は求めない)
         setIsAutoRecovering(false);
+        isAutoRecoveringRef.current = false;
         autoRecoveryTimerRef.current = setTimeout(() => {
           reconnectAttemptsRef.current = 0;
           attemptAutoRecovery();
@@ -400,6 +396,7 @@ export function useTermuxBridge() {
         if (currentStatus === 'connected') {
           // Recovery succeeded!
           setIsAutoRecovering(false);
+          isAutoRecoveringRef.current = false;
           setAutoRecoveryFailed(false);
           setIsReconnectExhausted(false);
 
@@ -425,9 +422,9 @@ export function useTermuxBridge() {
       }, AUTO_RECOVERY_BASE_INTERVAL * Math.pow(2, pollCount - 1));
     };
 
-    // Wait 2s for Termux to start, then begin polling
-    autoRecoveryTimerRef.current = setTimeout(poll, 2000);
-  }, [connect, isAutoRecovering]);
+    // Wait 5s for start-shelly.sh to finish + pty-helpers to start, then begin polling
+    autoRecoveryTimerRef.current = setTimeout(poll, 5000);
+  }, [connect]);
 
   // ── Cancel timeout helper ──────────────────────────────────────────────────
 

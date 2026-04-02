@@ -26,7 +26,7 @@ class TermuxBridgeModule : Module() {
           "com.termux",
           "com.termux.app.RunCommandService"
         )
-        putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+        putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash")
         putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", command))
         putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
         putExtra("com.termux.RUN_COMMAND_BACKGROUND", background)
