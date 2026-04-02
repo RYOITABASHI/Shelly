@@ -113,9 +113,9 @@ export type CreateProjectResult =
   | { ok: true;  projectPath: string; filesWritten: number }
   | { ok: false; error: string };
 
-const MAX_RECONNECT = 5;
+const MAX_RECONNECT = 2; // Fail fast — bridge is either alive or needs recovery
 const CANCEL_TIMEOUT_MS = 5000; // force-finalize if no 'cancelled' response in 5s
-const AUTO_RECOVERY_BASE_INTERVAL = 3000; // exponential backoff base (3s, 6s, 12s)
+const AUTO_RECOVERY_BASE_INTERVAL = 2000; // exponential backoff base (2s, 4s, 8s)
 const AUTO_RECOVERY_MAX_POLLS = 4; // 4 attempts max (省バッテリー: 10→4)
 
 export function useTermuxBridge() {
@@ -308,8 +308,8 @@ export function useTermuxBridge() {
     }
     if (appStateRef.current !== 'active') return; // don't reconnect in background
 
-    // Exponential back-off: 1s, 2s, 4s, 8s, 16s (capped at 30s)
-    const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 30000);
+    // Fast reconnect: 500ms, 1s (MAX_RECONNECT=2, then auto-recovery)
+    const delay = Math.min(500 * 2 ** reconnectAttemptsRef.current, 5000);
     reconnectAttemptsRef.current += 1;
 
     clearReconnectTimer();
@@ -442,8 +442,8 @@ export function useTermuxBridge() {
       }, AUTO_RECOVERY_BASE_INTERVAL * Math.pow(2, pollCount - 1));
     };
 
-    // Wait 7s for Termux Activity launch → .bashrc → bridge startup, then begin polling
-    autoRecoveryTimerRef.current = setTimeout(poll, 7000);
+    // Wait 3s for bridge to start (Strategy 2 via am-startservice is fast), then poll
+    autoRecoveryTimerRef.current = setTimeout(poll, 3000);
   }, [connect]);
 
   // ── Cancel timeout helper ──────────────────────────────────────────────────
