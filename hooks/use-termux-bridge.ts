@@ -36,7 +36,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { AppState, AppStateStatus, Linking } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
+
 import { useTerminalStore, _pendingTmuxKills, _pendingTmuxClears } from '@/store/terminal-store';
 import { notifyCommandComplete } from '@/lib/command-notifier';
 import { runTermuxCommand } from '@/lib/termux-intent';
@@ -358,20 +358,26 @@ export function useTermuxBridge() {
       `cd ${HOME}/shelly-bridge && nohup ${PREFIX}/bin/node server.js > /dev/null 2>&1 & `,
     ].join('');
 
-    console.log('[AutoRecovery] Sending runTermuxCommand to restart bridge...');
+    // Strategy 1: Try RunCommandService (works when Termux is in active standby bucket)
+    console.log('[AutoRecovery] Trying RunCommandService...');
     const result = await runTermuxCommand({ command: startCmd, background: true });
-    console.log('[AutoRecovery] runTermuxCommand result:', JSON.stringify(result));
+    console.log('[AutoRecovery] RunCommandService result:', JSON.stringify(result));
 
-    if (!result.success) {
-      // Native module failed — fallback: open Termux app and copy command
-      const recoveryCmd = 'cd ~/shelly-bridge && node server.js';
+    // Strategy 2: Always also launch Termux Activity as fallback.
+    // On Android 14 Samsung, RunCommandService silently fails when Termux is in
+    // RARE standby bucket. Activity launch always works and triggers .bashrc
+    // which auto-starts the bridge.
+    console.log('[AutoRecovery] Launching Termux Activity (triggers .bashrc bridge auto-start)...');
+    try {
+      const TermuxBridgeModule = require('../modules/termux-bridge').default;
+      await TermuxBridgeModule.launchTermux();
+    } catch (e) {
+      console.log('[AutoRecovery] Activity launch failed, trying URL scheme...');
       try {
-        await Clipboard.setStringAsync(recoveryCmd);
         await Linking.openURL('com.termux://');
       } catch {
-        // Termux not installed or clipboard failed — fall through to polling anyway
+        // Nothing worked — fall through to polling
       }
-      // Still poll in case Termux was already running and just needed a nudge
     }
 
     // Step 2: Poll for bridge to come back online
@@ -413,8 +419,8 @@ export function useTermuxBridge() {
       }, AUTO_RECOVERY_BASE_INTERVAL * Math.pow(2, pollCount - 1));
     };
 
-    // Wait 5s for start-shelly.sh to finish + pty-helpers to start, then begin polling
-    autoRecoveryTimerRef.current = setTimeout(poll, 5000);
+    // Wait 7s for Termux Activity launch → .bashrc → bridge startup, then begin polling
+    autoRecoveryTimerRef.current = setTimeout(poll, 7000);
   }, [connect]);
 
   // ── Cancel timeout helper ──────────────────────────────────────────────────

@@ -78,6 +78,33 @@ class TermuxBridgeModule : Module() {
     }
 
     /**
+     * Launch Termux Activity — reliable fallback when RunCommandService
+     * is blocked by Android battery restrictions (standby bucket RARE).
+     * Opening Termux triggers .bashrc which auto-starts the bridge.
+     */
+    AsyncFunction("launchTermux") {
+      val context = appContext.reactContext
+        ?: throw Exception("React context not available")
+
+      val intent = Intent(Intent.ACTION_MAIN).apply {
+        component = ComponentName(
+          "com.termux",
+          "com.termux.app.TermuxActivity"
+        )
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+      }
+
+      try {
+        context.startActivity(intent)
+        Log.i(TAG, "launchTermux: Activity launched successfully")
+        mapOf("success" to true)
+      } catch (e: Exception) {
+        Log.e(TAG, "launchTermux: failed", e)
+        mapOf("success" to false, "error" to (e.message ?: "Unknown error"))
+      }
+    }
+
+    /**
      * Check if a package is installed on the device.
      */
     AsyncFunction("isPackageInstalled") { packageName: String ->
