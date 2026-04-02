@@ -214,6 +214,7 @@ export function useTermuxBridge() {
 
     ws.onopen = () => {
       clearTimeout(connTimeout);
+      console.log('[Bridge] WebSocket connected to', wsUrl);
       reconnectAttemptsRef.current = 0;
       setIsReconnectExhausted(false);
       setBridgeStatus('connected');
@@ -229,15 +230,17 @@ export function useTermuxBridge() {
       handleMessage(msg);
     };
 
-    ws.onerror = () => {
+    ws.onerror = (err) => {
       clearTimeout(connTimeout);
+      console.warn('[Bridge] WebSocket error');
       setBridgeStatus('error');
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       clearTimeout(connTimeout);
       // Ignore close events from stale WebSockets (replaced by a newer connect() call)
       if (wsRef.current !== ws) return;
+      console.log('[Bridge] WebSocket closed code=', event?.code, 'reason=', event?.reason);
       setBridgeStatus('disconnected');
 
       // Flush buffered output and clear request handlers
@@ -311,6 +314,7 @@ export function useTermuxBridge() {
     // Fast reconnect: 500ms, 1s (MAX_RECONNECT=2, then auto-recovery)
     const delay = Math.min(500 * 2 ** reconnectAttemptsRef.current, 5000);
     reconnectAttemptsRef.current += 1;
+    console.log('[Bridge] scheduling reconnect attempt', reconnectAttemptsRef.current, 'in', delay, 'ms');
 
     clearReconnectTimer();
     reconnectTimerRef.current = setTimeout(() => {

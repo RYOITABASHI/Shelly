@@ -26,9 +26,12 @@ async function checkSessionAlive(name: string, runCmd: RunCommand): Promise<bool
       { timeoutMs: 3000, reason: 'pty-health-check' }
     );
     const output = typeof result === 'string' ? result : result?.stdout || result?.output || '';
-    return output.includes('ALIVE');
-  } catch {
+    const alive = output.includes('ALIVE');
+    if (!alive) console.log('[SessionMonitor] health check DEAD:', name, 'port=', port);
+    return alive;
+  } catch (e) {
     // On error (bridge disconnected, timeout), assume alive to avoid false recovery
+    console.warn('[SessionMonitor] health check error (assuming alive):', name, e);
     return true;
   }
 }
@@ -42,7 +45,9 @@ async function runCheck() {
       const count = (_failCounts.get(name) || 0) + 1;
       _failCounts.set(name, count);
       // Only trigger recovery after FAIL_THRESHOLD consecutive failures
+      console.log('[SessionMonitor] fail count:', name, count, '/', FAIL_THRESHOLD);
       if (count >= FAIL_THRESHOLD) {
+        console.log('[SessionMonitor] triggering recovery for:', name);
         _failCounts.set(name, 0);
         _onSessionDied?.(name);
       }
@@ -75,6 +80,7 @@ export function startSessionMonitor(
   _tmuxNames = tmuxNames;
   _failCounts.clear();
   _fastChecksRemaining = 0;
+  console.log('[SessionMonitor] started monitoring:', tmuxNames.join(', '));
 
   restartTimer(NORMAL_INTERVAL);
 }
@@ -85,6 +91,7 @@ export function startSessionMonitor(
  */
 export function triggerImmediateCheck(): void {
   if (!_runCmd || _tmuxNames.length === 0) return;
+  console.log('[SessionMonitor] triggerImmediateCheck — fast polling for', RECOVERY_FAST_CHECKS, 'rounds');
 
   _fastChecksRemaining = RECOVERY_FAST_CHECKS;
   _failCounts.clear(); // Reset counts — fresh start after recovery

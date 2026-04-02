@@ -178,6 +178,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
   setActiveCli: (cli) => {
     const { sessions, activeSessionId } = get();
+    const prev = sessions.find((s) => s.id === activeSessionId)?.activeCli;
+    console.log('[ActiveCli] change:', prev, '→', cli, 'session=', activeSessionId);
     set({
       sessions: sessions.map((s) =>
         s.id === activeSessionId ? { ...s, activeCli: cli } : s

@@ -48,8 +48,10 @@ async function releaseWakelock(runRawCommand: RunCommand): Promise<void> {
  */
 export function acquireWakelockForCli(): void {
   _activeCliCount++;
+  console.log('[SmartWakelock] acquireForCli count=', _activeCliCount);
   // Cancel any pending grace-period release
   if (_releaseTimer) {
+    console.log('[SmartWakelock] cancelled pending release timer');
     clearTimeout(_releaseTimer);
     _releaseTimer = null;
   }
@@ -65,6 +67,7 @@ export function acquireWakelockForCli(): void {
  */
 export function releaseWakelockForCli(): void {
   _activeCliCount = Math.max(0, _activeCliCount - 1);
+  console.log('[SmartWakelock] releaseForCli count=', _activeCliCount);
   if (_activeCliCount > 0) return; // Other CLI sessions still active
 
   // Clear any existing timer
@@ -72,6 +75,7 @@ export function releaseWakelockForCli(): void {
     clearTimeout(_releaseTimer);
   }
 
+  console.log('[SmartWakelock] starting grace period:', RELEASE_GRACE_MS / 1000, 's');
   _releaseTimer = setTimeout(() => {
     _releaseTimer = null;
     if (_activeCliCount === 0 && _runCommand) {

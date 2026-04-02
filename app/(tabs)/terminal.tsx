@@ -227,6 +227,7 @@ export default function TerminalScreen() {
       }
 
       // 2. Create Kotlin session connected to pty-helper TCP port (with retry)
+      console.log('[Terminal] connecting Kotlin session to port', port, 'sessionId=', session.nativeSessionId);
       let connected = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -237,6 +238,7 @@ export default function TerminalScreen() {
             cols: 80,
           });
           connected = true;
+          console.log(`[Terminal] createSession attempt ${attempt + 1} succeeded`);
           break;
         } catch (e) {
           console.warn(`[Terminal] createSession attempt ${attempt + 1} failed:`, e);

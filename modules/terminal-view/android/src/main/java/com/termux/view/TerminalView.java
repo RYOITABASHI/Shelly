@@ -357,6 +357,7 @@ public class TerminalView extends View {
                 if (mLastComposingSent.isEmpty()) return;
                 // Send one DEL per Unicode code point (not per Java char)
                 int codePointCount = mLastComposingSent.codePointCount(0, mLastComposingSent.length());
+                Log.d("ShellyIME", "eraseComposing DEL×" + codePointCount + " for=\"" + mLastComposingSent + "\"");
                 KeyEvent deleteKey = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL);
                 for (int i = 0; i < codePointCount; i++) {
                     sendKeyEvent(deleteKey);
@@ -456,6 +457,7 @@ public class TerminalView extends View {
 
             @Override
             public boolean deleteSurroundingText(int leftLength, int rightLength) {
+                Log.d("ShellyIME", "deleteSurrounding left=" + leftLength + " right=" + rightLength);
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
                     mClient.logInfo(LOG_TAG, "IME: deleteSurroundingText(" + leftLength + ", " + rightLength + ")");
                 }

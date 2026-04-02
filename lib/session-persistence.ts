@@ -77,6 +77,7 @@ export async function saveSessionsToProject(
         { timeoutMs: 5000, reason: 'session-save' },
       );
     }
+    console.log('[SessionPersist] saved', sessions.length, 'sessions to', projectPath);
   } catch (e) {
     console.warn('[SessionPersist] save to project failed:', e);
   }
@@ -110,12 +111,14 @@ export async function loadSessionsFromProject(
         const text = typeof content === 'string' ? content : content?.output || '';
         const parsed = JSON.parse(text.trim());
         sessions.push(parsed);
-      } catch {
-        // Skip corrupt files
+      } catch (e) {
+        console.warn('[SessionPersist] corrupt session file:', file, e);
       }
     }
+    console.log('[SessionPersist] loaded', sessions.length, 'sessions from', projectPath);
     return sessions;
-  } catch {
+  } catch (e) {
+    console.warn('[SessionPersist] load failed:', e);
     return [];
   }
 }

@@ -114,12 +114,15 @@ export async function checkAndSave(
   if (!status.trim()) return null;
 
   const message = generateCommitMessage(status);
+  const changedCount = status.trim().split('\n').filter(Boolean).length;
+  console.log('[AutoSave] changes detected:', changedCount, 'files in', projectDir);
 
   await runCommand(`git -C ${dir} add -A`);
 
   // Security gate: scan staged files for secrets before committing
   const issues = await scanForSecrets(projectDir, runCommand);
   if (issues.length > 0) {
+    console.warn('[AutoSave] BLOCKED — secrets detected:', issues.map(i => `${i.file}:${i.line} (${i.label})`).join(', '));
     // Unstage everything and notify caller
     await runCommand(`git -C ${dir} reset HEAD`);
     onSecurityIssues?.(issues);
@@ -129,9 +132,13 @@ export async function checkAndSave(
   const { exitCode } = await runCommand(
     `git -C ${dir} commit -m "${message.replace(/"/g, '\\"')}"`,
   );
-  if (exitCode !== 0) return null;
+  if (exitCode !== 0) {
+    console.warn('[AutoSave] commit failed, exitCode=', exitCode);
+    return null;
+  }
 
   const { stdout: hash } = await runCommand(`git -C ${dir} rev-parse --short HEAD`);
+  console.log('[AutoSave] committed:', hash.trim(), message);
 
   const lines = status.trim().split('\n').filter(Boolean);
   const created = lines.filter((l) => l.startsWith('?') || l.startsWith('A')).length;
@@ -192,11 +199,14 @@ export async function revertLastSavepoint(
   runCommand: RunCommandFn,
 ): Promise<boolean> {
   const dir = shellEscape(projectDir);
+  console.log('[AutoSave] reverting last savepoint in', projectDir);
   const { exitCode } = await runCommand(`git -C ${dir} revert HEAD --no-edit`);
   if (exitCode !== 0) {
+    console.warn('[AutoSave] revert failed, aborting');
     await runCommand(`git -C ${dir} revert --abort`);
     return false;
   }
+  console.log('[AutoSave] revert succeeded');
   return true;
 }
 
