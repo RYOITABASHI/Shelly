@@ -92,13 +92,13 @@ class TermuxBridgeModule : Module() {
       val context = appContext.reactContext
         ?: throw Exception("React context not available")
 
-      // Step 1: Launch Termux with CLEAR_TOP to force new session
+      // Launch Termux — SINGLE_TOP to avoid destroying existing sessions
       val termuxIntent = Intent(Intent.ACTION_MAIN).apply {
         component = ComponentName(
           "com.termux",
           "com.termux.app.TermuxActivity"
         )
-        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
       }
 
       try {

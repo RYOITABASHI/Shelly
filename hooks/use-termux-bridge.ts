@@ -335,6 +335,10 @@ export function useTermuxBridge() {
     if (isAutoRecoveringRef.current) return;
     isAutoRecoveringRef.current = true;
 
+    // Cancel any pending reconnect timers to prevent interference
+    clearReconnectTimer();
+    clearAutoRecoveryTimer();
+
     setIsAutoRecovering(true);
     setAutoRecoveryFailed(false);
     setIsReconnectExhausted(false);
@@ -372,21 +376,26 @@ export function useTermuxBridge() {
     console.log('[AutoRecovery] Strategy 1: RunCommandService...');
     await runTermuxCommand({ command: startCmd, background: true });
 
-    // Strategy 2: am startservice via Runtime.exec() (may bypass standby restriction)
+    // Strategy 2: am startservice via Runtime.exec() (bypasses standby restriction)
     console.log('[AutoRecovery] Strategy 2: am startservice via shell...');
+    let strategy2Success = false;
     try {
       const directResult = await TermuxBridgeModule.startBridgeDirect();
       console.log('[AutoRecovery] startBridgeDirect result:', JSON.stringify(directResult));
+      strategy2Success = directResult?.success === true;
     } catch (e) {
       console.log('[AutoRecovery] startBridgeDirect failed:', e);
     }
 
-    // Strategy 3: Launch Termux Activity (brings Termux to front, .bashrc starts bridge)
-    console.log('[AutoRecovery] Strategy 3: Launch Termux Activity...');
-    try {
-      await TermuxBridgeModule.launchTermux();
-    } catch {
-      try { await Linking.openURL('com.termux://'); } catch {}
+    // Strategy 3: Launch Termux Activity — ONLY if Strategy 2 failed.
+    // Activity launch causes a disruptive screen switch to Termux and back.
+    if (!strategy2Success) {
+      console.log('[AutoRecovery] Strategy 3: Launch Termux Activity (fallback)...');
+      try {
+        await TermuxBridgeModule.launchTermux();
+      } catch {
+        try { await Linking.openURL('com.termux://'); } catch {}
+      }
     }
 
     // Step 2: Poll for bridge to come back online
