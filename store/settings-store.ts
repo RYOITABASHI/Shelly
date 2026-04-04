@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   highContrastOutput: true,
   localLlmEnabled: false,
   localLlmUrl: 'http://127.0.0.1:8080',
-  localLlmModel: 'Qwen2.5-3B-Instruct-Q4_K_M',
+  localLlmModel: 'qwen2.5-1.5b-instruct-q4_k_m',
   groqModel: 'llama-3.3-70b-versatile',
   teamMembers: {
     claude: true,

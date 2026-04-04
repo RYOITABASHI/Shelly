@@ -90,9 +90,24 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     badge: '高品質',
   },
   {
+    id: 'qwen2.5-1.5b-q4',
+    name: 'Qwen 2.5 1.5B',
+    description: '超軽量・超高速。Nacre音声後処理と共用。推論2倍速で1-3秒応答。',
+    sizeGb: 1.1,
+    ramRequiredGb: 3.3,
+    language: 'ja',
+    useCase: 'chat',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'Qwen/Qwen2.5-1.5B-Instruct-GGUF',
+    filename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    downloadUrl:
+      'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    recommended: true,
+  },
+  {
     id: 'qwen2.5-3b-q4',
     name: 'Qwen 2.5 3B',
-    description: '軽量・高速・日本語対応。Z Fold6で快適動作。チャット応答が速い。推奨モデル。',
+    description: '軽量・高速・日本語対応。Z Fold6で快適動作。チャット応答が速い。',
     sizeGb: 2.0,
     ramRequiredGb: 4.4,
     language: 'ja',
@@ -102,7 +117,6 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'qwen2.5-3b-instruct-q4_k_m.gguf',
     downloadUrl:
       'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
-    recommended: true,
   },
   {
     id: 'qwen3-4b-q4',

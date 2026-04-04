@@ -1056,7 +1056,7 @@ export default function SettingsScreen() {
               style={[styles.wsUrlInput, { color: '#A78BFA' }]}
               value={llmModelInput}
               onChangeText={setLlmModelInput}
-              placeholder="qwen2.5-3b-instruct-q4_k_m"
+              placeholder="qwen2.5-1.5b-instruct-q4_k_m"
               placeholderTextColor="#3D4451"
               autoCapitalize="none"
               autoCorrect={false}
