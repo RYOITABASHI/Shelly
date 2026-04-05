@@ -159,42 +159,48 @@ class ShellyTerminalSession(
 
     private fun startReconnectLoop() {
         if (isReconnecting) return
-        stopHeartbeat()
         isReconnecting = true
+        stopHeartbeat()
 
         val thread = object : Thread("ReconnectLoop-$sessionId") {
             override fun run() {
-                var attempts = 0
-                val maxAttempts = 30
-                val intervalMs = 1000L
+                var backoffMs = 0L  // First attempt is immediate
 
-                while (shouldReconnect && attempts < maxAttempts && isReconnecting) {
-                    attempts++
-                    try {
-                        sleep(intervalMs)
-                    } catch (_: InterruptedException) {
-                        break
+                while (shouldReconnect && isReconnecting) {
+                    if (backoffMs > 0) {
+                        try { sleep(backoffMs) } catch (_: InterruptedException) { break }
                     }
 
-                    Log.d(TAG, "Session $sessionId: reconnect attempt $attempts/$maxAttempts")
+                    Log.d(TAG, "Session $sessionId: reconnect attempt (backoff=${backoffMs}ms)")
 
                     if (reconnectSocket()) {
                         isReconnecting = false
 
-                        // Send Ctrl+L to refresh shell prompt on the main thread
                         batchHandler.post {
+                            // Re-send current terminal size
                             try {
-                                write("\u000c") // Ctrl+L
+                                val emulator = terminalSession.emulator
+                                if (emulator != null) {
+                                    sendResizeCommand(emulator.mColumns, emulator.mRows)
+                                }
                             } catch (_: Exception) {}
+
+                            // Refresh screen
+                            try { write("\u000c") } catch (_: Exception) {}
                             onScreenUpdateCallback?.invoke()
                         }
                         return
                     }
+
+                    // Exponential backoff: 0 → 100 → 200 → 400 → ... → 5000ms max
+                    backoffMs = if (backoffMs == 0L) 100L else minOf(backoffMs * 2, 5000L)
                 }
 
-                // All attempts exhausted — emit exit
+                // shouldReconnect set to false — session destroyed
                 isReconnecting = false
-                Log.w(TAG, "Session $sessionId: reconnect failed after $maxAttempts attempts")
+                if (!shouldReconnect) return
+
+                Log.w(TAG, "Session $sessionId: reconnect loop ended (shouldReconnect=$shouldReconnect)")
                 batchHandler.post {
                     emitEvent("onSessionExit", mapOf("sessionId" to sessionId, "exitCode" to -1))
                 }
