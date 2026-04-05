@@ -1487,8 +1487,8 @@ export default function SettingsScreen() {
         <SectionHeader title="Usage Alerts" subtitle="Claude Code cost notifications" />
         <View style={styles.settingRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.settingLabel}>Enable usage alerts</Text>
-            <Text style={styles.settingHint}>Notify when daily cost exceeds limit</Text>
+            <Text style={styles.settingLabelText}>Enable usage alerts</Text>
+            <Text style={styles.sectionSubtitle}>Notify when daily cost exceeds limit</Text>
           </View>
           <Switch
             value={useUsageStore.getState().alertEnabled}
