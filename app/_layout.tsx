@@ -10,6 +10,7 @@ import "react-native-reanimated";
 import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-context";
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
+import { loadAgentsFromDisk } from "@/lib/agent-manager";
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return (
@@ -40,6 +41,18 @@ export default function RootLayout() {
 
   useEffect(() => {
     loadSettings();
+
+    // Load background agents from disk
+    loadAgentsFromDisk(async (_cmd) => {
+      try {
+        // Bridge may not be ready at startup — return empty string
+        // Agents will be re-loaded when a session connects
+        return '';
+      } catch {
+        return '';
+      }
+    }).catch(console.warn);
+
     // Initialize reduce-motion detection for sound/animation system
     useSoundStore.getState().initReduceMotion();
 
