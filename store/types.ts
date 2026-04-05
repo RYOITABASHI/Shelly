@@ -369,3 +369,37 @@ export type AppSettings = {
   /** Terminal ANSI color theme (default: 'shelly') */
   terminalTheme: string;
 };
+
+// ─── Background Agents ──────────────────────────────────────────────────────
+
+export type ToolChoice =
+  | { type: 'cli'; cli: 'claude' | 'gemini' | 'codex' }
+  | { type: 'local' }
+  | { type: 'perplexity' }
+  | { type: 'auto' };
+
+export interface Agent {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  schedule: string | null;     // cron expression, null = manual only
+  tool: ToolChoice;
+  outputPath: string;
+  outputTemplate: string | null;
+  enabled: boolean;
+  lastRun: number | null;
+  lastResult: 'success' | 'error' | null;
+  createdAt: number;
+  version: number;             // schema version (1 for v1)
+}
+
+export interface AgentRunLog {
+  agentId: string;
+  timestamp: number;
+  status: 'success' | 'error' | 'skipped';
+  outputPreview: string;       // first 500 chars
+  durationMs: number;
+  toolUsed: string;
+  errorMessage?: string;
+}
