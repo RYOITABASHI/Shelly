@@ -247,6 +247,7 @@ export async function ollamaChat(
   timeoutMs = 60000,
   externalSignal?: AbortSignal,
   maxTokens = 512,
+  _retried = false,
 ): Promise<{ success: boolean; content: string; error?: string }> {
   try {
     const controller = new AbortController();
@@ -309,12 +310,26 @@ export async function ollamaChat(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const isTimeout = message.includes('abort') || message.includes('timeout');
-    return {
-      success: false,
-      content: '',
-      error: isTimeout ? 'Timeout (60s). The model may be too large.' : message, // Keep English for debugging (not user-facing)
-    };
+    const isAbort = externalSignal?.aborted ?? false;
+    const isTimeout = !isAbort && (message.includes('abort') || message.includes('timeout'));
+
+    if (isTimeout || isAbort) {
+      return {
+        success: false,
+        content: '',
+        error: isTimeout ? 'Timeout (60s). The model may be too large.' : message, // Keep English for debugging (not user-facing)
+      };
+    }
+
+    // Connection-level error — retry once if server is still alive
+    if (!_retried) {
+      const check = await checkOllamaConnection(config.baseUrl);
+      if (check.available) {
+        return ollamaChat(config, messages, timeoutMs, externalSignal, maxTokens, true);
+      }
+    }
+
+    return { success: false, content: '', error: message };
   }
 }
 
@@ -332,6 +347,7 @@ export async function ollamaChatStream(
   onChunk: (text: string, done: boolean) => void,
   timeoutMs = 120000,
   externalSignal?: AbortSignal,
+  _retried = false,
 ): Promise<{ success: boolean; content?: string; error?: string }> {
   const apiType = detectApiType(config.baseUrl);
   const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
@@ -362,7 +378,7 @@ export async function ollamaChatStream(
 
   // React Native: XMLHttpRequest でストリーミング
   if (isReactNative) {
-    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal);
+    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried);
   }
 
   // Web: fetch + ReadableStream
@@ -438,11 +454,22 @@ export async function ollamaChatStream(
   } catch (err) {
     clearTimeout(timer);
     const message = err instanceof Error ? err.message : String(err);
-    const isTimeout = message.includes('abort') || message.includes('timeout');
-    return {
-      success: false,
-      error: isTimeout ? 'Timeout. The model may be too large.' : message,
-    };
+    const isAbort = externalSignal?.aborted ?? false;
+    const isTimeout = !isAbort && (message.includes('abort') || message.includes('timeout'));
+
+    if (isTimeout || isAbort) {
+      return { success: false, error: isTimeout ? 'Timeout. The model may be too large.' : message };
+    }
+
+    // Connection-level error — retry once if server is still alive
+    if (!_retried) {
+      const check = await checkOllamaConnection(config.baseUrl);
+      if (check.available) {
+        return ollamaChatStream(config, messages, onChunk, timeoutMs, externalSignal, true);
+      }
+    }
+
+    return { success: false, error: message };
   }
 }
 
@@ -487,6 +514,8 @@ function xhrStream(
   onChunk: (text: string, done: boolean) => void,
   timeoutMs: number,
   externalSignal?: AbortSignal,
+  baseUrl?: string,
+  _retried = false,
 ): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
@@ -544,7 +573,19 @@ function xhrStream(
     };
 
     xhr.onerror = () => {
-      finish({ success: false, error: 'XHR network error' });
+      // Connection-level error — retry once if server is still alive (and not already retried)
+      if (!_retried && baseUrl && !(externalSignal?.aborted)) {
+        checkOllamaConnection(baseUrl).then((check) => {
+          if (check.available) {
+            xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true)
+              .then(finish);
+          } else {
+            finish({ success: false, error: 'XHR network error' });
+          }
+        });
+      } else {
+        finish({ success: false, error: 'XHR network error' });
+      }
     };
 
     xhr.ontimeout = () => {
