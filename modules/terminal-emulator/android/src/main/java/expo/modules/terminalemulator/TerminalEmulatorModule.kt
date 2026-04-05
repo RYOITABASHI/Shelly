@@ -48,6 +48,15 @@ class TerminalEmulatorModule : Module() {
         sendEvent(name, body)
     }
 
+    private fun getAgentRequestCode(context: Context, agentId: String): Int {
+        val prefs = context.getSharedPreferences("shelly_agent_ids", Context.MODE_PRIVATE)
+        val existing = prefs.getInt(agentId, -1)
+        if (existing >= 0) return existing
+        val nextId = prefs.getInt("_next_id", 1000)
+        prefs.edit().putInt(agentId, nextId).putInt("_next_id", nextId + 1).apply()
+        return nextId
+    }
+
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
 
@@ -191,6 +200,38 @@ class TerminalEmulatorModule : Module() {
                 }
                 context.startActivity(intent)
             }
+            null
+        }
+
+        AsyncFunction("scheduleAgent") { agentId: String, intervalMs: Long, triggerAtMs: Long ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            val requestCode = getAgentRequestCode(context, agentId)
+            val am = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
+                putExtra("agent_id", agentId)
+            }
+            val pi = android.app.PendingIntent.getBroadcast(
+                context, requestCode, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            am.setRepeating(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, intervalMs, pi)
+            Log.i("TerminalEmulator", "Scheduled agent $agentId (reqCode=$requestCode): interval=${intervalMs}ms")
+            null
+        }
+
+        AsyncFunction("cancelAgent") { agentId: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            val requestCode = getAgentRequestCode(context, agentId)
+            val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
+                putExtra("agent_id", agentId)
+            }
+            val pi = android.app.PendingIntent.getBroadcast(
+                context, requestCode, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            val am = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            am.cancel(pi)
+            Log.i("TerminalEmulator", "Cancelled agent $agentId")
             null
         }
     }
