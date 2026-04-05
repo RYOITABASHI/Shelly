@@ -212,24 +212,48 @@ public final class TerminalSession extends TerminalOutput {
             public void run() {
                 try {
                     final byte[] buffer = new byte[4096];
+                    // Heartbeat filter: \x1bPTYH\n (6 bytes)
+                    final byte[] hbPrefix = {0x1b, 'P', 'T', 'Y', 'H', '\n'};
+
                     while (true) {
                         int read = inputStream.read(buffer);
                         if (read == -1) {
-                            // EOF — pty-helper closed the connection (client disconnect).
-                            // Signal disconnect, NOT exit. The shell is still alive in pty-helper.
                             mMainThreadHandler.sendMessage(
                                 mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, 0)
                             );
                             return;
                         }
-                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
-                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+
+                        // Filter out heartbeat responses
+                        int writeStart = 0;
+                        for (int i = 0; i < read; i++) {
+                            // Check for 6-byte heartbeat sequence
+                            if (i + 6 <= read && buffer[i] == 0x1b) {
+                                boolean isHeartbeat = true;
+                                for (int j = 0; j < 6 && i + j < read; j++) {
+                                    if (buffer[i + j] != hbPrefix[j]) { isHeartbeat = false; break; }
+                                }
+                                if (isHeartbeat) {
+                                    // Write everything before the heartbeat
+                                    if (i > writeStart) {
+                                        if (!mProcessToTerminalIOQueue.write(buffer, writeStart, i - writeStart)) return;
+                                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                                    }
+                                    i += 5; // skip heartbeat (loop will i++)
+                                    writeStart = i + 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        // Write remaining data
+                        if (writeStart < read) {
+                            if (!mProcessToTerminalIOQueue.write(buffer, writeStart, read - writeStart)) return;
+                            mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                        }
                     }
                 } catch (java.net.SocketTimeoutException e) {
-                    // Read timeout — not a real disconnect, just no data. This shouldn't
-                    // happen with soTimeout=0 but handle it gracefully anyway.
+                    // Read timeout — not a real disconnect
                 } catch (Exception e) {
-                    // Connection closed — signal session exit for reconnect
                     mMainThreadHandler.sendMessage(
                         mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, 0)
                     );
@@ -289,14 +313,36 @@ public final class TerminalSession extends TerminalOutput {
             public void run() {
                 try {
                     final byte[] buffer = new byte[4096];
+                    final byte[] hbPrefix = {0x1b, 'P', 'T', 'Y', 'H', '\n'};
+
                     while (true) {
                         int read = inputStream.read(buffer);
                         if (read == -1) return;
-                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
-                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+
+                        int writeStart = 0;
+                        for (int i = 0; i < read; i++) {
+                            if (i + 6 <= read && buffer[i] == 0x1b) {
+                                boolean isHeartbeat = true;
+                                for (int j = 0; j < 6 && i + j < read; j++) {
+                                    if (buffer[i + j] != hbPrefix[j]) { isHeartbeat = false; break; }
+                                }
+                                if (isHeartbeat) {
+                                    if (i > writeStart) {
+                                        if (!mProcessToTerminalIOQueue.write(buffer, writeStart, i - writeStart)) return;
+                                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                                    }
+                                    i += 5;
+                                    writeStart = i + 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        if (writeStart < read) {
+                            if (!mProcessToTerminalIOQueue.write(buffer, writeStart, read - writeStart)) return;
+                            mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                        }
                     }
                 } catch (Exception e) {
-                    // Connection closed — signal session exit
                     mMainThreadHandler.sendMessage(
                         mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, 0)
                     );

@@ -21,6 +21,10 @@ class ShellyTerminalSession(
         private const val BATCH_INTERVAL_MS = 16L
         private const val MAX_OUTPUT_BYTES = 64 * 1024
         private const val RESIZE_PREFIX = "\u001bPTYR"
+        private const val HEARTBEAT_PREFIX = "\u001bPTYH"
+        private const val HEARTBEAT_CMD = "\u001bPTYH\n"
+        private const val HEARTBEAT_INTERVAL_MS = 15_000L
+        private const val HEARTBEAT_TIMEOUT_MS = 45_000L
     }
 
     private val outputBuffer = StringBuilder()
@@ -33,6 +37,9 @@ class ShellyTerminalSession(
     @Volatile private var shouldReconnect = true
     private var reconnectThread: Thread? = null
     private val socketLock = Any()
+
+    private var heartbeatThread: Thread? = null
+    @Volatile private var lastDataReceived = System.currentTimeMillis()
 
     private var socket: Socket? = null
     val terminalSession: TerminalSession
@@ -56,6 +63,7 @@ class ShellyTerminalSession(
         val inputStream = sock.getInputStream()
         val outputStream = sock.getOutputStream()
         terminalSession.initializeWithStreams(inputStream, outputStream, cols, rows, 1, 1)
+        startHeartbeat()
 
         Log.i(TAG, "Session $sessionId connected to pty-helper on port $port")
     }
@@ -137,6 +145,8 @@ class ShellyTerminalSession(
                 terminalSession.replaceStreams(inputStream, outputStream)
 
                 Log.i(TAG, "Session $sessionId reconnected to pty-helper on port $port")
+                lastDataReceived = System.currentTimeMillis()
+                startHeartbeat()
                 return true
             } catch (e: Exception) {
                 Log.w(TAG, "Session $sessionId reconnect failed: ${e.message}")
@@ -149,6 +159,7 @@ class ShellyTerminalSession(
 
     private fun startReconnectLoop() {
         if (isReconnecting) return
+        stopHeartbeat()
         isReconnecting = true
 
         val thread = object : Thread("ReconnectLoop-$sessionId") {
@@ -214,6 +225,7 @@ class ShellyTerminalSession(
     }
 
     fun destroy() {
+        stopHeartbeat()
         shouldReconnect = false
         isReconnecting = false
         reconnectThread?.interrupt()
@@ -225,6 +237,46 @@ class ShellyTerminalSession(
             try { socket?.close() } catch (_: Exception) {}
             socket = null
         }
+    }
+
+    private fun startHeartbeat() {
+        stopHeartbeat()
+        heartbeatThread = Thread("Heartbeat-$sessionId") {
+            while (shouldReconnect && !Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(HEARTBEAT_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                // Send heartbeat
+                synchronized(socketLock) {
+                    try {
+                        socket?.getOutputStream()?.write(HEARTBEAT_CMD.toByteArray(Charsets.UTF_8))
+                        socket?.getOutputStream()?.flush()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Heartbeat send failed: ${e.message}")
+                        try { socket?.close() } catch (_: Exception) {}
+                        break
+                    }
+                }
+                // Check for response timeout
+                if (System.currentTimeMillis() - lastDataReceived > HEARTBEAT_TIMEOUT_MS) {
+                    Log.w(TAG, "Heartbeat timeout (${HEARTBEAT_TIMEOUT_MS}ms), triggering reconnect")
+                    synchronized(socketLock) {
+                        try { socket?.close() } catch (_: Exception) {}
+                    }
+                    break
+                }
+            }
+        }.also {
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatThread?.interrupt()
+        heartbeatThread = null
     }
 
     fun getTitle(): String = terminalSession.title ?: ""
@@ -254,6 +306,7 @@ class ShellyTerminalSession(
     var onScreenUpdateCallback: (() -> Unit)? = null
 
     override fun onTextChanged(changedSession: TerminalSession) {
+        lastDataReceived = System.currentTimeMillis()
         val emulator = changedSession.emulator ?: return
         val screen = emulator.screen
         val fullText = screen.transcriptText ?: return
