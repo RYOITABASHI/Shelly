@@ -7,6 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppSettings, TermuxSettings } from './types';
 import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys } from '@/lib/secure-store';
 import { useSoundStore } from '@/lib/sounds';
+import { useAgentStore } from '@/store/agent-store';
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   localLlmUrl: 'http://127.0.0.1:8080',
   localLlmModel: 'qwen2.5-1.5b-instruct-q4_k_m',
   groqModel: 'llama-3.3-70b-versatile',
+  perplexityApiKey: '',
   teamMembers: {
     claude: true,
     gemini: true,
@@ -102,6 +104,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         if (isApiKeyField(key) && typeof value === 'string') {
           saveApiKey(key, value);
         }
+      }
+      // Sync Perplexity API key to .env for headless agent execution
+      if ('perplexityApiKey' in newSettings && typeof newSettings.perplexityApiKey === 'string') {
+        const envKey = 'PERPLEXITY_API_KEY';
+        const value = newSettings.perplexityApiKey;
+        const cmd = `mkdir -p ~/.shelly/agents && (grep -v "^${envKey}=" ~/.shelly/agents/.env 2>/dev/null || true; echo "${envKey}=${value}") > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
+        useAgentStore.getState().setPendingEnvSync(cmd);
       }
       // Sync sound store with settings
       if ('soundEffects' in newSettings) {
