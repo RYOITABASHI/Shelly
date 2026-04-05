@@ -392,6 +392,9 @@ export default function TerminalScreen() {
   const resetSession = useCallback(async (session: TabSession) => {
     const port = getPtyPort(session.tmuxSession);
 
+    // 0. Clear creation mutex so createNativeSession doesn't skip
+    creatingSessions.current.delete(session.id);
+
     // 1. Destroy Kotlin session (clears TerminalEmulator buffer)
     try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
@@ -401,7 +404,7 @@ export default function TerminalScreen() {
         { timeoutMs: 3000, reason: 'pty-reset-kill' }
     ).catch(() => {});
 
-    // 3. Clear store state
+    // 3. Clear store state (also sets sessionStatus to 'starting')
     useTerminalStore.getState().clearSession(session.id);
 
     // 4. Small delay to ensure port is released
