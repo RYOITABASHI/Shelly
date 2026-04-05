@@ -18,13 +18,14 @@ const ONBOARDING_KEY = '@shelly/chat_onboarding_step';
 const ONBOARDING_DONE_KEY = '@shelly/chat_onboarding_done';
 
 export type OnboardingStep =
-  | 'welcome'           // 歓迎 + 「ファイル一覧」を試すよう促す
-  | 'after_first_cmd'   // コマンド実行後 → Cerebrasセットアップ促す
-  | 'cerebras_setup'    // Cerebras APIキー入力待ち
-  | 'cerebras_done'     // Cerebras設定完了 → Groq促す
-  | 'groq_setup'        // Groq APIキー入力待ち
-  | 'complete'          // 全完了
-  | 'skipped';          // スキップ済み
+  | 'welcome'             // 歓迎 + 「ファイル一覧」を試すよう促す
+  | 'after_first_cmd'     // コマンド実行後 → Gemini CLIブリッジステップへ
+  | 'gemini_cli_bridge'   // Gemini CLI案内 → Cerebrasセットアップへ
+  | 'cerebras_setup'      // Cerebras APIキー入力待ち
+  | 'cerebras_done'       // Cerebras設定完了 → Groq促す
+  | 'groq_setup'          // Groq APIキー入力待ち
+  | 'complete'            // 全完了
+  | 'skipped';            // スキップ済み
 
 /**
  * オンボーディングが完了済みかチェック

@@ -259,6 +259,8 @@ const ja: Record<string, string> = {
   'setup2.start_setup': 'セットアップ開始',
   'setup2.all_installed': '必要なアプリはすべてインストール済み',
   'setup2.missing_apps': '上のアプリを先にインストールしてください',
+  'setup2.gemini_teaser_title': '無料のAIコーディング支援付き',
+  'setup2.gemini_teaser_desc': 'セットアップ後、Gemini CLIが自動インストールされます — Googleアカウントで無料。',
   // Step 2: Auto setup (progress)
   'setup2.progress_title': 'セットアップ中',
   'setup2.progress_wait': '初回のみ少し時間がかかります。',
@@ -336,6 +338,9 @@ const ja: Record<string, string> = {
   'onboarding.open_browser': 'ブラウザで開く',
   'onboarding.save_key': 'APIキーを保存',
   'onboarding.key_placeholder': 'APIキーを貼り付け...',
+  'onboarding.gemini_bridge': 'Gemini CLIの準備ができました！ターミナルで `gemini` と入力してAIと対話を始めましょう。',
+  'onboarding.try_gemini': 'わかった！',
+  'onboarding.gemini_bridge_next': '他のAIツールもセットアップ',
 
   // CLIセッション
   'session.started': '{{cli}} セッションを開始しました。「ログアウト」と入力するまで、すべてのメッセージが {{cli}} に送信されます。',

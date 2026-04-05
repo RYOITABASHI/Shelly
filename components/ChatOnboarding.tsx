@@ -76,12 +76,27 @@ export function ChatOnboarding({ step, onStepChange }: Props) {
     return (
       <View style={styles.container}>
         <Text style={styles.message}>{t('onboarding.after_cmd')}</Text>
-        <Pressable style={styles.primaryBtn} onPress={() => advanceTo('cerebras_setup')}>
+        <Pressable style={styles.primaryBtn} onPress={() => advanceTo('gemini_cli_bridge')}>
           <MaterialIcons name="auto-awesome" size={16} color="#000" />
           <Text style={styles.primaryBtnText}>{t('onboarding.setup_cerebras')}</Text>
         </Pressable>
         <Pressable style={styles.skipBtn} onPress={handleSkip}>
           <Text style={styles.skipText}>{t('onboarding.skip')}</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (step === 'gemini_cli_bridge') {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.message}>{t('onboarding.gemini_bridge')}</Text>
+        <Pressable style={[styles.primaryBtn, { backgroundColor: '#60A5FA' }]} onPress={() => advanceTo('cerebras_setup')}>
+          <MaterialIcons name="terminal" size={16} color="#000" />
+          <Text style={styles.primaryBtnText}>{t('onboarding.gemini_bridge_next')}</Text>
+        </Pressable>
+        <Pressable style={styles.skipBtn} onPress={() => advanceTo('cerebras_setup')}>
+          <Text style={styles.skipText}>{t('onboarding.try_gemini')}</Text>
         </Pressable>
       </View>
     );

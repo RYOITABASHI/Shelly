@@ -338,6 +338,15 @@ export function SetupWizard({ visible, onComplete, isResetup = false }: Props) {
         {/* Bootstrap hint */}
         <Text style={styles.bootstrapHint}>{t('setup2.install_termux_bootstrap')}</Text>
 
+        {/* Gemini CLI teaser */}
+        <View style={styles.geminiTeaserCard}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <MaterialIcons name="auto-awesome" size={14} color="#60A5FA" />
+            <Text style={styles.geminiTeaserTitle}>{t('setup2.gemini_teaser_title')}</Text>
+          </View>
+          <Text style={styles.geminiTeaserDesc}>{t('setup2.gemini_teaser_desc')}</Text>
+        </View>
+
         <Pressable
           style={[styles.primaryBtn, { backgroundColor: '#00D4AA' }]}
           onPress={() => setWizardStep('init')}
@@ -815,6 +824,28 @@ const styles = StyleSheet.create({
   bootstrapHint: {
     color: '#FBBF24', fontSize: 11, fontFamily: 'monospace',
     textAlign: 'center', marginBottom: 8, lineHeight: 18,
+  },
+
+  // Gemini teaser card (install step)
+  geminiTeaserCard: {
+    backgroundColor: '#60A5FA12',
+    borderWidth: 1,
+    borderColor: '#60A5FA30',
+    borderRadius: 10,
+    padding: 12,
+    width: '100%',
+  },
+  geminiTeaserTitle: {
+    color: '#60A5FA',
+    fontSize: 12,
+    fontFamily: 'monospace',
+    fontWeight: '700',
+  },
+  geminiTeaserDesc: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    lineHeight: 17,
   },
 
   // Primary button

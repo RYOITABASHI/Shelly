@@ -258,6 +258,8 @@ const en: Record<string, string> = {
   'setup2.start_setup': 'Start Setup',
   'setup2.all_installed': 'All required apps installed',
   'setup2.missing_apps': 'Install the apps above first',
+  'setup2.gemini_teaser_title': 'Free AI coding assistant included',
+  'setup2.gemini_teaser_desc': 'After setup, Gemini CLI will be installed automatically — free with your Google account.',
   // Step 2: Auto setup (progress)
   'setup2.progress_title': 'Setting Up',
   'setup2.progress_wait': 'This only takes a minute on first setup.',
@@ -335,6 +337,9 @@ const en: Record<string, string> = {
   'onboarding.open_browser': 'Open in browser',
   'onboarding.save_key': 'Save API key',
   'onboarding.key_placeholder': 'Paste API key here...',
+  'onboarding.gemini_bridge': 'Gemini CLI is ready! Type `gemini` in the terminal to start a conversation with AI.',
+  'onboarding.try_gemini': 'Got it!',
+  'onboarding.gemini_bridge_next': 'Set up more AI tools',
 
   // CLI session
   'session.started': '{{cli}} session started. All messages will go to {{cli}} until you type "logout".',
