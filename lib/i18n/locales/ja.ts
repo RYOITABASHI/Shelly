@@ -810,6 +810,7 @@ const ja: Record<string, string> = {
   'settings.llm_url_updated': 'ローカルLLM URLを更新しました:\n{{url}}',
   'settings.model_error': 'モデル名を入力してください',
   'settings.model_updated': 'モデルを更新しました: {{model}}',
+  'settings.llm_model_hint': '推奨: モバイルで快適に動作するには1.5Bパラメータ以下（例: qwen2.5-1.5b）のモデル',
   'settings.llm_success_title': 'llama-server接続成功',
   'settings.llm_success_msg': 'llama-serverに接続しました。',
   'settings.llm_fail_title': 'llama-server接続失敗',

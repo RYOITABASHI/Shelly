@@ -503,7 +503,7 @@ export function useAIDispatch() {
           undefined, // toolStatuses
           undefined, // defaultAgent
           signal,
-          true, // forceLocal — @local mention skips routing
+          true, // forceLocal — skip routing for local model (avoids double-inference penalty)
         );
 
         if (result.handledBy !== 'local_llm') {

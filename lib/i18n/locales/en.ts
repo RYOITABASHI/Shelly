@@ -808,6 +808,7 @@ const en: Record<string, string> = {
   'settings.llm_url_updated': 'Local LLM URL updated:\n{{url}}',
   'settings.model_error': 'Please enter a model name',
   'settings.model_updated': 'Model updated: {{model}}',
+  'settings.llm_model_hint': 'Recommended: 1.5B parameters or smaller (e.g. qwen2.5-1.5b) for smooth performance on mobile',
   'settings.llm_success_title': 'llama-server connection successful',
   'settings.llm_success_msg': 'Connected to llama-server.',
   'settings.llm_fail_title': 'llama-server connection failed',

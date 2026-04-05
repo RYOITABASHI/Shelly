@@ -746,8 +746,10 @@ export async function orchestrateChatStream(
   externalSignal?: AbortSignal,
   forceLocal?: boolean,
 ): Promise<OrchestrationResult> {
-  // @localで明示指定された場合はルーティングをスキップ
-  if (forceLocal) {
+  // ローカルモデル（127.0.0.1/localhost）またはforceLocal指定の場合はルーティングをスキップ
+  // → double-inference（ルーティング用LLM呼び出し + 実際の応答用LLM呼び出し）を防止
+  const isLocalEndpoint = config.baseUrl?.includes('127.0.0.1') || config.baseUrl?.includes('localhost');
+  if (forceLocal || isLocalEndpoint) {
     const systemContent = buildSystemPrompt({ toolStatuses, projectContext, userProfileSummary, customContext });
     const messages: OllamaMessage[] = [
       { role: 'system', content: systemContent },
@@ -757,13 +759,13 @@ export async function orchestrateChatStream(
     // ストリーミング（RN: XHR, Web: ReadableStream）
     const result = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
     if (result.success) {
-      return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Direct @local mention' };
+      return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Local model — routing skipped' };
     }
     // ストリーミング失敗時は非ストリーミングにフォールバック
     const fallback = await ollamaChat(config, messages, 60000, externalSignal);
     if (fallback.success && fallback.content) {
       onChunk(fallback.content, true);
-      return { category: 'chat', handledBy: 'local_llm', response: fallback.content, reasoning: 'Direct @local mention' };
+      return { category: 'chat', handledBy: 'local_llm', response: fallback.content, reasoning: 'Local model — routing skipped' };
     }
     onChunk('Could not connect to local LLM. Make sure llama-server is running.', true);
     return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Connection failed' };

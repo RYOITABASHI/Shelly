@@ -1090,6 +1090,9 @@ export default function SettingsScreen() {
             GGUF model name. Example: gemma-3-4b-it-Q4_K_M, Qwen3-4B-Instruct-2507-Q4_K_M{`\n`}
             Copy the filename from the model catalog below.
           </Text>
+          <Text style={[styles.wsUrlHint, { marginTop: 4 }]}>
+            {t('settings.llm_model_hint')}
+          </Text>
         </View>
 
         {/* Test Ollama connection */}
