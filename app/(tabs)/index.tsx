@@ -56,6 +56,8 @@ import { TemplateGallery } from '@/components/chat/TemplateGallery';
 import type { TemplateWithWizard } from '@/lib/project-templates';
 import { useCreatorStore } from '@/store/creator-store';
 import { detectProjectTypeFromDir, generateWorkflowFromWizard, commitAndPushWorkflow, pollWorkflowResult } from '@/lib/github-actions';
+import { parseAgentCommand } from '@/lib/agent-manager';
+import { generateRunNowCommand, generateStopCommand } from '@/lib/agent-executor';
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -721,6 +723,55 @@ export default function ChatScreen() {
         isStreaming: false,
         wizardData,
       });
+      return;
+    }
+
+    // @agent commands — dispatch to agent manager
+    if (target === 'agent') {
+      const result = parseAgentCommand(parsed.prompt);
+      switch (result.type) {
+        case 'list':
+        case 'status':
+        case 'history':
+        case 'error':
+          addMessage(chatSessionId, {
+            id: generateId(), role: 'assistant', content: result.message, timestamp: Date.now(),
+          });
+          return;
+        case 'run': {
+          addMessage(chatSessionId, {
+            id: generateId(), role: 'assistant', content: `Running agent...`, timestamp: Date.now(),
+          });
+          const cmd = generateRunNowCommand(result.data.agentId);
+          await bridgeRunCommand(cmd);
+          return;
+        }
+        case 'stop': {
+          const cmd = generateStopCommand(result.data.agentId);
+          await bridgeRunCommand(cmd);
+          addMessage(chatSessionId, {
+            id: generateId(), role: 'assistant', content: `Agent stopped.`, timestamp: Date.now(),
+          });
+          return;
+        }
+        case 'delete': {
+          const { deleteAgent } = await import('@/lib/agent-manager');
+          await deleteAgent(result.data.agent.id);
+          addMessage(chatSessionId, {
+            id: generateId(), role: 'assistant', content: `Deleted agent "${result.data.agent.name}".`, timestamp: Date.now(),
+          });
+          return;
+        }
+        case 'create':
+          // For now, show the suggestion as a bot message
+          // Full AgentCreateFlow UI component will be added in Task 10
+          addMessage(chatSessionId, {
+            id: generateId(), role: 'assistant',
+            content: `To create this agent, use the Settings > Background Agents panel.\nSuggested tool: ${result.data.suggestion.label}\nReason: ${result.data.suggestion.reason}`,
+            timestamp: Date.now(),
+          });
+          return;
+      }
       return;
     }
 

@@ -67,6 +67,12 @@ export function parseAgentCommand(input: string): AgentCommandResult {
       return { type: 'history', message: formatHistory(agent, logs), data: { logs } };
     }
 
+    case 'edit': {
+      const agent = store.getAgentByName(nameArg);
+      if (!agent) return { type: 'error', message: `Agent "${nameArg}" not found` };
+      return { type: 'create', message: nameArg, data: { suggestion: suggestTool(agent.prompt), editAgent: agent } };
+    }
+
     case 'status':
       return statusAll(store.agents);
 
