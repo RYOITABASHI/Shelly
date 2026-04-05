@@ -24,6 +24,7 @@ class TerminalViewModule : Module() {
             Events(
                 "onOutput",
                 "onBlockCompleted",
+                "onBlockLongPress",
                 "onSelectionChanged",
                 "onUrlDetected",
                 "onBell",
@@ -68,6 +69,10 @@ class TerminalViewModule : Module() {
 
             Prop("cursorBlink") { view: ShellyTerminalView, blink: Boolean? ->
                 view.setCursorBlinkEnabled(blink ?: false)
+            }
+
+            Prop("gpuRendering") { view: ShellyTerminalView, enabled: Boolean? ->
+                view.setGpuRendering(enabled ?: false)
             }
 
             Prop("colorScheme") { view: ShellyTerminalView, colors: Map<String, String>? ->
@@ -116,6 +121,10 @@ class TerminalViewModule : Module() {
 
         AsyncFunction("focus") { viewTag: Int ->
             findView(viewTag)?.focusCommand()
+        }
+
+        AsyncFunction("scrollToRow") { viewTag: Int, row: Int ->
+            findView(viewTag)?.scrollToRowCommand(row)
         }
     }
 

@@ -19,6 +19,7 @@ class BlockDetector(
     private val onBlockCompleted: (block: CommandBlock) -> Unit,
     private val idleTimeoutMs: Long = 2000L
 ) {
+    var onBlockStarted: ((command: String) -> Unit)? = null
     data class CommandBlock(
         val command: String,
         val output: String,
@@ -118,6 +119,8 @@ class BlockDetector(
             if (cleaned.isNotEmpty()) {
                 currentCommand.append(cleaned)
             }
+            // Fire onBlockStarted for GL renderer
+            onBlockStarted?.invoke(currentCommand.toString().trim())
             found = true
         }
 
