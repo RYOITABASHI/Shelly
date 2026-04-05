@@ -294,4 +294,91 @@ object SyntaxHighlighter {
         }
         return modified
     }
+
+    /**
+     * Thread-safe overload for GPU rendering path (HighlightWorker).
+     * Returns per-cell foreground color override array.
+     * Each element is an ANSI color index (0-255), or -1 for "no override".
+     *
+     * Uses LOCAL arrays for column mapping to avoid data races with the
+     * main-thread Canvas path.
+     */
+    fun highlightRowForGpu(buffer: TerminalBuffer, row: Int): IntArray {
+        val cols = buffer.columns
+        val result = IntArray(cols) { -1 }
+
+        val terminalRow = try { buffer.getRow(row) } catch (_: Exception) { null }
+            ?: return result
+
+        // Thread-local column mapping (NOT the shared object fields)
+        val localColToTextIdx = IntArray(cols)
+        val localTextIdxToCol = IntArray(cols * 2)
+
+        // Extract text with column mapping
+        val sb = StringBuilder(cols)
+        var textIdx = 0
+        for (col in 0 until cols) {
+            localColToTextIdx[col] = textIdx
+            if (textIdx < localTextIdxToCol.size) {
+                localTextIdxToCol[textIdx] = col
+            }
+            val cp = terminalRow.getCodePoint(col)
+            if (cp == 0) {
+                sb.append(' ')
+            } else {
+                sb.appendCodePoint(cp)
+            }
+            textIdx++
+        }
+        val text = sb.toString()
+
+        // Check if row has any explicit ANSI colors — skip if so
+        for (col in 0 until cols) {
+            val style = terminalRow.getStyle(col)
+            val fg = com.termux.terminal.TextStyle.decodeForeColor(style)
+            if (fg != com.termux.terminal.TextStyle.COLOR_INDEX_FOREGROUND) {
+                return result
+            }
+        }
+
+        // Apply the same highlight patterns as the main highlighter
+        // Command pattern (after $ / # / %)
+        val cmdMatch = Regex("""^[\$#%>]\s+(\S+)""").find(text)
+        if (cmdMatch != null) {
+            val range = cmdMatch.groups[1]!!.range
+            for (i in range) {
+                val col = if (i < localColToTextIdx.size) localTextIdxToCol.getOrElse(i) { i } else i
+                if (col in result.indices) result[col] = COLOR_COMMAND
+            }
+        }
+
+        // Options pattern (--flag, -f)
+        Regex("""(?:^|\s)(--?\w[\w-]*)""").findAll(text).forEach { match ->
+            val range = match.groups[1]!!.range
+            for (i in range) {
+                val col = if (i < localTextIdxToCol.size) localTextIdxToCol.getOrElse(i) { i } else i
+                if (col in result.indices) result[col] = COLOR_OPTION
+            }
+        }
+
+        // Path pattern
+        Regex("""(?:^|\s)([~/.][\w/.@:-]+)""").findAll(text).forEach { match ->
+            val range = match.groups[1]!!.range
+            for (i in range) {
+                val col = if (i < localTextIdxToCol.size) localTextIdxToCol.getOrElse(i) { i } else i
+                if (col in result.indices) result[col] = COLOR_PATH
+            }
+        }
+
+        // Error keywords
+        Regex("""(?i)\b(error|fail|fatal|denied|refused|not found|exception)\b""").findAll(text).forEach { match ->
+            val range = match.range
+            for (i in range) {
+                val col = if (i < localTextIdxToCol.size) localTextIdxToCol.getOrElse(i) { i } else i
+                if (col in result.indices) result[col] = COLOR_ERROR
+            }
+        }
+
+        return result
+    }
 }
