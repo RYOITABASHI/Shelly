@@ -1,0 +1,135 @@
+{
+  "version": "4.2.0",
+  "generatedAt": "2026-04-06",
+  "totalFeatures": 91,
+  "categories": [
+    {
+      "name": "Navigation & Layout",
+      "features": [
+        {"id": "tabs", "name": "4タブインターフェース", "description": "Projects / Chat / Terminal / Settings の4画面", "usage": "画面下部のタブをタップ"},
+        {"id": "multi-pane", "name": "マルチペイン", "description": "ワイドスクリーンで複数画面を並列表示（最大4ペイン）", "usage": "ワイド画面でCtrl+Alt+M、またはヘッダーのペインアイコン"},
+        {"id": "command-palette", "name": "コマンドパレット", "description": "アクション・タブ・スニペットの検索＆実行", "usage": "Ctrl+Shift+P"},
+        {"id": "quick-terminal", "name": "クイックターミナル", "description": "モバイル画面でドロップダウン式ターミナルオーバーレイ", "usage": "モバイル画面で上からスワイプ"}
+      ]
+    },
+    {
+      "name": "Chat & AI",
+      "features": [
+        {"id": "multi-ai-router", "name": "マルチAIルーター", "description": "@mentionで13種類のAI/ツールを使い分け", "usage": "@claude, @gemini, @local, @perplexity, @team, @git, @agent, @plan, @arena, @codex, @cerebras, @open, @actions"},
+        {"id": "chat-bubbles", "name": "チャットバブル", "description": "Markdown・コードブロック・実行ボタン付きリッチメッセージ", "usage": "チャット画面でメッセージ送信"},
+        {"id": "message-editing", "name": "メッセージ編集", "description": "送信済みメッセージを編集して再生成", "usage": "メッセージを長押し → 編集"},
+        {"id": "chat-onboarding", "name": "チャットオンボーディング", "description": "初回利用時に@mentionの使い方チュートリアル", "usage": "初回チャット画面表示時に自動"},
+        {"id": "realtime-translate", "name": "リアルタイム翻訳", "description": "ターミナル出力をユーザー言語にリアルタイム翻訳", "usage": "設定でリアルタイム翻訳ON → ターミナル出力が自動翻訳"},
+        {"id": "llm-interpreter", "name": "LLM出力解釈", "description": "ターミナルコマンドと出力をAIが解説（学習モード）", "usage": "体験モード=学習 に設定 → コマンド実行時に自動解説"},
+        {"id": "template-gallery", "name": "テンプレートギャラリー", "description": "プロジェクトテンプレートでワークフロー作成", "usage": "チャット画面のテンプレートアイコン"},
+        {"id": "error-summary", "name": "エラーサマリー", "description": "エラー出力を自動要約して修正提案", "usage": "エラーが発生すると自動表示"},
+        {"id": "approval-prompt", "name": "承認プロンプト検出", "description": "コマンド実行の承認要求を検出して確認UI表示", "usage": "CLI（Claude等）が承認を求めると自動表示"},
+        {"id": "tool-suggestions", "name": "ツール提案", "description": "入力内容に応じて最適なAIツールを提案", "usage": "自然言語を入力 → 提案カードが表示"},
+        {"id": "auto-check-proposal", "name": "Auto-Checkプロポーザル", "description": "GitHub Actions CI/CDワークフロー自動生成", "usage": "チャットで提案が表示されたらタップ"},
+        {"id": "voice-chat", "name": "音声チャット", "description": "ハンズフリー音声入力・音声出力でAIと対話", "usage": "コマンドキーバーのマイクアイコン（Groq APIキー必要）"}
+      ]
+    },
+    {
+      "name": "Terminal",
+      "features": [
+        {"id": "native-terminal", "name": "ネイティブターミナル", "description": "PTY接続のフル機能ターミナルエミュレータ", "usage": "Terminalタブ"},
+        {"id": "multi-session", "name": "マルチセッション", "description": "最大4つの独立ターミナルセッション", "usage": "ヘッダーの+ボタンで新規セッション"},
+        {"id": "gpu-rendering", "name": "GPU描画", "description": "OpenGL ES 3.0によるハードウェアアクセラレーション", "usage": "設定 → GPU Rendering ON"},
+        {"id": "terminal-themes", "name": "ターミナルテーマ", "description": "6種類以上のANSIカラーテーマ（shelly, monokai, solarized等）", "usage": "設定 → ターミナルテーマ選択"},
+        {"id": "cursor-customization", "name": "カーソルカスタマイズ", "description": "カーソル形状（ブロック/アンダーライン/バー）とブリンク", "usage": "設定 → カーソル形状選択"},
+        {"id": "font-customization", "name": "フォントカスタマイズ", "description": "フォントサイズ（10-24pt）と行間調整", "usage": "設定 → フォントサイズスライダー"},
+        {"id": "high-contrast", "name": "高コントラスト出力", "description": "OLEDでも読みやすい配色保証（stdout白/stderr赤）", "usage": "設定 → 高コントラスト出力ON"},
+        {"id": "command-blocks", "name": "コマンドブロック", "description": "コマンド毎にセパレータ・終了コードバッジ・折りたたみ", "usage": "OSC 133対応シェルでコマンド実行 → 自動検出"},
+        {"id": "block-history", "name": "ブロック履歴", "description": "過去のコマンド一覧パネル", "usage": "ブロック行を長押し → 履歴パネル"},
+        {"id": "auto-savepoint", "name": "自動セーブポイント", "description": "危険なコマンド前にGitで自動バックアップ", "usage": "ファイル変更コマンド実行時に自動"},
+        {"id": "savepoint-timeline", "name": "セーブポイントタイムライン", "description": "セーブポイントの閲覧・復元", "usage": "セーブポイントバッジをタップ"},
+        {"id": "diff-viewer", "name": "差分ビューア", "description": "ファイル変更のサイドバイサイド表示", "usage": "セーブポイントの「変更を見る」ボタン"},
+        {"id": "preview-system", "name": "プレビューシステム", "description": "HTML/Markdown/JSON/CSV/画像/PDFのインラインプレビュー", "usage": "ヘッダーのPreviewボタン"},
+        {"id": "execution-log", "name": "実行ログ", "description": "Bridge操作のリアルタイム活動ログ", "usage": "ターミナルヘッダーのログアイコン"},
+        {"id": "command-key-bar", "name": "コマンドキーバー", "description": "Ctrl+C, Tab, 矢印キー等のクイックアクセスボタン", "usage": "キーボード上部のボタンバー"},
+        {"id": "process-guard", "name": "プロセスガード", "description": "誤ったプロセス強制終了を防止", "usage": "SIGKILL連打検出時に自動表示"},
+        {"id": "first-mate", "name": "ファーストメイト", "description": "初回ターミナル利用時のチュートリアルオーバーレイ", "usage": "初回ターミナル表示時に自動"},
+        {"id": "git-guide", "name": "Gitガイド", "description": "ターミナル内のGit操作ガイドブロック", "usage": "@git でGit操作の質問"}
+      ]
+    },
+    {
+      "name": "Projects",
+      "features": [
+        {"id": "chat-history", "name": "チャット履歴", "description": "過去の会話の一覧・検索・削除", "usage": "Projectsタブ → Chatsサブタブ"},
+        {"id": "project-browser", "name": "プロジェクトブラウザ", "description": "ディレクトリのフォルダブラウザ", "usage": "Projectsタブ → Projectsサブタブ"},
+        {"id": "project-timeline", "name": "プロジェクトタイムライン", "description": "プロジェクトの変更/コミット履歴", "usage": "プロジェクト選択 → タイムライン表示"},
+        {"id": "project-scanning", "name": "プロジェクトスキャン", "description": "~/dev, ~/projects等からプロジェクトを自動検出", "usage": "Projectsタブ表示時に自動"}
+      ]
+    },
+    {
+      "name": "Advanced AI",
+      "features": [
+        {"id": "plan-mode", "name": "プランモード", "description": "ステップバイステップの構造化プランニング", "usage": "@plan でタスク計画を作成"},
+        {"id": "arena-mode", "name": "アリーナモード", "description": "複数AIの匿名対決・投票で最良の回答を選択", "usage": "@arena で質問 → 匿名回答を比較投票"},
+        {"id": "background-agents", "name": "バックグラウンドエージェント", "description": "スケジュール実行の自律タスク（論文収集、OSS監視等）", "usage": "@agent で作成、@agent list/run/stop/delete で管理"},
+        {"id": "team-roundtable", "name": "チームラウンドテーブル", "description": "複数AIでの合意形成（ファシリテーター要約付き）", "usage": "@team で質問 → 複数AIが議論"},
+        {"id": "creator-engine", "name": "クリエイターエンジン", "description": "AI駆動プロジェクト生成（Web/Script/API/CLI/モバイル）", "usage": "チャットでプロジェクト作成を依頼"},
+        {"id": "git-assistant", "name": "Gitアシスタント", "description": "初心者向けGit操作のステップバイステップ解説", "usage": "@git でGitの質問"},
+        {"id": "perplexity-search", "name": "Perplexity検索", "description": "引用付きリアルタイムWeb検索", "usage": "@perplexity で検索（APIキー必要）"},
+        {"id": "browser-integration", "name": "ブラウザ連携", "description": "外部ブラウザでURL表示", "usage": "@open URL"},
+        {"id": "cerebras-api", "name": "Cerebras API", "description": "高速推論LLM", "usage": "@cerebras で質問（APIキー必要）"},
+        {"id": "groq-api", "name": "Groq API", "description": "高速音声認識（Whisper）", "usage": "音声チャットで自動使用（APIキー必要）"}
+      ]
+    },
+    {
+      "name": "Snippets",
+      "features": [
+        {"id": "snippet-manager", "name": "スニペット管理", "description": "コマンドスニペットの保存・編集・インポート/エクスポート", "usage": "コマンドパレット → スニペット"},
+        {"id": "snippet-run-modes", "name": "スニペット実行モード", "description": "貼り付けのみ or 貼り付け+実行の切り替え", "usage": "設定 → スニペット実行モード"},
+        {"id": "snippet-scoping", "name": "スニペットスコープ", "description": "グローバルまたはセッション単位のスニペット表示", "usage": "スニペット設定で切り替え"}
+      ]
+    },
+    {
+      "name": "System Integration",
+      "features": [
+        {"id": "termux-bridge", "name": "Termuxブリッジ", "description": "Termux↔アプリ間のセキュアWebSocket通信", "usage": "セットアップウィザードで自動設定"},
+        {"id": "pty-helper", "name": "PTYヘルパー", "description": "TCP接続のPTYセッション管理（heartbeat/ring buffer付き）", "usage": "自動（バックグラウンド）"},
+        {"id": "obsidian-integration", "name": "Obsidian連携", "description": "arxiv/Semantic Scholarからのデイリーブリーフィング", "usage": "設定でObsidian Vault パス設定"},
+        {"id": "mcp-manager", "name": "MCP管理", "description": "Model Context Protocolサーバーの管理", "usage": "設定 → MCP Servers"},
+        {"id": "session-persistence", "name": "セッション永続化", "description": "アプリ再起動時のターミナルセッション復元", "usage": "自動（tmuxベース）"},
+        {"id": "tmux-integration", "name": "tmux連携", "description": "tmuxセッションの作成・管理", "usage": "自動（Immortal Sessions）"},
+        {"id": "smart-wakelock", "name": "スマートWakeLock", "description": "コマンド実行中のデバイススリープ防止", "usage": "自動"},
+        {"id": "github-actions", "name": "GitHub Actions", "description": "CI/CDワークフローの生成・コミット・プッシュ", "usage": "@actions またはチャットで提案"}
+      ]
+    },
+    {
+      "name": "Settings & Configuration",
+      "features": [
+        {"id": "setup-wizard", "name": "セットアップウィザード", "description": "5ステップ初期設定（Termux, Bridge, CLI検出）", "usage": "初回起動時に自動、設定から再実行可能"},
+        {"id": "auth-wizard", "name": "認証ウィザード", "description": "GitHub PAT設定", "usage": "設定 → GitHub認証"},
+        {"id": "package-manager", "name": "パッケージマネージャ", "description": "GUIでパッケージ検索・インストール・削除", "usage": "設定 → パッケージ管理"},
+        {"id": "dotfiles-sync", "name": "Dotfiles同期", "description": ".bashrc等の設定ファイルをGitHubと同期", "usage": "設定 → Dotfiles"},
+        {"id": "custom-system-prompt", "name": "カスタムシステムプロンプト", "description": "ローカルLLMのシステムプロンプト編集", "usage": "設定 → Advanced → System Prompt"},
+        {"id": "usage-alerts", "name": "使用量アラート", "description": "日次コスト超過時の通知", "usage": "設定 → 使用量アラート"},
+        {"id": "command-safety", "name": "コマンド安全システム", "description": "危険コマンドの検出・確認ダイアログ", "usage": "設定 → コマンド安全ON → 危険コマンド実行時に確認"},
+        {"id": "diagnostics", "name": "診断パネル", "description": "システムヘルスチェック（Bridge, CLI, Ollama, ストレージ）", "usage": "設定 → Diagnostics"},
+        {"id": "language-selection", "name": "言語設定", "description": "多言語UI（英語、日本語等）", "usage": "設定 → 言語選択"},
+        {"id": "experience-mode", "name": "体験モード", "description": "初心者(詳細解説) vs 上級者(高速)モード", "usage": "設定 → 体験モード"},
+        {"id": "auto-approve", "name": "自動承認レベル", "description": "コマンド自動承認: なし/安全のみ/すべて", "usage": "設定 → 自動承認"}
+      ]
+    },
+    {
+      "name": "Accessibility",
+      "features": [
+        {"id": "a11y", "name": "アクセシビリティ", "description": "WCAG準拠、スクリーンリーダー対応", "usage": "自動"},
+        {"id": "haptic-feedback", "name": "触覚フィードバック", "description": "操作時のバイブレーション", "usage": "設定 → 触覚フィードバックON/OFF"},
+        {"id": "sound-effects", "name": "サウンドエフェクト", "description": "イベント音声通知", "usage": "設定 → サウンドON/OFF"},
+        {"id": "keyboard-shortcuts", "name": "キーボードショートカット", "description": "物理キーボード対応（Ctrl+Shift+P, Ctrl+K等）", "usage": "物理キーボード接続時"},
+        {"id": "text-scaling", "name": "テキストスケーリング", "description": "アクセシビリティ設定に応じたUI文字サイズ調整", "usage": "自動（OS設定連動）"}
+      ]
+    },
+    {
+      "name": "Security",
+      "features": [
+        {"id": "secure-store", "name": "セキュアストア", "description": "APIキー・認証情報の暗号化保存", "usage": "自動（設定でキー入力時）"},
+        {"id": "cli-permission-proxy", "name": "CLI権限プロキシ", "description": "チャットからのコマンド実行を承認/拒否", "usage": "自動（承認プロンプト表示）"},
+        {"id": "github-oauth", "name": "GitHub OAuth", "description": "セキュアなGitHub認証フロー", "usage": "認証ウィザードで設定"}
+      ]
+    }
+  ]
+}
