@@ -304,19 +304,50 @@ class TerminalEmulatorModule : Module() {
                     result.append("file_type=unknown\n")
                 }
 
-                // Step 3: Try to actually execve via ProcessBuilder
-                val pb = ProcessBuilder(bashPath, "-c", "echo EXECVE_OK; uname -a")
-                pb.environment()["HOME"] = "/data/data/com.termux/files/home"
-                pb.environment()["TERM"] = "xterm-256color"
-                pb.environment()["PATH"] = "/system/bin:/vendor/bin"
-                pb.directory(context.filesDir)
-                pb.redirectErrorStream(true)
-                val proc = pb.start()
-                val output = proc.inputStream.bufferedReader().readText()
-                val exitCode = proc.waitFor()
-                result.append("output=$output\n")
-                result.append("exitCode=$exitCode\n")
-                mapOf("success" to (exitCode == 0 && output.contains("EXECVE_OK")), "result" to result.toString())
+                // Step 3: Try direct execve
+                result.append("\n== Direct Exec ==\n")
+                var execSuccess = false
+                try {
+                    val pb = ProcessBuilder(bashPath, "-c", "echo EXECVE_OK; uname -a")
+                    pb.environment()["HOME"] = "/data/data/com.termux/files/home"
+                    pb.environment()["TERM"] = "xterm-256color"
+                    pb.environment()["PATH"] = "/system/bin:/vendor/bin"
+                    pb.directory(context.filesDir)
+                    pb.redirectErrorStream(true)
+                    val proc = pb.start()
+                    val output = proc.inputStream.bufferedReader().readText()
+                    val exitCode = proc.waitFor()
+                    result.append("direct_output=$output\n")
+                    result.append("direct_exitCode=$exitCode\n")
+                    execSuccess = exitCode == 0 && output.contains("EXECVE_OK")
+                } catch (e: Exception) {
+                    result.append("direct_error=${e.javaClass.simpleName}: ${e.message}\n")
+                }
+
+                // Step 4: If direct exec failed, try linker64 trick
+                if (!execSuccess) {
+                    result.append("\n== Linker64 Trick ==\n")
+                    try {
+                        val linker = "/system/bin/linker64"
+                        result.append("linker_exists=${java.io.File(linker).exists()}\n")
+                        val pb2 = ProcessBuilder(linker, bashPath, "-c", "echo EXECVE_OK; uname -a")
+                        pb2.environment()["HOME"] = "/data/data/com.termux/files/home"
+                        pb2.environment()["TERM"] = "xterm-256color"
+                        pb2.environment()["PATH"] = "/system/bin:/vendor/bin"
+                        pb2.directory(context.filesDir)
+                        pb2.redirectErrorStream(true)
+                        val proc2 = pb2.start()
+                        val output2 = proc2.inputStream.bufferedReader().readText()
+                        val exitCode2 = proc2.waitFor()
+                        result.append("linker64_output=$output2\n")
+                        result.append("linker64_exitCode=$exitCode2\n")
+                        execSuccess = exitCode2 == 0 && output2.contains("EXECVE_OK")
+                    } catch (e: Exception) {
+                        result.append("linker64_error=${e.javaClass.simpleName}: ${e.message}\n")
+                    }
+                }
+
+                mapOf("success" to execSuccess, "result" to result.toString())
             } catch (e: Exception) {
                 result.append("error=${e.javaClass.simpleName}: ${e.message}\n")
                 mapOf("success" to false, "result" to result.toString())
