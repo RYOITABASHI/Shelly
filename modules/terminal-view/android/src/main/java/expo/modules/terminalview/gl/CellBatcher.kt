@@ -107,9 +107,10 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
             val termRow = try { buffer.getRow(absRow) } catch (_: Exception) { null }
             val highlights = highlightCache.getHighlights(absRow)
 
+            val bufCols = try { buffer.getColumns() } catch (_: Exception) { cols }
             for (col in 0 until cols) {
                 val cellIndex = row * cols + col
-                val codepoint = if (termRow != null) {
+                val codepoint = if (termRow != null && col < bufCols) {
                     try {
                         val charIdx = termRow.findStartOfColumn(col)
                         val spaceUsed = termRow.getSpaceUsed()
@@ -121,12 +122,12 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
                         } else ' '.code
                     } catch (_: Exception) { ' '.code }
                 } else ' '.code
-                val style = try { termRow?.getStyle(col) ?: 0L } catch (_: Exception) { 0L }
+                val style = if (termRow != null && col < bufCols) { try { termRow.getStyle(col) } catch (_: Exception) { 0L } } else 0L
 
                 // Decode colors from style (pass directly — matches existing SyntaxHighlighter usage)
                 val fg = TextStyle.decodeForeColor(style)
                 val bg = TextStyle.decodeBackColor(style)
-                val highlightFg = highlights?.get(col) ?: -1
+                val highlightFg = if (highlights != null && col < highlights.size) highlights[col] else -1
 
                 val effectiveFg = if (highlightFg >= 0) highlightFg else fg
                 val fgColor = resolveColor(effectiveFg)
