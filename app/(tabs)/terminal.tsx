@@ -304,9 +304,17 @@ export default function TerminalScreen() {
       }
 
       // 3. Send Ctrl+L to trigger shell prompt redraw after connection/reconnection
+      // Delay to ensure TCP connection + shell is ready to receive input
+      await new Promise(r => setTimeout(r, 500));
       try {
         await TerminalEmulator.writeToSession(session.nativeSessionId, '\x0c');
       } catch {}
+      // Send a second Ctrl+L after 1.5s as fallback (shell may need time to initialize)
+      setTimeout(async () => {
+        try {
+          await TerminalEmulator.writeToSession(session.nativeSessionId, '\x0c');
+        } catch {}
+      }, 1500);
 
 
       // 4. Start foreground service to prevent task-kill
