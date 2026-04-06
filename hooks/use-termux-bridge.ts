@@ -392,14 +392,11 @@ export function useTermuxBridge() {
     }
 
     // Strategy 3: Launch Termux Activity — ONLY if Strategy 2 failed.
-    // Activity launch causes a disruptive screen switch to Termux and back.
+    // Strategy 3 (DISABLED): Activity launch causes disruptive screen switch to Termux.
+    // This was causing a bug where tapping Settings tab would open Termux instead.
+    // RunCommandService (Strategy 1/2) should be sufficient for bridge recovery.
     if (!strategy2Success) {
-      console.log('[AutoRecovery] Strategy 3: Launch Termux Activity (fallback)...');
-      try {
-        await TermuxBridgeModule.launchTermux();
-      } catch {
-        try { await Linking.openURL('com.termux://'); } catch {}
-      }
+      console.log('[AutoRecovery] Strategy 3: SKIPPED (launchTermux disabled to prevent screen switch)');
     }
 
     // Step 2: Poll for bridge to come back online
