@@ -104,7 +104,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
             }
 
             val absRow = topRow + row
-            val termRow = buffer.mLines[buffer.externalToInternalRow(absRow)]
+            val termRow = try { buffer.getRow(absRow) } catch (_: Exception) { null }
             val highlights = highlightCache.getHighlights(absRow)
 
             for (col in 0 until cols) {

@@ -505,6 +505,16 @@ public final class TerminalBuffer {
         }
     }
 
+    /** Get the TerminalRow at the given external row index. */
+    public TerminalRow getRow(int externalRow) {
+        return allocateFullLineIfNecessary(externalToInternalRow(externalRow));
+    }
+
+    /** Get the number of columns. */
+    public int getColumns() {
+        return mColumns;
+    }
+
     public void clearTranscript() {
         if (mScreenFirstRow < mActiveTranscriptRows) {
             Arrays.fill(mLines, mTotalRows + mScreenFirstRow - mActiveTranscriptRows, mTotalRows, null);
