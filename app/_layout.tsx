@@ -56,11 +56,14 @@ export default function RootLayout() {
     // Phase 0: execve verification test (Plan B)
     (async () => {
       try {
+        const { Alert } = require('react-native');
         const TE = (await import('@/modules/terminal-emulator/src/TerminalEmulatorModule')).default;
         const result = await TE.testExecve();
         console.log('[Phase0-ExecveTest]', JSON.stringify(result));
-      } catch (e) {
+        Alert.alert('Phase0 ExecveTest', JSON.stringify(result, null, 2));
+      } catch (e: any) {
         console.log('[Phase0-ExecveTest] FAILED:', e);
+        Alert.alert('Phase0 FAILED', String(e?.message || e));
       }
     })();
 
