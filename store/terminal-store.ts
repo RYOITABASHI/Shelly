@@ -14,6 +14,11 @@ import {
 import { executeCommand } from '@/lib/pseudo-shell';
 import { useSettingsStore } from './settings-store';
 
+/** @deprecated — kept for use-termux-bridge.ts compat, will be removed */
+export const _pendingTmuxKills: string[] = [];
+/** @deprecated — kept for use-termux-bridge.ts compat, will be removed */
+export const _pendingTmuxClears: string[] = [];
+
 // ─── Multi-session pool ────────────────────────────────────────────────
 
 const MAX_SESSIONS = 4;
