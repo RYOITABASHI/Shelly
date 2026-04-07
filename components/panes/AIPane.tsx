@@ -14,8 +14,10 @@ import {
   StyleSheet,
   Animated,
   Easing,
+  TouchableOpacity,
   type ListRenderItemInfo,
 } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
 import { PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
@@ -25,6 +27,8 @@ import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
+import VoiceWaveform from '@/components/panes/VoiceWaveform';
+import { usePaneVoice } from '@/hooks/use-pane-voice';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -223,6 +227,18 @@ export default function AIPane() {
     [dispatch],
   );
 
+  // Voice input — transcript is dispatched as a regular message
+  const { startRecording, stopRecording, isRecording, isTranscribing } =
+    usePaneVoice(handleSubmit);
+
+  const handleMicPress = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }, [isRecording, startRecording, stopRecording]);
+
   // While streaming, the attach button acts as a stop/cancel button
   const handleAttach = useCallback(() => {
     if (dispatchStreaming) {
@@ -318,12 +334,51 @@ export default function AIPane() {
         />
       )}
 
+      {/* Voice mode indicator — shown while recording or transcribing */}
+      {(isRecording || isTranscribing) && (
+        <View style={[paneStyles.voiceBar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
+          <VoiceWaveform active={isRecording} />
+          <Text style={[paneStyles.voiceLabel, { color: colors.accent }]}>
+            {isTranscribing ? 'Transcribing...' : 'Listening...'}
+          </Text>
+          {isRecording && (
+            <TouchableOpacity
+              onPress={stopRecording}
+              style={paneStyles.voiceStopButton}
+              accessibilityLabel="Stop recording"
+              accessibilityRole="button"
+            >
+              <MaterialIcons name="stop" size={16} color={colors.accent} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
       {/* Input bar — attach icon doubles as stop button while streaming */}
-      <PaneInputBar
-        placeholder={dispatchStreaming ? 'Responding...' : 'Ask anything...'}
-        onSubmit={handleSubmit}
-        onAttach={handleAttach}
-      />
+      <View style={paneStyles.inputRow}>
+        <View style={paneStyles.inputBarWrapper}>
+          <PaneInputBar
+            placeholder={dispatchStreaming ? 'Responding...' : 'Ask anything...'}
+            onSubmit={handleSubmit}
+            onAttach={handleAttach}
+          />
+        </View>
+        <TouchableOpacity
+          onPress={handleMicPress}
+          style={[
+            paneStyles.micButton,
+            { backgroundColor: isRecording ? colors.accent : colors.surface },
+          ]}
+          accessibilityLabel={isRecording ? 'Stop recording' : 'Start voice input'}
+          accessibilityRole="button"
+        >
+          <MaterialIcons
+            name={isRecording ? 'mic' : 'mic-none'}
+            size={18}
+            color={isRecording ? '#000' : colors.muted}
+          />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -368,5 +423,42 @@ const paneStyles = StyleSheet.create({
   },
   listContent: {
     paddingVertical: 8,
+  },
+  voiceBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  voiceLabel: {
+    flex: 1,
+    fontSize: 11,
+    fontFamily: 'monospace',
+    letterSpacing: 0.5,
+  },
+  voiceStopButton: {
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  inputBarWrapper: {
+    flex: 1,
+  },
+  micButton: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#1E1E1E',
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: '#1E1E1E',
   },
 });
