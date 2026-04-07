@@ -20,7 +20,7 @@ object HomeInitializer {
     )
 
     /** Version counter — increment to force .bashrc regeneration */
-    private const val BASHRC_VERSION = 3
+    private const val BASHRC_VERSION = 4
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -70,10 +70,10 @@ object HomeInitializer {
             sb.appendLine("sqlite3() { _run $libDir/sqlite3 \"\$@\"; }")
             sb.appendLine()
 
-            // Coreutils applets as functions
+            // Coreutils: use --coreutils-prog=NAME to select applet
             sb.appendLine("# Coreutils applets")
             for (applet in COREUTILS_APPLETS) {
-                sb.appendLine("$applet() { _run $libDir/coreutils $applet \"\$@\"; }")
+                sb.appendLine("$applet() { _run $libDir/coreutils --coreutils-prog=$applet \"\$@\"; }")
             }
             sb.appendLine()
 
