@@ -472,8 +472,8 @@ class ShellyTerminalView(
         lastSyncedCols = cols
         lastSyncedRows = rows
 
-        // Direct PTY resize via socket (replaces syncTmuxSize)
-        currentShellySession?.sendResizeCommand(cols, rows)
+        // Direct PTY resize via JNI ioctl(TIOCSWINSZ)
+        currentShellySession?.resize(rows, cols)
         onResize(mapOf("cols" to cols, "rows" to rows))
     }
 
