@@ -1,10 +1,13 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
+import android.util.Log
 import java.io.File
 import java.util.zip.ZipFile
 
 object LibExtractor {
+    private const val TAG = "LibExtractor"
+
     private val LIBS = mapOf(
         // bash + deps
         "lib/arm64-v8a/libbash.so" to "libbash.so",
@@ -38,6 +41,8 @@ object LibExtractor {
 
     fun extractAll(context: Context): File {
         val libDir = getLibDir(context)
+
+        // Extract native binaries from APK
         val apkPath = context.applicationInfo.sourceDir
         val zipFile = ZipFile(apkPath)
         try {
@@ -55,6 +60,31 @@ object LibExtractor {
         } finally {
             zipFile.close()
         }
+
+        // Extract npm from assets (tar.gz → node_modules/npm/)
+        val npmDir = File(libDir, "node_modules/npm")
+        if (!npmDir.exists()) {
+            try {
+                val tempTar = File(context.cacheDir, "npm.tar.gz")
+                context.assets.open("npm.tar.gz").use { input ->
+                    tempTar.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val nodeModulesDir = File(libDir, "node_modules")
+                nodeModulesDir.mkdirs()
+                val pb = ProcessBuilder("/system/bin/tar", "xzf", tempTar.absolutePath, "-C", nodeModulesDir.absolutePath)
+                pb.redirectErrorStream(true)
+                val proc = pb.start()
+                proc.inputStream.bufferedReader().readText()
+                proc.waitFor()
+                tempTar.delete()
+                Log.i(TAG, "npm extracted to ${npmDir.absolutePath}")
+            } catch (e: Exception) {
+                Log.e(TAG, "npm extraction failed: ${e.message}")
+            }
+        }
+
         return libDir
     }
 }
