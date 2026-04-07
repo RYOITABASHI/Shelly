@@ -6,6 +6,7 @@ import { useTheme } from '@/lib/theme-engine';
 import { usePaneStore, AGENT_COLORS } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
+import { useSettingsStore as useSettingsStoreImport } from '@/store/settings-store';
 
 type AgentDef = {
   name: string;
@@ -77,7 +78,11 @@ export function AgentBar() {
         >
           <MaterialIcons name="search" size={18} color={c.muted} />
         </Pressable>
-        <Pressable style={styles.iconBtn} hitSlop={8}>
+        <Pressable
+          style={styles.iconBtn}
+          onPress={() => useSettingsStoreImport.getState().setShowConfigTUI(true)}
+          hitSlop={8}
+        >
           <MaterialIcons name="settings" size={16} color={c.muted} />
         </Pressable>
       </View>

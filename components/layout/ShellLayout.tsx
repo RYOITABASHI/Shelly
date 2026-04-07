@@ -19,6 +19,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { CrtOverlay } from '@/components/CrtOverlay';
 import { VoiceChat } from '@/components/VoiceChat';
 import { useSettingsStore } from '@/store/settings-store';
+import { ConfigTUI } from '@/components/config/ConfigTUI';
 
 export function ShellLayout() {
   const theme = useTheme();
@@ -53,6 +54,10 @@ export function ShellLayout() {
   // Full-screen voice mode — triggered by `shelly voice` or long-press mic
   const showVoice = useSettingsStore((s) => s.showVoiceMode);
   const closeVoice = useCallback(() => useSettingsStore.getState().setShowVoiceMode(false), []);
+
+  // Settings TUI — triggered by gear button or `shelly config`
+  const showConfig = useSettingsStore((s) => s.showConfigTUI);
+  const closeConfig = useCallback(() => useSettingsStore.getState().setShowConfigTUI(false), []);
 
   // Welcome wizard state
   const [showWizard, setShowWizard] = useState(false);
@@ -139,6 +144,9 @@ export function ShellLayout() {
       {wizardChecked && (
         <WelcomeWizard visible={showWizard} onComplete={() => setShowWizard(false)} />
       )}
+
+      {/* Settings TUI overlay */}
+      <ConfigTUI visible={showConfig} onClose={closeConfig} />
 
       {/* Full-screen voice overlay */}
       <VoiceChat visible={showVoice} onClose={closeVoice} />

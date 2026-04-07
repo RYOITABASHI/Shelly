@@ -7,7 +7,7 @@
  * picker sheet for enums.
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -20,11 +20,22 @@ import {
   Switch,
   KeyboardAvoidingView,
   Platform,
+  Alert,
+  Share,
+  ToastAndroid,
 } from 'react-native';
-import Animated, { FadeIn, SlideInDown, SlideOutDown } from 'react-native-reanimated';
+import Animated, { SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSettingsStore } from '@/store/settings-store';
 import { useCosmeticStore, SoundProfile, FontFamily } from '@/store/cosmetic-store';
+import { getAllThemes } from '@/lib/theme-engine';
+import { useThemeStore } from '@/lib/theme-engine';
+import { TERMINAL_THEME_NAMES } from '@/lib/terminal-theme';
+import { useI18n, AVAILABLE_LOCALES } from '@/lib/i18n';
+import { useUsageStore } from '@/store/usage-store';
+import { useDotfilesStore } from '@/lib/dotfiles-sync';
+import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt';
+import { useTerminalStore } from '@/store/terminal-store';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -37,7 +48,7 @@ const TEXT = '#E5E7EB';
 
 // ─── Setting descriptor types ─────────────────────────────────────────────────
 
-type SettingType = 'boolean' | 'string' | 'number' | 'enum';
+type SettingType = 'boolean' | 'string' | 'number' | 'enum' | 'secret' | 'action';
 
 interface SettingDef {
   key: string;
@@ -45,11 +56,15 @@ interface SettingDef {
   type: SettingType;
   options?: string[];          // for enum
   min?: number; max?: number;  // for number
-  source: 'settings' | 'cosmetic';
+  source: 'settings' | 'cosmetic' | 'custom';
   description?: string;
+  actionLabel?: string;        // for 'action' type
+  dangerAction?: boolean;      // red styling for destructive actions
 }
 
 // ─── Section definitions ──────────────────────────────────────────────────────
+
+const ALL_THEMES = getAllThemes().map((t) => t.id);
 
 const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
   {
@@ -57,19 +72,52 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     icon: 'terminal',
     items: [
       { key: 'fontSize',       label: 'Font Size',        type: 'number', min: 8, max: 32, source: 'settings' },
+      { key: 'lineHeight',     label: 'Line Height',      type: 'number', min: 1.0, max: 2.5, source: 'settings', description: 'e.g. 1.4' },
       { key: 'cursorShape',    label: 'Cursor Shape',     type: 'enum',   options: ['block', 'underline', 'bar'], source: 'settings' },
       { key: 'autoScroll',     label: 'Auto Scroll',      type: 'boolean', source: 'settings' },
       { key: 'autocomplete',   label: 'Autocomplete',     type: 'boolean', source: 'settings' },
       { key: 'syntaxHighlight',label: 'Syntax Highlight', type: 'boolean', source: 'settings' },
+      { key: 'externalKeyboardShortcuts', label: 'External Keyboard', type: 'boolean', source: 'settings', description: 'Physical keyboard shortcuts' },
     ],
   },
   {
-    title: 'AI',
+    title: 'Display',
+    icon: 'palette',
+    items: [
+      { key: 'themeEngine',    label: 'Color Theme',      type: 'enum', options: ALL_THEMES, source: 'custom', description: 'WezTerm-style themes' },
+      { key: 'terminalTheme',  label: 'Terminal Theme',   type: 'enum', options: TERMINAL_THEME_NAMES, source: 'settings' },
+      { key: 'fontFamily',     label: 'Font Family',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen'], source: 'cosmetic' },
+      { key: 'crtEnabled',     label: 'CRT Effect',       type: 'boolean', source: 'cosmetic' },
+      { key: 'crtIntensity',   label: 'CRT Intensity',    type: 'number', min: 0, max: 100, source: 'cosmetic' },
+      { key: 'gpuRendering',   label: 'GPU Rendering',    type: 'boolean', source: 'settings' },
+    ],
+  },
+  {
+    title: 'AI / LLM',
     icon: 'auto-awesome',
     items: [
       { key: 'localLlmEnabled', label: 'Local LLM',       type: 'boolean', source: 'settings' },
       { key: 'localLlmUrl',     label: 'Local LLM URL',   type: 'string',  source: 'settings', description: 'e.g. http://127.0.0.1:8080' },
       { key: 'localLlmModel',   label: 'Local LLM Model', type: 'string',  source: 'settings' },
+      { key: 'groqApiKey',      label: 'Groq API Key',    type: 'secret',  source: 'settings' },
+      { key: 'groqModel',       label: 'Groq Model',      type: 'string',  source: 'settings', description: 'e.g. llama-3.3-70b-versatile' },
+      { key: 'cerebrasApiKey',  label: 'Cerebras API Key', type: 'secret', source: 'settings' },
+      { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
+      { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
+    ],
+  },
+  {
+    title: 'Team',
+    icon: 'groups',
+    items: [
+      { key: 'teamMembers.claude',     label: 'Claude',      type: 'boolean', source: 'custom', description: 'Enable Claude agent' },
+      { key: 'teamMembers.gemini',     label: 'Gemini',      type: 'boolean', source: 'custom', description: 'Enable Gemini agent' },
+      { key: 'teamMembers.codex',      label: 'Codex',       type: 'boolean', source: 'custom', description: 'Enable Codex agent' },
+      { key: 'teamMembers.perplexity', label: 'Perplexity',  type: 'boolean', source: 'custom', description: 'Enable Perplexity agent' },
+      { key: 'teamMembers.local',      label: 'Local LLM',   type: 'boolean', source: 'custom', description: 'Enable local LLM agent' },
+      { key: 'defaultAgent',           label: 'Default Agent', type: 'enum', options: ['gemini-cli', 'claude-code', 'codex', 'local'], source: 'settings' },
+      { key: 'experienceMode',         label: 'Experience Mode', type: 'enum', options: ['learning', 'standard', 'power'], source: 'settings' },
+      { key: 'autoApproveLevel',       label: 'CLI Approval Level', type: 'enum', options: ['safe', 'moderate', 'yolo'], source: 'settings', description: 'How much to auto-approve' },
     ],
   },
   {
@@ -77,28 +125,51 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     icon: 'volume-up',
     items: [
       { key: 'soundEffects',  label: 'Sound Effects', type: 'boolean', source: 'settings' },
+      { key: 'soundVolume',   label: 'Volume',        type: 'number', min: 0, max: 1.0, source: 'settings', description: '0.0 – 1.0' },
       { key: 'soundProfile',  label: 'Sound Profile', type: 'enum', options: ['modern', 'retro', 'silent'], source: 'cosmetic' },
+      { key: 'hapticFeedback', label: 'Haptic Feedback', type: 'boolean', source: 'settings' },
     ],
   },
   {
-    title: 'Display',
-    icon: 'palette',
+    title: 'Language',
+    icon: 'language',
     items: [
-      { key: 'fontFamily',   label: 'Font Family',    type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen'], source: 'cosmetic' },
-      { key: 'crtEnabled',   label: 'CRT Effect',     type: 'boolean', source: 'cosmetic' },
-      { key: 'crtIntensity', label: 'CRT Intensity',  type: 'number', min: 0, max: 100, source: 'cosmetic' },
+      { key: 'locale', label: 'Language', type: 'enum', options: AVAILABLE_LOCALES.map(l => l.code), source: 'custom', description: 'App language' },
     ],
   },
   {
-    title: 'Advanced',
-    icon: 'settings',
+    title: 'Context',
+    icon: 'psychology',
     items: [
-      { key: 'hapticFeedback',       label: 'Haptic Feedback',   type: 'boolean', source: 'settings' },
-      { key: 'highContrastOutput',   label: 'High Contrast',     type: 'boolean', source: 'settings' },
-      { key: 'enableCommandSafety',  label: 'Command Safety',    type: 'boolean', source: 'settings' },
-      { key: 'llmInterpreterEnabled',label: 'LLM Interpreter',   type: 'boolean', source: 'settings' },
+      { key: 'customContext', label: 'Custom System Prompt', type: 'string', source: 'custom', description: 'Injected into AI context' },
+      { key: 'llmInterpreterEnabled', label: 'LLM Interpreter', type: 'boolean', source: 'settings' },
       { key: 'realtimeTranslateEnabled', label: 'Realtime Translate', type: 'boolean', source: 'settings' },
-      { key: 'gpuRendering',         label: 'GPU Rendering',     type: 'boolean', source: 'settings' },
+    ],
+  },
+  {
+    title: 'Safety',
+    icon: 'shield',
+    items: [
+      { key: 'enableCommandSafety',  label: 'Command Safety',    type: 'boolean', source: 'settings' },
+      { key: 'highContrastOutput',   label: 'High Contrast',     type: 'boolean', source: 'settings' },
+    ],
+  },
+  {
+    title: 'Data',
+    icon: 'storage',
+    items: [
+      { key: 'usageAlertEnabled', label: 'Usage Alerts',  type: 'boolean', source: 'custom', description: 'Notify on cost threshold' },
+      { key: 'exportLogs',        label: 'Export Logs',    type: 'action', source: 'custom', actionLabel: 'Share as text' },
+      { key: 'deleteHistory',     label: 'Delete All History', type: 'action', source: 'custom', actionLabel: 'Delete', dangerAction: true },
+    ],
+  },
+  {
+    title: 'Sync',
+    icon: 'cloud',
+    items: [
+      { key: 'dotfilesPat',  label: 'GitHub PAT',      type: 'secret', source: 'custom', description: 'For dotfiles gist sync' },
+      { key: 'syncToGist',   label: 'Sync to Gist',    type: 'action', source: 'custom', actionLabel: 'Upload' },
+      { key: 'syncFromGist', label: 'Sync from Gist',  type: 'action', source: 'custom', actionLabel: 'Download' },
     ],
   },
 ];
@@ -107,12 +178,20 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
 
 function getValue(
   key: string,
-  source: 'settings' | 'cosmetic',
+  source: 'settings' | 'cosmetic' | 'custom',
   settings: ReturnType<typeof useSettingsStore.getState>['settings'],
   cosmetics: ReturnType<typeof useCosmeticStore.getState>,
+  customValues: Record<string, unknown>,
 ): unknown {
+  if (source === 'custom') return customValues[key];
   if (source === 'cosmetic') {
     return (cosmetics as unknown as Record<string, unknown>)[key];
+  }
+  // Handle nested keys like 'teamMembers.claude'
+  if (key.includes('.')) {
+    const [parent, child] = key.split('.');
+    const obj = (settings as Record<string, unknown>)[parent];
+    return obj && typeof obj === 'object' ? (obj as Record<string, unknown>)[child] : undefined;
   }
   return (settings as Record<string, unknown>)[key];
 }
@@ -121,6 +200,8 @@ function formatValue(value: unknown, type: SettingType): string {
   if (value === undefined || value === null) return '—';
   if (type === 'boolean') return value ? 'on' : 'off';
   if (type === 'number') return String(value);
+  if (type === 'secret') return value ? '••••••••' : '(not set)';
+  if (type === 'action') return '';
   return String(value);
 }
 
@@ -174,9 +255,10 @@ interface SettingRowProps {
   onToggle: () => void;
   onStringEdit: (v: string) => void;
   onEnumOpen: () => void;
+  onAction?: () => void;
 }
 
-function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen }: SettingRowProps) {
+function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }: SettingRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -234,6 +316,60 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen }: SettingR
     );
   }
 
+  // action
+  if (def.type === 'action') {
+    return (
+      <TouchableOpacity style={styles.row} onPress={onAction} activeOpacity={0.7}>
+        <View style={styles.rowLeft}>
+          <Text style={[styles.rowKey, def.dangerAction && { color: '#F87171' }]}>{def.label}</Text>
+          {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+        </View>
+        <View style={styles.rowRight}>
+          <Text style={[styles.rowValue, def.dangerAction && { color: '#F87171' }]}>{def.actionLabel ?? 'Run'}</Text>
+          <MaterialIcons name="chevron-right" size={16} color={def.dangerAction ? '#F87171' : MUTED} />
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
+  // secret (API key with masked display)
+  if (def.type === 'secret') {
+    if (editing) {
+      return (
+        <View style={styles.rowEditing}>
+          <Text style={styles.rowKey}>{def.label}</Text>
+          <TextInput
+            style={styles.rowInput}
+            value={draft}
+            onChangeText={setDraft}
+            onBlur={commitEdit}
+            onSubmitEditing={commitEdit}
+            autoFocus
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="done"
+            selectionColor={ACCENT}
+            placeholderTextColor={MUTED}
+            placeholder="Enter API key..."
+          />
+        </View>
+      );
+    }
+    return (
+      <TouchableOpacity style={styles.row} onPress={startEdit} activeOpacity={0.7}>
+        <View style={styles.rowLeft}>
+          <Text style={styles.rowKey}>{def.label}</Text>
+          {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+        </View>
+        <View style={styles.rowRight}>
+          <Text style={[styles.rowValue, !value && { color: MUTED }]}>{value ? '••••••••' : '(not set)'}</Text>
+          <MaterialIcons name="edit" size={14} color={MUTED} />
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
   // string / number
   if (editing) {
     return (
@@ -279,34 +415,128 @@ interface ConfigTUIProps {
 export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const { settings, updateSettings } = useSettingsStore();
   const cosmetics = useCosmeticStore();
+  const dotfiles = useDotfilesStore();
+  const themeStore = useThemeStore();
+  const i18n = useI18n();
+  const usageStore = useUsageStore();
 
   const [picker, setPicker] = useState<{
     def: SettingDef;
     current: string;
   } | null>(null);
 
+  // Custom context (loaded async)
+  const [customContextText, setCustomContextText] = useState('');
+  useEffect(() => {
+    if (visible) loadCustomContext().then(setCustomContextText).catch(() => {});
+  }, [visible]);
+
+  // Build custom values map for 'custom' source items
+  const customValues: Record<string, unknown> = {
+    themeEngine: themeStore.currentThemeId,
+    locale: i18n.locale,
+    'teamMembers.claude': settings.teamMembers?.claude,
+    'teamMembers.gemini': settings.teamMembers?.gemini,
+    'teamMembers.codex': settings.teamMembers?.codex,
+    'teamMembers.perplexity': settings.teamMembers?.perplexity,
+    'teamMembers.local': settings.teamMembers?.local,
+    customContext: customContextText,
+    usageAlertEnabled: usageStore.alertEnabled,
+    dotfilesPat: dotfiles.pat,
+  };
+
   const getVal = useCallback(
-    (def: SettingDef) => getValue(def.key, def.source, settings, cosmetics),
-    [settings, cosmetics],
+    (def: SettingDef) => getValue(def.key, def.source, settings, cosmetics, customValues),
+    [settings, cosmetics, customValues],
   );
 
   const applyValue = useCallback(
     (def: SettingDef, rawValue: unknown) => {
+      // Custom source handling
+      if (def.source === 'custom') {
+        switch (def.key) {
+          case 'themeEngine':
+            themeStore.setTheme(String(rawValue));
+            break;
+          case 'locale':
+            i18n.setLocale(String(rawValue) as any);
+            break;
+          case 'customContext':
+            setCustomContextText(String(rawValue));
+            saveCustomContext(String(rawValue));
+            break;
+          case 'usageAlertEnabled':
+            usageStore.setAlertSettings({ alertEnabled: Boolean(rawValue) });
+            break;
+          case 'dotfilesPat':
+            dotfiles.setPat(String(rawValue));
+            break;
+          default:
+            // teamMembers.xxx
+            if (def.key.startsWith('teamMembers.')) {
+              const member = def.key.split('.')[1];
+              updateSettings({
+                teamMembers: { ...settings.teamMembers, [member]: Boolean(rawValue) },
+              } as any);
+            }
+            break;
+        }
+        return;
+      }
       if (def.source === 'settings') {
-        updateSettings({ [def.key]: rawValue } as Parameters<typeof updateSettings>[0]);
+        // Handle nested keys
+        if (def.key.includes('.')) {
+          const [parent, child] = def.key.split('.');
+          const current = (settings as Record<string, unknown>)[parent] ?? {};
+          updateSettings({ [parent]: { ...(current as object), [child]: rawValue } } as any);
+        } else {
+          updateSettings({ [def.key]: rawValue } as any);
+        }
       } else {
-        // cosmetic store — map key to setter
+        // cosmetic store
         switch (def.key) {
           case 'crtEnabled':    cosmetics.setCrt(Boolean(rawValue)); break;
           case 'crtIntensity':  cosmetics.setCrtIntensity(Number(rawValue)); break;
           case 'soundProfile':  cosmetics.setSoundProfile(rawValue as SoundProfile); break;
           case 'fontFamily':    cosmetics.setFontFamily(rawValue as FontFamily); break;
+          case 'hapticEnabled': cosmetics.setHapticEnabled(Boolean(rawValue)); break;
           default: break;
         }
       }
     },
-    [updateSettings, cosmetics],
+    [updateSettings, cosmetics, settings, themeStore, i18n, dotfiles, usageStore],
   );
+
+  // Action handlers
+  const handleAction = useCallback((def: SettingDef) => {
+    switch (def.key) {
+      case 'exportLogs': {
+        const sessions = useTerminalStore.getState().sessions;
+        const text = sessions.map(s =>
+          s.entries.map((e: any) => `$ ${e.command ?? ''}\n${(e.output ?? []).map((o: any) => o.text).join('\n')}`).join('\n\n')
+        ).join('\n---\n');
+        Share.share({ message: text, title: 'Shelly Logs' });
+        break;
+      }
+      case 'deleteHistory':
+        Alert.alert('Delete All History', 'This cannot be undone.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: () => {
+            useTerminalStore.getState().sessions.forEach(s => useTerminalStore.getState().clearSession(s.id));
+            ToastAndroid.show('History deleted', ToastAndroid.SHORT);
+          }},
+        ]);
+        break;
+      case 'syncToGist':
+        dotfiles.syncToGist();
+        ToastAndroid.show('Syncing to Gist...', ToastAndroid.SHORT);
+        break;
+      case 'syncFromGist':
+        dotfiles.syncFromGist();
+        ToastAndroid.show('Syncing from Gist...', ToastAndroid.SHORT);
+        break;
+    }
+  }, [dotfiles]);
 
   const handleToggle = useCallback(
     (def: SettingDef) => applyValue(def, !getVal(def)),
@@ -379,6 +609,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
                         onToggle={() => handleToggle(def)}
                         onStringEdit={(v) => handleStringEdit(def, v)}
                         onEnumOpen={() => handleEnumOpen(def)}
+                        onAction={() => handleAction(def)}
                       />
                     </View>
                   ))}
