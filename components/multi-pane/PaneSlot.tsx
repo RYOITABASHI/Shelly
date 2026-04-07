@@ -14,6 +14,9 @@ const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 /** Context to let child screens know their pane width */
 export const MultiPaneContext = createContext<{ paneWidth: number } | null>(null);
 
+/** Context to let child pane components know their leaf ID */
+export const PaneIdContext = React.createContext<string>('');
+
 type Props = {
   leafId: string;
   tab: PaneTab;
@@ -30,12 +33,23 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const [paneWidth, setPaneWidth] = useState(0);
   const [notification, setNotification] = useState<{ status: 'done' | 'error' } | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keep track of whether browser was ever the active tab so we can preserve its mount
+  const wasBrowserRef = useRef(tab === 'browser');
   const entry = PANE_REGISTRY[tab];
   const agentColor = usePaneStore((s) => getAgentColor(s.paneAgents, leafId));
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const { setFocusedPane } = usePaneStore();
   const Component = useMemo(() => entry.getComponent(), [tab]);
+  // BrowserComponent is memoised once — never remounts, even when hidden
+  const BrowserComponent = useMemo(() => PANE_REGISTRY['browser'].getComponent(), []);
   const ctxValue = useMemo(() => ({ paneWidth }), [paneWidth]);
+
+  // Latch wasBrowserRef once the browser tab has been shown
+  useEffect(() => {
+    if (tab === 'browser') {
+      wasBrowserRef.current = true;
+    }
+  }, [tab]);
 
   useEffect(() => {
     const unsub = onCommandComplete((event) => {
@@ -103,7 +117,16 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
       <View style={styles.content}>
         <SafeAreaInsetsContext.Provider value={ZERO_INSETS}>
           <MultiPaneContext.Provider value={ctxValue}>
-            <Component />
+            <PaneIdContext.Provider value={leafId}>
+              {/* Active non-browser pane — hidden when browser is active */}
+              {tab !== 'browser' && <Component />}
+              {/* Browser pane rendered once and toggled via display so audio keeps playing */}
+              {(tab === 'browser' || wasBrowserRef.current) && (
+                <View style={tab === 'browser' ? styles.fill : styles.hidden}>
+                  <BrowserComponent />
+                </View>
+              )}
+            </PaneIdContext.Provider>
           </MultiPaneContext.Provider>
         </SafeAreaInsetsContext.Provider>
       </View>

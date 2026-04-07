@@ -26,7 +26,7 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
   ai: {
     title: 'AI',
     icon: 'auto-awesome',
-    getComponent: () => () => React.createElement(StubPane, { label: 'AI Pane' }),
+    getComponent: () => require('@/components/panes/AIPane').default,
   },
   browser: {
     title: 'Browser',
