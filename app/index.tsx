@@ -1,5 +1,7 @@
-import { Redirect } from "expo-router";
+// app/index.tsx — Single-screen terminal IDE
+import React from 'react';
+import { ShellLayout } from '@/components/layout/ShellLayout';
 
-export default function Index() {
-  return <Redirect href="/(tabs)" />;
+export default function ShellScreen() {
+  return <ShellLayout />;
 }

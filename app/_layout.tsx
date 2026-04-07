@@ -11,6 +11,10 @@ import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-c
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
 import { loadAgentsFromDisk } from "@/lib/agent-manager";
+import { useI18n } from '@/lib/i18n';
+import { useThemeStore } from '@/lib/theme-engine';
+import { useA11yStore } from '@/lib/accessibility';
+import { usePluginStore } from '@/lib/plugin-api';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return (
@@ -33,13 +37,18 @@ const ebStyles = StyleSheet.create({
 });
 
 export const unstable_settings = {
-  anchor: "(tabs)",
+  initialRouteName: "index",
 };
 
 export default function RootLayout() {
   const loadSettings = useTerminalStore((s) => s.loadSettings);
 
   useEffect(() => {
+    useI18n.getState().loadLocale();
+    useThemeStore.getState().loadTheme();
+    useA11yStore.getState().loadConfig();
+    usePluginStore.getState().loadPlugins();
+
     loadSettings();
 
     // Load background agents from disk
@@ -71,7 +80,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
         <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="index" />
         </Stack>
         <StatusBar style="light" />
       </SafeAreaProvider>
