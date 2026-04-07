@@ -60,7 +60,7 @@ export function CommandPalette() {
       { id: 'tab-projects', label: 'Projects', hint: t('palette.hint_projects'), icon: 'folder', category: 'tab',
         onExecute: () => { close(); } },
       { id: 'tab-chat', label: 'Chat / AI', hint: t('palette.hint_chat'), icon: 'chat', category: 'tab',
-        onExecute: () => { useMultiPaneStore.getState().splitPane?.(); close(); } },
+        onExecute: () => { (() => { const s = useMultiPaneStore.getState(); const root = s.root; if (root) { const leaf = root.type === 'leaf' ? root.id : root.children[0].type === 'leaf' ? root.children[0].id : ''; if (leaf) s.splitPane(leaf, 'horizontal', 'ai'); } })(); close(); } },
       { id: 'tab-terminal', label: 'Terminal', hint: t('palette.hint_terminal'), icon: 'terminal', category: 'tab',
         onExecute: () => { close(); } },
       { id: 'tab-settings', label: 'Settings', hint: t('palette.hint_settings'), icon: 'settings', category: 'tab',
@@ -166,7 +166,7 @@ export function CommandPalette() {
       icon: 'auto-awesome' as const,
       category: 'suggest',
       onExecute: () => {
-        if (f.id === 'ai-pane') { useMultiPaneStore.getState().splitPane?.(); close(); }
+        if (f.id === 'ai-pane') { (() => { const s = useMultiPaneStore.getState(); const root = s.root; if (root) { const leaf = root.type === 'leaf' ? root.id : root.children[0].type === 'leaf' ? root.children[0].id : ''; if (leaf) s.splitPane(leaf, 'horizontal', 'ai'); } })(); close(); }
         else { close(); }
       },
     }));

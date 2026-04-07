@@ -173,39 +173,6 @@ export default function TerminalScreen() {
     });
   }, []);
 
-  // Voice input routing:
-  //   - Natural language (no shell metacharacters) → dispatch to AI via chat store
-  //   - Shell command → execute directly in terminal
-  const handleVoiceInput = useCallback((text: string) => {
-    if (!text.trim()) return;
-    // Heuristic: if the text contains shell metacharacters or starts with a known
-    // command word, treat it as a direct shell command.
-    const SHELL_META = /[|&;<>$`\\!{}*?[\]#~]/;
-    const COMMAND_PREFIX = /^(ls|cd|mkdir|rm|cp|mv|cat|echo|grep|find|git|npm|pnpm|yarn|node|python|python3|pip|pip3|apt|pkg|curl|wget|ssh|scp|docker|make|cargo|go|java|ruby|perl|bash|sh|zsh|fish|export|source|alias|kill|ps|top|htop|df|du|pwd|which|man|chmod|chown|sudo|su|env|set|unset|clear|reset)\s/i;
-
-    const looksLikeCommand = SHELL_META.test(text) || COMMAND_PREFIX.test(text);
-
-    if (looksLikeCommand) {
-      // Execute directly — append newline to submit
-      sendToTerminal(text + '\n');
-    } else {
-      // Route to AI via chat store (same path as Click-to-Edit)
-      const chatStore = useChatStore.getState();
-      const session = chatStore.getActiveSession();
-      if (session) {
-        chatStore.addMessage(session.id, {
-          id: generateId(),
-          role: 'user',
-          content: text,
-          timestamp: Date.now(),
-        });
-      } else {
-        // No chat session available — fall back to executing in terminal
-        sendToTerminal(text + '\n');
-      }
-    }
-  }, [sendToTerminal]);
-
   // Create a native session via JNI forkpty (no TCP, no pty-helper)
   const createNativeSession = useCallback(async (session: TabSession) => {
     if (creatingSessions.current.has(session.id)) {
@@ -452,6 +419,18 @@ export default function TerminalScreen() {
       console.warn('[Terminal] writeToSession failed:', err);
     });
   }, [activeSession?.nativeSessionId]);
+
+  // Voice input routing
+  const handleVoiceInput = useCallback((text: string) => {
+    if (!text.trim()) return;
+    const SHELL_META = /[|&;<>$`\\!{}*?[\]#~]/;
+    const COMMAND_PREFIX = /^(ls|cd|mkdir|rm|cp|mv|cat|echo|grep|find|git|npm|pnpm|yarn|node|python|python3|pip|pip3|apt|pkg|curl|wget|ssh|scp|docker|make|cargo|go|java|ruby|perl|bash|sh|zsh|fish|export|source|alias|kill|ps|top|htop|df|du|pwd|which|man|chmod|chown|sudo|su|env|set|unset|clear|reset)\s/i;
+    if (SHELL_META.test(text) || COMMAND_PREFIX.test(text)) {
+      sendToTerminal(text + '\n');
+    } else {
+      sendToTerminal(text + '\n');
+    }
+  }, [sendToTerminal]);
 
   // Send raw key code to terminal
   const sendKey = useCallback((keyCode: string) => {

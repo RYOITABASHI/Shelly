@@ -5,7 +5,7 @@ export type PaletteAction = {
   label: string;
   hint?: string;
   icon: string; // MaterialIcons name
-  category: 'tab' | 'action' | 'snippet' | 'pane';
+  category: 'tab' | 'action' | 'snippet' | 'pane' | 'recent' | 'suggest';
   onExecute: () => void;
 };
 
