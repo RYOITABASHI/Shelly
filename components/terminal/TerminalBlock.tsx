@@ -30,6 +30,11 @@ import { detectErrors } from '@/lib/error-pattern-detector';
 import { isDiffOutput } from '@/lib/diff-parser';
 import { LinkContextMenu, type LinkInfo } from '@/components/terminal/LinkContextMenu';
 import { DiffViewer } from '@/components/terminal/DiffViewer';
+import { detectContentType, type ContentType } from '@/lib/content-block-detector';
+import MarkdownBlock from '@/components/terminal/MarkdownBlock';
+import JsonTreeBlock from '@/components/terminal/JsonTreeBlock';
+import ImagePreviewBlock from '@/components/terminal/ImagePreviewBlock';
+import TableBlock from '@/components/terminal/TableBlock';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
@@ -253,6 +258,8 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
     block.output.length > COLLAPSE_THRESHOLD
   );
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  const [richView, setRichView] = useState(true);
+  const [richCollapsed, setRichCollapsed] = useState(false);
 
   const useHighContrast = highContrastOutput ?? highContrastSetting ?? true;
   const lineHeightPx = Math.round(fontSize * lineHeight);
@@ -274,6 +281,14 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
     () => isDiffOutput(block.command, outputText),
     [block.command, outputText],
   );
+
+  const contentType: ContentType = useMemo(() => {
+    if (block.isRunning || block.exitCode === null) return 'plain';
+    return detectContentType(block.command, outputText);
+  }, [block.isRunning, block.exitCode, block.command, outputText]);
+
+  // Only show rich view for non-plain, non-running blocks
+  const showRichRenderer = richView && !block.isRunning && block.exitCode !== null && contentType !== 'plain';
 
   const showFeedback = useCallback((msg: string) => {
     setFeedbackMsg(msg);
@@ -540,8 +555,37 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
           ]}>
             {/* Output header bar */}
             <View style={[styles.outputHeader, { borderBottomColor: withAlpha(colors.command, 0.08) }]}>
-              <Text style={[styles.outputHeaderLabel, { color: colors.inactive }]}>output</Text>
+              {/* Left: label + content type badge (tappable to collapse rich view) */}
+              <Pressable
+                style={styles.outputHeaderLeft}
+                onPress={showRichRenderer ? () => setRichCollapsed((v) => !v) : undefined}
+                hitSlop={4}
+              >
+                <Text style={[styles.outputHeaderLabel, { color: colors.inactive }]}>output</Text>
+                {showRichRenderer && (
+                  <>
+                    <View style={[styles.contentTypeBadge, { backgroundColor: withAlpha(colors.accent, 0.13), borderColor: withAlpha(colors.accent, 0.25) }]}>
+                      <Text style={[styles.contentTypeLabel, { color: colors.accent }]}>{contentType}</Text>
+                    </View>
+                    <Text style={[styles.richChevron, { color: colors.inactive }]}>
+                      {richCollapsed ? '\u25BA' : '\u25BC'}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
               <View style={styles.outputHeaderRight}>
+                {/* Plain/Rich toggle */}
+                {!block.isRunning && block.exitCode !== null && contentType !== 'plain' && (
+                  <Pressable
+                    style={[styles.viewToggleBtn, { backgroundColor: withAlpha(colors.command, 0.08) }]}
+                    hitSlop={6}
+                    onPress={() => setRichView((v) => !v)}
+                  >
+                    <Text style={[styles.viewToggleText, { color: richView ? colors.accent : colors.inactive }]}>
+                      {richView ? 'Rich' : 'Plain'}
+                    </Text>
+                  </Pressable>
+                )}
                 {!block.isRunning && block.output.length > 0 && (
                   <Animated.View style={copyAnimStyle}>
                     <Pressable
@@ -615,9 +659,21 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
               </View>
             ) : (
               <View style={styles.outputBody}>
-                {isDiff ? (
-                  <DiffViewer output={outputText} />
-                ) : (
+                {/* Rich content renderers (non-plain detected types) */}
+                {showRichRenderer && !richCollapsed && (
+                  <View style={styles.richRendererContainer}>
+                    {contentType === 'markdown' && <MarkdownBlock content={outputText} />}
+                    {contentType === 'json' && <JsonTreeBlock json={outputText} />}
+                    {contentType === 'image' && <ImagePreviewBlock output={outputText} cwd={block.currentDir} />}
+                    {contentType === 'table' && <TableBlock output={outputText} />}
+                    {contentType === 'diff' && <DiffViewer output={outputText} />}
+                  </View>
+                )}
+                {/* Plain rendering: always shown when richView=false, or for plain/collapsed-rich */}
+                {(!showRichRenderer || richCollapsed) && (
+                  isDiff ? (
+                    <DiffViewer output={outputText} />
+                  ) : (
                   <View style={styles.outputLines}>
                     {visibleOutput.map((line, i) => {
                       const segments = segmentText(line.text);
@@ -703,9 +759,10 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
                       );
                     })}
                   </View>
+                  )
                 )}
 
-                {shouldCollapse && block.output.length > 0 && (
+                {shouldCollapse && block.output.length > 0 && !showRichRenderer && (
                   <Pressable
                     onPress={handleCollapseToggle}
                     style={[styles.collapseToggle, { backgroundColor: withAlpha(colors.command, 0.08) }]}
@@ -921,6 +978,43 @@ const styles = StyleSheet.create({
   quickCopyBtn: {
     padding: 4,
     borderRadius: 4,
+  },
+  outputHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flex: 1,
+  },
+  contentTypeBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  contentTypeLabel: {
+    fontSize: 8,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  richChevron: {
+    fontSize: 8,
+    lineHeight: 12,
+  },
+  viewToggleBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  viewToggleText: {
+    fontSize: 9,
+    fontFamily: 'monospace',
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  richRendererContainer: {
+    paddingVertical: 4,
   },
   outputBody: {
     paddingHorizontal: 10,
