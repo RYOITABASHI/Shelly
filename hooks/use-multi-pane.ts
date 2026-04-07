@@ -6,11 +6,7 @@ export type PaneTab =
   | 'terminal'
   | 'ai'
   | 'browser'
-  | 'markdown'
-  // Legacy (kept for pane-registry compat during migration)
-  | 'index'
-  | 'projects'
-  | 'settings';
+  | 'markdown';
 
 export type SplitDirection = 'horizontal' | 'vertical';
 
@@ -154,7 +150,7 @@ type MultiPaneActions = {
   /** Initialize for shell layout — always on, starts with 1 terminal pane */
   initShell: () => void;
 
-  // ── Backwards compat (used by _layout.tsx, TerminalHeader, etc.) ──
+  // ── Backwards compat (used by TerminalHeader, etc.) ──
   /** @deprecated Use root tree instead */
   panes: PaneTab[];
   /** @deprecated */
@@ -176,10 +172,10 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
     },
 
     enableMultiPane: (initial) => {
-      const tabs = initial ?? ['index', 'terminal'];
+      const tabs = initial ?? ['terminal'];
       // Build a simple horizontal split from the initial tabs
       if (tabs.length <= 1) {
-        set({ isMultiPane: true, root: makeLeaf(tabs[0] ?? 'index') });
+        set({ isMultiPane: true, root: makeLeaf(tabs[0] ?? 'terminal') });
       } else {
         // Chain horizontal splits: [a, b, c] → split(a, split(b, c))
         let node: PaneNode = makeLeaf(tabs[tabs.length - 1]);
@@ -232,7 +228,7 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
       const oldLeaf = makeLeaf(
         (() => {
           const f = findNode(root, leafId);
-          return f && f.node.type === 'leaf' ? f.node.tab : 'index';
+          return f && f.node.type === 'leaf' ? f.node.tab : 'terminal';
         })(),
       );
       const newLeaf = makeLeaf(newTab);

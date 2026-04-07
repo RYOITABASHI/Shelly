@@ -223,7 +223,7 @@ function SplitMenu({
   };
 
   // Find a suggested tab that's not currently shown
-  const suggestedTab: PaneTab = (['terminal', 'index', 'browser', 'projects', 'settings'] as PaneTab[])
+  const suggestedTab: PaneTab = (['terminal', 'ai', 'browser', 'markdown'] as PaneTab[])
     .find((t) => t !== currentTab) ?? 'terminal';
 
   return (

@@ -38,20 +38,4 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
     icon: 'description',
     getComponent: () => require('@/components/panes/MarkdownPane').default,
   },
-  // Legacy — kept for backwards compat during migration
-  index: {
-    title: 'Chat',
-    icon: 'chat',
-    getComponent: () => require('@/app/(tabs)/index').default,
-  },
-  projects: {
-    title: 'Projects',
-    icon: 'folder',
-    getComponent: () => require('@/app/(tabs)/projects').default,
-  },
-  settings: {
-    title: 'Settings',
-    icon: 'settings',
-    getComponent: () => require('@/app/(tabs)/settings').default,
-  },
 };
