@@ -105,6 +105,10 @@ Horizontal scrollable bar of available AI agents:
 - Long-press: agent settings (API key, model selection)
 - `[+]` button: add/configure new agent
 - Replaces the old `@mention` routing for agent selection
+- **Width**: aligned to pane grid width (not full screen — does not overlap sidebar)
+- **Right side buttons**: Search (command palette) + Settings (gear icon) — always visible, one tap
+- **Agent-pane color linking**: each pane shows a colored top border matching its bound agent
+  (e.g., Claude=#D4A574, Gemini=#4285F4, Codex=#10A37F, unbound=#333)
 
 ### 3.5 Context Bar (Bottom)
 
@@ -127,6 +131,11 @@ Pane operations:
 - Switch pane type (dropdown: Terminal, AI, Browser, Markdown)
 - Drag to reorder (long-press header)
 - Close (X button, minimum 1 pane always open)
+
+**Input model**: inline prompt only — no separate text box.
+All panes use an inline `>` prompt at the bottom of content.
+Attach (clip icon) and voice (mic icon) buttons sit beside the prompt.
+This applies to both Terminal and AI panes.
 
 ### 3.7 Pane Types
 
