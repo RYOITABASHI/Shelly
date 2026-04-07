@@ -39,7 +39,7 @@ export type WriteFileResult =
   | { ok: true }
   | { ok: false; error: string };
 
-async function exec(command: string, timeoutMs?: number): Promise<ExecResult> {
+export async function execCommand(command: string, timeoutMs?: number): Promise<ExecResult> {
   return TerminalEmulator.execCommand(command, timeoutMs);
 }
 
@@ -53,7 +53,7 @@ export function useNativeExec() {
     const timeout = opts?.timeoutMs ?? 120_000;
     // If cwd specified, prepend cd
     const fullCmd = opts?.cwd ? `cd '${opts.cwd}' && ${cmd}` : cmd;
-    return exec(fullCmd, timeout);
+    return execCommand(fullCmd, timeout);
   }, []);
 
   const runRawCommand = useCallback(async (
@@ -61,7 +61,7 @@ export function useNativeExec() {
     opts?: { onStream?: (type: 'stdout' | 'stderr', data: string) => void; timeoutMs?: number; reason?: string },
   ): Promise<ExecResult> => {
     const timeout = opts?.timeoutMs ?? 1_200_000; // 20 min default (same as old runRawCommand)
-    return exec(cmd, timeout);
+    return execCommand(cmd, timeout);
   }, []);
 
   // ── File operations ─────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ export function useNativeExec() {
     try {
       // Use base64 to avoid shell escaping issues
       const base64Content = btoa(unescape(encodeURIComponent(content)));
-      const result = await exec(
+      const result = await execCommand(
         `echo '${base64Content}' | base64 -d > '${filePath}'`,
         30_000,
       );
@@ -91,7 +91,7 @@ export function useNativeExec() {
     _encoding?: string,
   ): Promise<ReadFileResult> => {
     try {
-      const result = await exec(`cat '${filePath}'`, 30_000);
+      const result = await execCommand(`cat '${filePath}'`, 30_000);
       return result.exitCode === 0
         ? { ok: true, content: result.stdout, encoding: 'utf8' }
         : { ok: false, error: result.stderr || `exit code ${result.exitCode}` };
@@ -107,7 +107,7 @@ export function useNativeExec() {
     try {
       const target = dir || '.';
       // JSON-style output for reliable parsing
-      const result = await exec(
+      const result = await execCommand(
         `ls -la '${target}' 2>/dev/null | tail -n +2`,
         10_000,
       );
@@ -133,7 +133,7 @@ export function useNativeExec() {
   ): Promise<EditFileResult> => {
     try {
       // Read file, apply edits in memory, write back
-      const readResult = await exec(`cat '${filePath}'`, 30_000);
+      const readResult = await execCommand(`cat '${filePath}'`, 30_000);
       if (readResult.exitCode !== 0) {
         return { ok: false, error: readResult.stderr || 'Cannot read file' };
       }
