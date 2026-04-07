@@ -261,11 +261,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }));
 
     // Execute via pseudo-shell (mock mode)
-    setTimeout(() => {
+    setTimeout(async () => {
       const currentSession = get().sessions.find((s) => s.id === activeSessionId);
       if (!currentSession) return;
 
-      const result = executeCommand(command, {
+      const result = await executeCommand(command, {
         cwd: currentSession.currentDir,
         env: {},
         history: currentSession.commandHistory,

@@ -1,4 +1,11 @@
 import { OutputLine } from '@/store/types';
+import {
+  saveWorkflow,
+  loadWorkflow,
+  listWorkflows,
+  deleteWorkflow,
+  substituteParams,
+} from '@/lib/workflow-manager';
 
 type ShellState = {
   cwd: string;
@@ -92,10 +99,10 @@ function isDir(path: string): boolean {
   return path in FAKE_FS;
 }
 
-export function executeCommand(
+export async function executeCommand(
   rawInput: string,
   state: ShellState
-): { lines: OutputLine[]; newState: Partial<ShellState> } {
+): Promise<{ lines: OutputLine[]; newState: Partial<ShellState> }> {
   const trimmed = rawInput.trim();
   if (!trimmed) return { lines: [], newState: {} };
 
@@ -379,6 +386,92 @@ export function executeCommand(
         ),
         newState: {},
       };
+    }
+
+    case 'shelly': {
+      const sub = args[0];
+      if (sub !== 'workflow') {
+        return {
+          lines: out(
+            'Usage: shelly <command>',
+            '',
+            'Commands:',
+            '  shelly workflow  Manage saved workflows'
+          ),
+          newState: {},
+        };
+      }
+
+      const wfSub = args[1];
+
+      switch (wfSub) {
+        case 'save': {
+          const name = args[2];
+          if (!name) return { lines: err('Usage: shelly workflow save <name>'), newState: {} };
+          const recent = state.history.slice(0, 5);
+          if (recent.length === 0) return { lines: err('No commands in session history to save'), newState: {} };
+          await saveWorkflow(name, recent);
+          return { lines: out(`Saved workflow '${name}' with ${recent.length} commands`), newState: {} };
+        }
+
+        case 'run': {
+          const name = args[2];
+          if (!name) return { lines: err('Usage: shelly workflow run <name> [args...]'), newState: {} };
+          const wf = await loadWorkflow(name);
+          if (!wf) return { lines: err(`Workflow '${name}' not found`), newState: {} };
+          const params = args.slice(3);
+          const cmds = substituteParams(wf.commands, params);
+          return { lines: out(...cmds.map((c) => `$ ${c}`)), newState: {} };
+        }
+
+        case 'list': {
+          const wfs = await listWorkflows();
+          if (wfs.length === 0) return { lines: out('No workflows saved yet.'), newState: {} };
+          const header = 'NAME                 COMMANDS';
+          const sep   = '─────────────────────────────';
+          const rows = wfs.map((w) => `${w.name.padEnd(20)} ${w.commands.length}`);
+          return { lines: out(header, sep, ...rows), newState: {} };
+        }
+
+        case 'edit': {
+          const name = args[2];
+          if (!name) return { lines: err('Usage: shelly workflow edit <name>'), newState: {} };
+          const wf = await loadWorkflow(name);
+          if (!wf) return { lines: err(`Workflow '${name}' not found`), newState: {} };
+          const lines = [
+            `Workflow: ${name}`,
+            '─────────────────────────────',
+            ...wf.commands.map((c, i) => `  ${i + 1}. ${c}`),
+            '',
+            `Edit: vim ~/.shelly/workflows/${name}.sh`,
+          ];
+          return { lines: out(...lines), newState: {} };
+        }
+
+        case 'delete': {
+          const name = args[2];
+          if (!name) return { lines: err('Usage: shelly workflow delete <name>'), newState: {} };
+          const ok = await deleteWorkflow(name);
+          if (!ok) return { lines: err(`Failed to delete workflow '${name}'`), newState: {} };
+          return { lines: out(`Deleted workflow '${name}'`), newState: {} };
+        }
+
+        default: {
+          return {
+            lines: out(
+              'Usage: shelly workflow <subcommand>',
+              '',
+              'Subcommands:',
+              '  save <name>           Save last 5 commands as a workflow',
+              '  run  <name> [args...] Run a saved workflow',
+              '  list                  List all workflows',
+              '  edit <name>           Show workflow contents',
+              '  delete <name>         Delete a workflow'
+            ),
+            newState: {},
+          };
+        }
+      }
     }
 
     default: {
