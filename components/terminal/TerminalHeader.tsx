@@ -35,11 +35,12 @@ type ModeConfig = {
 };
 
 const MODE_CONFIG: Record<ConnectionMode, ModeConfig> = {
+  native:       { icon: 'terminal',  colorKey: 'command',  label: 'Native',   description: 'JNI Terminal' },
   termux:       { icon: 'terminal',  colorKey: 'command',  label: 'Termux',   description: 'Termux WebSocket' },
   disconnected: { icon: 'cloud-off', colorKey: 'inactive', label: 'Off',      description: '\u672A\u63A5\u7D9A' },
 };
 
-const MODE_CYCLE: ConnectionMode[] = ['termux', 'disconnected'];
+const MODE_CYCLE: ConnectionMode[] = ['native', 'termux', 'disconnected'];
 
 // ─── BlinkingCursor ─────────────────────────────────────────────────────────
 

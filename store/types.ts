@@ -7,10 +7,11 @@ export type ConnectionStatus = 'local' | 'ssh' | 'disconnected';
 
 /**
  * Active execution mode for the terminal.
- * - 'termux'     : WebSocket → Termux bridge
+ * - 'native'      : JNI forkpty + linker64 (Plan B, no Termux needed)
+ * - 'termux'      : WebSocket → Termux bridge (legacy)
  * - 'disconnected': bridge configured but not connected
  */
-export type ConnectionMode = 'termux' | 'disconnected';
+export type ConnectionMode = 'native' | 'termux' | 'disconnected';
 
 /** WebSocket connection health */
 export type BridgeStatus =

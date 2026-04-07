@@ -904,7 +904,7 @@ function SettingsScreenInner() {
         <View style={styles.termuxStatusRow}>
           <Text style={styles.termuxStatusLabel}>Current mode</Text>
           <View style={styles.modeChips}>
-            {(['termux', 'disconnected'] as const).map((m) => (
+            {(['native', 'termux', 'disconnected'] as const).map((m) => (
               <Pressable
                 key={m}
                 onPress={() => setConnectionMode(m)}
@@ -917,7 +917,7 @@ function SettingsScreenInner() {
                   styles.modeChipText,
                   connectionMode === m && styles.modeChipTextActive,
                 ]}>
-                  {m === 'termux' ? 'Termux' : 'Off'}
+                  {m === 'native' ? 'Native' : m === 'termux' ? 'Termux' : 'Off'}
                 </Text>
               </Pressable>
             ))}
