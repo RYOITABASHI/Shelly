@@ -4,7 +4,6 @@ import android.content.Context
 import java.io.File
 
 object HomeInitializer {
-    // Coreutils applets to create wrapper scripts for
     private val COREUTILS_APPLETS = listOf(
         "arch", "base32", "base64", "basename", "cat", "chgrp", "chmod", "chown",
         "cksum", "comm", "cp", "csplit", "cut", "date", "dd", "df", "dir", "dircolors",
@@ -20,33 +19,62 @@ object HomeInitializer {
         "wc", "who", "whoami", "yes"
     )
 
+    /** Version counter — increment to force .bashrc regeneration */
+    private const val BASHRC_VERSION = 2
+
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
 
     fun initialize(context: Context): File {
         val home = getHomeDir(context)
         val libDir = LibExtractor.getLibDir(context).absolutePath
-        val binDir = File(context.filesDir, "bin")
-        binDir.mkdirs()
 
         File(home, "projects").mkdirs()
 
-        // Create .bashrc
+        // Regenerate .bashrc if version changed
         val bashrc = File(home, ".bashrc")
-        if (!bashrc.exists()) {
-            bashrc.writeText(
-                "export HOME=\"${home.absolutePath}\"\n" +
-                "export TERM=xterm-256color\n" +
-                "export COLORTERM=truecolor\n" +
-                "export LANG=en_US.UTF-8\n" +
-                "export SHELL=\"$libDir/libbash.so\"\n" +
-                "export PATH=\"${binDir.absolutePath}:$libDir:/system/bin:/vendor/bin\"\n" +
-                "export LD_LIBRARY_PATH=\"$libDir\"\n" +
-                "\n" +
-                "# OSC 133 for command block detection\n" +
-                "PS1='\\[\\e]133;A\\a\\]\\u@shelly:\\w\\\$ \\[\\e]133;B\\a\\]'\n" +
-                "PROMPT_COMMAND='echo -ne \"\\033]133;D;\\\$?\\007\"'\n"
-            )
+        val versionFile = File(home, ".bashrc_version")
+        val currentVersion = try { versionFile.readText().trim().toInt() } catch (_: Exception) { 0 }
+
+        if (!bashrc.exists() || currentVersion < BASHRC_VERSION) {
+            val sb = StringBuilder()
+
+            // Environment
+            sb.appendLine("export HOME=\"${home.absolutePath}\"")
+            sb.appendLine("export TERM=xterm-256color")
+            sb.appendLine("export COLORTERM=truecolor")
+            sb.appendLine("export LANG=en_US.UTF-8")
+            sb.appendLine("export SHELL=\"$libDir/libbash.so\"")
+            sb.appendLine("export PATH=\"/system/bin:/vendor/bin\"")
+            sb.appendLine("export LD_LIBRARY_PATH=\"$libDir\"")
+            sb.appendLine()
+
+            // Linker64 helper function
+            sb.appendLine("# Run binary via linker64 (SELinux blocks direct execve on app_data_file)")
+            sb.appendLine("_run() { /system/bin/linker64 \"\$@\"; }")
+            sb.appendLine()
+
+            // Node and git as functions
+            sb.appendLine("node() { _run $libDir/node \"\$@\"; }")
+            sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
+            sb.appendLine("npm() { _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js \"\$@\"; }")
+            sb.appendLine("npx() { _run $libDir/node $libDir/node_modules/npm/bin/npx-cli.js \"\$@\"; }")
+            sb.appendLine()
+
+            // Coreutils applets as functions
+            sb.appendLine("# Coreutils applets")
+            for (applet in COREUTILS_APPLETS) {
+                sb.appendLine("$applet() { _run $libDir/coreutils $applet \"\$@\"; }")
+            }
+            sb.appendLine()
+
+            // OSC 133 for command block detection
+            sb.appendLine("# OSC 133 for command block detection")
+            sb.appendLine("PS1='\\[\\e]133;A\\a\\]\\u@shelly:\\w\\\$ \\[\\e]133;B\\a\\]'")
+            sb.appendLine("PROMPT_COMMAND='echo -ne \"\\033]133;D;\\\$?\\007\"'")
+
+            bashrc.writeText(sb.toString())
+            versionFile.writeText(BASHRC_VERSION.toString())
         }
 
         // Create .profile
@@ -55,35 +83,6 @@ object HomeInitializer {
             profile.writeText("[ -f ~/.bashrc ] && . ~/.bashrc\n")
         }
 
-        // Create wrapper scripts for node, git, and coreutils applets
-        createWrapper(binDir, "node", libDir, "$libDir/node")
-        createWrapper(binDir, "git", libDir, "$libDir/git")
-
-        // Coreutils: each applet is a symlink-like wrapper that calls coreutils with applet name
-        for (applet in COREUTILS_APPLETS) {
-            val wrapper = File(binDir, applet)
-            if (!wrapper.exists()) {
-                wrapper.writeText(
-                    "#!/system/bin/sh\n" +
-                    "export LD_LIBRARY_PATH=\"$libDir\"\n" +
-                    "exec /system/bin/linker64 $libDir/coreutils $applet \"\$@\"\n"
-                )
-                wrapper.setExecutable(true, false)
-            }
-        }
-
         return home
-    }
-
-    private fun createWrapper(binDir: File, name: String, libDir: String, binaryPath: String) {
-        val wrapper = File(binDir, name)
-        if (!wrapper.exists()) {
-            wrapper.writeText(
-                "#!/system/bin/sh\n" +
-                "export LD_LIBRARY_PATH=\"$libDir\"\n" +
-                "exec /system/bin/linker64 $binaryPath \"\$@\"\n"
-            )
-            wrapper.setExecutable(true, false)
-        }
     }
 }
