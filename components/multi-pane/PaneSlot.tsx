@@ -5,6 +5,7 @@ import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { PANE_REGISTRY } from './pane-registry';
 import { PaneSelector } from './PaneSelector';
 import type { PaneTab } from '@/hooks/use-multi-pane';
+import { usePaneStore, getAgentColor } from '@/store/pane-store';
 
 const ACCENT = '#00D4AA';
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -27,16 +28,19 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const [splitMenuVisible, setSplitMenuVisible] = useState(false);
   const [paneWidth, setPaneWidth] = useState(0);
   const entry = PANE_REGISTRY[tab];
+  const agentColor = usePaneStore((s) => getAgentColor(s.paneAgents, leafId));
+  const { setFocusedPane } = usePaneStore();
   const Component = useMemo(() => entry.getComponent(), [tab]);
   const ctxValue = useMemo(() => ({ paneWidth }), [paneWidth]);
 
   return (
     <View
       style={styles.pane}
+      onTouchStart={() => setFocusedPane(leafId)}
       onLayout={(e) => setPaneWidth(e.nativeEvent.layout.width)}
     >
       {/* Pane header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { borderTopWidth: 2, borderTopColor: agentColor }]}>
         <Pressable
           style={styles.headerTabBtn}
           onPress={() => setSelectorVisible(true)}
