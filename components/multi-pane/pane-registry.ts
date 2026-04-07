@@ -31,7 +31,7 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
   browser: {
     title: 'Browser',
     icon: 'language',
-    getComponent: () => () => React.createElement(StubPane, { label: 'Browser Pane' }),
+    getComponent: () => require('@/components/panes/BrowserPane').default,
   },
   markdown: {
     title: 'Markdown',
