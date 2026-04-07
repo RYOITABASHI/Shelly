@@ -9,8 +9,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { usePreviewStore } from '@/store/preview-store';
 import { ConnectionMode } from '@/store/types';
@@ -76,7 +76,6 @@ export function TerminalHeader() {
     setConnectionMode,
     settings,
   } = useTerminalStore();
-  const router = useRouter();
   const layout = useDeviceLayout();
   const { isMultiPane, toggleMultiPane } = useMultiPaneStore();
 
@@ -125,8 +124,8 @@ export function TerminalHeader() {
     if (settings.hapticFeedback) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
-    router.push('/(tabs)/settings');
-  }, [router, settings.hapticFeedback]);
+    useSettingsStore.getState().setShowConfigTUI(true);
+  }, [settings.hapticFeedback]);
 
   const handleTabPress = useCallback((sessionId: string) => {
     setActiveSession(sessionId);

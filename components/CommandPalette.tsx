@@ -9,9 +9,9 @@ import {
   StyleSheet,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useRouter } from 'expo-router';
 import { useCommandPaletteStore, type PaletteAction } from '@/hooks/use-command-palette';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useSettingsStore } from '@/store/settings-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
@@ -48,7 +48,6 @@ const ACCENT = '#00D4AA';
 
 export function CommandPalette() {
   const { isOpen, close } = useCommandPaletteStore();
-  const router = useRouter();
   const layout = useDeviceLayout();
   const { enableMultiPane, disableMultiPane, isMultiPane } = useMultiPaneStore();
   const snippets = useSnippetStore((s) => s.snippets);
@@ -57,15 +56,15 @@ export function CommandPalette() {
 
   const actions = useMemo((): PaletteAction[] => {
     const list: PaletteAction[] = [
-      // Tab navigation
+      // Navigation actions (new layout — terminal is always visible, AI/projects are panes)
       { id: 'tab-projects', label: 'Projects', hint: t('palette.hint_projects'), icon: 'folder', category: 'tab',
-        onExecute: () => { router.push('/(tabs)/projects' as any); close(); } },
-      { id: 'tab-chat', label: 'Chat', hint: t('palette.hint_chat'), icon: 'chat', category: 'tab',
-        onExecute: () => { router.push('/(tabs)/' as any); close(); } },
+        onExecute: () => { close(); } },
+      { id: 'tab-chat', label: 'Chat / AI', hint: t('palette.hint_chat'), icon: 'chat', category: 'tab',
+        onExecute: () => { useMultiPaneStore.getState().splitPane?.(); close(); } },
       { id: 'tab-terminal', label: 'Terminal', hint: t('palette.hint_terminal'), icon: 'terminal', category: 'tab',
-        onExecute: () => { router.push('/(tabs)/terminal' as any); close(); } },
+        onExecute: () => { close(); } },
       { id: 'tab-settings', label: 'Settings', hint: t('palette.hint_settings'), icon: 'settings', category: 'tab',
-        onExecute: () => { router.push('/(tabs)/settings' as any); close(); } },
+        onExecute: () => { useSettingsStore.getState().setShowConfigTUI(true); close(); } },
 
       // Actions
       { id: 'action-clear', label: t('palette.clear_terminal'), hint: t('palette.hint_clear'), icon: 'delete-sweep', category: 'action',
@@ -81,13 +80,11 @@ export function CommandPalette() {
       { id: 'action-tmux-list', label: t('palette.restore_tmux'), hint: t('palette.hint_restore_tmux'), icon: 'restore', category: 'action',
         onExecute: () => {
           useTerminalStore.setState({ pendingCommand: buildTmuxListCommand() });
-          router.push('/(tabs)/' as any);
           close();
         } },
       { id: 'action-tmux-attach', label: t('palette.tmux_attach'), hint: t('palette.hint_tmux_attach'), icon: 'link', category: 'action',
         onExecute: () => {
           useTerminalStore.setState({ pendingCommand: 'tmux attach' });
-          router.push('/(tabs)/' as any);
           close();
         } },
     ];
@@ -109,7 +106,7 @@ export function CommandPalette() {
     list.push(
       { id: 'action-packages', label: t('pkg.title'), hint: 'Termux pkg GUI', icon: 'inventory-2', category: 'action',
         onExecute: () => {
-          router.push('/(tabs)/settings' as any);
+          useSettingsStore.getState().setShowConfigTUI(true);
           close();
         } },
     );
@@ -124,7 +121,6 @@ export function CommandPalette() {
         category: 'snippet',
         onExecute: () => {
           useTerminalStore.setState({ pendingCommand: s.command });
-          router.push('/(tabs)/' as any);
           close();
         },
       });
@@ -170,9 +166,7 @@ export function CommandPalette() {
       icon: 'auto-awesome' as const,
       category: 'suggest',
       onExecute: () => {
-        if (f.id === 'ai-pane') { router.push('/(tabs)/' as any); close(); }
-        else if (f.id === 'savepoints') { router.push('/(tabs)/projects' as any); close(); }
-        else if (f.id === 'command-blocks') { router.push('/(tabs)/terminal' as any); close(); }
+        if (f.id === 'ai-pane') { useMultiPaneStore.getState().splitPane?.(); close(); }
         else { close(); }
       },
     }));
