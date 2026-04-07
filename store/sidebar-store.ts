@@ -1,5 +1,6 @@
 // store/sidebar-store.ts
 import { create } from 'zustand';
+import { execCommand } from '@/hooks/use-native-exec';
 
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
 export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles';
@@ -18,6 +19,7 @@ interface SidebarState {
   setActiveRepo: (path: string) => void;
   addRepo: (path: string) => void;
   removeRepo: (path: string) => void;
+  loadRepos: () => Promise<void>;
 }
 
 export const useSidebarStore = create<SidebarState>((set, get) => ({
@@ -45,4 +47,18 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
       repoPaths: s.repoPaths.filter((p) => p !== path),
       activeRepoPath: s.activeRepoPath === path ? null : s.activeRepoPath,
     })),
+
+  loadRepos: async () => {
+    try {
+      const result = await execCommand(
+        'find ~/ -maxdepth 2 -name .git -type d 2>/dev/null | head -20 | sed "s/\\.git$//"'
+      );
+      const paths = result.stdout.trim().split('\n').filter(Boolean).map((p: string) => p.replace(/\/$/, ''));
+      if (paths.length > 0) {
+        set({ repoPaths: paths, activeRepoPath: paths[0] });
+      }
+    } catch {
+      // Silent fail — sidebar just shows empty repos
+    }
+  },
 }));
