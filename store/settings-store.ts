@@ -53,15 +53,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
 interface SettingsState {
   settings: AppSettings;
   isSettingsLoaded: boolean;
+  showConfigTUI: boolean;
 
   loadSettings: () => Promise<void>;
   updateSettings: (partial: Partial<AppSettings>) => void;
   resetSettings: () => void;
+  setShowConfigTUI: (show: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isSettingsLoaded: false,
+  showConfigTUI: false,
 
   loadSettings: async () => {
     try {
@@ -119,4 +122,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ settings: DEFAULT_SETTINGS });
     AsyncStorage.setItem('shelly_settings', JSON.stringify(DEFAULT_SETTINGS)).catch(() => {});
   },
+
+  setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),
 }));

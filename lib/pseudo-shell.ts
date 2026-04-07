@@ -6,6 +6,8 @@ import {
   deleteWorkflow,
   substituteParams,
 } from '@/lib/workflow-manager';
+import { useSettingsStore, DEFAULT_SETTINGS } from '@/store/settings-store';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 
 type ShellState = {
   cwd: string;
@@ -390,12 +392,136 @@ export async function executeCommand(
 
     case 'shelly': {
       const sub = args[0];
+
+      // ── shelly config ────────────────────────────────────────────────────────
+      if (sub === 'config') {
+        const configSub = args[1];
+
+        // shelly config (no args) → open TUI overlay
+        if (!configSub) {
+          useSettingsStore.getState().setShowConfigTUI(true);
+          return { lines: info('Opening settings…'), newState: {} };
+        }
+
+        // shelly config list → print all settings as key=value
+        if (configSub === 'list') {
+          const { settings } = useSettingsStore.getState();
+          const cosmetics = useCosmeticStore.getState();
+          const configMap: Record<string, unknown> = {
+            fontSize:                settings.fontSize,
+            cursorShape:             settings.cursorShape,
+            hapticFeedback:          settings.hapticFeedback,
+            autoScroll:              settings.autoScroll,
+            soundEffects:            settings.soundEffects,
+            localLlmEnabled:         settings.localLlmEnabled,
+            localLlmUrl:             settings.localLlmUrl,
+            localLlmModel:           settings.localLlmModel,
+            crtEnabled:              cosmetics.crtEnabled,
+            crtIntensity:            cosmetics.crtIntensity,
+            soundProfile:            cosmetics.soundProfile,
+            fontFamily:              cosmetics.fontFamily,
+            autocomplete:            (settings as Record<string, unknown>)['autocomplete'] ?? false,
+            syntaxHighlight:         (settings as Record<string, unknown>)['syntaxHighlight'] ?? false,
+            highContrastOutput:      settings.highContrastOutput,
+            enableCommandSafety:     settings.enableCommandSafety,
+            llmInterpreterEnabled:   settings.llmInterpreterEnabled,
+            realtimeTranslateEnabled:settings.realtimeTranslateEnabled,
+            gpuRendering:            settings.gpuRendering,
+          };
+          const rows = Object.entries(configMap).map(([k, v]) => `${k}=${v}`);
+          return { lines: out(...rows), newState: {} };
+        }
+
+        // shelly config get <key>
+        if (configSub === 'get') {
+          const key = args[2];
+          if (!key) return { lines: err('Usage: shelly config get <key>'), newState: {} };
+          const { settings } = useSettingsStore.getState();
+          const cosmetics = useCosmeticStore.getState();
+          const combined: Record<string, unknown> = {
+            ...(settings as Record<string, unknown>),
+            crtEnabled: cosmetics.crtEnabled,
+            crtIntensity: cosmetics.crtIntensity,
+            soundProfile: cosmetics.soundProfile,
+            fontFamily: cosmetics.fontFamily,
+          };
+          if (!(key in combined)) return { lines: err(`config: unknown key '${key}'`), newState: {} };
+          return { lines: out(`${key}=${combined[key]}`), newState: {} };
+        }
+
+        // shelly config set <key> <value>
+        if (configSub === 'set') {
+          const key = args[2];
+          const rawVal = args[3];
+          if (!key || rawVal === undefined) {
+            return { lines: err('Usage: shelly config set <key> <value>'), newState: {} };
+          }
+
+          // Cosmetic keys
+          const COSMETIC_KEYS: Record<string, (v: string) => void> = {
+            crtEnabled:   (v) => useCosmeticStore.getState().setCrt(v === 'true' || v === '1'),
+            crtIntensity: (v) => useCosmeticStore.getState().setCrtIntensity(Number(v)),
+            soundProfile: (v) => useCosmeticStore.getState().setSoundProfile(v as import('@/store/cosmetic-store').SoundProfile),
+            fontFamily:   (v) => useCosmeticStore.getState().setFontFamily(v as import('@/store/cosmetic-store').FontFamily),
+          };
+
+          if (key in COSMETIC_KEYS) {
+            COSMETIC_KEYS[key](rawVal);
+            return { lines: out(`${key} = ${rawVal}`), newState: {} };
+          }
+
+          // Boolean settings
+          const BOOL_KEYS = new Set([
+            'hapticFeedback', 'autoScroll', 'soundEffects', 'localLlmEnabled',
+            'highContrastOutput', 'enableCommandSafety', 'llmInterpreterEnabled',
+            'realtimeTranslateEnabled', 'gpuRendering', 'autocomplete', 'syntaxHighlight',
+          ]);
+          if (BOOL_KEYS.has(key)) {
+            const boolVal = rawVal === 'true' || rawVal === '1' || rawVal === 'on';
+            useSettingsStore.getState().updateSettings({ [key]: boolVal });
+            return { lines: out(`${key} = ${boolVal}`), newState: {} };
+          }
+
+          // Number settings
+          const NUM_KEYS = new Set(['fontSize', 'soundVolume']);
+          if (NUM_KEYS.has(key)) {
+            const num = parseFloat(rawVal);
+            if (isNaN(num)) return { lines: err(`config: '${rawVal}' is not a number`), newState: {} };
+            useSettingsStore.getState().updateSettings({ [key]: num });
+            return { lines: out(`${key} = ${num}`), newState: {} };
+          }
+
+          // String settings
+          const STR_KEYS = new Set(['cursorShape', 'localLlmUrl', 'localLlmModel', 'terminalTheme', 'groqModel']);
+          if (STR_KEYS.has(key)) {
+            useSettingsStore.getState().updateSettings({ [key]: rawVal });
+            return { lines: out(`${key} = ${rawVal}`), newState: {} };
+          }
+
+          return { lines: err(`config: unknown key '${key}'`), newState: {} };
+        }
+
+        return {
+          lines: out(
+            'Usage: shelly config [subcommand]',
+            '',
+            'Subcommands:',
+            '  (none)           Open settings TUI',
+            '  list             Print all settings as key=value',
+            '  get <key>        Show a single setting value',
+            '  set <key> <val>  Update a setting'
+          ),
+          newState: {},
+        };
+      }
+
       if (sub !== 'workflow') {
         return {
           lines: out(
             'Usage: shelly <command>',
             '',
             'Commands:',
+            '  shelly config    View and edit settings',
             '  shelly workflow  Manage saved workflows'
           ),
           newState: {},
