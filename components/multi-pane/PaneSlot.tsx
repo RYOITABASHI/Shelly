@@ -1,4 +1,4 @@
-import React, { useState, useMemo, createContext } from 'react';
+import React, { useState, useMemo, createContext, useEffect, useRef } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
@@ -6,6 +6,7 @@ import { PANE_REGISTRY } from './pane-registry';
 import { PaneSelector } from './PaneSelector';
 import type { PaneTab } from '@/hooks/use-multi-pane';
 import { usePaneStore, getAgentColor } from '@/store/pane-store';
+import { onCommandComplete } from '@/lib/cli-notification';
 
 const ACCENT = '#00D4AA';
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -27,11 +28,29 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const [selectorVisible, setSelectorVisible] = useState(false);
   const [splitMenuVisible, setSplitMenuVisible] = useState(false);
   const [paneWidth, setPaneWidth] = useState(0);
+  const [notification, setNotification] = useState<{ status: 'done' | 'error' } | null>(null);
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const entry = PANE_REGISTRY[tab];
   const agentColor = usePaneStore((s) => getAgentColor(s.paneAgents, leafId));
+  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const { setFocusedPane } = usePaneStore();
   const Component = useMemo(() => entry.getComponent(), [tab]);
   const ctxValue = useMemo(() => ({ paneWidth }), [paneWidth]);
+
+  useEffect(() => {
+    const unsub = onCommandComplete((event) => {
+      // Only show badge when the event is for this pane and it's not focused
+      if (event.paneId !== leafId) return;
+      if (focusedPaneId === leafId) return;
+      setNotification({ status: event.exitCode === 0 ? 'done' : 'error' });
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = setTimeout(() => setNotification(null), 5000);
+    });
+    return () => {
+      unsub();
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+    };
+  }, [leafId, focusedPaneId]);
 
   return (
     <View
@@ -51,6 +70,16 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           </Text>
           <MaterialIcons name="arrow-drop-down" size={14} color="#9BA1A6" />
         </Pressable>
+        {notification && (
+          <View style={[
+            styles.notificationBadge,
+            notification.status === 'done' ? styles.notificationBadgeDone : styles.notificationBadgeError,
+          ]}>
+            <Text style={styles.notificationBadgeText}>
+              {notification.status === 'done' ? 'Done' : 'Error'}
+            </Text>
+          </View>
+        )}
         <View style={styles.headerSpacer} />
         {canSplit && (
           <Pressable
@@ -212,6 +241,28 @@ const styles = StyleSheet.create({
   },
   headerSpacer: {
     flex: 1,
+  },
+  notificationBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    marginLeft: 4,
+  },
+  notificationBadgeDone: {
+    backgroundColor: 'rgba(34,197,94,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.4)',
+  },
+  notificationBadgeError: {
+    backgroundColor: 'rgba(239,68,68,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.4)',
+  },
+  notificationBadgeText: {
+    color: '#ECEDEE',
+    fontSize: 9,
+    fontFamily: 'monospace',
+    fontWeight: '700',
   },
   actionBtn: {
     padding: 3,
