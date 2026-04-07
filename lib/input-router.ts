@@ -462,6 +462,17 @@ export function parseInput(input: string): ParsedInput {
     };
   }
 
+  // ── 4.1 GitHub Actions インテント検出 ──────────────────────────────────────
+  if (hasGitHubActionsIntent(trimmed)) {
+    return {
+      layer: 'mention',
+      target: 'actions',
+      prompt: trimmed,
+      raw: trimmed,
+      logSummary: `[GitHub Actions] ${trimmed.slice(0, 60)}`,
+    };
+  }
+
   // ── 4.5 軽量タスク → API不要、シェルコマンドに変換して直送 ─────────────────
   const shellShortcut = matchLightweightTask(trimmed);
   if (shellShortcut) {

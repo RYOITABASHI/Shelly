@@ -56,6 +56,7 @@ import { TemplateGallery } from '@/components/chat/TemplateGallery';
 import type { TemplateWithWizard } from '@/lib/project-templates';
 import { useCreatorStore } from '@/store/creator-store';
 import { detectProjectTypeFromDir, generateWorkflowFromWizard, commitAndPushWorkflow, pollWorkflowResult } from '@/lib/github-actions';
+import { isGitHubConfigured } from '@/lib/github-auth';
 import { parseAgentCommand } from '@/lib/agent-manager';
 import { generateRunNowCommand, generateStopCommand } from '@/lib/agent-executor';
 
@@ -861,6 +862,34 @@ export default function ChatScreen() {
   const handleWizardComplete = useCallback(async (messageId: string, data: ActionsWizardData) => {
     if (!chatSessionId) return;
 
+    // PAT validation — must be configured before pushing workflow
+    const hasToken = await isGitHubConfigured();
+    if (!hasToken) {
+      addMessage(chatSessionId, {
+        id: generateId(),
+        role: 'assistant',
+        content: t('wizard.no_pat'),
+        timestamp: Date.now(),
+        agent: 'git',
+      });
+      return;
+    }
+
+    // Check git remote
+    try {
+      const remoteRes = await bridgeRunCommand('git remote get-url origin 2>/dev/null');
+      if (remoteRes.exitCode !== 0 || !remoteRes.stdout.trim()) {
+        addMessage(chatSessionId, {
+          id: generateId(),
+          role: 'assistant',
+          content: t('wizard.no_remote'),
+          timestamp: Date.now(),
+          agent: 'git',
+        });
+        return;
+      }
+    } catch { /* proceed anyway */ }
+
     // Mark wizard as done
     updateMessage(chatSessionId, messageId, {
       wizardData: { ...data, step: 'done' },
@@ -900,6 +929,39 @@ export default function ChatScreen() {
           content: t('wizard.done', { trigger: triggerText }),
           isStreaming: false,
         });
+
+        // Poll for workflow result in background
+        pollWorkflowResult({
+          projectDir: dir,
+          runCommand: async (cmd) => {
+            const res = await bridgeRunCommand(cmd);
+            return { stdout: res.stdout, exitCode: res.exitCode };
+          },
+        }).then((pollResult) => {
+          if (!chatSessionId) return;
+          if (pollResult.status === 'success') {
+            addMessage(chatSessionId, {
+              id: generateId(),
+              role: 'assistant',
+              content: t('autocheck.result_pass'),
+              timestamp: Date.now(),
+              agent: 'git',
+            });
+          } else if (pollResult.status === 'failure') {
+            addMessage(chatSessionId, {
+              id: generateId(),
+              role: 'assistant',
+              content: t('autocheck.result_fail'),
+              timestamp: Date.now(),
+              agent: 'git',
+              error: pollResult.url ? `Details: ${pollResult.url}` : undefined,
+            });
+          }
+          // timeout/error — silently ignore, user can check GitHub
+        }).catch(() => { /* ignore polling errors */ });
+
+        // Show auto-check proposal after first successful push
+        maybeShowAutoCheckProposal();
       } else {
         updateMessage(chatSessionId, progressId, {
           content: '',

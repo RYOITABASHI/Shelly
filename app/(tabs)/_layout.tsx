@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import { Tabs, useRouter } from "expo-router";
 import { Platform, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,6 +11,7 @@ import { matchKeybinding, type KeyAction } from "@/lib/keybindings";
 import { MultiPaneContainer } from "@/components/multi-pane/MultiPaneContainer";
 import { CommandPalette } from "@/components/CommandPalette";
 import { QuickTerminal } from "@/components/QuickTerminal";
+import { WelcomeWizard, isWizardComplete } from "@/components/WelcomeWizard";
 import { useTerminalStore } from "@/store/terminal-store";
 import { useI18n } from "@/lib/i18n";
 import { useTheme, useThemeStore } from "@/lib/theme-engine";
@@ -23,6 +24,17 @@ export default function TabLayout() {
   useToolDiscovery();
   const layout = useDeviceLayout();
   const router = useRouter();
+
+  // ── Setup Wizard (first launch only) ────────────────────────────────────
+  const [showWizard, setShowWizard] = useState(false);
+  const [wizardChecked, setWizardChecked] = useState(false);
+
+  useEffect(() => {
+    isWizardComplete().then((done) => {
+      if (!done) setShowWizard(true);
+      setWizardChecked(true);
+    });
+  }, []);
   // Track window dimensions to force Tabs re-mount on multi-window resize
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const { isMultiPane, disableMultiPane, setMaxPanes, toggleMultiPane } = useMultiPaneStore();
@@ -171,6 +183,11 @@ export default function TabLayout() {
 
       {/* Quick Terminal (drop-down overlay) — hidden on wide screens where Terminal pane is always visible */}
       {!layout.isWide && <QuickTerminal />}
+
+      {/* Setup Wizard (first launch) */}
+      {wizardChecked && (
+        <WelcomeWizard visible={showWizard} onComplete={() => setShowWizard(false)} />
+      )}
 
     </View>
   );
