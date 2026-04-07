@@ -190,6 +190,42 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     }
   }, [isNaturalMode]);
 
+  // Track cursor position for bracket auto-close
+  const selectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+
+  // Bracket auto-close map
+  const BRACKET_PAIRS: Record<string, string> = {
+    '(': ')',
+    '[': ']',
+    '{': '}',
+    "'": "'",
+    '"': '"',
+  };
+
+  const handleChangeText = useCallback((newText: string) => {
+    const oldText = inputText;
+    // Detect single character insertion
+    if (newText.length === oldText.length + 1) {
+      const cursorPos = selectionRef.current.start;
+      // The inserted char is at cursorPos - 1 (after insertion, cursor moved forward)
+      const insertedIndex = cursorPos > 0 ? cursorPos - 1 : newText.length - 1;
+      const insertedChar = newText[insertedIndex];
+      const closer = BRACKET_PAIRS[insertedChar];
+      if (closer) {
+        const withCloser =
+          newText.slice(0, insertedIndex + 1) + closer + newText.slice(insertedIndex + 1);
+        setInputText(withCloser);
+        // Place cursor between the pair
+        const between = insertedIndex + 1;
+        setTimeout(() => {
+          inputRef.current?.setNativeProps({ selection: { start: between, end: between } });
+        }, 0);
+        return;
+      }
+    }
+    setInputText(newText);
+  }, [inputText]);
+
   const ctrlHeld = useRef(false);
   const bottomPad = Platform.OS === 'android' ? Math.max(insets.bottom, 8) : insets.bottom;
 
@@ -202,6 +238,20 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
           e.preventDefault();
           onCtrlC?.();
         }
+      }
+      // Shift+Enter: insert newline without submitting (web only)
+      if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        const sel = selectionRef.current;
+        setInputText((prev) => {
+          const before = prev.slice(0, sel.start);
+          const after = prev.slice(sel.end);
+          return before + '\n' + after;
+        });
+        const newPos = sel.start + 1;
+        setTimeout(() => {
+          inputRef.current?.setNativeProps({ selection: { start: newPos, end: newPos } });
+        }, 0);
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -395,6 +445,19 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
       }
     } else if (key === 'tab') {
       setInputText((prev) => prev + '  ');
+    } else if (key === 'newline') {
+      // Mobile: insert newline at current cursor position
+      const sel = selectionRef.current;
+      setInputText((prev) => {
+        const before = prev.slice(0, sel.start);
+        const after = prev.slice(sel.end);
+        return before + '\n' + after;
+      });
+      const newPos = sel.start + 1;
+      setTimeout(() => {
+        inputRef.current?.setNativeProps({ selection: { start: newPos, end: newPos } });
+        inputRef.current?.focus();
+      }, 0);
     }
   }, [onSend, onCtrlC]);
 
@@ -408,11 +471,14 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     if (cmd !== undefined) setInputText(cmd);
   }, [onHistoryDown]);
 
+  const isMultiLine = inputText.includes('\n');
+
   const handleContentSizeChange = useCallback((e: any) => {
     const h = e.nativeEvent.contentSize.height;
-    const clamped = Math.min(Math.max(40, h + 12), 140);
+    const maxH = inputText.includes('\n') ? 200 : 140;
+    const clamped = Math.min(Math.max(40, h + 12), maxH);
     setInputHeight(clamped);
-  }, []);
+  }, [inputText]);
 
   const handleKeyPress = useCallback((e: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
     // Best-effort hook for future use
@@ -609,7 +675,8 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
             },
           ]}
           value={inputText}
-          onChangeText={setInputText}
+          onChangeText={handleChangeText}
+          onSelectionChange={(e) => { selectionRef.current = e.nativeEvent.selection; }}
           onContentSizeChange={handleContentSizeChange}
           onKeyPress={handleKeyPress}
           multiline
@@ -623,7 +690,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
           returnKeyType="default"
           blurOnSubmit={false}
           textAlignVertical="top"
-          scrollEnabled={inputHeight >= 140}
+          scrollEnabled={inputHeight >= (isMultiLine ? 200 : 140)}
           inputMode="text"
           onSubmitEditing={undefined}
         />
@@ -763,7 +830,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     borderWidth: 1,
     minHeight: 40,
-    maxHeight: 140,
+    maxHeight: 200,
   },
   attachMenu: {
     borderWidth: 1,

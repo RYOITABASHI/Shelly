@@ -44,6 +44,7 @@ const SHORTCUT_KEYS: ShortcutKey[] = [
   { label: 'PgDn', key: 'pagedown', width: 46 },
   { label: '^C', key: 'ctrl_c', isAction: true, width: 40 },
   { label: '^D', key: 'ctrl_d', isAction: true, width: 40 },
+  { label: '\u21b5', key: 'newline', width: 40 },
 ];
 
 type ToastMessage = 'no_running' | 'not_connected' | null;
