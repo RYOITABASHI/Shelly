@@ -26,7 +26,9 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { getOutputColor } from '@/lib/output-colors';
 import { segmentText } from '@/lib/link-detector';
+import { detectErrors } from '@/lib/error-pattern-detector';
 import { isDiffOutput } from '@/lib/diff-parser';
+import { LinkContextMenu, type LinkInfo } from '@/components/terminal/LinkContextMenu';
 import { DiffViewer } from '@/components/terminal/DiffViewer';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/use-theme';
@@ -235,6 +237,16 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
   }, [router, onRerun]);
 
   const [menuVisible, setMenuVisible] = useState(false);
+  const [linkMenuVisible, setLinkMenuVisible] = useState(false);
+  const [activeLinkInfo, setActiveLinkInfo] = useState<LinkInfo | null>(null);
+
+  const handleLinkLongPress = useCallback((info: LinkInfo) => {
+    if (hapticFeedback) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    setActiveLinkInfo(info);
+    setLinkMenuVisible(true);
+  }, [hapticFeedback]);
   const [dupDialogVisible, setDupDialogVisible] = useState(false);
   const [existingSnippetId, setExistingSnippetId] = useState<string | null>(null);
   const [isCollapsed, setIsCollapsed] = useState(
@@ -402,6 +414,20 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
         isSaved={!!block.isSavedSnippet}
         colors={colors}
       />
+
+      {/* Link context menu */}
+      {activeLinkInfo && (
+        <LinkContextMenu
+          visible={linkMenuVisible}
+          onClose={() => setLinkMenuVisible(false)}
+          link={activeLinkInfo}
+          position={{ x: 0, y: 0 }}
+          onOpenInSidebar={(filePath, line, col) => {
+            if (onRerun) onRerun(`cat ${filePath}`);
+          }}
+          onCopied={showFeedback}
+        />
+      )}
 
       {/* Duplicate snippet confirmation dialog */}
       <Modal
@@ -595,8 +621,24 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
                   <View style={styles.outputLines}>
                     {visibleOutput.map((line, i) => {
                       const segments = segmentText(line.text);
+                      const errors = detectErrors(line.text);
                       const baseColor = getOutputColor(line.type, useHighContrast);
-                      const hasLinks = segments.some((s) => s.link);
+                      const hasLinks = segments.some((s) => s.link) || errors.length > 0;
+
+                      // Build enriched segments: merge error spans on top of link segments
+                      const enrichedSegments = hasLinks
+                        ? segments.map((seg) => {
+                            if (!seg.link) return { ...seg, errorInfo: null };
+                            // Check if this link text matches an error pattern
+                            const err = errors.find(
+                              (e) =>
+                                e.filePath === seg.link!.text ||
+                                seg.link!.text.startsWith(e.filePath),
+                            );
+                            return { ...seg, errorInfo: err ?? null };
+                          })
+                        : [];
+
                       return (
                         <Text
                           key={i}
@@ -607,19 +649,55 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
                           selectable
                         >
                           {hasLinks
-                            ? segments.map((seg, j) =>
-                                seg.link ? (
+                            ? enrichedSegments.map((seg, j) => {
+                                if (!seg.link) return <Text key={j}>{seg.text}</Text>;
+                                const isError = seg.errorInfo != null;
+                                const isUrl = seg.link.type === 'url';
+                                const linkColor = isError
+                                  ? colors.error
+                                  : isUrl
+                                  ? colors.link
+                                  : colors.accent;
+                                const linkInfo: LinkInfo = isError
+                                  ? {
+                                      text: seg.text,
+                                      type: 'error',
+                                      filePath: seg.errorInfo!.filePath,
+                                      line: seg.errorInfo!.line,
+                                      col: seg.errorInfo!.col,
+                                    }
+                                  : {
+                                      text: seg.text,
+                                      type: seg.link.type,
+                                      filePath:
+                                        seg.link.type === 'filepath'
+                                          ? seg.text
+                                          : undefined,
+                                      url:
+                                        seg.link.type === 'url'
+                                          ? seg.text
+                                          : undefined,
+                                    };
+                                return (
                                   <Text
                                     key={j}
-                                    style={[styles.linkText, { color: colors.link }]}
-                                    onPress={() => handleLinkPress(seg.link!.text, seg.link!.type)}
+                                    style={[
+                                      styles.linkText,
+                                      { color: linkColor },
+                                    ]}
+                                    onPress={() =>
+                                      handleLinkPress(
+                                        seg.link!.text,
+                                        seg.link!.type,
+                                      )
+                                    }
+                                    onLongPress={() => handleLinkLongPress(linkInfo)}
+                                    delayLongPress={350}
                                   >
                                     {seg.text}
                                   </Text>
-                                ) : (
-                                  <Text key={j}>{seg.text}</Text>
-                                ),
-                              )
+                                );
+                              })
                             : line.text}
                         </Text>
                       );
