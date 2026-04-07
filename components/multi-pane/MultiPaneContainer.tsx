@@ -1,7 +1,6 @@
 import React, { useCallback, useRef } from 'react';
-import { View, StyleSheet, StatusBar, LayoutChangeEvent } from 'react-native';
+import { View, StyleSheet, LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMultiPaneStore, type PaneNode, type PaneSplit } from '@/hooks/use-multi-pane';
 import { PaneSlot } from './PaneSlot';
 
@@ -97,14 +96,12 @@ function countLeavesQuick(node: PaneNode): number {
 }
 
 export function MultiPaneContainer() {
-  const insets = useSafeAreaInsets();
   const { root } = useMultiPaneStore();
 
   if (!root) return null;
 
   return (
-    <View style={[StyleSheet.absoluteFill, styles.root, { paddingTop: insets.top }]}>
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+    <View style={styles.root}>
       <PaneTreeNode node={root} />
     </View>
   );
@@ -112,8 +109,8 @@ export function MultiPaneContainer() {
 
 const styles = StyleSheet.create({
   root: {
+    flex: 1,
     backgroundColor: '#0A0A0A',
-    zIndex: 50,
   },
   split: {
     flex: 1,
