@@ -21,6 +21,8 @@ import { useAIPaneStore } from '@/store/ai-pane-store';
 import { formatContextBadge } from '@/lib/ai-pane-context';
 import { useThemeStore } from '@/lib/theme-engine';
 import type { ChatMessage } from '@/store/chat-store';
+import PaneInputBar from '@/components/panes/PaneInputBar';
+import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -100,6 +102,8 @@ const MessageBubble = React.memo(function MessageBubble({
   }
 
   // Assistant message
+  const containsDiff = !isLastStreaming && hasDiffContent(displayText);
+
   return (
     <View style={bubbleStyles.assistantRow}>
       {message.agent && (
@@ -110,12 +114,16 @@ const MessageBubble = React.memo(function MessageBubble({
         </View>
       )}
       <View style={[bubbleStyles.assistantBubble, { backgroundColor: surfaceColor }]}>
-        <Text
-          style={[bubbleStyles.assistantText, { color: foregroundColor }]}
-          selectable
-        >
-          {displayText}
-        </Text>
+        {containsDiff ? (
+          <InlineDiff content={displayText} />
+        ) : (
+          <Text
+            style={[bubbleStyles.assistantText, { color: foregroundColor }]}
+            selectable
+          >
+            {displayText}
+          </Text>
+        )}
         {isLastStreaming && <StreamingDots color={mutedColor} />}
       </View>
     </View>
@@ -180,6 +188,24 @@ export default function AIPane() {
   const paneId = useContext(PaneIdContext);
   const theme = useThemeStore((s) => s.activeTheme);
   const colors = theme.colors;
+  const addMessage = useAIPaneStore((s) => s.addMessage);
+
+  const handleSubmit = useCallback(
+    (text: string) => {
+      const msg: ChatMessage = {
+        id: `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        role: 'user',
+        content: text,
+        timestamp: Date.now(),
+      };
+      addMessage(paneId, msg);
+    },
+    [paneId, addMessage],
+  );
+
+  const handleAttach = useCallback(() => {
+    console.log('[AIPane] attach pressed — not yet implemented');
+  }, []);
 
   // Ensure conversation exists and subscribe to it
   const conversation = useAIPaneStore((s) => {
@@ -246,6 +272,13 @@ export default function AIPane() {
           removeClippedSubviews
         />
       )}
+
+      {/* Input bar */}
+      <PaneInputBar
+        placeholder="Ask anything..."
+        onSubmit={handleSubmit}
+        onAttach={handleAttach}
+      />
     </View>
   );
 }
