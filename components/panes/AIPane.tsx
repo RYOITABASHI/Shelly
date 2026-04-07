@@ -24,6 +24,7 @@ import { useThemeStore } from '@/lib/theme-engine';
 import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
+import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -98,6 +99,17 @@ const MessageBubble = React.memo(function MessageBubble({
             {displayText}
           </Text>
         </View>
+      </View>
+    );
+  }
+
+  // System message (e.g., "Switched to Claude")
+  if (message.role === 'system') {
+    return (
+      <View style={bubbleStyles.systemRow}>
+        <Text style={[bubbleStyles.systemText, { color: mutedColor }]}>
+          {displayText}
+        </Text>
       </View>
     );
   }
@@ -181,6 +193,17 @@ const bubbleStyles = StyleSheet.create({
     fontFamily: 'monospace',
     lineHeight: 18,
   },
+  systemRow: {
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  systemText: {
+    fontSize: 10,
+    fontFamily: 'monospace',
+    opacity: 0.6,
+    fontStyle: 'italic',
+  },
 });
 
 // ─── AIPane ──────────────────────────────────────────────────────────────────
@@ -189,24 +212,25 @@ export default function AIPane() {
   const paneId = useContext(PaneIdContext);
   const theme = useThemeStore((s) => s.activeTheme);
   const colors = theme.colors;
-  const addMessage = useAIPaneStore((s) => s.addMessage);
+
+  // Dispatch hook — handles message routing, terminal context injection, streaming
+  const { dispatch, cancelStreaming, isStreaming: dispatchStreaming } = useAIPaneDispatch(paneId);
 
   const handleSubmit = useCallback(
     (text: string) => {
-      const msg: ChatMessage = {
-        id: `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        role: 'user',
-        content: text,
-        timestamp: Date.now(),
-      };
-      addMessage(paneId, msg);
+      dispatch(text);
     },
-    [paneId, addMessage],
+    [dispatch],
   );
 
+  // While streaming, the attach button acts as a stop/cancel button
   const handleAttach = useCallback(() => {
-    console.log('[AIPane] attach pressed — not yet implemented');
-  }, []);
+    if (dispatchStreaming) {
+      cancelStreaming();
+    } else {
+      console.log('[AIPane] attach pressed — not yet implemented');
+    }
+  }, [dispatchStreaming, cancelStreaming]);
 
   // Ensure conversation exists and subscribe to it
   const conversation = useAIPaneStore((s) => {
@@ -220,6 +244,26 @@ export default function AIPane() {
     useAIPaneStore.getState().getOrCreate(paneId);
     initialised.current = true;
   }
+
+  // Watch for bound agent changes and insert a system message on switch
+  const boundAgent = usePaneStore((s) => s.paneAgents[paneId] ?? null);
+  const prevAgentRef = useRef<string | null>(boundAgent);
+  useEffect(() => {
+    const prev = prevAgentRef.current;
+    prevAgentRef.current = boundAgent;
+    // Skip on first mount (no actual switch happened)
+    if (prev === boundAgent) return;
+    const agentName = boundAgent
+      ? boundAgent.charAt(0).toUpperCase() + boundAgent.slice(1)
+      : 'Unbound';
+    const systemMsg: ChatMessage = {
+      id: `system-agent-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      role: 'system',
+      content: `Switched to ${agentName}`,
+      timestamp: Date.now(),
+    };
+    useAIPaneStore.getState().addMessage(paneId, systemMsg);
+  }, [boundAgent, paneId]);
 
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.isStreaming ?? false;
@@ -274,9 +318,9 @@ export default function AIPane() {
         />
       )}
 
-      {/* Input bar */}
+      {/* Input bar — attach icon doubles as stop button while streaming */}
       <PaneInputBar
-        placeholder="Ask anything..."
+        placeholder={dispatchStreaming ? 'Responding...' : 'Ask anything...'}
         onSubmit={handleSubmit}
         onAttach={handleAttach}
       />
