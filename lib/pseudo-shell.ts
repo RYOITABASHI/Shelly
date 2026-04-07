@@ -515,6 +515,12 @@ export async function executeCommand(
         };
       }
 
+      // ── shelly voice ─────────────────────────────────────────────────────────
+      if (sub === 'voice') {
+        useSettingsStore.getState().setShowVoiceMode(true);
+        return { lines: info('Opening voice mode…'), newState: {} };
+      }
+
       if (sub !== 'workflow') {
         return {
           lines: out(
@@ -522,6 +528,7 @@ export async function executeCommand(
             '',
             'Commands:',
             '  shelly config    View and edit settings',
+            '  shelly voice     Open full-screen voice chat',
             '  shelly workflow  Manage saved workflows'
           ),
           newState: {},

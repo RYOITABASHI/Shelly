@@ -29,6 +29,7 @@ import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
+import { useSettingsStore } from '@/store/settings-store';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -239,6 +240,10 @@ export default function AIPane() {
     }
   }, [isRecording, startRecording, stopRecording]);
 
+  const handleMicLongPress = useCallback(() => {
+    useSettingsStore.getState().setShowVoiceMode(true);
+  }, []);
+
   // While streaming, the attach button acts as a stop/cancel button
   const handleAttach = useCallback(() => {
     if (dispatchStreaming) {
@@ -365,11 +370,14 @@ export default function AIPane() {
         </View>
         <TouchableOpacity
           onPress={handleMicPress}
+          onLongPress={handleMicLongPress}
+          delayLongPress={500}
           style={[
             paneStyles.micButton,
             { backgroundColor: isRecording ? colors.accent : colors.surface },
           ]}
           accessibilityLabel={isRecording ? 'Stop recording' : 'Start voice input'}
+          accessibilityHint="Long press for full-screen voice mode"
           accessibilityRole="button"
         >
           <MaterialIcons

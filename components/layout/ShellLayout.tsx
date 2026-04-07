@@ -17,6 +17,8 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { CrtOverlay } from '@/components/CrtOverlay';
+import { VoiceChat } from '@/components/VoiceChat';
+import { useSettingsStore } from '@/store/settings-store';
 
 export function ShellLayout() {
   const theme = useTheme();
@@ -47,6 +49,10 @@ export function ShellLayout() {
   useEffect(() => {
     setMaxPanes(layout.isLandscape && layout.isWide ? 4 : layout.isWide ? 2 : 1);
   }, [layout.isWide, layout.isLandscape]);
+
+  // Full-screen voice mode — triggered by `shelly voice` or long-press mic
+  const showVoice = useSettingsStore((s) => s.showVoiceMode);
+  const closeVoice = useCallback(() => useSettingsStore.getState().setShowVoiceMode(false), []);
 
   // Welcome wizard state
   const [showWizard, setShowWizard] = useState(false);
@@ -133,6 +139,9 @@ export function ShellLayout() {
       {wizardChecked && (
         <WelcomeWizard visible={showWizard} onComplete={() => setShowWizard(false)} />
       )}
+
+      {/* Full-screen voice overlay */}
+      <VoiceChat visible={showVoice} onClose={closeVoice} />
 
       {/* CRT effect — must be last so it renders on top of everything */}
       <CrtOverlay />

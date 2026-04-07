@@ -54,17 +54,20 @@ interface SettingsState {
   settings: AppSettings;
   isSettingsLoaded: boolean;
   showConfigTUI: boolean;
+  showVoiceMode: boolean;
 
   loadSettings: () => Promise<void>;
   updateSettings: (partial: Partial<AppSettings>) => void;
   resetSettings: () => void;
   setShowConfigTUI: (show: boolean) => void;
+  setShowVoiceMode: (show: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isSettingsLoaded: false,
   showConfigTUI: false,
+  showVoiceMode: false,
 
   loadSettings: async () => {
     try {
@@ -124,4 +127,5 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),
+  setShowVoiceMode: (show: boolean) => set({ showVoiceMode: show }),
 }));
