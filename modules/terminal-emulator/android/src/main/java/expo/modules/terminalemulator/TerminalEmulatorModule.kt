@@ -425,6 +425,9 @@ class TerminalEmulatorModule : Module() {
             // Prepend PATH export so bundled tools (node, npm, git, etc.) are found
             val wrappedCommand = "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && export LD_LIBRARY_PATH='$libPath' && export HOME='${homeDir.absolutePath}' && $command"
 
+            Log.i("TerminalEmulator", "execCommand: bash=$bashPath lib=$libPath home=${homeDir.absolutePath}")
+            Log.i("TerminalEmulator", "execCommand: bash exists=${java.io.File(bashPath).exists()} lib exists=${libDir.exists()} files=${libDir.list()?.size ?: 0}")
+
             val result = ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
                 bashPath,
@@ -434,10 +437,16 @@ class TerminalEmulatorModule : Module() {
                 timeout
             )
 
+            val exitCode = result[0].toInt()
+            val stderr = result[2]
+            if (exitCode != 0) {
+                Log.e("TerminalEmulator", "execCommand FAILED: exit=$exitCode stderr=$stderr cmd=${command.take(80)}")
+            }
+
             mapOf(
-                "exitCode" to result[0].toInt(),
+                "exitCode" to exitCode,
                 "stdout" to result[1],
-                "stderr" to result[2]
+                "stderr" to stderr
             )
         }
     }
