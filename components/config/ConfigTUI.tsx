@@ -36,6 +36,7 @@ import { useUsageStore } from '@/store/usage-store';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt';
 import { useTerminalStore } from '@/store/terminal-store';
+import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -428,7 +429,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   // Custom context (loaded async)
   const [customContextText, setCustomContextText] = useState('');
   useEffect(() => {
-    if (visible) loadCustomContext().then(setCustomContextText).catch(() => {});
+    if (visible) {
+      logLifecycle('ConfigTUI', 'opened');
+      loadCustomContext().then(setCustomContextText).catch((e) => {
+        logError('ConfigTUI', 'Failed to load custom context', e);
+      });
+    }
   }, [visible]);
 
   // Build custom values map for 'custom' source items
@@ -452,6 +458,9 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
 
   const applyValue = useCallback(
     (def: SettingDef, rawValue: unknown) => {
+      const displayValue = def.type === 'secret' ? (rawValue ? 'set' : 'empty') : String(rawValue);
+      logInfo('ConfigTUI', 'Setting ' + def.key + ' = ' + displayValue);
+      try {
       // Custom source handling
       if (def.source === 'custom') {
         switch (def.key) {
@@ -503,12 +512,16 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           default: break;
         }
       }
+      } catch (e) {
+        logError('ConfigTUI', 'Failed to apply ' + def.key, e);
+      }
     },
     [updateSettings, cosmetics, settings, themeStore, i18n, dotfiles, usageStore],
   );
 
   // Action handlers
   const handleAction = useCallback((def: SettingDef) => {
+    logInfo('ConfigTUI', 'Action: ' + def.key);
     switch (def.key) {
       case 'exportLogs': {
         const sessions = useTerminalStore.getState().sessions;

@@ -1,6 +1,7 @@
 // store/sidebar-store.ts
 import { create } from 'zustand';
 import { execCommand } from '@/hooks/use-native-exec';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
 export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles';
@@ -54,11 +55,12 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
         'find ~/ -maxdepth 2 -name .git -type d 2>/dev/null | head -20 | sed "s/\\.git$//"'
       );
       const paths = result.stdout.trim().split('\n').filter(Boolean).map((p: string) => p.replace(/\/$/, ''));
+      logInfo('Sidebar', 'Found ' + paths.length + ' repos');
       if (paths.length > 0) {
         set({ repoPaths: paths, activeRepoPath: paths[0] });
       }
-    } catch {
-      // Silent fail — sidebar just shows empty repos
+    } catch (e) {
+      logError('Sidebar', 'loadRepos failed', e);
     }
   },
 }));

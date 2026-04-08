@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { logInfo, logLifecycle } from '@/lib/debug-logger';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -214,6 +215,7 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
     },
 
     splitPane: (leafId, direction, newTab) => {
+      logInfo('MultiPane', 'Split: ' + leafId + ' → ' + direction + ' ' + newTab);
       const { root, maxPanes } = get();
       if (!root) return;
       if (countLeaves(root) >= maxPanes) return;
@@ -238,6 +240,7 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
     },
 
     removePane: (leafId) => {
+      logInfo('MultiPane', 'Remove pane: ' + leafId);
       const { root } = get();
       if (!root) return;
       const result = removeLeaf(root, leafId);
@@ -266,6 +269,7 @@ export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
     },
 
     initShell: () => {
+      logLifecycle('MultiPane', 'initShell');
       const { root } = get();
       // Only initialize if not already active
       if (root) return;

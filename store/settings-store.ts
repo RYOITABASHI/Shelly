@@ -8,6 +8,7 @@ import { AppSettings } from './types';
 import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys } from '@/lib/secure-store';
 import { useSoundStore } from '@/lib/sounds';
 import { useAgentStore } from '@/store/agent-store';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -83,14 +84,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // Sync sound store on load
       useSoundStore.getState().setEnabled(settings.soundEffects ?? true);
       useSoundStore.getState().setVolume(settings.soundVolume ?? 0.6);
+      logInfo('Settings', 'Settings loaded');
       set({ settings, isSettingsLoaded: true });
     } catch (err) {
+      logError('Settings', 'Failed to load settings', err);
       console.error('[Settings] loadSettings failed, using defaults:', err);
       set({ settings: DEFAULT_SETTINGS, isSettingsLoaded: true });
     }
   },
 
   updateSettings: (newSettings: Partial<AppSettings>) => {
+    logInfo('Settings', 'Updated: ' + Object.keys(newSettings).join(', '));
     set((state) => {
       const updated = { ...state.settings, ...newSettings };
       // Save API keys to SecureStore, strip them from AsyncStorage

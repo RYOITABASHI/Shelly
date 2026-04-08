@@ -7,6 +7,7 @@
 
 import { useCallback } from 'react';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 export type ExecResult = {
   stdout: string;
@@ -40,7 +41,15 @@ export type WriteFileResult =
   | { ok: false; error: string };
 
 export async function execCommand(command: string, timeoutMs?: number): Promise<ExecResult> {
-  return TerminalEmulator.execCommand(command, timeoutMs);
+  logInfo('NativeExec', 'exec: ' + command.slice(0, 80));
+  try {
+    const result = await TerminalEmulator.execCommand(command, timeoutMs);
+    logInfo('NativeExec', 'exit=' + result.exitCode + ' stdout=' + result.stdout.length + 'chars');
+    return result;
+  } catch (error: any) {
+    logError('NativeExec', 'exec failed: ' + command.slice(0, 40), error);
+    throw error;
+  }
 }
 
 export function useNativeExec() {

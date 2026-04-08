@@ -30,6 +30,7 @@ import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTranslation } from '@/lib/i18n';
 import { useTerminalStore } from '@/store/terminal-store';
+import { logInfo, logWarn, logError, logLifecycle } from '@/lib/debug-logger';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import {
   AUTH_TOOL_CONFIGS,
@@ -58,6 +59,10 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
   const { t } = useTranslation();
   const { runCommand } = useTerminalStore();
   const isConnected = true; // Plan B: native terminal is always available
+
+  useEffect(() => {
+    logLifecycle('AuthWizard', 'mounted, visible=' + visible);
+  }, [visible]);
 
   const [authStatuses, setAuthStatuses] = useState<Record<AuthToolId, AuthStatus>>({
     'claude-code': 'checking',
@@ -93,8 +98,8 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
     try {
       const statuses = await checkAllAuthStatus(nativeRunner);
       setAuthStatuses(statuses);
-    } catch {
-      // Keep existing statuses
+    } catch (error) {
+      logError('AuthWizard', 'refreshStatuses failed', error);
     } finally {
       setIsRefreshing(false);
     }
@@ -110,6 +115,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
 
   const handleSaveApiKey = useCallback(async (toolId: AuthToolId) => {
     const key = apiKeyInputs[toolId]?.trim();
+    logInfo('AuthWizard', 'Saving API key for ' + toolId + ', key: ' + (key ? 'set' : 'empty'));
     if (!key) {
       Alert.alert(t('auth.error'), t('auth.key_empty'));
       return;
@@ -126,15 +132,19 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
           [toolId]: verified ? 'authenticated' : 'not-authenticated',
         }));
         if (verified) {
+          logInfo('AuthWizard', 'Auth success for ' + toolId);
           setExpandedTool(null);
           setApiKeyInputs((prev) => ({ ...prev, [toolId]: '' }));
         } else {
+          logWarn('AuthWizard', 'API key saved but verify failed for ' + toolId);
           Alert.alert(t('auth.error'), t('auth.verify_failed'));
         }
       } else {
+        logWarn('AuthWizard', 'storeApiKey failed for ' + toolId + ': ' + result.error);
         Alert.alert(t('auth.error'), result.error || t('auth.save_failed'));
       }
     } catch (e) {
+      logError('AuthWizard', 'handleSaveApiKey failed', e);
       Alert.alert(t('auth.error'), String(e));
     } finally {
       setSavingTool(null);
@@ -157,6 +167,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
   }, []);
 
   const handleBrowserAuth = useCallback(async (config: AuthToolConfig) => {
+    logInfo('AuthWizard', 'Starting browser auth for ' + config.id);
     // If the tool has a loginCommand, run OAuth via real PTY
     if (config.loginCommand) {
       setOauthRunning(config.id);
@@ -164,13 +175,15 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
 
       // Get the native session ID from the first terminal session
       const sessionId = useTerminalStore.getState().sessions[0]?.nativeSessionId;
+      logInfo('AuthWizard', 'Writing to PTY session: ' + (sessionId ?? 'none (fallback)'));
       if (!sessionId) {
         // Fallback: route through store's runCommand
         runCommand(config.loginCommand);
       } else {
         try {
           await TerminalEmulator.writeToSession(sessionId, config.loginCommand + '\n');
-        } catch {
+        } catch (e) {
+          logError('AuthWizard', 'writeToSession failed, falling back to runCommand', e);
           runCommand(config.loginCommand);
         }
       }
@@ -198,6 +211,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
           oauthPollRef.current = null;
           setOauthRunning(null);
           setOauthOutput('');
+          logWarn('AuthWizard', 'Auth timeout for ' + config.id);
           Alert.alert(t('auth.error'), t('auth.oauth_timeout'));
           return;
         }
@@ -230,7 +244,9 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
           const urlMatch = recentText.match(/https?:\/\/[^\s\x1b\]]+/);
           if (urlMatch) {
             urlOpened = true;
-            Linking.openURL(urlMatch[0]).catch(() => {
+            logInfo('AuthWizard', 'URL detected: ' + urlMatch[0]);
+            Linking.openURL(urlMatch[0]).catch((e) => {
+              logError('AuthWizard', 'Failed to open browser URL', e);
               Alert.alert(t('auth.error'), t('auth.browser_failed'));
             });
             setOauthOutput(urlMatch[0]);
@@ -244,6 +260,7 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
           oauthPollRef.current = null;
           setOauthRunning(null);
           setOauthOutput('');
+          logInfo('AuthWizard', 'Auth success for ' + config.id);
           setAuthStatuses((prev) => ({ ...prev, [config.id]: 'authenticated' }));
           setExpandedTool(null);
           refreshStatuses();

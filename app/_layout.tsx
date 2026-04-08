@@ -1,5 +1,6 @@
 import "@/global.css";
 import React from "react";
+import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { Stack } from "expo-router";
 import { ErrorBoundaryProps } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -17,6 +18,7 @@ import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  logError('ErrorBoundary', 'Uncaught error', error);
   return (
     <View style={ebStyles.container}>
       <Text style={ebStyles.title}>Something went wrong</Text>
@@ -44,12 +46,23 @@ export default function RootLayout() {
   const loadSettings = useTerminalStore((s) => s.loadSettings);
 
   useEffect(() => {
-    useI18n.getState().loadLocale();
-    useThemeStore.getState().loadTheme();
-    useA11yStore.getState().loadConfig();
-    usePluginStore.getState().loadPlugins();
+    logLifecycle('RootLayout', 'mounted');
+    logInfo('RootLayout', 'Initializing stores...');
 
-    loadSettings();
+    useI18n.getState().loadLocale();
+    logInfo('RootLayout', 'Loaded: i18n');
+    useThemeStore.getState().loadTheme();
+    logInfo('RootLayout', 'Loaded: theme');
+    useA11yStore.getState().loadConfig();
+    logInfo('RootLayout', 'Loaded: a11y');
+    usePluginStore.getState().loadPlugins();
+    logInfo('RootLayout', 'Loaded: plugins');
+
+    loadSettings().then(() => {
+      logInfo('RootLayout', 'Loaded: settings');
+    }).catch((e: any) => {
+      logError('RootLayout', 'loadSettings failed', e);
+    });
 
     // Load background agents from disk
     loadAgentsFromDisk(async (_cmd) => {
@@ -60,7 +73,12 @@ export default function RootLayout() {
       } catch {
         return '';
       }
-    }).catch(console.warn);
+    }).then(() => {
+      logInfo('RootLayout', 'Loaded: agents');
+    }).catch((e: any) => {
+      logError('RootLayout', 'loadAgentsFromDisk failed', e);
+      console.warn(e);
+    });
 
 
 

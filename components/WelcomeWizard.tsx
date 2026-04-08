@@ -29,6 +29,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTranslation } from '@/lib/i18n';
 import { AuthWizard } from '@/components/AuthWizard';
 import type { AuthToolId } from '@/lib/cli-auth';
+import { logInfo, logLifecycle } from '@/lib/debug-logger';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -117,6 +118,14 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
   const [configuredClis, setConfiguredClis] = useState<Set<AuthToolId>>(new Set());
   const [showAuthModal, setShowAuthModal] = useState(false);
 
+  React.useEffect(() => {
+    logLifecycle('WelcomeWizard', 'mounted');
+  }, []);
+
+  React.useEffect(() => {
+    logInfo('WelcomeWizard', 'Step: ' + step);
+  }, [step]);
+
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   const toggleCli = useCallback((id: AuthToolId) => {
@@ -124,16 +133,19 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      logInfo('WelcomeWizard', 'Selected CLIs: ' + Array.from(next).join(', '));
       return next;
     });
   }, []);
 
   const handleFinish = useCallback(async () => {
+    logInfo('WelcomeWizard', 'Wizard complete');
     await AsyncStorage.setItem(WIZARD_KEY, 'true');
     onComplete();
   }, [onComplete]);
 
   const handleCliSelectNext = useCallback(() => {
+    logInfo('WelcomeWizard', 'CLI select next, showing auth modal=' + (selectedClis.size > 0));
     if (selectedClis.size === 0) {
       // Skip auth, go straight to done
       setStep('done');

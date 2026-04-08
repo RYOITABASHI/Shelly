@@ -15,6 +15,7 @@ import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { getTerminalSnapshot, buildAIPaneSystemPrompt } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/chat-store';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -215,6 +216,7 @@ export function useAIPaneDispatch(paneId: string) {
       const store = useAIPaneStore.getState();
       const agent = usePaneStore.getState().paneAgents[paneId] ?? 'local';
       const { settings } = useSettingsStore.getState();
+      logInfo('AIPaneDispatch', 'Dispatching to agent: ' + agent);
 
       // ── Add user message ──
       const userMsg: ChatMessage = {
@@ -228,6 +230,7 @@ export function useAIPaneDispatch(paneId: string) {
 
       // ── Snapshot terminal context ──
       const terminalCtx = getTerminalSnapshot();
+      logInfo('AIPaneDispatch', 'Terminal context: ' + (terminalCtx ? terminalCtx.length + ' chars' : 'none'));
       store.setTerminalContext(paneId, terminalCtx);
 
       // ── Create assistant placeholder ──
@@ -291,6 +294,7 @@ export function useAIPaneDispatch(paneId: string) {
           });
 
           if (!signal.aborted) {
+            logInfo('AIPaneDispatch', 'Response complete');
             store.updateMessage(paneId, assistantId, {
               content: accumulated,
               streamingText: undefined,
@@ -300,6 +304,7 @@ export function useAIPaneDispatch(paneId: string) {
           }
         } else {
           // ── Other agents: stub until full routing is wired ──
+          logInfo('AIPaneDispatch', 'Response complete (stub for agent: ' + agent + ')');
           store.updateMessage(paneId, assistantId, {
             content: `Agent "${agent}" is not yet wired in the AI Pane.\nConfigure your API keys in Settings, or switch the pane agent to "local".`,
             isStreaming: false,
@@ -315,6 +320,7 @@ export function useAIPaneDispatch(paneId: string) {
           });
           return;
         }
+        logError('AIPaneDispatch', 'Dispatch failed', err);
         const message =
           err instanceof Error ? err.message : 'Failed to get response';
         store.updateMessage(paneId, assistantId, {

@@ -1,5 +1,6 @@
 // components/layout/ShellLayout.tsx
 import React, { useEffect, useState, useCallback } from 'react';
+import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import { View, Platform, StyleSheet, StatusBar } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme-engine';
@@ -31,19 +32,29 @@ export function ShellLayout() {
 
   // Initialize pane system on mount
   useEffect(() => {
+    logLifecycle('ShellLayout', 'mounted');
     initShell();
-    useSidebarStore.getState().loadRepos?.();
+    logInfo('ShellLayout', 'Pane system initialized');
+    useSidebarStore.getState().loadRepos?.().then(() => {
+      const count = useSidebarStore.getState().repoPaths.length;
+      logInfo('ShellLayout', 'Repos loaded: ' + count);
+    });
   }, []);
 
   // Responsive sidebar mode
   useEffect(() => {
+    let mode: string;
     if (layout.isWide && layout.isLandscape) {
+      mode = 'expanded';
       setMode('expanded');
     } else if (layout.isWide) {
+      mode = 'icons';
       setMode('icons');
     } else {
+      mode = 'hidden';
       setMode('hidden');
     }
+    logInfo('ShellLayout', 'Sidebar mode: ' + mode);
   }, [layout.isWide, layout.isLandscape]);
 
   // Responsive max panes
@@ -57,7 +68,14 @@ export function ShellLayout() {
 
   // Settings TUI — triggered by gear button or `shelly config`
   const showConfig = useSettingsStore((s) => s.showConfigTUI);
-  const closeConfig = useCallback(() => useSettingsStore.getState().setShowConfigTUI(false), []);
+  const closeConfig = useCallback(() => {
+    logInfo('ShellLayout', 'ConfigTUI: close');
+    useSettingsStore.getState().setShowConfigTUI(false);
+  }, []);
+
+  useEffect(() => {
+    if (showConfig) logInfo('ShellLayout', 'ConfigTUI: open');
+  }, [showConfig]);
 
   // Welcome wizard state
   const [showWizard, setShowWizard] = useState(false);

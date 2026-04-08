@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ChatMessage, ChatAgent } from './chat-store';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,8 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         } else {
           set({ isLoaded: true });
         }
-      } catch {
+      } catch (e) {
+        logError('AIPaneStore', 'load failed', e);
         set({ isLoaded: true });
       }
     },
@@ -116,6 +118,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       if (conversations[paneId]) {
         return conversations[paneId];
       }
+      logInfo('AIPaneStore', 'getOrCreate: ' + paneId);
       const newConv = makeEmptyConversation(paneId);
       set((state) => ({
         conversations: { ...state.conversations, [paneId]: newConv },
@@ -124,6 +127,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
     },
 
     addMessage: (paneId, msg) => {
+      logInfo('AIPaneStore', 'Message added to ' + paneId + ': ' + msg.role);
       // Ensure conversation exists
       get().getOrCreate(paneId);
 
@@ -172,6 +176,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
     },
 
     setStreaming: (paneId, streaming) => {
+      logInfo('AIPaneStore', 'Streaming ' + paneId + ': ' + streaming);
       get().getOrCreate(paneId);
       set((state) => {
         const conv = state.conversations[paneId] ?? makeEmptyConversation(paneId);

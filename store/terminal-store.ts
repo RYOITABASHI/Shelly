@@ -12,6 +12,7 @@ import {
 import { executeCommand } from '@/lib/pseudo-shell';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useSettingsStore } from './settings-store';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 // ─── Multi-session pool ────────────────────────────────────────────────
 
@@ -170,6 +171,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     if (!sessionName) return;
     const id = `session-${Date.now()}`;
     const name = `Terminal ${sessions.length + 1}`;
+    logInfo('TerminalStore', 'Session added: ' + id + ' (' + name + ')');
     set((state) => ({
       sessions: [...state.sessions, createSession(id, name, sessionName)],
       activeSessionId: id,
@@ -180,6 +182,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   removeSession: (id: string) => {
     const { sessions, activeSessionId } = get();
     if (sessions.length <= 1) return;
+    logInfo('TerminalStore', 'Session removed: ' + id);
     const newSessions = sessions.filter((s) => s.id !== id);
     const newActive = activeSessionId === id ? newSessions[0].id : activeSessionId;
     set({ sessions: newSessions, activeSessionId: newActive });
@@ -232,6 +235,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   runCommand: (command: string) => {
     const { sessions, activeSessionId, connectionMode } = get();
     const session = sessions.find((s) => s.id === activeSessionId);
+    logInfo('TerminalStore', 'runCommand: ' + command.slice(0, 80));
     if (!session) return;
 
     const blockId = `block-${Date.now()}`;
@@ -263,6 +267,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
     // Route: shelly <subcommand> → pseudo-shell (app-internal), everything else → JNI exec
     if (command.startsWith('shelly ') || command === 'shelly') {
+      logInfo('TerminalStore', 'Routing to pseudo-shell');
       // Pseudo-shell handles shelly config / shelly workflow / shelly voice
       setTimeout(async () => {
         const currentSession = get().sessions.find((s) => s.id === activeSessionId);
@@ -306,10 +311,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       }, 150);
     } else {
       // Real execution via JNI forkpty
+      logInfo('TerminalStore', 'Routing to JNI exec');
       const currentSession = get().sessions.find((s) => s.id === activeSessionId);
       const cwd = currentSession?.currentDir;
       const fullCmd = cwd ? `cd '${cwd}' && ${command}` : command;
       execCommand(fullCmd).then((result) => {
+        logInfo('TerminalStore', 'Exit code: ' + result.exitCode);
         if (result.stdout) {
           get().appendOutputToBlock(blockId, { text: result.stdout, type: 'stdout' });
         }
@@ -318,6 +325,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         }
         get().finalizeBlock(blockId, result.exitCode);
       }).catch((err: any) => {
+        logError('TerminalStore', 'exec failed', err);
         get().errorBlock(blockId, err?.message || 'Execution failed');
       });
     }
