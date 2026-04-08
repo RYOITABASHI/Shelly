@@ -30,6 +30,7 @@ import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTranslation } from '@/lib/i18n';
 import { useTerminalStore } from '@/store/terminal-store';
+import { execCommand } from '@/hooks/use-native-exec';
 import { logInfo, logWarn, logError, logLifecycle } from '@/lib/debug-logger';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import {
@@ -85,11 +86,15 @@ export function AuthWizard({ visible, onComplete, toolFilter, title }: Props) {
     (config) => !toolFilter || toolFilter.includes(config.id),
   );
 
-  // ── Native runner: fires command in terminal, returns dummy result ──────────
+  // ── Native runner: executes command and returns real output ─────────────────
   const nativeRunner = useCallback(async (cmd: string, _opts?: any): Promise<any> => {
-    runCommand(cmd);
-    return { ok: true, stdout: '', stderr: '', exitCode: 0 };
-  }, [runCommand]);
+    try {
+      const result = await execCommand(cmd);
+      return { ok: result.exitCode === 0, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+    } catch (e: any) {
+      return { ok: false, stdout: '', stderr: e.message || '', exitCode: 1 };
+    }
+  }, []);
 
   // ── Check auth status on open ─────────────────────────────────────────────
 
