@@ -1,18 +1,15 @@
 /**
- * lib/env-manager.ts — v1.0
+ * lib/env-manager.ts — v2.0
  *
- * Environment Manager: Termux環境の自動構築・ツール管理。
+ * Environment Manager: ツール可用性チェック・状態管理。
  *
- * ユーザーはTermuxを一度も開かずに、Shellyの中だけで:
- * - 基盤パッケージの自動インストール
- * - AIツールの自動セットアップ（Claude Code, Gemini CLI, llama-server）
- * - 認証フローの誘導（Shellyの内蔵ブラウザへ）
- * - ツールの起動・停止・状態管理
- *
- * Bridge経由で全てのTermuxコマンドを実行する。
+ * ツールのインストール・バージョン確認を行い、
+ * 未インストールの場合はユーザーへのガイダンスを返す。
+ * インストール自体は行わない。
  */
 
 import type { ToolStatus } from './shelly-system-prompt';
+import { execCommand } from '@/hooks/use-native-exec';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,19 +35,17 @@ export interface ToolDefinition {
   name: string;
   description: string;
   category: 'base' | 'ai';
-  /** インストール確認コマンド */
+  /** 存在確認コマンド */
   checkCommand: string;
   /** バージョン取得コマンド */
   versionCommand: string;
-  /** インストールコマンド（順序付き） */
-  installCommands: string[];
-  /** インストール推定時間（秒） */
-  estimatedInstallSeconds: number;
+  /** ツールが見つからない場合のインストール案内 */
+  installGuidance: string;
   /** 依存ツール */
   dependencies: ToolId[];
   /** 認証が必要か */
   requiresAuth: boolean;
-  /** 認証URL（Shellyの内蔵ブラウザで開く） */
+  /** 認証URL */
   authUrl?: string;
   /** 認証確認コマンド */
   authCheckCommand?: string;
@@ -69,7 +64,7 @@ export interface ToolDefinition {
 // ─── Tool Catalog ─────────────────────────────────────────────────────────────
 
 export const TOOL_CATALOG: ToolDefinition[] = [
-  // ── 基盤ツール（自動インストール） ──────────────────────────────────────
+  // ── 基盤ツール ──────────────────────────────────────────────────────────
   {
     id: 'node',
     name: 'Node.js',
@@ -77,8 +72,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: 'base',
     checkCommand: 'which node',
     versionCommand: 'node --version',
-    installCommands: ['pkg install -y nodejs-lts'],
-    estimatedInstallSeconds: 30,
+    installGuidance: 'Node.js is not installed. Download from https://nodejs.org or install via your system package manager.',
     dependencies: [],
     requiresAuth: false,
     userFriendlyDescription: 'アプリやウェブサイトを作るための基盤ツール',
@@ -91,8 +85,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: 'base',
     checkCommand: 'which python3',
     versionCommand: 'python3 --version',
-    installCommands: ['pkg install -y python'],
-    estimatedInstallSeconds: 20,
+    installGuidance: 'Python 3 is not installed. Download from https://www.python.org or install via your system package manager.',
     dependencies: [],
     requiresAuth: false,
     userFriendlyDescription: 'データ分析やAI開発のための言語',
@@ -105,8 +98,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: 'base',
     checkCommand: 'which git',
     versionCommand: 'git --version',
-    installCommands: ['pkg install -y git'],
-    estimatedInstallSeconds: 15,
+    installGuidance: 'Git is not installed. Download from https://git-scm.com or install via your system package manager.',
     dependencies: [],
     requiresAuth: false,
     userFriendlyDescription: 'コードの変更履歴を管理するツール',
@@ -121,10 +113,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: 'ai',
     checkCommand: 'which claude',
     versionCommand: 'claude --version 2>/dev/null | head -1',
-    installCommands: [
-      'npm install -g @anthropic-ai/claude-code',
-    ],
-    estimatedInstallSeconds: 60,
+    installGuidance: 'Claude Code is not installed. Run: npm install -g @anthropic-ai/claude-code',
     dependencies: ['node'],
     requiresAuth: true,
     authUrl: 'https://console.anthropic.com/',
@@ -139,10 +128,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: 'ai',
     checkCommand: 'which gemini',
     versionCommand: 'gemini --version 2>/dev/null | head -1',
-    installCommands: [
-      'npm install -g @anthropic-ai/claude-code',  // TODO: Gemini CLI正式パッケージ名が確定したら修正
-    ],
-    estimatedInstallSeconds: 60,
+    installGuidance: 'Gemini CLI is not installed. Run: npm install -g @google/gemini-cli',
     dependencies: ['node'],
     requiresAuth: true,
     authUrl: 'https://aistudio.google.com/apikey',
@@ -157,10 +143,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: 'ai',
     checkCommand: 'which llama-server',
     versionCommand: 'llama-server --version 2>/dev/null | head -1 || echo "installed"',
-    installCommands: [
-      'pkg install -y llama-cpp',
-    ],
-    estimatedInstallSeconds: 15,
+    installGuidance: 'llama-server is not installed. Build from source at https://github.com/ggerganov/llama.cpp or install a pre-built binary for your platform.',
     dependencies: [],
     requiresAuth: false,
     startCommand: 'llama-server --model ~/models/*.gguf --port 8080 --host 127.0.0.1 --ctx-size 2048 --threads 6',
@@ -173,15 +156,24 @@ export const TOOL_CATALOG: ToolDefinition[] = [
 
 // ─── Command Runner Type ──────────────────────────────────────────────────────
 
-/** Bridge経由でコマンドを実行する関数の型 */
+/** コマンドを実行する関数の型 */
 export type EnvCommandRunner = (
   command: string,
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
-// ─── Environment Check ───────────────────────────────────────────────────────
+// ─── Tool Check ──────────────────────────────────────────────────────────────
+
+export interface CheckToolResult {
+  id: ToolId;
+  installed: boolean;
+  version?: string;
+  running?: boolean;
+  /** ツールが見つからない場合のガイダンス */
+  guidance?: string;
+}
 
 /**
- * 全ツールのインストール状態を一括チェックする。
+ * 全ツールの存在をチェックする。インストールは行わない。
  */
 export async function checkAllTools(
   runCommand: EnvCommandRunner,
@@ -215,30 +207,33 @@ export async function checkAllTools(
 }
 
 /**
- * 特定のツールのインストール状態をチェックする。
+ * 特定ツールの存在をチェックする。
+ * ツールが見つからない場合はガイダンスを返す。
  */
 export async function checkTool(
   toolId: ToolId,
   runCommand: EnvCommandRunner,
-): Promise<ToolStatus> {
+): Promise<CheckToolResult> {
   const tool = TOOL_CATALOG.find((t) => t.id === toolId);
-  if (!tool) return { id: toolId, installed: false };
+  if (!tool) return { id: toolId, installed: false, guidance: `Unknown tool: ${toolId}` };
 
   try {
     const checkResult = await runCommand(tool.checkCommand);
     const installed = checkResult.exitCode === 0;
-    let version: string | undefined;
-    if (installed) {
-      const verResult = await runCommand(tool.versionCommand);
-      version = verResult.stdout?.trim().split('\n')[0] || undefined;
+
+    if (!installed) {
+      return { id: toolId, installed: false, guidance: tool.installGuidance };
     }
-    return { id: toolId, installed, version };
+
+    const verResult = await runCommand(tool.versionCommand);
+    const version = verResult.stdout?.trim().split('\n')[0] || undefined;
+    return { id: toolId, installed: true, version };
   } catch {
-    return { id: toolId, installed: false };
+    return { id: toolId, installed: false, guidance: tool.installGuidance };
   }
 }
 
-// ─── Installation ─────────────────────────────────────────────────────────────
+// ─── Setup Check (replaces installTool / runInitialSetup) ─────────────────────
 
 export interface InstallProgress {
   toolId: ToolId;
@@ -250,10 +245,10 @@ export interface InstallProgress {
 }
 
 /**
- * ツールをインストールする（依存関係も自動解決）。
- * @param onProgress 進捗コールバック
+ * ツールの存在確認を行い、見つからない場合はガイダンスを通知する。
+ * インストールは行わない。
  */
-export async function installTool(
+export async function ensureTool(
   toolId: ToolId,
   runCommand: EnvCommandRunner,
   onProgress: (progress: InstallProgress) => void,
@@ -264,61 +259,46 @@ export async function installTool(
     return false;
   }
 
-  // 依存関係を先にインストール
+  onProgress({ toolId, phase: 'checking', step: 0, totalSteps: 1, message: `${tool.name}を確認中...` });
+
+  // 依存関係の確認
   for (const depId of tool.dependencies) {
-    const depStatus = await checkTool(depId, runCommand);
-    if (!depStatus.installed) {
-      onProgress({ toolId: depId, phase: 'installing', step: 0, totalSteps: 1, message: `${depId}をインストール中...` });
-      const depOk = await installTool(depId, runCommand, onProgress);
-      if (!depOk) {
-        onProgress({ toolId, phase: 'error', step: 0, totalSteps: 0, message: `依存ツール${depId}のインストールに失敗`, error: `dependency ${depId} failed` });
-        return false;
-      }
-    }
-  }
-
-  // メインインストール
-  const totalSteps = tool.installCommands.length;
-  onProgress({ toolId, phase: 'installing', step: 0, totalSteps, message: `${tool.name}をインストール中...` });
-
-  for (let i = 0; i < tool.installCommands.length; i++) {
-    const cmd = tool.installCommands[i];
-    onProgress({ toolId, phase: 'installing', step: i + 1, totalSteps, message: `実行中: ${cmd.slice(0, 60)}...` });
-
-    try {
-      const result = await runCommand(cmd);
-      if (result.exitCode !== 0) {
-        onProgress({
-          toolId,
-          phase: 'error',
-          step: i + 1,
-          totalSteps,
-          message: `コマンド失敗: ${cmd}`,
-          error: result.stderr || result.stdout,
-        });
-        return false;
-      }
-    } catch (e) {
+    const depResult = await checkTool(depId, runCommand);
+    if (!depResult.installed) {
+      const depTool = TOOL_CATALOG.find((t) => t.id === depId);
       onProgress({
         toolId,
         phase: 'error',
-        step: i + 1,
-        totalSteps,
-        message: `実行エラー: ${cmd}`,
-        error: String(e),
+        step: 0,
+        totalSteps: 1,
+        message: `依存ツール ${depId} が見つかりません`,
+        error: depTool?.installGuidance ?? `Tool not found: ${depId}`,
       });
       return false;
     }
   }
 
-  onProgress({ toolId, phase: 'done', step: totalSteps, totalSteps, message: `${tool.name}のインストール完了` });
-  return true;
+  const result = await checkTool(toolId, runCommand);
+
+  if (result.installed) {
+    onProgress({ toolId, phase: 'done', step: 1, totalSteps: 1, message: `${tool.name} found: ${result.version ?? 'installed'}` });
+    return true;
+  }
+
+  onProgress({
+    toolId,
+    phase: 'error',
+    step: 0,
+    totalSteps: 1,
+    message: `${tool.name} が見つかりません`,
+    error: result.guidance,
+  });
+  return false;
 }
 
-// ─── Batch Setup ──────────────────────────────────────────────────────────────
-
 /**
- * 初回セットアップ: 基盤ツール + 選択されたAIツールを一括インストール。
+ * 初回セットアップチェック: 基盤ツール + 選択されたAIツールの存在を確認。
+ * 不足ツールがあればガイダンスを返す。インストールは行わない。
  */
 export async function runInitialSetup(
   selectedAiTools: ToolId[],
@@ -327,31 +307,31 @@ export async function runInitialSetup(
 ): Promise<{ success: boolean; failedTools: ToolId[] }> {
   const failedTools: ToolId[] = [];
 
-  // 1. pkg updateを最初に実行
-  onProgress({ toolId: 'node' as ToolId, phase: 'checking', step: 0, totalSteps: 0, message: 'パッケージリストを更新中...' });
-  await runCommand('pkg update -y');
+  onProgress({ toolId: 'node' as ToolId, phase: 'checking', step: 0, totalSteps: 0, message: '環境を確認中...' });
 
-  // 2. 基盤ツールのインストール
+  // 基盤ツールの確認
   const baseTools = TOOL_CATALOG.filter((t) => t.category === 'base');
   for (const tool of baseTools) {
-    const status = await checkTool(tool.id, runCommand);
-    if (!status.installed) {
-      const ok = await installTool(tool.id, runCommand, onProgress);
-      if (!ok) failedTools.push(tool.id);
+    const result = await checkTool(tool.id, runCommand);
+    if (result.installed) {
+      onProgress({ toolId: tool.id, phase: 'done', step: 1, totalSteps: 1, message: `${tool.name} found: ${result.version ?? 'installed'}` });
     } else {
-      onProgress({ toolId: tool.id, phase: 'done', step: 1, totalSteps: 1, message: `${tool.name}は既にインストール済み` });
+      onProgress({
+        toolId: tool.id,
+        phase: 'error',
+        step: 0,
+        totalSteps: 1,
+        message: `${tool.name} が見つかりません`,
+        error: result.guidance,
+      });
+      failedTools.push(tool.id);
     }
   }
 
-  // 3. 選択されたAIツールのインストール
+  // 選択されたAIツールの確認
   for (const toolId of selectedAiTools) {
-    const status = await checkTool(toolId, runCommand);
-    if (!status.installed) {
-      const ok = await installTool(toolId, runCommand, onProgress);
-      if (!ok) failedTools.push(toolId);
-    } else {
-      onProgress({ toolId, phase: 'done', step: 1, totalSteps: 1, message: `${toolId}は既にインストール済み` });
-    }
+    const ok = await ensureTool(toolId, runCommand, onProgress);
+    if (!ok) failedTools.push(toolId);
   }
 
   return { success: failedTools.length === 0, failedTools };
