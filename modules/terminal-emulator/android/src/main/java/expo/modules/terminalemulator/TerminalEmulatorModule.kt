@@ -417,7 +417,8 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("No React context")
             val timeout = timeoutMs ?: 120_000
-            val libDir = LibExtractor.getLibDir(context)
+            // Ensure bundled tools are extracted (may not have happened yet if no PTY session created)
+            val libDir = LibExtractor.extractAll(context)
             val homeDir = HomeInitializer.getHomeDir(context)
             val bashPath = LibExtractor.getBashPath(context)
             val libPath = libDir.absolutePath
