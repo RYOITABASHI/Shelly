@@ -10,6 +10,7 @@ import {
   ConnectionMode,
 } from './types';
 import { executeCommand } from '@/lib/pseudo-shell';
+import { execCommand } from '@/hooks/use-native-exec';
 import { useSettingsStore } from './settings-store';
 
 // ─── Multi-session pool ────────────────────────────────────────────────
@@ -260,47 +261,66 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       ),
     }));
 
-    // Execute via pseudo-shell (mock mode)
-    setTimeout(async () => {
-      const currentSession = get().sessions.find((s) => s.id === activeSessionId);
-      if (!currentSession) return;
+    // Route: shelly <subcommand> → pseudo-shell (app-internal), everything else → JNI exec
+    if (command.startsWith('shelly ') || command === 'shelly') {
+      // Pseudo-shell handles shelly config / shelly workflow / shelly voice
+      setTimeout(async () => {
+        const currentSession = get().sessions.find((s) => s.id === activeSessionId);
+        if (!currentSession) return;
 
-      const result = await executeCommand(command, {
-        cwd: currentSession.currentDir,
-        env: {},
-        history: currentSession.commandHistory,
-      });
+        const result = await executeCommand(command, {
+          cwd: currentSession.currentDir,
+          env: {},
+          history: currentSession.commandHistory,
+        });
 
-      if (result.lines.some((l) => l.text === '__CLEAR__')) {
+        if (result.lines.some((l) => l.text === '__CLEAR__')) {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === activeSessionId ? { ...s, blocks: [] } : s
+            ),
+          }));
+          return;
+        }
+
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === activeSessionId ? { ...s, blocks: [] } : s
+            s.id === activeSessionId
+              ? {
+                  ...s,
+                  currentDir: result.newState.cwd ?? s.currentDir,
+                  blocks: s.blocks.map((b) =>
+                    b.id === blockId
+                      ? {
+                          ...b,
+                          output: result.lines,
+                          exitCode: result.lines.some((l) => l.type === 'stderr') ? 1 : 0,
+                          isRunning: false,
+                        }
+                      : b
+                  ),
+                }
+              : s
           ),
         }));
-        return;
-      }
-
-      set((state) => ({
-        sessions: state.sessions.map((s) =>
-          s.id === activeSessionId
-            ? {
-                ...s,
-                currentDir: result.newState.cwd ?? s.currentDir,
-                blocks: s.blocks.map((b) =>
-                  b.id === blockId
-                    ? {
-                        ...b,
-                        output: result.lines,
-                        exitCode: result.lines.some((l) => l.type === 'stderr') ? 1 : 0,
-                        isRunning: false,
-                      }
-                    : b
-                ),
-              }
-            : s
-        ),
-      }));
-    }, 150);
+      }, 150);
+    } else {
+      // Real execution via JNI forkpty
+      const currentSession = get().sessions.find((s) => s.id === activeSessionId);
+      const cwd = currentSession?.currentDir;
+      const fullCmd = cwd ? `cd '${cwd}' && ${command}` : command;
+      execCommand(fullCmd).then((result) => {
+        if (result.stdout) {
+          get().appendOutputToBlock(blockId, { text: result.stdout, type: 'stdout' });
+        }
+        if (result.stderr) {
+          get().appendOutputToBlock(blockId, { text: result.stderr, type: 'stderr' });
+        }
+        get().finalizeBlock(blockId, result.exitCode);
+      }).catch((err: any) => {
+        get().errorBlock(blockId, err?.message || 'Execution failed');
+      });
+    }
   },
 
   appendOutputToBlock: (blockId: string, line: OutputLine) => {
