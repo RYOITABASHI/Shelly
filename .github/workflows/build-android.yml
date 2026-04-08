@@ -43,7 +43,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease -x lintVitalAnalyzeRelease
+          ./gradlew clean assembleRelease -x lintVitalAnalyzeRelease
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
 
