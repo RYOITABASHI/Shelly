@@ -524,11 +524,32 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     logInfo('ConfigTUI', 'Action: ' + def.key);
     switch (def.key) {
       case 'exportLogs': {
-        const sessions = useTerminalStore.getState().sessions;
-        const text = sessions.map(s =>
-          s.entries.map((e: any) => `$ ${e.command ?? ''}\n${(e.output ?? []).map((o: any) => o.text).join('\n')}`).join('\n\n')
-        ).join('\n---\n');
-        Share.share({ message: text, title: 'Shelly Logs' });
+        // Try execution log first (has actual native terminal output)
+        let text = '';
+        try {
+          const { useExecutionLogStore } = require('@/store/execution-log-store');
+          const logStore = useExecutionLogStore.getState();
+          // Per-session output using stored sessionIds
+          const sessionOutputs = logStore.getRecentOutputForAllSessions(500);
+          if (sessionOutputs && sessionOutputs.length > 0) {
+            text = sessionOutputs
+              .map((s: { sessionId: string; output: string }) => `=== Session: ${s.sessionId} ===\n${s.output}`)
+              .join('\n\n');
+          }
+          // Fallback: all output combined (no sessionId filter)
+          if (!text.trim()) {
+            text = logStore.getRecentOutput(500, 0);
+          }
+        } catch {}
+        // Fallback to entries if execution log is empty
+        if (!text.trim()) {
+          const sessions = useTerminalStore.getState().sessions;
+          text = sessions.map((s: any) =>
+            s.entries.map((e: any) => `$ ${e.command ?? ''}\n${(e.output ?? []).map((o: any) => o.text).join('\n')}`).join('\n\n')
+          ).join('\n---\n');
+        }
+        if (!text.trim()) text = 'No terminal output to export.';
+        Share.share({ message: text, title: 'Shelly Terminal Logs' });
         break;
       }
       case 'deleteHistory':
