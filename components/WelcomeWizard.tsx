@@ -27,9 +27,18 @@ import Animated, {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTranslation } from '@/lib/i18n';
+import { ActivityIndicator } from 'react-native';
 import { AuthWizard } from '@/components/AuthWizard';
 import type { AuthToolId } from '@/lib/cli-auth';
-import { logInfo, logLifecycle } from '@/lib/debug-logger';
+import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
+import { execCommand } from '@/hooks/use-native-exec';
+
+// Map wizard CLI IDs to npm packages
+const CLI_INSTALL_MAP: Record<AuthToolId, { npm: string; bin: string }> = {
+  'claude-code': { npm: '@anthropic-ai/claude-code', bin: 'claude' },
+  'gemini-cli': { npm: '@google/gemini-cli', bin: 'gemini' },
+  'codex': { npm: '@openai/codex', bin: 'codex' },
+};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -38,7 +47,7 @@ const ACCENT = '#00D4AA';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type WizardStep = 'welcome' | 'cli-select' | 'cli-auth' | 'done';
+type WizardStep = 'welcome' | 'cli-select' | 'cli-install' | 'cli-auth' | 'done';
 
 type CliOption = {
   id: AuthToolId;
@@ -117,6 +126,8 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
   const [selectedClis, setSelectedClis] = useState<Set<AuthToolId>>(new Set());
   const [configuredClis, setConfiguredClis] = useState<Set<AuthToolId>>(new Set());
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [installProgress, setInstallProgress] = useState<Record<string, 'pending' | 'installing' | 'done' | 'error'>>({});
+  const [installError, setInstallError] = useState<string | null>(null);
 
   React.useEffect(() => {
     logLifecycle('WelcomeWizard', 'mounted');
@@ -145,15 +156,56 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
   }, [onComplete]);
 
   const handleCliSelectNext = useCallback(() => {
-    logInfo('WelcomeWizard', 'CLI select next, showing auth modal=' + (selectedClis.size > 0));
+    logInfo('WelcomeWizard', 'CLI select next, count=' + selectedClis.size);
     if (selectedClis.size === 0) {
-      // Skip auth, go straight to done
       setStep('done');
     } else {
-      setStep('cli-auth');
-      setShowAuthModal(true);
+      // Go to install step first
+      setStep('cli-install');
+      setInstallError(null);
+      const initial: Record<string, 'pending' | 'installing' | 'done' | 'error'> = {};
+      selectedClis.forEach((id) => { initial[id] = 'pending'; });
+      setInstallProgress(initial);
+      // Start installation
+      installSelectedClis(Array.from(selectedClis));
     }
   }, [selectedClis]);
+
+  const installSelectedClis = useCallback(async (cliIds: AuthToolId[]) => {
+    for (const id of cliIds) {
+      const info = CLI_INSTALL_MAP[id];
+      if (!info) continue;
+      setInstallProgress((prev) => ({ ...prev, [id]: 'installing' }));
+      logInfo('WelcomeWizard', 'Installing ' + id + ' via npm install -g ' + info.npm);
+      try {
+        // Check if already installed
+        const check = await execCommand(`which ${info.bin} 2>/dev/null`);
+        if (check.exitCode === 0 && check.stdout.trim()) {
+          logInfo('WelcomeWizard', id + ' already installed: ' + check.stdout.trim());
+          setInstallProgress((prev) => ({ ...prev, [id]: 'done' }));
+          continue;
+        }
+        // Install via npm
+        const result = await execCommand(`npm install -g ${info.npm} 2>&1`, 300000);
+        if (result.exitCode === 0) {
+          logInfo('WelcomeWizard', id + ' installed successfully');
+          setInstallProgress((prev) => ({ ...prev, [id]: 'done' }));
+        } else {
+          logError('WelcomeWizard', id + ' install failed: ' + result.stderr);
+          setInstallProgress((prev) => ({ ...prev, [id]: 'error' }));
+          setInstallError(result.stderr || 'Install failed');
+        }
+      } catch (e: any) {
+        logError('WelcomeWizard', id + ' install exception', e);
+        setInstallProgress((prev) => ({ ...prev, [id]: 'error' }));
+        setInstallError(e.message || 'Install failed');
+      }
+    }
+    // All done — proceed to auth
+    logInfo('WelcomeWizard', 'All installations complete, moving to auth');
+    setStep('cli-auth');
+    setShowAuthModal(true);
+  }, []);
 
   const handleAuthComplete = useCallback(() => {
     setShowAuthModal(false);
@@ -164,8 +216,8 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
 
   // ── Step indicator ───────────────────────────────────────────────────────
 
-  const stepIndex = step === 'welcome' ? 0 : step === 'cli-select' ? 1 : step === 'cli-auth' ? 2 : 3;
-  const totalSteps = selectedClis.size > 0 ? 4 : 3;
+  const stepIndex = step === 'welcome' ? 0 : step === 'cli-select' ? 1 : step === 'cli-install' ? 2 : step === 'cli-auth' ? 3 : 4;
+  const totalSteps = selectedClis.size > 0 ? 5 : 3;
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -208,6 +260,53 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
                 onNext={handleCliSelectNext}
                 onBack={() => setStep('welcome')}
               />
+            )}
+
+            {step === 'cli-install' && (
+              <Animated.View entering={FadeInRight.duration(300)} style={styles.stepContent}>
+                <View style={[styles.iconCircle, { backgroundColor: '#FBBF2420' }]}>
+                  <MaterialIcons name="download" size={36} color="#FBBF24" />
+                </View>
+                <Text style={styles.stepTitle}>{t('wizard2.installing_title') || 'インストール中'}</Text>
+                <Text style={styles.stepDesc}>{t('wizard2.installing_desc') || 'AIツールをセットアップしています...'}</Text>
+
+                <View style={{ width: '100%', gap: 12, marginTop: 16 }}>
+                  {Array.from(selectedClis).map((id) => {
+                    const opt = CLI_OPTIONS.find((o) => o.id === id);
+                    const status = installProgress[id] || 'pending';
+                    return (
+                      <View key={id} style={[styles.cliCard, { borderColor: status === 'error' ? '#F8717140' : '#2A2A2A' }]}>
+                        <View style={[styles.cliIcon, { backgroundColor: (opt?.color ?? '#666') + '18' }]}>
+                          {status === 'installing' ? (
+                            <ActivityIndicator size={20} color={opt?.color ?? ACCENT} />
+                          ) : (
+                            <MaterialIcons
+                              name={status === 'done' ? 'check-circle' : status === 'error' ? 'error' : (opt?.icon as any) ?? 'code'}
+                              size={20}
+                              color={status === 'done' ? ACCENT : status === 'error' ? '#F87171' : opt?.color ?? '#666'}
+                            />
+                          )}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.cliName, { color: opt?.color ?? '#ccc' }]}>{opt?.name ?? id}</Text>
+                          <Text style={styles.cliDesc}>
+                            {status === 'pending' ? '待機中...'
+                              : status === 'installing' ? 'npm install -g ...'
+                              : status === 'done' ? 'インストール完了'
+                              : 'エラー'}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {installError && (
+                  <Text style={{ color: '#F87171', fontSize: 11, fontFamily: 'monospace', marginTop: 8, textAlign: 'center' }}>
+                    {installError}
+                  </Text>
+                )}
+              </Animated.View>
             )}
 
             {step === 'cli-auth' && (
