@@ -79,17 +79,8 @@ export function ShellLayout() {
     if (showConfig) logInfo('ShellLayout', 'ConfigTUI: open');
   }, [showConfig]);
 
-  // Interactive setup — auto-run `shelly setup` on first launch
-  useEffect(() => {
-    AsyncStorage.getItem('@shelly/setup_wizard_complete').then((val) => {
-      if (val !== 'true') {
-        // Delay to let terminal session initialize
-        setTimeout(() => {
-          useTerminalStore.getState().runCommand('shelly setup');
-        }, 800);
-      }
-    });
-  }, []);
+  // First-launch setup is now handled by terminal.tsx after PTY session is alive
+  // (sends CLI install commands directly to the real terminal)
 
   // Global keybinding handler (physical keyboard)
   const handleKeyAction = useCallback((action: KeyAction) => {

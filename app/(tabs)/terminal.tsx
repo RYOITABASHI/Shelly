@@ -54,6 +54,7 @@ import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
+import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
 
 // ─── Status type for StatusBadge ─────────────────────────────────────────────
 
@@ -133,13 +134,7 @@ export default function TerminalScreen() {
   // Block History panel toggle
   const [showBlockHistory, setShowBlockHistory] = useState(false);
 
-  // Auto-show Block History when setup overlay is requested
-  const showSetupOverlay = useTerminalStore((s) => s.showSetupOverlay);
-  useEffect(() => {
-    if (showSetupOverlay) {
-      setShowBlockHistory(true);
-    }
-  }, [showSetupOverlay]);
+  const showSetupOverlay = false; // Setup now runs directly on PTY, no overlay needed
 
   // Scroll state — show FAB when user scrolls up
   const [isScrolledUp, setIsScrolledUp] = useState(false);
@@ -233,6 +228,9 @@ export default function TerminalScreen() {
           s.id === session.id ? { ...s, sessionStatus: 'alive' as const, isAlive: true } : s
         ),
       }));
+
+      // First-launch setup: run CLI install commands directly on the live terminal
+      runFirstLaunchSetup(session.nativeSessionId);
     } catch (err: any) {
       console.error('[Terminal] createNativeSession failed:', err);
       Alert.alert('Terminal Error', String(err?.message || err));

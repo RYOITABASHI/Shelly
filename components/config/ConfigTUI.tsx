@@ -525,9 +525,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     logInfo('ConfigTUI', 'Action: ' + def.key);
     switch (def.key) {
       case 'rerunSetup': {
-        const AsyncStorageModule = require('@react-native-async-storage/async-storage').default;
-        AsyncStorageModule.removeItem('@shelly/setup_wizard_complete').then(() => {
-          useTerminalStore.getState().runCommand('shelly setup');
+        const { resetSetup, runFirstLaunchSetup } = require('@/lib/first-launch-setup');
+        resetSetup().then(() => {
+          const session = useTerminalStore.getState().sessions[0];
+          if (session?.nativeSessionId) {
+            runFirstLaunchSetup(session.nativeSessionId);
+          }
         });
         onClose();
         break;
