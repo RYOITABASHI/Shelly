@@ -686,6 +686,22 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  stepTitle: {
+    color: '#ECEDEE',
+    fontSize: 20,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  stepDesc: {
+    color: '#9BA1A6',
+    fontSize: 13,
+    fontFamily: 'monospace',
+    textAlign: 'center',
+    marginTop: 4,
+    paddingHorizontal: 16,
+  },
   cliName: {
     fontSize: 14,
     fontWeight: '700',

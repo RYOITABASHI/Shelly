@@ -22,7 +22,7 @@ import { PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { formatContextBadge } from '@/lib/ai-pane-context';
-import { useThemeStore } from '@/lib/theme-engine';
+import { useTheme } from '@/lib/theme-engine';
 import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
@@ -215,7 +215,7 @@ const bubbleStyles = StyleSheet.create({
 
 export default function AIPane() {
   const paneId = useContext(PaneIdContext);
-  const theme = useThemeStore((s) => s.activeTheme);
+  const theme = useTheme();
   const colors = theme.colors;
 
   // Dispatch hook — handles message routing, terminal context injection, streaming

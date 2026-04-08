@@ -175,7 +175,7 @@ export function useAutocomplete(
   history: string[],
 ): CompletionItem[] {
   const [items, setItems] = useState<CompletionItem[]>([]);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const pathCacheRef = useRef<PathCache>(null);
   const branchCacheRef = useRef<BranchCache>(null);
 

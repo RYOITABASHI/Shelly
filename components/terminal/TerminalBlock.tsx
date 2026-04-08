@@ -664,7 +664,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
                   <View style={styles.richRendererContainer}>
                     {contentType === 'markdown' && <MarkdownBlock content={outputText} />}
                     {contentType === 'json' && <JsonTreeBlock json={outputText} />}
-                    {contentType === 'image' && <ImagePreviewBlock output={outputText} cwd={block.currentDir} />}
+                    {contentType === 'image' && <ImagePreviewBlock output={outputText} cwd={''} />}
                     {contentType === 'table' && <TableBlock output={outputText} />}
                     {contentType === 'diff' && <DiffViewer output={outputText} />}
                   </View>
@@ -748,7 +748,6 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
                                       )
                                     }
                                     onLongPress={() => handleLinkLongPress(linkInfo)}
-                                    delayLongPress={350}
                                   >
                                     {seg.text}
                                   </Text>
