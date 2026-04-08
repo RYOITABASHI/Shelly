@@ -241,73 +241,53 @@ As far as we know, this is the **only React Native app in the world** with an em
 
 ### Screen Layout
 
-```
- ╔══════════════════════════════════════════════════════════╗
- ║  Agent Bar          [Claude] [Gemini] [Local]  [Q] [⚙]  ║
- ╠═══════╦══════════════════════╦═══════════════════════════╣
- ║       ║                      ║                           ║
- ║  S    ║   Terminal Pane      ║   AI Pane                 ║
- ║  i    ║                      ║                           ║
- ║  d    ║   $ npm run build    ║   "Fix the error →"       ║
- ║  e    ║   Error: missing...  ║   The module './utils'... ║
- ║  b    ║                      ║   [▶ Run fix]             ║
- ║  a    ╠══════════════════════╬═══════════════════════════╣
- ║  r    ║                      ║                           ║
- ║       ║   Browser Pane       ║   Markdown Pane           ║
- ║  ───  ║   localhost:3000     ║   README.md               ║
- ║  Repos║                      ║                           ║
- ║  Files║   [YouTube] [GitHub] ║   # Getting Started       ║
- ║  Tasks║                      ║   ...                     ║
- ╠═══════╩══════════════════════╩═══════════════════════════╣
- ║  Context Bar     ~/Shelly  main ↑2  node v22  Native     ║
- ╚══════════════════════════════════════════════════════════╝
+```mermaid
+block-beta
+  columns 5
+  AB["Agent Bar — Claude / Gemini / Local / ⚙"]:5
+  SB["Sidebar\nRepos\nFiles\nTasks\nPorts\nProfiles"]:1 TP["Terminal Pane\n$ npm run build\nError: missing..."]:2 AP["AI Pane\n'Fix the error →'\n▶ Run fix"]:2
+  space:1 BP["Browser Pane\nlocalhost:3000\nYouTube / GitHub"]:2 MP["Markdown Pane\nREADME.md\n# Getting Started"]:2
+  CB["Context Bar — ~/Shelly  main ↑2  Native"]:5
+
+  style AB fill:#1a1a1a,stroke:#00D4AA,color:#00D4AA
+  style SB fill:#111,stroke:#333,color:#ccc
+  style TP fill:#0a0a0a,stroke:#333,color:#0f0
+  style AP fill:#0a0a0a,stroke:#D4A574,color:#D4A574
+  style BP fill:#0a0a0a,stroke:#333,color:#61AFEF
+  style MP fill:#0a0a0a,stroke:#333,color:#ccc
+  style CB fill:#1a1a1a,stroke:#333,color:#666
 ```
 
 ### Cross-Pane Intelligence
 
-```
-┌─────────────────────────────────────────────────┐
-│              Shelly (Wide Mode)                  │
-│                                                  │
-│  ┌──────────────────┐    ┌─────────────────────┐ │
-│  │   AI Pane         │    │   Terminal Pane      │ │
-│  │                  │    │                     │ │
-│  │  User: "fix the  │    │  $ npm run build    │ │
-│  │  error on the    │    │  Error: Cannot find  │ │
-│  │  right"          │    │  module './utils'   │ │
-│  │                  │    │                     │ │
-│  │  AI: The error   │◄───│  (transcript injected│ │
-│  │  is a missing    │    │   at dispatch time)  │ │
-│  │  import path...  │    │                     │ │
-│  │                  │    │                     │ │
-│  │  ┌───────────┐   │    │                     │ │
-│  │  │  Run      │───┼───►│  $ mv util.ts       │ │
-│  │  └───────────┘   │    │    utils.ts         │ │
-│  └──────────────────┘    └─────────────────────┘ │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph AI Pane
+    U["User: 'fix the error'"]
+    R["AI: missing import path..."]
+    RUN["▶ Run fix"]
+  end
+  subgraph Terminal Pane
+    CMD["$ npm run build"]
+    ERR["Error: Cannot find './utils'"]
+    FIX["$ mv util.ts utils.ts"]
+  end
+  ERR -- "transcript injected" --> R
+  RUN -- "execute" --> FIX
+  U --> R
 ```
 
 AI reads Terminal. Terminal executes AI. The user just talks.
 
 ### Native PTY — JNI forkpty
 
-```
-React Native JS
-      │
-      │  JSI bridge
-      ▼
-Kotlin NativeModule (TermuxBridgeModule)
-      │
-      │  JNI call
-      ▼
-shelly-exec.c  ──── forkpty() ────► shell process
-      │                              (bash / zsh / sh)
-      │  read/write fd
-      ▼
-ShellyTerminalView.kt  (Kotlin Canvas renderer)
-      │
-      ▼
-Android SurfaceView  (GPU composited)
+```mermaid
+flowchart TB
+  JS["React Native JS"] -- "JSI bridge" --> KT["Kotlin NativeModule"]
+  KT -- "JNI call" --> C["shelly-exec.c"]
+  C -- "forkpty()" --> SH["shell process\nbash / zsh / sh"]
+  C -- "read/write fd" --> TV["ShellyTerminalView.kt\nKotlin Canvas renderer"]
+  TV --> GPU["Android SurfaceView\nGPU composited"]
 ```
 
 No TCP. No sockets. No separate process. The shell runs as a child of the app process via `forkpty`, and the PTY fd is read directly from Kotlin via JNI.
