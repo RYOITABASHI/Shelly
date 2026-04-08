@@ -10,6 +10,14 @@ import { shellEscape } from '@/lib/auto-savepoint';
 type RunCommandFn = (cmd: string) => Promise<{ stdout: string; exitCode: number | null }>;
 
 /**
+ * Check if git is available on the system.
+ */
+async function ensureGit(runCommand: RunCommandFn): Promise<boolean> {
+  const result = await runCommand('which git 2>/dev/null');
+  return result.exitCode === 0;
+}
+
+/**
  * Create a new GitHub repo and push the local project to it.
  */
 export async function createAndPushRepo(params: {
@@ -24,6 +32,12 @@ export async function createAndPushRepo(params: {
   const dir = shellEscape(projectDir);
 
   try {
+    // Check git availability
+    const gitAvailable = await ensureGit(runCommand);
+    if (!gitAvailable) {
+      return { success: false, error: 'git is not available. Ensure it is installed.' };
+    }
+
     // 1. Create repo via API
     const res = await fetch('https://api.github.com/user/repos', {
       method: 'POST',
@@ -86,6 +100,12 @@ export async function pushToExisting(params: {
   const dir = shellEscape(projectDir);
 
   try {
+    // Check git availability
+    const gitAvailable = await ensureGit(runCommand);
+    if (!gitAvailable) {
+      return { success: false, error: 'git is not available. Ensure it is installed.' };
+    }
+
     // Update remote URL with PAT for authentication
     const { stdout: currentUrl } = await runCommand(
       `git -C ${dir} remote get-url origin 2>/dev/null`,
@@ -132,6 +152,11 @@ export async function hasRemoteOrigin(
   projectDir: string,
   runCommand: RunCommandFn,
 ): Promise<boolean> {
+  const gitAvailable = await ensureGit(runCommand);
+  if (!gitAvailable) {
+    return false;
+  }
+
   const dir = shellEscape(projectDir);
   const { exitCode } = await runCommand(
     `git -C ${dir} remote get-url origin 2>/dev/null`,
@@ -146,6 +171,11 @@ export async function getRemoteUrl(
   projectDir: string,
   runCommand: RunCommandFn,
 ): Promise<string | null> {
+  const gitAvailable = await ensureGit(runCommand);
+  if (!gitAvailable) {
+    return null;
+  }
+
   const dir = shellEscape(projectDir);
   const { stdout, exitCode } = await runCommand(
     `git -C ${dir} remote get-url origin 2>/dev/null`,
