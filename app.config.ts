@@ -79,7 +79,14 @@ const config: ExpoConfig & { android?: any } = {
         supportsPictureInPicture: true,
       },
     ],
-    "expo-splash-screen",
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: "#000000",
+        image: "./assets/images/icon.png",
+        imageWidth: 120,
+      },
+    ],
     "expo-localization",
     [
       "expo-build-properties",
