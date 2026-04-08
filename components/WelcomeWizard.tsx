@@ -171,40 +171,83 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
     }
   }, [selectedClis]);
 
+  const [installLog, setInstallLog] = useState<string[]>([]);
+  const [installDone, setInstallDone] = useState(false);
+
+  const appendLog = (msg: string) => {
+    setInstallLog((prev) => [...prev.slice(-20), msg]);
+  };
+
   const installSelectedClis = useCallback(async (cliIds: AuthToolId[]) => {
+    setInstallDone(false);
+    let hasError = false;
+
+    // First check if npm/node are available
+    appendLog('$ which node');
+    const nodeCheck = await execCommand('which node 2>&1');
+    appendLog(nodeCheck.exitCode === 0 ? `→ ${nodeCheck.stdout.trim()}` : `→ not found (exit ${nodeCheck.exitCode})`);
+
+    appendLog('$ which npm');
+    const npmCheck = await execCommand('which npm 2>&1');
+    appendLog(npmCheck.exitCode === 0 ? `→ ${npmCheck.stdout.trim()}` : `→ not found (exit ${npmCheck.exitCode})`);
+
+    if (npmCheck.exitCode !== 0) {
+      appendLog('');
+      appendLog('ERROR: npm not found in PATH.');
+      appendLog('PATH=' + (await execCommand('echo $PATH')).stdout.trim());
+      setInstallError('npm not found — bundled tools may not be extracted correctly');
+      hasError = true;
+      setInstallDone(true);
+      return;
+    }
+
     for (const id of cliIds) {
       const info = CLI_INSTALL_MAP[id];
       if (!info) continue;
       setInstallProgress((prev) => ({ ...prev, [id]: 'installing' }));
-      logInfo('WelcomeWizard', 'Installing ' + id + ' via npm install -g ' + info.npm);
+
+      // Check if already installed
+      appendLog(`$ which ${info.bin}`);
+      const check = await execCommand(`which ${info.bin} 2>/dev/null`);
+      if (check.exitCode === 0 && check.stdout.trim()) {
+        appendLog(`→ already installed: ${check.stdout.trim()}`);
+        setInstallProgress((prev) => ({ ...prev, [id]: 'done' }));
+        continue;
+      }
+      appendLog('→ not found, installing...');
+
+      // Install via npm
+      appendLog(`$ npm install -g ${info.npm}`);
       try {
-        // Check if already installed
-        const check = await execCommand(`which ${info.bin} 2>/dev/null`);
-        if (check.exitCode === 0 && check.stdout.trim()) {
-          logInfo('WelcomeWizard', id + ' already installed: ' + check.stdout.trim());
-          setInstallProgress((prev) => ({ ...prev, [id]: 'done' }));
-          continue;
-        }
-        // Install via npm
         const result = await execCommand(`npm install -g ${info.npm} 2>&1`, 300000);
         if (result.exitCode === 0) {
-          logInfo('WelcomeWizard', id + ' installed successfully');
+          appendLog(`→ installed successfully`);
           setInstallProgress((prev) => ({ ...prev, [id]: 'done' }));
         } else {
-          logError('WelcomeWizard', id + ' install failed: ' + result.stderr);
+          const errMsg = (result.stderr || result.stdout || 'unknown error').slice(0, 200);
+          appendLog(`→ FAILED (exit ${result.exitCode}): ${errMsg}`);
           setInstallProgress((prev) => ({ ...prev, [id]: 'error' }));
-          setInstallError(result.stderr || 'Install failed');
+          setInstallError(errMsg);
+          hasError = true;
         }
       } catch (e: any) {
-        logError('WelcomeWizard', id + ' install exception', e);
+        appendLog(`→ EXCEPTION: ${e.message || e}`);
         setInstallProgress((prev) => ({ ...prev, [id]: 'error' }));
         setInstallError(e.message || 'Install failed');
+        hasError = true;
       }
     }
-    // All done — proceed to auth
-    logInfo('WelcomeWizard', 'All installations complete, moving to auth');
-    setStep('cli-auth');
-    setShowAuthModal(true);
+
+    setInstallDone(true);
+    if (!hasError) {
+      appendLog('');
+      appendLog('All done. Moving to authentication...');
+      // Auto-proceed after 1.5s
+      setTimeout(() => {
+        setStep('cli-auth');
+        setShowAuthModal(true);
+      }, 1500);
+    }
   }, []);
 
   const handleAuthComplete = useCallback(() => {
@@ -301,10 +344,50 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
                   })}
                 </View>
 
+                {/* Live install log */}
+                {installLog.length > 0 && (
+                  <ScrollView style={{ maxHeight: 120, width: '100%', backgroundColor: '#111', borderRadius: 8, marginTop: 12, padding: 8 }}>
+                    {installLog.map((line, i) => (
+                      <Text key={i} style={{ color: line.startsWith('→ FAIL') || line.startsWith('ERROR') ? '#F87171' : line.startsWith('→') ? '#00D4AA' : '#9BA1A6', fontSize: 10, fontFamily: 'monospace', lineHeight: 14 }}>
+                        {line}
+                      </Text>
+                    ))}
+                  </ScrollView>
+                )}
+
                 {installError && (
                   <Text style={{ color: '#F87171', fontSize: 11, fontFamily: 'monospace', marginTop: 8, textAlign: 'center' }}>
                     {installError}
                   </Text>
+                )}
+
+                {/* Retry / Skip buttons when done with errors */}
+                {installDone && installError && (
+                  <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+                    <Pressable
+                      style={{ flex: 1, backgroundColor: '#1A1A1A', borderRadius: 8, paddingVertical: 10, alignItems: 'center', borderWidth: 1, borderColor: '#333' }}
+                      onPress={() => {
+                        setInstallLog([]);
+                        setInstallError(null);
+                        setInstallDone(false);
+                        const initial: Record<string, 'pending' | 'installing' | 'done' | 'error'> = {};
+                        selectedClis.forEach((id) => { initial[id] = 'pending'; });
+                        setInstallProgress(initial);
+                        installSelectedClis(Array.from(selectedClis));
+                      }}
+                    >
+                      <Text style={{ color: ACCENT, fontSize: 13, fontFamily: 'monospace', fontWeight: '600' }}>リトライ</Text>
+                    </Pressable>
+                    <Pressable
+                      style={{ flex: 1, backgroundColor: '#1A1A1A', borderRadius: 8, paddingVertical: 10, alignItems: 'center', borderWidth: 1, borderColor: '#333' }}
+                      onPress={() => {
+                        setStep('cli-auth');
+                        setShowAuthModal(true);
+                      }}
+                    >
+                      <Text style={{ color: '#9BA1A6', fontSize: 13, fontFamily: 'monospace' }}>スキップして認証へ</Text>
+                    </Pressable>
+                  </View>
                 )}
               </Animated.View>
             )}

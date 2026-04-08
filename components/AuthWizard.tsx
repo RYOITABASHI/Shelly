@@ -422,10 +422,10 @@ function ToolAuthCard({
     : status === 'checking' ? t('auth.status_checking')
     : t('auth.status_not_authenticated');
 
-  // Allow card expansion even when CLI is not installed — user can still enter API keys
+  // Always allow expansion and browser auth attempt — CLI may have just been installed
+  // and status check may be stale. Let the user try; handleBrowserAuth will show errors if CLI missing.
   const canExpand = status !== 'checking';
-  // Browser auth requires CLI to be installed (it runs `claude auth login` etc.)
-  const canBrowserAuth = status !== 'not-installed' && status !== 'checking' && isConnected;
+  const canBrowserAuth = status !== 'checking';
 
   return (
     <View style={[styles.toolCard, { borderColor: isExpanded ? config.color + '44' : '#2A2A2A' }]}>
@@ -468,9 +468,9 @@ function ToolAuthCard({
         <Animated.View entering={FadeIn.duration(200)} style={styles.authOptions}>
           {/* Browser/OAuth sign-in (recommended) — requires CLI installed */}
           <Pressable
-            style={[styles.authMethodBtn, { borderColor: config.color + '44', opacity: canBrowserAuth ? 1 : 0.4 }]}
-            onPress={canBrowserAuth ? onBrowserAuth : undefined}
-            disabled={!canBrowserAuth || oauthRunning === config.id}
+            style={[styles.authMethodBtn, { borderColor: config.color + '44' }]}
+            onPress={onBrowserAuth}
+            disabled={oauthRunning === config.id}
           >
             {oauthRunning === config.id ? (
               <ActivityIndicator size={18} color={config.color} />
