@@ -508,11 +508,11 @@ const ja: Record<string, string> = {
 
 
   // ── Terminal Screen ─────────────────────────────────────────────
-  'terminal.connecting_terminal': 'ターミナルに接続中...',
+  'terminal.connecting_terminal': 'ターミナルを起動中...',
   'terminal.retry_count': 'リトライ {{count}} / 5',
   'terminal.connected': '接続済み',
-  'terminal.connecting': '接続中...',
-  'terminal.connecting_retry': '接続中 ({{count}})',
+  'terminal.connecting': '起動中...',
+  'terminal.connecting_retry': '起動中 ({{count}})',
   'terminal.disconnected': '接続されていません',
   'terminal.jp_placeholder': '日本語入力...',
   'terminal.paste': '貼り付け',

@@ -526,11 +526,11 @@ const en: Record<string, string> = {
   'intent.delegated': 'Delegated to {{label}}.\nReason: {{reason}}',
 
 // ── Terminal Screen ─────────────────────────────────────────────
-  'terminal.connecting_terminal': 'Connecting to terminal...',
+  'terminal.connecting_terminal': 'Starting terminal...',
   'terminal.retry_count': 'Retry {{count}} / 5',
   'terminal.connected': 'Connected',
-  'terminal.connecting': 'Connecting...',
-  'terminal.connecting_retry': 'Connecting ({{count}})',
+  'terminal.connecting': 'Starting...',
+  'terminal.connecting_retry': 'Starting ({{count}})',
   'terminal.disconnected': 'Disconnected',
   'terminal.jp_placeholder': 'Japanese input...',
   'terminal.paste': 'Paste',
