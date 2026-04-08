@@ -160,11 +160,16 @@ export default function TerminalScreen() {
   const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
   const showSplitPreview = previewIsOpen && layout.isWide;
 
-  // Click-to-Edit: send edit prompt to Chat as a user message for AI dispatch
+  // Click-to-Edit: send edit prompt to Chat as a user message for AI dispatch.
+  // If no chat session exists, fall back to running the prompt as a terminal command.
   const handleEditSubmit = useCallback((prompt: string) => {
     const chatStore = useChatStore.getState();
     const session = chatStore.getActiveSession();
-    if (!session) return;
+    if (!session) {
+      // No chat session — execute as terminal command so the input isn't swallowed
+      useTerminalStore.getState().runCommand(prompt);
+      return;
+    }
     chatStore.addMessage(session.id, {
       id: generateId(),
       role: 'user',

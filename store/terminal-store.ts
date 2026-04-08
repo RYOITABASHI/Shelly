@@ -248,7 +248,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       timestamp: Date.now(),
       exitCode: null,
       isRunning: true,
-      connectionMode,
+      connectionMode: connectionMode === 'native' ? 'native' as const : undefined,
     };
 
     // Truncate overly long commands in history (keep first 500 chars)
@@ -582,14 +582,14 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
       // Restore sessions with defaults for missing fields
       const restored: TabSession[] = parsed.sessions.map((s: any, index: number) => ({
-        ...createSession(s.id, s.name, s.tmuxSession || TMUX_NAMES[index] || 'shelly-1'),
+        ...createSession(s.id, s.name, s.tmuxSession || SESSION_NAMES[index] || 'shelly-1'),
         currentDir: s.currentDir || '/data/data/com.termux/files/home',
         commandHistory: s.commandHistory || [],
         blocks: (s.blocks || []).map((b: any) => ({ ...b, isRunning: false })),
         entries: (s.entries || []).map((e: any) => ({ ...e, isStreaming: false })),
         activeCli: s.activeCli ?? null,
-        tmuxSession: s.tmuxSession || TMUX_NAMES[index] || 'shelly-1',
-        nativeSessionId: s.nativeSessionId || s.tmuxSession || TMUX_NAMES[index] || 'shelly-1',
+        tmuxSession: s.tmuxSession || SESSION_NAMES[index] || 'shelly-1',
+        nativeSessionId: s.nativeSessionId || s.tmuxSession || SESSION_NAMES[index] || 'shelly-1',
         sessionStatus: 'starting' as const,
         isAlive: false,
       }));

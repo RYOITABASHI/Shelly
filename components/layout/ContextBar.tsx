@@ -9,7 +9,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 
 function truncatePath(path: string, maxLen = 30): string {
   if (path.length <= maxLen) return path;
-  const home = '/data/data/com.termux/files/home';
+  const home = process.env.HOME || '/data/data/com.termux/files/home';
   const short = path.startsWith(home) ? '~' + path.slice(home.length) : path;
   if (short.length <= maxLen) return short;
   return '...' + short.slice(short.length - maxLen + 3);

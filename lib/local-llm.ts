@@ -114,7 +114,7 @@ export interface LocalLlmConfig {
 
 export interface OrchestrationResult {
   category: TaskCategory;
-  handledBy: 'local_llm' | 'claude' | 'gemini' | 'codex' | 'termux';
+  handledBy: 'local_llm' | 'claude' | 'gemini' | 'codex';
   response?: string;         // Local LLMが直接回答した場合
   delegatedCommand?: string; // Claude/Geminiに委譲する場合のコマンド
   reasoning: string;         // 判定理由（デバッグ用）
@@ -706,16 +706,6 @@ export async function orchestrateTask(
       };
     }
 
-    case 'termux': {
-      return {
-        category: 'file_ops',
-        handledBy: 'termux',
-        delegatedCommand: userInput,
-        reasoning: routing.reason,
-        routingDecision: routing,
-      };
-    }
-
     default: {
       return {
         category: 'unknown',
@@ -783,10 +773,6 @@ export async function orchestrateChatStream(
   // まずローカルLLMで応答を試みる（応答テキストが表示されない問題を防止）。
   // delegatedCommandが必要な場合はフォールバックで処理する。
   if (routing.tool !== 'local-llm') {
-    // ただしtermux/file_ops判定の場合はそのまま委譲
-    if (routing.tool === 'termux') {
-      return orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext, toolStatuses, defaultAgent);
-    }
     // code/research系: delegatedCommandを返しつつ、AiBlockにもルーティング情報を載せる
     const result = await orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext, toolStatuses, defaultAgent);
     // orchestrateTaskがlocal_llmで応答を返した場合はonChunk経由で渡す
@@ -881,7 +867,6 @@ export function getHandlerLabel(handler: OrchestrationResult['handledBy']): stri
     claude: 'Claude Code',
     gemini: 'Gemini CLI',
     codex: 'Codex CLI',
-    termux: 'Termux',
   };
   return labels[handler];
 }
