@@ -45,7 +45,7 @@ export const ErrorSummaryBubble = memo(function ErrorSummaryBubble({ data, onSug
     }
     if (err.includes('command not found')) {
       const cmd = err.match(/(\w+): command not found/)?.[1];
-      return cmd ? `pkg install ${cmd}` : null;
+      return cmd ? `npm install -g ${cmd}` : null;
     }
     return null;
   }, [data.errorText]);
