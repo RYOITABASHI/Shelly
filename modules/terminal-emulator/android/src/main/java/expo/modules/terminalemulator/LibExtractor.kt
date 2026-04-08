@@ -93,25 +93,34 @@ object LibExtractor {
             zipFile.close()
         }
 
-        // Extract npm from assets (tar.gz → node_modules/npm/)
+        // Extract npm from assets (tar → node_modules/npm/)
+        // Note: aapt strips .gz compression, so assets contain .tar not .tar.gz
         val npmDir = File(libDir, "node_modules/npm")
         if (!npmDir.exists()) {
             try {
-                val tempTar = File(context.cacheDir, "npm.tar.gz")
-                context.assets.open("npm.tar.gz").use { input ->
+                // Try .tar first (aapt-decompressed), fall back to .tar.gz (original)
+                val assetName = tryAssetName(context, "npm.tar", "npm.tar.gz")
+                val isTarGz = assetName.endsWith(".gz")
+                val tempTar = File(context.cacheDir, assetName)
+                context.assets.open(assetName).use { input ->
                     tempTar.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
                 val nodeModulesDir = File(libDir, "node_modules")
                 nodeModulesDir.mkdirs()
-                val pb = ProcessBuilder("/system/bin/tar", "xzf", tempTar.absolutePath, "-C", nodeModulesDir.absolutePath)
+                val tarFlags = if (isTarGz) "xzf" else "xf"
+                val pb = ProcessBuilder("/system/bin/tar", tarFlags, tempTar.absolutePath, "-C", nodeModulesDir.absolutePath)
                 pb.redirectErrorStream(true)
                 val proc = pb.start()
-                proc.inputStream.bufferedReader().readText()
-                proc.waitFor()
+                val tarOutput = proc.inputStream.bufferedReader().readText()
+                val exitCode = proc.waitFor()
                 tempTar.delete()
-                Log.i(TAG, "npm extracted to ${npmDir.absolutePath}")
+                if (exitCode != 0) {
+                    Log.e(TAG, "npm tar failed (exit $exitCode): $tarOutput")
+                } else {
+                    Log.i(TAG, "npm extracted to ${npmDir.absolutePath}")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "npm extraction failed: ${e.message}")
             }
@@ -127,23 +136,43 @@ object LibExtractor {
         return libDir
     }
 
+    /** Try .tar first (aapt strips .gz), fall back to .tar.gz */
+    private fun tryAssetName(context: Context, vararg candidates: String): String {
+        for (name in candidates) {
+            try {
+                context.assets.open(name).close()
+                return name
+            } catch (_: Exception) {}
+        }
+        throw java.io.FileNotFoundException("None of ${candidates.toList()} found in assets")
+    }
+
     private fun extractTarGzAsset(context: Context, assetName: String, destDir: File, checkDir: String) {
         if (File(destDir, checkDir).exists()) return
         try {
-            val tempTar = File(context.cacheDir, assetName)
-            context.assets.open(assetName).use { input ->
+            // aapt may strip .gz, so try both .tar and .tar.gz
+            val baseName = assetName.removeSuffix(".gz")
+            val actualName = tryAssetName(context, baseName, assetName)
+            val isTarGz = actualName.endsWith(".gz")
+            val tempTar = File(context.cacheDir, actualName)
+            context.assets.open(actualName).use { input ->
                 tempTar.outputStream().use { output ->
                     input.copyTo(output)
                 }
             }
             destDir.mkdirs()
-            val pb = ProcessBuilder("/system/bin/tar", "xzf", tempTar.absolutePath, "-C", destDir.absolutePath)
+            val tarFlags = if (isTarGz) "xzf" else "xf"
+            val pb = ProcessBuilder("/system/bin/tar", tarFlags, tempTar.absolutePath, "-C", destDir.absolutePath)
             pb.redirectErrorStream(true)
             val proc = pb.start()
-            proc.inputStream.bufferedReader().readText()
-            proc.waitFor()
+            val tarOutput = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
             tempTar.delete()
-            Log.i(TAG, "$assetName extracted to ${File(destDir, checkDir).absolutePath}")
+            if (exitCode != 0) {
+                Log.e(TAG, "$actualName tar failed (exit $exitCode): $tarOutput")
+            } else {
+                Log.i(TAG, "$actualName extracted to ${File(destDir, checkDir).absolutePath}")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "$assetName extraction failed: ${e.message}")
         }
