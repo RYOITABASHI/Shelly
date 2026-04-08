@@ -420,13 +420,17 @@ class TerminalEmulatorModule : Module() {
             val libDir = LibExtractor.getLibDir(context)
             val homeDir = HomeInitializer.getHomeDir(context)
             val bashPath = LibExtractor.getBashPath(context)
+            val libPath = libDir.absolutePath
+
+            // Prepend PATH export so bundled tools (node, npm, git, etc.) are found
+            val wrappedCommand = "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && export LD_LIBRARY_PATH='$libPath' && export HOME='${homeDir.absolutePath}' && $command"
 
             val result = ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
                 bashPath,
-                libDir.absolutePath,
+                libPath,
                 homeDir.absolutePath,
-                command,
+                wrappedCommand,
                 timeout
             )
 
