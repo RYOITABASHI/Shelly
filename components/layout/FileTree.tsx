@@ -5,6 +5,8 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/lib/theme-engine';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { execCommand } from '@/hooks/use-native-exec';
+import { openMarkdownFile } from '@/components/panes/MarkdownPane';
+import { useTerminalStore } from '@/store/terminal-store';
 
 type FileEntry = {
   name: string;
@@ -54,8 +56,11 @@ export function FileTree() {
     if (entry.isDirectory) {
       setCwd(entry.path);
       loadDir(entry.path);
+    } else if (entry.name.endsWith('.md')) {
+      openMarkdownFile(entry.path);
+    } else {
+      useTerminalStore.getState().runCommand(`cat '${entry.path.replace(/'/g, "'\\''")}'`);
     }
-    // File taps will be handled in Plan 2 (open in Markdown pane or cat in terminal)
   };
 
   const handleGoUp = () => {
