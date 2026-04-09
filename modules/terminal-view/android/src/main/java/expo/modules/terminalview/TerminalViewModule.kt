@@ -128,12 +128,7 @@ class TerminalViewModule : Module() {
         }
 
         AsyncFunction("refreshScreen") { viewTag: Int ->
-            findView(viewTag)?.let { view ->
-                view.post {
-                    view.onScreenUpdated()
-                    view.invalidate()
-                }
-            }
+            findView(viewTag)?.refreshScreenCommand()
         }
     }
 

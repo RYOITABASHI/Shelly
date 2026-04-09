@@ -414,6 +414,17 @@ class ShellyTerminalView(
         }
     }
 
+    fun refreshScreenCommand() {
+        if (useGPU && glTerminalView != null) {
+            glTerminalView?.post { glTerminalView?.renderer?.onScreenUpdated() }
+        } else {
+            terminalView.post {
+                terminalView.onScreenUpdated()
+                terminalView.invalidate()
+            }
+        }
+    }
+
     // ===== TerminalViewClient Implementation =====
 
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 2.0f)
