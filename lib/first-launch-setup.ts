@@ -58,29 +58,27 @@ export async function runFirstLaunchSetup(sessionId: string): Promise<void> {
   await writeToTerminal(sessionId, 'clear');
   await sleep(300);
 
-  // Build MOTD with ANSI colors via printf
-  const motd = [
-    '',
-    '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m',
-    `\\033[1;32m  ${welcome}\\033[0m`,
-    '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m',
-    '',
-    `  ${preinstalled}`,
-    '',
-    '    \\033[33mclaude\\033[0m    — Claude Code (Anthropic)',
-    '    \\033[33mgemini\\033[0m    — Gemini CLI  (Google)',
-    '    \\033[33mcodex\\033[0m     — Codex CLI   (OpenAI)',
-    '',
-    `  ${loginPrompt}`,
-    '',
-    '    \\033[90m$\\033[0m claude auth login',
-    '    \\033[90m$\\033[0m gemini auth login',
-    '',
-    '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m',
-    '',
-  ].join('\\n');
-
-  await writeToTerminal(sessionId, `printf '${motd}'`);
+  // Write MOTD line by line to avoid long command overflow
+  const L = (s: string) => writeToTerminal(sessionId, `printf '${s}\\n'`);
+  const B = '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m';
+  await L('');
+  await L(B);
+  await L(`\\033[1;32m  ${welcome}\\033[0m`);
+  await L(B);
+  await L('');
+  await L(`  ${preinstalled}`);
+  await L('');
+  await L('    \\033[33mclaude\\033[0m    — Claude Code (Anthropic)');
+  await L('    \\033[33mgemini\\033[0m    — Gemini CLI  (Google)');
+  await L('    \\033[33mcodex\\033[0m     — Codex CLI   (OpenAI)');
+  await L('');
+  await L(`  ${loginPrompt}`);
+  await L('');
+  await L('    \\033[90m$\\033[0m claude auth login');
+  await L('    \\033[90m$\\033[0m gemini auth login');
+  await L('');
+  await L(B);
+  await L('');
 
   // Mark complete
   await markSetupComplete();
