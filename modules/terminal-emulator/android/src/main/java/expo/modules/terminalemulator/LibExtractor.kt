@@ -143,7 +143,29 @@ object LibExtractor {
         val sitePackages = File(libDir, "python3.13/site-packages")
         extractTarGzAsset(context, "pip.tar.gz", sitePackages, "pip")
 
+        // Extract bundled AI CLIs (Claude Code, Gemini CLI, Codex)
+        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code")
+
+        // Create CLI launcher scripts in libDir so they're on PATH
+        createCliLauncher(libDir, "claude", "node_modules/@anthropic-ai/claude-code/cli.js")
+        createCliLauncher(libDir, "gemini", "node_modules/@google/gemini-cli/bundle/gemini.js")
+        createCliLauncher(libDir, "codex", "node_modules/@openai/codex/bin/codex.js")
+
         return libDir
+    }
+
+    /** Create a shell launcher script for a Node.js CLI tool */
+    private fun createCliLauncher(libDir: File, name: String, relPath: String) {
+        val launcher = File(libDir, name)
+        if (launcher.exists()) return
+        val script = File(libDir, relPath)
+        if (!script.exists()) {
+            Log.w(TAG, "CLI entry point not found: $relPath")
+            return
+        }
+        launcher.writeText("#!/bin/sh\nexec node \"${script.absolutePath}\" \"$@\"\n")
+        launcher.setExecutable(true, false)
+        Log.i(TAG, "CLI launcher created: $name → $relPath")
     }
 
     /** Try .tar first (aapt strips .gz), fall back to .tar.gz */

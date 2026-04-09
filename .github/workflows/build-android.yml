@@ -27,6 +27,17 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Bundle AI CLIs (Claude Code, Gemini CLI, Codex)
+        run: |
+          mkdir -p cli-bundle
+          # Install CLIs into a temporary prefix
+          npm install -g --prefix ./cli-bundle @anthropic-ai/claude-code @google/gemini-cli @openai/codex
+          # Tar them up for APK assets (LibExtractor will extract on first launch)
+          cd cli-bundle/lib
+          tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
+          cd ../..
+          ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
+
       - name: Prebuild Android
         run: npx expo prebuild --platform android --clean
 
