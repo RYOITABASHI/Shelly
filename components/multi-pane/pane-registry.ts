@@ -21,7 +21,7 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
   terminal: {
     title: 'Terminal',
     icon: 'terminal',
-    getComponent: () => require('@/app/(tabs)/terminal').default,
+    getComponent: () => require('@/components/panes/TerminalPane').default,
   },
   ai: {
     title: 'AI',
