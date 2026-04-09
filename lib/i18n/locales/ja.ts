@@ -1031,6 +1031,11 @@ const ja: Record<string, string> = {
   'chat.auto_saved': '💾 自動保存しました — {{total}}ファイル変更',
   'chat.security_skip': '🔒 コミットをスキップしました\n\n{{labels}}\n\nAPIキーや秘密情報がコードに含まれています。',
   'chat.session_ended': '{{agent}} セッションを終了しました。',
+
+  // ── First Launch MOTD ────────────────────────────────────────────
+  'motd.welcome': 'Shelly へようこそ',
+  'motd.cli_preinstalled': '以下のCLIツールがインストール済みです:',
+  'motd.login_prompt': 'お持ちのアカウントでログインしてください:',
 };
 
 export default ja;

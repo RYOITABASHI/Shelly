@@ -1049,6 +1049,11 @@ const en: Record<string, string> = {
   'chat.auto_saved': 'Auto-saved — {{total}} files changed',
   'chat.security_skip': 'Commit skipped\n\n{{labels}}\n\nAPI keys or secrets found in code.',
   'chat.session_ended': '{{agent}} session ended.',
+
+  // ── First Launch MOTD ────────────────────────────────────────────
+  'motd.welcome': 'Welcome to Shelly',
+  'motd.cli_preinstalled': 'The following CLI tools are pre-installed:',
+  'motd.login_prompt': 'Log in with your account to get started:',
 };
 
 export default en;

@@ -11,6 +11,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { logInfo } from '@/lib/debug-logger';
+import { t } from '@/lib/i18n';
 
 const SETUP_KEY = '@shelly/setup_wizard_complete';
 
@@ -49,8 +50,33 @@ export async function runFirstLaunchSetup(sessionId: string): Promise<void> {
   // Wait for shell prompt to appear
   await sleep(1000);
 
-  // Simple MOTD — no wizard, no install steps
-  await writeToTerminal(sessionId, `printf '\\n\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m\\n\\033[1;32m  Welcome to Shelly\\033[0m\\n\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m\\n\\n  The following CLI tools are pre-installed:\\n\\n    \\033[33mclaude\\033[0m    — Claude Code (Anthropic)\\n    \\033[33mgemini\\033[0m    — Gemini CLI  (Google)\\n    \\033[33mcodex\\033[0m     — Codex CLI   (OpenAI)\\n\\n  Log in with your account to get started:\\n\\n    \\033[90m$\\033[0m claude auth login\\n    \\033[90m$\\033[0m gemini auth login\\n\\n\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m\\n\\n'`);
+  const welcome = t('motd.welcome');
+  const preinstalled = t('motd.cli_preinstalled');
+  const loginPrompt = t('motd.login_prompt');
+
+  // Build MOTD with ANSI colors via printf
+  const motd = [
+    '',
+    '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m',
+    `\\033[1;32m  ${welcome}\\033[0m`,
+    '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m',
+    '',
+    `  ${preinstalled}`,
+    '',
+    '    \\033[33mclaude\\033[0m    — Claude Code (Anthropic)',
+    '    \\033[33mgemini\\033[0m    — Gemini CLI  (Google)',
+    '    \\033[33mcodex\\033[0m     — Codex CLI   (OpenAI)',
+    '',
+    `  ${loginPrompt}`,
+    '',
+    '    \\033[90m$\\033[0m claude auth login',
+    '    \\033[90m$\\033[0m gemini auth login',
+    '',
+    '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m',
+    '',
+  ].join('\\n');
+
+  await writeToTerminal(sessionId, `printf '${motd}'`);
 
   // Mark complete
   await markSetupComplete();
