@@ -55,6 +55,9 @@ import { BlockList } from '@/components/terminal/BlockList';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
+import { logInfo, logLifecycle } from '@/lib/debug-logger';
+
+logInfo('Terminal', 'module loaded');
 
 // ─── Status type for StatusBadge ─────────────────────────────────────────────
 
@@ -73,6 +76,7 @@ function sessionStatusToConnectionState(status: SessionStatus | undefined): Conn
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function TerminalScreen() {
+  logLifecycle('TerminalScreen', 'render');
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
   const { t } = useTranslation();
@@ -191,8 +195,9 @@ export default function TerminalScreen() {
 
   // Create a native session via JNI forkpty (no TCP, no pty-helper)
   const createNativeSession = useCallback(async (session: TabSession) => {
+    logInfo('Terminal', 'createNativeSession called for: ' + session.nativeSessionId);
     if (creatingSessions.current.has(session.id)) {
-      console.log('[Terminal] createNativeSession: already in progress for', session.nativeSessionId);
+      logInfo('Terminal', 'createNativeSession: already in progress for ' + session.nativeSessionId);
       return;
     }
     creatingSessions.current.add(session.id);
@@ -276,11 +281,13 @@ export default function TerminalScreen() {
 
   // Ensure native sessions exist. Called on mount and foreground resume.
   const ensureNativeSessions = useCallback(async () => {
+    logInfo('Terminal', 'ensureNativeSessions called, sessions=' + sessions.length + ', mutex=' + sessionMutexRef.current);
     if (sessionMutexRef.current) return;
     sessionMutexRef.current = true;
 
     try {
       for (const session of sessions) {
+        logInfo('Terminal', 'session ' + session.nativeSessionId + ' status=' + session.sessionStatus);
         if (session.sessionStatus === 'starting' || session.sessionStatus === 'alive') {
           // Check if session is already alive (works in both MultiPane and tab contexts)
           try {
