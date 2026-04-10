@@ -30,15 +30,15 @@ jobs:
       - name: Bundle AI CLIs (Claude Code, Gemini CLI, Codex)
         run: |
           mkdir -p cli-bundle
-          # Install CLIs into a temporary prefix
-          npm install -g --prefix ./cli-bundle @anthropic-ai/claude-code @google/gemini-cli @openai/codex
-          # Patch clipboardy: remove Termux guard so Gemini CLI can start without Termux
-          # clipboardy throws at import time if process.platform==='android' && !TERMUX_VERSION
-          sed -i "s|if (process.env.TERMUX_VERSION === undefined) {|if (false) {|" \
-            cli-bundle/lib/node_modules/@google/gemini-cli/node_modules/clipboardy/index.js
-          # Also patch any bundled/minified chunks that contain the same check
+          # Install CLIs with arm64 target (device is aarch64, CI is x86_64)
+          npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
+            @anthropic-ai/claude-code @google/gemini-cli @openai/codex
+          # Patch clipboardy: remove Termux guard so Gemini CLI starts without Termux
+          # The check may be in clipboardy hoisted to various locations or bundled in chunks
           find cli-bundle/lib -name "*.js" -exec grep -l "TERMUX_VERSION" {} \; | while read f; do
-            sed -i "s|process.env.TERMUX_VERSION===void 0|false|g; s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
+            sed -i "s|process.env.TERMUX_VERSION===void 0|false|g" "$f"
+            sed -i "s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
+            echo "Patched TERMUX_VERSION in: $f"
           done
           # Tar them up for APK assets (LibExtractor will extract on first launch)
           cd cli-bundle/lib
