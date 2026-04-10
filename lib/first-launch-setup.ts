@@ -58,8 +58,8 @@ export async function runFirstLaunchSetup(sessionId: string): Promise<void> {
   await writeToTerminal(sessionId, 'clear');
   await sleep(300);
 
-  // Write MOTD line by line to avoid long command overflow
-  const L = (s: string) => writeToTerminal(sessionId, `printf '${s}\\n'`);
+  // Write MOTD using builtin printf (coreutils printf breaks ANSI escapes)
+  const L = (s: string) => writeToTerminal(sessionId, `builtin printf '%b\\n' '${s}'`);
   const B = '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m';
   await L('');
   await L(B);

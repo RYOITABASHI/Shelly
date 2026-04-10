@@ -20,7 +20,7 @@ object HomeInitializer {
     )
 
     /** Version counter — increment to force .bashrc regeneration */
-    private const val BASHRC_VERSION = 6
+    private const val BASHRC_VERSION = 7
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -80,16 +80,22 @@ object HomeInitializer {
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
-            sb.appendLine("# Coreutils applets")
+            // Skip bash builtins — overriding them breaks ANSI escapes in printf/echo
+            val bashBuiltins = setOf("echo", "printf", "pwd", "test", "true", "false", "kill")
+            sb.appendLine("# Coreutils applets (bash builtins excluded)")
             for (applet in COREUTILS_APPLETS) {
+                if (applet in bashBuiltins) continue
                 sb.appendLine("$applet() { _run $libDir/coreutils --coreutils-prog=$applet \"\$@\"; }")
             }
             sb.appendLine()
 
             // OSC 133 for command block detection
             sb.appendLine("# OSC 133 for command block detection")
-            sb.appendLine("PS1='\\[\\e]133;A\\a\\]shelly:\\w\\\$ \\[\\e]133;B\\a\\]'")
-            sb.appendLine("PROMPT_COMMAND='echo -ne \"\\033]133;D;\\\$?\\007\"'")
+            // Use custom prompt that manually shortens HOME to ~
+            // (\w may show full path if HOME isn't set before bash initializes)
+            sb.appendLine("__shelly_cwd() { local d=\"\\\$(pwd)\"; echo \"\\\${d/#\\\$HOME/\\~}\"; }")
+            sb.appendLine("PS1='\\[\\e]133;A\\a\\]\\[\\033[1;32m\\]\\\$(__shelly_cwd)\\[\\033[0m\\]\\\$ \\[\\e]133;B\\a\\]'")
+            sb.appendLine("PROMPT_COMMAND='builtin echo -ne \"\\033]133;D;\\\$?\\007\"'")
 
             bashrc.writeText(sb.toString())
             versionFile.writeText(BASHRC_VERSION.toString())
