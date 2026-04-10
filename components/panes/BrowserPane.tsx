@@ -50,9 +50,23 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const [canGoForward, setCanGoForward] = useState(false);
   const [activeBookmarkIdx, setActiveBookmarkIdx] = useState(0);
 
+  const navSignal = useBrowserStore((s) => s.navSignal);
+
   useEffect(() => {
     loadBookmarks();
   }, []);
+
+  // Listen for nav actions from PaneSlot header
+  const lastSeqRef = useRef(navSignal.seq);
+  useEffect(() => {
+    if (navSignal.seq === lastSeqRef.current) return;
+    lastSeqRef.current = navSignal.seq;
+    switch (navSignal.action) {
+      case 'back': webviewRef.current?.goBack(); break;
+      case 'forward': webviewRef.current?.goForward(); break;
+      case 'reload': webviewRef.current?.reload(); break;
+    }
+  }, [navSignal.seq]);
 
   const handleSubmit = useCallback(() => {
     const url = normalizeUrl(inputUrl);

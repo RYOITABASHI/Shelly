@@ -1,17 +1,21 @@
 // components/layout/Sidebar.tsx
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
+  Modal,
+  Alert,
 } from 'react-native';
 import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/lib/theme-engine';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useAgentStore } from '@/store/agent-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
@@ -40,9 +44,11 @@ export function Sidebar() {
   const theme = useTheme();
   const c = theme.colors;
 
-  const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode } =
+  const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo } =
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
+  const [addRepoVisible, setAddRepoVisible] = useState(false);
+  const [repoInput, setRepoInput] = useState('');
 
   const runningAgents = agents.filter((a) => a.enabled);
 
@@ -137,7 +143,7 @@ export function Sidebar() {
               );
             })
           )}
-          <Pressable style={styles.addRow} onPress={() => {}}>
+          <Pressable style={styles.addRow} onPress={() => setAddRepoVisible(true)}>
             <Text style={styles.addRowText}>+ ADD REPOSITORY</Text>
           </Pressable>
         </SidebarSection>
@@ -182,7 +188,22 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           {CLOUD_SERVICES.map((svc) => (
-            <Pressable key={svc.label} style={styles.cloudRow}>
+            <Pressable
+              key={svc.label}
+              style={styles.cloudRow}
+              onPress={() => {
+                if (!svc.linked) {
+                  Alert.alert(
+                    svc.label,
+                    'Cloud storage integration coming soon. Configure in Settings.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Open Settings', onPress: () => useSettingsStore.getState().setShowConfigTUI(true) },
+                    ]
+                  );
+                }
+              }}
+            >
               <MaterialIcons
                 name={svc.icon as any}
                 size={13}
@@ -237,6 +258,61 @@ export function Sidebar() {
           <ProfilesSection />
         </SidebarSection>
       </ScrollView>
+
+      {/* Add repository modal */}
+      <Modal
+        visible={addRepoVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAddRepoVisible(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setAddRepoVisible(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>ADD REPOSITORY</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={repoInput}
+              onChangeText={setRepoInput}
+              placeholder="~/projects/my-repo"
+              placeholderTextColor="#6B7280"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              onSubmitEditing={() => {
+                const path = repoInput.trim();
+                if (path) {
+                  addRepo(path);
+                  setActiveRepo(path);
+                  setRepoInput('');
+                  setAddRepoVisible(false);
+                }
+              }}
+            />
+            <View style={styles.modalBtns}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => { setRepoInput(''); setAddRepoVisible(false); }}
+              >
+                <Text style={styles.modalCancelText}>CANCEL</Text>
+              </Pressable>
+              <Pressable
+                style={styles.modalAddBtn}
+                onPress={() => {
+                  const path = repoInput.trim();
+                  if (path) {
+                    addRepo(path);
+                    setActiveRepo(path);
+                    setRepoInput('');
+                    setAddRepoVisible(false);
+                  }
+                }}
+              >
+                <Text style={styles.modalAddText}>ADD</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Collapse toggle */}
       <Pressable
@@ -422,5 +498,69 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: 'monospace',
     color: '#6B7280',
+  },
+  // Modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: 280,
+    backgroundColor: '#1A1A1A',
+    borderRadius: 10,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  modalTitle: {
+    color: '#6B7280',
+    fontSize: 9,
+    fontFamily: 'monospace',
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  modalInput: {
+    height: 36,
+    backgroundColor: '#111',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#333',
+    paddingHorizontal: 10,
+    fontFamily: 'monospace',
+    fontSize: 12,
+    color: '#E5E7EB',
+    marginBottom: 12,
+  },
+  modalBtns: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  modalCancelBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+    backgroundColor: '#222',
+  },
+  modalCancelText: {
+    color: '#6B7280',
+    fontSize: 10,
+    fontFamily: 'monospace',
+    fontWeight: '700',
+  },
+  modalAddBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+    backgroundColor: 'rgba(0,212,170,0.15)',
+  },
+  modalAddText: {
+    color: ACCENT,
+    fontSize: 10,
+    fontFamily: 'monospace',
+    fontWeight: '700',
   },
 });

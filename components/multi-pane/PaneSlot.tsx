@@ -9,6 +9,7 @@ import { usePaneStore, getAgentColor, AGENT_COLORS } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { onCommandComplete } from '@/lib/cli-notification';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useBrowserStore } from '@/store/browser-store';
 
 const ACCENT = '#00D4AA';
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -112,13 +113,13 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         {/* Center: token/usage indicator (terminal/ai) or nav buttons (browser) */}
         {tab === 'browser' ? (
           <View style={styles.browserNav}>
-            <Pressable style={styles.navMiniBtn} hitSlop={4}>
+            <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('back')}>
               <MaterialIcons name="arrow-back" size={12} color="#6B7280" />
             </Pressable>
-            <Pressable style={styles.navMiniBtn} hitSlop={4}>
+            <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('forward')}>
               <MaterialIcons name="arrow-forward" size={12} color="#6B7280" />
             </Pressable>
-            <Pressable style={styles.navMiniBtn} hitSlop={4}>
+            <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('reload')}>
               <MaterialIcons name="refresh" size={12} color="#6B7280" />
             </Pressable>
           </View>

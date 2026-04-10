@@ -23,8 +23,8 @@ interface CosmeticState {
 }
 
 export const useCosmeticStore = create<CosmeticState>((set, get) => ({
-  crtEnabled: false,
-  crtIntensity: 50,
+  crtEnabled: true,
+  crtIntensity: 11,
   soundProfile: 'modern',
   fontFamily: 'jetbrains-mono',
   crtFont: 'pixel-mplus',

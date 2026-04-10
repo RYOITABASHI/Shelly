@@ -1036,6 +1036,20 @@ const ja: Record<string, string> = {
   'motd.welcome': 'Shelly へようこそ',
   'motd.cli_preinstalled': '以下のCLIツールがインストール済みです:',
   'motd.login_prompt': 'お持ちのアカウントでログインしてください:',
+
+  // ── UI Overhaul (Step 3) ──────────────────────────────────────────
+  'agentbar.crt_on': 'CRT: ON',
+  'agentbar.crt_off': 'CRT: OFF',
+  'agentbar.add_agent': 'エージェント追加',
+  'agentbar.all_agents_enabled': '全エージェント有効済み',
+  'agentbar.enable': '有効化',
+  'sidebar.add_repository': '+ リポジトリ追加',
+  'sidebar.add_repo_title': 'リポジトリ追加',
+  'sidebar.add_repo_placeholder': '~/projects/my-repo',
+  'sidebar.add_repo_cancel': 'キャンセル',
+  'sidebar.add_repo_add': '追加',
+  'sidebar.cloud_coming_soon': 'クラウドストレージ連携は近日対応予定です。設定で確認してください。',
+  'sidebar.cloud_open_settings': '設定を開く',
 };
 
 export default ja;

@@ -1054,6 +1054,20 @@ const en: Record<string, string> = {
   'motd.welcome': 'Welcome to Shelly',
   'motd.cli_preinstalled': 'The following CLI tools are pre-installed:',
   'motd.login_prompt': 'Log in with your account to get started:',
+
+  // ── UI Overhaul (Step 3) ──────────────────────────────────────────
+  'agentbar.crt_on': 'CRT: ON',
+  'agentbar.crt_off': 'CRT: OFF',
+  'agentbar.add_agent': 'ADD AGENT',
+  'agentbar.all_agents_enabled': 'All agents enabled',
+  'agentbar.enable': 'ENABLE',
+  'sidebar.add_repository': '+ ADD REPOSITORY',
+  'sidebar.add_repo_title': 'ADD REPOSITORY',
+  'sidebar.add_repo_placeholder': '~/projects/my-repo',
+  'sidebar.add_repo_cancel': 'CANCEL',
+  'sidebar.add_repo_add': 'ADD',
+  'sidebar.cloud_coming_soon': 'Cloud storage integration coming soon. Configure in Settings.',
+  'sidebar.cloud_open_settings': 'Open Settings',
 };
 
 export default en;
