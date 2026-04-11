@@ -885,6 +885,9 @@ const styles = StyleSheet.create({
   prompt: {
     fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
+    textShadowColor: 'rgba(0, 212, 170, 0.6)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
   command: {
     fontFamily: 'GeistPixel-Square',

@@ -7,6 +7,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useI18n, type Locale } from '@/lib/i18n';
+import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 
 type AgentDef = {
   name: string;
@@ -70,12 +71,12 @@ export function AgentBar() {
               ]}
               onPress={() => handleAgentTap(agent.key)}
             >
-              <View style={[styles.statusDot, { backgroundColor: isActive ? ACCENT : '#6B7280' }]} />
+              <View style={[styles.statusDot, { backgroundColor: isActive ? ACCENT : '#6B7280' }, isActive && neonDotGlow]} />
               <Text
                 style={[
                   styles.agentText,
                   { color: isActive ? '#E5E7EB' : '#6B7280' },
-                  isActive && { fontWeight: '800' },
+                  isActive && { fontWeight: '800', ...neonTextGlow },
                 ]}
               >
                 {agent.name}
@@ -298,6 +299,9 @@ const styles = StyleSheet.create({
   },
   crtBadgeTextOn: {
     color: ACCENT,
+    textShadowColor: 'rgba(0, 212, 170, 0.6)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
   crtSliderWrap: {
     width: 56,

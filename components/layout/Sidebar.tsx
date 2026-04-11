@@ -19,6 +19,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
+import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 
 const WIDTH_EXPANDED = 170;
 const WIDTH_ICONS = 48;
@@ -178,7 +179,7 @@ export function Sidebar() {
                     />
                   </View>
                   <Text
-                    style={[styles.repoName, { color: isActive ? ACCENT : '#E5E7EB' }]}
+                    style={[styles.repoName, { color: isActive ? ACCENT : '#E5E7EB' }, isActive && neonTextGlow]}
                     numberOfLines={1}
                   >
                     {name.toUpperCase()}
@@ -279,14 +280,14 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           <View style={styles.portRow}>
-            <View style={[styles.portDot, { backgroundColor: ACCENT }]} />
+            <View style={[styles.portDot, { backgroundColor: ACCENT }, neonDotGlow]} />
             <Text style={styles.portLabel}>:3000</Text>
             <Text style={styles.portName}>NEXT.JS</Text>
             <View style={styles.cloudSpacer} />
             <MaterialIcons name="open-in-new" size={11} color="#6B7280" />
           </View>
           <View style={styles.portRow}>
-            <View style={[styles.portDot, { backgroundColor: ACCENT }]} />
+            <View style={[styles.portDot, { backgroundColor: ACCENT }, neonDotGlow]} />
             <Text style={styles.portLabel}>:8081</Text>
             <Text style={styles.portName}>EXPO</Text>
             <View style={styles.cloudSpacer} />

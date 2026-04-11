@@ -174,6 +174,11 @@ const styles = StyleSheet.create({
   presetBtnActive: {
     backgroundColor: ACCENT,
     borderColor: ACCENT,
+    shadowColor: ACCENT,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 3,
   },
   presetLabel: {
     fontSize: 9,

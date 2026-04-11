@@ -6,6 +6,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useTerminalStore } from '@/store/terminal-store';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
+import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 
 const ACCENT = '#00D4AA';
 
@@ -51,7 +52,7 @@ export function ContextBar() {
       {gitBranch && (
         <View style={[styles.segment, { marginLeft: 8 }]}>
           <MaterialIcons name="call-split" size={10} color={ACCENT} />
-          <Text style={[styles.text, { color: ACCENT }]}>{gitBranch}</Text>
+          <Text style={[styles.text, { color: ACCENT, ...neonTextGlow }]}>{gitBranch}</Text>
         </View>
       )}
 
@@ -68,7 +69,7 @@ export function ContextBar() {
       <View style={styles.segment}>
         <View style={[styles.dot, {
           backgroundColor: connectionMode === 'native' ? ACCENT : '#FF5555',
-        }]} />
+        }, connectionMode === 'native' && neonDotGlow]} />
         <Text style={styles.text}>
           {connectionMode === 'native' ? 'Native' : 'Off'}
         </Text>

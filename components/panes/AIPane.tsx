@@ -137,6 +137,9 @@ const bubbleStyles = StyleSheet.create({
     color: ACCENT,
     marginBottom: 3,
     textTransform: 'uppercase',
+    textShadowColor: 'rgba(0, 212, 170, 0.6)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
   roleLabelClaude: {
     fontSize: 9,

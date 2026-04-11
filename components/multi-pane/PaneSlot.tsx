@@ -11,6 +11,7 @@ import { onCommandComplete } from '@/lib/cli-notification';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useBrowserStore } from '@/store/browser-store';
 import { SessionInfoBar } from './SessionInfoBar';
+import { neonTextGlow } from '@/lib/neon-glow';
 
 const ACCENT = '#00D4AA';
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
