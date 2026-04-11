@@ -124,7 +124,7 @@ export function Sidebar() {
             <>
               {runningAgents.map((agent) => (
                 <View key={agent.id} style={styles.taskRow}>
-                  <View style={[styles.taskDot, { backgroundColor: '#EF4444' }]} />
+                  <View style={[styles.taskDot, { backgroundColor: ACCENT }]} />
                   <View style={styles.taskInfo}>
                     <Text style={styles.taskName} numberOfLines={1}>
                       {agent.name.toUpperCase()}

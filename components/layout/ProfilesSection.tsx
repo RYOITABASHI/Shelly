@@ -195,7 +195,7 @@ export function ProfilesSection() {
             onLongPress={() => handleLongPress(p)}
             delayLongPress={400}
           >
-            <MaterialIcons name="dns" size={14} color={c.accent} style={styles.profileIcon} />
+            <View style={[styles.profileSquare, { backgroundColor: p.name.toLowerCase().includes('prod') ? '#4ADE80' : '#60A5FA' }]} />
             <View style={styles.profileText}>
               <Text style={[styles.profileName, { color: c.foreground }]} numberOfLines={1}>
                 {p.name}
@@ -255,6 +255,11 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     gap: 6,
   },
+  profileSquare: {
+    width: 12,
+    height: 12,
+    borderRadius: 2,
+  },
   profileIcon: {
     width: 16,
   },
@@ -262,11 +267,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   profileName: {
-    fontSize: 12,
-    fontWeight: '500',
+    fontSize: 10,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   profileHost: {
-    fontSize: 10,
+    fontSize: 9,
+    fontFamily: 'monospace',
     marginTop: 1,
   },
   actionBtn: {

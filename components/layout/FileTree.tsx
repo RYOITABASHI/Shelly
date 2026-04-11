@@ -113,9 +113,21 @@ export function FileTree() {
             <MaterialIcons
               name={item.isDirectory ? 'folder' : 'insert-drive-file'}
               size={14}
-              color={item.isDirectory ? c.accent : c.muted}
+              color={item.isDirectory ? '#6B7280' : '#4B5563'}
             />
-            <Text style={[styles.fileName, { color: c.foreground }]} numberOfLines={1}>
+            <Text
+              style={[
+                styles.fileName,
+                {
+                  color: item.name.toLowerCase() === 'readme.md'
+                    ? '#EF4444'
+                    : item.isDirectory
+                    ? c.foreground
+                    : c.foreground,
+                },
+              ]}
+              numberOfLines={1}
+            >
               {item.name}
             </Text>
           </Pressable>
@@ -166,11 +178,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 3,
   },
   fileName: {
-    fontSize: 11,
+    fontSize: 10,
     fontFamily: 'monospace',
+    fontWeight: '600',
+    letterSpacing: 0.3,
     flex: 1,
   },
   empty: {
