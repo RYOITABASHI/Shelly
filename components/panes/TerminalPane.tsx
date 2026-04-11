@@ -26,6 +26,7 @@ import { NativeTerminalView } from '@/modules/terminal-view/src';
 import TerminalViewModule from '@/modules/terminal-view/src/TerminalViewModule';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalOutput } from '@/hooks/use-terminal-output';
+import { MockClaudeSession } from '@/components/terminal/MockClaudeSession';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation, t } from '@/lib/i18n';
@@ -500,14 +501,9 @@ export default function TerminalScreen() {
         <PreviewBanner url={bannerUrl} onOpen={() => openPreview()} onDismiss={dismissBanner} />
       )}
 
-      {/* Connecting Spinner */}
+      {/* Mock Claude Code session (shown while connecting or when no PTY) */}
       {connectionState === 'connecting' && (
-        <View style={styles.connectingContainer}>
-          <ActivityIndicator size="large" color={c.accent} />
-          <Text style={[styles.connectingText, { color: c.foreground }]}>
-            {activeSession?.sessionStatus === 'recovering' ? 'Restoring session...' : t('terminal.connecting_terminal')}
-          </Text>
-        </View>
+        <MockClaudeSession />
       )}
 
       {/* Terminal + Preview Split View */}

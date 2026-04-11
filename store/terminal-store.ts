@@ -29,52 +29,12 @@ function allocateSessionName(sessions: TabSession[]): string | null {
   return null;
 }
 
-// ─── Mock dummy blocks matching mock screenshot ──────────────────────────────
-
-const MOCK_BLOCKS: CommandBlock[] = [
-  {
-    id: 'mock-read',
-    command: 'READ components/WelcomeWizard.tsx',
-    output: [
-      { text: '1 IMPORT REACT, { USESTATE } FROM \'REACT\'; 2 IMPORT { VIEW, TEXT } FROM \'REACT-NATIVE\'; 3 // ... 340 LINES', type: 'stdout' },
-    ],
-    exitCode: 0,
-    isRunning: false,
-    timestamp: Date.now() - 30000,
-    durationMs: 350,
-  },
-  {
-    id: 'mock-edit',
-    command: 'EDIT lib/input-router.ts',
-    output: [
-      { text: '\x1b[31m—   LAYER: \'NATURAL\',\x1b[0m', type: 'stdout' },
-      { text: '\x1b[32m+   LAYER: \'MENTION\',\x1b[0m', type: 'stdout' },
-      { text: '\x1b[31m—   TARGET: \'SUGGEST\',\x1b[0m', type: 'stdout' },
-      { text: '\x1b[32m+   TARGET: \'ACTIONS\',\x1b[0m', type: 'stdout' },
-    ],
-    exitCode: 0,
-    isRunning: false,
-    timestamp: Date.now() - 20000,
-    durationMs: 500,
-  },
-  {
-    id: 'mock-bash',
-    command: 'BASH: RM -RF NODE_MODULES/',
-    output: [
-      { text: 'THIS WILL DELETE NODE_MODULES/. PROCEED?', type: 'stderr' },
-    ],
-    exitCode: null,
-    isRunning: false,
-    timestamp: Date.now() - 10000,
-  },
-];
-
 function createSession(id: string, name: string, sessionName: string = SESSION_NAMES[0]): TabSession {
   return {
     id,
     name,
     currentDir: getHomePath(),
-    blocks: MOCK_BLOCKS,
+    blocks: [],
     entries: [],
     commandHistory: [],
     historyIndex: -1,
