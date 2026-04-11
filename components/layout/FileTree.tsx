@@ -87,25 +87,25 @@ export function FileTree() {
     return (
       <View style={styles.container}>
         <View style={styles.searchRow}>
-          <MaterialIcons name="search" size={12} color="#6B7280" />
+          <MaterialIcons name="search" size={10} color="#6B7280" />
           <TextInput
             style={[styles.search, { color: c.foreground }]}
             placeholder="SEARCH FILES..."
             placeholderTextColor="#6B7280"
             editable={false}
           />
-          <MaterialIcons name="edit" size={11} color="#6B7280" />
+          <MaterialIcons name="edit" size={9} color="#6B7280" />
         </View>
         {MOCK_TREE.map((item, i) => (
-          <View key={i} style={[styles.row, { paddingLeft: 10 + item.depth * 14 }]}>
+          <View key={i} style={[styles.row, { paddingLeft: 8 + item.depth * 12 }]}>
             <MaterialIcons
               name={item.isDir ? 'folder' : 'insert-drive-file'}
-              size={14}
-              color={item.isDir ? '#6B7280' : '#4B5563'}
+              size={12}
+              color={item.isDir ? '#4B5563' : '#3D4451'}
             />
             <Text style={[
               styles.fileName,
-              { color: item.special === 'red' ? '#EF4444' : c.foreground },
+              { color: item.special === 'red' ? '#EF4444' : '#D1D5DB' },
             ]}>
               {item.name}
             </Text>
@@ -181,18 +181,18 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 8,
-    marginBottom: 4,
-    paddingHorizontal: 6,
-    height: 24,
+    marginHorizontal: 6,
+    marginBottom: 3,
+    paddingHorizontal: 5,
+    height: 20,
     gap: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#1A1A1A',
   },
   search: {
     flex: 1,
-    height: 24,
-    fontSize: 10,
+    height: 20,
+    fontSize: 8,
     fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     letterSpacing: 0.3,
@@ -206,29 +206,30 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   breadcrumbText: {
-    fontSize: 11,
+    fontSize: 8,
     fontFamily: 'GeistPixel-Square',
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
   fileName: {
-    fontSize: 10,
+    fontSize: 8,
     fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     letterSpacing: 0.3,
+    color: '#D1D5DB',
     flex: 1,
   },
   empty: {
-    padding: 16,
+    padding: 10,
     alignItems: 'center',
   },
   emptyText: {
-    fontSize: 11,
+    fontSize: 8,
     fontFamily: 'GeistPixel-Square',
   },
 });
