@@ -119,8 +119,26 @@ export function Sidebar() {
           badge={runningAgents.length}
           iconsOnly={iconsOnly}
         >
+          {/* Mock dummy tasks (fallback when no real data) */}
           {runningAgents.length === 0 && recentTasks.length === 0 ? (
-            <Text style={styles.emptyText}>No running tasks</Text>
+            <>
+              <View style={styles.taskRow}>
+                <View style={[styles.taskDot, { backgroundColor: ACCENT }]} />
+                <View style={styles.taskInfo}>
+                  <Text style={styles.taskName} numberOfLines={1}>NPM RUN DEV</Text>
+                </View>
+                <View style={[styles.statusBadge, { backgroundColor: 'rgba(239,68,68,0.15)' }]}>
+                  <Text style={[styles.statusBadgeText, { color: '#EF4444' }]}>RUNNING</Text>
+                </View>
+              </View>
+              <View style={styles.taskRow}>
+                <MaterialIcons name="check-circle" size={10} color={ACCENT} />
+                <View style={styles.taskInfo}>
+                  <Text style={styles.taskName} numberOfLines={1}>GIT PUSH</Text>
+                </View>
+                <Text style={styles.taskAge}>25 AGO</Text>
+              </View>
+            </>
           ) : (
             <>
               {runningAgents.map((agent) => (
@@ -160,7 +178,27 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           {repoPaths.length === 0 ? (
-            <Text style={styles.emptyText}>No repos added</Text>
+            <>
+              {/* Mock dummy repos matching mock screenshot */}
+              {[
+                { name: 'SHELLY', version: 'V9.2', active: true },
+                { name: 'NACRE', version: null, active: false },
+                { name: 'LLM-BENCH-V2', version: null, active: false },
+              ].map((repo) => (
+                <View
+                  key={repo.name}
+                  style={[styles.repoRow, repo.active && { backgroundColor: ACCENT + '15', borderLeftWidth: 2, borderLeftColor: ACCENT }]}
+                >
+                  <View style={[styles.repoIcon, { backgroundColor: repo.active ? ACCENT : '#333' }]}>
+                    <MaterialIcons name="folder" size={10} color={repo.active ? '#000' : '#999'} />
+                  </View>
+                  <Text style={[styles.repoName, { color: repo.active ? ACCENT : '#E5E7EB' }]} numberOfLines={1}>
+                    {repo.name}
+                  </Text>
+                  {repo.version && <Text style={styles.repoVersion}>{repo.version}</Text>}
+                </View>
+              ))}
+            </>
           ) : (
             repoPaths.map((p) => {
               const isActive = p === activeRepoPath;

@@ -69,12 +69,48 @@ export function FileTree() {
     loadDir(parent);
   };
 
+  // Mock dummy file tree matching mock screenshot (shown when no repo selected)
   if (!repoPath) {
+    const MOCK_TREE = [
+      { name: 'APP', isDir: true, depth: 0 },
+      { name: 'COMPONENTS', isDir: true, depth: 0 },
+      { name: 'CHAT', isDir: true, depth: 1 },
+      { name: 'TERMINAL', isDir: true, depth: 1 },
+      { name: 'WELCOMEWIZARD.TSX', isDir: false, depth: 1 },
+      { name: 'LIB', isDir: true, depth: 0 },
+      { name: 'INPUT-ROUTER.TS', isDir: false, depth: 1 },
+      { name: 'STORE', isDir: true, depth: 0 },
+      { name: 'APP.CONFIG.TS', isDir: false, depth: 0 },
+      { name: 'PACKAGE.JSON', isDir: false, depth: 0 },
+      { name: 'README.MD', isDir: false, depth: 0, special: 'red' },
+    ];
     return (
-      <View style={styles.empty}>
-        <Text style={[styles.emptyText, { color: c.muted }]}>
-          Select a repository
-        </Text>
+      <View style={styles.container}>
+        <View style={styles.searchRow}>
+          <MaterialIcons name="search" size={12} color="#6B7280" />
+          <TextInput
+            style={[styles.search, { color: c.foreground }]}
+            placeholder="SEARCH FILES..."
+            placeholderTextColor="#6B7280"
+            editable={false}
+          />
+          <MaterialIcons name="edit" size={11} color="#6B7280" />
+        </View>
+        {MOCK_TREE.map((item, i) => (
+          <View key={i} style={[styles.row, { paddingLeft: 10 + item.depth * 14 }]}>
+            <MaterialIcons
+              name={item.isDir ? 'folder' : 'insert-drive-file'}
+              size={14}
+              color={item.isDir ? '#6B7280' : '#4B5563'}
+            />
+            <Text style={[
+              styles.fileName,
+              { color: item.special === 'red' ? '#EF4444' : c.foreground },
+            ]}>
+              {item.name}
+            </Text>
+          </View>
+        ))}
       </View>
     );
   }

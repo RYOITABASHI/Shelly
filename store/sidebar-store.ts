@@ -24,7 +24,7 @@ interface SidebarState {
 }
 
 export const useSidebarStore = create<SidebarState>((set, get) => ({
-  mode: 'hidden',
+  mode: 'expanded',
   openSections: { tasks: true, repos: true, files: true, device: false, cloud: false, ports: false, profiles: false },
   activeRepoPath: null,
   repoPaths: [],
