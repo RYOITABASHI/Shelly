@@ -424,14 +424,14 @@ const styles = StyleSheet.create({
   headerTitle: {
     color: '#E5E7EB',
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   headerPath: {
     color: '#6B7280',
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '500',
     flexShrink: 1,
   },
@@ -444,7 +444,7 @@ const styles = StyleSheet.create({
   tokenText: {
     color: '#6B7280',
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
   },
   headerMiniBtn: {
@@ -485,7 +485,7 @@ const styles = StyleSheet.create({
   notifText: {
     color: '#E5E7EB',
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     textTransform: 'uppercase',
   },
@@ -544,7 +544,7 @@ const menuStyles = StyleSheet.create({
   title: {
     color: '#6B7280',
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginBottom: 6,
@@ -565,7 +565,7 @@ const menuStyles = StyleSheet.create({
   optionText: {
     color: '#E5E7EB',
     fontSize: 12,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
 });
 
@@ -597,6 +597,6 @@ const agentStyles = StyleSheet.create({
   label: {
     color: '#E5E7EB',
     fontSize: 11,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
 });

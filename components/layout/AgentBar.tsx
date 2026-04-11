@@ -245,7 +245,7 @@ const styles = StyleSheet.create({
   },
   agentText: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 0.8,
     textTransform: 'uppercase',
@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
   addBtnText: {
     color: '#6B7280',
     fontSize: 14,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
   },
   rightBtns: {
@@ -291,7 +291,7 @@ const styles = StyleSheet.create({
   },
   crtBadgeText: {
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     color: '#6B7280',
     letterSpacing: 0.5,
@@ -326,7 +326,7 @@ const styles = StyleSheet.create({
   },
   crtPercent: {
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     color: '#6B7280',
     minWidth: 22,
@@ -341,7 +341,7 @@ const styles = StyleSheet.create({
   },
   langText: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     color: '#6B7280',
   },
@@ -350,7 +350,7 @@ const styles = StyleSheet.create({
   },
   langSep: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     color: '#333',
   },
   // Add agent modal
@@ -373,7 +373,7 @@ const styles = StyleSheet.create({
   addModalTitle: {
     color: '#6B7280',
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 1,
     marginBottom: 4,
@@ -382,7 +382,7 @@ const styles = StyleSheet.create({
   addModalEmpty: {
     color: '#6B7280',
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontStyle: 'italic',
     paddingHorizontal: 6,
     paddingVertical: 8,
@@ -399,14 +399,14 @@ const styles = StyleSheet.create({
     flex: 1,
     color: '#E5E7EB',
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   addModalAction: {
     color: ACCENT,
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     letterSpacing: 0.5,
   },

@@ -8,11 +8,11 @@ import { useSettingsStore } from '@/store/settings-store';
 
 export function useUIFont(): string {
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'pixel');
-  return uiFont === 'pixel' ? 'PixelMplus12' : 'monospace';
+  return uiFont === 'pixel' ? 'GeistPixel-Square' : 'monospace';
 }
 
 /** Non-hook version for StyleSheet.create or outside React */
 export function getUIFont(): string {
   const uiFont = useSettingsStore.getState().settings.uiFont ?? 'pixel';
-  return uiFont === 'pixel' ? 'PixelMplus12' : 'monospace';
+  return uiFont === 'pixel' ? 'GeistPixel-Square' : 'monospace';
 }

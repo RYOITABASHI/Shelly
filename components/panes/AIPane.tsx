@@ -67,7 +67,7 @@ const StreamingDots = React.memo(function StreamingDots({ color }: { color: stri
 
 const dotStyles = StyleSheet.create({
   text: {
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontSize: 16,
     letterSpacing: 2,
     marginTop: 2,
@@ -131,7 +131,7 @@ const bubbleStyles = StyleSheet.create({
   },
   roleLabel: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     letterSpacing: 1,
     color: ACCENT,
@@ -140,7 +140,7 @@ const bubbleStyles = StyleSheet.create({
   },
   roleLabelClaude: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     letterSpacing: 1,
     color: '#D4A574',
@@ -149,7 +149,7 @@ const bubbleStyles = StyleSheet.create({
   },
   userText: {
     fontSize: 12,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     lineHeight: 18,
     color: '#E5E7EB',
   },
@@ -161,7 +161,7 @@ const bubbleStyles = StyleSheet.create({
   },
   assistantText: {
     fontSize: 12,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     lineHeight: 18,
     color: '#E5E7EB',
   },
@@ -172,7 +172,7 @@ const bubbleStyles = StyleSheet.create({
   },
   systemText: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     color: '#6B7280',
     fontStyle: 'italic',
   },
@@ -353,7 +353,7 @@ const paneStyles = StyleSheet.create({
   },
   contextBadgeText: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     fontWeight: '700',
@@ -367,7 +367,7 @@ const paneStyles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 11,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     textAlign: 'center',
     lineHeight: 18,
     color: '#6B7280',
@@ -388,7 +388,7 @@ const paneStyles = StyleSheet.create({
   voiceLabel: {
     flex: 1,
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     letterSpacing: 0.5,
     color: ACCENT,
   },

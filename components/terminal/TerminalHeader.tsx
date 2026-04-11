@@ -288,13 +288,13 @@ const styles = StyleSheet.create({
   appName: {
     fontSize: 14,
     fontWeight: '700',
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     letterSpacing: 0.5,
   },
   cursor: {
     fontSize: 14,
     fontWeight: '700',
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
   tabsContainer: {
     flexDirection: 'row',
@@ -312,7 +312,7 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 11,
     fontWeight: '600',
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
   addTabButton: {
     width: 26,
@@ -336,7 +336,7 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 10,
     fontWeight: '600',
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
   fullscreenButton: {
     width: 28,
@@ -355,7 +355,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   previewLabel: {
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontSize: 11,
     fontWeight: '600',
   },

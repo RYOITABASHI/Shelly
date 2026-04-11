@@ -20,7 +20,7 @@ import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 
-const WIDTH_EXPANDED = 240;
+const WIDTH_EXPANDED = 170;
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
 const TIMING_MS = 200;
@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     color: '#6B7280',
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -417,14 +417,14 @@ const styles = StyleSheet.create({
   },
   taskAge: {
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#6B7280',
     letterSpacing: 0.3,
   },
   taskName: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#E5E7EB',
     letterSpacing: 0.3,
@@ -436,7 +436,7 @@ const styles = StyleSheet.create({
   },
   statusBadgeText: {
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     letterSpacing: 0.5,
   },
@@ -460,14 +460,14 @@ const styles = StyleSheet.create({
   },
   repoName: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 0.5,
     flex: 1,
   },
   repoVersion: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#6B7280',
   },
@@ -477,7 +477,7 @@ const styles = StyleSheet.create({
   },
   addRowText: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#6B7280',
     letterSpacing: 0.3,
@@ -492,7 +492,7 @@ const styles = StyleSheet.create({
   },
   deviceLabel: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#E5E7EB',
     letterSpacing: 0.3,
@@ -507,7 +507,7 @@ const styles = StyleSheet.create({
   },
   cloudLabel: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#E5E7EB',
     letterSpacing: 0.3,
@@ -517,7 +517,7 @@ const styles = StyleSheet.create({
   },
   cloudStatus: {
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     letterSpacing: 0.5,
   },
@@ -536,13 +536,13 @@ const styles = StyleSheet.create({
   },
   portLabel: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     color: '#E5E7EB',
   },
   portName: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     color: '#6B7280',
   },
@@ -557,7 +557,7 @@ const styles = StyleSheet.create({
   },
   toggleLabel: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     color: '#6B7280',
   },
   // Modal
@@ -578,7 +578,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     color: '#6B7280',
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 1,
     marginBottom: 12,
@@ -590,7 +590,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#333',
     paddingHorizontal: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontSize: 12,
     color: '#E5E7EB',
     marginBottom: 12,
@@ -609,7 +609,7 @@ const styles = StyleSheet.create({
   modalCancelText: {
     color: '#6B7280',
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
   },
   modalAddBtn: {
@@ -621,7 +621,7 @@ const styles = StyleSheet.create({
   modalAddText: {
     color: ACCENT,
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
   },
 });

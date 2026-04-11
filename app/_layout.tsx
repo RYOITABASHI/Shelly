@@ -47,13 +47,14 @@ export const unstable_settings = {
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     'PixelMplus12': require('@/assets/fonts/PixelMplus12-Regular.ttf'),
+    'GeistPixel-Square': require('@/assets/fonts/GeistPixel-Square.ttf'),
   });
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'pixel');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
 
   // Override default Text fontFamily globally
   useEffect(() => {
-    const fontFamily = uiFont === 'pixel' ? 'PixelMplus12' : 'monospace';
+    const fontFamily = uiFont === 'pixel' ? 'GeistPixel-Square' : 'monospace';
     const defaultStyle = (Text as any).render;
     if (defaultStyle) {
       // Wrap Text.render to inject fontFamily

@@ -44,18 +44,16 @@ export function ShellLayout() {
     });
   }, []);
 
-  // Responsive sidebar mode
+  // Responsive sidebar mode — always expanded (Superset-style)
   useEffect(() => {
     let mode: string;
-    if (layout.isWide && layout.isLandscape) {
+    if (layout.isWide) {
       mode = 'expanded';
       setMode('expanded');
-    } else if (layout.isWide) {
-      mode = 'icons';
-      setMode('icons');
     } else {
-      mode = 'hidden';
-      setMode('hidden');
+      // Even on narrow screens, show sidebar expanded (user can swipe to hide)
+      mode = 'expanded';
+      setMode('expanded');
     }
     logInfo('ShellLayout', 'Sidebar mode: ' + mode);
   }, [layout.isWide, layout.isLandscape]);

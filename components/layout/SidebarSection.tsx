@@ -76,7 +76,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     textTransform: 'uppercase',
     letterSpacing: 1.2,
@@ -92,7 +92,7 @@ const styles = StyleSheet.create({
   },
   countText: {
     fontSize: 8,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '800',
     color: ACCENT,
   },

@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
   },
   presetLabel: {
     fontSize: 9,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '700',
     letterSpacing: 0.8,
     color: '#6B7280',

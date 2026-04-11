@@ -157,7 +157,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 24,
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     letterSpacing: 0.3,
     padding: 0,
@@ -171,7 +171,7 @@ const styles = StyleSheet.create({
   },
   breadcrumbText: {
     fontSize: 11,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
   row: {
     flexDirection: 'row',
@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
   },
   fileName: {
     fontSize: 10,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
     fontWeight: '600',
     letterSpacing: 0.3,
     flex: 1,
@@ -193,6 +193,6 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 11,
-    fontFamily: 'PixelMplus12',
+    fontFamily: 'GeistPixel-Square',
   },
 });
