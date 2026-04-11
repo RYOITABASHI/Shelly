@@ -151,7 +151,7 @@ export function ShellLayout() {
       </GestureDetector>
 
       {/* Layout Preset Bar */}
-      {layout.isWide && <LayoutPresetBar />}
+      <LayoutPresetBar />
 
       {/* Context Bar (bottom) */}
       <ContextBar />

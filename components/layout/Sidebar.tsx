@@ -167,7 +167,7 @@ export function Sidebar() {
               return (
                 <Pressable
                   key={p}
-                  style={[styles.repoRow, isActive && { backgroundColor: ACCENT + '15' }]}
+                  style={[styles.repoRow, isActive && { backgroundColor: ACCENT + '15', borderLeftWidth: 2, borderLeftColor: ACCENT }]}
                   onPress={() => setActiveRepo(p)}
                 >
                   <View style={[styles.repoIcon, { backgroundColor: isActive ? ACCENT : '#333' }]}>
@@ -404,7 +404,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingVertical: 3,
     gap: 6,
   },
   taskDot: {
@@ -446,8 +446,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 4,
+    paddingVertical: 4,
+    borderRadius: 3,
+    borderLeftWidth: 0,
+    borderLeftColor: 'transparent',
   },
   repoIcon: {
     width: 18,
@@ -486,7 +488,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingVertical: 4,
   },
   deviceLabel: {
     fontSize: 10,
@@ -501,7 +503,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingVertical: 4,
   },
   cloudLabel: {
     fontSize: 10,
@@ -525,7 +527,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingVertical: 4,
   },
   portDot: {
     width: 6,
