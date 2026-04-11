@@ -21,7 +21,7 @@ import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 
-const WIDTH_EXPANDED = 170;
+const WIDTH_EXPANDED = 190;
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
 const TIMING_MS = 200;

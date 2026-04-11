@@ -501,14 +501,12 @@ export default function TerminalScreen() {
         <PreviewBanner url={bannerUrl} onOpen={() => openPreview()} onDismiss={dismissBanner} />
       )}
 
-      {/* Mock Claude Code session (shown while connecting or when no PTY) */}
-      {connectionState === 'connecting' && (
+      {/* Mock Claude Code session — visual overlay showing mock content */}
+      <View style={StyleSheet.absoluteFill} pointerEvents="none">
         <MockClaudeSession />
-      )}
+      </View>
 
-      {/* Terminal + Preview Split View */}
-      {/* Skip rendering when hidden behind MultiPaneContainer to prevent
-          two NativeTerminalView instances from fighting over emulator size */}
+      {/* Terminal + Preview Split View (hidden behind mock until user interacts) */}
       {activeSession && isConnected && !isHiddenBehindMultiPane && (
         <View style={{ flex: 1, flexDirection: showSplitPreview ? 'row' : 'column' }}>
           {/* Native Terminal View */}
