@@ -124,29 +124,26 @@ object HomeInitializer {
             sb.appendLine("fi")
             sb.appendLine()
 
-            // Prompt: PROMPT_COMMAND dynamically builds PS1 with HOME→~ replacement
-            // bash's \w doesn't shorten HOME when launched via linker64,
-            // so we do it manually in PROMPT_COMMAND
-            sb.appendLine("# Prompt with OSC 133 + dynamic HOME shortening")
+            // Prompt: PROMPT_COMMAND dynamically builds PS1 with HOME→~ replacement.
+            // bash's \w doesn't shorten HOME when launched via linker64, so we do it
+            // manually. We previously embedded OSC 133 (shell-integration) markers
+            // here, but the bundled TerminalView didn't strip them and they leaked
+            // into the visible buffer (\[\e]133;A\a\] showed up literally),
+            // throwing off cursor column math and producing the "phantom prompt"
+            // bug. Drop OSC 133 entirely — it's only useful to terminals that
+            // understand it (Warp, WezTerm) and we don't.
+            sb.appendLine("# Prompt with dynamic HOME shortening")
             sb.appendLine("# Resolve real HOME path once (symlink: /data/user/0 vs /data/data)")
             sb.appendLine("SHELLY_HOME_REAL=\$(cd \"\$HOME\" 2>/dev/null && pwd -P)")
             sb.appendLine("[ -z \"\$SHELLY_HOME_REAL\" ] && SHELLY_HOME_REAL=\"\$HOME\"")
-            sb.appendLine("__shelly_first_prompt=1")
             sb.appendLine("__shelly_prompt() {")
-            sb.appendLine("  local ec=\$?")
             sb.appendLine("  local d")
             sb.appendLine("  d=\"\$(pwd -P 2>/dev/null || pwd)\"")
             sb.appendLine("  # Replace home path with ~ (\\~ prevents tilde expansion in replacement)")
             sb.appendLine("  d=\"\${d/#\$SHELLY_HOME_REAL/\\~}\"")
             sb.appendLine("  d=\"\${d/#\$HOME/\\~}\"")
-            sb.appendLine("  # OSC 133;D — skip on the very first prompt (no prior command)")
-            sb.appendLine("  if [ -z \"\$__shelly_first_prompt\" ]; then")
-            sb.appendLine("    printf '\\033]133;D;%s\\007' \"\$ec\"")
-            sb.appendLine("  else")
-            sb.appendLine("    unset __shelly_first_prompt")
-            sb.appendLine("  fi")
-            sb.appendLine("  # OSC 133;A = prompt start, 133;B = prompt end")
-            sb.appendLine("  PS1='\\[\\e]133;A\\a\\]\\[\\033[1;32m\\]'\"\$d\"'\\[\\033[0m\\]\\\$ \\[\\e]133;B\\a\\]'")
+            sb.appendLine("  # Use printf-style escapes via \$'...' so \\[ \\] reach bash literally")
+            sb.appendLine("  PS1=\$'\\[\\e[1;32m\\]'\"\$d\"\$'\\[\\e[0m\\]\\$ '")
             sb.appendLine("}")
             sb.appendLine("PROMPT_COMMAND=__shelly_prompt")
 

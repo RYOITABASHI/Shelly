@@ -375,41 +375,20 @@ public class TerminalView extends View {
                 }
                 String newText = text != null ? text.toString() : "";
 
-                // For ASCII-only text (English typing), Gboard uses composing mode
-                // for autocorrect/prediction. Over TCP-based PTY, the DEL-based
-                // erase-and-resend creates duplicates because DEL may be delayed.
-                // Solution: for ASCII-only composing, only send the *delta* (new chars
-                // appended since last composing text) instead of erase+resend all.
-                boolean isAsciiOnly = true;
-                for (int i = 0; i < newText.length(); i++) {
-                    if (newText.charAt(i) > 127) {
-                        isAsciiOnly = false;
-                        break;
-                    }
-                }
-
-                if (isAsciiOnly && newText.startsWith(mLastComposingSent)) {
-                    // ASCII composing: only send newly appended characters
-                    String delta = newText.substring(mLastComposingSent.length());
-                    if (!delta.isEmpty()) {
-                        sendTextToTerminal(delta);
-                    }
-                    Log.d("ShellyIME", "setComposing ASCII delta prev=\"" + mLastComposingSent + "\" new=\"" + newText + "\" delta=\"" + delta + "\"");
+                // Simple, reliable path: always erase the previous composing
+                // text from the PTY and send the new full string. The earlier
+                // ASCII delta optimization assumed Gboard's composing buffer
+                // and the PTY echo stayed in lockstep, but in practice they
+                // drift (especially after paste / backspace) and characters
+                // get dropped. JNI fork+exec PTY makes the resend cheap.
+                eraseComposingFromPty();
+                if (!newText.isEmpty()) {
+                    sendTextToTerminal(newText);
                     mLastComposingSent = newText;
-                } else {
-                    // CJK or non-incremental change: erase previous and resend all
-                    Log.d("ShellyIME", "setComposing FULL erase prev=\"" + mLastComposingSent + "\" new=\"" + newText + "\" ascii=" + isAsciiOnly);
-                    eraseComposingFromPty();
-                    if (!newText.isEmpty()) {
-                        sendTextToTerminal(newText);
-                        mLastComposingSent = newText;
-                    }
                 }
+                Log.d("ShellyIME", "setComposing text=\"" + newText + "\"");
 
-                // No overlay needed — text is shown inline by the terminal
                 mComposingText = "";
-
-                // Keep BaseInputConnection's internal state in sync
                 return super.setComposingText(text, newCursorPosition);
             }
 
@@ -432,24 +411,19 @@ public class TerminalView extends View {
                 }
                 String commitStr = text != null ? text.toString() : "";
 
-                if (!mLastComposingSent.isEmpty() && commitStr.equals(mLastComposingSent)) {
-                    // Composing text is already on the PTY — just finalize without resending
-                    Log.d("ShellyIME", "commit NOOP (matches composing) text=\"" + commitStr + "\"");
-                } else if (!mLastComposingSent.isEmpty() && commitStr.startsWith(mLastComposingSent)) {
-                    // Committed text extends composing — only send the delta
-                    String delta = commitStr.substring(mLastComposingSent.length());
-                    if (!delta.isEmpty()) {
-                        sendTextToTerminal(delta);
-                    }
-                    Log.d("ShellyIME", "commit DELTA prev=\"" + mLastComposingSent + "\" commit=\"" + commitStr + "\" delta=\"" + delta + "\"");
-                } else {
-                    // Different text or no composing — erase and send fresh
-                    Log.d("ShellyIME", "commit FRESH prev=\"" + mLastComposingSent + "\" commit=\"" + commitStr + "\"");
+                // Simple, reliable path: erase any in-flight composing from PTY,
+                // then send the committed text. The previous delta-detection
+                // optimization caused dropped characters on paste, leftover state
+                // after backspace, and a "first character missing" bug for the
+                // next input. JNI fork+exec PTY is fast enough that the
+                // erase+resend overhead is invisible.
+                if (!mLastComposingSent.isEmpty()) {
                     eraseComposingFromPty();
-                    if (!commitStr.isEmpty()) {
-                        sendTextToTerminal(commitStr);
-                    }
                 }
+                if (!commitStr.isEmpty()) {
+                    sendTextToTerminal(commitStr);
+                }
+                Log.d("ShellyIME", "commit text=\"" + commitStr + "\"");
 
                 mComposingText = "";
                 mLastComposingSent = "";
