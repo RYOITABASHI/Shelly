@@ -428,9 +428,9 @@ const paneStyles = StyleSheet.create({
     letterSpacing: 0.6,
     fontWeight: '700',
     color: C.accent,
-    textShadowColor: 'rgba(0, 212, 170, 0.5)',
+    textShadowColor: 'rgba(0, 212, 170, 0.9)',
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 4,
+    textShadowRadius: 8,
   },
   emptyState: {
     flex: 1,
