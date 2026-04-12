@@ -427,8 +427,18 @@ export default function TerminalScreen() {
     };
   }, [settings.terminalTheme]);
 
-  // Adaptive terminal font size for small screens (Z Fold6 cover ~ 373dp)
-  const termFontSize = layout.isCompact ? 11 : layout.width < 500 ? 12 : layout.isWide ? 11 : 12;
+  // Terminal font size honors the user's Settings → Display → Font Size choice
+  // (8/10/12 sp = S/M/L). Falls back to a compact-friendly default when the
+  // settings store hasn't loaded yet. Compact screens (Z Fold6 cover ~ 373dp)
+  // shave one extra step.
+  const termFontSize = (() => {
+    const base = settings.fontSize ?? 10;
+    // settings.fontSize comes in as 12/14/16 from the S/M/L preset; map down
+    // to the smaller scale the terminal renderer needs (PressStart2P-style 8x8
+    // glyphs make sp values read about 1.4x larger than a normal monospace).
+    const mapped = base <= 12 ? 8 : base <= 14 ? 10 : 12;
+    return layout.isCompact ? Math.max(7, mapped - 1) : mapped;
+  })();
 
   // Send text to terminal via native PTY
   const sendToTerminal = useCallback((text: string) => {
