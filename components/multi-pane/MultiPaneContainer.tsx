@@ -42,8 +42,13 @@ function Divider({
   return (
     <GestureDetector gesture={composed}>
       <View style={isHorizontal ? styles.dividerV : styles.dividerH}>
-        {/* 1px visible line centered in the 12px hit area */}
+        {/* Accent line + 3-dot handle so the user can see where to grab */}
         <View style={isHorizontal ? styles.dividerVLine : styles.dividerHLine} />
+        <View style={isHorizontal ? styles.dividerGripV : styles.dividerGripH}>
+          <View style={styles.dividerDot} />
+          <View style={styles.dividerDot} />
+          <View style={styles.dividerDot} />
+        </View>
       </View>
     </GestureDetector>
   );
@@ -145,29 +150,63 @@ const styles = StyleSheet.create({
   splitV: {
     flexDirection: 'column',
   },
-  // 12px hit area with a 1px visible line centered
+  // 16px hit area with a 2px accent line + 3-dot grip centered so the
+  // user can actually find and drag it. Previously a 1px border-color
+  // line in a 12px hitbox, both invisible on a dark background.
   dividerV: {
-    width: 12,
-    marginHorizontal: -6,
+    width: 16,
+    marginHorizontal: -8,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
   },
   dividerH: {
-    height: 12,
-    marginVertical: -6,
+    height: 16,
+    marginVertical: -8,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
   },
   dividerVLine: {
-    width: 1,
+    position: 'absolute',
+    width: 2,
     height: '100%',
-    backgroundColor: C.border,
+    backgroundColor: 'rgba(0,212,170,0.45)',
   },
   dividerHLine: {
-    height: 1,
+    position: 'absolute',
+    height: 2,
     width: '100%',
-    backgroundColor: C.border,
+    backgroundColor: 'rgba(0,212,170,0.45)',
+  },
+  dividerGripV: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 10,
+    height: 28,
+    borderRadius: 3,
+    backgroundColor: C.bgSurface,
+    borderWidth: 1,
+    borderColor: 'rgba(0,212,170,0.55)',
+    gap: 2,
+  },
+  dividerGripH: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 28,
+    height: 10,
+    borderRadius: 3,
+    backgroundColor: C.bgSurface,
+    borderWidth: 1,
+    borderColor: 'rgba(0,212,170,0.55)',
+    gap: 2,
+  },
+  dividerDot: {
+    width: 2,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: C.accent,
   },
 });
