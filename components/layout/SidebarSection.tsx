@@ -2,9 +2,7 @@
 import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useTheme } from '@/lib/theme-engine';
-
-const ACCENT = '#00D4AA';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
 type Props = {
   title: string;
@@ -25,13 +23,10 @@ export function SidebarSection({
   iconsOnly,
   children,
 }: Props) {
-  const theme = useTheme();
-  const c = theme.colors;
-
   if (iconsOnly) {
     return (
       <Pressable style={styles.iconBtn} onPress={onToggle} hitSlop={4}>
-        <MaterialIcons name={icon as any} size={18} color={isOpen ? ACCENT : '#6B7280'} />
+        <MaterialIcons name={icon as any} size={18} color={isOpen ? C.accent : C.text2} />
         {badge != null && badge > 0 && (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{badge > 9 ? '9+' : badge}</Text>
@@ -54,7 +49,7 @@ export function SidebarSection({
         <MaterialIcons
           name={isOpen ? 'expand-less' : 'expand-more'}
           size={14}
-          color="#6B7280"
+          color={C.text2}
         />
       </Pressable>
       {isOpen && <View style={styles.body}>{children}</View>}
@@ -64,37 +59,36 @@ export function SidebarSection({
 
 const styles = StyleSheet.create({
   section: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    borderBottomWidth: S.borderWidth,
+    borderBottomColor: C.border,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 0,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    height: S.sidebarSectionHeaderHeight,
+    paddingHorizontal: P.sidebarItem.px,
   },
   title: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '800',
+    fontSize: F.sidebarSection.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarSection.weight,
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: '#6B7280',
+    letterSpacing: F.sidebarSection.letterSpacing,
+    color: C.text2,
   },
   spacer: { flex: 1 },
   countBadge: {
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    borderRadius: R.badge,
+    paddingHorizontal: P.statusBadge.px,
+    paddingVertical: P.statusBadge.py,
     marginLeft: 4,
-    backgroundColor: 'rgba(0,212,170,0.15)',
+    backgroundColor: C.badgeRunningBg,
   },
   countText: {
-    fontSize: 7,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '800',
-    color: ACCENT,
+    fontSize: F.badge.size - 1,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
+    color: C.badgeRunningText,
   },
   body: {
     paddingBottom: 4,
@@ -112,13 +106,13 @@ const styles = StyleSheet.create({
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   badgeText: {
-    color: '#000',
-    fontSize: 8,
-    fontWeight: '800',
+    color: C.btnPrimaryText,
+    fontSize: F.badge.size,
+    fontWeight: F.badge.weight,
   },
 });

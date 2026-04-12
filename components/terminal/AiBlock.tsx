@@ -13,6 +13,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { AiBlock as AiBlockType } from '@/store/types';
+import { colors as C } from '@/theme.config';
 import { getTargetColor } from '@/lib/input-router';
 import { speakText, stopSpeaking } from '@/lib/tts';
 import { GitGuideBlock } from './GitGuideBlock';
@@ -299,7 +300,7 @@ export const AiBlock = memo(function AiBlock({ block, onSelectTool, onRunCommand
                   activeOpacity={0.7}
                 >
                   <MaterialIcons name="refresh" size={14} color="#FBBF24" />
-                  <Text style={[styles.errorBtnText, { color: '#FBBF24' }]}>{t('ai.retry') || 'Retry'}</Text>
+                  <Text style={[styles.errorBtnText, { color: C.warning }]}>{t('ai.retry') || 'Retry'}</Text>
                 </TouchableOpacity>
               )}
               {onAskOther && (

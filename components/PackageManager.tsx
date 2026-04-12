@@ -6,6 +6,7 @@
  * installed via npm/pip/etc. as guided in the panel.
  */
 import React, { useState, useCallback, useEffect } from 'react';
+import { colors as C } from '@/theme.config';
 import {
   View,
   Text,
@@ -19,7 +20,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { execCommand } from '@/hooks/use-native-exec';
 
-const ACCENT = '#00D4AA';
+
 
 const BUNDLED_TOOLS = [
   { name: 'bash',     cmd: 'bash --version | head -1' },
@@ -90,7 +91,7 @@ export function PackageManager({ visible, onClose }: Props) {
       <View style={[styles.container, { paddingTop: insets.top }]}>
         {/* Header */}
         <View style={styles.header}>
-          <MaterialIcons name="build-circle" size={20} color={ACCENT} />
+          <MaterialIcons name="build-circle" size={20} color={C.accent} />
           <Text style={styles.headerTitle}>Bundled Tools</Text>
           <View style={styles.headerActions}>
             <Pressable style={styles.headerBtn} onPress={runChecks}>
@@ -111,9 +112,9 @@ export function PackageManager({ visible, onClose }: Props) {
             <View key={tool.name} style={styles.toolRow}>
               <View style={styles.toolStatus}>
                 {tool.checking ? (
-                  <ActivityIndicator size="small" color={ACCENT} />
+                  <ActivityIndicator size="small" color={C.accent} />
                 ) : tool.version ? (
-                  <MaterialIcons name="check-circle" size={18} color={ACCENT} />
+                  <MaterialIcons name="check-circle" size={18} color={C.accent} />
                 ) : (
                   <MaterialIcons name="cancel" size={18} color="#F87171" />
                 )}
@@ -257,7 +258,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   codeSnippet: {
-    color: ACCENT,
+    color: C.accent,
     fontFamily: 'monospace',
     fontSize: 11,
   },

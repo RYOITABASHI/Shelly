@@ -1,21 +1,10 @@
 /**
  * MockClaudeSession.tsx — Hardcoded Claude Code session matching mock screenshots
- *
- * Renders a pixel-perfect replica of the mock's terminal content:
- * - Session banner (CLAUDE CODE V2.1.92)
- * - READ block with file content preview
- * - EDIT block with diff (red/green lines) + ACCEPT/REJECT
- * - BASH warning block with ALLOW/DENY
- * - Auto-save bar
- * - Tip bar
- * - Prompt cursor
  */
 import React from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable } from 'react-native';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
-
-const ACCENT = '#00D4AA';
-const FONT = 'GeistPixel-Square';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R, decorations as D } from '@/theme.config';
 
 export function MockClaudeSession() {
   return (
@@ -32,7 +21,6 @@ export function MockClaudeSession() {
           </View>
         </View>
         <View style={s.bannerRight}>
-          {/* Progress bar */}
           <View style={s.progressBar}>
             <View style={s.progressDot} />
           </View>
@@ -42,8 +30,8 @@ export function MockClaudeSession() {
 
       {/* ── READ Block ── */}
       <View style={s.blockRow}>
-        <View style={[s.blockDot, { backgroundColor: ACCENT }]} />
-        <Text style={[s.blockAction, { color: ACCENT }]}>READ </Text>
+        <View style={[s.blockDot, { backgroundColor: C.accent }]} />
+        <Text style={[s.blockAction, { color: C.accent }]}>READ </Text>
         <Text style={s.blockPath}>COMPONENTS/WELCOMEWIZARD.TSX</Text>
         <View style={{ flex: 1 }} />
         <Text style={s.blockDuration}>0.3S</Text>
@@ -58,27 +46,27 @@ export function MockClaudeSession() {
 
       {/* ── EDIT Block ── */}
       <View style={s.blockRow}>
-        <View style={[s.blockDot, { backgroundColor: '#FBBF24' }]} />
-        <Text style={[s.blockAction, { color: '#FBBF24' }]}>EDIT </Text>
+        <View style={[s.blockDot, { backgroundColor: C.warning }]} />
+        <Text style={[s.blockAction, { color: C.warning }]}>EDIT </Text>
         <Text style={s.blockPath}>LIB/INPUT-ROUTER.TS</Text>
         <View style={{ flex: 1 }} />
         <Text style={s.editPen}>✏️</Text>
       </View>
       <View style={s.diffContainer}>
         <View style={s.diffLine}>
-          <View style={[s.diffBar, { backgroundColor: '#EF4444' }]} />
+          <View style={[s.diffBar, { backgroundColor: C.diffRemoveBorder }]} />
           <Text style={s.diffRemove}>—   LAYER: 'NATURAL',</Text>
         </View>
         <View style={s.diffLineAdd}>
-          <View style={[s.diffBar, { backgroundColor: ACCENT }]} />
+          <View style={[s.diffBar, { backgroundColor: C.diffAddBorder }]} />
           <Text style={s.diffAdd}>+   LAYER: 'MENTION',</Text>
         </View>
         <View style={s.diffLine}>
-          <View style={[s.diffBar, { backgroundColor: '#EF4444' }]} />
+          <View style={[s.diffBar, { backgroundColor: C.diffRemoveBorder }]} />
           <Text style={s.diffRemove}>—   TARGET: 'SUGGEST',</Text>
         </View>
         <View style={s.diffLineAdd}>
-          <View style={[s.diffBar, { backgroundColor: ACCENT }]} />
+          <View style={[s.diffBar, { backgroundColor: C.diffAddBorder }]} />
           <Text style={s.diffAdd}>+   TARGET: 'ACTIONS',</Text>
         </View>
       </View>
@@ -148,27 +136,27 @@ export function MockClaudeSession() {
 }
 
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0A0A' },
+  container: { flex: 1, backgroundColor: C.bgDeep },
   content: { padding: 0 },
 
   // Banner
   banner: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#111', borderRadius: 8, margin: 8, padding: 10,
-    borderWidth: 1, borderColor: '#1A1A1A',
+    backgroundColor: C.bgSurface, borderRadius: 8, margin: 8, padding: 10,
+    borderWidth: S.borderWidth, borderColor: C.border,
   },
   bannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  bannerIcon: { fontSize: 16, color: '#6B7280' },
-  bannerTitle: { fontFamily: FONT, fontSize: 11, fontWeight: '700', color: '#E5E7EB' },
-  bannerVersion: { color: '#6B7280', fontWeight: '400' },
-  bannerSub: { fontFamily: FONT, fontSize: 8, color: '#6B7280', marginTop: 2 },
+  bannerIcon: { fontSize: 16, color: C.text2 },
+  bannerTitle: { fontFamily: F.family, fontSize: 11, fontWeight: '700', color: C.text1 },
+  bannerVersion: { color: C.text2, fontWeight: '400' },
+  bannerSub: { fontFamily: F.family, fontSize: 8, color: C.text2, marginTop: 2 },
   bannerRight: { alignItems: 'flex-end' },
-  progressBar: { width: 60, height: 3, backgroundColor: '#1A1A1A', borderRadius: 2, marginBottom: 3 },
+  progressBar: { width: 60, height: 3, backgroundColor: C.border, borderRadius: 2, marginBottom: 3 },
   progressDot: {
     position: 'absolute', width: 5, height: 5, borderRadius: 3,
-    backgroundColor: ACCENT, top: -1, left: '50%',
+    backgroundColor: C.accent, top: -1, left: '50%',
   },
-  bannerTokens: { fontFamily: FONT, fontSize: 8, color: '#6B7280' },
+  bannerTokens: { fontFamily: F.family, fontSize: 8, color: C.text2 },
 
   // Block header
   blockRow: {
@@ -176,76 +164,76 @@ const s = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 6, gap: 4,
   },
   blockDot: { width: 8, height: 8, borderRadius: 4 },
-  blockAction: { fontFamily: FONT, fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
-  blockPath: { fontFamily: FONT, fontSize: 10, color: '#E5E7EB' },
-  blockDuration: { fontFamily: FONT, fontSize: 9, color: '#6B7280' },
+  blockAction: { fontFamily: F.family, fontSize: F.paneHeader.size, fontWeight: F.paneHeader.weight, letterSpacing: 0.5 },
+  blockPath: { fontFamily: F.family, fontSize: F.paneHeader.size, color: C.text1 },
+  blockDuration: { fontFamily: F.family, fontSize: F.contextBar.size, color: C.text2 },
   blockCopy: { fontSize: 12, marginLeft: 4 },
   editPen: { fontSize: 12 },
   blockBody: { paddingHorizontal: 12, paddingBottom: 8 },
-  codeText: { fontFamily: FONT, fontSize: 9, color: '#93C5FD', lineHeight: 14 },
+  codeText: { fontFamily: F.family, fontSize: F.contextBar.size, color: '#93C5FD', lineHeight: 14 },
 
   // Diff
-  diffContainer: { marginHorizontal: 8, borderRadius: 4, overflow: 'hidden', borderWidth: 1, borderColor: '#1A1A1A' },
+  diffContainer: { marginHorizontal: 8, borderRadius: 4, overflow: 'hidden', borderWidth: S.borderWidth, borderColor: C.border },
   diffLine: {
     flexDirection: 'row', alignItems: 'stretch',
-    backgroundColor: 'rgba(239,68,68,0.10)',
+    backgroundColor: C.errorBg,
   },
   diffLineAdd: {
     flexDirection: 'row', alignItems: 'stretch',
-    backgroundColor: 'rgba(0,212,170,0.10)',
+    backgroundColor: C.addBg,
   },
-  diffBar: { width: 3 },
+  diffBar: { width: D.diffBorderWidth },
   diffRemove: {
-    fontFamily: FONT, fontSize: 10, color: '#EF4444',
+    fontFamily: F.family, fontSize: F.paneHeader.size, color: C.errorText,
     paddingHorizontal: 8, paddingVertical: 4, flex: 1,
   },
   diffAdd: {
-    fontFamily: FONT, fontSize: 10, color: ACCENT,
+    fontFamily: F.family, fontSize: F.paneHeader.size, color: C.addText,
     paddingHorizontal: 8, paddingVertical: 4, flex: 1,
   },
 
   // Action buttons
   actionRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 10, paddingVertical: 6 },
   acceptBtn: {
-    backgroundColor: ACCENT, paddingHorizontal: 14, paddingVertical: 5, borderRadius: 4,
-    shadowColor: ACCENT, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.4, shadowRadius: 6,
+    backgroundColor: C.btnPrimaryBg, paddingHorizontal: 14, paddingVertical: 5, borderRadius: R.actionButton,
+    shadowColor: C.accent, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.4, shadowRadius: 6,
   },
-  acceptText: { fontFamily: FONT, fontSize: 9, fontWeight: '800', color: '#000', letterSpacing: 0.5 },
+  acceptText: { fontFamily: F.family, fontSize: F.contextBar.size, fontWeight: '800', color: C.btnPrimaryText, letterSpacing: 0.5 },
   rejectBtn: {
-    borderWidth: 1, borderColor: '#333', paddingHorizontal: 14, paddingVertical: 5, borderRadius: 4,
+    backgroundColor: C.btnSecondaryBg, paddingHorizontal: 14, paddingVertical: 5, borderRadius: R.actionButton,
   },
-  rejectText: { fontFamily: FONT, fontSize: 9, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
+  rejectText: { fontFamily: F.family, fontSize: F.contextBar.size, fontWeight: '700', color: C.btnSecondaryText, letterSpacing: 0.5 },
 
   // Bash warning
   bashHeader: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(251,191,36,0.08)', paddingHorizontal: 10, paddingVertical: 6,
-    borderTopWidth: 1, borderTopColor: '#1A1A1A', marginTop: 4,
+    backgroundColor: 'rgba(245,158,11,0.08)', paddingHorizontal: 10, paddingVertical: 6,
+    borderTopWidth: S.borderWidth, borderTopColor: C.border, marginTop: 4,
   },
-  bashIcon: { fontSize: 12, color: '#FBBF24' },
-  bashTitle: { fontFamily: FONT, fontSize: 10, fontWeight: '700', color: '#FBBF24' },
-  bashConfirm: { fontFamily: FONT, fontSize: 9, fontWeight: '800', color: '#FBBF24' },
+  bashIcon: { fontSize: 12, color: C.warning },
+  bashTitle: { fontFamily: F.family, fontSize: F.paneHeader.size, fontWeight: '700', color: C.warning },
+  bashConfirm: { fontFamily: F.family, fontSize: F.contextBar.size, fontWeight: '800', color: C.warning },
   bashBody: { paddingHorizontal: 10, paddingVertical: 6 },
-  bashText: { fontFamily: FONT, fontSize: 10, color: '#E5E7EB', marginBottom: 6 },
+  bashText: { fontFamily: F.family, fontSize: F.paneHeader.size, color: C.text1, marginBottom: 6 },
   allowBtn: {
-    backgroundColor: ACCENT, paddingHorizontal: 14, paddingVertical: 5, borderRadius: 4,
+    backgroundColor: C.btnPrimaryBg, paddingHorizontal: 14, paddingVertical: 5, borderRadius: R.actionButton,
   },
-  allowText: { fontFamily: FONT, fontSize: 9, fontWeight: '800', color: '#000', letterSpacing: 0.5 },
+  allowText: { fontFamily: F.family, fontSize: F.contextBar.size, fontWeight: '800', color: C.btnPrimaryText, letterSpacing: 0.5 },
   denyBtn: {
-    borderWidth: 1, borderColor: '#333', paddingHorizontal: 14, paddingVertical: 5, borderRadius: 4,
+    backgroundColor: C.btnSecondaryBg, paddingHorizontal: 14, paddingVertical: 5, borderRadius: R.actionButton,
   },
-  denyText: { fontFamily: FONT, fontSize: 9, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
+  denyText: { fontFamily: F.family, fontSize: F.contextBar.size, fontWeight: '700', color: C.btnSecondaryText, letterSpacing: 0.5 },
 
   // Auto-save
   autoSaveBar: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(0,212,170,0.08)', paddingHorizontal: 10, paddingVertical: 5,
+    backgroundColor: C.autoSaveBg, paddingHorizontal: 10, paddingVertical: 5,
     marginHorizontal: 8, borderRadius: 4, marginTop: 4,
   },
   autoSaveIcon: { fontSize: 10 },
-  autoSaveText: { fontFamily: FONT, fontSize: 9, color: ACCENT },
+  autoSaveText: { fontFamily: F.family, fontSize: F.contextBar.size, color: C.accent },
   autoSaveLink: {
-    fontFamily: FONT, fontSize: 9, fontWeight: '700', color: ACCENT,
+    fontFamily: F.family, fontSize: F.contextBar.size, fontWeight: '700', color: C.accent,
     textDecorationLine: 'underline',
   },
 
@@ -255,17 +243,17 @@ const s = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   tipIcon: { fontSize: 10 },
-  tipText: { fontFamily: FONT, fontSize: 9, color: '#6B7280' },
-  tipDismiss: { fontFamily: FONT, fontSize: 10, color: '#4B5563' },
+  tipText: { fontFamily: F.family, fontSize: F.tip.size, color: C.text3 },
+  tipDismiss: { fontFamily: F.family, fontSize: F.paneHeader.size, color: C.text3 },
 
   // Prompt
   promptRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 10, paddingVertical: 8, gap: 4,
   },
-  promptSymbol: { fontFamily: FONT, fontSize: 12, color: ACCENT, fontWeight: '700' },
+  promptSymbol: { fontFamily: F.family, fontSize: 12, color: C.accent, fontWeight: '700' },
   cursor: {
-    width: 8, height: 14, backgroundColor: ACCENT, borderRadius: 1,
+    width: 8, height: 14, backgroundColor: C.accent, borderRadius: 1,
     opacity: 0.8,
   },
 
@@ -276,7 +264,7 @@ const s = StyleSheet.create({
   },
   fab: {
     width: 32, height: 32, borderRadius: 16,
-    backgroundColor: 'rgba(0,212,170,0.2)', borderWidth: 1, borderColor: ACCENT,
+    backgroundColor: 'rgba(0,212,170,0.2)', borderWidth: S.borderWidth, borderColor: C.accent,
     justifyContent: 'center', alignItems: 'center',
   },
   fabIcon: { fontSize: 14 },

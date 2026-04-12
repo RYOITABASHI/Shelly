@@ -8,6 +8,7 @@ import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useI18n, type Locale } from '@/lib/i18n';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
 type AgentDef = {
   name: string;
@@ -21,8 +22,6 @@ const BUILT_IN_AGENTS: AgentDef[] = [
   { name: 'OPENCODE', key: 'opencode' },
   { name: 'COPILOT', key: 'copilot' },
 ];
-
-const ACCENT = '#00D4AA';
 
 export function AgentBar() {
   const { focusedPaneId, paneAgents, bindAgent } = usePaneStore();
@@ -71,11 +70,11 @@ export function AgentBar() {
               ]}
               onPress={() => handleAgentTap(agent.key)}
             >
-              <View style={[styles.statusDot, { backgroundColor: isActive ? ACCENT : '#6B7280' }, isActive && neonDotGlow]} />
+              <View style={[styles.statusDot, { backgroundColor: isActive ? C.accent : C.text2 }, isActive && neonDotGlow]} />
               <Text
                 style={[
                   styles.agentText,
-                  { color: isActive ? '#E5E7EB' : '#6B7280' },
+                  { color: isActive ? C.text1 : C.text2 },
                   isActive && { fontWeight: '800', ...neonTextGlow },
                 ]}
               >
@@ -104,7 +103,7 @@ export function AgentBar() {
                   style={styles.addModalRow}
                   onPress={() => handleEnableAgent(agent.key)}
                 >
-                  <View style={[styles.statusDot, { backgroundColor: '#6B7280' }]} />
+                  <View style={[styles.statusDot, { backgroundColor: C.text2 }]} />
                   <Text style={styles.addModalLabel}>{agent.name}</Text>
                   <Text style={styles.addModalAction}>ENABLE</Text>
                 </Pressable>
@@ -123,14 +122,14 @@ export function AgentBar() {
           onPress={() => useCommandPaletteStore.getState().toggle()}
           hitSlop={8}
         >
-          <MaterialIcons name="search" size={16} color="#6B7280" />
+          <MaterialIcons name="search" size={16} color={C.text2} />
         </Pressable>
         <Pressable
           style={styles.iconBtn}
           onPress={() => useSettingsStore.getState().setShowConfigTUI(true)}
           hitSlop={8}
         >
-          <MaterialIcons name="settings" size={15} color="#6B7280" />
+          <MaterialIcons name="settings" size={15} color={C.text2} />
         </Pressable>
       </View>
     </View>
@@ -210,29 +209,29 @@ function LangToggle() {
 
 const styles = StyleSheet.create({
   bar: {
-    height: 32,
+    height: S.agentBarHeight,
     flexDirection: 'row',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
-    backgroundColor: '#0D0D0D',
+    borderBottomWidth: S.borderWidth,
+    borderBottomColor: C.border,
+    backgroundColor: C.bgSidebar,
   },
   scroll: {
     flex: 1,
   },
   scrollContent: {
     alignItems: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: P.agentBar.px,
     gap: 2,
   },
   agentTab: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 4,
-    borderWidth: 1,
+    paddingHorizontal: P.agentTab.px,
+    paddingVertical: P.agentTab.py,
+    borderRadius: R.agentTab,
+    borderWidth: S.borderWidth,
     borderColor: 'transparent',
   },
   agentTabActive: {
@@ -240,25 +239,25 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(0,212,170,0.25)',
   },
   statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: S.agentDotSize,
+    height: S.agentDotSize,
+    borderRadius: S.agentDotSize / 2,
   },
   agentText: {
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '700',
+    fontSize: F.agentTab.size,
+    fontFamily: F.family,
+    fontWeight: F.agentTab.weight,
     letterSpacing: 0.8,
     textTransform: 'uppercase',
   },
   addBtn: {
-    paddingHorizontal: 10,
+    paddingHorizontal: P.agentTab.px,
     paddingVertical: 4,
   },
   addBtnText: {
-    color: '#6B7280',
+    color: C.text2,
     fontSize: 14,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '600',
   },
   rightBtns: {
@@ -269,7 +268,7 @@ const styles = StyleSheet.create({
   },
   iconBtn: {
     padding: 4,
-    borderRadius: 4,
+    borderRadius: R.agentTab,
   },
   // CRT controls
   crtGroup: {
@@ -279,26 +278,26 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   crtBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-    backgroundColor: '#1A1A1A',
-    borderWidth: 1,
-    borderColor: '#333',
+    paddingHorizontal: P.statusBadge.px,
+    paddingVertical: P.statusBadge.py,
+    borderRadius: R.badge,
+    backgroundColor: C.crtBadgeBg,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
   },
   crtBadgeOn: {
     backgroundColor: 'rgba(0,212,170,0.15)',
     borderColor: 'rgba(0,212,170,0.4)',
   },
   crtBadgeText: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '800',
-    color: '#6B7280',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
+    color: C.text2,
     letterSpacing: 0.5,
   },
   crtBadgeTextOn: {
-    color: ACCENT,
+    color: C.crtBadgeText,
     textShadowColor: 'rgba(0, 212, 170, 0.6)',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 6,
@@ -311,13 +310,13 @@ const styles = StyleSheet.create({
   crtTrack: {
     width: 56,
     height: 4,
-    backgroundColor: '#333',
+    backgroundColor: C.border,
     borderRadius: 2,
     position: 'relative',
   },
   crtTrackFill: {
     height: 4,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     borderRadius: 2,
   },
   crtThumb: {
@@ -326,13 +325,13 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
   },
   crtPercent: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '700',
-    color: '#6B7280',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
+    color: C.text2,
     minWidth: 22,
     textAlign: 'right',
   },
@@ -344,18 +343,18 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   langText: {
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '700',
-    color: '#6B7280',
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
+    fontWeight: F.contextBar.weight,
+    color: C.text2,
   },
   langTextActive: {
-    color: '#E5E7EB',
+    color: C.text1,
   },
   langSep: {
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
-    color: '#333',
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
+    color: C.text3,
   },
   // Add agent modal
   addModalBackdrop: {
@@ -368,25 +367,25 @@ const styles = StyleSheet.create({
   },
   addModalMenu: {
     width: 200,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     borderRadius: 8,
     padding: 8,
-    borderWidth: 1,
-    borderColor: '#333',
+    borderWidth: S.borderWidth,
+    borderColor: C.btnSecondaryBg,
   },
   addModalTitle: {
-    color: '#6B7280',
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    color: C.text2,
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 1,
     marginBottom: 4,
     paddingHorizontal: 6,
   },
   addModalEmpty: {
-    color: '#6B7280',
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    color: C.text2,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
     fontStyle: 'italic',
     paddingHorizontal: 6,
     paddingVertical: 8,
@@ -397,21 +396,21 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 6,
     paddingHorizontal: 6,
-    borderRadius: 4,
+    borderRadius: R.agentTab,
   },
   addModalLabel: {
     flex: 1,
-    color: '#E5E7EB',
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    color: C.text1,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   addModalAction: {
-    color: ACCENT,
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '800',
+    color: C.accent,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
     letterSpacing: 0.5,
   },
 });

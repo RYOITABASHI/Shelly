@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useExecutionLogStore, type ExecutionLogEntry } from '@/store/execution-log-store';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 interface Props {
   colors: any;
@@ -40,7 +41,7 @@ export function ExecutionLogPanel({ colors: c }: Props) {
   if (entries.length === 0) return null;
 
   return (
-    <View style={[styles.container, { backgroundColor: c.backgroundDeep || '#0A0A0A', borderTopColor: c.border }]}>
+    <View style={[styles.container, { backgroundColor: c.backgroundDeep || C.bgDeep, borderTopColor: c.border }]}>
       {/* Header */}
       <Pressable style={styles.header} onPress={toggleLogPanel}>
         <View style={styles.headerLeft}>
@@ -94,7 +95,7 @@ function LogEntry({ entry, colors: c }: { entry: ExecutionLogEntry; colors: any 
 
   const isCommand = !!entry.command;
   const isError = entry.exitCode != null && entry.exitCode !== 0;
-  const statusColor = entry.isStreaming ? '#FBBF24' : isError ? '#F87171' : '#4ADE80';
+  const statusColor = entry.isStreaming ? C.warning : isError ? '#F87171' : '#4ADE80';
 
   return (
     <View style={[styles.entry, { borderLeftColor: statusColor }]}>
@@ -144,7 +145,7 @@ function LogEntry({ entry, colors: c }: { entry: ExecutionLogEntry; colors: any 
 
       {/* Streaming indicator */}
       {entry.isStreaming && (
-        <Text style={[styles.streamingText, { color: '#FBBF24' }]}>...</Text>
+        <Text style={[styles.streamingText, { color: C.warning }]}>...</Text>
       )}
     </View>
   );

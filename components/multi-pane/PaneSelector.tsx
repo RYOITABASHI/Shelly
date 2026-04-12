@@ -10,9 +10,9 @@ import {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { PANE_REGISTRY } from './pane-registry';
 import type { PaneTab } from '@/hooks/use-multi-pane';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 const ALL_TABS = Object.keys(PANE_REGISTRY) as PaneTab[];
-const ACCENT = '#00D4AA';
 
 type Props = {
   visible: boolean;
@@ -49,7 +49,7 @@ export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) 
                   <MaterialIcons
                     name={entry.icon as any}
                     size={20}
-                    color={isActive ? ACCENT : '#9BA1A6'}
+                    color={isActive ? C.accent : C.text2}
                   />
                   <Text style={[styles.itemText, isActive && styles.itemTextActive]}>
                     {entry.title}
@@ -73,17 +73,17 @@ const styles = StyleSheet.create({
   },
   menu: {
     width: 240,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 12,
     padding: 12,
-    borderWidth: 1,
-    borderColor: '#333',
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
     maxHeight: 400,
   },
   title: {
-    color: '#9BA1A6',
+    color: C.text2,
     fontSize: 11,
-    fontFamily: 'monospace',
+    fontFamily: F.family,
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginBottom: 8,
@@ -101,12 +101,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,212,170,0.1)',
   },
   itemText: {
-    color: '#ECEDEE',
+    color: C.text1,
     fontSize: 14,
-    fontFamily: 'monospace',
+    fontFamily: F.family,
   },
   itemTextActive: {
-    color: ACCENT,
+    color: C.accent,
     fontWeight: '600',
   },
 });

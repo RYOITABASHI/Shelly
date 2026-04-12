@@ -1,12 +1,13 @@
 // components/UsageBarChart.tsx
 import React from 'react';
+import { colors as C } from '@/theme.config';
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Rect } from 'react-native-svg';
 import type { DailyUsage } from '@/lib/usage-parser';
 
 const CHART_HEIGHT = 48;
 const BAR_GAP = 4;
-const ACCENT = '#00D4AA';
+
 const TODAY_COLOR = '#FFD700';
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -38,7 +39,7 @@ export function UsageBarChart({ daily }: { daily: DailyUsage[] }) {
           const x = i * 30 + BAR_GAP / 2;
           const width = 30 - BAR_GAP;
           const y = CHART_HEIGHT - barHeight;
-          const fill = i === todayIndex ? TODAY_COLOR : ACCENT;
+          const fill = i === todayIndex ? TODAY_COLOR : C.accent;
           const opacity = i === todayIndex ? 0.85 : 0.5;
           return (
             <Rect

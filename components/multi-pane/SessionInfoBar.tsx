@@ -1,13 +1,9 @@
 // components/multi-pane/SessionInfoBar.tsx
-// Rich session info bar shown inside terminal/AI panes — matches mock's
-// "CLAUDE CODE V2.1.92 / OPUS 4.6 (1M CONTEXT) · ~/SHELLY" header block.
-
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { usePaneStore, getAgentColor, AGENT_COLORS } from '@/store/pane-store';
 import { useSidebarStore } from '@/store/sidebar-store';
-
-const ACCENT = '#00D4AA';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 const AGENT_INFO: Record<string, { name: string; version: string; model: string }> = {
   claude: { name: 'CLAUDE CODE', version: 'V2.1.92', model: 'OPUS 4.6 (1M CONTEXT)' },
@@ -31,31 +27,22 @@ export function SessionInfoBar({ leafId }: Props) {
     ? cwd.replace(/^\/data\/data\/com\.termux\/files\/home/, '~')
     : '~/';
 
-  // Mock shows: token usage progress bar + "42K / 1M TOKENS · ~$0.63"
-  // These are cosmetic placeholders — actual values come from CLI output
   const tokenUsed = 42;
   const tokenMax = 1000;
   const progressRatio = tokenUsed / tokenMax;
 
   return (
     <View style={styles.container}>
-      {/* Row 1: Agent name + version */}
       <View style={styles.row1}>
         <Text style={[styles.agentName, { color: agentColor }]}>{info.name}</Text>
         <Text style={styles.version}>{info.version}</Text>
       </View>
-
-      {/* Row 2: Model + cwd */}
       <Text style={styles.model} numberOfLines={1}>
         {info.model} · {cwdShort}
       </Text>
-
-      {/* Row 3: Progress bar */}
       <View style={styles.progressTrack}>
         <View style={[styles.progressFill, { width: `${progressRatio * 100}%`, backgroundColor: agentColor }]} />
       </View>
-
-      {/* Row 4: Token count + cost */}
       <Text style={styles.tokenText}>
         {tokenUsed}K / {tokenMax >= 1000 ? `${tokenMax / 1000}M` : `${tokenMax}K`} TOKENS · ~$0.63
       </Text>
@@ -67,9 +54,9 @@ const styles = StyleSheet.create({
   container: {
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#0D0D0D',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    backgroundColor: C.bgSidebar,
+    borderBottomWidth: S.borderWidth,
+    borderBottomColor: C.border,
     gap: 3,
   },
   row1: {
@@ -79,26 +66,26 @@ const styles = StyleSheet.create({
   },
   agentName: {
     fontSize: 12,
-    fontFamily: 'monospace',
+    fontFamily: F.family,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
   version: {
-    fontSize: 10,
-    fontFamily: 'monospace',
-    fontWeight: '600',
-    color: '#E5E7EB',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text1,
   },
   model: {
-    fontSize: 9,
-    fontFamily: 'monospace',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
+    fontWeight: F.contextBar.weight,
+    color: C.text2,
     letterSpacing: 0.3,
   },
   progressTrack: {
     height: 2,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     borderRadius: 1,
     marginTop: 2,
     overflow: 'hidden',
@@ -108,10 +95,10 @@ const styles = StyleSheet.create({
     borderRadius: 1,
   },
   tokenText: {
-    fontSize: 8,
-    fontFamily: 'monospace',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.contextBar.weight,
+    color: C.text2,
     letterSpacing: 0.3,
     textAlign: 'right',
   },

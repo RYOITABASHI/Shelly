@@ -2,11 +2,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, Pressable, FlatList, TextInput, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useTheme } from '@/lib/theme-engine';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { execCommand } from '@/hooks/use-native-exec';
 import { openMarkdownFile } from '@/components/panes/MarkdownPane';
 import { useTerminalStore } from '@/store/terminal-store';
+import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
 
 type FileEntry = {
   name: string;
@@ -15,8 +15,6 @@ type FileEntry = {
 };
 
 export function FileTree() {
-  const theme = useTheme();
-  const c = theme.colors;
   const repoPath = useSidebarStore((s) => s.activeRepoPath);
   const [cwd, setCwd] = useState(repoPath ?? '');
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -87,25 +85,25 @@ export function FileTree() {
     return (
       <View style={styles.container}>
         <View style={styles.searchRow}>
-          <MaterialIcons name="search" size={10} color="#6B7280" />
+          <MaterialIcons name="search" size={10} color={C.text2} />
           <TextInput
-            style={[styles.search, { color: c.foreground }]}
+            style={styles.search}
             placeholder="SEARCH FILES..."
-            placeholderTextColor="#6B7280"
+            placeholderTextColor={C.text2}
             editable={false}
           />
-          <MaterialIcons name="edit" size={9} color="#6B7280" />
+          <MaterialIcons name="edit" size={9} color={C.text2} />
         </View>
         {MOCK_TREE.map((item, i) => (
           <View key={i} style={[styles.row, { paddingLeft: 8 + item.depth * 12 }]}>
             <MaterialIcons
               name={item.isDir ? 'folder' : 'insert-drive-file'}
-              size={12}
-              color={item.isDir ? '#4B5563' : '#3D4451'}
+              size={I.fileIcon}
+              color={item.isDir ? C.text3 : C.text3}
             />
             <Text style={[
               styles.fileName,
-              { color: item.special === 'red' ? '#EF4444' : '#D1D5DB' },
+              { color: item.special === 'red' ? C.errorText : C.text1 },
             ]}>
               {item.name}
             </Text>
@@ -119,22 +117,22 @@ export function FileTree() {
     <View style={styles.container}>
       {/* Search */}
       <View style={styles.searchRow}>
-        <MaterialIcons name="search" size={12} color="#6B7280" />
+        <MaterialIcons name="search" size={I.fileIcon} color={C.text2} />
         <TextInput
-          style={[styles.search, { color: c.foreground }]}
+          style={styles.search}
           placeholder="SEARCH FILES..."
-          placeholderTextColor="#6B7280"
+          placeholderTextColor={C.text2}
           value={search}
           onChangeText={setSearch}
         />
-        <MaterialIcons name="edit" size={11} color="#6B7280" />
+        <MaterialIcons name="edit" size={11} color={C.text2} />
       </View>
 
       {/* Breadcrumb */}
       {cwd !== repoPath && (
         <Pressable style={styles.breadcrumb} onPress={handleGoUp}>
-          <MaterialIcons name="arrow-back" size={12} color={c.accent} />
-          <Text style={[styles.breadcrumbText, { color: c.accent }]} numberOfLines={1}>
+          <MaterialIcons name="arrow-back" size={I.fileIcon} color={C.accent} />
+          <Text style={[styles.breadcrumbText, { color: C.accent }]} numberOfLines={1}>
             ..
           </Text>
         </Pressable>
@@ -148,18 +146,16 @@ export function FileTree() {
           <Pressable style={styles.row} onPress={() => handleTap(item)}>
             <MaterialIcons
               name={item.isDirectory ? 'folder' : 'insert-drive-file'}
-              size={14}
-              color={item.isDirectory ? '#6B7280' : '#4B5563'}
+              size={I.fileIcon}
+              color={item.isDirectory ? C.text2 : C.text3}
             />
             <Text
               style={[
                 styles.fileName,
                 {
                   color: item.name.toLowerCase() === 'readme.md'
-                    ? '#EF4444'
-                    : item.isDirectory
-                    ? c.foreground
-                    : c.foreground,
+                    ? C.errorText
+                    : C.text1,
                 },
               ]}
               numberOfLines={1}
@@ -186,50 +182,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     height: 20,
     gap: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1A1A1A',
+    borderBottomWidth: S.borderWidth,
+    borderBottomColor: C.border,
   },
   search: {
     flex: 1,
     height: 20,
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
+    fontSize: F.fileName.size,
+    fontFamily: F.family,
+    fontWeight: F.fileName.weight,
     letterSpacing: 0.3,
     padding: 0,
+    color: C.text1,
   },
   breadcrumb: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: P.sidebarItem.px,
+    paddingVertical: P.sidebarItem.py,
   },
   breadcrumbText: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
+    fontSize: F.fileName.size,
+    fontFamily: F.family,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    height: S.sidebarItemHeight,
   },
   fileName: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
+    fontSize: F.fileName.size,
+    fontFamily: F.family,
+    fontWeight: F.fileName.weight,
     letterSpacing: 0.3,
-    color: '#D1D5DB',
+    color: C.text1,
     flex: 1,
-  },
-  empty: {
-    padding: 10,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
   },
 });

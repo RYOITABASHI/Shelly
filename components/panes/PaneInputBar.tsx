@@ -3,7 +3,6 @@
  *
  * Shared bottom input bar for all pane types.
  * Layout: [> TextInput] [attach circle] [send circle]
- * Matching mock: > █ + green circular attach + green circular send/voice buttons
  */
 
 import React, { useRef, useState, useCallback } from 'react';
@@ -15,18 +14,13 @@ import {
   Text,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-
-const ACCENT = '#00D4AA';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 type Props = {
   placeholder?: string;
   onSubmit: (text: string) => void;
   onAttach?: () => void;
 };
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function PaneInputBar({ placeholder, onSubmit, onAttach }: Props) {
   const [text, setText] = useState('');
@@ -41,7 +35,6 @@ export default function PaneInputBar({ placeholder, onSubmit, onAttach }: Props)
 
   return (
     <View style={styles.container}>
-      {/* Prompt glyph + TextInput */}
       <View style={styles.inputRow}>
         <Text style={styles.promptGlyph}>{'>'}</Text>
         <TextInput
@@ -50,7 +43,7 @@ export default function PaneInputBar({ placeholder, onSubmit, onAttach }: Props)
           value={text}
           onChangeText={setText}
           placeholder={placeholder ?? ''}
-          placeholderTextColor="#444"
+          placeholderTextColor={C.text3}
           onSubmitEditing={handleSubmit}
           blurOnSubmit={false}
           returnKeyType="send"
@@ -59,37 +52,33 @@ export default function PaneInputBar({ placeholder, onSubmit, onAttach }: Props)
         />
       </View>
 
-      {/* Attach circle button */}
       <TouchableOpacity
         onPress={onAttach}
         style={styles.circleBtn}
         accessibilityLabel="Attach file"
         accessibilityRole="button"
       >
-        <MaterialIcons name="attach-file" size={16} color="#000" />
+        <MaterialIcons name="attach-file" size={16} color={C.btnPrimaryText} />
       </TouchableOpacity>
 
-      {/* Send circle button */}
       <TouchableOpacity
         onPress={handleSubmit}
         style={styles.circleBtn}
         accessibilityLabel="Send"
         accessibilityRole="button"
       >
-        <MaterialIcons name="arrow-upward" size={16} color="#000" />
+        <MaterialIcons name="arrow-upward" size={16} color={C.btnPrimaryText} />
       </TouchableOpacity>
     </View>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: {
     height: 44,
-    backgroundColor: '#0D0D0D',
-    borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
+    backgroundColor: C.bgSidebar,
+    borderTopWidth: S.borderWidth,
+    borderTopColor: C.border,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 8,
@@ -102,24 +91,24 @@ const styles = StyleSheet.create({
   },
   promptGlyph: {
     fontSize: 14,
-    fontFamily: 'monospace',
+    fontFamily: F.family,
     fontWeight: '700',
-    color: ACCENT,
+    color: C.accent,
     marginRight: 6,
   },
   input: {
     flex: 1,
     height: 34,
-    fontFamily: 'monospace',
+    fontFamily: F.family,
     fontSize: 13,
-    color: '#E5E7EB',
+    color: C.text1,
     paddingVertical: 0,
   },
   circleBtn: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     justifyContent: 'center',
     alignItems: 'center',
   },

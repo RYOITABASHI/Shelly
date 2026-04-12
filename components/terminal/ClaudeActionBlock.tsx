@@ -4,17 +4,17 @@
 import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
-const ACCENT = '#00D4AA';
 
 export type ActionType = 'read' | 'edit' | 'bash' | 'autosave' | 'tip';
 
 const ACTION_COLORS: Record<ActionType, string> = {
-  read: ACCENT,
+  read: C.accent,
   edit: '#FFB86C',
   bash: '#FF5555',
   autosave: '#50FA7B',
-  tip: '#6B7280',
+  tip: C.text2,
 };
 
 const ACTION_ICONS: Record<ActionType, string> = {
@@ -83,7 +83,7 @@ export function EditActionBlock({ filePath, removedLines, addedLines, onAccept, 
         <Text style={styles.actionPath} numberOfLines={1}>{filePath}</Text>
         <View style={styles.spacer} />
         {isComplete ? (
-          <MaterialIcons name="check" size={14} color={ACCENT} />
+          <MaterialIcons name="check" size={14} color={C.accent} />
         ) : (
           <MaterialIcons name="edit" size={12} color={ACTION_COLORS.edit} />
         )}
@@ -217,13 +217,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: 'monospace',
     fontWeight: '500',
-    color: '#E5E7EB',
+    color: C.text1,
     flexShrink: 1,
   },
   actionDuration: {
     fontSize: 9,
     fontFamily: 'monospace',
-    color: '#6B7280',
+    color: C.text2,
   },
   // Read
   readContainer: {
@@ -235,20 +235,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
+    borderTopColor: C.border,
   },
   codePreviewLine: {
     fontSize: 10,
     fontFamily: 'monospace',
     fontWeight: '500',
-    color: '#E5E7EB',
+    color: C.text1,
     lineHeight: 16,
   },
   codePreviewEllipsis: {
     fontSize: 9,
     fontFamily: 'monospace',
     fontWeight: '500',
-    color: '#6B7280',
+    color: C.text2,
     marginTop: 2,
   },
   spacer: {
@@ -284,7 +284,7 @@ const styles = StyleSheet.create({
     paddingTop: 6,
   },
   acceptBtn: {
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     paddingHorizontal: 14,
     paddingVertical: 4,
     borderRadius: 4,
@@ -303,7 +303,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   rejectText: {
-    color: '#E5E7EB',
+    color: C.text1,
     fontSize: 9,
     fontFamily: 'monospace',
     fontWeight: '700',
@@ -342,7 +342,7 @@ const styles = StyleSheet.create({
   bashDesc: {
     fontSize: 10,
     fontFamily: 'monospace',
-    color: '#E5E7EB',
+    color: C.text1,
     paddingHorizontal: 12,
     paddingBottom: 6,
   },
@@ -352,7 +352,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   allowBtn: {
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     paddingHorizontal: 14,
     paddingVertical: 4,
     borderRadius: 4,
@@ -371,7 +371,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   denyText: {
-    color: '#E5E7EB',
+    color: C.text1,
     fontSize: 9,
     fontFamily: 'monospace',
     fontWeight: '700',
@@ -399,7 +399,7 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontFamily: 'monospace',
     fontWeight: '700',
-    color: ACCENT,
+    color: C.accent,
     letterSpacing: 0.5,
     paddingHorizontal: 4,
     textDecorationLine: 'underline',
@@ -417,7 +417,7 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontFamily: 'monospace',
     fontWeight: '500',
-    color: '#6B7280',
+    color: C.text2,
     letterSpacing: 0.3,
     flex: 1,
   },

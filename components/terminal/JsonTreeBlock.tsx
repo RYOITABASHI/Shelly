@@ -1,5 +1,6 @@
 import React, { memo, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { colors as TC, fonts as F, sizes as S } from '@/theme.config';
 
 type Props = {
   json: string;
@@ -10,7 +11,7 @@ type Props = {
 const C = {
   key: '#56B6C2',
   string: '#E5C07B',
-  number: '#00D4AA',
+  number: TC.accent,
   boolean: '#C678DD',
   null: '#666666',
   bracket: '#ABB2BF',
@@ -18,7 +19,7 @@ const C = {
   colon: '#ABB2BF',
   plain: '#ECEDEE',
   bg: '#0E0E0F',
-  toggleBg: '#1A1A1A',
+  toggleBg: TC.border,
 };
 
 const INDENT_PX = 12;

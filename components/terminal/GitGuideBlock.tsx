@@ -9,8 +9,8 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import type { GitGuide, GitGuideStep } from '@/lib/git-assistant';
 import { useTranslation } from '@/lib/i18n';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
-const ACCENT = '#00D4AA';
 
 type Props = {
   guide: GitGuide;
@@ -22,8 +22,8 @@ type Props = {
 
 const STEP_ICONS: Record<GitGuideStep['type'], { icon: string; color: string; bg: string }> = {
   info:    { icon: 'info-outline',    color: '#60A5FA', bg: '#60A5FA10' },
-  command: { icon: 'terminal',        color: ACCENT,    bg: '#00D4AA10' },
-  warning: { icon: 'warning-amber',   color: '#FBBF24', bg: '#FBBF2410' },
+  command: { icon: 'terminal',        color: C.accent,    bg: '#00D4AA10' },
+  warning: { icon: 'warning-amber',   color: C.warning, bg: '#FBBF2410' },
   tip:     { icon: 'lightbulb-outline', color: '#A78BFA', bg: '#A78BFA10' },
 };
 
@@ -37,7 +37,7 @@ function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <MaterialIcons name="assistant" size={18} color={ACCENT} />
+        <MaterialIcons name="assistant" size={18} color={C.accent} />
         <Text style={styles.headerTitle}>{guide.title}</Text>
         <View style={styles.gitBadge}>
           <Text style={styles.gitBadgeText}>@git</Text>
@@ -140,7 +140,7 @@ const styles = StyleSheet.create({
     borderColor: '#00D4AA40',
   },
   gitBadgeText: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 10,
     fontFamily: 'monospace',
     fontWeight: '700',
@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    borderBottomColor: C.border,
   },
   overviewText: {
     color: '#C8D0D8',
@@ -191,7 +191,7 @@ const styles = StyleSheet.create({
   commandBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#00D4AA30',
@@ -205,7 +205,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   commandPrompt: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 12,
     fontFamily: 'monospace',
     fontWeight: '700',
@@ -220,7 +220,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
@@ -236,10 +236,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
+    borderTopColor: C.border,
   },
   footerText: {
-    color: '#4B5563',
+    color: C.text3,
     fontSize: 10,
     fontFamily: 'monospace',
   },

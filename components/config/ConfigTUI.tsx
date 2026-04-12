@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
+import { colors as C } from '@/theme.config';
 import {
   View,
   Text,
@@ -40,7 +41,7 @@ import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const ACCENT = '#00D4AA';
+
 const BG = '#0D0D0D';
 const SURFACE = '#1A1A1A';
 const BORDER = '#2A2A2A';
@@ -240,7 +241,7 @@ function EnumPickerSheet({ visible, label, options, current, onSelect, onClose }
               {opt}
             </Text>
             {opt === current && (
-              <MaterialIcons name="check" size={16} color={ACCENT} />
+              <MaterialIcons name="check" size={16} color={C.accent} />
             )}
           </TouchableOpacity>
         ))}
@@ -296,8 +297,8 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }
         <Switch
           value={Boolean(value)}
           onValueChange={onToggle}
-          trackColor={{ false: BORDER, true: ACCENT + '66' }}
-          thumbColor={value ? ACCENT : MUTED}
+          trackColor={{ false: BORDER, true: C.accent + '66' }}
+          thumbColor={value ? C.accent : MUTED}
         />
       </View>
     );
@@ -351,7 +352,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="done"
-            selectionColor={ACCENT}
+            selectionColor={C.accent}
             placeholderTextColor={MUTED}
             placeholder="Enter API key..."
           />
@@ -386,7 +387,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }
           autoFocus
           keyboardType={def.type === 'number' ? 'numeric' : 'default'}
           returnKeyType="done"
-          selectionColor={ACCENT}
+          selectionColor={C.accent}
           placeholderTextColor={MUTED}
         />
       </View>
@@ -622,7 +623,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <MaterialIcons name="tune" size={18} color={ACCENT} />
+              <MaterialIcons name="tune" size={18} color={C.accent} />
               <Text style={styles.headerTitle}>shelly config</Text>
             </View>
             <TouchableOpacity onPress={onClose} hitSlop={8}>
@@ -640,7 +641,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
               <View key={section.title} style={si > 0 ? styles.section : styles.sectionFirst}>
                 {/* Section header */}
                 <View style={styles.sectionHeader}>
-                  <MaterialIcons name={section.icon as any} size={13} color={ACCENT} />
+                  <MaterialIcons name={section.icon as any} size={13} color={C.accent} />
                   <Text style={styles.sectionTitle}>{section.title.toUpperCase()}</Text>
                 </View>
 
@@ -739,7 +740,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   sectionTitle: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1.2,
@@ -787,16 +788,16 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   rowValue: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 13,
     fontFamily: 'JetBrainsMono_400Regular',
   },
   rowInput: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 13,
     fontFamily: 'JetBrainsMono_400Regular',
     borderBottomWidth: 1,
-    borderBottomColor: ACCENT,
+    borderBottomColor: C.accent,
     paddingVertical: 4,
     marginTop: 4,
   },
@@ -846,7 +847,7 @@ const styles = StyleSheet.create({
     fontFamily: 'JetBrainsMono_400Regular',
   },
   pickerOptionActive: {
-    color: ACCENT,
+    color: C.accent,
   },
 
   footer: {

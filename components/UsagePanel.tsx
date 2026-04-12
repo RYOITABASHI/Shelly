@@ -1,5 +1,6 @@
 // components/UsagePanel.tsx
 import React, { useEffect } from 'react';
+import { colors as C } from '@/theme.config';
 import { View, Text, Pressable, LayoutAnimation, StyleSheet, Platform, UIManager } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useUsageStore } from '@/store/usage-store';
@@ -126,7 +127,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 11,
-    color: '#00D4AA',
+    color: C.accent,
     fontFamily: 'monospace',
     fontWeight: '600',
   },

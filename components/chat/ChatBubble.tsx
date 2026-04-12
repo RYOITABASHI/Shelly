@@ -6,6 +6,7 @@
  */
 
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { colors as C } from '@/theme.config';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Share } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
@@ -46,7 +47,7 @@ const AGENT_COLORS: Record<ChatAgent | 'default', string> = {
   team: '#EC4899',
   git: '#F97316',
   codex: '#6366F1',
-  default: '#00D4AA',
+  default: C.accent,
 };
 
 function getAgentColor(agent?: ChatAgent): string {
@@ -657,7 +658,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   execPrompt: {
-    color: '#00D4AA',
+    color: C.accent,
     fontSize: 12,
     fontFamily: 'monospace',
     fontWeight: '700',

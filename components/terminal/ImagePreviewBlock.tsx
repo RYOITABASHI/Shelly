@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Image } from 'expo-image';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 type Props = {
   output: string;
@@ -86,7 +87,7 @@ const ImagePreviewBlock = memo(function ImagePreviewBlock({ output, cwd }: Props
 
 const styles = StyleSheet.create({
   wrapper: {
-    backgroundColor: '#0D0D0D',
+    backgroundColor: C.bgSidebar,
     marginVertical: 8,
     marginHorizontal: 8,
     borderRadius: 8,
@@ -107,7 +108,7 @@ const styles = StyleSheet.create({
     width: 240,
     height: 200,
     borderRadius: 6,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
   },
   caption: {
     fontFamily: 'monospace',

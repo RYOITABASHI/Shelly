@@ -22,6 +22,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { SPRING_CONFIGS } from '@/hooks/use-motion';
 import { playSound } from '@/lib/sounds';
 import { HEADER_HEIGHT, HEADER_PADDING_H, BORDER_WIDTH } from '@/lib/layout-constants';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 // ─── Mode config ──────────────────────────────────────────────────────────────
 
@@ -288,13 +289,13 @@ const styles = StyleSheet.create({
   appName: {
     fontSize: 14,
     fontWeight: '700',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     letterSpacing: 0.5,
   },
   cursor: {
     fontSize: 14,
     fontWeight: '700',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   tabsContainer: {
     flexDirection: 'row',
@@ -312,7 +313,7 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 11,
     fontWeight: '600',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   addTabButton: {
     width: 26,
@@ -336,7 +337,7 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 10,
     fontWeight: '600',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   fullscreenButton: {
     width: 28,
@@ -355,7 +356,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   previewLabel: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 11,
     fontWeight: '600',
   },

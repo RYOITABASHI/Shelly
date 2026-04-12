@@ -3,6 +3,7 @@ import { View, StyleSheet, LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useMultiPaneStore, type PaneNode, type PaneSplit } from '@/hooks/use-multi-pane';
 import { PaneSlot } from './PaneSlot';
+import { colors as C } from '@/theme.config';
 
 /** Draggable divider between two panes */
 function Divider({
@@ -62,7 +63,6 @@ function PaneTreeNode({ node }: { node: PaneNode }) {
     );
   }
 
-  // Split node
   const isHorizontal = node.direction === 'horizontal';
 
   const onLayout = useCallback((e: LayoutChangeEvent) => {
@@ -110,7 +110,7 @@ export function MultiPaneContainer() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
   },
   split: {
     flex: 1,
@@ -123,13 +123,12 @@ const styles = StyleSheet.create({
   },
   dividerV: {
     width: 3,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
   },
   dividerH: {
     height: 3,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
   },
-  // Larger hit area for touch
   dividerVHit: {
     paddingHorizontal: 6,
     marginHorizontal: -6,

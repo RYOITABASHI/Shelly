@@ -12,8 +12,8 @@ import { useSidebarStore } from '@/store/sidebar-store';
 import { useBrowserStore } from '@/store/browser-store';
 import { SessionInfoBar } from './SessionInfoBar';
 import { neonTextGlow } from '@/lib/neon-glow';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
-const ACCENT = '#00D4AA';
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 
 /** Context to let child screens know their pane width */
@@ -94,14 +94,13 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
       onTouchStart={() => setFocusedPane(leafId)}
       onLayout={(e) => setPaneWidth(e.nativeEvent.layout.width)}
     >
-      {/* Pane header — rich info display matching mock */}
+      {/* Pane header */}
       <View style={[styles.header, { borderTopColor: agentColor }]}>
-        {/* Left: pane icon + title + cwd */}
         <Pressable
           style={styles.headerLeft}
           onPress={() => setSelectorVisible(true)}
         >
-          <MaterialIcons name={entry.icon as any} size={12} color={ACCENT} />
+          <MaterialIcons name={entry.icon as any} size={12} color={C.accent} />
           <Text style={styles.headerTitle} numberOfLines={1}>
             {paneTitle}
           </Text>
@@ -112,32 +111,31 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           ) : null}
         </Pressable>
 
-        {/* Center: token/usage indicator (terminal/ai) or nav buttons (browser) */}
         {tab === 'browser' ? (
           <View style={styles.browserNav}>
             <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('back')}>
-              <MaterialIcons name="arrow-back" size={12} color="#6B7280" />
+              <MaterialIcons name="arrow-back" size={12} color={C.text2} />
             </Pressable>
             <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('forward')}>
-              <MaterialIcons name="arrow-forward" size={12} color="#6B7280" />
+              <MaterialIcons name="arrow-forward" size={12} color={C.text2} />
             </Pressable>
             <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('reload')}>
-              <MaterialIcons name="refresh" size={12} color="#6B7280" />
+              <MaterialIcons name="refresh" size={12} color={C.text2} />
             </Pressable>
           </View>
         ) : (
           <View style={styles.headerCenter}>
-            <MaterialIcons name="data-usage" size={10} color="#6B7280" />
+            <MaterialIcons name="data-usage" size={10} color={C.text2} />
             <Text style={styles.tokenText}>42K / 1H</Text>
             <Pressable style={styles.headerMiniBtn} hitSlop={4} onPress={() => {
               import('@/hooks/use-native-exec').then((m) =>
                 m.execCommand('cd "$(pwd)" && git add -A && git commit -m "savepoint" 2>&1 | tail -3')
               ).catch(() => {});
             }}>
-              <MaterialIcons name="save" size={11} color="#6B7280" />
+              <MaterialIcons name="save" size={11} color={C.text2} />
             </Pressable>
             <Pressable style={styles.headerMiniBtn} hitSlop={4}>
-              <MaterialIcons name="push-pin" size={11} color="#6B7280" />
+              <MaterialIcons name="push-pin" size={11} color={C.text2} />
             </Pressable>
           </View>
         )}
@@ -155,7 +153,6 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
 
         <View style={styles.headerSpacer} />
 
-        {/* Right action icons matching mock: split-h, split-grid, close */}
         <View style={styles.headerActions}>
           {canSplit && (
             <>
@@ -164,14 +161,14 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
                 onPress={() => onSplitH('terminal')}
                 hitSlop={6}
               >
-                <MaterialIcons name="view-column" size={13} color="#6B7280" />
+                <MaterialIcons name="view-column" size={13} color={C.text2} />
               </Pressable>
               <Pressable
                 style={styles.actionBtn}
                 onPress={() => setSplitMenuVisible(true)}
                 hitSlop={6}
               >
-                <MaterialIcons name="grid-view" size={13} color="#6B7280" />
+                <MaterialIcons name="grid-view" size={13} color={C.text2} />
               </Pressable>
             </>
           )}
@@ -180,17 +177,15 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             onPress={onRemove}
             hitSlop={6}
           >
-            <MaterialIcons name="close" size={13} color="#6B7280" />
+            <MaterialIcons name="close" size={13} color={C.text2} />
           </Pressable>
         </View>
       </View>
 
-      {/* Session info bar (terminal/AI panes only) */}
       {(tab === 'terminal' || tab === 'ai') && (
         <SessionInfoBar leafId={leafId} />
       )}
 
-      {/* Pane content */}
       <View style={styles.content}>
         <SafeAreaInsetsContext.Provider value={ZERO_INSETS}>
           <MultiPaneContext.Provider value={ctxValue}>
@@ -206,37 +201,33 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         </SafeAreaInsetsContext.Provider>
       </View>
 
-      {/* Floating action buttons (save + push) — terminal/AI panes */}
       {(tab === 'terminal' || tab === 'ai') && (
         <View style={styles.fabContainer}>
           <Pressable
             style={styles.fab}
             onPress={() => {
-              // Auto-savepoint trigger
               import('@/hooks/use-native-exec').then((m) =>
                 m.execCommand('cd "$(pwd)" && git add -A && git commit -m "savepoint" 2>&1 | tail -3')
               ).catch(() => {});
             }}
             hitSlop={6}
           >
-            <MaterialIcons name="save" size={16} color="#0A0A0A" />
+            <MaterialIcons name="save" size={16} color={C.btnPrimaryText} />
           </Pressable>
           <Pressable
             style={styles.fab}
             onPress={() => {
-              // Quick git push
               import('@/hooks/use-native-exec').then((m) =>
                 m.execCommand('cd "$(pwd)" && git add -A && git push 2>&1 | tail -3')
               ).catch(() => {});
             }}
             hitSlop={6}
           >
-            <MaterialIcons name="arrow-upward" size={16} color="#0A0A0A" />
+            <MaterialIcons name="arrow-upward" size={16} color={C.btnPrimaryText} />
           </Pressable>
         </View>
       )}
 
-      {/* Tab selector modal */}
       <PaneSelector
         visible={selectorVisible}
         currentTab={tab}
@@ -244,7 +235,6 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         onClose={() => setSelectorVisible(false)}
       />
 
-      {/* Split direction menu */}
       <SplitMenu
         visible={splitMenuVisible}
         onClose={() => setSplitMenuVisible(false)}
@@ -253,7 +243,6 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         currentTab={tab}
       />
 
-      {/* Agent selector menu */}
       {tab === 'ai' && (
         <AgentMenu
           visible={agentMenuVisible}
@@ -319,11 +308,11 @@ function SplitMenu({
           <>
             <Text style={menuStyles.title}>Split Pane</Text>
             <Pressable style={menuStyles.option} onPress={() => handleDirection('h')}>
-              <MaterialIcons name="view-column" size={18} color={ACCENT} />
+              <MaterialIcons name="view-column" size={18} color={C.accent} />
               <Text style={menuStyles.optionText}>Split Right</Text>
             </Pressable>
             <Pressable style={menuStyles.option} onPress={() => handleDirection('v')}>
-              <MaterialIcons name="view-stream" size={18} color={ACCENT} />
+              <MaterialIcons name="view-stream" size={18} color={C.accent} />
               <Text style={menuStyles.optionText}>Split Down</Text>
             </Pressable>
           </>
@@ -336,8 +325,8 @@ function SplitMenu({
                 style={[menuStyles.option, t === suggestedTab && menuStyles.optionHighlight]}
                 onPress={() => handleTabSelect(t)}
               >
-                <MaterialIcons name={PANE_REGISTRY[t].icon as any} size={16} color={t === suggestedTab ? ACCENT : '#6B7280'} />
-                <Text style={[menuStyles.optionText, t === suggestedTab && { color: ACCENT }]}>
+                <MaterialIcons name={PANE_REGISTRY[t].icon as any} size={16} color={t === suggestedTab ? C.accent : C.text2} />
+                <Text style={[menuStyles.optionText, t === suggestedTab && { color: C.accent }]}>
                   {PANE_REGISTRY[t].title}
                 </Text>
               </Pressable>
@@ -384,11 +373,11 @@ function AgentMenu({
               onPress={() => onSelect(key)}
             >
               <View style={[agentStyles.dot, { backgroundColor: color }]} />
-              <Text style={[agentStyles.label, isActive && { color: ACCENT }]}>
+              <Text style={[agentStyles.label, isActive && { color: C.accent }]}>
                 {key.charAt(0).toUpperCase() + key.slice(1)}
               </Text>
               {isActive && (
-                <MaterialIcons name="check" size={12} color={ACCENT} style={{ marginLeft: 'auto' }} />
+                <MaterialIcons name="check" size={12} color={C.accent} style={{ marginLeft: 'auto' }} />
               )}
             </Pressable>
           );
@@ -403,17 +392,18 @@ function AgentMenu({
 const styles = StyleSheet.create({
   pane: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
   },
   header: {
-    height: 28,
+    height: S.paneHeaderHeight,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    backgroundColor: '#111',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    paddingHorizontal: P.paneHeader.px,
+    backgroundColor: C.bgSurface,
+    borderBottomWidth: S.borderWidth,
+    borderBottomColor: C.border,
     borderTopWidth: 2,
+    borderRadius: R.paneHeader,
     gap: 4,
   },
   headerLeft: {
@@ -423,17 +413,17 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   headerTitle: {
-    color: '#E5E7EB',
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '700',
+    color: C.text1,
+    fontSize: F.paneHeader.size,
+    fontFamily: F.family,
+    fontWeight: F.paneHeader.weight,
     letterSpacing: 0.5,
   },
   headerPath: {
-    color: '#6B7280',
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '500',
+    color: C.text2,
+    fontSize: F.paneHeader.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
     flexShrink: 1,
   },
   headerCenter: {
@@ -443,10 +433,10 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   tokenText: {
-    color: '#6B7280',
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
+    color: C.text2,
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
+    fontWeight: F.contextBar.weight,
   },
   headerMiniBtn: {
     padding: 2,
@@ -461,7 +451,7 @@ const styles = StyleSheet.create({
   },
   navMiniBtn: {
     padding: 2,
-    borderRadius: 3,
+    borderRadius: R.actionButton,
   },
   headerSpacer: {
     flex: 1,
@@ -472,27 +462,27 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   notificationBadge: {
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
+    paddingHorizontal: P.statusBadge.px,
+    paddingVertical: P.statusBadge.py,
+    borderRadius: R.badge,
     marginLeft: 4,
   },
   notifDone: {
-    backgroundColor: 'rgba(34,197,94,0.15)',
+    backgroundColor: C.badgeRunningBg,
   },
   notifError: {
-    backgroundColor: 'rgba(239,68,68,0.15)',
+    backgroundColor: C.errorBg,
   },
   notifText: {
-    color: '#E5E7EB',
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '700',
+    color: C.text1,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
     textTransform: 'uppercase',
   },
   actionBtn: {
     padding: 3,
-    borderRadius: 3,
+    borderRadius: R.actionButton,
   },
   content: {
     flex: 1,
@@ -515,7 +505,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 4,
@@ -536,21 +526,21 @@ const menuStyles = StyleSheet.create({
   },
   menu: {
     width: 220,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 10,
     padding: 10,
-    borderWidth: 1,
-    borderColor: '#333',
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
   },
   title: {
-    color: '#6B7280',
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    color: C.text2,
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginBottom: 6,
     paddingHorizontal: 8,
-    fontWeight: '700',
+    fontWeight: F.paneHeader.weight,
   },
   option: {
     flexDirection: 'row',
@@ -564,20 +554,20 @@ const menuStyles = StyleSheet.create({
     backgroundColor: 'rgba(0,212,170,0.08)',
   },
   optionText: {
-    color: '#E5E7EB',
+    color: C.text1,
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 });
 
 const agentStyles = StyleSheet.create({
   menu: {
     width: 180,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 10,
     padding: 8,
-    borderWidth: 1,
-    borderColor: '#333',
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
   },
   row: {
     flexDirection: 'row',
@@ -596,8 +586,8 @@ const agentStyles = StyleSheet.create({
     borderRadius: 4,
   },
   label: {
-    color: '#E5E7EB',
+    color: C.text1,
     fontSize: 11,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 });

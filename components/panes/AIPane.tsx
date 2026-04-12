@@ -29,8 +29,7 @@ import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
 import { useSettingsStore } from '@/store/settings-store';
-
-const ACCENT = '#00D4AA';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -67,7 +66,7 @@ const StreamingDots = React.memo(function StreamingDots({ color }: { color: stri
 
 const dotStyles = StyleSheet.create({
   text: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 16,
     letterSpacing: 2,
     marginTop: 2,
@@ -131,10 +130,10 @@ const bubbleStyles = StyleSheet.create({
   },
   roleLabel: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '800',
     letterSpacing: 1,
-    color: ACCENT,
+    color: C.accent,
     marginBottom: 3,
     textTransform: 'uppercase',
     textShadowColor: 'rgba(0, 212, 170, 0.6)',
@@ -143,7 +142,7 @@ const bubbleStyles = StyleSheet.create({
   },
   roleLabelClaude: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '800',
     letterSpacing: 1,
     color: '#D4A574',
@@ -152,21 +151,21 @@ const bubbleStyles = StyleSheet.create({
   },
   userText: {
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     lineHeight: 18,
-    color: '#E5E7EB',
+    color: C.text1,
   },
   assistantContent: {
-    backgroundColor: '#111',
+    backgroundColor: C.bgSurface,
     borderRadius: 6,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   assistantText: {
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     lineHeight: 18,
-    color: '#E5E7EB',
+    color: C.text1,
   },
   systemRow: {
     alignItems: 'center',
@@ -175,8 +174,8 @@ const bubbleStyles = StyleSheet.create({
   },
   systemText: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
-    color: '#6B7280',
+    fontFamily: F.family,
+    color: C.text2,
     fontStyle: 'italic',
   },
 });
@@ -297,7 +296,7 @@ export default function AIPane() {
           </Text>
           {isRecording && (
             <TouchableOpacity onPress={stopRecording} style={paneStyles.voiceStopButton}>
-              <MaterialIcons name="stop" size={16} color={ACCENT} />
+              <MaterialIcons name="stop" size={16} color={C.accent} />
             </TouchableOpacity>
           )}
         </View>
@@ -318,13 +317,13 @@ export default function AIPane() {
           delayLongPress={500}
           style={[
             paneStyles.micButton,
-            isRecording && { backgroundColor: ACCENT },
+            isRecording && { backgroundColor: C.accent },
           ]}
         >
           <MaterialIcons
             name={isRecording ? 'mic' : 'mic-none'}
             size={18}
-            color={isRecording ? '#000' : '#6B7280'}
+            color={isRecording ? '#000' : C.text2}
           />
         </TouchableOpacity>
       </View>
@@ -337,7 +336,7 @@ export default function AIPane() {
 const paneStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
   },
   contextBadge: {
     flexDirection: 'row',
@@ -346,21 +345,21 @@ const paneStyles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    borderBottomColor: C.border,
   },
   contextDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
   },
   contextBadgeText: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     fontWeight: '700',
-    color: '#6B7280',
+    color: C.text2,
   },
   emptyState: {
     flex: 1,
@@ -370,10 +369,10 @@ const paneStyles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 11,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     textAlign: 'center',
     lineHeight: 18,
-    color: '#6B7280',
+    color: C.text2,
   },
   listContent: {
     paddingVertical: 8,
@@ -384,16 +383,16 @@ const paneStyles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
-    backgroundColor: '#111',
+    borderTopColor: C.border,
+    backgroundColor: C.bgSurface,
     gap: 8,
   },
   voiceLabel: {
     flex: 1,
     fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     letterSpacing: 0.5,
-    color: ACCENT,
+    color: C.accent,
   },
   voiceStopButton: {
     width: 28,
@@ -413,10 +412,10 @@ const paneStyles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#111',
+    backgroundColor: C.bgSurface,
     borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
+    borderTopColor: C.border,
     borderLeftWidth: 1,
-    borderLeftColor: '#1A1A1A',
+    borderLeftColor: C.border,
   },
 });

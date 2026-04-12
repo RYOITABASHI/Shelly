@@ -2,8 +2,8 @@ import React, { memo, useState, useCallback } from 'react';
 import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { parseDiff, type DiffLineType } from '@/lib/diff-parser';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
-const ACCENT = '#00D4AA';
 
 const LINE_COLORS: Record<DiffLineType, { bg: string; fg: string }> = {
   added:   { bg: '#4ADE8010', fg: '#86EFAC' },
@@ -40,7 +40,7 @@ function DiffViewerInner({ output, aiSummary }: Props) {
     <View style={styles.container}>
       {/* Summary bar */}
       <View style={styles.summaryBar}>
-        <MaterialIcons name="difference" size={14} color={ACCENT} />
+        <MaterialIcons name="difference" size={14} color={C.accent} />
         <Text style={styles.summaryText}>
           {files.length} file{files.length !== 1 ? 's' : ''}
         </Text>
@@ -193,7 +193,7 @@ const styles = StyleSheet.create({
   },
   lineMarker: {
     width: 14,
-    color: '#4B5563',
+    color: C.text3,
     fontSize: 11,
     fontFamily: 'monospace',
     textAlign: 'center',

@@ -21,17 +21,17 @@ import * as Clipboard from 'expo-clipboard';
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import type { SetupBlock as SetupBlockType } from '@/store/types';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const ACCENT = '#00D4AA';
 
 // ── Step icons ──────────────────────────────────────────────────────────────
 
 const STEP_ICONS: Record<string, { icon: string; color: string }> = {
-  'welcome': { icon: 'terminal', color: ACCENT },
+  'welcome': { icon: 'terminal', color: C.accent },
   'cli-select': { icon: 'smart-toy', color: '#8B5CF6' },
-  'cli-install': { icon: 'download', color: '#FBBF24' },
+  'cli-install': { icon: 'download', color: C.warning },
   'cli-auth': { icon: 'vpn-key', color: '#60A5FA' },
   'git-config': { icon: 'source', color: '#F97316' },
   'git-input': { icon: 'source', color: '#F97316' },
@@ -62,7 +62,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
     return initial;
   });
 
-  const stepConfig = STEP_ICONS[block.stepId] || { icon: 'settings', color: '#6B7280' };
+  const stepConfig = STEP_ICONS[block.stepId] || { icon: 'settings', color: C.text2 };
   const isActive = block.status === 'active';
   const isCompleted = block.status === 'completed';
   const isSkipped = block.status === 'skipped';
@@ -130,7 +130,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
   // ── Status indicator ──────────────────────────────────────────────────
 
   const statusIcon = isCompleted ? 'check-circle' : isSkipped ? 'skip-next' : isError ? 'error' : undefined;
-  const statusColor = isCompleted ? '#4ADE80' : isSkipped ? '#6B7280' : isError ? '#F87171' : undefined;
+  const statusColor = isCompleted ? '#4ADE80' : isSkipped ? C.text2 : isError ? '#F87171' : undefined;
 
   // ── Render ────────────────────────────────────────────────────────────
 
@@ -171,15 +171,15 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
                   key={opt.id}
                   style={[
                     styles.optionCard,
-                    { borderColor: opt.selected ? (opt.color || ACCENT) + '66' : colors.border },
-                    opt.selected && { backgroundColor: (opt.color || ACCENT) + '08' },
+                    { borderColor: opt.selected ? (opt.color || C.accent) + '66' : colors.border },
+                    opt.selected && { backgroundColor: (opt.color || C.accent) + '08' },
                   ]}
                   onPress={() => handleOptionPress(opt.id)}
                 >
                   {block.multiSelect && (
                     <View style={[
                       styles.checkbox,
-                      opt.selected && { borderColor: opt.color || ACCENT, backgroundColor: opt.color || ACCENT },
+                      opt.selected && { borderColor: opt.color || C.accent, backgroundColor: opt.color || C.accent },
                     ]}>
                       {opt.selected && <MaterialIcons name="check" size={14} color="#000" />}
                     </View>
@@ -374,7 +374,7 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 6,
     borderWidth: 2,
-    borderColor: '#4B5563',
+    borderColor: C.text3,
     alignItems: 'center',
     justifyContent: 'center',
   },

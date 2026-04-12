@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect } from 'react';
+import { colors as C } from '@/theme.config';
 import { View, StyleSheet } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -35,7 +36,7 @@ const BAR_CONFIG: [number, number, number, number][] = [
   [4, 22, 360, 80],
 ];
 
-const ACCENT = '#00D4AA';
+
 
 // ─── Single Bar ───────────────────────────────────────────────────────────────
 
@@ -117,6 +118,6 @@ const styles = StyleSheet.create({
   bar: {
     width: 3,
     borderRadius: 2,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
   },
 });

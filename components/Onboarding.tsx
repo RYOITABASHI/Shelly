@@ -8,6 +8,7 @@
  * 4. Customization (themes, keybindings, plugins)
  */
 import React, { useState, useCallback } from 'react';
+import { colors as C } from '@/theme.config';
 import {
   View,
   Text,
@@ -21,7 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTranslation } from '@/lib/i18n';
 
 const ONBOARDING_KEY = '@shelly/onboarding_complete';
-const ACCENT = '#00D4AA';
+
 const { width: SCREEN_W } = Dimensions.get('window');
 
 interface Step {
@@ -42,7 +43,7 @@ const STEPS: Step[] = [
     icon: 'terminal',
     titleKey: 'onboard.terminal_title',
     descKey: 'onboard.terminal_desc',
-    color: ACCENT,
+    color: C.accent,
   },
   {
     icon: 'smart-toy',

@@ -1,10 +1,7 @@
 /**
  * Output color utilities for Shelly terminal blocks.
  *
- * Separated from TerminalBlock.tsx so this pure logic can be imported
- * in tests without pulling in React Native UI dependencies.
- *
- * Contrast ratios against block background (#1A1A1A):
+ * Contrast ratios against block background (#1C1C1C):
  *   stdout  #E5E7EB  → ~12.9:1  (WCAG AAA)
  *   stderr  #EF4444  → ~4.6:1   (WCAG AA)
  *   info    #9BA1A6  → ~4.7:1   (WCAG AA)
@@ -12,29 +9,21 @@
  */
 
 import { OutputLine } from '@/store/types';
+import { colors as C } from '@/theme.config';
 
-/**
- * Returns the output text color for a given line type.
- *
- * @param type - The output line type ('stdout' | 'stderr' | 'info' | 'prompt')
- * @param highContrast - When true (default), uses WCAG-AA-safe colors
- *   guaranteed readable on OLED/AMOLED displays (Z Fold6).
- *   When false, uses legacy theme-dependent colors.
- */
 export function getOutputColor(type: OutputLine['type'], highContrast = true): string {
   if (highContrast) {
     switch (type) {
-      case 'stderr': return '#EF4444';
+      case 'stderr': return C.errorText;
       case 'info':   return '#9BA1A6';
-      case 'prompt': return '#00D4AA';
-      default:       return '#E5E7EB'; // stdout — primary text, always readable on OLED
+      case 'prompt': return C.accent;
+      default:       return C.text1;
     }
   }
-  // Legacy / theme-dependent colors
   switch (type) {
-    case 'stderr': return '#EF4444';
-    case 'info':   return '#6B7280';
-    case 'prompt': return '#00D4AA';
-    default:       return '#E5E7EB';
+    case 'stderr': return C.errorText;
+    case 'info':   return C.text2;
+    case 'prompt': return C.accent;
+    default:       return C.text1;
   }
 }

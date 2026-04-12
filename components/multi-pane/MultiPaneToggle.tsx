@@ -3,19 +3,12 @@ import { Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
+import { colors as C } from '@/theme.config';
 
-const ACCENT = '#00D4AA';
-
-/**
- * Floating Action Button for multi-pane toggle.
- * Only visible on the inner (unfolded) screen.
- * Hidden completely on the outer (cover) screen.
- */
 export function MultiPaneToggle() {
   const layout = useDeviceLayout();
   const { isMultiPane, toggleMultiPane } = useMultiPaneStore();
 
-  // Only show on wide screens (tablet, foldable inner, desktop)
   if (!layout.isWide) return null;
 
   return (
@@ -37,11 +30,11 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     right: 16,
-    bottom: 72, // above the tab bar
+    bottom: 72,
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 6,

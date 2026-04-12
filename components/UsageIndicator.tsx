@@ -1,12 +1,13 @@
 // components/UsageIndicator.tsx
 import React from 'react';
+import { colors as C } from '@/theme.config';
 import { Pressable, Text, StyleSheet } from 'react-native';
 import { useUsageStore } from '@/store/usage-store';
 
 function getCostColor(cost: number): string {
   if (cost > 15) return '#FF6B6B';
   if (cost > 5) return '#FBBF24';
-  return '#00D4AA';
+  return C.accent;
 }
 
 export function UsageIndicator() {

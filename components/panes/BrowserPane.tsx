@@ -14,8 +14,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
 import { useBrowserStore } from '@/store/browser-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
-
-const ACCENT = '#00D4AA';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,7 +99,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
 
   return (
     <KeyboardAvoidingView
-      style={[styles.root, { backgroundColor: '#0A0A0A' }]}
+      style={[styles.root, { backgroundColor: C.bgDeep }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {/* URL bar */}
@@ -110,17 +109,17 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           disabled={!canGoBack}
           style={[styles.navBtn, !canGoBack && styles.navBtnDisabled]}
         >
-          <MaterialIcons name="arrow-back" size={16} color={canGoBack ? '#E5E7EB' : '#333'} />
+          <MaterialIcons name="arrow-back" size={16} color={canGoBack ? C.text1 : C.border} />
         </TouchableOpacity>
         <TouchableOpacity
           onPress={handleForward}
           disabled={!canGoForward}
           style={[styles.navBtn, !canGoForward && styles.navBtnDisabled]}
         >
-          <MaterialIcons name="arrow-forward" size={16} color={canGoForward ? '#E5E7EB' : '#333'} />
+          <MaterialIcons name="arrow-forward" size={16} color={canGoForward ? C.text1 : C.border} />
         </TouchableOpacity>
         <TouchableOpacity onPress={handleRefresh} style={styles.navBtn}>
-          <MaterialIcons name="refresh" size={16} color="#E5E7EB" />
+          <MaterialIcons name="refresh" size={16} color={C.text1} />
         </TouchableOpacity>
         <TextInput
           style={styles.urlInput}
@@ -161,7 +160,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
               <MaterialIcons
                 name={bm.icon as any}
                 size={12}
-                color={isActive ? ACCENT : '#6B7280'}
+                color={isActive ? C.accent : C.text2}
               />
               <Text
                 style={[
@@ -229,8 +228,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 4,
     borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
-    backgroundColor: '#111',
+    borderBottomColor: C.border,
+    backgroundColor: C.bgSurface,
     gap: 4,
   },
   navBtn: {
@@ -247,17 +246,17 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 28,
     borderRadius: 4,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     paddingHorizontal: 8,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 11,
-    color: '#E5E7EB',
+    color: C.text1,
   },
   bookmarksBar: {
     height: 32,
     borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
-    backgroundColor: '#0D0D0D',
+    borderBottomColor: C.border,
+    backgroundColor: C.bgSidebar,
     flexGrow: 0,
   },
   bookmarksContent: {
@@ -277,37 +276,37 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   bookmarkTabActive: {
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     borderWidth: 1,
-    borderColor: '#333',
+    borderColor: C.border,
   },
   bookmarkLabel: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 9,
     fontWeight: '700',
-    color: '#6B7280',
+    color: C.text2,
     letterSpacing: 0.5,
   },
   bookmarkLabelActive: {
-    color: '#E5E7EB',
+    color: C.text1,
   },
   bookmarkClose: {
     marginLeft: 4,
   },
   webview: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
   },
   blankScreen: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
   },
   blankText: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 11,
-    color: '#6B7280',
+    color: C.text2,
   },
   loadingOverlay: {
     position: 'absolute',
@@ -317,6 +316,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgDeep,
   },
 });

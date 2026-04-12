@@ -41,6 +41,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { SPRING_CONFIGS, TIMING_CONFIGS } from '@/hooks/use-motion';
 import { playSound } from '@/lib/sounds';
 import { parseAnsi, hasAnsiCodes } from '@/lib/ansi-parser';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 export { getOutputColor };
 
@@ -101,9 +102,9 @@ function RunningDots({ color }: { color: string }) {
 
   return (
     <View style={{ flexDirection: 'row', gap: 2 }}>
-      <Animated.Text style={[{ color, fontSize: 14, fontFamily: 'GeistPixel-Square' }, s1]}>{'\u00B7'}</Animated.Text>
-      <Animated.Text style={[{ color, fontSize: 14, fontFamily: 'GeistPixel-Square' }, s2]}>{'\u00B7'}</Animated.Text>
-      <Animated.Text style={[{ color, fontSize: 14, fontFamily: 'GeistPixel-Square' }, s3]}>{'\u00B7'}</Animated.Text>
+      <Animated.Text style={[{ color, fontSize: 14, fontFamily: F.family }, s1]}>{'\u00B7'}</Animated.Text>
+      <Animated.Text style={[{ color, fontSize: 14, fontFamily: F.family }, s2]}>{'\u00B7'}</Animated.Text>
+      <Animated.Text style={[{ color, fontSize: 14, fontFamily: F.family }, s3]}>{'\u00B7'}</Animated.Text>
     </View>
   );
 }
@@ -883,14 +884,14 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   prompt: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '700',
     textShadowColor: 'rgba(0, 212, 170, 0.6)',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 6,
   },
   command: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     flex: 1,
     flexWrap: 'wrap',
   },
@@ -903,7 +904,7 @@ const styles = StyleSheet.create({
   },
   userTimestamp: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   termuxBadge: {
     paddingHorizontal: 4,
@@ -914,7 +915,7 @@ const styles = StyleSheet.create({
   termuxBadgeText: {
     fontSize: 8,
     fontWeight: '700',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     letterSpacing: 0.5,
   },
   snippetStar: {
@@ -928,7 +929,7 @@ const styles = StyleSheet.create({
   exitText: {
     fontSize: 10,
     fontWeight: '600',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 
   // ─── Cancelled row ─────────────────────────────────────────────────────────
@@ -945,7 +946,7 @@ const styles = StyleSheet.create({
   },
   cancelledBannerText: {
     fontSize: 11,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 
   // ─── Output bubble (left-aligned, terminal style) ─────────────────────────
@@ -969,7 +970,7 @@ const styles = StyleSheet.create({
   terminalIconText: {
     fontSize: 9,
     fontWeight: '800',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   outputBubble: {
     flex: 1,
@@ -988,7 +989,7 @@ const styles = StyleSheet.create({
   },
   outputHeaderLabel: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '600',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
@@ -1017,7 +1018,7 @@ const styles = StyleSheet.create({
   contentTypeLabel: {
     fontSize: 8,
     fontWeight: '700',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     letterSpacing: 0.4,
     textTransform: 'uppercase',
   },
@@ -1032,7 +1033,7 @@ const styles = StyleSheet.create({
   },
   viewToggleText: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '600',
     letterSpacing: 0.3,
   },
@@ -1047,7 +1048,7 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   outputLine: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     flexWrap: 'wrap',
     minHeight: 0,
   },
@@ -1059,7 +1060,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   noOutputText: {
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 11,
     fontStyle: 'italic',
     paddingVertical: 2,
@@ -1073,7 +1074,7 @@ const styles = StyleSheet.create({
   },
   collapseText: {
     fontSize: 11,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 
   // ─── Running / Cancel ──────────────────────────────────────────────────────
@@ -1090,7 +1091,7 @@ const styles = StyleSheet.create({
   },
   runningLabel: {
     fontSize: 11,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   cancelButton: {
     paddingHorizontal: 10,
@@ -1100,7 +1101,7 @@ const styles = StyleSheet.create({
   },
   cancelButtonText: {
     fontSize: 11,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '600',
   },
 
@@ -1115,7 +1116,7 @@ const styles = StyleSheet.create({
   },
   feedbackText: {
     fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 
   // ─── LLM Interpret (left-aligned bubble) ──────────────────────────────────
@@ -1139,7 +1140,7 @@ const styles = StyleSheet.create({
   interpretAvatarText: {
     fontSize: 10,
     fontWeight: '800',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   interpretContainer: {
     flex: 1,
@@ -1157,20 +1158,20 @@ const styles = StyleSheet.create({
   },
   interpretLabel: {
     fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   interpretText: {
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     lineHeight: 18,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   interpretCursor: {
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   suggestBox: {
     marginHorizontal: 8,
@@ -1181,7 +1182,7 @@ const styles = StyleSheet.create({
   },
   suggestLabel: {
     fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 0.5,
     marginBottom: 4,
@@ -1189,7 +1190,7 @@ const styles = StyleSheet.create({
   suggestCommand: {
     color: '#86EFAC',
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
 });
 
@@ -1208,7 +1209,7 @@ const menuStyles = StyleSheet.create({
   },
   menuTitle: {
     fontSize: 12,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     textAlign: 'center',
     paddingVertical: 10,
     borderBottomWidth: 1,
@@ -1225,7 +1226,7 @@ const menuStyles = StyleSheet.create({
     fontSize: 16,
     width: 20,
     textAlign: 'center',
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
   },
   menuLabel: {
     fontSize: 15,

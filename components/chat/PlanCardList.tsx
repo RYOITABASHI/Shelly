@@ -6,6 +6,7 @@
  */
 
 import React, { memo, useCallback } from 'react';
+import { colors as C } from '@/theme.config';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { t } from '@/lib/i18n';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -19,7 +20,7 @@ import type { PlanMessage, PlanStep, PlanStepStatus } from '@/lib/parse-plan';
 
 const STATUS_CONFIG: Record<PlanStepStatus, { icon: keyof typeof MaterialIcons.glyphMap; color: string }> = {
   pending:  { icon: 'radio-button-unchecked', color: '#6B7280' },
-  running:  { icon: 'play-circle-outline',    color: '#00D4AA' },
+  running:  { icon: 'play-circle-outline',    color: C.accent },
   done:     { icon: 'check-circle',           color: '#22C55E' },
   error:    { icon: 'error',                  color: '#EF4444' },
   skipped:  { icon: 'remove-circle-outline',  color: '#9CA3AF' },
@@ -130,12 +131,12 @@ const StepCard = memo(function StepCard({
       {isActionable && (
         <View style={styles.buttonRow}>
           <TouchableOpacity
-            style={[styles.button, { backgroundColor: withAlpha('#00D4AA', 0.15) }]}
+            style={[styles.button, { backgroundColor: withAlpha(C.accent, 0.15) }]}
             onPress={handleExecute}
             activeOpacity={0.7}
           >
             <MaterialIcons name="play-arrow" size={14} color="#00D4AA" />
-            <Text style={[styles.buttonText, { color: '#00D4AA' }]}>
+            <Text style={[styles.buttonText, { color: C.accent }]}>
               {step.command ? t('plan.execute') : t('plan.next')}
             </Text>
           </TouchableOpacity>

@@ -20,6 +20,7 @@ import Animated, {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 import type { CompletionItem } from '@/lib/autocomplete-engine';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 // ── Icon mapping ──────────────────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ export function AutocompletePopup({
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-const SURFACE    = '#1A1A1A';
+const SURFACE    = C.border;
 const BORDER     = '#333333';
 const ACCENT     = '#E8E8E8';
 const MUTED      = '#777777';

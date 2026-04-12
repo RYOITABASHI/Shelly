@@ -4,8 +4,8 @@
 //               progress bar + 42K / 1M TOKENS · ~$0.63
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
-const ACCENT = '#00D4AA';
 
 type Props = {
   version?: string;
@@ -66,7 +66,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 4,
     borderWidth: 1,
-    borderColor: '#1A1A1A',
+    borderColor: C.border,
   },
   topRow: {
     flexDirection: 'row',
@@ -76,26 +76,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'monospace',
     fontWeight: '800',
-    color: '#E5E7EB',
+    color: C.text1,
     letterSpacing: 0.5,
   },
   version: {
     fontSize: 13,
     fontFamily: 'monospace',
     fontWeight: '600',
-    color: '#6B7280',
+    color: C.text2,
   },
   modelLine: {
     fontSize: 10,
     fontFamily: 'monospace',
     fontWeight: '500',
-    color: '#6B7280',
+    color: C.text2,
     marginTop: 2,
     letterSpacing: 0.3,
   },
   progressOuter: {
     height: 3,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     borderRadius: 1.5,
     marginTop: 8,
     position: 'relative',
@@ -103,7 +103,7 @@ const styles = StyleSheet.create({
   },
   progressInner: {
     height: 3,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     borderRadius: 1.5,
   },
   progressDot: {
@@ -112,14 +112,14 @@ const styles = StyleSheet.create({
     width: 9,
     height: 9,
     borderRadius: 4.5,
-    backgroundColor: ACCENT,
+    backgroundColor: C.accent,
     marginLeft: -4.5,
   },
   tokenLine: {
     fontSize: 10,
     fontFamily: 'monospace',
     fontWeight: '600',
-    color: '#6B7280',
+    color: C.text2,
     marginTop: 6,
     textAlign: 'right',
     letterSpacing: 0.3,

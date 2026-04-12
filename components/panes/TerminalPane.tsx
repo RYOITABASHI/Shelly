@@ -57,6 +57,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
+import { colors as C } from '@/theme.config';
 
 logInfo('Terminal', 'module loaded');
 
@@ -585,8 +586,8 @@ export default function TerminalScreen() {
       {/* Recovery splash — shown while session re-creates */}
       {isRecovering && (
         <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
-          <ActivityIndicator size="small" color="#00D4AA" />
-          <Text style={{ color: '#4B5563', fontFamily: 'monospace', fontSize: 11, marginTop: 8 }}>
+          <ActivityIndicator size="small" color={C.accent} />
+          <Text style={{ color: C.text3, fontFamily: 'monospace', fontSize: 11, marginTop: 8 }}>
             Restoring session...
           </Text>
         </View>
@@ -736,7 +737,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     backgroundColor: 'rgba(0,0,0,0.7)',
     borderWidth: 1,
-    borderColor: '#00D4AA44',
+    borderColor: C.accent + '44',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 20,

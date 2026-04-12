@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback } from 'react';
+import { colors as C } from '@/theme.config';
 import {
   View,
   Text,
@@ -44,7 +45,7 @@ export function addRecentAction(label: string, action: () => void): void {
   if (_recentActions.length > MAX_RECENT) _recentActions.length = MAX_RECENT;
 }
 
-const ACCENT = '#00D4AA';
+
 
 export function CommandPalette() {
   const { isOpen, close } = useCommandPaletteStore();
@@ -242,7 +243,7 @@ export function CommandPalette() {
               value={query}
               onChangeText={setQuery}
               autoFocus
-              selectionColor={ACCENT}
+              selectionColor={C.accent}
               returnKeyType="go"
             />
             <Pressable onPress={handleClose} hitSlop={8}>

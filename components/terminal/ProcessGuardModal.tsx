@@ -16,6 +16,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { getDeviceProfile, type KillFixStep } from '@/lib/process-guard';
 import { useTranslation } from '@/lib/i18n';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 type Props = {
   visible: boolean;
@@ -112,7 +113,7 @@ export const ProcessGuardModal = memo(function ProcessGuardModal({ visible, onCl
 
             {/* ADB command (if applicable) */}
             {step.adbCommand && (
-              <View style={[styles.codeBox, { backgroundColor: '#0D0D0D', borderColor: colors.border }]}>
+              <View style={[styles.codeBox, { backgroundColor: C.bgSidebar, borderColor: colors.border }]}>
                 <Text style={styles.codeText} selectable>{step.adbCommand}</Text>
                 <TouchableOpacity
                   style={[styles.copyBtn, { backgroundColor: withAlpha(colors.accent, 0.15) }]}

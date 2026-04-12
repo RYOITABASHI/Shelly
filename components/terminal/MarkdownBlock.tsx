@@ -1,5 +1,6 @@
 import React, { memo, useCallback } from 'react';
 import { View, Text, StyleSheet, Linking, Pressable } from 'react-native';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 type Props = {
   content: string;
@@ -221,9 +222,8 @@ function MarkdownBlock({ content }: Props) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const ACCENT = '#00D4AA';
 const TEXT = '#ECEDEE';
-const CODE_BG = '#1A1A1A';
+const CODE_BG = C.border;
 const MUTED = '#666';
 
 const styles = StyleSheet.create({
@@ -243,7 +243,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   inlineCode: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 12,
     fontFamily: 'monospace',
     backgroundColor: CODE_BG,
@@ -252,12 +252,12 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   link: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 13,
     textDecorationLine: 'underline',
   },
   h1: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 16,
     fontWeight: '700',
     marginTop: 6,
@@ -278,7 +278,7 @@ const styles = StyleSheet.create({
     paddingLeft: 4,
   },
   bullet: {
-    color: ACCENT,
+    color: C.accent,
     fontSize: 13,
     lineHeight: 20,
     marginRight: 2,

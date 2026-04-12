@@ -1,5 +1,6 @@
 import React, { memo, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 type Props = {
   output: string;
@@ -124,7 +125,7 @@ const TableBlock = memo(function TableBlock({ output }: Props) {
             key={rowIdx}
             style={[
               styles.dataRow,
-              { backgroundColor: rowIdx % 2 === 0 ? '#0A0A0A' : '#111111' },
+              { backgroundColor: rowIdx % 2 === 0 ? C.bgDeep : C.bgSurface },
             ]}
           >
             {row.map((cell, colIdx) => (
@@ -169,7 +170,7 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     flexDirection: 'row',
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     borderBottomWidth: 1,
     borderBottomColor: '#2A2A2A',
   },
@@ -196,7 +197,7 @@ const styles = StyleSheet.create({
     textAlign: 'left',
   },
   headerText: {
-    color: '#00D4AA',
+    color: C.accent,
     fontWeight: '700',
   },
   numberCell: {

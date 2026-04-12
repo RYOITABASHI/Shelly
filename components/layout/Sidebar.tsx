@@ -20,12 +20,11 @@ import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
 
-const WIDTH_EXPANDED = 160;
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
 const TIMING_MS = 200;
-const ACCENT = '#00D4AA';
 
 function formatTimeAgo(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000);
@@ -87,7 +86,7 @@ export function Sidebar() {
   const runningAgents = agents.filter((a) => a.enabled);
 
   const targetWidth =
-    mode === 'expanded' ? WIDTH_EXPANDED : mode === 'icons' ? WIDTH_ICONS : WIDTH_HIDDEN;
+    mode === 'expanded' ? S.sidebarWidth : mode === 'icons' ? WIDTH_ICONS : WIDTH_HIDDEN;
 
   const animatedStyle = useAnimatedStyle(() => ({
     width: withTiming(targetWidth, { duration: TIMING_MS }),
@@ -104,7 +103,7 @@ export function Sidebar() {
   if (mode === 'hidden') return null;
 
   return (
-    <Animated.View style={[styles.container, animatedStyle, { backgroundColor: '#0D0D0D', borderRightColor: c.border }]}>
+    <Animated.View style={[styles.container, animatedStyle, { backgroundColor: C.bgSidebar, borderRightColor: C.border }]}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -123,16 +122,16 @@ export function Sidebar() {
           {runningAgents.length === 0 && recentTasks.length === 0 ? (
             <>
               <View style={styles.taskRow}>
-                <View style={[styles.taskDot, { backgroundColor: ACCENT }]} />
+                <View style={[styles.taskDot, { backgroundColor: C.accentGreen }]} />
                 <View style={styles.taskInfo}>
                   <Text style={styles.taskName} numberOfLines={1}>NPM RUN DEV</Text>
                 </View>
-                <View style={[styles.statusBadge, { backgroundColor: 'rgba(239,68,68,0.15)' }]}>
-                  <Text style={[styles.statusBadgeText, { color: '#EF4444' }]}>RUNNING</Text>
+                <View style={[styles.statusBadge, { backgroundColor: C.badgeRunningBg }]}>
+                  <Text style={[styles.statusBadgeText, { color: C.badgeRunningText }]}>RUNNING</Text>
                 </View>
               </View>
               <View style={styles.taskRow}>
-                <MaterialIcons name="check-circle" size={10} color={ACCENT} />
+                <MaterialIcons name="check-circle" size={10} color={C.accent} />
                 <View style={styles.taskInfo}>
                   <Text style={styles.taskName} numberOfLines={1}>GIT PUSH</Text>
                 </View>
@@ -143,20 +142,20 @@ export function Sidebar() {
             <>
               {runningAgents.map((agent) => (
                 <View key={agent.id} style={styles.taskRow}>
-                  <View style={[styles.taskDot, { backgroundColor: ACCENT }]} />
+                  <View style={[styles.taskDot, { backgroundColor: C.accentGreen }]} />
                   <View style={styles.taskInfo}>
                     <Text style={styles.taskName} numberOfLines={1}>
                       {agent.name.toUpperCase()}
                     </Text>
                   </View>
-                  <View style={[styles.statusBadge, { backgroundColor: 'rgba(239,68,68,0.15)' }]}>
-                    <Text style={[styles.statusBadgeText, { color: '#EF4444' }]}>RUNNING</Text>
+                  <View style={[styles.statusBadge, { backgroundColor: C.badgeRunningBg }]}>
+                    <Text style={[styles.statusBadgeText, { color: C.badgeRunningText }]}>RUNNING</Text>
                   </View>
                 </View>
               ))}
               {recentTasks.map((task) => (
                 <View key={task.id} style={styles.taskRow}>
-                  <MaterialIcons name="check-circle" size={10} color={ACCENT} />
+                  <MaterialIcons name="check-circle" size={10} color={C.accent} />
                   <View style={styles.taskInfo}>
                     <Text style={styles.taskName} numberOfLines={1}>
                       {task.name.toUpperCase()}
@@ -187,12 +186,12 @@ export function Sidebar() {
               ].map((repo) => (
                 <View
                   key={repo.name}
-                  style={[styles.repoRow, repo.active && { backgroundColor: ACCENT + '15', borderLeftWidth: 2, borderLeftColor: ACCENT }]}
+                  style={[styles.repoRow, repo.active && styles.repoRowActive]}
                 >
-                  <View style={[styles.repoIcon, { backgroundColor: repo.active ? ACCENT : '#333' }]}>
-                    <MaterialIcons name="folder" size={10} color={repo.active ? '#000' : '#999'} />
+                  <View style={[styles.repoIcon, { backgroundColor: repo.active ? C.accent : C.btnSecondaryBg }]}>
+                    <MaterialIcons name="folder" size={10} color={repo.active ? C.btnPrimaryText : C.text2} />
                   </View>
-                  <Text style={[styles.repoName, { color: repo.active ? ACCENT : '#E5E7EB' }]} numberOfLines={1}>
+                  <Text style={[styles.repoName, { color: repo.active ? C.accent : C.text1 }]} numberOfLines={1}>
                     {repo.name}
                   </Text>
                   {repo.version && <Text style={styles.repoVersion}>{repo.version}</Text>}
@@ -206,18 +205,18 @@ export function Sidebar() {
               return (
                 <Pressable
                   key={p}
-                  style={[styles.repoRow, isActive && { backgroundColor: ACCENT + '15', borderLeftWidth: 2, borderLeftColor: ACCENT }]}
+                  style={[styles.repoRow, isActive && styles.repoRowActive]}
                   onPress={() => setActiveRepo(p)}
                 >
-                  <View style={[styles.repoIcon, { backgroundColor: isActive ? ACCENT : '#333' }]}>
+                  <View style={[styles.repoIcon, { backgroundColor: isActive ? C.accent : C.btnSecondaryBg }]}>
                     <MaterialIcons
                       name="folder"
                       size={10}
-                      color={isActive ? '#000' : '#999'}
+                      color={isActive ? C.btnPrimaryText : C.text2}
                     />
                   </View>
                   <Text
-                    style={[styles.repoName, { color: isActive ? ACCENT : '#E5E7EB' }, isActive && neonTextGlow]}
+                    style={[styles.repoName, { color: isActive ? C.accent : C.text1 }, isActive && neonTextGlow]}
                     numberOfLines={1}
                   >
                     {name.toUpperCase()}
@@ -259,7 +258,7 @@ export function Sidebar() {
               style={styles.deviceRow}
               onPress={() => setActiveRepo(path)}
             >
-              <MaterialIcons name={icon as any} size={13} color="#6B7280" />
+              <MaterialIcons name={icon as any} size={13} color={C.text2} />
               <Text style={styles.deviceLabel}>{label}</Text>
             </Pressable>
           ))}
@@ -293,18 +292,15 @@ export function Sidebar() {
               <MaterialIcons
                 name={svc.icon as any}
                 size={13}
-                color={svc.linked ? ACCENT : '#6B7280'}
+                color={svc.linked ? C.accent : C.text2}
               />
               <Text style={styles.cloudLabel}>{svc.label}</Text>
               <View style={styles.cloudSpacer} />
-              <Text
-                style={[
-                  styles.cloudStatus,
-                  { color: svc.linked ? ACCENT : '#6B7280' },
-                ]}
-              >
-                {svc.status}
-              </Text>
+              <View style={[styles.statusBadge, { backgroundColor: svc.linked ? C.badgeLinkedBg : C.badgeConnectBg }]}>
+                <Text style={[styles.statusBadgeText, { color: svc.linked ? C.badgeLinkedText : C.badgeConnectText }]}>
+                  {svc.status}
+                </Text>
+              </View>
             </Pressable>
           ))}
         </SidebarSection>
@@ -318,18 +314,18 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           <View style={styles.portRow}>
-            <View style={[styles.portDot, { backgroundColor: ACCENT }, neonDotGlow]} />
+            <View style={[styles.portDot, { backgroundColor: C.accentGreen }, neonDotGlow]} />
             <Text style={styles.portLabel}>:3000</Text>
             <Text style={styles.portName}>NEXT.JS</Text>
             <View style={styles.cloudSpacer} />
-            <MaterialIcons name="open-in-new" size={11} color="#6B7280" />
+            <MaterialIcons name="open-in-new" size={I.externalLink} color={C.text2} />
           </View>
           <View style={styles.portRow}>
-            <View style={[styles.portDot, { backgroundColor: ACCENT }, neonDotGlow]} />
+            <View style={[styles.portDot, { backgroundColor: C.accentGreen }, neonDotGlow]} />
             <Text style={styles.portLabel}>:8081</Text>
             <Text style={styles.portName}>EXPO</Text>
             <View style={styles.cloudSpacer} />
-            <MaterialIcons name="open-in-new" size={11} color="#6B7280" />
+            <MaterialIcons name="open-in-new" size={I.externalLink} color={C.text2} />
           </View>
         </SidebarSection>
 
@@ -360,7 +356,7 @@ export function Sidebar() {
               value={repoInput}
               onChangeText={setRepoInput}
               placeholder="~/projects/my-repo"
-              placeholderTextColor="#6B7280"
+              placeholderTextColor={C.text2}
               autoCapitalize="none"
               autoCorrect={false}
               autoFocus
@@ -402,14 +398,14 @@ export function Sidebar() {
 
       {/* Collapse toggle */}
       <Pressable
-        style={[styles.toggleBtn, { borderTopColor: c.border }]}
+        style={[styles.toggleBtn, { borderTopColor: C.border }]}
         onPress={handleToggle}
         hitSlop={8}
       >
         <MaterialIcons
           name={mode === 'expanded' ? 'chevron-left' : 'chevron-right'}
           size={20}
-          color="#6B7280"
+          color={C.text2}
         />
         {!iconsOnly && (
           <Text style={styles.toggleLabel}>Collapse</Text>
@@ -422,7 +418,7 @@ export function Sidebar() {
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'column',
-    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: S.borderWidth,
   },
   scroll: {
     flex: 1,
@@ -430,53 +426,45 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: 8,
   },
-  emptyText: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    color: '#6B7280',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    fontStyle: 'italic',
-  },
   // Tasks
   taskRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 2,
+    paddingHorizontal: P.sidebarItem.px,
+    height: S.sidebarItemHeight,
     gap: 5,
   },
   taskDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
+    width: S.agentDotSize,
+    height: S.agentDotSize,
+    borderRadius: S.agentDotSize / 2,
   },
   taskInfo: {
     flex: 1,
   },
   taskAge: {
-    fontSize: 7,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text2,
     letterSpacing: 0.3,
   },
   taskName: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#D1D5DB',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text1,
     letterSpacing: 0.3,
   },
   statusBadge: {
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
+    paddingHorizontal: P.statusBadge.px,
+    paddingVertical: P.statusBadge.py,
+    borderRadius: R.badge,
   },
   statusBadgeText: {
-    fontSize: 7,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '800',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
     letterSpacing: 0.5,
   },
   // Repos
@@ -484,11 +472,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 3,
+    paddingHorizontal: P.sidebarItem.px,
+    height: S.sidebarItemHeight,
+    borderRadius: R.badge,
     borderLeftWidth: 0,
     borderLeftColor: 'transparent',
+  },
+  repoRowActive: {
+    backgroundColor: C.badgeRunningBg,
+    borderLeftWidth: 2,
+    borderLeftColor: C.accent,
   },
   repoIcon: {
     width: 14,
@@ -498,27 +491,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   repoName: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 0.5,
     flex: 1,
   },
   repoVersion: {
-    fontSize: 7,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text2,
   },
   addRow: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: P.sidebarItem.px,
+    paddingVertical: P.sidebarItem.py,
   },
   addRowText: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text2,
     letterSpacing: 0.3,
   },
   // Device
@@ -526,14 +519,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    paddingHorizontal: P.sidebarItem.px,
+    height: S.sidebarItemHeight,
   },
   deviceLabel: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#D1D5DB',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text1,
     letterSpacing: 0.3,
   },
   // Cloud
@@ -541,49 +534,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    paddingHorizontal: P.sidebarItem.px,
+    height: S.sidebarItemHeight,
   },
   cloudLabel: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#D1D5DB',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text1,
     letterSpacing: 0.3,
   },
   cloudSpacer: {
     flex: 1,
-  },
-  cloudStatus: {
-    fontSize: 7,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '800',
-    letterSpacing: 0.5,
   },
   // Ports
   portRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    paddingHorizontal: P.sidebarItem.px,
+    height: S.sidebarItemHeight,
   },
   portDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
+    width: S.agentDotSize,
+    height: S.agentDotSize,
+    borderRadius: S.agentDotSize / 2,
   },
   portLabel: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
     fontWeight: '700',
-    color: '#D1D5DB',
+    color: C.text1,
   },
   portName: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text2,
   },
   // Toggle
   toggleBtn: {
@@ -591,13 +578,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: S.borderWidth,
     gap: 4,
   },
   toggleLabel: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
-    color: '#6B7280',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    color: C.text2,
   },
   // Modal
   modalBackdrop: {
@@ -608,30 +595,30 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     width: 280,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 10,
     padding: 16,
-    borderWidth: 1,
-    borderColor: '#333',
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
   },
   modalTitle: {
-    color: '#6B7280',
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
+    color: C.text2,
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 1,
     marginBottom: 12,
   },
   modalInput: {
     height: 36,
-    backgroundColor: '#111',
+    backgroundColor: C.bgDeep,
     borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#333',
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
     paddingHorizontal: 10,
-    fontFamily: 'GeistPixel-Square',
+    fontFamily: F.family,
     fontSize: 12,
-    color: '#E5E7EB',
+    color: C.text1,
     marginBottom: 12,
   },
   modalBtns: {
@@ -640,27 +627,27 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   modalCancelBtn: {
-    paddingHorizontal: 12,
+    paddingHorizontal: P.sidebarItem.px,
     paddingVertical: 6,
-    borderRadius: 4,
-    backgroundColor: '#222',
+    borderRadius: R.agentTab,
+    backgroundColor: C.btnSecondaryBg,
   },
   modalCancelText: {
-    color: '#6B7280',
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    color: C.btnSecondaryText,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
     fontWeight: '700',
   },
   modalAddBtn: {
-    paddingHorizontal: 12,
+    paddingHorizontal: P.sidebarItem.px,
     paddingVertical: 6,
-    borderRadius: 4,
-    backgroundColor: 'rgba(0,212,170,0.15)',
+    borderRadius: R.agentTab,
+    backgroundColor: C.badgeRunningBg,
   },
   modalAddText: {
-    color: ACCENT,
-    fontSize: 10,
-    fontFamily: 'GeistPixel-Square',
+    color: C.accent,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
     fontWeight: '700',
   },
 });

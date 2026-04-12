@@ -3,8 +3,7 @@ import React from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useMultiPaneStore, makeLeaf, makeSplit } from '@/hooks/use-multi-pane';
 import type { PaneNode } from '@/hooks/use-multi-pane';
-
-const ACCENT = '#00D4AA';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
 export type LayoutPreset = {
   id: string;
@@ -78,21 +77,17 @@ function detectPreset(root: PaneNode | null): string | null {
   const leaves = countLeaves(root);
   const tabs = collectTabs(root);
 
-  // 2 panes
   if (leaves === 2 && root.type === 'split') {
     if (root.direction === 'horizontal') return '2col';
     if (root.direction === 'vertical') return '2row';
   }
 
-  // 4 panes — check all terminal
   if (leaves === 4) {
     if (tabs.every((t) => t === 'terminal')) return '4term';
-    // 2x2 or 1+2 — check structure
     if (root.type === 'split' && root.direction === 'vertical') {
       const top = root.children[0];
       const bot = root.children[1];
       if (top.type === 'split' && bot.type === 'split') {
-        // If ratio is ~0.5 both ways → 2x2, otherwise 1+2
         if (root.ratio > 0.45 && root.ratio < 0.55) return '2x2';
         return '1+2';
       }
@@ -150,44 +145,44 @@ export function LayoutPresetBar() {
 
 const styles = StyleSheet.create({
   container: {
-    height: 34,
-    backgroundColor: '#0D0D0D',
-    borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
+    height: S.layoutBarHeight,
+    backgroundColor: C.bgSidebar,
+    borderTopWidth: S.borderWidth,
+    borderTopColor: C.border,
     justifyContent: 'center',
   },
   scrollContent: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
-    gap: 6,
+    paddingHorizontal: P.layoutButton.px,
+    gap: P.layoutButton.gap,
     flexGrow: 1,
   },
   presetBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#333',
-    backgroundColor: '#111',
+    paddingHorizontal: P.layoutButton.px,
+    paddingVertical: P.layoutButton.py,
+    borderRadius: R.layoutButton,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
+    backgroundColor: C.layoutInactiveBg,
   },
   presetBtnActive: {
-    backgroundColor: ACCENT,
-    borderColor: ACCENT,
-    shadowColor: ACCENT,
+    backgroundColor: C.layoutActiveBg,
+    borderColor: C.layoutActiveBg,
+    shadowColor: C.accent,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 8,
     elevation: 3,
   },
   presetLabel: {
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '700',
+    fontSize: F.layoutButton.size,
+    fontFamily: F.family,
+    fontWeight: F.layoutButton.weight,
     letterSpacing: 0.8,
-    color: '#6B7280',
+    color: C.layoutInactiveText,
   },
   presetLabelActive: {
-    color: '#000',
+    color: C.layoutActiveText,
   },
 });

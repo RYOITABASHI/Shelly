@@ -6,6 +6,7 @@
  */
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { colors as TC } from '@/theme.config';
 
 // ── Theme Definition ─────────────────────────────────────────────────────────
 
@@ -91,19 +92,19 @@ export const BUILTIN_THEMES: Theme[] = [
     name: 'Shelly Default',
     type: 'dark',
     colors: {
-      background: '#0A0A0A',
-      surface: '#111111',
-      surfaceAlt: '#1A1A1A',
-      foreground: '#E5E7EB',
-      muted: '#6B7280',
-      accent: '#00D4AA',
-      border: '#1A1A1A',
-      success: '#4ADE80',
-      warning: '#FBBF24',
-      error: '#EF4444',
-      prompt: '#00D4AA',
+      background: TC.bgDeep,
+      surface: TC.bgSurface,
+      surfaceAlt: TC.border,
+      foreground: TC.text1,
+      muted: TC.text2,
+      accent: TC.accent,
+      border: TC.border,
+      success: TC.accentGreen,
+      warning: TC.warning,
+      error: TC.errorText,
+      prompt: TC.accent,
       command: '#93C5FD',
-      inactive: '#4B5563',
+      inactive: TC.text3,
       ...DEFAULT_ANSI,
     },
   },

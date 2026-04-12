@@ -7,8 +7,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
-
-const ACCENT = '#00D4AA';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 function truncatePath(path: string, maxLen = 30): string {
   if (path.length <= maxLen) return path;
@@ -42,7 +41,7 @@ export function ContextBar() {
     <View style={styles.bar}>
       {/* CWD */}
       <Pressable onPress={handleCopyPath} style={styles.segment} hitSlop={4}>
-        <MaterialIcons name="folder" size={10} color="#6B7280" />
+        <MaterialIcons name="folder" size={10} color={C.text2} />
         <Text style={styles.text} numberOfLines={1}>
           {truncatePath(cwd)}
         </Text>
@@ -51,8 +50,8 @@ export function ContextBar() {
       {/* Git branch */}
       {gitBranch && (
         <View style={[styles.segment, { marginLeft: 8 }]}>
-          <MaterialIcons name="call-split" size={10} color={ACCENT} />
-          <Text style={[styles.text, { color: ACCENT, ...neonTextGlow }]}>{gitBranch}</Text>
+          <MaterialIcons name="call-split" size={10} color={C.accent} />
+          <Text style={[styles.text, { color: C.accent, ...neonTextGlow }]}>{gitBranch}</Text>
         </View>
       )}
 
@@ -68,7 +67,7 @@ export function ContextBar() {
       {/* Connection status */}
       <View style={styles.segment}>
         <View style={[styles.dot, {
-          backgroundColor: connectionMode === 'native' ? ACCENT : '#FF5555',
+          backgroundColor: connectionMode === 'native' ? C.accent : C.errorText,
         }, connectionMode === 'native' && neonDotGlow]} />
         <Text style={styles.text}>
           {connectionMode === 'native' ? 'Native' : 'Off'}
@@ -80,13 +79,13 @@ export function ContextBar() {
 
 const styles = StyleSheet.create({
   bar: {
-    height: 24,
+    height: S.contextBarHeight,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#1A1A1A',
-    backgroundColor: '#0D0D0D',
+    borderTopWidth: S.borderWidth,
+    borderTopColor: C.border,
+    backgroundColor: C.bgSidebar,
   },
   segment: {
     flexDirection: 'row',
@@ -95,17 +94,17 @@ const styles = StyleSheet.create({
   },
   spacer: { flex: 1 },
   text: {
-    fontSize: 9,
-    fontFamily: 'GeistPixel-Square',
-    fontWeight: '600',
-    color: '#6B7280',
+    fontSize: F.contextBar.size,
+    fontFamily: F.family,
+    fontWeight: F.contextBar.weight,
+    color: C.text2,
     letterSpacing: 0.3,
   },
   tagline: {
-    fontSize: 8,
-    fontFamily: 'GeistPixel-Square',
+    fontSize: F.badge.size,
+    fontFamily: F.family,
     fontWeight: '600',
-    color: '#333',
+    color: C.text3,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },

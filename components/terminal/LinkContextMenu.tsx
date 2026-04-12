@@ -16,6 +16,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
 export type LinkInfo = {
   text: string;
@@ -116,7 +117,7 @@ export function LinkContextMenu({
               {isFile && (
                 <TouchableOpacity style={styles.row} onPress={handleOpenInSidebar}>
                   <MaterialIcons name="open-in-new" size={16} color="#00D4AA" />
-                  <Text style={[styles.rowLabel, { color: '#00D4AA' }]}>
+                  <Text style={[styles.rowLabel, { color: C.accent }]}>
                     Open in Sidebar
                     {link.line != null ? ` (line ${link.line})` : ''}
                   </Text>
@@ -154,7 +155,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   menu: {
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.border,
     borderColor: '#333',
     borderWidth: 1,
     borderRadius: 12,
