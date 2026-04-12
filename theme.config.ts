@@ -61,7 +61,7 @@ export const colors = {
 // ─── Fonts ──────────────────────────────────────────────────────────────────
 
 export const fonts = {
-  family: 'PixelMplus12',
+  family: 'PressStart2P',
 
   agentTab:       { size: 10, weight: '700' as const },
   paneHeader:     { size: 10, weight: '700' as const },
