@@ -1,10 +1,17 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type Bookmark = { label: string; url: string; icon: string };
+export type Bookmark = {
+  label: string;
+  url: string;
+  icon: string;
+  /** Icon tint color. Defaults to theme accent if omitted. */
+  color?: string;
+};
 export type BrowserNavAction = 'back' | 'forward' | 'reload';
 
 interface BrowserState {
+  /** User-added bookmarks (persisted) */
   bookmarks: Bookmark[];
   /** Incremented to signal a nav action to BrowserPane */
   navSignal: { action: BrowserNavAction; seq: number };
@@ -17,15 +24,16 @@ interface BrowserState {
   openUrl: (url: string) => void;
 }
 
-const DEFAULT_BOOKMARKS: Bookmark[] = [
-  { label: 'YouTube', url: 'https://youtube.com', icon: 'play-circle-outline' },
-  { label: 'X', url: 'https://x.com', icon: 'alternate-email' },
-  { label: 'GitHub', url: 'https://github.com', icon: 'code' },
-  { label: 'localhost', url: 'http://localhost:3000', icon: 'computer' },
-];
+/** Built-in preset bookmarks. Always shown, not editable, not persisted. */
+export const PRESET_BOOKMARKS: readonly Bookmark[] = [
+  { label: 'YouTube', url: 'https://youtube.com', icon: 'play-circle-filled', color: '#FF0000' },
+  { label: 'X',       url: 'https://x.com',       icon: 'close',              color: '#000000' },
+  { label: 'GitHub',  url: 'https://github.com',  icon: 'code',               color: '#FFFFFF' },
+  { label: 'localhost', url: 'http://localhost:3000', icon: 'computer',       color: '#22C55E' },
+] as const;
 
 export const useBrowserStore = create<BrowserState>((set, get) => ({
-  bookmarks: DEFAULT_BOOKMARKS,
+  bookmarks: [],
   navSignal: { action: 'reload' as BrowserNavAction, seq: 0 },
   openSignal: { url: '', seq: 0 },
 

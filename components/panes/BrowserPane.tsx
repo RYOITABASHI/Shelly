@@ -12,7 +12,7 @@ import {
 import WebView, { WebViewNavigation } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
-import { useBrowserStore } from '@/store/browser-store';
+import { useBrowserStore, PRESET_BOOKMARKS } from '@/store/browser-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
@@ -40,7 +40,12 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const theme = useTheme();
   const { background, surface, foreground, muted, accent, border } = theme.colors;
 
-  const { bookmarks, addBookmark, loadBookmarks } = useBrowserStore();
+  const { bookmarks: userBookmarks, addBookmark, loadBookmarks } = useBrowserStore();
+  // Presets are always shown first, followed by user-added bookmarks
+  const bookmarks = React.useMemo(
+    () => [...PRESET_BOOKMARKS, ...userBookmarks],
+    [userBookmarks],
+  );
 
   const webviewRef = useRef<WebView>(null);
   const [inputUrl, setInputUrl] = useState(initialUrl === 'about:blank' ? '' : initialUrl);
@@ -160,6 +165,9 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       >
         {bookmarks.map((bm, idx) => {
           const isActive = idx === activeBookmarkIdx;
+          const isPreset = idx < PRESET_BOOKMARKS.length;
+          // Preset icons use their brand color; user bookmarks follow theme
+          const iconColor = bm.color ?? (isActive ? C.accent : C.text2);
           return (
             <TouchableOpacity
               key={bm.url}
@@ -172,7 +180,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
               <MaterialIcons
                 name={bm.icon as any}
                 size={12}
-                color={isActive ? C.accent : C.text2}
+                color={iconColor}
               />
               <Text
                 style={[
@@ -183,7 +191,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
               >
                 {bm.label.toUpperCase()}
               </Text>
-              {isActive && (
+              {isActive && !isPreset && (
                 <TouchableOpacity hitSlop={8} style={styles.bookmarkClose}>
                   <MaterialIcons name="close" size={10} color="#6B7280" />
                 </TouchableOpacity>
