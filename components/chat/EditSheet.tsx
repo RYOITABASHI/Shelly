@@ -143,8 +143,8 @@ const chipStyles = StyleSheet.create({
     borderRadius: 4,
     marginRight: 6,
   },
-  label: { fontSize: 9, fontFamily: 'monospace', fontWeight: '600' },
-  value: { fontSize: 10, fontFamily: 'monospace', maxWidth: 80 },
+  label: { fontSize: 9, fontFamily: 'Silkscreen', fontWeight: '600' },
+  value: { fontSize: 10, fontFamily: 'Silkscreen', maxWidth: 80 },
 });
 
 // ─── Helper ─────────────────────────────────────────────────────────────────

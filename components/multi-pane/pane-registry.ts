@@ -13,7 +13,7 @@ function StubPane({ label }: { label: string }) {
   return React.createElement(View, {
     style: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', alignItems: 'center' },
   }, React.createElement(Text, {
-    style: { color: '#666', fontFamily: 'monospace', fontSize: 12 },
+    style: { color: '#666', fontFamily: 'Silkscreen', fontSize: 12 },
   }, `${label} — Coming Soon`));
 }
 

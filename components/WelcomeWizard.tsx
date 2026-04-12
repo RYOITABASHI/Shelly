@@ -348,7 +348,7 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
                 {installLog.length > 0 && (
                   <ScrollView style={{ maxHeight: 120, width: '100%', backgroundColor: '#111', borderRadius: 8, marginTop: 12, padding: 8 }}>
                     {installLog.map((line, i) => (
-                      <Text key={i} style={{ color: line.startsWith('→ FAIL') || line.startsWith('ERROR') ? '#F87171' : line.startsWith('→') ? '#00D4AA' : '#9BA1A6', fontSize: 10, fontFamily: 'monospace', lineHeight: 14 }}>
+                      <Text key={i} style={{ color: line.startsWith('→ FAIL') || line.startsWith('ERROR') ? '#F87171' : line.startsWith('→') ? '#00D4AA' : '#9BA1A6', fontSize: 10, fontFamily: 'Silkscreen', lineHeight: 14 }}>
                         {line}
                       </Text>
                     ))}
@@ -356,7 +356,7 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
                 )}
 
                 {installError && (
-                  <Text style={{ color: '#F87171', fontSize: 11, fontFamily: 'monospace', marginTop: 8, textAlign: 'center' }}>
+                  <Text style={{ color: '#F87171', fontSize: 11, fontFamily: 'Silkscreen', marginTop: 8, textAlign: 'center' }}>
                     {installError}
                   </Text>
                 )}
@@ -376,7 +376,7 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
                         installSelectedClis(Array.from(selectedClis));
                       }}
                     >
-                      <Text style={{ color: ACCENT, fontSize: 13, fontFamily: 'monospace', fontWeight: '600' }}>リトライ</Text>
+                      <Text style={{ color: ACCENT, fontSize: 13, fontFamily: 'Silkscreen', fontWeight: '600' }}>リトライ</Text>
                     </Pressable>
                     <Pressable
                       style={{ flex: 1, backgroundColor: '#1A1A1A', borderRadius: 8, paddingVertical: 10, alignItems: 'center', borderWidth: 1, borderColor: '#333' }}
@@ -385,7 +385,7 @@ export function WelcomeWizard({ visible, onComplete }: Props) {
                         setShowAuthModal(true);
                       }}
                     >
-                      <Text style={{ color: '#9BA1A6', fontSize: 13, fontFamily: 'monospace' }}>スキップして認証へ</Text>
+                      <Text style={{ color: '#9BA1A6', fontSize: 13, fontFamily: 'Silkscreen' }}>スキップして認証へ</Text>
                     </Pressable>
                   </View>
                 )}

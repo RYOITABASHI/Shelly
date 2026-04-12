@@ -62,6 +62,6 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   tabBar: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, paddingHorizontal: 4 },
   tab: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 8 },
-  tabLabel: { fontFamily: 'monospace', fontSize: 12, fontWeight: '600' },
+  tabLabel: { fontFamily: 'Silkscreen', fontSize: 12, fontWeight: '600' },
   closeBtn: { padding: 8 },
 });

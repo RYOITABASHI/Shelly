@@ -61,6 +61,6 @@ export const JsonTreeRenderer = memo(function JsonTreeRenderer({ content }: Prop
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0D0D0D' },
   content: { padding: 12 },
-  nodeText: { fontFamily: 'monospace', fontSize: 12, lineHeight: 20 },
-  errorText: { fontFamily: 'monospace', fontSize: 13, padding: 16 },
+  nodeText: { fontFamily: 'Silkscreen', fontSize: 12, lineHeight: 20 },
+  errorText: { fontFamily: 'Silkscreen', fontSize: 13, padding: 16 },
 });

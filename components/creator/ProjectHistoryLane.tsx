@@ -485,11 +485,11 @@ const cardStyles = StyleSheet.create({
     borderWidth: 1,
   },
   actionOpen: { backgroundColor: '#0A1628', borderColor: '#1E3A5F' },
-  actionOpenText: { fontSize: 11, color: '#60A5FA', fontFamily: 'monospace' },
+  actionOpenText: { fontSize: 11, color: '#60A5FA', fontFamily: 'Silkscreen' },
   actionClone: { backgroundColor: '#0D1F0D', borderColor: '#1A3D1A' },
-  actionCloneText: { fontSize: 11, color: '#4ADE80', fontFamily: 'monospace' },
+  actionCloneText: { fontSize: 11, color: '#4ADE80', fontFamily: 'Silkscreen' },
   actionImprove: { backgroundColor: '#1A1000', borderColor: '#3D2A00' },
-  actionImproveText: { fontSize: 11, color: '#FBBF24', fontFamily: 'monospace' },
+  actionImproveText: { fontSize: 11, color: '#FBBF24', fontFamily: 'Silkscreen' },
 });
 
 // ─── SortSelector ─────────────────────────────────────────────────────────────

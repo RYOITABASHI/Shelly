@@ -53,7 +53,7 @@ export function ContextHint({ hintId, onDismiss }: ContextHintProps) {
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           style={{ marginLeft: 6 }}
         >
-          <Text style={{ fontFamily: 'monospace', fontSize: 10, color: '#555' }}>×</Text>
+          <Text style={{ fontFamily: 'Silkscreen', fontSize: 10, color: '#555' }}>×</Text>
         </TouchableOpacity>
       </View>
     </Animated.View>

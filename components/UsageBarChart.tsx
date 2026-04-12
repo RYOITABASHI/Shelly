@@ -85,7 +85,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     marginTop: 4,
   },
-  dayLabel: { fontSize: 9, color: '#666', fontFamily: 'monospace', textAlign: 'center', flex: 1 },
+  dayLabel: { fontSize: 9, color: '#666', fontFamily: 'Silkscreen', textAlign: 'center', flex: 1 },
   todayLabel: { color: '#FFD700', fontWeight: 'bold' },
   footer: {
     flexDirection: 'row',
@@ -93,5 +93,5 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingHorizontal: 4,
   },
-  footerText: { fontSize: 9, color: '#888', fontFamily: 'monospace' },
+  footerText: { fontSize: 9, color: '#888', fontFamily: 'Silkscreen' },
 });

@@ -287,13 +287,13 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
         {/* Message text (Markdown) — skip if Plan Mode rendered above */}
         {(!displayText || message.isStreaming || !isPlanOutput(displayText)) && (() => {
           const markdownStyles = {
-            body: { color: colors.foregroundDim, fontSize, fontFamily: 'monospace', lineHeight: 18 },
-            code_inline: { backgroundColor: withAlpha(colors.foreground, 0.08), color: colors.accent, fontFamily: 'monospace', fontSize: fontSize - 1, paddingHorizontal: 4, borderRadius: 3 },
-            code_block: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'monospace', fontSize: fontSize - 1, padding: 10, borderRadius: 6, lineHeight: 18 },
-            fence: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'monospace', fontSize: fontSize - 1, padding: 10, borderRadius: 6, lineHeight: 18 },
-            heading1: { color: colors.foreground, fontSize: fontSize + 4, fontWeight: '700' as const, fontFamily: 'monospace', marginVertical: 6 },
-            heading2: { color: colors.foreground, fontSize: fontSize + 2, fontWeight: '700' as const, fontFamily: 'monospace', marginVertical: 4 },
-            heading3: { color: colors.foreground, fontSize: fontSize + 1, fontWeight: '600' as const, fontFamily: 'monospace', marginVertical: 3 },
+            body: { color: colors.foregroundDim, fontSize, fontFamily: 'Silkscreen', lineHeight: 18 },
+            code_inline: { backgroundColor: withAlpha(colors.foreground, 0.08), color: colors.accent, fontFamily: 'Silkscreen', fontSize: fontSize - 1, paddingHorizontal: 4, borderRadius: 3 },
+            code_block: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'Silkscreen', fontSize: fontSize - 1, padding: 10, borderRadius: 6, lineHeight: 18 },
+            fence: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'Silkscreen', fontSize: fontSize - 1, padding: 10, borderRadius: 6, lineHeight: 18 },
+            heading1: { color: colors.foreground, fontSize: fontSize + 4, fontWeight: '700' as const, fontFamily: 'Silkscreen', marginVertical: 6 },
+            heading2: { color: colors.foreground, fontSize: fontSize + 2, fontWeight: '700' as const, fontFamily: 'Silkscreen', marginVertical: 4 },
+            heading3: { color: colors.foreground, fontSize: fontSize + 1, fontWeight: '600' as const, fontFamily: 'Silkscreen', marginVertical: 3 },
             link: { color: colors.link ?? colors.accent },
             blockquote: { borderLeftColor: agentColor, borderLeftWidth: 3, paddingLeft: 10, opacity: 0.85 },
             bullet_list_icon: { color: colors.foregroundDim },
@@ -327,7 +327,7 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
                   </Markdown>
                 )}
                 {message.isStreaming && (
-                  <Text style={{ color: agentColor, fontSize: 14, fontFamily: 'monospace' }}>{'\u258B'}</Text>
+                  <Text style={{ color: agentColor, fontSize: 14, fontFamily: 'Silkscreen' }}>{'\u258B'}</Text>
                 )}
               </View>
             );
@@ -335,7 +335,7 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
             return (
               <View style={[styles.markdownWrap, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
                 <ActivityIndicator size="small" color={agentColor} />
-                <Text style={{ color: agentColor, fontSize: 12, fontFamily: 'monospace', opacity: 0.7 }}>{t('chat.thinking')}</Text>
+                <Text style={{ color: agentColor, fontSize: 12, fontFamily: 'Silkscreen', opacity: 0.7 }}>{t('chat.thinking')}</Text>
               </View>
             );
           }
@@ -372,7 +372,7 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
                 onPress={() => setShowPreview(true)}
               >
                 <MaterialIcons name="visibility" size={14} color={colors.accent} />
-                <Text style={{ color: colors.accent, fontFamily: 'monospace', fontSize: 11, fontWeight: '600' }}>
+                <Text style={{ color: colors.accent, fontFamily: 'Silkscreen', fontSize: 11, fontWeight: '600' }}>
                   {t('preview.open')}
                 </Text>
               </TouchableOpacity>

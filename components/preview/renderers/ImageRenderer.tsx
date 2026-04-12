@@ -39,5 +39,5 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { alignItems: 'center', padding: 16 },
   errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  errorText: { fontFamily: 'monospace', fontSize: 13 },
+  errorText: { fontFamily: 'Silkscreen', fontSize: 13 },
 });

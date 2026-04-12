@@ -46,10 +46,10 @@ export const ArenaBubble = memo(function ArenaBubble({ arenaId, isWide }: Props)
   const winRate = winner ? getWinRate(winner.agent) : 0;
 
   const markdownStyles = {
-    body: { color: colors.foregroundDim, fontSize: 13, fontFamily: 'monospace', lineHeight: 18 },
-    code_inline: { backgroundColor: withAlpha(colors.foreground, 0.08), color: colors.accent, fontFamily: 'monospace', fontSize: 12 },
-    code_block: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'monospace', fontSize: 12, padding: 8, borderRadius: 6 },
-    fence: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'monospace', fontSize: 12, padding: 8, borderRadius: 6 },
+    body: { color: colors.foregroundDim, fontSize: 13, fontFamily: 'Silkscreen', lineHeight: 18 },
+    code_inline: { backgroundColor: withAlpha(colors.foreground, 0.08), color: colors.accent, fontFamily: 'Silkscreen', fontSize: 12 },
+    code_block: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'Silkscreen', fontSize: 12, padding: 8, borderRadius: 6 },
+    fence: { backgroundColor: '#0D0D0D', color: '#E8E8E8', fontFamily: 'Silkscreen', fontSize: 12, padding: 8, borderRadius: 6 },
   };
 
   const renderCandidate = (candidate: typeof a, label: string, idx: number) => {

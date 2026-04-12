@@ -38,6 +38,6 @@ export const CsvTableRenderer = memo(function CsvTableRenderer({ content, delimi
 const styles = StyleSheet.create({
   container: { flex: 1 },
   row: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#222' },
-  cell: { fontFamily: 'monospace', fontSize: 11, padding: 6, minWidth: 80, maxWidth: 200 },
+  cell: { fontFamily: 'Silkscreen', fontSize: 11, padding: 6, minWidth: 80, maxWidth: 200 },
   headerCell: { fontWeight: '600', fontSize: 11 },
 });

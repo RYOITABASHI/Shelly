@@ -189,9 +189,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   backRow: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderBottomWidth: 1, borderBottomColor: '#222' },
-  backText: { fontFamily: 'monospace', fontSize: 12, fontWeight: '600' },
-  breadcrumb: { fontFamily: 'monospace', fontSize: 10, flex: 1 },
+  backText: { fontFamily: 'Silkscreen', fontSize: 12, fontWeight: '600' },
+  breadcrumb: { fontFamily: 'Silkscreen', fontSize: 10, flex: 1 },
   fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#111' },
-  fileName: { fontFamily: 'monospace', fontSize: 12, flex: 1 },
-  fileSize: { fontFamily: 'monospace', fontSize: 10 },
+  fileName: { fontFamily: 'Silkscreen', fontSize: 12, flex: 1 },
+  fileSize: { fontFamily: 'Silkscreen', fontSize: 10 },
 });

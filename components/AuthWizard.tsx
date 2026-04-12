@@ -439,7 +439,7 @@ function ToolAuthCard({
             <Text style={[styles.toolName, { color: config.color }]}>{config.name}</Text>
             {config.id === 'gemini-cli' && (
               <View style={{ backgroundColor: '#4ADE8030', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 }}>
-                <Text style={{ color: '#4ADE80', fontSize: 8, fontWeight: '700', fontFamily: 'monospace' }}>
+                <Text style={{ color: '#4ADE80', fontSize: 8, fontWeight: '700', fontFamily: 'Silkscreen' }}>
                   {t('setup2.free_badge')}
                 </Text>
               </View>

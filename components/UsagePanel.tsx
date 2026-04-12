@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
     padding: 10,
     alignItems: 'center',
   },
-  cardLabel: { fontSize: 9, color: '#666', fontFamily: 'monospace' },
-  cardValue: { fontSize: 20, fontWeight: 'bold', fontFamily: 'monospace', marginVertical: 2 },
-  cardSub: { fontSize: 9, color: '#888', fontFamily: 'monospace' },
+  cardLabel: { fontSize: 9, color: '#666', fontFamily: 'Silkscreen' },
+  cardValue: { fontSize: 20, fontWeight: 'bold', fontFamily: 'Silkscreen', marginVertical: 2 },
+  cardSub: { fontSize: 9, color: '#888', fontFamily: 'Silkscreen' },
 });

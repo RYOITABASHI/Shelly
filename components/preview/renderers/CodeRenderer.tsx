@@ -53,9 +53,9 @@ const styles = StyleSheet.create({
   codeBlock: { padding: 8 },
   lineRow: { flexDirection: 'row', minHeight: 18 },
   lineNumber: {
-    fontFamily: 'monospace', fontSize: 11, textAlign: 'right',
+    fontFamily: 'Silkscreen', fontSize: 11, textAlign: 'right',
     paddingRight: 8, opacity: 0.5,
   },
-  lineContent: { fontFamily: 'monospace', fontSize: 12, flex: 1 },
-  truncatedNotice: { fontFamily: 'monospace', fontSize: 11, padding: 8, textAlign: 'center' },
+  lineContent: { fontFamily: 'Silkscreen', fontSize: 12, flex: 1 },
+  truncatedNotice: { fontFamily: 'Silkscreen', fontSize: 11, padding: 8, textAlign: 'center' },
 });

@@ -28,8 +28,8 @@ export const PdfRenderer = memo(function PdfRenderer({ filePath }: Props) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  text: { fontFamily: 'monospace', fontSize: 16, fontWeight: '600' },
-  subtext: { fontFamily: 'monospace', fontSize: 12 },
+  text: { fontFamily: 'Silkscreen', fontSize: 16, fontWeight: '600' },
+  subtext: { fontFamily: 'Silkscreen', fontSize: 12 },
   button: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
-  buttonText: { fontFamily: 'monospace', fontSize: 13, fontWeight: '600' },
+  buttonText: { fontFamily: 'Silkscreen', fontSize: 13, fontWeight: '600' },
 });

@@ -259,8 +259,8 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   bodyContent: { padding: 16, paddingBottom: 32 },
   center: { alignItems: 'center', paddingVertical: 24, gap: 12 },
-  desc: { color: '#9CA3AF', fontSize: 13, fontFamily: 'monospace', textAlign: 'center' },
-  errorText: { color: '#F87171', fontSize: 13, fontFamily: 'monospace', textAlign: 'center' },
+  desc: { color: '#9CA3AF', fontSize: 13, fontFamily: 'Silkscreen', textAlign: 'center' },
+  errorText: { color: '#F87171', fontSize: 13, fontFamily: 'Silkscreen', textAlign: 'center' },
   sectionLabel: {
     color: '#00D4AA',
     fontSize: 11,
@@ -276,7 +276,7 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 4,
   },
-  previewRow: { color: '#E8E8E8', fontSize: 13, fontFamily: 'monospace' },
+  previewRow: { color: '#E8E8E8', fontSize: 13, fontFamily: 'Silkscreen' },
   strategyBtn: {
     backgroundColor: '#1A1A1A',
     borderRadius: 8,
@@ -286,7 +286,7 @@ const styles = StyleSheet.create({
     borderColor: '#2D2D2D',
   },
   strategyBtnActive: { borderColor: '#00D4AA', backgroundColor: '#00D4AA15' },
-  strategyBtnText: { color: '#9CA3AF', fontSize: 13, fontFamily: 'monospace' },
+  strategyBtnText: { color: '#9CA3AF', fontSize: 13, fontFamily: 'Silkscreen' },
   strategyBtnTextActive: { color: '#00D4AA' },
   primaryBtn: {
     backgroundColor: '#00D4AA',
@@ -296,7 +296,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     alignItems: 'center',
   },
-  primaryBtnText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'monospace' },
+  primaryBtnText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'Silkscreen' },
   secondaryBtn: {
     backgroundColor: '#1A1A1A',
     borderRadius: 8,
@@ -305,7 +305,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#2D2D2D',
   },
-  secondaryBtnText: { color: '#E8E8E8', fontSize: 13, fontFamily: 'monospace' },
+  secondaryBtnText: { color: '#E8E8E8', fontSize: 13, fontFamily: 'Silkscreen' },
   doneIcon: { fontSize: 40 },
-  doneText: { color: '#00D4AA', fontSize: 18, fontWeight: '700', fontFamily: 'monospace' },
+  doneText: { color: '#00D4AA', fontSize: 18, fontWeight: '700', fontFamily: 'Silkscreen' },
 });

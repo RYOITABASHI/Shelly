@@ -62,7 +62,7 @@ function BlinkingCursor({ color, size = 14 }: { color: string; size?: number }) 
   const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   return (
-    <Animated.Text style={[{ color, fontFamily: 'monospace', fontSize: size }, animStyle]}>
+    <Animated.Text style={[{ color, fontFamily: 'Silkscreen', fontSize: size }, animStyle]}>
       {'\u258B'}
     </Animated.Text>
   );

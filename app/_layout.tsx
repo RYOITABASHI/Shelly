@@ -35,10 +35,10 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 const ebStyles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0D1117', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  title: { color: '#F85149', fontSize: 20, fontWeight: '700', fontFamily: 'monospace', marginBottom: 12 },
-  message: { color: '#8B949E', fontSize: 14, fontFamily: 'monospace', textAlign: 'center', marginBottom: 24 },
+  title: { color: '#F85149', fontSize: 20, fontWeight: '700', fontFamily: 'Silkscreen', marginBottom: 12 },
+  message: { color: '#8B949E', fontSize: 14, fontFamily: 'Silkscreen', textAlign: 'center', marginBottom: 24 },
   button: { backgroundColor: '#21262D', borderWidth: 1, borderColor: '#30363D', borderRadius: 8, paddingHorizontal: 24, paddingVertical: 12 },
-  buttonText: { color: '#C9D1D9', fontSize: 14, fontFamily: 'monospace', fontWeight: '600' },
+  buttonText: { color: '#C9D1D9', fontSize: 14, fontFamily: 'Silkscreen', fontWeight: '600' },
 });
 
 export const unstable_settings = {
