@@ -518,7 +518,13 @@ export default function TerminalScreen() {
           <NativeTerminalView
             ref={terminalViewRef}
             sessionId={activeSession.nativeSessionId}
-            fontFamily={'jetbrains-mono'}
+            fontFamily={
+              settings.uiFont === 'silkscreen'
+                ? 'silkscreen'
+                : settings.uiFont === 'pixel'
+                ? 'pixel-mplus'
+                : 'jetbrains-mono'
+            }
             fontSize={termFontSize}
             cursorShape={settings.cursorShape || 'block'}
             cursorBlink={true}

@@ -20,6 +20,7 @@ object FontManager {
                     else -> "fonts/FiraCode-Regular.ttf"
                 }
                 "pixel-mplus" -> "fonts/PixelMplus12-Regular.ttf"
+                "silkscreen" -> "fonts/Silkscreen-Regular.ttf"
                 else -> "fonts/JetBrainsMono-Regular.ttf"
             }
             try {
