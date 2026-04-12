@@ -98,20 +98,26 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
     >
       {/* Pane header */}
       <View style={[styles.header, { borderTopColor: agentColor }]}>
+        {/* Pane-type pill — tap to switch this pane between Terminal / AI /
+            Browser / Markdown. The dropdown chevron makes it obvious that
+            this is interactive. */}
         <Pressable
-          style={styles.headerLeft}
+          style={styles.paneTypePill}
           onPress={() => setSelectorVisible(true)}
+          hitSlop={6}
+          accessibilityLabel="Change pane type"
         >
-          <MaterialIcons name={entry.icon as any} size={12} color={C.accent} />
-          <Text style={styles.headerTitle} numberOfLines={1}>
+          <MaterialIcons name={entry.icon as any} size={11} color={C.accent} />
+          <Text style={styles.paneTypeLabel} numberOfLines={1}>
             {paneTitle}
           </Text>
-          {cwdDisplay ? (
-            <Text style={styles.headerPath} numberOfLines={1}>
-              {cwdDisplay}
-            </Text>
-          ) : null}
+          <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
         </Pressable>
+        {cwdDisplay ? (
+          <Text style={styles.headerPath} numberOfLines={1}>
+            {cwdDisplay}
+          </Text>
+        ) : null}
 
         {tab === 'browser' ? (
           <View style={styles.browserNav}>
@@ -418,6 +424,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     flexShrink: 1,
+  },
+  paneTypePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(0,212,170,0.25)',
+    backgroundColor: 'rgba(0,212,170,0.06)',
+    flexShrink: 0,
+  },
+  paneTypeLabel: {
+    color: C.text1,
+    fontSize: F.paneHeader.size,
+    fontFamily: F.family,
+    fontWeight: F.paneHeader.weight,
+    letterSpacing: 0.5,
   },
   headerTitle: {
     color: C.text1,

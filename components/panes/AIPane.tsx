@@ -219,9 +219,20 @@ export default function AIPane() {
   const initialised = useRef(false);
   if (!initialised.current) {
     useAIPaneStore.getState().getOrCreate(paneId);
-    // Default to Claude when no agent is bound — matches the pane header label
     if (!usePaneStore.getState().paneAgents[paneId]) {
-      usePaneStore.getState().bindAgent(paneId, 'claude');
+      // Pick the first agent the user has actually configured. The order
+      // mirrors the chat-routing decision settled in commit 2ba65f3a:
+      //   Cerebras Qwen3-235B (1M tok/day, frontier-class, fastest)
+      //   → Groq Llama3 (100K tok/day, fast fallback)
+      //   → Gemini API (free tier)
+      //   → Claude CLI (bundled, always available, no key needed)
+      const s = useSettingsStore.getState().settings;
+      const pick =
+        s.cerebrasApiKey ? 'cerebras' :
+        s.groqApiKey     ? 'groq' :
+        s.geminiApiKey   ? 'gemini' :
+        'claude';
+      usePaneStore.getState().bindAgent(paneId, pick);
     }
     initialised.current = true;
   }

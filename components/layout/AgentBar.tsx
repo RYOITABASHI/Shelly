@@ -44,14 +44,14 @@ export function AgentBar() {
 
   return (
     <View style={styles.bar}>
-      {/* Layout preset button (left edge) */}
+      {/* Layout preset button (left edge) — boxed so it reads as a button */}
       <Pressable
         style={styles.layoutBtn}
         onPress={() => setLayoutSheetVisible(true)}
-        hitSlop={8}
+        hitSlop={10}
         accessibilityLabel="Layout"
       >
-        <MaterialIcons name="dashboard" size={15} color={C.text2} />
+        <MaterialIcons name="dashboard" size={18} color={C.accent} />
       </Pressable>
 
       {/* Agent tabs */}
@@ -182,9 +182,13 @@ const styles = StyleSheet.create({
     borderRadius: R.agentTab,
   },
   layoutBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    marginLeft: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginLeft: 6,
+    marginRight: 4,
     borderRadius: R.agentTab,
+    borderWidth: 1,
+    borderColor: 'rgba(0,212,170,0.35)',
+    backgroundColor: 'rgba(0,212,170,0.08)',
   },
 });

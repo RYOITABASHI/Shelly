@@ -19,9 +19,11 @@ import { logInfo, logError } from '@/lib/debug-logger';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
+import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
 import { claudeCliStream } from '@/lib/claude-cli';
 import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
+import type { CerebrasMessage } from '@/lib/cerebras';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -308,6 +310,61 @@ export function useAIPaneDispatch(paneId: string) {
               tokenCount: estimateTokens(accumulated),
             });
           }
+        } else if (agent === 'cerebras') {
+          // ── Cerebras Qwen3-235B (frontier-class, fastest, 1M tok/day) ──
+          const apiKey = settings.cerebrasApiKey ?? '';
+          if (!apiKey) {
+            store.updateMessage(paneId, assistantId, {
+              content: 'Cerebras API key is not set. Add it in Settings (gear icon) → Cerebras API Key.',
+              isStreaming: false,
+              streamingText: undefined,
+            });
+          } else {
+            const cerebrasHistory: CerebrasMessage[] = history.map((m) => ({
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            }));
+            let accumulated = '';
+            throttledUpdate(paneId, assistantId, { isStreaming: true, streamingText: '' });
+
+            const result = await cerebrasChatStream(
+              apiKey,
+              userText,
+              (chunk, done) => {
+                if (signal.aborted) return;
+                if (!done && chunk) {
+                  accumulated += chunk;
+                  throttledUpdate(paneId, assistantId, {
+                    streamingText: accumulated,
+                    tokenCount: estimateTokens(accumulated),
+                    isStreaming: true,
+                  });
+                }
+              },
+              settings.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
+              cerebrasHistory,
+              signal,
+            );
+
+            if (!signal.aborted) {
+              const finalContent = result.content ?? accumulated;
+              if (!result.success && result.error) {
+                store.updateMessage(paneId, assistantId, {
+                  content: `Cerebras error: ${result.error}`,
+                  isStreaming: false,
+                  streamingText: undefined,
+                });
+              } else {
+                store.updateMessage(paneId, assistantId, {
+                  content: finalContent,
+                  streamingText: undefined,
+                  isStreaming: false,
+                  tokenCount: estimateTokens(finalContent),
+                });
+              }
+              logInfo('AIPaneDispatch', 'Cerebras response complete');
+            }
+          }
         } else if (agent === 'groq') {
           // ── Groq (Llama 3.3 70B, OpenAI-compatible SSE) ──
           const apiKey = settings.groqApiKey ?? '';
@@ -490,6 +547,7 @@ export function useAIPaneDispatch(paneId: string) {
           }
         } else if (agent === 'claude') {
           // ── Claude (bundled CLI via JNI fork+exec) ──
+          logInfo('AIPaneDispatch', `Claude dispatch start: prompt=${userText.slice(0, 80)}`);
           let accumulated = '';
           throttledUpdate(paneId, assistantId, { isStreaming: true, streamingText: '' });
 
@@ -499,6 +557,7 @@ export function useAIPaneDispatch(paneId: string) {
               if (signal.aborted) return;
               if (!done && chunk) {
                 accumulated += chunk;
+                logInfo('AIPaneDispatch', `Claude chunk: +${chunk.length} chars (total=${accumulated.length})`);
                 throttledUpdate(paneId, assistantId, {
                   streamingText: accumulated,
                   tokenCount: estimateTokens(accumulated),
@@ -512,7 +571,9 @@ export function useAIPaneDispatch(paneId: string) {
 
           if (!signal.aborted) {
             const finalContent = result.content || accumulated;
+            logInfo('AIPaneDispatch', `Claude dispatch end: success=${result.success} exitCode=${result.exitCode} contentLen=${finalContent.length}`);
             if (!result.success) {
+              logError('AIPaneDispatch', `Claude failed: ${result.error ?? '(no error msg)'}`);
               store.updateMessage(paneId, assistantId, {
                 content: result.error
                   ? `Claude CLI error: ${result.error}`
