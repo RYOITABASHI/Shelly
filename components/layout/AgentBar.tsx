@@ -6,6 +6,7 @@ import { usePaneStore, AGENT_COLORS } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
+import { AddPaneSheet } from '@/components/multi-pane/AddPaneSheet';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
@@ -25,15 +26,11 @@ const BUILT_IN_AGENTS: AgentDef[] = [
 export function AgentBar() {
   const { focusedPaneId, paneAgents, bindAgent } = usePaneStore();
   const settings = useSettingsStore((s) => s.settings);
-  const [addModalVisible, setAddModalVisible] = useState(false);
+  const [addPaneSheetVisible, setAddPaneSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const agents = BUILT_IN_AGENTS.filter(
     (a) => settings.teamMembers?.[a.key as keyof typeof settings.teamMembers]
-  );
-
-  const disabledAgents = BUILT_IN_AGENTS.filter(
-    (a) => !settings.teamMembers?.[a.key as keyof typeof settings.teamMembers]
   );
 
   const activeAgent = focusedPaneId ? paneAgents[focusedPaneId] : null;
@@ -41,13 +38,6 @@ export function AgentBar() {
   const handleAgentTap = (agentKey: string) => {
     if (!focusedPaneId) return;
     bindAgent(focusedPaneId, agentKey);
-  };
-
-  const handleEnableAgent = (agentKey: string) => {
-    useSettingsStore.getState().updateSettings({
-      teamMembers: { ...settings.teamMembers, [agentKey]: true },
-    });
-    setAddModalVisible(false);
   };
 
   return (
@@ -83,35 +73,11 @@ export function AgentBar() {
             </Pressable>
           );
         })}
-        {/* Add agent button */}
-        <Pressable style={styles.addBtn} hitSlop={8} onPress={() => setAddModalVisible(true)}>
+        {/* Add pane button (opens bottom sheet) */}
+        <Pressable style={styles.addBtn} hitSlop={8} onPress={() => setAddPaneSheetVisible(true)}>
           <Text style={styles.addBtnText}>+</Text>
         </Pressable>
       </ScrollView>
-
-      {/* Add agent modal */}
-      {addModalVisible && (
-        <Pressable style={styles.addModalBackdrop} onPress={() => setAddModalVisible(false)}>
-          <Pressable style={styles.addModalMenu} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.addModalTitle}>ADD AGENT</Text>
-            {disabledAgents.length === 0 ? (
-              <Text style={styles.addModalEmpty}>All agents enabled</Text>
-            ) : (
-              disabledAgents.map((agent) => (
-                <Pressable
-                  key={agent.key}
-                  style={styles.addModalRow}
-                  onPress={() => handleEnableAgent(agent.key)}
-                >
-                  <View style={[styles.statusDot, { backgroundColor: C.text2 }]} />
-                  <Text style={styles.addModalLabel}>{agent.name}</Text>
-                  <Text style={styles.addModalAction}>ENABLE</Text>
-                </Pressable>
-              ))
-            )}
-          </Pressable>
-        </Pressable>
-      )}
 
       {/* Right-side: search + settings (dropdown) */}
       <View style={styles.rightBtns}>
@@ -132,6 +98,7 @@ export function AgentBar() {
       </View>
 
       <SettingsDropdown visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <AddPaneSheet visible={addPaneSheetVisible} onClose={() => setAddPaneSheetVisible(false)} />
     </View>
   );
 }
@@ -200,62 +167,5 @@ const styles = StyleSheet.create({
   iconBtn: {
     padding: 4,
     borderRadius: R.agentTab,
-  },
-  // Add agent modal
-  addModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-start',
-    alignItems: 'center',
-    zIndex: 200,
-    paddingTop: 36,
-  },
-  addModalMenu: {
-    width: 200,
-    backgroundColor: C.border,
-    borderRadius: 8,
-    padding: 8,
-    borderWidth: S.borderWidth,
-    borderColor: C.btnSecondaryBg,
-  },
-  addModalTitle: {
-    color: C.text2,
-    fontSize: F.contextBar.size,
-    fontFamily: F.family,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 4,
-    paddingHorizontal: 6,
-  },
-  addModalEmpty: {
-    color: C.text2,
-    fontSize: F.sidebarItem.size,
-    fontFamily: F.family,
-    fontStyle: 'italic',
-    paddingHorizontal: 6,
-    paddingVertical: 8,
-  },
-  addModalRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
-    borderRadius: R.agentTab,
-  },
-  addModalLabel: {
-    flex: 1,
-    color: C.text1,
-    fontSize: F.sidebarItem.size,
-    fontFamily: F.family,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  addModalAction: {
-    color: C.accent,
-    fontSize: F.badge.size,
-    fontFamily: F.family,
-    fontWeight: F.badge.weight,
-    letterSpacing: 0.5,
   },
 });
