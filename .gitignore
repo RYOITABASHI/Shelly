@@ -40,3 +40,7 @@ Thumbs.db
 
 # Superpowers cache (user-local)
 .superpowers/
+
+# Local Claude Code working scratch — created accidentally inside Shelly
+.claude-config-backup/
+awesome-claude-plugins/
