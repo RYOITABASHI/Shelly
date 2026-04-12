@@ -86,9 +86,13 @@ export function TerminalHeader() {
   // width so the header can drop non-essential chrome (preview, usage,
   // mode badge) once the row would otherwise overflow.
   const multiPaneCtx = useContext(MultiPaneContext);
-  const paneWidth = multiPaneCtx?.paneWidth ?? Infinity;
-  const isNarrowPane = paneWidth < 420;
-  const isVeryNarrowPane = paneWidth < 300;
+  const paneWidth = multiPaneCtx?.paneWidth ?? 0;
+  // Treat "unknown width" (0 before onLayout, or no MultiPaneContext at
+  // all) as wide so the header renders its full set on first paint
+  // instead of collapsing to the very-narrow variant and making users
+  // think the tab bar died.
+  const isNarrowPane = paneWidth > 0 && paneWidth < 420;
+  const isVeryNarrowPane = paneWidth > 0 && paneWidth < 300;
 
   const previewOpen = usePreviewStore((s) => s.isOpen);
   const hasNewContent = usePreviewStore((s) => s.hasNewContent);
