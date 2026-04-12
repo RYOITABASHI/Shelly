@@ -353,6 +353,20 @@ public class TerminalView extends View {
             /** Track what composing text is currently on the PTY so we can erase it */
             private String mLastComposingSent = "";
 
+            /**
+             * Re-seed the Editable with a non-empty sentinel so the IME (Gboard
+             * etc.) keeps sending BackSpace through deleteSurroundingText. If
+             * the Editable is empty, Gboard treats BackSpace as a no-op and
+             * silently swallows the key. We use a single ASCII space as the
+             * sentinel and place the cursor after it.
+             */
+            private void primeImeBuffer() {
+                Editable e = getEditable();
+                e.clear();
+                e.append(' ');
+                android.text.Selection.setSelection(e, 1);
+            }
+
             private void eraseComposingFromPty() {
                 if (mLastComposingSent.isEmpty()) return;
                 // Send one DEL (0x7F) per Unicode code point directly to the terminal
@@ -400,7 +414,10 @@ public class TerminalView extends View {
                 mLastComposingSent = "";
                 mComposingText = "";
                 super.finishComposingText();
-                getEditable().clear();
+                // Re-seed a sentinel so the IME thinks there's still something to
+                // backspace into. clear() here would leave the Editable empty,
+                // and Gboard would silently swallow the next BackSpace press.
+                primeImeBuffer();
                 return true;
             }
 
@@ -428,7 +445,11 @@ public class TerminalView extends View {
                 mComposingText = "";
                 mLastComposingSent = "";
                 super.commitText(text, newCursorPosition);
-                getEditable().clear();
+                // Don't clear() — that would leave the Editable empty and Gboard
+                // would stop sending BackSpace through deleteSurroundingText.
+                // Re-seed a sentinel character instead so the IME has something
+                // to "delete back to."
+                primeImeBuffer();
                 return true;
             }
 
@@ -447,7 +468,10 @@ public class TerminalView extends View {
                     }
                     sendTextToTerminal(delSeq);
                 }
-                return super.deleteSurroundingText(leftLength, rightLength);
+                boolean result = super.deleteSurroundingText(leftLength, rightLength);
+                // Re-seed so the IME has something to delete on the *next* press.
+                primeImeBuffer();
+                return result;
             }
 
             void sendTextToTerminal(CharSequence text) {
