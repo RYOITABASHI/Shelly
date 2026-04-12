@@ -157,7 +157,7 @@ export function useNativeExec() {
       }
 
       const writeResult = await writeFile(filePath, content);
-      if (!writeResult.ok) {
+      if (writeResult.ok === false) {
         return { ok: false, error: writeResult.error };
       }
       return { ok: true, filePath, editsApplied: applied };

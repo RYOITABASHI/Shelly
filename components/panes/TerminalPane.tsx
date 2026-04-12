@@ -26,7 +26,6 @@ import { NativeTerminalView } from '@/modules/terminal-view/src';
 import TerminalViewModule from '@/modules/terminal-view/src/TerminalViewModule';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalOutput } from '@/hooks/use-terminal-output';
-import { MockClaudeSession } from '@/components/terminal/MockClaudeSession';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation, t } from '@/lib/i18n';
@@ -502,12 +501,7 @@ export default function TerminalScreen() {
         <PreviewBanner url={bannerUrl} onOpen={() => openPreview()} onDismiss={dismissBanner} />
       )}
 
-      {/* Mock Claude Code session — visual overlay showing mock content */}
-      <View style={StyleSheet.absoluteFill} pointerEvents="none">
-        <MockClaudeSession />
-      </View>
-
-      {/* Terminal + Preview Split View (hidden behind mock until user interacts) */}
+      {/* Terminal + Preview Split View */}
       {activeSession && isConnected && !isHiddenBehindMultiPane && (
         <View style={{ flex: 1, flexDirection: showSplitPreview ? 'row' : 'column' }}>
           {/* Native Terminal View */}
@@ -536,7 +530,9 @@ export default function TerminalScreen() {
                   exitCode: typeof exitCode === 'number' ? exitCode : 0,
                   isRunning: false,
                   blockStatus: exitCode !== 0 ? 'error' : 'done',
-                  connectionMode: useTerminalStore.getState().connectionMode,
+                  // onBlockCompleted only fires when a native session is alive,
+                  // so connectionMode is always 'native' here.
+                  connectionMode: 'native',
                 });
               }
               // Sync currentDir from PTY after each command block
