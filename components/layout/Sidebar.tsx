@@ -16,6 +16,9 @@ import { useTheme } from '@/lib/theme-engine';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useAgentStore } from '@/store/agent-store';
 import { useSettingsStore } from '@/store/settings-store';
+import { usePaneStore } from '@/store/pane-store';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
@@ -48,6 +51,13 @@ const CLOUD_SERVICES = [
   { label: 'ONEDRIVE', status: 'CONNECT', icon: 'cloud-queue', linked: false },
 ] as const;
 
+// OAuth authorize endpoints — client_id wiring happens later; for now these
+// open the provider's sign-in page in the built-in browser pane.
+const CLOUD_OAUTH_URLS: Record<string, string> = {
+  DROPBOX: 'https://www.dropbox.com/oauth2/authorize?response_type=token&client_id=SHELLY_DROPBOX_CLIENT_ID&redirect_uri=https://shelly.local/oauth/dropbox',
+  ONEDRIVE: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?response_type=token&client_id=SHELLY_ONEDRIVE_CLIENT_ID&scope=Files.ReadWrite.All%20offline_access&redirect_uri=https://shelly.local/oauth/onedrive',
+};
+
 export function Sidebar() {
   const theme = useTheme();
   const c = theme.colors;
@@ -58,6 +68,26 @@ export function Sidebar() {
   const runHistory = useAgentStore((s) => s.runHistory);
   const [addRepoVisible, setAddRepoVisible] = useState(false);
   const [repoInput, setRepoInput] = useState('');
+
+  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
+  const setLeafTab = useMultiPaneStore((s) => s.setLeafTab);
+  const openUrl = useBrowserStore((s) => s.openUrl);
+
+  const handleCloudConnect = React.useCallback((svcLabel: string) => {
+    const url = CLOUD_OAUTH_URLS[svcLabel];
+    if (!url) {
+      Alert.alert(svcLabel, 'Cloud storage integration coming soon. Configure in Settings.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open Settings', onPress: () => useSettingsStore.getState().setShowConfigTUI(true) },
+      ]);
+      return;
+    }
+    // Switch focused pane to browser and load the OAuth URL
+    if (focusedPaneId) {
+      setLeafTab(focusedPaneId, 'browser');
+    }
+    openUrl(url);
+  }, [focusedPaneId, setLeafTab, openUrl]);
 
   // Derive recent completed tasks from run history
   const recentTasks = React.useMemo(() => {
@@ -277,16 +307,7 @@ export function Sidebar() {
               key={svc.label}
               style={styles.cloudRow}
               onPress={() => {
-                if (!svc.linked) {
-                  Alert.alert(
-                    svc.label,
-                    'Cloud storage integration coming soon. Configure in Settings.',
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Open Settings', onPress: () => useSettingsStore.getState().setShowConfigTUI(true) },
-                    ]
-                  );
-                }
+                if (!svc.linked) handleCloudConnect(svc.label);
               }}
             >
               <MaterialIcons

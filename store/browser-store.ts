@@ -8,10 +8,13 @@ interface BrowserState {
   bookmarks: Bookmark[];
   /** Incremented to signal a nav action to BrowserPane */
   navSignal: { action: BrowserNavAction; seq: number };
+  /** Incremented to tell BrowserPane to load a specific URL */
+  openSignal: { url: string; seq: number };
   addBookmark: (b: Bookmark) => void;
   removeBookmark: (url: string) => void;
   loadBookmarks: () => Promise<void>;
   triggerNav: (action: BrowserNavAction) => void;
+  openUrl: (url: string) => void;
 }
 
 const DEFAULT_BOOKMARKS: Bookmark[] = [
@@ -24,6 +27,7 @@ const DEFAULT_BOOKMARKS: Bookmark[] = [
 export const useBrowserStore = create<BrowserState>((set, get) => ({
   bookmarks: DEFAULT_BOOKMARKS,
   navSignal: { action: 'reload' as BrowserNavAction, seq: 0 },
+  openSignal: { url: '', seq: 0 },
 
   addBookmark: (b) => {
     set((s) => {
@@ -50,5 +54,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
 
   triggerNav: (action) => {
     set((s) => ({ navSignal: { action, seq: s.navSignal.seq + 1 } }));
+  },
+
+  openUrl: (url) => {
+    set((s) => ({ openSignal: { url, seq: s.openSignal.seq + 1 } }));
   },
 }));

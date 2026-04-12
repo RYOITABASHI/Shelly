@@ -50,6 +50,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const [activeBookmarkIdx, setActiveBookmarkIdx] = useState(0);
 
   const navSignal = useBrowserStore((s) => s.navSignal);
+  const openSignal = useBrowserStore((s) => s.openSignal);
 
   useEffect(() => {
     loadBookmarks();
@@ -66,6 +67,17 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       case 'reload': webviewRef.current?.reload(); break;
     }
   }, [navSignal.seq]);
+
+  // Listen for external openUrl requests (Sidebar cloud buttons, etc.)
+  const lastOpenSeqRef = useRef(openSignal.seq);
+  useEffect(() => {
+    if (openSignal.seq === lastOpenSeqRef.current) return;
+    lastOpenSeqRef.current = openSignal.seq;
+    if (openSignal.url) {
+      setInputUrl(openSignal.url);
+      setCurrentUrl(openSignal.url);
+    }
+  }, [openSignal.seq]);
 
   const handleSubmit = useCallback(() => {
     const url = normalizeUrl(inputUrl);
