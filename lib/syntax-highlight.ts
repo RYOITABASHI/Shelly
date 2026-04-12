@@ -14,13 +14,16 @@ export type Token = {
 
 // --- Color Map ------------------------------------------------------------------
 
+// Mock-faithful palette. Keywords land on the same purple Shelly uses for
+// the CLAUDE role label so code blocks read as "same family" as the AI
+// pane. Strings pop in pink, numbers in amber.
 export const TOKEN_COLORS: Record<TokenType, string> = {
-  keyword: '#22C55E',     // green
-  string: '#F59E0B',      // yellow
-  comment: '#6B7280',     // gray
-  number: '#D946EF',      // magenta
-  punctuation: '#888',     // dim
-  default: '#E8E8E8',     // foreground
+  keyword:     '#A78BFA', // purple — import/from/const/function/return
+  string:      '#EC4899', // pink — 'react', "react-native"
+  comment:     '#6B7280', // slate-500
+  number:      '#F59E0B', // amber
+  punctuation: '#6B7280',
+  default:     '#E5E7EB',
 };
 
 // --- Keyword Sets ---------------------------------------------------------------

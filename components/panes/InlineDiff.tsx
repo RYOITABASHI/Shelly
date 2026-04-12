@@ -147,17 +147,28 @@ function hunkPatchedContent(hunk: DiffHunk): string {
 
 // ─── Line colours ─────────────────────────────────────────────────────────────
 
+// Mock-faithful diff palette — matches the green / red glow the AI pane's
+// code proposals use in the design mock.
 const LINE_COLORS: Record<DiffLine['type'], { bg: string; fg: string }> = {
-  add:     { bg: '#1a3a1a', fg: '#7ec87e' },
-  remove:  { bg: '#3a1a1a', fg: '#e07070' },
-  header:  { bg: '#1a2a3a', fg: '#5fc8d8' },
-  context: { bg: '#111111', fg: '#cccccc' },
+  add:     { bg: 'rgba(34,197,94,0.12)',  fg: '#4ADE80' }, // green neon
+  remove:  { bg: 'rgba(239,68,68,0.12)',  fg: '#F87171' }, // red neon
+  header:  { bg: 'rgba(96,165,250,0.10)', fg: '#60A5FA' }, // blue header
+  context: { bg: '#111111',                fg: '#9CA3AF' }, // muted context
 };
 
 // ─── DiffLineRow ──────────────────────────────────────────────────────────────
 
+// Per-type text glow so + / - lines read as neon in the mock.
+const LINE_GLOWS: Record<DiffLine['type'], { textShadowColor: string; textShadowRadius: number }> = {
+  add:     { textShadowColor: 'rgba(74,222,128,0.55)', textShadowRadius: 5 },
+  remove:  { textShadowColor: 'rgba(248,113,113,0.55)', textShadowRadius: 5 },
+  header:  { textShadowColor: 'rgba(96,165,250,0.5)',  textShadowRadius: 4 },
+  context: { textShadowColor: 'transparent',            textShadowRadius: 0 },
+};
+
 const DiffLineRow = React.memo(function DiffLineRow({ line }: { line: DiffLine }) {
   const { bg, fg } = LINE_COLORS[line.type];
+  const glow = LINE_GLOWS[line.type];
   const gutterNum = line.lineNum != null ? String(line.lineNum).padStart(3, ' ') : '   ';
 
   return (
@@ -165,7 +176,18 @@ const DiffLineRow = React.memo(function DiffLineRow({ line }: { line: DiffLine }
       <Text style={rowStyles.gutter} selectable={false}>
         {gutterNum}
       </Text>
-      <Text style={[rowStyles.code, { color: fg }]} selectable>
+      <Text
+        style={[
+          rowStyles.code,
+          {
+            color: fg,
+            textShadowColor: glow.textShadowColor,
+            textShadowOffset: { width: 0, height: 0 },
+            textShadowRadius: glow.textShadowRadius,
+          },
+        ]}
+        selectable
+      >
         {line.text}
       </Text>
     </View>
