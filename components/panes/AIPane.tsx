@@ -107,10 +107,11 @@ const MessageBubble = React.memo(function MessageBubble({
 
   // Assistant message
   const containsDiff = !isLastStreaming && hasDiffContent(displayText);
+  const agentLabel = (message.agent ?? 'claude').toUpperCase();
 
   return (
     <View style={bubbleStyles.messageContainer}>
-      <Text style={bubbleStyles.roleLabelClaude}>CLAUDE</Text>
+      <Text style={bubbleStyles.roleLabelClaude}>{agentLabel}</Text>
       <View style={bubbleStyles.assistantContent}>
         {containsDiff ? (
           <InlineDiff content={displayText} />

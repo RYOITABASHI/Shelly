@@ -37,6 +37,7 @@
     "bridge": "node server.js"
   },
   "dependencies": {
+    "@expo-google-fonts/silkscreen": "^0.4.2",
     "@expo/vector-icons": "^15.0.3",
     "@openai/codex": "^0.119.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
@@ -58,7 +59,7 @@
     "expo-dev-client": "^6.0.20",
     "expo-document-picker": "^14.0.8",
     "expo-file-system": "~19.0.10",
-    "expo-font": "~14.0.10",
+    "expo-font": "~14.0.11",
     "expo-haptics": "~15.0.8",
     "expo-image": "~3.0.11",
     "expo-image-picker": "~17.0.10",

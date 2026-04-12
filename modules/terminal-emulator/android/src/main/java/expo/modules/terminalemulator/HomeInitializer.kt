@@ -25,8 +25,14 @@ object HomeInitializer {
      *    14: drop OSC 133 from PS1 (0dff463b) — was forgotten to bump,
      *        which left users stuck on the broken phantom-prompt PS1 even
      *        after the code was fixed. Bumping now so the next launch
-     *        regenerates .bashrc with the simple green-cwd-$ prompt. */
-    private const val BASHRC_VERSION = 14
+     *        regenerates .bashrc with the simple green-cwd-$ prompt.
+     *    15: switch PS1 generation from $'...' ANSI-C quoting to
+     *        `printf -v PS1 '\[\033[...\]...'`. The $'...' form turned
+     *        \[ \] into literal backslash-bracket bytes, so bash never
+     *        saw them as width hints and `echo "$PS1"` dumped ugly
+     *        \[\]~\[\]\$. printf -v keeps \[ \] literal for bash while
+     *        still expanding \033 into ESC. */
+    private const val BASHRC_VERSION = 15
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -148,8 +154,9 @@ object HomeInitializer {
             sb.appendLine("  # Replace home path with ~ (\\~ prevents tilde expansion in replacement)")
             sb.appendLine("  d=\"\${d/#\$SHELLY_HOME_REAL/\\~}\"")
             sb.appendLine("  d=\"\${d/#\$HOME/\\~}\"")
-            sb.appendLine("  # Use printf-style escapes via \$'...' so \\[ \\] reach bash literally")
-            sb.appendLine("  PS1=\$'\\[\\e[1;32m\\]'\"\$d\"\$'\\[\\e[0m\\]\\$ '")
+            sb.appendLine("  # printf -v assigns to PS1 directly; \\[ \\] stay literal so bash treats")
+            sb.appendLine("  # them as PS1 width-hint markers, and \\033 expands to ESC for color.")
+            sb.appendLine("  printf -v PS1 '\\[\\033[1;32m\\]%s\\[\\033[0m\\]\\$ ' \"\$d\"")
             sb.appendLine("}")
             sb.appendLine("PROMPT_COMMAND=__shelly_prompt")
 
