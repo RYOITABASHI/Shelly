@@ -11,7 +11,6 @@ import { Sidebar } from './Sidebar';
 import { AgentBar } from './AgentBar';
 import { ContextBar } from './ContextBar';
 import { MultiPaneContainer } from '@/components/multi-pane/MultiPaneContainer';
-import { LayoutPresetBar } from '@/components/multi-pane/LayoutPresetBar';
 import { CommandPalette } from '@/components/CommandPalette';
 // WelcomeWizard kept as import for potential fallback — replaced by shelly setup
 // import { WelcomeWizard, isWizardComplete } from '@/components/WelcomeWizard';
@@ -147,9 +146,6 @@ export function ShellLayout() {
           <MultiPaneContainer />
         </View>
       </GestureDetector>
-
-      {/* Layout Preset Bar */}
-      <LayoutPresetBar />
 
       {/* Context Bar (bottom) */}
       <ContextBar />

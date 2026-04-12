@@ -7,6 +7,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
 import { AddPaneSheet } from '@/components/multi-pane/AddPaneSheet';
+import { LayoutPresetSheet } from '@/components/multi-pane/LayoutPresetSheet';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
@@ -27,6 +28,7 @@ export function AgentBar() {
   const { focusedPaneId, paneAgents, bindAgent } = usePaneStore();
   const settings = useSettingsStore((s) => s.settings);
   const [addPaneSheetVisible, setAddPaneSheetVisible] = useState(false);
+  const [layoutSheetVisible, setLayoutSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const agents = BUILT_IN_AGENTS.filter(
@@ -42,6 +44,16 @@ export function AgentBar() {
 
   return (
     <View style={styles.bar}>
+      {/* Layout preset button (left edge) */}
+      <Pressable
+        style={styles.layoutBtn}
+        onPress={() => setLayoutSheetVisible(true)}
+        hitSlop={8}
+        accessibilityLabel="Layout"
+      >
+        <MaterialIcons name="dashboard" size={15} color={C.text2} />
+      </Pressable>
+
       {/* Agent tabs */}
       <ScrollView
         horizontal
@@ -99,6 +111,7 @@ export function AgentBar() {
 
       <SettingsDropdown visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <AddPaneSheet visible={addPaneSheetVisible} onClose={() => setAddPaneSheetVisible(false)} />
+      <LayoutPresetSheet visible={layoutSheetVisible} onClose={() => setLayoutSheetVisible(false)} />
     </View>
   );
 }
@@ -166,6 +179,12 @@ const styles = StyleSheet.create({
   },
   iconBtn: {
     padding: 4,
+    borderRadius: R.agentTab,
+  },
+  layoutBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginLeft: 2,
     borderRadius: R.agentTab,
   },
 });
