@@ -63,18 +63,20 @@ export async function perplexitySearchStream(
   model: string = PERPLEXITY_DEFAULT_MODEL,
   history?: Array<{ role: string; content: string }>,
   externalSignal?: AbortSignal,
+  systemPromptOverride?: string,
 ): Promise<PerplexityResult> {
   if (!apiKey || apiKey.trim() === '') {
     return { success: false, error: 'Perplexity APIキーが設定されていません。設定画面で入力してください。' };
   }
 
+  const systemContent = systemPromptOverride && systemPromptOverride.length > 0
+    ? systemPromptOverride
+    : (getCurrentLocale() === 'ja'
+      ? 'あなたは学術論文・研究の専門家です。日本語で回答してください。引用元を示し、要点を箇条書きでまとめてください。'
+      : 'You are an expert in academic papers and research. Reply in English. Always cite sources and summarize key points in bullet points.');
+
   const messages: PerplexityMessage[] = [
-    {
-      role: 'system',
-      content: getCurrentLocale() === 'ja'
-        ? 'あなたは学術論文・研究の専門家です。日本語で回答してください。引用元を示し、要点を箇条書きでまとめてください。'
-        : 'You are an expert in academic papers and research. Reply in English. Always cite sources and summarize key points in bullet points.',
-    },
+    { role: 'system', content: systemContent },
     ...(history ?? []).map((m) => ({ role: m.role as PerplexityMessage['role'], content: m.content })),
     {
       role: 'user' as const,

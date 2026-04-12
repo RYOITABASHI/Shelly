@@ -344,6 +344,7 @@ export function useAIPaneDispatch(paneId: string) {
               settings.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
               cerebrasHistory,
               signal,
+              systemPrompt,
             );
 
             if (!signal.aborted) {
@@ -403,6 +404,7 @@ export function useAIPaneDispatch(paneId: string) {
               settings.groqModel ?? GROQ_DEFAULT_MODEL,
               groqHistory,
               signal,
+              systemPrompt,
             );
 
             if (!signal.aborted) {
@@ -459,6 +461,7 @@ export function useAIPaneDispatch(paneId: string) {
               settings.geminiModel ?? GEMINI_DEFAULT_MODEL,
               geminiHistory,
               signal,
+              systemPrompt,
             );
 
             if (!signal.aborted) {
@@ -518,6 +521,7 @@ export function useAIPaneDispatch(paneId: string) {
               settings.perplexityModel ?? PERPLEXITY_DEFAULT_MODEL,
               pplxHistory,
               signal,
+              systemPrompt,
             );
 
             if (!signal.aborted) {
@@ -565,7 +569,10 @@ export function useAIPaneDispatch(paneId: string) {
                 });
               }
             },
-            { autoApprove: (settings.autoApproveLevel ?? 'safe') as any },
+            {
+              autoApprove: (settings.autoApproveLevel ?? 'safe') as any,
+              systemPrompt,
+            },
             signal,
           );
 

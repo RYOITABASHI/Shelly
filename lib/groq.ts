@@ -85,6 +85,7 @@ export async function groqChatStream(
   model: string = GROQ_DEFAULT_MODEL,
   history: GroqMessage[] = [],
   externalSignal?: AbortSignal,
+  systemPromptOverride?: string,
 ): Promise<GroqResult> {
   if (!apiKey || apiKey.trim() === '') {
     return {
@@ -93,11 +94,16 @@ export async function groqChatStream(
     };
   }
 
-  const { getCurrentLocale } = await import('@/lib/i18n');
-  const locale = getCurrentLocale();
-  const systemContent = locale === 'ja'
-    ? 'あなたは優秀なAIアシスタントです。日本語で簡潔に回答してください。'
-    : 'You are a helpful AI assistant. Reply concisely in English.';
+  let systemContent: string;
+  if (systemPromptOverride && systemPromptOverride.length > 0) {
+    systemContent = systemPromptOverride;
+  } else {
+    const { getCurrentLocale } = await import('@/lib/i18n');
+    const locale = getCurrentLocale();
+    systemContent = locale === 'ja'
+      ? 'あなたは優秀なAIアシスタントです。日本語で簡潔に回答してください。'
+      : 'You are a helpful AI assistant. Reply concisely in English.';
+  }
 
   const messages: GroqMessage[] = [
     {

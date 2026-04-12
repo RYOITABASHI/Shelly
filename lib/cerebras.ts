@@ -82,6 +82,7 @@ export async function cerebrasChatStream(
   model: string = CEREBRAS_DEFAULT_MODEL,
   history: CerebrasMessage[] = [],
   externalSignal?: AbortSignal,
+  systemPromptOverride?: string,
 ): Promise<CerebrasResult> {
   if (!apiKey || apiKey.trim() === '') {
     return {
@@ -90,11 +91,16 @@ export async function cerebrasChatStream(
     };
   }
 
-  const { getCurrentLocale } = await import('@/lib/i18n');
-  const locale = getCurrentLocale();
-  const systemContent = locale === 'ja'
-    ? 'あなたは優秀なAIアシスタントです。日本語で簡潔に回答してください。'
-    : 'You are a helpful AI assistant. Reply concisely in English.';
+  let systemContent: string;
+  if (systemPromptOverride && systemPromptOverride.length > 0) {
+    systemContent = systemPromptOverride;
+  } else {
+    const { getCurrentLocale } = await import('@/lib/i18n');
+    const locale = getCurrentLocale();
+    systemContent = locale === 'ja'
+      ? 'あなたは優秀なAIアシスタントです。日本語で簡潔に回答してください。'
+      : 'You are a helpful AI assistant. Reply concisely in English.';
+  }
 
   const messages: CerebrasMessage[] = [
     {

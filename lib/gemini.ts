@@ -159,6 +159,7 @@ export async function geminiChatStream(
   model: string = GEMINI_DEFAULT_MODEL,
   history: GeminiMessage[] = [],
   externalSignal?: AbortSignal,
+  systemPromptOverride?: string,
 ): Promise<GeminiResult> {
   if (!apiKey || apiKey.trim() === '') {
     return {
@@ -167,15 +168,14 @@ export async function geminiChatStream(
     };
   }
 
-  // システム指示（日本語強制）
+  // システム指示（オーバーライド優先 → デフォルトはローカル言語）
+  const systemText = systemPromptOverride && systemPromptOverride.length > 0
+    ? systemPromptOverride
+    : (getCurrentLocale() === 'ja'
+      ? 'あなたは優秀なAIアシスタントです。日本語で簡潔に回答してください。'
+      : 'You are a helpful AI assistant. Reply concisely in English.');
   const systemInstruction = {
-    parts: [
-      {
-        text: getCurrentLocale() === 'ja'
-          ? 'あなたは優秀なAIアシスタントです。日本語で簡潔に回答してください。'
-          : 'You are a helpful AI assistant. Reply concisely in English.',
-      },
-    ],
+    parts: [{ text: systemText }],
   };
 
   // 会話履歴 + 現在のメッセージ

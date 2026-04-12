@@ -21,6 +21,10 @@ export type ClaudeCliOptions = {
   autoApprove?: AutoApproveLevel;
   /** Per-call timeout, default 10 min. */
   timeoutMs?: number;
+  /** Optional system context prepended to the prompt. claude --print
+   *  doesn't accept a real system message via flag, so we inline the
+   *  context as a "Context:" preamble before the user's question. */
+  systemPrompt?: string;
 };
 
 export type ClaudeCliResult = {
@@ -40,7 +44,12 @@ export async function claudeCliRun(
   prompt: string,
   options: ClaudeCliOptions = {},
 ): Promise<ClaudeCliResult> {
-  const cmd = buildChatModeClaudeCommand(prompt, options.autoApprove ?? 'safe');
+  // claude --print doesn't take a -s/system flag, so prefix the system
+  // context (e.g. terminal snapshot) into the prompt body when present.
+  const wholePrompt = options.systemPrompt && options.systemPrompt.length > 0
+    ? `${options.systemPrompt}\n\n---\n\n${prompt}`
+    : prompt;
+  const cmd = buildChatModeClaudeCommand(wholePrompt, options.autoApprove ?? 'safe');
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   logInfo('ClaudeCli', 'run: ' + prompt.slice(0, 60));
 
