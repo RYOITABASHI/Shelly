@@ -18,12 +18,20 @@ import { PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
-// JS injected into every loaded page so pinch-to-fullscreen inside the
-// WebView bubbles up to a Shelly pane-maximize. react-native-webview
-// doesn't hook WebChromeClient.onShowCustomView on Android, so YouTube's
-// fullscreen button is otherwise dead. We listen for the standard
-// fullscreenchange event and post a message that BrowserPane turns into
-// useMultiPaneStore.toggleMaximize(paneId).
+// JS injected before the page loads so our fullscreen hooks are in place
+// before YouTube or any other video app tries to go fullscreen.
+//
+// react-native-webview does not wire WebChromeClient.onShowCustomView on
+// Android, so the native HTML5 fullscreen exit path is missing. We cover
+// every fullscreen entry point a mobile video player might use:
+//
+//   1. Standard Fullscreen API: document.fullscreenchange
+//   2. WebKit-prefixed API used by Safari / WebView: webkitfullscreenchange
+//   3. iOS/Android-native video element fullscreen:
+//      <video>.webkitbeginfullscreen / webkitendfullscreen
+//   4. Pointer capture via requestFullscreen on ANY element — we
+//      monkey-patch HTMLElement.prototype.requestFullscreen so we see
+//      entries that never fire a document-level event first.
 const FULLSCREEN_BRIDGE_JS = `
 (function() {
   if (window.__shellyFullscreenInstalled) return;
@@ -33,12 +41,57 @@ const FULLSCREEN_BRIDGE_JS = `
       window.ReactNativeWebView.postMessage('shelly:fs:' + kind);
     } catch (e) {}
   };
-  document.addEventListener('fullscreenchange', function() {
-    post(document.fullscreenElement ? 'on' : 'off');
-  });
-  document.addEventListener('webkitfullscreenchange', function() {
-    post(document.webkitFullscreenElement ? 'on' : 'off');
-  });
+
+  // 1 + 2: document-level fullscreen events (W3C + WebKit)
+  var onFs = function() {
+    var el = document.fullscreenElement || document.webkitFullscreenElement;
+    post(el ? 'on' : 'off');
+  };
+  document.addEventListener('fullscreenchange', onFs, true);
+  document.addEventListener('webkitfullscreenchange', onFs, true);
+
+  // 3: native <video> element fullscreen (iOS / Android WebView)
+  var wireVideo = function(v) {
+    if (!v || v.__shellyFsWired) return;
+    v.__shellyFsWired = true;
+    v.addEventListener('webkitbeginfullscreen', function() { post('on'); }, true);
+    v.addEventListener('webkitendfullscreen', function() { post('off'); }, true);
+  };
+  var scan = function() {
+    var vids = document.getElementsByTagName('video');
+    for (var i = 0; i < vids.length; i++) wireVideo(vids[i]);
+  };
+  // Rescan on any DOM mutation since YouTube lazy-loads its player
+  var mo = new MutationObserver(scan);
+  var attach = function() {
+    if (!document.body) return setTimeout(attach, 100);
+    mo.observe(document.body, { childList: true, subtree: true });
+    scan();
+  };
+  attach();
+
+  // 4: monkey-patch requestFullscreen so wrapper elements also fire
+  var origRF = HTMLElement.prototype.requestFullscreen;
+  if (origRF) {
+    HTMLElement.prototype.requestFullscreen = function() {
+      post('on');
+      return origRF.apply(this, arguments);
+    };
+  }
+  var origWF = HTMLElement.prototype.webkitRequestFullscreen;
+  if (origWF) {
+    HTMLElement.prototype.webkitRequestFullscreen = function() {
+      post('on');
+      return origWF.apply(this, arguments);
+    };
+  }
+  var origExit = Document.prototype.exitFullscreen;
+  if (origExit) {
+    Document.prototype.exitFullscreen = function() {
+      post('off');
+      return origExit.apply(this, arguments);
+    };
+  }
 })();
 true;
 `;
@@ -89,10 +142,11 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const enterFullscreen = useCallback(async () => {
     if (isFullscreen.current) return;
     isFullscreen.current = true;
-    try {
-      const orient = await import('expo-screen-orientation');
-      await orient.lockAsync(orient.OrientationLock.LANDSCAPE);
-    } catch {}
+    // Android 15 / target SDK 36 ignores setRequestedOrientation from
+    // non-default apps ("Ignoring requested fixed orientation" in
+    // ActivityTaskManager). Skip the lockAsync call entirely — the user
+    // can rotate the device manually if auto-rotate is on, and the pane
+    // maximize + hidden nav bar already gives a near-full-screen feel.
     try {
       const navBar = await import('expo-navigation-bar');
       await navBar.setVisibilityAsync('hidden');
@@ -103,10 +157,6 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const exitFullscreen = useCallback(async () => {
     if (!isFullscreen.current) return;
     isFullscreen.current = false;
-    try {
-      const orient = await import('expo-screen-orientation');
-      await orient.unlockAsync();
-    } catch {}
     try {
       const navBar = await import('expo-navigation-bar');
       await navBar.setVisibilityAsync('visible');
@@ -347,7 +397,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           userAgent={desktopMode ? DESKTOP_UA : MOBILE_UA}
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
-          injectedJavaScript={FULLSCREEN_BRIDGE_JS}
+          injectedJavaScriptBeforeContentLoaded={FULLSCREEN_BRIDGE_JS}
           javaScriptEnabled
           domStorageEnabled
           mediaPlaybackRequiresUserAction={false}
