@@ -87,7 +87,13 @@ class ShellyTerminalSession(
         val data = outputBuffer.toString()
         outputBuffer.clear()
         emitEvent("onSessionOutput", mapOf("sessionId" to sessionId, "data" to data))
-        onScreenUpdateCallback?.invoke()
+        // NOTE: don't call onScreenUpdateCallback here. onTextChanged() invokes
+        // it synchronously on every emulator append. Calling it again from the
+        // 16 ms-delayed batch flush gave us two redraws per packet — the second
+        // one snapshotting whatever the screen looked like 16 ms ago. That was
+        // visible as Enter "needing" a second press: the first press's prompt
+        // arrived after the cursor advance was already drawn, and then the
+        // delayed flush re-drew the older state and clobbered it.
     }
 
     fun write(data: String) {
@@ -141,6 +147,14 @@ class ShellyTerminalSession(
     var onScreenUpdateCallback: (() -> Unit)? = null
 
     override fun onTextChanged(changedSession: TerminalSession) {
+        // Always tell the view to redraw FIRST so the visible state matches
+        // what the emulator already processed. The transcript-diff below is
+        // only used to feed JS-side onSessionOutput events; it must not gate
+        // or delay the redraw, because transcript bytes lag the live screen
+        // (the row the cursor is currently editing isn't in transcriptText
+        // yet, so prompt redraws often produce no length delta).
+        onScreenUpdateCallback?.invoke()
+
         val emulator = changedSession.emulator ?: return
         val screen = emulator.screen
         val fullText = screen.transcriptText ?: return
@@ -153,7 +167,6 @@ class ShellyTerminalSession(
             lastTranscriptLength = currentLength
             if (fullText.isNotEmpty()) appendToOutputBuffer(fullText)
         }
-        onScreenUpdateCallback?.invoke()
     }
 
     override fun onTitleChanged(changedSession: TerminalSession) {
