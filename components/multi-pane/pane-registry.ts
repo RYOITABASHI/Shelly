@@ -38,4 +38,9 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
     icon: 'description',
     getComponent: () => require('@/components/panes/MarkdownPane').default,
   },
+  preview: {
+    title: 'Preview',
+    icon: 'preview',
+    getComponent: () => require('@/components/panes/PreviewPane').default,
+  },
 };

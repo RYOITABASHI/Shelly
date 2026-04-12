@@ -22,8 +22,10 @@ type SheetOption =
 
 const OPTIONS: SheetOption[] = [
   { kind: 'pane', id: 'terminal', label: 'Terminal',    icon: 'terminal' },
-  { kind: 'pane', id: 'ai',       label: 'Claude Code', icon: 'auto-awesome' },
+  { kind: 'pane', id: 'ai',       label: 'AI Chat',     icon: 'auto-awesome' },
   { kind: 'pane', id: 'browser',  label: 'Browser',     icon: 'language' },
+  { kind: 'pane', id: 'preview',  label: 'Preview',     icon: 'preview' },
+  { kind: 'pane', id: 'markdown', label: 'Markdown',    icon: 'description' },
   { kind: 'sidebar', id: 'fileTree', label: 'File Tree', icon: 'folder-open' },
 ];
 

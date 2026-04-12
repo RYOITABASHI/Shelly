@@ -7,7 +7,8 @@ export type PaneTab =
   | 'terminal'
   | 'ai'
   | 'browser'
-  | 'markdown';
+  | 'markdown'
+  | 'preview';
 
 export type SplitDirection = 'horizontal' | 'vertical';
 

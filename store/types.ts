@@ -372,6 +372,8 @@ export type AppSettings = {
     claude: boolean;
     gemini: boolean;
     codex: boolean;
+    cerebras: boolean;
+    groq: boolean;
     perplexity: boolean;
     local: boolean;
   };

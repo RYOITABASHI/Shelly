@@ -33,6 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     claude: true,
     gemini: true,
     codex: false,
+    cerebras: true,
+    groq: true,
     perplexity: true,
     local: true,
   },

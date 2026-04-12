@@ -6,6 +6,8 @@ export const AGENT_COLORS: Record<string, string> = {
   claude: '#D4A574',
   gemini: '#4285F4',
   codex: '#10A37F',
+  cerebras: '#FF6B35',
+  groq: '#F97316',
   local: '#FFD700',
   perplexity: '#20808D',
   unbound: '#333333',
