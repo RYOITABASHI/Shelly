@@ -87,7 +87,7 @@ ${projectContext}
 
 /**
  * cwdのプロジェクトを走査して .shelly/context.md を自動生成する。
- * Termux経由でシェルコマンドを使う。
+ * ネイティブシェル（JNI forkpty）経由でコマンドを実行する。
  *
  * @returns 生成されたコンテキスト文字列
  */

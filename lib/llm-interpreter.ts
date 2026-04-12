@@ -1,7 +1,7 @@
 /**
  * llm-interpreter.ts
  *
- * Termuxコマンド出力をLLMで自然言語に通訳するモジュール。
+ * シェルコマンド出力をLLMで自然言語に通訳するモジュール。
  *
  * フォールバック順:
  *   1. Cerebras API（高速推論）
@@ -218,9 +218,8 @@ async function callGeminiCli(
   onChunk: StreamingCallback,
 ): Promise<string> {
   // React Native環境ではchild_processが使えないため、
-  // TermuxBridge経由でgeminiコマンドを実行する必要がある。
-  // ここではrunCommand相当の関数が必要だが、llm-interpreterはpure関数なので
-  // 呼び出し側からrunCommandを渡す設計にする（Phase 5で統合時に接続）。
+  // execCommand(JNI)経由でgeminiコマンドを実行する必要がある。
+  // llm-interpreterはpure関数なので呼び出し側からrunner相当を渡す設計。
   // 現時点ではスキップしてフォールバック。
   return '';
 }
@@ -267,7 +266,7 @@ async function readSSEStream(
 // ─── Main Functions ──────────────────────────────────────────────────────────
 
 /**
- * Termuxコマンドの出力をLLMで通訳する（フォールバックチェーン対応）。
+ * シェルコマンドの出力をLLMで通訳する（フォールバックチェーン対応）。
  * ストリーミングでコールバックに逐次チャンクを渡す。
  *
  * @param command   実行されたコマンド
@@ -278,7 +277,7 @@ async function readSSEStream(
  * @param options   追加オプション
  * @returns         通訳結果（完了後）
  */
-export async function interpretTermuxOutput(
+export async function interpretShellOutput(
   command: string,
   output: OutputLine[],
   exitCode: number | null,

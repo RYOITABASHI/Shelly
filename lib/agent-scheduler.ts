@@ -1,7 +1,7 @@
 /**
  * lib/agent-scheduler.ts — Manages scheduled execution.
  * Primary: AlarmManager (via native module).
- * Fallback: crond (Termux crontab).
+ * Fallback: crond.
  */
 import { Agent } from '@/store/types';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';

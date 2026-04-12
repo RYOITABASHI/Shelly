@@ -1,6 +1,6 @@
 /**
  * tmux/screen session detection and auto-attach.
- * Runs `tmux ls` on Termux reconnect to detect existing sessions.
+ * Runs `tmux ls` on shell reconnect to detect existing sessions.
  */
 
 export type TmuxSession = {

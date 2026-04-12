@@ -1291,7 +1291,7 @@ Example:
       };
       useChatStore.getState().addMessage(chatSessionId, arenaMsg);
 
-      // Dispatch to both agents sequentially (OOM-safe for Termux)
+      // Dispatch to both agents sequentially (OOM-safe on mobile)
       for (let i = 0; i < agents.length; i++) {
         const agent = agents[i];
         const candidateId = `${arenaId}-${i}`;

@@ -16,10 +16,10 @@ const ARENA_ELIGIBLE: ChatAgent[] = ['claude', 'gemini', 'groq', 'cerebras', 'lo
 export function selectArenaAgents(settings: AppSettings): [ChatAgent, ChatAgent] {
   const available: ChatAgent[] = [];
 
-  // Claude: termuxにclaude cliがあれば利用可能（API key不要）
+  // Claude: 同梱claude cliが利用可能（API key不要）
   available.push('claude');
 
-  // Gemini: termuxにgemini cliがあれば利用可能（API key不要）
+  // Gemini: 同梱gemini cliが利用可能（API key不要）
   available.push('gemini');
 
   if (settings.groqApiKey) available.push('groq');

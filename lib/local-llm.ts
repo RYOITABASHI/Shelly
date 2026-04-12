@@ -20,7 +20,7 @@ export type TaskCategory =
   | 'chat'          // 基本的な質問・会話 → Local LLM
   | 'code'          // コード生成・修正 → Claude Code
   | 'research'      // 調査・情報収集 → Gemini CLI
-  | 'file_ops'      // ファイル操作 → Termux直接実行
+  | 'file_ops'      // ファイル操作 → シェル直接実行
   | 'unknown';      // 判定不能 → Claude Code（デフォルト）
 
 export interface OllamaMessage {
@@ -607,7 +607,7 @@ function xhrStream(
  *
  * フロー:
  * 1. LLMベースのインテントルーターでユーザー意図を解析
- * 2. 最適なツールを選択（Claude Code / Gemini CLI / Codex / ローカルLLM / Termux）
+ * 2. 最適なツールを選択（Claude Code / Gemini CLI / Codex / ローカルLLM / Shell）
  * 3. ツール未インストールの場合、セットアップを提案
  * 4. LLM無効時はキーワードベースにフォールバック
  */

@@ -3,7 +3,7 @@
  *
  * Settings画面のLocal LLM (llama.cpp) 管理セクション。
  * - モデルカタログ表示（推奨バッジ・サイズ・RAM要件）
- * - 自動セットアップ（Bridge経由でTermuxにビルド・起動）
+ * - 自動セットアップ（ネイティブシェル経由でビルド・起動）
  * - モデルダウンロード・切替・削除
  * - llama-serverの起動/停止
  */
@@ -83,7 +83,7 @@ export function LlamaCppSection({
 
     Alert.alert(
       'llama.cpp Setup',
-      `Install llama.cpp on Termux.\n\nEstimated time: ~${totalMin} min\n\nContinue?`,
+      `Install llama.cpp locally.\n\nEstimated time: ~${totalMin} min\n\nContinue?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
