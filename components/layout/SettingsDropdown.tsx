@@ -4,7 +4,7 @@
 // Consolidates Display (CRT/Font), Language, AI Agents, and API Keys
 // that were previously scattered across the top bar.
 
-import React, { useRef } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
   ScrollView,
   PanResponder,
   Modal,
+  TextInput,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCosmeticStore } from '@/store/cosmetic-store';
@@ -254,39 +255,156 @@ function AgentsSection() {
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
-function ApiKeysSection() {
-  const geminiApiKey = useSettingsStore((s) => s.settings.geminiApiKey);
-  const perplexityApiKey = useSettingsStore((s) => s.settings.perplexityApiKey);
-  const groqApiKey = useSettingsStore((s) => s.settings.groqApiKey);
+type ApiKeyFieldKey = 'cerebrasApiKey' | 'groqApiKey' | 'geminiApiKey' | 'perplexityApiKey';
 
-  const rows: Array<{ label: string; set: boolean }> = [
-    { label: 'Gemini', set: !!geminiApiKey },
-    { label: 'Perplexity', set: !!perplexityApiKey },
-    { label: 'Groq', set: !!groqApiKey },
-  ];
+type ApiKeyField = {
+  key: ApiKeyFieldKey;
+  label: string;
+  hint: string;
+};
 
-  return (
-    <Section title="API KEYS">
-      {rows.map((r) => (
-        <Row key={r.label} label={r.label}>
-          {r.set ? (
+const API_KEY_FIELDS: ApiKeyField[] = [
+  { key: 'cerebrasApiKey',   label: 'Cerebras',   hint: 'cloud.cerebras.ai' },
+  { key: 'groqApiKey',       label: 'Groq',       hint: 'console.groq.com' },
+  { key: 'geminiApiKey',     label: 'Gemini',     hint: 'aistudio.google.com/apikey' },
+  { key: 'perplexityApiKey', label: 'Perplexity', hint: 'perplexity.ai/settings/api' },
+];
+
+function maskKey(value: string): string {
+  if (!value) return '';
+  if (value.length <= 8) return '•'.repeat(value.length);
+  return value.slice(0, 4) + '…' + value.slice(-4);
+}
+
+function ApiKeyRow({ field }: { field: ApiKeyField }) {
+  const stored = useSettingsStore((s) => (s.settings[field.key] as string | undefined) ?? '');
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(stored);
+  const [reveal, setReveal] = useState(false);
+
+  // Keep draft in sync when stored value changes externally
+  useEffect(() => {
+    if (!editing) setDraft(stored);
+  }, [stored, editing]);
+
+  const hasStored = stored.trim().length > 0;
+
+  const handleSave = () => {
+    const trimmed = draft.trim();
+    updateSettings({ [field.key]: trimmed } as Record<string, string>);
+    setEditing(false);
+    setReveal(false);
+  };
+
+  const handleCancel = () => {
+    setDraft(stored);
+    setEditing(false);
+    setReveal(false);
+  };
+
+  const handleClear = () => {
+    updateSettings({ [field.key]: '' } as Record<string, string>);
+    setDraft('');
+    setEditing(false);
+    setReveal(false);
+  };
+
+  if (!editing) {
+    return (
+      <View style={styles.apiKeyRow}>
+        <View style={styles.apiKeyRowHead}>
+          <Text style={styles.apiKeyLabel}>{field.label}</Text>
+          {hasStored ? (
             <View style={styles.statusOn}>
               <MaterialIcons name="check" size={10} color={C.accent} />
-              <Text style={styles.statusOnText}>設定済</Text>
+              <Text style={styles.statusOnText}>{maskKey(stored)}</Text>
             </View>
           ) : (
             <Text style={styles.statusOff}>未設定</Text>
           )}
-        </Row>
+        </View>
+        <View style={styles.apiKeyActions}>
+          <Text style={styles.apiKeyHint}>{field.hint}</Text>
+          <View style={{ flex: 1 }} />
+          <Pressable
+            onPress={() => setEditing(true)}
+            style={styles.apiKeyBtn}
+            hitSlop={6}
+          >
+            <Text style={styles.apiKeyBtnText}>
+              {hasStored ? 'EDIT' : 'SET'}
+            </Text>
+          </Pressable>
+          {hasStored && (
+            <Pressable
+              onPress={handleClear}
+              style={styles.apiKeyBtn}
+              hitSlop={6}
+            >
+              <Text style={styles.apiKeyBtnText}>CLEAR</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.apiKeyRow}>
+      <View style={styles.apiKeyRowHead}>
+        <Text style={styles.apiKeyLabel}>{field.label}</Text>
+        <Pressable
+          onPress={() => setReveal((v) => !v)}
+          hitSlop={6}
+          style={styles.eyeBtn}
+        >
+          <MaterialIcons
+            name={reveal ? 'visibility-off' : 'visibility'}
+            size={12}
+            color={C.text2}
+          />
+        </Pressable>
+      </View>
+      <TextInput
+        value={draft}
+        onChangeText={setDraft}
+        style={styles.apiKeyInput}
+        placeholder={`Paste ${field.label} API key`}
+        placeholderTextColor={C.text3}
+        autoCapitalize="none"
+        autoCorrect={false}
+        spellCheck={false}
+        secureTextEntry={!reveal}
+        selectTextOnFocus
+      />
+      <View style={styles.apiKeyActions}>
+        <Text style={styles.apiKeyHint}>{field.hint}</Text>
+        <View style={{ flex: 1 }} />
+        <Pressable onPress={handleCancel} style={styles.apiKeyBtn} hitSlop={6}>
+          <Text style={styles.apiKeyBtnText}>CANCEL</Text>
+        </Pressable>
+        <Pressable
+          onPress={handleSave}
+          style={[styles.apiKeyBtn, styles.apiKeyBtnPrimary]}
+          hitSlop={6}
+        >
+          <Text style={[styles.apiKeyBtnText, styles.apiKeyBtnTextPrimary]}>
+            SAVE
+          </Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function ApiKeysSection() {
+  return (
+    <Section title="API KEYS">
+      {API_KEY_FIELDS.map((f) => (
+        <ApiKeyRow key={f.key} field={f} />
       ))}
-      <Pressable
-        style={styles.manageBtn}
-        onPress={() => {
-          useSettingsStore.getState().setShowConfigTUI(true);
-        }}
-      >
-        <Text style={styles.manageBtnText}>MANAGE KEYS →</Text>
-      </Pressable>
     </Section>
   );
 }
@@ -592,5 +710,72 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 0.8,
+  },
+  apiKeyRow: {
+    paddingVertical: 6,
+    borderTopWidth: S.borderWidth,
+    borderTopColor: C.border,
+  },
+  apiKeyRowHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  apiKeyLabel: {
+    color: C.text1,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+    flex: 1,
+  },
+  eyeBtn: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  apiKeyInput: {
+    marginTop: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    backgroundColor: C.bgDeep,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
+    borderRadius: 3,
+    color: C.text1,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+  },
+  apiKeyActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  apiKeyHint: {
+    color: C.text3,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+  },
+  apiKeyBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
+    borderRadius: 3,
+  },
+  apiKeyBtnPrimary: {
+    backgroundColor: C.accent,
+    borderColor: C.accent,
+  },
+  apiKeyBtnText: {
+    color: C.text2,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
+  apiKeyBtnTextPrimary: {
+    color: C.bgDeep,
   },
 });
