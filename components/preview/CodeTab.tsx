@@ -1,5 +1,5 @@
 import React, { memo, useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ToastAndroid } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
@@ -7,6 +7,7 @@ import { usePreviewStore } from '@/store/preview-store';
 import { useNativeExec } from '@/hooks/use-native-exec';
 import { CodeRenderer } from '@/components/preview/renderers/CodeRenderer';
 import { detectLanguage, shellEscape, MAX_PREVIEW_SIZE } from '@/lib/preview-file-detector';
+import { stageAiEdit } from '@/lib/ai-edit';
 
 export const CodeTab = memo(function CodeTab() {
   const { colors } = useTheme();
@@ -90,7 +91,7 @@ export const CodeTab = memo(function CodeTab() {
 
   return (
     <View style={styles.container}>
-      {/* File selector + diff toggle */}
+      {/* File selector + diff toggle + AI edit */}
       <View style={[styles.toolbar, { borderBottomColor: colors.border }]}>
         <TouchableOpacity
           style={[styles.fileChip, { backgroundColor: withAlpha(colors.accent, 0.1) }]}
@@ -107,6 +108,32 @@ export const CodeTab = memo(function CodeTab() {
         >
           <Text style={[styles.toggleText, { color: showDiff ? colors.accent : colors.muted }]}>
             {showDiff ? 'Diff' : 'Full'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleBtn, { backgroundColor: withAlpha(colors.accent, 0.2) }]}
+          disabled={!activeFile}
+          onPress={async () => {
+            if (!activeFile) return;
+            try {
+              const ok = await stageAiEdit(activeFile);
+              if (!ok) {
+                ToastAndroid.show('Open an AI pane first', ToastAndroid.SHORT);
+              } else {
+                ToastAndroid.show('Staged for AI — type in AI pane', ToastAndroid.SHORT);
+              }
+            } catch (err) {
+              ToastAndroid.show(
+                err instanceof Error ? err.message : 'Stage failed',
+                ToastAndroid.LONG,
+              );
+            }
+          }}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="auto-awesome" size={12} color={colors.accent} />
+          <Text style={[styles.toggleText, { color: colors.accent, marginLeft: 3 }]}>
+            AI
           </Text>
         </TouchableOpacity>
       </View>
@@ -146,7 +173,7 @@ const styles = StyleSheet.create({
   toolbar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderBottomWidth: 1, gap: 8 },
   fileChip: { flex: 1, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   filePath: { fontFamily: 'monospace', fontSize: 11 },
-  toggleBtn: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
+  toggleBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   toggleText: { fontFamily: 'monospace', fontSize: 11, fontWeight: '600' },
   fileList: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#222' },
   fileTab: { paddingHorizontal: 10, paddingVertical: 6 },

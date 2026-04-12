@@ -4,8 +4,7 @@ import { View, Text, Pressable, FlatList, TextInput, StyleSheet } from 'react-na
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { execCommand } from '@/hooks/use-native-exec';
-import { openMarkdownFile } from '@/components/panes/MarkdownPane';
-import { useTerminalStore } from '@/store/terminal-store';
+import { openFile } from '@/lib/open-file';
 import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
 
 type FileEntry = {
@@ -103,10 +102,8 @@ export function FileTree() {
     if (entry.isDirectory) {
       setCwd(entry.path);
       loadDir(entry.path);
-    } else if (entry.name.endsWith('.md')) {
-      openMarkdownFile(entry.path);
     } else {
-      useTerminalStore.getState().runCommand(`cat '${entry.path.replace(/'/g, "'\\''")}'`);
+      openFile(entry.path).catch(() => {});
     }
   };
 
