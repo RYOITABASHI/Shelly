@@ -1,50 +1,26 @@
 // components/layout/AgentBar.tsx
+//
+// Global top bar: layout preset button • add-pane button • search • settings.
+// The old CLI tab strip (CLAUDE/GEMINI/CODEX/OPENCODE/COPILOT) moved into
+// each TerminalPane header as a per-pane tab bar (Superset-style), so this
+// bar no longer carries CLI tabs at all.
 import React, { useState } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { View, Pressable, StyleSheet, Text } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { usePaneStore, AGENT_COLORS } from '@/store/pane-store';
-import { useSettingsStore } from '@/store/settings-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
 import { AddPaneSheet } from '@/components/multi-pane/AddPaneSheet';
 import { LayoutPresetSheet } from '@/components/multi-pane/LayoutPresetSheet';
-import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
-type AgentDef = {
-  name: string;
-  key: string;
-};
-
-const BUILT_IN_AGENTS: AgentDef[] = [
-  { name: 'CLAUDE', key: 'claude' },
-  { name: 'GEMINI', key: 'gemini' },
-  { name: 'CODEX', key: 'codex' },
-  { name: 'OPENCODE', key: 'opencode' },
-  { name: 'COPILOT', key: 'copilot' },
-];
-
 export function AgentBar() {
-  const { focusedPaneId, paneAgents, bindAgent } = usePaneStore();
-  const settings = useSettingsStore((s) => s.settings);
   const [addPaneSheetVisible, setAddPaneSheetVisible] = useState(false);
   const [layoutSheetVisible, setLayoutSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const agents = BUILT_IN_AGENTS.filter(
-    (a) => settings.teamMembers?.[a.key as keyof typeof settings.teamMembers]
-  );
-
-  const activeAgent = focusedPaneId ? paneAgents[focusedPaneId] : null;
-
-  const handleAgentTap = (agentKey: string) => {
-    if (!focusedPaneId) return;
-    bindAgent(focusedPaneId, agentKey);
-  };
-
   return (
     <View style={styles.bar}>
-      {/* Layout preset button (left edge) — boxed so it reads as a button */}
+      {/* Layout preset button (left edge) */}
       <Pressable
         style={styles.layoutBtn}
         onPress={() => setLayoutSheetVisible(true)}
@@ -54,44 +30,19 @@ export function AgentBar() {
         <MaterialIcons name="dashboard" size={18} color={C.accent} />
       </Pressable>
 
-      {/* Agent tabs */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-        style={styles.scroll}
+      {/* Add pane button */}
+      <Pressable
+        style={styles.addBtn}
+        hitSlop={8}
+        onPress={() => setAddPaneSheetVisible(true)}
+        accessibilityLabel="Add pane"
       >
-        {agents.map((agent) => {
-          const isActive = activeAgent === agent.key;
-          return (
-            <Pressable
-              key={agent.key}
-              style={[
-                styles.agentTab,
-                isActive && styles.agentTabActive,
-              ]}
-              onPress={() => handleAgentTap(agent.key)}
-            >
-              <View style={[styles.statusDot, { backgroundColor: isActive ? C.accent : C.text2 }, isActive && neonDotGlow]} />
-              <Text
-                style={[
-                  styles.agentText,
-                  { color: isActive ? C.text1 : C.text2 },
-                  isActive && { fontWeight: '800', ...neonTextGlow },
-                ]}
-              >
-                {agent.name}
-              </Text>
-            </Pressable>
-          );
-        })}
-        {/* Add pane button (opens bottom sheet) */}
-        <Pressable style={styles.addBtn} hitSlop={8} onPress={() => setAddPaneSheetVisible(true)}>
-          <Text style={styles.addBtnText}>+</Text>
-        </Pressable>
-      </ScrollView>
+        <Text style={styles.addBtnText}>+</Text>
+      </Pressable>
 
-      {/* Right-side: search + settings (dropdown) */}
+      <View style={{ flex: 1 }} />
+
+      {/* Right-side: search + settings */}
       <View style={styles.rightBtns}>
         <Pressable
           style={styles.iconBtn}
@@ -127,43 +78,10 @@ const styles = StyleSheet.create({
     borderBottomColor: C.border,
     backgroundColor: C.bgSidebar,
   },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    alignItems: 'center',
-    paddingHorizontal: P.agentBar.px,
-    gap: 2,
-  },
-  agentTab: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: P.agentTab.px,
-    paddingVertical: P.agentTab.py,
-    borderRadius: R.agentTab,
-    borderWidth: S.borderWidth,
-    borderColor: 'transparent',
-  },
-  agentTabActive: {
-    backgroundColor: 'rgba(0,212,170,0.10)',
-    borderColor: 'rgba(0,212,170,0.25)',
-  },
-  statusDot: {
-    width: S.agentDotSize,
-    height: S.agentDotSize,
-    borderRadius: S.agentDotSize / 2,
-  },
-  agentText: {
-    fontSize: F.agentTab.size,
-    fontFamily: F.family,
-    fontWeight: F.agentTab.weight,
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
   addBtn: {
     paddingHorizontal: P.agentTab.px,
     paddingVertical: 4,
+    marginLeft: 2,
   },
   addBtnText: {
     color: C.text2,

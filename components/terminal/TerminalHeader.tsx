@@ -147,7 +147,7 @@ export function TerminalHeader() {
 
       {/* Tab switcher */}
       <Animated.View style={[styles.tabsContainer, tabAnimStyle]}>
-        {sessions.map((session, index) => (
+        {sessions.map((session) => (
           <Pressable
             key={session.id}
             onPress={() => handleTabPress(session.id)}
@@ -172,7 +172,7 @@ export function TerminalHeader() {
                 });
               }
               Alert.alert(
-                `Session ${index + 1}`,
+                (session.activeCli ?? 'shell').toUpperCase(),
                 'Reset restarts the shell.\nClose removes this tab.',
                 buttons,
               );
@@ -192,7 +192,7 @@ export function TerminalHeader() {
               { color: colors.inactive },
               session.id === activeSessionId && { color: colors.accent },
             ]}>
-              {index + 1}
+              {(session.activeCli ?? 'shell').toUpperCase()}
             </Text>
           </Pressable>
         ))}
@@ -303,17 +303,18 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   tab: {
-    width: 26,
-    height: 26,
-    borderRadius: 5,
+    height: 22,
+    paddingHorizontal: 8,
+    borderRadius: 4,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
   },
   tabText: {
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 8,
+    fontWeight: '700',
     fontFamily: F.family,
+    letterSpacing: 0.6,
   },
   addTabButton: {
     width: 26,
