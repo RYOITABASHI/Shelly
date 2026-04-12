@@ -219,6 +219,10 @@ export default function AIPane() {
   const initialised = useRef(false);
   if (!initialised.current) {
     useAIPaneStore.getState().getOrCreate(paneId);
+    // Default to Claude when no agent is bound — matches the pane header label
+    if (!usePaneStore.getState().paneAgents[paneId]) {
+      usePaneStore.getState().bindAgent(paneId, 'claude');
+    }
     initialised.current = true;
   }
 

@@ -63,40 +63,43 @@ export const colors = {
 export const fonts = {
   family: 'PressStart2P',
 
-  agentTab:       { size: 10, weight: '700' as const },
-  paneHeader:     { size: 10, weight: '700' as const },
-  sidebarSection: { size: 10, weight: '700' as const, letterSpacing: 0.5 }, // 0.05em ≈ 0.5px at 10px
-  sidebarItem:    { size: 10, weight: '500' as const },
-  fileName:       { size: 10, weight: '400' as const },
-  badge:          { size: 8,  weight: '700' as const },
-  contextBar:     { size: 9,  weight: '500' as const },
-  layoutButton:   { size: 9,  weight: '700' as const },
-  tip:            { size: 9,  weight: '400' as const },
+  // PressStart2P is an 8x8 pixel font, so each unit reads about 1.4× a normal
+  // monospace pixel. These sizes were tuned down from 10/9/8 because the
+  // mock-1 ratios were drowning the actual content.
+  agentTab:       { size: 8, weight: '700' as const },
+  paneHeader:     { size: 8, weight: '700' as const },
+  sidebarSection: { size: 8, weight: '700' as const, letterSpacing: 0.4 },
+  sidebarItem:    { size: 7, weight: '500' as const },
+  fileName:       { size: 7, weight: '400' as const },
+  badge:          { size: 6, weight: '700' as const },
+  contextBar:     { size: 7, weight: '500' as const },
+  layoutButton:   { size: 7, weight: '700' as const },
+  tip:            { size: 7, weight: '400' as const },
 } as const;
 
 // ─── Sizes ──────────────────────────────────────────────────────────────────
 
 export const sizes = {
-  agentBarHeight: 32,
-  paneHeaderHeight: 28,
-  layoutBarHeight: 36,
-  sidebarWidth: 180,
-  sidebarItemHeight: 24,
-  sidebarSectionHeaderHeight: 28,
-  agentDotSize: 6,
+  agentBarHeight: 28,
+  paneHeaderHeight: 24,
+  layoutBarHeight: 32,
+  sidebarWidth: 156,
+  sidebarItemHeight: 20,
+  sidebarSectionHeaderHeight: 22,
+  agentDotSize: 5,
   borderWidth: 1,
-  contextBarHeight: 24,
+  contextBarHeight: 20,
 } as const;
 
 // ─── Padding ────────────────────────────────────────────────────────────────
 
 export const padding = {
-  agentBar:     { px: 6 },
-  agentTab:     { px: 10, py: 6 },
-  paneHeader:   { px: 8 },
-  sidebarItem:  { px: 12, py: 4 },
-  layoutButton: { px: 12, py: 5, gap: 6 },
-  statusBadge:  { px: 6, py: 2 },
+  agentBar:     { px: 5 },
+  agentTab:     { px: 8, py: 4 },
+  paneHeader:   { px: 6 },
+  sidebarItem:  { px: 10, py: 3 },
+  layoutButton: { px: 10, py: 4, gap: 5 },
+  statusBadge:  { px: 5, py: 2 },
 } as const;
 
 // ─── Radii ──────────────────────────────────────────────────────────────────

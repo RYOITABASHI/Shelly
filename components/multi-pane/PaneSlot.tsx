@@ -208,7 +208,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         </SafeAreaInsetsContext.Provider>
       </View>
 
-      {(tab === 'terminal' || tab === 'ai') && (
+      {tab === 'terminal' && (
         <View style={styles.fabContainer}>
           <Pressable
             style={styles.fab}
