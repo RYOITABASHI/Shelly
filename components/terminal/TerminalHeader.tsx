@@ -328,7 +328,8 @@ const styles = StyleSheet.create({
   tabsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
+    marginRight: 8,
   },
   tab: {
     height: 22,
@@ -345,9 +346,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   addTabButton: {
-    width: 26,
-    height: 26,
-    borderRadius: 5,
+    width: 22,
+    height: 22,
+    borderRadius: 4,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
