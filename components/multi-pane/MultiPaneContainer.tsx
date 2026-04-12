@@ -5,7 +5,7 @@ import { useMultiPaneStore, type PaneNode, type PaneSplit, type PaneLeaf } from 
 import { PaneSlot } from './PaneSlot';
 import { colors as C } from '@/theme.config';
 
-/** Draggable divider between two panes */
+/** Draggable divider between two panes (12px invisible hit area) */
 function Divider({
   splitNode,
   isHorizontal,
@@ -15,7 +15,7 @@ function Divider({
   isHorizontal: boolean;
   containerSize: React.MutableRefObject<number>;
 }) {
-  const { setSplitRatio } = useMultiPaneStore();
+  const { setSplitRatio, resetSplitRatio } = useMultiPaneStore();
   const startRatio = useRef(splitNode.ratio);
 
   const pan = Gesture.Pan()
@@ -28,17 +28,23 @@ function Divider({
       const delta = isHorizontal ? e.translationX : e.translationY;
       const newRatio = startRatio.current + delta / size;
       setSplitRatio(splitNode.id, newRatio);
-    })
-    .hitSlop({ horizontal: 12, vertical: 12 });
+    });
+
+  // Double-tap = reset to 50/50
+  const doubleTap = Gesture.Tap()
+    .numberOfTaps(2)
+    .onEnd(() => {
+      resetSplitRatio(splitNode.id);
+    });
+
+  const composed = Gesture.Race(pan, doubleTap);
 
   return (
-    <GestureDetector gesture={pan}>
-      <View
-        style={[
-          isHorizontal ? styles.dividerV : styles.dividerH,
-          isHorizontal ? styles.dividerVHit : styles.dividerHHit,
-        ]}
-      />
+    <GestureDetector gesture={composed}>
+      <View style={isHorizontal ? styles.dividerV : styles.dividerH}>
+        {/* 1px visible line centered in the 12px hit area */}
+        <View style={isHorizontal ? styles.dividerVLine : styles.dividerHLine} />
+      </View>
     </GestureDetector>
   );
 }
@@ -139,20 +145,29 @@ const styles = StyleSheet.create({
   splitV: {
     flexDirection: 'column',
   },
+  // 12px hit area with a 1px visible line centered
   dividerV: {
-    width: 3,
-    backgroundColor: C.border,
+    width: 12,
+    marginHorizontal: -6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
   },
   dividerH: {
-    height: 3,
+    height: 12,
+    marginVertical: -6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  dividerVLine: {
+    width: 1,
+    height: '100%',
     backgroundColor: C.border,
   },
-  dividerVHit: {
-    paddingHorizontal: 6,
-    marginHorizontal: -6,
-  },
-  dividerHHit: {
-    paddingVertical: 6,
-    marginVertical: -6,
+  dividerHLine: {
+    height: 1,
+    width: '100%',
+    backgroundColor: C.border,
   },
 });
