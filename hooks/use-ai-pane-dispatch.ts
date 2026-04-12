@@ -19,6 +19,7 @@ import { logInfo, logError } from '@/lib/debug-logger';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
+import { claudeCliStream } from '@/lib/claude-cli';
 import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
 
@@ -488,13 +489,47 @@ export function useAIPaneDispatch(paneId: string) {
             }
           }
         } else if (agent === 'claude') {
-          // ── Claude — TODO: no lib/claude.ts yet ──
-          // Claude Code runs as a CLI tool; a REST API wrapper is needed.
-          store.updateMessage(paneId, assistantId, {
-            content: 'Claude API integration is not yet available in the AI Pane.\n\nTo use Claude, open a Terminal tab and run `claude` directly.\n\n(TODO: add lib/claude.ts with Anthropic Messages API)',
-            isStreaming: false,
-            streamingText: undefined,
-          });
+          // ── Claude (bundled CLI via JNI fork+exec) ──
+          let accumulated = '';
+          throttledUpdate(paneId, assistantId, { isStreaming: true, streamingText: '' });
+
+          const result = await claudeCliStream(
+            userText,
+            (chunk, done) => {
+              if (signal.aborted) return;
+              if (!done && chunk) {
+                accumulated += chunk;
+                throttledUpdate(paneId, assistantId, {
+                  streamingText: accumulated,
+                  tokenCount: estimateTokens(accumulated),
+                  isStreaming: true,
+                });
+              }
+            },
+            { autoApprove: (settings.autoApproveLevel ?? 'safe') as any },
+            signal,
+          );
+
+          if (!signal.aborted) {
+            const finalContent = result.content || accumulated;
+            if (!result.success) {
+              store.updateMessage(paneId, assistantId, {
+                content: result.error
+                  ? `Claude CLI error: ${result.error}`
+                  : finalContent || 'Claude returned no output.',
+                isStreaming: false,
+                streamingText: undefined,
+              });
+            } else {
+              store.updateMessage(paneId, assistantId, {
+                content: finalContent,
+                streamingText: undefined,
+                isStreaming: false,
+                tokenCount: estimateTokens(finalContent),
+              });
+            }
+            logInfo('AIPaneDispatch', 'Claude response complete');
+          }
         } else {
           // ── Unknown agent ──
           store.updateMessage(paneId, assistantId, {
