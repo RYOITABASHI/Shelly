@@ -131,6 +131,19 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
               <MaterialIcons name="refresh" size={12} color={C.text2} />
             </Pressable>
           </View>
+        ) : tab === 'ai' ? (
+          <Pressable
+            style={[styles.agentBadge, { borderColor: agentColor + '66', backgroundColor: agentColor + '14' }]}
+            onPress={() => setAgentMenuVisible(true)}
+            hitSlop={6}
+            accessibilityLabel="Switch agent"
+          >
+            <View style={[styles.agentBadgeDot, { backgroundColor: agentColor }]} />
+            <Text style={styles.agentBadgeLabel} numberOfLines={1}>
+              {boundAgent ? boundAgent.toUpperCase() : 'AGENT'}
+            </Text>
+            <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
+          </Pressable>
         ) : (
           <View style={styles.headerCenter}>
             <MaterialIcons name="data-usage" size={10} color={C.text2} />
@@ -436,6 +449,28 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(0,212,170,0.25)',
     backgroundColor: 'rgba(0,212,170,0.06)',
     flexShrink: 0,
+  },
+  agentBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    marginLeft: 6,
+  },
+  agentBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  agentBadgeLabel: {
+    color: C.text1,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.badge.weight,
+    letterSpacing: 0.5,
   },
   paneTypeLabel: {
     color: C.text1,

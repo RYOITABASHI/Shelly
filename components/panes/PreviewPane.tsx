@@ -16,5 +16,8 @@ import React from 'react';
 import { PreviewTabs } from '@/components/preview/PreviewTabs';
 
 export default function PreviewPane() {
-  return <PreviewTabs onClose={() => {}} />;
+  // No onClose: PreviewTabs hides its own tab-bar close button when this is
+  // omitted, so the user doesn't see a dead button next to the pane header's
+  // close icon.
+  return <PreviewTabs />;
 }

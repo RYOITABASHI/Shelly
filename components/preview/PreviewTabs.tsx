@@ -8,7 +8,8 @@ import { CodeTab } from '@/components/preview/CodeTab';
 import { FilesTab } from '@/components/preview/FilesTab';
 
 type Props = {
-  onClose: () => void;
+  /** Hide the tab bar close button when omitted (used by standalone PreviewPane) */
+  onClose?: () => void;
   onEditSubmit?: (prompt: string) => void;
 };
 
@@ -42,13 +43,15 @@ export const PreviewTabs = memo(function PreviewTabs({ onClose, onEditSubmit }: 
           </TouchableOpacity>
         ))}
         <View style={{ flex: 1 }} />
-        <Pressable onPress={onClose} hitSlop={8} style={styles.closeBtn}>
-          <MaterialIcons name="close" size={16} color={colors.muted} />
-        </Pressable>
+        {onClose && (
+          <Pressable onPress={onClose} hitSlop={8} style={styles.closeBtn}>
+            <MaterialIcons name="close" size={16} color={colors.muted} />
+          </Pressable>
+        )}
       </View>
 
       {/* Tab content (lazy mount) */}
-      {activeTab === 'web' && <WebTab url={previewUrl} onClose={onClose} onEditSubmit={onEditSubmit} />}
+      {activeTab === 'web' && <WebTab url={previewUrl} onClose={onClose ?? (() => {})} onEditSubmit={onEditSubmit} />}
       {activeTab === 'code' && <CodeTab />}
       {activeTab === 'files' && <FilesTab />}
     </View>
