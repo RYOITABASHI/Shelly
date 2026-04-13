@@ -56,26 +56,20 @@ export default function RootLayout() {
     // path — Metro can't resolve that through the package subpath).
     'Silkscreen': Silkscreen_400Regular,
   });
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'silkscreen');
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
 
-  // Override default Text fontFamily globally
+  // Runtime theme preset swap. applyThemePreset() rewrites the live
+  // colors object in place, re-injects Text.defaultProps.style.fontFamily,
+  // and bumps the theme-version store so ShellLayout's root re-mounts
+  // with the fresh palette. PTY sessions are unaffected because only
+  // JS styles re-compute.
   useEffect(() => {
-    const fontFamily =
-      uiFont === 'silkscreen' ? 'Silkscreen' :
-      uiFont === 'pixel' ? 'PressStart2P' :
-      'monospace';
-    const defaultStyle = (Text as any).render;
-    if (defaultStyle) {
-      // Wrap Text.render to inject fontFamily
-    }
-    // Set defaultProps for all Text components
-    (Text as any).defaultProps = (Text as any).defaultProps || {};
-    (Text as any).defaultProps.style = {
-      ...((Text as any).defaultProps?.style || {}),
-      fontFamily,
-    };
-    logInfo('RootLayout', `UI font set to: ${fontFamily}`);
+    if (!fontsLoaded) return;
+    import('@/lib/theme-presets').then(({ applyThemePreset }) => {
+      applyThemePreset(uiFont as any);
+      logInfo('RootLayout', 'Theme preset applied: ' + uiFont);
+    });
   }, [uiFont, fontsLoaded]);
 
   useEffect(() => {

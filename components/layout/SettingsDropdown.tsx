@@ -150,9 +150,10 @@ function DisplaySection() {
 }
 
 function FontFamilyRow() {
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'silkscreen');
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const options: Array<{ value: 'silkscreen' | 'pixel' | 'mono'; label: string }> = [
+  const options: Array<{ value: 'shelly' | 'silkscreen' | 'pixel' | 'mono'; label: string }> = [
+    { value: 'shelly',     label: 'Shelly' },
     { value: 'silkscreen', label: 'Silk' },
     { value: 'pixel',      label: '8bit' },
     { value: 'mono',       label: 'Mono' },

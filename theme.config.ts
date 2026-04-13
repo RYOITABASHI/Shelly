@@ -1,68 +1,17 @@
 // theme.config.ts — Single source of truth for all design tokens
 // Extracted from mock screenshots. Every component imports from here.
+//
+// `colors` is now a MUTABLE object seeded from the Shelly preset. At
+// runtime, applyThemePreset() (lib/theme-presets.ts) calls
+// Object.assign(colors, newPalette) to swap values in place. Consumers
+// keep the same object reference so the 100+ `import { colors as C }`
+// call sites do not need to change.
 
 // ─── Colors ─────────────────────────────────────────────────────────────────
 
-export const colors = {
-  // Backgrounds
-  bgDeep: '#0A0A0A',        // deepest background
-  bgSurface: '#111111',     // pane backgrounds, cards
-  bgSidebar: '#0D0D0D',     // sidebar, agentbar, contextbar
-  border: '#1C1C1C',        // standard border
+import { shellyPalette, type Palette } from '@/lib/theme-presets';
 
-  // Accent
-  accent: '#00D4AA',        // primary accent (teal)
-  accentGreen: '#22C55E',   // running dot, + diff, LINKED, :3000 port
-  accentBlue: '#60A5FA',    // folder/file icons, ls directories, YOU label
-  accentSky: '#38BDF8',     // ports, :8081 expo
-  accentPurple: '#A78BFA',  // import/from keywords, CLAUDE brand label
-  accentPink: '#EC4899',    // string literals 'react', 'react-native'
-  accentAmber: '#F59E0B',   // ⚠ warning, EDIT dots, ALLOW, yellow hint
-  accentCode: '#60A5FA',    // code ls-dir color (alias for accentBlue)
-  warning: '#F59E0B',       // ⚠ warning amber (alias)
-
-  // Text
-  text1: '#E5E7EB',         // main text
-  text2: '#6B7280',         // sub text, labels
-  text3: '#374151',         // muted, tip text
-
-  // Semantic
-  errorText: '#EF4444',     // error / delete line text
-  errorBg: '#7F1D1D',       // delete line background
-  addText: '#00D4AA',       // add line text
-  addBg: '#064E3B',         // add line background
-
-  // Buttons
-  btnPrimaryBg: '#00D4AA',
-  btnPrimaryText: '#000000',
-  btnSecondaryBg: '#1F2937',
-  btnSecondaryText: '#E5E7EB',
-
-  // Badges
-  badgeRunningBg: '#022C22',
-  badgeRunningText: '#00D4AA',
-  badgeLinkedBg: '#022C22',
-  badgeLinkedText: '#00D4AA',
-  badgeConnectBg: '#1F2937',
-  badgeConnectText: '#6B7280',
-
-  // Layout buttons
-  layoutActiveBg: '#00D4AA',
-  layoutActiveText: '#000000',
-  layoutInactiveBg: '#111111',
-  layoutInactiveText: '#6B7280',
-
-  // CRT badge
-  crtBadgeBg: '#0D0D0D',
-  crtBadgeText: '#00D4AA',
-
-  // Auto-save row
-  autoSaveBg: '#111827',
-
-  // Diff
-  diffAddBorder: '#00D4AA',
-  diffRemoveBorder: '#EF4444',
-} as const;
+export const colors: Palette = { ...shellyPalette };
 
 // ─── Fonts ──────────────────────────────────────────────────────────────────
 

@@ -7,6 +7,7 @@ import { useTheme } from '@/lib/theme-engine';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useThemeVersionStore } from '@/store/theme-version-store';
 import { Sidebar } from './Sidebar';
 import { AgentBar } from './AgentBar';
 import { ContextBar } from './ContextBar';
@@ -32,6 +33,7 @@ export function ShellLayout() {
   const insets = useSafeAreaInsets();
   const { initShell, setMaxPanes } = useMultiPaneStore();
   const { setMode } = useSidebarStore();
+  const themeVersion = useThemeVersionStore((s) => s.version);
 
   // Initialize pane system on mount
   useEffect(() => {
@@ -158,7 +160,10 @@ export function ShellLayout() {
   const composed = Gesture.Race(swipeRight, swipeLeft);
 
   return (
-    <View style={[styles.root, { backgroundColor: c.background, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+    <View
+      key={`theme-${themeVersion}`}
+      style={[styles.root, { backgroundColor: c.background, paddingTop: insets.top, paddingBottom: insets.bottom }]}
+    >
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       {/* Agent Bar (top) */}

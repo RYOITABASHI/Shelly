@@ -49,7 +49,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   externalKeyboardShortcuts: false,
   terminalTheme: 'shelly',
   gpuRendering: false,
-  uiFont: 'silkscreen',
+  uiFont: 'shelly',
 };
 
 // ─── Store ───────────────────────────────────────────────────────────────────
