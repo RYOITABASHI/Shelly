@@ -388,7 +388,7 @@ export default function TerminalScreen() {
     return () => sub.remove();
   }, [checkBatteryExemption]);
 
-  // Handle reset requests from TerminalHeader
+  // Handle reset requests from PaneCliTabs long-press menu
   const pendingResetId = useTerminalStore((s) => s.pendingResetSessionId);
   useEffect(() => {
     if (!pendingResetId) return;

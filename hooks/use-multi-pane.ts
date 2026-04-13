@@ -158,7 +158,7 @@ type MultiPaneActions = {
   /** Toggle fullscreen for one leaf (null = restore) */
   toggleMaximize: (leafId: string) => void;
 
-  // ── Backwards compat (used by TerminalHeader, etc.) ──
+  // ── Backwards compat (still used by EmptyState CTA and older panes) ──
   /** @deprecated Use root tree instead */
   panes: PaneTab[];
   /** @deprecated */
