@@ -13,6 +13,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore, type PaletteAction } from '@/hooks/use-command-palette';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useSettingsStore } from '@/store/settings-store';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
@@ -128,6 +129,55 @@ export function CommandPalette() {
           useTerminalStore.setState({ pendingCommand: 'git pull --rebase' });
           close();
         } },
+
+      // Pane add — route through the multi-pane store's addPane helper,
+      // which splits the last leaf horizontally. Empty state also
+      // handled (it creates a root leaf of the requested tab).
+      { id: 'pane-add-terminal', label: 'Pane: Add Terminal', hint: 'split current layout', icon: 'terminal', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().addPane('terminal'); close(); } },
+      { id: 'pane-add-ai', label: 'Pane: Add AI', hint: 'split current layout', icon: 'smart-toy', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().addPane('ai'); close(); } },
+      { id: 'pane-add-browser', label: 'Pane: Add Browser', hint: 'split current layout', icon: 'public', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().addPane('browser'); close(); } },
+      { id: 'pane-add-markdown', label: 'Pane: Add Markdown', hint: 'split current layout', icon: 'article', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().addPane('markdown'); close(); } },
+      { id: 'pane-add-preview', label: 'Pane: Add Preview', hint: 'split current layout', icon: 'preview', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().addPane('preview'); close(); } },
+
+      // Font preset — flips uiFont in settings, RootLayout's effect
+      // picks the change up and calls applyThemePreset automatically.
+      { id: 'font-shelly', label: 'Font: Shelly', hint: 'mock-faithful palette', icon: 'palette', category: 'action',
+        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'shelly' }); close(); } },
+      { id: 'font-silkscreen', label: 'Font: Silk', hint: 'previous green palette', icon: 'palette', category: 'action',
+        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'silkscreen' }); close(); } },
+      { id: 'font-pixel', label: 'Font: 8bit', hint: 'PressStart2P', icon: 'palette', category: 'action',
+        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'pixel' }); close(); } },
+      { id: 'font-mono', label: 'Font: Mono', hint: 'system monospace', icon: 'palette', category: 'action',
+        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'mono' }); close(); } },
+
+      // CRT toggle
+      { id: 'crt-toggle', label: 'CRT: Toggle', hint: 'scanline + bloom overlay', icon: 'tv', category: 'action',
+        onExecute: () => {
+          const cs = useCosmeticStore.getState();
+          cs.setCrt(!cs.crtEnabled);
+          close();
+        } },
+
+      // Voice dialogue
+      { id: 'voice-open', label: 'Voice: Open Dialogue', hint: 'mic long-press shortcut', icon: 'mic', category: 'action',
+        onExecute: () => { useSettingsStore.getState().setShowVoiceMode(true); close(); } },
+
+      // Layout presets — rebuilds the pane tree from scratch. Any
+      // existing PTY sessions attached to the destroyed leaves will be
+      // torn down (unlike font swap which preserves identity).
+      { id: 'layout-single-terminal', label: 'Layout: Single Terminal', hint: 'one terminal pane', icon: 'crop-square', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().enableMultiPane(['terminal']); close(); } },
+      { id: 'layout-terminal-ai', label: 'Layout: Terminal + AI', hint: '2-col split', icon: 'view-column', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().enableMultiPane(['terminal', 'ai']); close(); } },
+      { id: 'layout-terminal-browser', label: 'Layout: Terminal + Browser', hint: '2-col split', icon: 'view-column', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().enableMultiPane(['terminal', 'browser']); close(); } },
+      { id: 'layout-triple', label: 'Layout: 3-Way Triple', hint: 'terminal + ai + browser', icon: 'view-week', category: 'pane',
+        onExecute: () => { useMultiPaneStore.getState().enableMultiPane(['terminal', 'ai', 'browser']); close(); } },
     ];
 
     // Multi-pane actions (inner screen only)

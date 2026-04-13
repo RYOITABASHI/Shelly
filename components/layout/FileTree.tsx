@@ -1,7 +1,8 @@
 // components/layout/FileTree.tsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, Pressable, FlatList, TextInput, StyleSheet } from 'react-native';
+import { View, Text, Pressable, FlatList, TextInput, StyleSheet, Alert, ToastAndroid, Modal } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import * as Clipboard from 'expo-clipboard';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { execCommand } from '@/hooks/use-native-exec';
 import { openFile } from '@/lib/open-file';
@@ -62,11 +63,22 @@ function fileNameColor(name: string): string {
   return C.text1;
 }
 
+// Shell-quote a path so spaces and special chars survive execCommand.
+function sq(p: string): string {
+  return `'${p.replace(/'/g, "'\\''")}'`;
+}
+
 export function FileTree() {
   const repoPath = useSidebarStore((s) => s.activeRepoPath);
   const [cwd, setCwd] = useState(repoPath ?? '');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [search, setSearch] = useState('');
+  // Create-file prompt state (RN has no Alert.prompt on Android so we
+  // roll a minimal one-field modal)
+  const [createMode, setCreateMode] = useState<null | 'file' | 'dir'>(null);
+  const [createName, setCreateName] = useState('');
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
+  const [renameName, setRenameName] = useState('');
 
   const loadDir = useCallback(async (dir: string) => {
     try {
@@ -112,6 +124,92 @@ export function FileTree() {
     setCwd(parent);
     loadDir(parent);
   };
+
+  // ── Context menu actions ──────────────────────────────────────────
+  const handleLongPress = useCallback((entry: FileEntry) => {
+    Alert.alert(
+      entry.name,
+      entry.isDirectory ? 'Directory' : 'File',
+      [
+        {
+          text: 'Rename',
+          onPress: () => {
+            setRenameTarget(entry);
+            setRenameName(entry.name);
+          },
+        },
+        {
+          text: 'Copy path',
+          onPress: async () => {
+            await Clipboard.setStringAsync(entry.path);
+            ToastAndroid.show('Path copied', ToastAndroid.SHORT);
+          },
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert('Delete ' + entry.name + '?', 'This cannot be undone.', [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: async () => {
+                  const cmd = entry.isDirectory
+                    ? `rm -rf ${sq(entry.path)}`
+                    : `rm ${sq(entry.path)}`;
+                  const r = await execCommand(cmd, 10_000);
+                  if (r.exitCode === 0) {
+                    ToastAndroid.show('Deleted', ToastAndroid.SHORT);
+                    loadDir(cwd);
+                  } else {
+                    ToastAndroid.show('rm failed: ' + (r.stderr || '').trim(), ToastAndroid.LONG);
+                  }
+                },
+              },
+            ]);
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+      { cancelable: true },
+    );
+  }, [cwd, loadDir]);
+
+  const performCreate = useCallback(async () => {
+    const name = createName.trim();
+    if (!name || !createMode) return;
+    const target = `${cwd}/${name}`;
+    const cmd = createMode === 'dir' ? `mkdir -p ${sq(target)}` : `touch ${sq(target)}`;
+    const r = await execCommand(cmd, 10_000);
+    if (r.exitCode === 0) {
+      ToastAndroid.show(createMode === 'dir' ? 'Folder created' : 'File created', ToastAndroid.SHORT);
+      setCreateMode(null);
+      setCreateName('');
+      loadDir(cwd);
+    } else {
+      ToastAndroid.show('create failed: ' + (r.stderr || '').trim(), ToastAndroid.LONG);
+    }
+  }, [createMode, createName, cwd, loadDir]);
+
+  const performRename = useCallback(async () => {
+    if (!renameTarget) return;
+    const name = renameName.trim();
+    if (!name || name === renameTarget.name) {
+      setRenameTarget(null);
+      return;
+    }
+    const parent = renameTarget.path.replace(/\/[^/]+$/, '');
+    const newPath = `${parent}/${name}`;
+    const r = await execCommand(`mv ${sq(renameTarget.path)} ${sq(newPath)}`, 10_000);
+    if (r.exitCode === 0) {
+      ToastAndroid.show('Renamed', ToastAndroid.SHORT);
+      setRenameTarget(null);
+      loadDir(cwd);
+    } else {
+      ToastAndroid.show('mv failed: ' + (r.stderr || '').trim(), ToastAndroid.LONG);
+    }
+  }, [renameTarget, renameName, cwd, loadDir]);
 
   // Mock dummy file tree matching mock screenshot (shown when no repo selected)
   if (!repoPath) {
@@ -170,7 +268,12 @@ export function FileTree() {
           value={search}
           onChangeText={setSearch}
         />
-        <MaterialIcons name="edit" size={11} color={C.text2} />
+        <Pressable onPress={() => { setCreateMode('file'); setCreateName(''); }} hitSlop={6}>
+          <MaterialIcons name="note-add" size={11} color={C.text2} />
+        </Pressable>
+        <Pressable onPress={() => { setCreateMode('dir'); setCreateName(''); }} hitSlop={6}>
+          <MaterialIcons name="create-new-folder" size={11} color={C.text2} />
+        </Pressable>
       </View>
 
       {/* Breadcrumb */}
@@ -188,7 +291,12 @@ export function FileTree() {
         data={filtered}
         keyExtractor={(item) => item.path}
         renderItem={({ item }) => (
-          <Pressable style={styles.row} onPress={() => handleTap(item)}>
+          <Pressable
+            style={styles.row}
+            onPress={() => handleTap(item)}
+            onLongPress={() => handleLongPress(item)}
+            delayLongPress={350}
+          >
             <MaterialIcons
               name={item.isDirectory ? 'folder' : 'insert-drive-file'}
               size={I.fileIcon}
@@ -203,9 +311,123 @@ export function FileTree() {
           </Pressable>
         )}
       />
+
+      {/* Create file/folder prompt */}
+      <Modal visible={createMode !== null} transparent animationType="fade" onRequestClose={() => setCreateMode(null)}>
+        <Pressable style={promptStyles.backdrop} onPress={() => setCreateMode(null)}>
+          <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
+            <Text style={promptStyles.title}>
+              {createMode === 'dir' ? 'New Folder' : 'New File'}
+            </Text>
+            <TextInput
+              style={promptStyles.input}
+              placeholder={createMode === 'dir' ? 'folder name' : 'file.ext'}
+              placeholderTextColor={C.text3}
+              value={createName}
+              onChangeText={setCreateName}
+              autoFocus
+              onSubmitEditing={performCreate}
+            />
+            <View style={promptStyles.actions}>
+              <Pressable onPress={() => setCreateMode(null)} style={promptStyles.btn}>
+                <Text style={promptStyles.btnText}>Cancel</Text>
+              </Pressable>
+              <Pressable onPress={performCreate} style={[promptStyles.btn, promptStyles.btnPrimary]}>
+                <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>Create</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Rename prompt */}
+      <Modal visible={renameTarget !== null} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}>
+        <Pressable style={promptStyles.backdrop} onPress={() => setRenameTarget(null)}>
+          <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
+            <Text style={promptStyles.title}>Rename</Text>
+            <TextInput
+              style={promptStyles.input}
+              value={renameName}
+              onChangeText={setRenameName}
+              autoFocus
+              onSubmitEditing={performRename}
+            />
+            <View style={promptStyles.actions}>
+              <Pressable onPress={() => setRenameTarget(null)} style={promptStyles.btn}>
+                <Text style={promptStyles.btnText}>Cancel</Text>
+              </Pressable>
+              <Pressable onPress={performRename} style={[promptStyles.btn, promptStyles.btnPrimary]}>
+                <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>Rename</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
+
+const promptStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  card: {
+    width: 260,
+    backgroundColor: C.bgSurface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 6,
+    padding: 12,
+    gap: 10,
+  },
+  title: {
+    fontFamily: F.family,
+    fontSize: 10,
+    fontWeight: '700',
+    color: C.accent,
+    letterSpacing: 0.5,
+  },
+  input: {
+    fontFamily: F.family,
+    fontSize: 11,
+    color: C.text1,
+    backgroundColor: C.bgDeep,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  btn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  btnPrimary: {
+    backgroundColor: C.accent,
+    borderColor: C.accent,
+  },
+  btnText: {
+    fontFamily: F.family,
+    fontSize: 10,
+    fontWeight: '700',
+    color: C.text2,
+  },
+  btnPrimaryText: {
+    color: C.bgDeep,
+  },
+});
 
 const styles = StyleSheet.create({
   container: {

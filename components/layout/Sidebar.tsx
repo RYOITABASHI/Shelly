@@ -1,5 +1,6 @@
 // components/layout/Sidebar.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { execCommand } from '@/hooks/use-native-exec';
 import {
   View,
   Text,
@@ -72,6 +73,30 @@ export function Sidebar() {
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const setLeafTab = useMultiPaneStore((s) => s.setLeafTab);
   const openUrl = useBrowserStore((s) => s.openUrl);
+
+  // Count uncommitted changes in the active repo. Polls every 20s so
+  // the badge catches file tree edits and AI Edit writebacks without
+  // hammering the shell. Only runs when a real repo is bound.
+  const [gitDirtyCount, setGitDirtyCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!activeRepoPath) {
+      setGitDirtyCount(null);
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      const r = await execCommand(
+        `cd '${activeRepoPath.replace(/'/g, "'\\''")}' && git status --porcelain 2>/dev/null | wc -l`,
+        5_000,
+      );
+      if (cancelled) return;
+      const n = parseInt((r.stdout || '').trim(), 10);
+      setGitDirtyCount(Number.isNaN(n) ? null : n);
+    };
+    refresh();
+    const iv = setInterval(refresh, 20_000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [activeRepoPath]);
 
   const handleCloudConnect = React.useCallback((svcLabel: string) => {
     const url = CLOUD_OAUTH_URLS[svcLabel];
@@ -251,6 +276,11 @@ export function Sidebar() {
                   >
                     {name.toUpperCase()}
                   </Text>
+                  {isActive && gitDirtyCount !== null && gitDirtyCount > 0 && (
+                    <View style={styles.gitDirtyBadge}>
+                      <Text style={styles.gitDirtyText}>{String(gitDirtyCount)}</Text>
+                    </View>
+                  )}
                   {isActive && (
                     <Text style={styles.repoVersion}>V9.2</Text>
                   )}
@@ -523,6 +553,20 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
     color: C.text2,
+  },
+  gitDirtyBadge: {
+    backgroundColor: C.badgeRunningBg,
+    borderRadius: R.badge,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    marginRight: 4,
+  },
+  gitDirtyText: {
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+    color: C.badgeRunningText,
+    letterSpacing: 0.3,
   },
   addRow: {
     paddingHorizontal: P.sidebarItem.px,
