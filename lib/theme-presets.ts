@@ -9,7 +9,32 @@
 // Keys MUST stay aligned with the keys declared in theme.config.ts's
 // `colors` export. Adding a new key? Add it here AND in theme.config.ts.
 
+import React from 'react';
 import { Text } from 'react-native';
+
+// ── Global Text font injection ──────────────────────────────────────
+// Text.defaultProps.style is REPLACED (not merged) when a child passes
+// its own `style` prop, so ~100 call sites that write
+// `<Text style={styles.x}>` escape the default font. Monkey-patch
+// Text.render once so the injected fontFamily lives at the head of the
+// style array — explicit per-site styles still win if they specify
+// fontFamily themselves, but the default covers every unspecified case.
+let currentFontFamily = 'Silkscreen';
+let textRenderPatched = false;
+function patchTextRenderOnce() {
+  if (textRenderPatched) return;
+  const TextAny = Text as any;
+  const original = TextAny.render;
+  if (typeof original !== 'function') return;
+  TextAny.render = function patchedRender(...args: any[]) {
+    const elem = original.apply(this, args);
+    if (!elem) return elem;
+    return React.cloneElement(elem, {
+      style: [{ fontFamily: currentFontFamily }, elem.props?.style],
+    });
+  };
+  textRenderPatched = true;
+}
 
 export type Palette = {
   // Backgrounds
@@ -220,14 +245,11 @@ export function applyThemePreset(id: ThemePresetId) {
   const themeConfig = require('@/theme.config');
   Object.assign(themeConfig.colors, preset.colors);
 
-  // 2. Re-inject Text.defaultProps.style.fontFamily so any newly
-  //    mounted Text picks up the new family without needing the
-  //    parent to re-render first.
-  (Text as any).defaultProps = (Text as any).defaultProps || {};
-  (Text as any).defaultProps.style = {
-    ...((Text as any).defaultProps?.style || {}),
-    fontFamily: preset.font,
-  };
+  // 2. Install the Text.render monkey-patch (idempotent) and update the
+  //    currently-active font family. Every Text component re-renders
+  //    with the new family after the version bump in step 3.
+  patchTextRenderOnce();
+  currentFontFamily = preset.font;
 
   // 3. Bump the theme version so ShellLayout forces a full re-render
   //    of the tree through its key={version} root <View>.

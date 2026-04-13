@@ -16,6 +16,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { useTerminalStore } from '@/store/terminal-store';
 import { KEY_BAR_HEIGHT, BORDER_WIDTH } from '@/lib/layout-constants';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
+import { fonts as F } from '@/theme.config';
 
 type Props = {
   sendKey: (keyCode: string) => void;
@@ -345,6 +346,7 @@ const styles = StyleSheet.create({
     borderRadius: 3.5,
   },
   setLabel: {
+    fontFamily: F.family,
     fontSize: 8,
     marginLeft: 4,
   },
@@ -365,6 +367,7 @@ const styles = StyleSheet.create({
     minWidth: 36,
   },
   keyText: {
+    fontFamily: F.family,
     fontSize: 11,
     fontWeight: '600',
   },
