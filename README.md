@@ -113,7 +113,7 @@ Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Rep
 | **Multi-agent AI** | Claude Code, Gemini, Cerebras, Groq, Perplexity, Codex, Local LLM. Auto-routed or `@mention`. |
 | **Shelly theme preset** | Mock-faithful teal-on-black palette with Silkscreen pixel font. Runtime swap — your shell survives the switch. |
 | **Voice input** | Speak your commands or AI prompts. VoiceChain ties speech to the same input router the keyboard uses. |
-| **CRT mode** | Scanlines + phosphor green + flicker. Retro 8-bit sounds. Pixel fonts. Just for fun. |
+| **CRT mode** | Scanlines + phosphor green + vignette. Retro 8-bit sounds. Pixel fonts. Just for fun. |
 
 <details>
 <summary><strong>Layout System</strong></summary>
@@ -255,10 +255,10 @@ Currently registered:
 - **"Shelly" preset** — new default. Mock-faithful palette with 8 neon accents (teal / green / blue / sky / purple / pink / amber / red) on a `#0A0A0A` background. Paired with Silkscreen.
 - **Other presets** — Silkscreen (previous greener palette), 8bit (PressStart2P), Mono (system monospace). Switch from Settings → Display → Font or from the Command Palette.
 - **Runtime swap** — presets are swapped by mutating the live `colors` object in place (identity preserved) and bumping a theme-version store that key-remounts the shell layout. PTY sessions survive the switch — your vim stays open.
-- **Silkscreen Bold** — loaded as a separately-named font (`Silkscreen-Bold`) and swapped in by a `Text.render` monkey-patch whenever `fontWeight` is `700` or higher, so section headers and badges render properly pixel-weighted instead of falling back to system sans-serif.
+- **Single-weight rendering** — every Text is forced through Silkscreen Regular regardless of its `fontWeight`. A two-weight mix (bold section headers against regular inline buttons) read as visibly inconsistent, so Shelly commits to one pixel weight everywhere.
 - **Text.render monkey-patch** — `Text.defaultProps.style` is replaced (not merged) when a child passes its own `style`, which would otherwise let 100+ call sites escape the theme font. The patch prepends `{ fontFamily }` to every Text's style array so the preset font reaches every call site without touching them.
 - **Neon glow** — seven per-color `textShadow` styles (teal / blue / sky / purple / pink / green / red / amber) for the mock's "reading terminal" vibe
-- **CRT overlay** — scanlines + phosphor tint + flicker, backed by the cosmetic store
+- **CRT overlay** — scanlines + phosphor tint + vignette, backed by the cosmetic store
 - **Haptic toggle** — per-interaction feedback on/off
 
 </details>
@@ -310,7 +310,7 @@ Parts of the app are scaffolded but not ready. These are on the short-term roadm
 | FileTree CRUD (create / rename / delete / copy path) | ✅ shipping |
 | Command Palette — tabs, terminal, git, panes, layouts, font, CRT, voice | ✅ shipping |
 | Browser fullscreen, desktop UA toggle, link capture, bookmarks | ✅ shipping |
-| Shelly theme preset + runtime swap + Silkscreen Bold + monkey-patch | ✅ shipping |
+| Shelly theme preset + runtime swap + single-weight Text monkey-patch | ✅ shipping |
 | AgentBar + Sidebar git dirty badge (single-writer poll) | ✅ shipping |
 | Voice dialogue (VoiceChat + VoiceChain + TTS) | ✅ implemented, device smoke-test pending |
 | Immortal sessions (tmux keep-alive) | ✅ implemented, device smoke-test pending |
