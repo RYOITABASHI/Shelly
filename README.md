@@ -226,7 +226,8 @@ Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Rep
 - **Device** — quick-access folders (`~`, `/sdcard/Download`, …) that re-bind the file tree in one tap
 - **Ports** — every 20 seconds Shelly scans `ss -tlnp` and lists each loopback / wildcard listener; tap a row to open `http://localhost:<port>` in the Browser pane. Well-known ports get friendly labels (`:3000 NEXT.JS`, `:5173 VITE`, `:8081 EXPO`, `:8888 JUPYTER`, …).
 - **Profiles** — saved SSH connections. Tap to insert `ssh -i KEY user@host -p PORT` into the active terminal pane; long-press to edit or delete; `Import from ~/.ssh/config` bulk-adds hosts. Key-file auth only — no passwords or passphrases are persisted.
-- **Cloud** — section shell in place for future Google Drive / Dropbox / OneDrive OAuth. *Not yet wired; see [Coming Soon](#coming-soon).*
+
+> **Cloud storage?** Shelly deliberately doesn't ship a Google Drive / Dropbox / OneDrive UI. A terminal app should lean on the tools that already solve this — install [`rclone`](https://rclone.org) from your package manager, run `rclone config` once, and mount or sync any of 40+ cloud backends from the terminal pane.
 
 </details>
 
@@ -291,7 +292,6 @@ Currently registered:
 
 Parts of the app are scaffolded but not ready. These are on the short-term roadmap, not in the current build:
 
-- **Cloud OAuth** — Google Drive / Dropbox / OneDrive linking (section shells only for now)
 - **Additional terminal theme presets** — beyond the four Shelly / Silk / 8bit / Mono font presets, the palette is currently Shelly-only
 - **Background agent scheduler UI** — currently registered via `@agent` syntax; a proper sidebar/Settings view is planned
 - **MCP manager** — MCP server catalog exists but is experimental
@@ -318,7 +318,7 @@ Parts of the app are scaffolded but not ready. These are on the short-term roadm
 | Background agents (`@agent` + AlarmManager) | 🟡 skeleton, end-to-end validation pending |
 | Sidebar Ports monitor (`ss -tlnp` → tap to open in Browser pane) | ✅ shipping |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
-| Sidebar Cloud (Drive / Dropbox / OneDrive) | 🟡 section shell, OAuth not yet wired |
+| Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon + distribution channels | 🟡 brief written, image + store flow not done |
 
 Full validation checklist: [`docs/superpowers/specs/2026-04-13-validation-checklist.md`](docs/superpowers/specs/2026-04-13-validation-checklist.md)

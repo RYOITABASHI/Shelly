@@ -51,19 +51,6 @@ const QUICK_FOLDERS = [
   { label: 'MUSIC', path: '~/storage/music', icon: 'music-note' },
 ] as const;
 
-const CLOUD_SERVICES = [
-  { label: 'GOOGLE DRIVE', status: 'LINKED', icon: 'cloud', linked: true },
-  { label: 'DROPBOX', status: 'CONNECT', icon: 'cloud-queue', linked: false },
-  { label: 'ONEDRIVE', status: 'CONNECT', icon: 'cloud-queue', linked: false },
-] as const;
-
-// OAuth authorize endpoints — client_id wiring happens later; for now these
-// open the provider's sign-in page in the built-in browser pane.
-const CLOUD_OAUTH_URLS: Record<string, string> = {
-  DROPBOX: 'https://www.dropbox.com/oauth2/authorize?response_type=token&client_id=SHELLY_DROPBOX_CLIENT_ID&redirect_uri=https://shelly.local/oauth/dropbox',
-  ONEDRIVE: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?response_type=token&client_id=SHELLY_ONEDRIVE_CLIENT_ID&scope=Files.ReadWrite.All%20offline_access&redirect_uri=https://shelly.local/oauth/onedrive',
-};
-
 export function Sidebar() {
   const theme = useTheme();
   const c = theme.colors;
@@ -123,22 +110,6 @@ export function Sidebar() {
     const iv = setInterval(refresh, 20_000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [activeRepoPath]);
-
-  const handleCloudConnect = React.useCallback((svcLabel: string) => {
-    const url = CLOUD_OAUTH_URLS[svcLabel];
-    if (!url) {
-      Alert.alert(svcLabel, 'Cloud storage integration coming soon. Configure in Settings.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Open Settings', onPress: () => useSettingsStore.getState().setShowConfigTUI(true) },
-      ]);
-      return;
-    }
-    // Switch focused pane to browser and load the OAuth URL
-    if (focusedPaneId) {
-      setLeafTab(focusedPaneId, 'browser');
-    }
-    openUrl(url);
-  }, [focusedPaneId, setLeafTab, openUrl]);
 
   // Derive recent completed tasks from run history
   const recentTasks = React.useMemo(() => {
@@ -379,38 +350,6 @@ export function Sidebar() {
           ))}
         </SidebarSection>
 
-        {/* CLOUD */}
-        <SidebarSection
-          title="CLOUD"
-          icon="cloud"
-          isOpen={openSections.cloud}
-          onToggle={() => toggleSection('cloud')}
-          iconsOnly={iconsOnly}
-        >
-          {CLOUD_SERVICES.map((svc) => (
-            <Pressable
-              key={svc.label}
-              style={styles.cloudRow}
-              onPress={() => {
-                if (!svc.linked) handleCloudConnect(svc.label);
-              }}
-            >
-              <MaterialIcons
-                name={svc.icon as any}
-                size={13}
-                color={svc.linked ? C.accent : C.accentBlue}
-              />
-              <Text style={styles.cloudLabel}>{svc.label}</Text>
-              <View style={styles.cloudSpacer} />
-              <View style={[styles.statusBadge, { backgroundColor: svc.linked ? C.badgeLinkedBg : C.badgeConnectBg }]}>
-                <Text style={[styles.statusBadgeText, { color: svc.linked ? C.badgeLinkedText : C.badgeConnectText }]}>
-                  {svc.status}
-                </Text>
-              </View>
-            </Pressable>
-          ))}
-        </SidebarSection>
-
         {/* PORTS — live `ss -tlnp` scan every 20s (see useEffect above) */}
         <SidebarSection
           title="PORTS"
@@ -436,7 +375,7 @@ export function Sidebar() {
                   <View style={[styles.portDot, { backgroundColor: dotColor }, neonDotGlow]} />
                   <Text style={styles.portLabel}>{`:${entry.port}`}</Text>
                   {label ? <Text style={styles.portName}>{label}</Text> : null}
-                  <View style={styles.cloudSpacer} />
+                  <View style={{ flex: 1 }} />
                   <MaterialIcons name="open-in-new" size={I.externalLink} color={C.text2} />
                 </Pressable>
               );
@@ -683,24 +622,8 @@ const styles = StyleSheet.create({
     color: C.text1,
     letterSpacing: 0.3,
   },
-  // Cloud
-  cloudRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: P.sidebarItem.px,
-    height: S.sidebarItemHeight,
-  },
-  cloudLabel: {
-    fontSize: F.sidebarItem.size,
-    fontFamily: F.family,
-    fontWeight: F.sidebarItem.weight,
-    color: C.text1,
-    letterSpacing: 0.3,
-  },
-  cloudSpacer: {
-    flex: 1,
-  },
+  // Ports
+  // (cloudSpacer was reused here historically; inline flex:1 View now.)
   // Ports
   portRow: {
     flexDirection: 'row',

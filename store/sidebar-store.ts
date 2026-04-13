@@ -4,7 +4,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { logInfo, logError } from '@/lib/debug-logger';
 
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
-export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'cloud' | 'ports' | 'profiles';
+export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles';
 
 interface SidebarState {
   mode: SidebarMode;
@@ -25,7 +25,7 @@ interface SidebarState {
 
 export const useSidebarStore = create<SidebarState>((set, get) => ({
   mode: 'expanded',
-  openSections: { tasks: true, repos: true, files: true, device: false, cloud: false, ports: false, profiles: false },
+  openSections: { tasks: true, repos: true, files: true, device: false, ports: false, profiles: false },
   activeRepoPath: null,
   repoPaths: [],
 
