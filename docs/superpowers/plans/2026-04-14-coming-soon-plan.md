@@ -338,6 +338,8 @@ On device:
 - Create: `components/settings/MCPSection.tsx`
 - Modify: `components/layout/SettingsDropdown.tsx` — add MCP Servers row
 
+**Note**: `MCPSection.tsx` below uses `radii as R` only. The `sizes as S` and `padding as P` imports shown are for future expansion — executing agent may trim them.
+
 ---
 
 - [ ] **Step 2.1: Read existing mcp store + catalog**
@@ -477,7 +479,28 @@ const styles = StyleSheet.create({
 
 - [ ] **Step 2.3: Wire SettingsDropdown → MCP Modal**
 
-In `components/layout/SettingsDropdown.tsx`, add a new row that opens a Modal containing `<MCPSection />`. Follow the same pattern as the existing "Settings TUI" row if present, or wrap with `<Modal visible={...} animationType="slide">`.
+In `components/layout/SettingsDropdown.tsx`:
+
+1. Add `useState` import if missing
+2. Add a local state: `const [mcpOpen, setMcpOpen] = useState(false);`
+3. Add a new `<Pressable>` row below the existing Theme/Font row (search for `Font:` label or `FontFamilyRow` to find it) with:
+   ```tsx
+   <Pressable onPress={() => setMcpOpen(true)} style={styles.row}>
+     <MaterialIcons name="extension" size={14} color={C.text2} />
+     <Text style={styles.label}>MCP Servers</Text>
+   </Pressable>
+   ```
+4. At the very bottom of the dropdown JSX (just before the closing wrapper), add:
+   ```tsx
+   <Modal visible={mcpOpen} animationType="slide" onRequestClose={() => setMcpOpen(false)}>
+     <MCPSection />
+     <Pressable onPress={() => setMcpOpen(false)} style={styles.modalClose}>
+       <Text style={styles.modalCloseText}>CLOSE</Text>
+     </Pressable>
+   </Modal>
+   ```
+5. Add `Modal` to the react-native import list if missing
+6. Import `MCPSection` from `@/components/settings/MCPSection`
 
 - [ ] **Step 2.4: tsc check**
 
@@ -527,21 +550,30 @@ Confirm:
 
 - [ ] **Step 3.2: Add `runAgent` to agent-store**
 
-If `lib/agent-manager.ts` has a runner function (e.g., `runAgent(agent)`), wrap it. Otherwise fall back to `pendingCommand` dispatch.
+**Decision rule (apply literally, no interpretation):**
 
-Add to `store/agent-store.ts`:
+- If Step 3.1 found `runAgent` or equivalent runner in `lib/agent-manager.ts` → **import it and wrap it**
+- If no runner was found → **use `pendingCommand` fallback**
+
+Add to `store/agent-store.ts` (after existing `deleteAgent` action):
+
 ```ts
+// At the top of the file, add this import if not present:
+import { useTerminalStore } from '@/store/terminal-store';
+
+// Inside the store definition, after deleteAgent:
 runAgent: async (id: string) => {
   const agent = get().agents.find((a) => a.id === id);
   if (!agent) return;
-  // If a native runner exists, call it here. Otherwise fall back:
+  // Fallback: dispatch the agent's shell command to the active terminal pane.
+  // If a native runner exists in agent-manager.ts, call it HERE instead.
   useTerminalStore.setState({
-    pendingCommand: `# agent run: ${agent.name}\n${agent.command ?? ''}`,
+    pendingCommand: (agent as any).command ?? `# agent: ${agent.name}`,
   });
 },
 ```
 
-Exact wiring depends on what Step 3.1 revealed. Document the decision in the commit message.
+Also update `AgentStore` type to include `runAgent: (id: string) => Promise<void>`. Record the chosen wiring mode ("native runner" vs "pendingCommand fallback") in the commit message.
 
 - [ ] **Step 3.3: Read Sidebar.tsx Tasks section**
 
@@ -552,6 +584,13 @@ sed -n '140,240p' components/layout/Sidebar.tsx
 Find the Tasks section, the `runningAgents` / `recentTasks` subscription, and the empty-state placeholder (`NPM RUN DEV` / `GIT PUSH`).
 
 - [ ] **Step 3.4: Extend Tasks section**
+
+**Required imports** (add to the top of `Sidebar.tsx` if missing):
+```tsx
+import { Alert } from 'react-native';
+import { useAgentStore } from '@/store/agent-store';
+```
+`MaterialIcons`, `neonDotGlow`, and `formatAge` should already be imported — verify first. If `formatAge` is not present, replace the `{formatAge(task.timestamp)}` usage with `{new Date(task.timestamp).toLocaleTimeString()}`.
 
 Replace the existing Tasks section body with:
 
@@ -888,16 +927,20 @@ const styles = StyleSheet.create({
 
 - [ ] **Step 4.4: Extend `components/layout/ProfilesSection.tsx`**
 
-Add SSH section rendering. Read the current file first:
+Read the current file first:
 
 ```bash
 cat components/layout/ProfilesSection.tsx
 ```
 
-Then add an SSH list above or below existing content:
+**Insertion point**: Add the SSH block **at the end of the main `View` return**, after any existing profile content. If the component is currently a stub, replace the body entirely.
 
+**Required imports** (add to the top if missing):
 ```tsx
-import { useSshProfilesStore } from '@/store/ssh-profiles-store';
+import { useState, useCallback } from 'react';
+import { Alert, ToastAndroid, Pressable, View, Text, StyleSheet } from 'react-native';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { useSshProfilesStore, type SshProfile } from '@/store/ssh-profiles-store';
 import { buildSshCommand } from '@/lib/ssh-cmd';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -1440,9 +1483,9 @@ cd ~/Shelly
 pnpm add expo-auth-session expo-crypto
 ```
 
-- [ ] **Step 6A.2: Verify package.json + app.config.ts plugins**
+- [ ] **Step 6A.2: Verify package.json**
 
-Open `app.config.ts` and ensure `plugins` includes nothing special for expo-auth-session (it's a config-plugin-free library, pure JS).
+Confirm `expo-auth-session` and `expo-crypto` are now under `dependencies` in `package.json`. No `app.config.ts` plugin edits needed — `expo-auth-session` is config-plugin-free.
 
 - [ ] **Step 6A.3: Commit deps**
 
@@ -1998,7 +2041,21 @@ git add -A && git commit -m "feat(gdrive): Sidebar file list with breadcrumb + d
 
 - [ ] **Step 6F.1: Remove handleCloudConnect and CLOUD_SERVICES dummy rows**
 
-Delete `handleCloudConnect` function, `CLOUD_OAUTH_URLS` constant if unused elsewhere, and the `CLOUD_SERVICES.map` render block.
+In `components/layout/Sidebar.tsx`:
+1. Delete the `handleCloudConnect` `useCallback` function (around L124)
+2. Delete the `CLOUD_OAUTH_URLS` constant (near the top) if nothing else references it — `grep -n CLOUD_OAUTH_URLS components` to confirm
+3. Delete the `CLOUD_SERVICES.map` render block inside the Cloud section (around L358)
+
+**Imports to add** for the new Cloud section:
+```tsx
+import { useState } from 'react';  // if not already imported
+import { hasClientId } from '@/lib/google-drive';
+import { GoogleDriveList } from '@/components/cloud/GoogleDriveList';
+import { GoogleDriveAuthModal } from '@/components/cloud/GoogleDriveAuthModal';
+import { useGoogleDriveStore } from '@/store/google-drive-store';
+```
+
+`openUrl` is already imported as `const openUrl = useBrowserStore((s) => s.openUrl);` at the top of the Sidebar component — reuse it.
 
 - [ ] **Step 6F.2: Replace Cloud section body**
 
