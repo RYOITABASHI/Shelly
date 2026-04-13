@@ -9,7 +9,8 @@
 
 // ─── Colors ─────────────────────────────────────────────────────────────────
 
-import { shellyPalette, type Palette } from './lib/theme-presets';
+import { shellyPalette } from './lib/theme-presets';
+import type { Palette } from './lib/theme-presets';
 
 export const colors: Palette = { ...shellyPalette };
 
