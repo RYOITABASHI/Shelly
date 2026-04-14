@@ -444,22 +444,20 @@ export default function TerminalScreen() {
     };
   }, [settings.terminalTheme]);
 
-  // Terminal font size honors the user's Settings → Display → Font Size choice
-  // (8/10/12 sp = S/M/L). Falls back to a compact-friendly default when the
-  // settings store hasn't loaded yet. Compact screens (Z Fold6 cover ~ 373dp)
-  // shave one extra step.
+  // Terminal font size honors the user's Settings → Display → Font Size
+  // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
+  // the old "pixel font is tiny, scale it up aggressively" mapping does
+  // not apply. JetBrains Mono at 11px is already readable; 14px is
+  // comfortable; 17px is spacious. Mapping chosen for comfortable
+  // reading on phone and Fold screens:
+  //   S  -> 11 sp (compact, fits more on screen)
+  //   M  -> 14 sp (default, balanced)
+  //   L  -> 17 sp (spacious, glasses-friendly)
+  // Compact screens (Z Fold 6 cover display ~ 373dp) shave one extra sp.
   const termFontSize = (() => {
-    // Default to M (14) instead of S (12) because:
-    // (a) S = 7px Silkscreen is too small for most phone screens,
-    // (b) CJK (Noto fallback) reads more naturally at the M cell size,
-    // (c) users reported S feels "too small" in field testing.
-    // Users who want compact can still pick S in Settings.
     const base = settings.fontSize ?? 14;
-    // settings.fontSize comes in as 12/14/16 from the S/M/L preset.
-    // Widened from the previous 8/10/12 mapping (users said fontSize
-    // button had no visible effect) so each step is clearly distinct.
-    const mapped = base <= 12 ? 7 : base <= 14 ? 11 : 15;
-    return layout.isCompact ? Math.max(6, mapped - 1) : mapped;
+    const mapped = base <= 12 ? 11 : base <= 14 ? 14 : 17;
+    return layout.isCompact ? Math.max(10, mapped - 1) : mapped;
   })();
 
   // Send text to terminal via native PTY
@@ -536,15 +534,17 @@ export default function TerminalScreen() {
           <NativeTerminalView
             ref={terminalViewRef}
             sessionId={activeSession.nativeSessionId}
+            // Terminal font is deliberately NOT Silkscreen. Silkscreen's
+            // glyph design has all letters drawn in uppercase shapes —
+            // even lowercase code points render as visual capitals — so
+            // using it in the terminal makes it impossible to tell what
+            // you actually typed. The surrounding UI chrome can still
+            // wear Silkscreen as its brand identity, but the terminal
+            // pane itself uses JetBrains Mono so character case is
+            // readable. The 'pixel' preset still gets PixelMplus for
+            // users who want a pixel aesthetic with real lowercase.
             fontFamily={
-              settings.uiFont === 'shelly' ||
-              settings.uiFont === 'silkscreen' ||
-              settings.uiFont === 'dracula' ||
-              settings.uiFont === 'nord' ||
-              settings.uiFont === 'gruvbox' ||
-              settings.uiFont === 'tokyo-night'
-                ? 'silkscreen'
-                : settings.uiFont === 'pixel'
+              settings.uiFont === 'pixel'
                 ? 'pixel-mplus'
                 : 'jetbrains-mono'
             }

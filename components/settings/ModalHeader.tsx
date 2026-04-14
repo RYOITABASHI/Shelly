@@ -25,23 +25,25 @@ export function ModalHeader({ title, onClose, subtitle }: Props) {
       <View style={styles.header}>
         <Pressable
           onPress={onClose}
-          hitSlop={8}
-          style={styles.sideButton}
+          hitSlop={10}
+          style={styles.backButton}
           accessibilityRole="button"
           accessibilityLabel={`Back from ${title}`}
         >
-          <MaterialIcons name="arrow-back" size={14} color={C.text2} />
-          <Text style={styles.sideText}>BACK</Text>
+          <MaterialIcons name="arrow-back" size={16} color={C.accent} />
+          <Text style={styles.backText}>BACK</Text>
         </Pressable>
-        <Text style={styles.title} numberOfLines={1}>{title}</Text>
+        <View style={styles.titleWrap} pointerEvents="none">
+          <Text style={styles.title} numberOfLines={1}>{title}</Text>
+        </View>
         <Pressable
           onPress={onClose}
-          hitSlop={8}
-          style={styles.sideButton}
+          hitSlop={10}
+          style={styles.closeButton}
           accessibilityRole="button"
           accessibilityLabel={`Close ${title}`}
         >
-          <Text style={styles.sideText}>CLOSE</Text>
+          <MaterialIcons name="close" size={16} color={C.text2} />
         </Pressable>
       </View>
       {subtitle}
@@ -53,32 +55,51 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
+    // Relative positioning so the absolute-positioned titleWrap centers
+    // against the full header width regardless of left/right button widths.
+    position: 'relative',
   },
-  sideButton: {
+  backButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    minWidth: 60,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    minHeight: 32,
+    zIndex: 2,
   },
-  title: {
-    flex: 1,
-    textAlign: 'center',
+  backText: {
     fontFamily: F.family,
     fontSize: 11,
     fontWeight: '700',
     color: C.accent,
     letterSpacing: 0.5,
   },
-  sideText: {
+  titleWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  title: {
     fontFamily: F.family,
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: '700',
-    color: C.text2,
+    color: C.accent,
     letterSpacing: 0.5,
+  },
+  closeButton: {
+    marginLeft: 'auto',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    minHeight: 32,
+    minWidth: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
   },
 });

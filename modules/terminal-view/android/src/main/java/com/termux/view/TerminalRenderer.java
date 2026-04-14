@@ -60,25 +60,14 @@ public final class TerminalRenderer {
         mTextPaint.setAntiAlias(true);
         mTextPaint.setTextSize(textSize);
 
-        // Silkscreen is a narrow pixel font — its ASCII advance width is
-        // roughly half the line spacing, which gives the terminal cell a
-        // 2:1 aspect ratio. CJK glyphs drawn through Android's font
-        // fallback (Noto Sans CJK) fill the full square of a 2-cell-wide
-        // slot, so the rendered kanji look much larger than the 2 ASCII
-        // letters they sit next to. Stretching Silkscreen horizontally
-        // to 1.6× brings the cell aspect ratio close to 1.25:1, which
-        // lines up with Noto's natural advance and stops the visual
-        // "kanji are huge" illusion.
-        //
-        // We detect Silkscreen by measuring its narrow X: if the ASCII
-        // advance is less than 70% of the line spacing, the font is
-        // narrow enough to justify the stretch. This keeps JetBrains
-        // Mono and PressStart2P (both wider) unchanged.
-        float rawX = mTextPaint.measureText("X");
-        int rawLine = (int) Math.ceil(mTextPaint.getFontSpacing());
-        if (rawLine > 0 && rawX / rawLine < 0.70f) {
-            mTextPaint.setTextScaleX(1.6f);
-        }
+        // NOTE: the previous narrow-font stretch path (setTextScaleX(1.6)
+        // for Silkscreen to fix CJK aspect ratio) is disabled now that
+        // the terminal no longer defaults to Silkscreen. JetBrains Mono
+        // draws real lowercase glyphs and already has a balanced cell
+        // aspect ratio; stretching it would make the terminal look
+        // rubber-banded for no gain. If a user ever opts back into a
+        // narrow pixel font for the terminal, reintroduce this at the
+        // call site that picks the typeface, not here.
 
         mFontLineSpacing = (int) Math.ceil(mTextPaint.getFontSpacing());
         mFontAscent = (int) Math.ceil(mTextPaint.ascent());
