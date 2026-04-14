@@ -50,6 +50,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalTheme: 'shelly',
   gpuRendering: false,
   uiFont: 'shelly',
+  showVimKeyBar: false,
 };
 
 // ─── Store ───────────────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ import { useUsageStore } from '@/store/usage-store';
 import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
+import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
 import { VoiceChat } from '@/components/VoiceChat';
 import { PreviewBanner } from '@/components/terminal/PreviewBanner';
 import { PreviewTabs } from '@/components/preview/PreviewTabs';
@@ -468,17 +469,42 @@ export default function TerminalScreen() {
     });
   }, [activeSession?.nativeSessionId]);
 
-  // Voice input routing
-  const handleVoiceInput = useCallback((text: string) => {
-    if (!text.trim()) return;
-    const SHELL_META = /[|&;<>$`\\!{}*?[\]#~]/;
-    const COMMAND_PREFIX = /^(ls|cd|mkdir|rm|cp|mv|cat|echo|grep|find|git|npm|pnpm|yarn|node|python|python3|pip|pip3|apt|pkg|curl|wget|ssh|scp|docker|make|cargo|go|java|ruby|perl|bash|sh|zsh|fish|export|source|alias|kill|ps|top|htop|df|du|pwd|which|man|chmod|chown|sudo|su|env|set|unset|clear|reset)\s/i;
-    if (SHELL_META.test(text) || COMMAND_PREFIX.test(text)) {
-      sendToTerminal(text + '\n');
-    } else {
-      sendToTerminal(text + '\n');
+  // bug #44: Voice input routing.
+  //
+  // Previously the STT transcript was written straight into the PTY, which
+  // meant Japanese utterances like "ハローワールドを一応出して" were handed
+  // to bash as a literal command and immediately produced "command not
+  // found". Voice input is overwhelmingly used to talk to the AI, not to
+  // type shell commands character-by-character, so we route every voice
+  // transcript through the AI pane dispatch instead of the terminal.
+  //
+  // The rare case of dictating a real shell command (e.g. "ls -la") is
+  // still recoverable: the AI pane will echo it back or the user can paste
+  // it via the key bar. This is the "always send to AI" path the spec calls
+  // out as the minimum viable implementation.
+  const slots = useMultiPaneStore((s) => s.slots);
+  const firstAiPaneId = useMemo(() => {
+    for (const slot of slots) {
+      if (slot && slot.tab === 'ai') return slot.id;
     }
-  }, [sendToTerminal]);
+    return '';
+  }, [slots]);
+  const { dispatch: aiDispatch } = useAIPaneDispatch(firstAiPaneId);
+
+  const handleVoiceInput = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (firstAiPaneId) {
+      void aiDispatch(trimmed);
+      return;
+    }
+    // No AI pane open — fall back to a visible warning rather than
+    // silently dumping the transcript into bash.
+    Alert.alert(
+      'No AI pane open',
+      'Voice input is routed to the AI pane. Open an AI pane to use it.',
+    );
+  }, [aiDispatch, firstAiPaneId]);
 
   // Send raw key code to terminal
   const sendKey = useCallback((keyCode: string) => {

@@ -10,6 +10,7 @@ import {
   Modal,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme-engine';
 import { fonts as F } from '@/theme.config';
 import { useProfileStore, SSHProfile } from '@/store/profile-store';
@@ -27,6 +28,9 @@ type EditModalProps = {
 function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
   const theme = useTheme();
   const c = theme.colors;
+  // Match ModalHeader — keep the BACK affordance clear of the Android
+  // status bar on tall/foldable devices (bug #33).
+  const insets = useSafeAreaInsets();
 
   const [name, setName] = useState(initial.name ?? '');
   const [host, setHost] = useState(initial.host ?? '');
@@ -73,7 +77,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
           {/* Leading BACK affordance for users whose device doesn't have
               an edge-swipe gesture enabled. Matches the ModalHeader used
               by the MCP / llama.cpp wrappers — see issue #11. */}
-          <View style={styles.modalHeaderRow}>
+          <View style={[styles.modalHeaderRow, { paddingTop: insets.top }]}>
             <Pressable
               onPress={onClose}
               hitSlop={10}

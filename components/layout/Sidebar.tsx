@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useGitStatusStore } from '@/store/git-status-store';
-import { usePortsStore, parseSsOutput, portLabel } from '@/store/ports-store';
+import { usePortsStore, parseProcNet, portLabel } from '@/store/ports-store';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated'
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/lib/theme-engine';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { normalizePath } from '@/lib/normalize-path';
 import { useAgentStore } from '@/store/agent-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { deleteAgent } from '@/lib/agent-manager';
@@ -66,22 +67,29 @@ export function Sidebar() {
   const setLeafTab = useMultiPaneStore((s) => s.setLeafTab);
   const openUrl = useBrowserStore((s) => s.openUrl);
 
-  // Poll active localhost listeners every 20s. Single-writer pattern
+  // Poll active localhost listeners every 15s. Single-writer pattern
   // (Sidebar owns the interval, usePortsStore is the one state source)
   // so the list stays stable across renders without duplicate work.
-  // `ss -tlnp` is the modern iproute2 replacement for netstat and is
-  // present in the bundled toolbox.
+  //
+  // Plan B does not bundle ss / netstat / lsof, so we read
+  // /proc/net/tcp and /proc/net/tcp6 directly and decode the hex
+  // columns in JS. Those files are world-readable on Android — the
+  // kernel filters rows by uid so we only see sockets owned by this
+  // app, which is exactly what the Sidebar needs.
   const portEntries = usePortsStore((s) => s.entries);
   useEffect(() => {
     const setEntries = usePortsStore.getState().setEntries;
     let cancelled = false;
     const refresh = async () => {
-      const r = await execCommand('ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null', 5_000);
+      const [v4, v6] = await Promise.all([
+        execCommand('cat /proc/net/tcp 2>/dev/null', 3_000),
+        execCommand('cat /proc/net/tcp6 2>/dev/null', 3_000),
+      ]);
       if (cancelled) return;
-      setEntries(parseSsOutput(r.stdout || ''));
+      setEntries(parseProcNet(v4.stdout || '', v6.stdout || ''));
     };
     refresh();
-    const iv = setInterval(refresh, 20_000);
+    const iv = setInterval(refresh, 15_000);
     return () => { cancelled = true; clearInterval(iv); };
   }, []);
 
@@ -98,8 +106,10 @@ export function Sidebar() {
     }
     let cancelled = false;
     const refresh = async () => {
+      // bug #43: normalize `~/` so the single-quoted cd target resolves.
+      const repo = normalizePath(activeRepoPath);
       const r = await execCommand(
-        `cd '${activeRepoPath.replace(/'/g, "'\\''")}' && git status --porcelain 2>/dev/null | wc -l`,
+        `cd '${repo.replace(/'/g, "'\\''")}' && git status --porcelain 2>/dev/null | wc -l`,
         5_000,
       );
       if (cancelled) return;
@@ -354,7 +364,7 @@ export function Sidebar() {
           ))}
         </SidebarSection>
 
-        {/* PORTS — live `ss -tlnp` scan every 20s (see useEffect above) */}
+        {/* PORTS — live /proc/net/tcp{,6} scan every 15s (see useEffect above) */}
         <SidebarSection
           title="PORTS"
           icon="lan"
@@ -377,7 +387,7 @@ export function Sidebar() {
                   onPress={() => openUrl(`http://localhost:${entry.port}`)}
                 >
                   <View style={[styles.portDot, { backgroundColor: dotColor }, neonDotGlow]} />
-                  <Text style={styles.portLabel}>{`:${entry.port}`}</Text>
+                  <Text style={styles.portLabel}>{`${entry.address}:${entry.port}`}</Text>
                   {label ? <Text style={styles.portName}>{label}</Text> : null}
                   <View style={{ flex: 1 }} />
                   <MaterialIcons name="open-in-new" size={I.externalLink} color={C.text2} />

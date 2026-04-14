@@ -4,6 +4,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { execCommand } from '@/hooks/use-native-exec';
 import { logInfo, logError } from '@/lib/debug-logger';
+import { normalizePath } from '@/lib/normalize-path';
 
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
 export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles';
@@ -41,25 +42,37 @@ export const useSidebarStore = create<SidebarState>()(
       openSections: { ...s.openSections, [section]: !s.openSections[section] },
     })),
 
-  setActiveRepo: (path) => set({ activeRepoPath: path }),
+  // bug #43: normalize `~/` before storing — Plan B bash doesn't expand
+  // tilde, and single-quoted paths in shell commands would break otherwise.
+  setActiveRepo: (path) => set({ activeRepoPath: normalizePath(path) }),
 
   addRepo: (path) =>
-    set((s) => ({
-      repoPaths: s.repoPaths.includes(path) ? s.repoPaths : [...s.repoPaths, path],
-    })),
+    set((s) => {
+      const np = normalizePath(path);
+      return {
+        repoPaths: s.repoPaths.includes(np) ? s.repoPaths : [...s.repoPaths, np],
+      };
+    }),
 
   removeRepo: (path) =>
-    set((s) => ({
-      repoPaths: s.repoPaths.filter((p) => p !== path),
-      activeRepoPath: s.activeRepoPath === path ? null : s.activeRepoPath,
-    })),
+    set((s) => {
+      const np = normalizePath(path);
+      return {
+        repoPaths: s.repoPaths.filter((p) => p !== np),
+        activeRepoPath: s.activeRepoPath === np ? null : s.activeRepoPath,
+      };
+    }),
 
   loadRepos: async () => {
     try {
       const result = await execCommand(
         'find ~/ -maxdepth 2 -name .git -type d 2>/dev/null | head -20 | sed "s/\\.git$//"'
       );
-      const paths = result.stdout.trim().split('\n').filter(Boolean).map((p: string) => p.replace(/\/$/, ''));
+      const paths = result.stdout
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((p: string) => normalizePath(p.replace(/\/$/, '')));
       logInfo('Sidebar', 'Found ' + paths.length + ' repos');
       if (paths.length > 0) {
         set({ repoPaths: paths, activeRepoPath: paths[0] });

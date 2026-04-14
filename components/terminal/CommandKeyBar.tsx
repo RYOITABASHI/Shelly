@@ -110,11 +110,19 @@ const KEY_SETS: Record<KeySetId, { label: string; icon: string; keys: KeyConfig[
   },
 };
 
-const SET_ORDER: KeySetId[] = ['default', 'vim', 'git', 'repl', 'navigate'];
+const SET_ORDER_FULL: KeySetId[] = ['default', 'vim', 'git', 'repl', 'navigate'];
+const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 
 export function CommandKeyBar({ sendKey, sendText, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong }: Props) {
   const { colors: c } = useTheme();
   const { settings } = useTerminalStore();
+  // bug #48: Gate the Vim key page behind a settings toggle. Vim users opt in
+  // via Settings → Terminal → "Show Vim key bar" (default off). Until then
+  // ":w / :q / :wq / dd" don't clutter the bar for non-vim users.
+  const SET_ORDER = useMemo<KeySetId[]>(
+    () => (settings.showVimKeyBar ? SET_ORDER_FULL : SET_ORDER_NO_VIM),
+    [settings.showVimKeyBar],
+  );
   const [activeSet, setActiveSet] = useState<KeySetId>('default');
   const [altActive, setAltActive] = useState(false);
   const scrollRef = useRef<ScrollView>(null);

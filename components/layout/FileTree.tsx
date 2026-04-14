@@ -6,6 +6,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { execCommand } from '@/hooks/use-native-exec';
 import { openFile } from '@/lib/open-file';
+import { normalizePath } from '@/lib/normalize-path';
 import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
 
 type FileEntry = {
@@ -69,7 +70,9 @@ function sq(p: string): string {
 }
 
 export function FileTree() {
-  const repoPath = useSidebarStore((s) => s.activeRepoPath);
+  // bug #43: defensively normalize any stale `~/` from a pre-fix persisted store.
+  const rawRepoPath = useSidebarStore((s) => s.activeRepoPath);
+  const repoPath = rawRepoPath ? normalizePath(rawRepoPath) : rawRepoPath;
   const [cwd, setCwd] = useState(repoPath ?? '');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [search, setSearch] = useState('');

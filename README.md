@@ -536,7 +536,9 @@ Both were developed entirely on a Samsung Galaxy Z Fold6, without ever touching 
 ## Known Limitations
 
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline, but you must start the llama.cpp server yourself today.
-- **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, and sqlite3. For tools outside this set, Termux can be used alongside Shelly.
+- **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, `ssh`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
+- **`watch` is broken in the current release** — the bundled `watch` implementation hard-codes `/bin/date` and fails with `unable to open file "/bin/date"` when invoking subcommands. The header refreshes but the command never runs. Workaround: `while true; do clear; <cmd>; sleep 1; done`. Tracked as bug #34.
+- **`busybox` is not bundled** — `busybox httpd`, `busybox nc`, and other applets return `command not found`. Use the standalone equivalents where available (`curl`, `nc` from the bundle, `python3 -m http.server`), or bundle `busybox-static` yourself. Tracked as bug #35.
 - **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once; a cost warning is shown before execution.
 - **Multi-hunk Accept against a partially-edited file** — per-hunk Accept uses fuzzy re-anchoring so successive hunks land, but if the AI's diff references context that has already been edited to something else, the hunk will be rejected with a toast asking you to regenerate.
 - **Silkscreen is not monospaced** — `ls -la` columns may drift slightly; switch to the `Mono` font preset from the Command Palette if you need strict columns.

@@ -408,6 +408,14 @@ export type AppSettings = {
   terminalTheme: string;
   /** Enable OpenGL ES 3.0 GPU hardware acceleration for terminal rendering */
   gpuRendering?: boolean;
+  /**
+   * bug #48: Show the Vim-specific key set in the terminal CommandKeyBar.
+   * When false (default), the Vim page is hidden so `Esc / :w / :q / :wq / dd`
+   * don't clutter the key bar for users who never open vim. Users who live
+   * in vim can flip this on from Settings. v0.2.0 will replace this with
+   * PTY-state auto-detection.
+   */
+  showVimKeyBar?: boolean;
   /** UI font family: 'silkscreen' (mock default, readable pixel),
    *  'pixel' (PressStart2P 8×8 grid), or 'mono' (system monospace) */
   uiFont?: 'shelly' | 'silkscreen' | 'pixel' | 'mono' | 'dracula' | 'nord' | 'gruvbox' | 'tokyo-night';

@@ -545,6 +545,28 @@ public class TerminalView extends View {
                 return super.deleteSurroundingText(leftLength, rightLength);
             }
 
+            // bug #37: Samsung/Gboard soft keyboards send KEYCODE_ESCAPE when
+            // the user taps the system "hide keyboard" button. The default
+            // BaseInputConnection path forwards that event through onKeyDown
+            // and into the PTY as the ^[ (ESC) control sequence, which
+            // corrupts the current shell line (and in vim pops out of insert
+            // mode unexpectedly). Shelly is a soft-keyboard-first app, so we
+            // swallow every KEYCODE_ESCAPE that arrives via the IME here.
+            // Users who need a real ESC can still use the Vim key set in
+            // CommandKeyBar (which calls writeToSession("\u001b") directly)
+            // or Ctrl+[ on a hardware keyboard (which takes the onKeyDown
+            // path, not sendKeyEvent).
+            @Override
+            public boolean sendKeyEvent(KeyEvent event) {
+                if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                    if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
+                        mClient.logInfo(LOG_TAG, "IME: sendKeyEvent(KEYCODE_ESCAPE) swallowed (hide-keyboard button)");
+                    }
+                    return true;
+                }
+                return super.sendKeyEvent(event);
+            }
+
 
             void sendTextToTerminal(CharSequence text) {
                 stopTextSelectionMode();

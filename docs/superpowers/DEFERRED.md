@@ -108,6 +108,22 @@
 #### execCommand タイムアウトの上限キャップ + `__SHELLY_TIMEOUT__` マーカー
 - **Why not now**: 小さい UX 改善、重要度低
 
+#### bug #34 — `watch` コマンドが `/bin/date` を決め打ちで呼ぶ
+- **症状**: Plan B 環境で `watch -n1 date` が `error: unable to open file "/bin/date"` を出す。ヘッダーは更新されるがサブコマンド実行が壊れる
+- **原因仮説**: 同梱 `watch` バイナリ (出自不明、`LibExtractor.LIBS` に明示エントリ無し → おそらく別バンドル or 別ツール由来) が `/bin/sh -c` / `/bin/date` を hard-code。Plan B の rootfs には `/bin/*` が存在しない
+- **対応 (v0.1.0)**: Known issue として README.md (Known Limitations) に明記済。ワークアラウンド: `while true; do clear; <cmd>; sleep 1; done`
+- **本修正候補**: (a) `/data/.../termux-libs/bin/` に shim スクリプトを置いて PATH 先頭に追加 (b) procps-ng watch を $PREFIX 対応で再ビルドして jniLibs 同梱 (c) toybox watch applet (同じく hard-code 問題あるので要 patch)
+- **Why not now**: shim 方式は簡単だが Android 10+ の shebang 実行制限 (SELinux) にかかる可能性あり、LD_PRELOAD exec wrapper 経由の挙動検証が必要。v0.1.1 以降
+- **Issue 登録条件**: 実ユーザーから複数報告が来たら GitHub Issue 化
+
+#### bug #35 — `busybox` コマンド未同梱
+- **症状**: `busybox httpd ...` / `busybox nc ...` 等が `libbash.so: busybox: command not found`
+- **現状**: `LibExtractor.LIBS` に busybox エントリなし、`jniLibs/arm64-v8a/` にも `libbusybox.so` 無し → 完全未同梱が確定
+- **対応 (v0.1.0)**: Known issue として README.md に明記済。代替: 同梱済の `curl`, `nc`, `python3 -m http.server` 等を使う / Termux 併用 / PR 歓迎
+- **本修正候補**: busybox-static (arm64-v8a, ~1 MiB) を `jniLibs/arm64-v8a/libbusybox.so` として同梱し `LibExtractor.LIBS` に `"busybox"` エントリ追加。applet シンボリックリンクは初回起動時に `LibExtractor` で展開
+- **Why not now**: ターミナルの主要ユースケース (AI CLI + git + node + python) には不要。バイナリ追加は APK サイズ増 (+1-2 MiB × ABI) とビルド時間の問題
+- **Issue 登録条件**: busybox 依存ワークフローの具体的要望が 3 件以上
+
 ---
 
 ## P3 — 長期ロードマップ / 検討中

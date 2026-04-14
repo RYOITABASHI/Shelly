@@ -10,6 +10,7 @@
 import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors as C, fonts as F } from '@/theme.config';
 
 type Props = {
@@ -20,9 +21,12 @@ type Props = {
 };
 
 export function ModalHeader({ title, onClose, subtitle }: Props) {
+  // Respect Android status bar / notch — otherwise BACK/× collide with
+  // the system clock and battery icons on devices like the Z Fold6 (bug #33).
+  const insets = useSafeAreaInsets();
   return (
     <View>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Pressable
           onPress={onClose}
           hitSlop={10}

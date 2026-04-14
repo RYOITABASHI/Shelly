@@ -1,18 +1,20 @@
 // store/ports-store.ts
 //
-// Active localhost ports poller. Runs a `ss -tlnp` scan every 20s and
-// exposes the result as a Zustand store so the Sidebar Ports section
-// can render one row per listener and tap-to-open a browser pane.
-//
-// We keep a single writer (Sidebar kicks off the poller once, same
-// pattern as git-status-store) so the badge/list stays consistent
-// without multiple components racing each other.
+// Active localhost ports poller. On Plan B (no Termux, no iproute2) the
+// `ss` / `netstat` / `lsof` binaries are not bundled, so we read
+// `/proc/net/tcp` and `/proc/net/tcp6` directly and decode the hex
+// `local_address` / `st` columns. The Sidebar is the single writer —
+// it owns the 15 s interval and publishes into this store, same
+// pattern as git-status-store, so the list stays stable across
+// renders without multiple components racing each other.
 
 import { create } from 'zustand';
 
 export type PortEntry = {
   port: number;
-  /** Process label extracted from ss output, or '' if unknown. */
+  /** '127.0.0.1' | '0.0.0.0' | '::1' | '::' — wildcard/loopback only. */
+  address: string;
+  /** Process label if we could resolve it; '' otherwise. */
   name: string;
 };
 
@@ -26,64 +28,134 @@ export const usePortsStore = create<PortsState>((set) => ({
   setEntries: (entries) => set({ entries }),
 }));
 
-// ── Parser ──────────────────────────────────────────────────────────
-// Parses `ss -tlnp` output. Example lines (header + data):
+// ── /proc/net/tcp parser ────────────────────────────────────────────
+// Format (one line per socket, whitespace separated):
 //
-//   State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
-//   LISTEN 0      511          0.0.0.0:3000        0.0.0.0:*    users:(("node",pid=1234,fd=20))
-//   LISTEN 0      4096       127.0.0.1:8081        0.0.0.0:*    users:(("expo",pid=1235,fd=20))
+//   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid ...
+//    0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 ...
 //
-// We only care about IPv4/IPv6 LISTEN rows with a numeric port and,
-// if possible, the inner process name from users:(("<name>"...)).
-// Duplicate ports are collapsed because 0.0.0.0 and :: often appear
-// for the same listener.
-export function parseSsOutput(raw: string): PortEntry[] {
-  if (!raw) return [];
-  const byPort = new Map<number, string>();
+// `local_address` for IPv4 is 8 hex chars (little-endian IP) + ':' + 4
+// hex chars (big-endian port). For IPv6 the IP portion is 32 hex chars
+// (four 32-bit little-endian words). `st == 0A` means LISTEN.
+//
+// We keep only wildcard / loopback binds because anything else is a
+// remote interface the user can't usefully open from the pane.
 
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith('LISTEN')) continue;
+const STATE_LISTEN = '0A';
 
-    // Local address is the 4th whitespace-separated column. Port is
-    // after the last ':' in that column (handles IPv6 like [::]:3000).
-    const cols = trimmed.split(/\s+/);
-    if (cols.length < 4) continue;
-    const local = cols[3];
-    const colonIdx = local.lastIndexOf(':');
-    if (colonIdx === -1) continue;
-    const portStr = local.slice(colonIdx + 1);
-    const port = parseInt(portStr, 10);
-    if (!Number.isFinite(port) || port <= 0) continue;
+function decodePort(hex: string): number {
+  const n = parseInt(hex, 16);
+  return Number.isFinite(n) ? n : -1;
+}
 
-    // Only surface loopback / wildcard listeners. The user won't see
-    // anything useful by opening a remote bind.
-    const addr = local.slice(0, colonIdx);
-    if (addr !== '0.0.0.0' && addr !== '*' && addr !== '[::]' && addr !== '127.0.0.1' && addr !== '[::1]') {
-      continue;
-    }
+function decodeIPv4(hex: string): string {
+  // 8 hex chars, little-endian byte order.
+  if (hex.length !== 8) return '';
+  const b0 = parseInt(hex.slice(6, 8), 16);
+  const b1 = parseInt(hex.slice(4, 6), 16);
+  const b2 = parseInt(hex.slice(2, 4), 16);
+  const b3 = parseInt(hex.slice(0, 2), 16);
+  return `${b0}.${b1}.${b2}.${b3}`;
+}
 
-    // Process name from users:(("<name>",pid=...)) — optional.
-    let name = '';
-    const proc = trimmed.match(/users:\(\("([^"]+)"/);
-    if (proc) name = proc[1];
-
-    const existing = byPort.get(port);
-    if (!existing || (!existing && name)) {
-      byPort.set(port, name);
-    } else if (existing === '' && name) {
-      byPort.set(port, name);
+function decodeIPv6(hex: string): string {
+  // 32 hex chars: four 32-bit little-endian words. We only need to
+  // recognise the all-zero wildcard and the ::1 loopback, so the
+  // rendering is deliberately minimal.
+  if (hex.length !== 32) return '';
+  // Reverse bytes inside each 4-byte word.
+  const bytes: number[] = [];
+  for (let w = 0; w < 4; w++) {
+    const word = hex.slice(w * 8, w * 8 + 8);
+    for (let i = 3; i >= 0; i--) {
+      bytes.push(parseInt(word.slice(i * 2, i * 2 + 2), 16));
     }
   }
+  const allZero = bytes.every((b) => b === 0);
+  if (allZero) return '::';
+  // IPv4-mapped ::ffff:a.b.c.d
+  const isV4Mapped =
+    bytes.slice(0, 10).every((b) => b === 0) &&
+    bytes[10] === 0xff &&
+    bytes[11] === 0xff;
+  if (isV4Mapped) return `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+  // ::1
+  const isLoopback =
+    bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1;
+  if (isLoopback) return '::1';
+  // Full expansion, good enough for debug listings.
+  const parts: string[] = [];
+  for (let i = 0; i < 16; i += 2) {
+    parts.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+  }
+  return parts.join(':');
+}
 
-  return [...byPort.entries()]
-    .map(([port, name]) => ({ port, name }))
-    .sort((a, b) => a.port - b.port);
+function isWildcardOrLoopback(addr: string): boolean {
+  return (
+    addr === '0.0.0.0' ||
+    addr === '127.0.0.1' ||
+    addr.startsWith('127.') ||
+    addr === '::' ||
+    addr === '::1'
+  );
+}
+
+type ParseOpts = { family: 'v4' | 'v6' };
+
+function parseProcNetTcp(raw: string, opts: ParseOpts): PortEntry[] {
+  if (!raw) return [];
+  const out: PortEntry[] = [];
+  const lines = raw.split('\n');
+  // First line is the header ("  sl  local_address ..."), skip it.
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(/\s+/);
+    // sl local rem st ... — need at least 4 cols.
+    if (cols.length < 4) continue;
+    const local = cols[1];
+    const state = cols[3];
+    if (state !== STATE_LISTEN) continue;
+    const colon = local.indexOf(':');
+    if (colon === -1) continue;
+    const ipHex = local.slice(0, colon);
+    const portHex = local.slice(colon + 1);
+    const port = decodePort(portHex);
+    if (port <= 0) continue;
+    const address = opts.family === 'v4' ? decodeIPv4(ipHex) : decodeIPv6(ipHex);
+    if (!address) continue;
+    if (!isWildcardOrLoopback(address)) continue;
+    out.push({ port, address, name: '' });
+  }
+  return out;
+}
+
+/**
+ * Parse both /proc/net/tcp and /proc/net/tcp6, merge, dedupe by port
+ * (preferring wildcard over loopback when both exist — same listener),
+ * and sort ascending.
+ */
+export function parseProcNet(rawV4: string, rawV6: string): PortEntry[] {
+  const all = [...parseProcNetTcp(rawV4, { family: 'v4' }), ...parseProcNetTcp(rawV6, { family: 'v6' })];
+  const byPort = new Map<number, PortEntry>();
+  for (const e of all) {
+    const prev = byPort.get(e.port);
+    if (!prev) {
+      byPort.set(e.port, e);
+      continue;
+    }
+    // Prefer 0.0.0.0 / :: (wildcard) over loopback for display clarity.
+    const prevWild = prev.address === '0.0.0.0' || prev.address === '::';
+    const curWild = e.address === '0.0.0.0' || e.address === '::';
+    if (!prevWild && curWild) byPort.set(e.port, e);
+  }
+  return [...byPort.values()].sort((a, b) => a.port - b.port);
 }
 
 // ── Well-known port → friendly label ────────────────────────────────
-// Falls back to the process name from ss output, then to the numeric
-// port if neither is known.
+// Falls back to the process name (if we ever resolve it) then to the
+// numeric port.
 const WELL_KNOWN: Record<number, string> = {
   80:    'HTTP',
   443:   'HTTPS',
@@ -100,6 +172,8 @@ const WELL_KNOWN: Record<number, string> = {
   8081:  'EXPO',
   8787:  'WRANGLER',
   8888:  'JUPYTER',
+  9999:  'NETCAT',
+  11434: 'OLLAMA',
   19000: 'EXPO',
   19001: 'EXPO',
   19002: 'EXPO',
