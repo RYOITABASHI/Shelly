@@ -103,16 +103,59 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
     }
 
     // === InputConnection (IME support) ===
-
+    //
+    // We want a "raw PTY" input mode — every keystroke should land in the
+    // terminal as-is, not sit in an IME composition buffer that only
+    // flushes on a finishComposingText() event. Two consequences of the
+    // old path (inputType = TYPE_TEXT_VARIATION_VISIBLE_PASSWORD +
+    // default BaseInputConnection compose handling):
+    //
+    //   1. Symbols, URLs, paths — anything the IME *doesn't* send
+    //      through its candidate bar — arrived instantly via commitText.
+    //      But letters and kana were held by the IME until the user
+    //      picked a candidate, so they were invisible on the terminal
+    //      until confirmation. Mixed visibility = confusing.
+    //   2. Some IMEs (Samsung Keyboard's predictive mode, swipe input,
+    //      any keyboard that calls setComposingText instead of
+    //      commitText) ended up swallowing the first character on
+    //      paste/auto-correct because commitText was never called for
+    //      the composing run.
+    //
+    // Fix: declare the View as a TYPE_NULL text editor. TYPE_NULL is the
+    // Android-blessed way for terminal emulators to say "I am a dumb
+    // character sink — don't compose, don't autocorrect, don't suggest."
+    // IMEs that respect the flag (Gboard, Samsung Keyboard, Nacre)
+    // will fall back to direct KeyEvent delivery, which is exactly the
+    // behavior this app wants.
+    //
+    // We still override setComposingText / finishComposingText as a
+    // safety net for keyboards that call them anyway — commit the text
+    // immediately instead of buffering.
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        outAttrs.inputType = InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN
+        outAttrs.inputType = InputType.TYPE_NULL
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+            EditorInfo.IME_ACTION_NONE
 
         return object : BaseInputConnection(this, true) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-                val session = shellySession?.terminalSession ?: return false
-                val bytes = text.toString().toByteArray(Charsets.UTF_8)
-                session.write(bytes, 0, bytes.size)
+                writeToSession(text)
+                return true
+            }
+
+            // If the IME still tries to compose (some keyboards ignore
+            // TYPE_NULL), forward the in-progress text as if it were
+            // already committed. Each keystroke becomes visible on the
+            // terminal immediately — matching the symbol path.
+            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                writeToSession(text)
+                return true
+            }
+
+            override fun finishComposingText(): Boolean {
+                // Nothing to do — we already flushed each setComposingText
+                // call. Returning true tells the IME the composition is
+                // accepted.
                 return true
             }
 
@@ -132,6 +175,13 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
                     inputHandler?.onKeyUp(event.keyCode, event) ?: return false
                 }
                 return true
+            }
+
+            private fun writeToSession(text: CharSequence) {
+                if (text.isEmpty()) return
+                val session = shellySession?.terminalSession ?: return
+                val bytes = text.toString().toByteArray(Charsets.UTF_8)
+                session.write(bytes, 0, bytes.size)
             }
         }
     }

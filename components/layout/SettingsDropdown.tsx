@@ -261,7 +261,12 @@ function FontFamilyRow() {
 function ThemeRow() {
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
+  // Include the default (shelly) preset as the leftmost tile so users have
+  // an obvious way to revert after experimenting with Dracula / Nord / etc.
+  // 'shelly' is shared with FontFamilyRow — picking it here resets both the
+  // palette and the font to Shelly defaults in one tap.
   const options: Array<{ value: UiFontId; label: string }> = [
+    { value: 'shelly',      label: 'Default' },
     { value: 'dracula',     label: 'Dracula' },
     { value: 'nord',        label: 'Nord' },
     { value: 'gruvbox',     label: 'Gruvbox' },

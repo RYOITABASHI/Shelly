@@ -156,6 +156,8 @@ export function CommandPalette() {
         onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'mono' }); close(); } },
 
       // Theme presets — color swaps that keep Silkscreen as the font
+      { id: 'theme-default', label: 'Theme: Default (Shelly)', hint: 'reset to teal-on-black', icon: 'palette', category: 'action',
+        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'shelly' }); close(); } },
       { id: 'theme-dracula', label: 'Theme: Dracula', hint: 'purple accent', icon: 'palette', category: 'action',
         onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'dracula' }); close(); } },
       { id: 'theme-nord', label: 'Theme: Nord', hint: 'arctic blue', icon: 'palette', category: 'action',

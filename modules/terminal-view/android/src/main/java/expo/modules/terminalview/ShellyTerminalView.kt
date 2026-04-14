@@ -436,7 +436,14 @@ class ShellyTerminalView(
     }
 
     override fun shouldBackButtonBeMappedToEscape(): Boolean = true
-    override fun shouldEnforceCharBasedInput(): Boolean = false
+    // PC-terminal mode: force char-based input so the IME does not start a
+    // composing buffer. Every keystroke reaches the PTY immediately, the
+    // way a desktop terminal emulator behaves. The TerminalView's
+    // onCreateInputConnection branches on this to pick TYPE_NULL /
+    // TYPE_TEXT_VARIATION_VISIBLE_PASSWORD + TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+    // which keeps predictive text, autocorrect, and the candidate-bar
+    // compose path out of the terminal input flow.
+    override fun shouldEnforceCharBasedInput(): Boolean = true
     override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
     override fun isTerminalViewSelected(): Boolean = terminalView.hasFocus()
 
@@ -456,7 +463,16 @@ class ShellyTerminalView(
 
     override fun readControlKey(): Boolean = inputHandler.ctrlDown
     override fun readAltKey(): Boolean = inputHandler.altDown
-    override fun readShiftKey(): Boolean = inputHandler.shiftDown
+    // PC-terminal mode: never force-uppercase input through readShiftKey.
+    // The previous implementation returned inputHandler.shiftDown, which
+    // could latch on and cause every character to be uppercased inside
+    // TerminalView.sendTextToTerminal (line ~495, `codePoint =
+    // Character.toUpperCase(codePoint)`). Hardware Shift still works —
+    // KeyEvent.isShiftPressed() is read directly at line ~923 of
+    // TerminalView and carries the real per-event meta state. IMEs are
+    // responsible for sending already-uppercased characters via commitText
+    // when the user hits the shifted variant.
+    override fun readShiftKey(): Boolean = false
     override fun readFnKey(): Boolean = inputHandler.fnDown
 
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean =
