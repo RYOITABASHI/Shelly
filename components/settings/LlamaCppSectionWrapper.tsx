@@ -151,20 +151,21 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
         }
       }
     }
-    setInstalledModelIds(found);
 
     // Consult the running server for its active model. Try the HTTP
     // endpoint first (fast, authoritative); fall back to parsing `ps`
-    // output if the endpoint is unreachable.
+    // output if the endpoint is unreachable. Whichever model the server
+    // is actively serving MUST count as installed — otherwise the UI
+    // would show a Download button for a file that demonstrably exists
+    // on disk (the bug spotted on the first device test).
+    let resolvedActiveId: string | null = null;
     const serverModel = await fetchActiveServerModelId(localLlmUrl);
     if (serverModel) {
       setActiveServerLabel(serverModel);
-      // Try to map the server's model id back to a catalog entry so the
-      // UI can highlight the correct row.
       for (const model of MODEL_CATALOG) {
         if (basenameMatchesCatalog(serverModel, model.filename)) {
-          setActiveModelId(model.id);
-          return;
+          resolvedActiveId = model.id;
+          break;
         }
       }
     } else {
@@ -174,13 +175,23 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
         setActiveServerLabel(base);
         for (const model of MODEL_CATALOG) {
           if (basenameMatchesCatalog(base, model.filename)) {
-            setActiveModelId(model.id);
-            return;
+            resolvedActiveId = model.id;
+            break;
           }
         }
       } else {
         setActiveServerLabel(null);
       }
+    }
+
+    if (resolvedActiveId) {
+      found.add(resolvedActiveId);
+    }
+    setInstalledModelIds(found);
+
+    if (resolvedActiveId) {
+      setActiveModelId(resolvedActiveId);
+      return;
     }
 
     // No server hint — fall back to the previous heuristic of picking
