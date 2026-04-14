@@ -230,18 +230,26 @@ async function getTerminalContextForPrompt(prompt: string, isWide: boolean): Pro
   if (!shouldInject) return '';
 
   // Primary: snapshot from native TerminalEmulator (captures pre-split output)
+  // Cap the pulled history aggressively: a user running `while true; do
+  // date; sleep 1; done` can fill 100 rows in a couple of minutes, and the
+  // chat history (system + assistant messages) already takes a large
+  // chunk of the per-minute token budget on providers like Cerebras.
+  // Injecting 100 rows of noisy repeats tripped a 1-request rate limit
+  // during the 2026-04-14 device smoke test (bug #41).
   const activeSessionId = useTerminalStore.getState().activeSessionId;
   let termOutput = '';
   if (activeSessionId) {
     try {
-      termOutput = await TerminalEmulator.getTranscriptText(activeSessionId, 100);
+      termOutput = await TerminalEmulator.getTranscriptText(activeSessionId, 40);
     } catch {}
   }
   // Fallback: execution-log buffer (for sessions without native emulator)
   if (!termOutput) {
-    termOutput = useExecutionLogStore.getState().getRecentOutput(50, 5, activeSessionId);
+    termOutput = useExecutionLogStore.getState().getRecentOutput(30, 5, activeSessionId);
   }
   if (!termOutput) return '';
+
+  termOutput = truncateTerminalContext(termOutput);
 
   const suffix = TERMINAL_CONTEXT_SUFFIXES[intent ?? 'reference'];
 
@@ -256,7 +264,31 @@ async function getTerminalContextForPrompt(prompt: string, isWide: boolean): Pro
     }
   } catch {}
 
-  return `\n\n--- Terminal Output (Session: ${activeSessionId}, last 100 lines) ---\n${termOutput}${fileContext}${suffix}`;
+  return `\n\n--- Terminal Output (Session: ${activeSessionId}, tail) ---\n${termOutput}${fileContext}${suffix}`;
+}
+
+/**
+ * Hard cap on injected terminal history so a noisy loop can't push a
+ * single AI request past the provider's per-minute token budget. We
+ * prefer to keep the MOST RECENT content (right side of the buffer),
+ * which is where edit/reference intents expect the cursor to be.
+ *
+ * Heuristic budget: ~3 chars per token, target ~1500 tokens of context
+ * = 4500 chars. Well below Cerebras 60k/min but enough to capture a
+ * typical command + output pair. Per-line truncation avoids a single
+ * 20k-char runaway line dominating the whole budget.
+ */
+function truncateTerminalContext(raw: string): string {
+  const MAX_CHARS = 4500;
+  const MAX_LINE_CHARS = 400;
+  const lines = raw.split('\n').map((line) =>
+    line.length > MAX_LINE_CHARS ? line.slice(0, MAX_LINE_CHARS) + '…' : line,
+  );
+  let out = lines.join('\n');
+  if (out.length > MAX_CHARS) {
+    out = '…\n' + out.slice(out.length - MAX_CHARS);
+  }
+  return out;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
