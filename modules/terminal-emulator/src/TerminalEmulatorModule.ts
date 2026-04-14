@@ -28,6 +28,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   cancelAgent(agentId: string): Promise<void>;
   execCommand(command: string, timeoutMs?: number): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   readProcNetFile(path: string): Promise<string>;
+  readDir(path: string): Promise<string>;
 }
 
 export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator');

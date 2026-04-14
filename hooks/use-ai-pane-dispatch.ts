@@ -271,9 +271,15 @@ export function useAIPaneDispatch(paneId: string) {
 
         if (agent === 'local') {
           // ── Local LLM streaming ──
-          if (!settings.localLlmEnabled || !settings.localLlmUrl) {
+          // Plan B: llama.cpp Setup 画面で Start すると localLlmUrl が
+          // セットされる (LlamaCppSectionWrapper)。localLlmEnabled トグルは
+          // Plan B 移行後は旧チャット画面専用で、Setup フローからは更新
+          // されない (bug #68)。従ってここでは URL が設定されているか
+          // だけをゲートに使い、実サーバーが落ちていれば streamLocalLLM
+          // が connection エラーを返すので UX 的にはそれで十分。
+          if (!settings.localLlmUrl) {
             throw new Error(
-              'Local LLM is not enabled. Enable it in Settings → Local LLM.',
+              'Local LLM server is not configured. Open Settings → Local LLM and start llama.cpp.',
             );
           }
 

@@ -8,6 +8,7 @@
  * JNI class: expo.modules.terminalemulator.ShellyJNI
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -372,6 +374,98 @@ Java_expo_modules_terminalemulator_ShellyJNI_readProcNetFile(
     fclose(f);
 
     LOGI("readProcNetFile: %s -> %zu bytes", path, len);
+
+    jstring result = (*env)->NewStringUTF(env, buf);
+    free(buf);
+    (*env)->ReleaseStringUTFChars(env, pathJ, path);
+    return result;
+}
+
+/*
+ * readDir(path) — list a directory directly via opendir/readdir/lstat in
+ * the app process. Bug #70: shelling out to `ls` via bash+LD_PRELOAD/linker64
+ * fails with exit=0 stdout=0chars on some devices (same root cause as bug
+ * #36), breaking the Sidebar FILE TREE / FilesTab preview. Going through
+ * plain libc syscalls from the app uid sidesteps PATH / SELinux / LD_*
+ * interactions entirely.
+ *
+ * Output format: one line per entry, tab-delimited:
+ *     NAME\tTYPE\tSIZE\n
+ * where TYPE is 'd' (dir), 'f' (regular file), 'l' (symlink), '?' (other).
+ * "." and ".." are skipped; callers re-add them if needed.
+ *
+ * Returns an empty string on any error (ENOENT, EACCES, OOM). Never throws.
+ */
+JNIEXPORT jstring JNICALL
+Java_expo_modules_terminalemulator_ShellyJNI_readDir(
+        JNIEnv *env,
+        jclass  clazz __attribute__((unused)),
+        jstring pathJ)
+{
+    if (!pathJ) return (*env)->NewStringUTF(env, "");
+    const char *path = (*env)->GetStringUTFChars(env, pathJ, NULL);
+    if (!path) return (*env)->NewStringUTF(env, "");
+
+    DIR *dir = opendir(path);
+    if (!dir) {
+        LOGE("readDir: opendir(%s) failed: %s", path, strerror(errno));
+        (*env)->ReleaseStringUTFChars(env, pathJ, path);
+        return (*env)->NewStringUTF(env, "");
+    }
+
+    size_t cap = 65536;
+    size_t used = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) {
+        closedir(dir);
+        (*env)->ReleaseStringUTFChars(env, pathJ, path);
+        return (*env)->NewStringUTF(env, "");
+    }
+
+    struct dirent *entry;
+    char fullpath[4096];
+    while ((entry = readdir(dir)) != NULL) {
+        const char *name = entry->d_name;
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            continue;  /* skip . and .. */
+        }
+
+        /* lstat for size + type (don't follow symlinks) */
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", path, name);
+        struct stat st;
+        char type = '?';
+        long long size = 0;
+        if (lstat(fullpath, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) type = 'd';
+            else if (S_ISLNK(st.st_mode)) type = 'l';
+            else if (S_ISREG(st.st_mode)) type = 'f';
+            size = (long long)st.st_size;
+        }
+
+        /* Grow the buffer if this line might not fit (worst-case name ~256,
+         * plus type+size+delims ~32; double until it does, cap at 4 MiB). */
+        size_t need = strlen(name) + 48;
+        while (used + need >= cap) {
+            size_t newCap = cap * 2;
+            if (newCap > MAX_OUTPUT) newCap = MAX_OUTPUT;
+            if (newCap <= cap) { need = 0; break; } /* hit ceiling */
+            char *tmp = (char *)realloc(buf, newCap);
+            if (!tmp) { need = 0; break; }
+            buf = tmp;
+            cap = newCap;
+        }
+        if (need == 0) break;
+
+        int written = snprintf(buf + used, cap - used,
+                               "%s\t%c\t%lld\n", name, type, size);
+        if (written <= 0 || (size_t)written >= cap - used) break;
+        used += (size_t)written;
+    }
+
+    closedir(dir);
+    buf[used] = '\0';
+
+    LOGI("readDir: %s -> %zu bytes", path, used);
 
     jstring result = (*env)->NewStringUTF(env, buf);
     free(buf);

@@ -492,5 +492,13 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("readProcNetFile") { path: String ->
             ShellyJNI.readProcNetFile(path)
         }
+
+        // Bug #70: list a directory directly via opendir/readdir/lstat,
+        // bypassing bash/LD_PRELOAD which returns exit=0 stdout=0chars
+        // on some devices (same root cause as bug #36). Used by FileTree /
+        // Sidebar / FilesTab to populate the FILE TREE reliably.
+        AsyncFunction("readDir") { path: String ->
+            ShellyJNI.readDir(path)
+        }
     }
 }

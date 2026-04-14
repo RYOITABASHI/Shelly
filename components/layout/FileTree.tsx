@@ -5,6 +5,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { execCommand } from '@/hooks/use-native-exec';
+import { readDirEntries } from '@/lib/fs-native';
 import { openFile } from '@/lib/open-file';
 import { normalizePath } from '@/lib/normalize-path';
 import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
@@ -83,19 +84,23 @@ export function FileTree() {
   const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
   const [renameName, setRenameName] = useState('');
 
+  // Bug #70: use in-process readDir (JNI opendir/readdir/lstat) instead of
+  // shelling out to `ls -1pa ... | head -100`. The shell path returns
+  // exit=0 stdout=0chars on some devices and silently blanks the FILE TREE.
   const loadDir = useCallback(async (dir: string) => {
     try {
-      const result = await execCommand(
-        `ls -1pa "${dir}" 2>/dev/null | head -100`
-      );
-      const lines = result.stdout.trim().split('\n').filter(Boolean);
-      const parsed: FileEntry[] = lines
-        .filter((l) => l !== './' && l !== '../')
-        .map((l) => ({
-          name: l.replace(/\/$/, ''),
-          path: `${dir}/${l.replace(/\/$/, '')}`,
-          isDirectory: l.endsWith('/'),
-        }));
+      const items = await readDirEntries(dir);
+      items.sort((a, b) => {
+        const ad = a.type === 'd' ? 0 : 1;
+        const bd = b.type === 'd' ? 0 : 1;
+        if (ad !== bd) return ad - bd;
+        return a.name.localeCompare(b.name);
+      });
+      const parsed: FileEntry[] = items.slice(0, 500).map((e) => ({
+        name: e.name,
+        path: `${dir}/${e.name}`,
+        isDirectory: e.type === 'd',
+      }));
       setEntries(parsed);
     } catch {
       setEntries([]);

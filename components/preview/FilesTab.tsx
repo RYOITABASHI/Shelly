@@ -5,6 +5,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePreviewStore } from '@/store/preview-store';
 import { useNativeExec } from '@/hooks/use-native-exec';
+import { readDirEntries } from '@/lib/fs-native';
 import { getHomePath } from '@/lib/home-path';
 import {
   shellEscape, detectFileType, detectLanguage, formatFileSize,
@@ -38,42 +39,26 @@ export const FilesTab = memo(function FilesTab() {
 
   // Scan directory.
   //
-  // Previous implementation used `find -maxdepth 1 -exec stat -c '%n\t%s\t%F'`
-  // which relies on GNU stat's `-c` format string. The bundled shelly-shell
-  // (Plan B, fork+exec via libexec_wrapper) on Android doesn't always ship a
-  // GNU-compatible stat, so the command produced empty stdout and the FILES
-  // tab rendered as blank (bug #53). `ls -la` is portable across busybox,
-  // toybox, coreutils, and bash builtins, so switch to parsing that.
+  // Bug #70: the previous `ls -la` shell path (and before that, `find ...
+  // -exec stat -c`) returns exit=0 stdout=0chars on some devices because
+  // libbash.so + linker64 can't resolve PATH / SELinux / LD_LIBRARY_PATH
+  // correctly. Same root cause as bug #36. The fix is to bypass the shell
+  // entirely and call opendir/readdir/lstat in-process via JNI.
   const scanDir = useCallback(async (dir: string) => {
     setLoading(true);
     try {
-      const result = await runRawCommand(
-        `ls -la ${shellEscape(dir)} 2>/dev/null`,
-      );
-      const lines = (result.stdout || '').split('\n').filter(Boolean);
-      const entries: FileEntry[] = [];
-      for (const line of lines) {
-        // Skip "total N" header and any line that doesn't look like an ls row.
-        if (/^total\s/i.test(line)) continue;
-        // ls -la columns: perms links owner group size month day time/year name
-        // `name` may contain spaces, so split on whitespace max 9 times.
-        const parts = line.split(/\s+/);
-        if (parts.length < 9) continue;
-        const perms = parts[0];
-        if (!/^[\-dlcbps]/.test(perms)) continue;
-        const name = parts.slice(8).join(' ');
-        if (name === '.' || name === '..') continue;
-        const isDir = perms.startsWith('d');
-        const size = parseInt(parts[4] || '0', 10) || 0;
-        const fullPath = dir.endsWith('/') ? dir + name : dir + '/' + name;
-        entries.push({
-          name,
+      const items = await readDirEntries(dir);
+      const entries: FileEntry[] = items.map((e) => {
+        const isDir = e.type === 'd';
+        const fullPath = dir.endsWith('/') ? dir + e.name : dir + '/' + e.name;
+        return {
+          name: e.name,
           path: fullPath,
           isDirectory: isDir,
-          size,
-          type: isDir ? ('plaintext' as PreviewFileType) : detectFileType(name),
-        });
-      }
+          size: e.size,
+          type: isDir ? ('plaintext' as PreviewFileType) : detectFileType(e.name),
+        };
+      });
       entries.sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
         return a.name.localeCompare(b.name);
@@ -86,7 +71,7 @@ export const FilesTab = memo(function FilesTab() {
       setFiles([]);
     }
     setLoading(false);
-  }, [runRawCommand]);
+  }, []);
 
   // Init: get cwd if not set
   useEffect(() => {

@@ -71,7 +71,70 @@
 
 ## P0 — 次リリース前の必須対応 (v0.1.0 ブロッカー)
 
-*空 (ここに項目が残っている間はタグ打ちしない)*
+### bug #73 — Sidebar repo のパス正規化漏れ (P1)
+
+**発見**: 2026-04-15 Phase 6-A Test 5-2 logcat 解析
+**症状**: ユーザーが `~/Shelly` をコピペで ADD REPOSITORY 追加 → 内部で `/data/data/com.termux/files/home/Shelly` に変換されて保存される。実際のパスは `/data/data/com.termux/files/usr/lib/...` などに配置されているため、FileTree の `git status --porcelain` が `cd: No such file or directory` で exit=1。
+```
+execCommand FAILED: cd: /data/data/com.termux/files/home/Shelly: No such file or directory
+cmd=cd '/data/data/com.termux/files/home/Shelly' && git status --porcelain
+```
+**原因**: repo 追加パスで Termux 時代の HOME (`/data/data/com.termux/files/home`) を前提としたパス展開ロジックが残っている可能性。Shelly の HOME は `/data/user/0/dev.shelly.terminal/files/home`。
+**修正方針**: (1) `~` 展開は Shelly の HOME を参照、(2) 存在チェック (stat) を repo 追加時に行い、存在しない場合は保存拒否 + トースト。
+**優先度**: P1 (bug #70 修正後の動作確認で正式判断。#70 JNI readDir 移行で自動解消する可能性あり)
+
+---
+
+### bug #74 — 空履歴で ↑ を押した時の無反応 UX (P3)
+
+**発見**: 2026-04-15 Phase 6-A Test 5-2
+**症状**: bash 起動直後で履歴が空の状態で action bar の ↑ を押しても画面が無変化。ユーザー視点では「ボタン壊れてる?」と混乱する。実際は `\x1b[A` を送信しており bash 側が無反応なだけ (後で `echo hello` 等を実行してから ↑ を押せば正常復元される)。
+**修正方針**: action bar 側で履歴状態を知る手段はないので、(a) 軽いベル音/ハプティック、(b) あるいは初回 bash 起動時に `HISTFILE` を明示作成して履歴機能をアクティブ化、のどちらか。
+**優先度**: P3 (仕様通り動作しているため出荷可能。出荷後改善)
+
+---
+
+### bug #70 — Sidebar の ls/git 実行が shell 経由で exit=0 stdout=0chars を返す (P0)
+
+**発見**: 2026-04-15 Phase 6-A Test 4 実機検証
+**症状**: `/data/data/com.termux/files/home/Shelly` を ADD REPOSITORY で追加しても FILE TREE が空のまま。logcat で以下のパターンを確認:
+```
+exec: ls -1pa "/data/data/com.termux/files/home/Shelly" 2>/dev/null | head -100
+exit=0 stdout=0chars
+exec: cd '...' && git status --porcelain
+exit=1 stdout=0chars
+```
+**原因**: bug #36 (PORTS の `cat /proc/net/tcp`) と同根で、shell 経由の execCommand が exit=0 返しつつ stdout 空。Sidebar / FileTree / GitStatusBadge / PORTS すべてが `execCommand("ls ...")` / `execCommand("git ...")` に依存しているため、**現在 shell-based な読取経路を使っているすべてのサイドバー機能が壊れている**。
+**修正範囲**: bug #36 の PORTS では readProcNetFile JNI に切替えたが、**Sidebar / FileTree / GitStatus も同様に JNI の readDir / readFile 経由に切替える必要がある**。または libbash.so の PATH 問題を根本解決。
+**優先度**: P0 (すべてのサイドバー機能が壊れているので出荷不可)
+
+---
+
+### bug #69 — Sidebar REPOSITORIES に Mock のダミーが表示され切替不能 (P0)
+
+**発見**: 2026-04-15 Phase 6-A Test 2 (リポジトリ切替) 実機検証
+**症状**: サイドバーに SHELLY V9.2 / NACRE / LLM-BENCH-V2 の 3 リポジトリが表示されるがタップしても何も起きない。logcat に `[Shelly][Sidebar] Found 0 repos` / `[Shelly][ShellLayout] Repos loaded: 0` と記録されている。
+**原因**: `components/layout/Sidebar.tsx:278-299` で `repoPaths.length === 0` の時に **"Mock dummy repos matching mock screenshot"** というコメント付きのハードコードプレースホルダを描画している。`<View>` でラップされており Pressable も onPress も無い → タップしても何も反応しないのは仕様通り。新規ユーザーは永遠に Mock を見続けることになる。
+**修正方針**: Mock dummy 分岐を削除して、repo 0 件時は明確な空状態 UI ("No repositories yet. Tap + ADD REPOSITORY to browse your code.") に差し替える。
+**優先度**: P0 (ユーザーが機能を見つけられない致命的 UX 欠陥)
+
+---
+
+### bug #68 — AI ペインの Local LLM が sever running 状態を検知せず "not enabled" エラー
+
+**発見**: 2026-04-15 Phase 6-A Test 1 (LLM ローカル 1 往復) 実機検証
+**症状**:
+- llama.cpp Setup 画面では **RUNNING** 状態で Qwen2.5-3B-Instruct-Q4_K_M.gguf が ACTIVE
+- サーバーは http://127.0.0.1:8080 で稼働中
+- AI ペインでプロバイダを Local に切替えて「こんにちは。」送信 → **"Error: Local LLM is not enabled. Enable it in Settings → Local LLM."**
+**疑い**: AI ペインの Local プロバイダ経路が llama.cpp サーバーの running 状態ではなく、別の enabled フラグ (Settings → Local LLM トグル) を参照している。Setup 画面の "RUNNING" と AI プロバイダの "enabled" が別管理。
+**調査指針**:
+- `hooks/use-ai-dispatch.ts` または `lib/local-llm.ts` で "Local LLM is not enabled" を grep
+- enabled フラグの管理 store (settings-store or llama-store) を特定
+- Setup 画面の Start/Stop ボタンが enabled フラグを flip しているかを確認
+**優先度**: P0 (ローカル LLM 使えないと v0.1.0 のセールスポイント「ローカル推論」が成立しない)
+
+---
 
 解決済み:
 - ✅ **#27** ペースト末尾残留 (Wave B: commitText の二重フラッシュガードを mLastFinishFlush 比較に修正、TerminalView.java)
@@ -251,6 +314,7 @@
 - **2026-04-14**: Phase 5 で bug #36 / #51-#67 を発見、並列 5 agent で原因調査。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
+- **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
 
 ---
 

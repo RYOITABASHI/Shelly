@@ -276,27 +276,9 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           {repoPaths.length === 0 ? (
-            <>
-              {/* Mock dummy repos matching mock screenshot */}
-              {[
-                { name: 'SHELLY', version: 'V9.2', active: true },
-                { name: 'NACRE', version: null, active: false },
-                { name: 'LLM-BENCH-V2', version: null, active: false },
-              ].map((repo) => (
-                <View
-                  key={repo.name}
-                  style={[styles.repoRow, repo.active && styles.repoRowActive]}
-                >
-                  <View style={[styles.repoIcon, { backgroundColor: repo.active ? C.accent : C.btnSecondaryBg }]}>
-                    <MaterialIcons name="folder" size={10} color={repo.active ? C.btnPrimaryText : C.accentBlue} />
-                  </View>
-                  <Text style={[styles.repoName, { color: repo.active ? C.accent : C.text1 }]} numberOfLines={1}>
-                    {repo.name}
-                  </Text>
-                  {repo.version && <Text style={styles.repoVersion}>{repo.version}</Text>}
-                </View>
-              ))}
-            </>
+            <Text style={styles.emptyRepoHint}>
+              No repositories yet. Tap + ADD REPOSITORY to browse your code.
+            </Text>
           ) : (
             repoPaths.map((p) => {
               const isActive = p === activeRepoPath;
@@ -599,6 +581,15 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
     color: C.text2,
+  },
+  emptyRepoHint: {
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    color: C.text2,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontStyle: 'italic',
+    lineHeight: 14,
   },
   gitDirtyBadge: {
     backgroundColor: C.badgeRunningBg,
