@@ -146,6 +146,14 @@ class ShellyTerminalSession(
 
     var onScreenUpdateCallback: (() -> Unit)? = null
 
+    /**
+     * Delta-text callback. Invoked with every newly-appended chunk of
+     * transcript text (post-emulator-processing). Used by ShellyTerminalView
+     * to feed BlockDetector so Command Block chrome / JS onBlockCompleted
+     * events fire under the Plan B architecture (#60, #59).
+     */
+    var onOutputDelta: ((String) -> Unit)? = null
+
     override fun onTextChanged(changedSession: TerminalSession) {
         // Always tell the view to redraw FIRST so the visible state matches
         // what the emulator already processed. The transcript-diff below is
@@ -163,9 +171,13 @@ class ShellyTerminalSession(
             val newText = fullText.substring(lastTranscriptLength)
             lastTranscriptLength = currentLength
             appendToOutputBuffer(newText)
+            onOutputDelta?.invoke(newText)
         } else if (currentLength < lastTranscriptLength) {
             lastTranscriptLength = currentLength
-            if (fullText.isNotEmpty()) appendToOutputBuffer(fullText)
+            if (fullText.isNotEmpty()) {
+                appendToOutputBuffer(fullText)
+                onOutputDelta?.invoke(fullText)
+            }
         }
     }
 

@@ -201,6 +201,13 @@ class ShellyTerminalView(
         currentShellySession = shellySession
         currentSessionId = sessionId
 
+        // Wire BlockDetector + link detection + JS output events to the
+        // session's delta-text stream. Under the Plan B architecture PTY
+        // output flows directly into the emulator via JNI — nothing else
+        // feeds processTerminalOutput, so without this line Command Block
+        // chrome never renders and onBlockCompleted never fires on JS.
+        shellySession.onOutputDelta = { text -> processTerminalOutput(text) }
+
         if (useGPU && glTerminalView != null) {
             glTerminalView?.attachSession(shellySession, inputHandler)
             shellySession.onScreenUpdateCallback = {
@@ -225,6 +232,7 @@ class ShellyTerminalView(
 
     fun detachCurrentSession() {
         currentShellySession?.onScreenUpdateCallback = null
+        currentShellySession?.onOutputDelta = null
         currentShellySession = null
         currentSessionId = null
     }

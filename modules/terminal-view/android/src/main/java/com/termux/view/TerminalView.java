@@ -51,6 +51,7 @@ import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Scroller;
 
 import androidx.annotation.Nullable;
@@ -596,6 +597,18 @@ public class TerminalView extends View {
 
             void sendTextToTerminal(CharSequence text) {
                 stopTextSelectionMode();
+                // DIAG bug #63: log whether we're in alt-buffer when a keystroke arrives.
+                // If a vim keystroke reaches here but isAlternateBufferActive()==false the
+                // emulator never saw CSI?1049h; if it's true but nothing visible happens
+                // the byte is being dropped downstream (mTermSession.write / pty).
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED && mEmulator != null) {
+                    try {
+                        boolean alt = mEmulator.isAlternateBufferActive();
+                        mClient.logInfo(LOG_TAG, "sendTextToTerminal: altBuffer=" + alt
+                            + " len=" + text.length() + " first=0x"
+                            + (text.length() > 0 ? Integer.toHexString(text.charAt(0)) : "-"));
+                    } catch (Throwable t) { /* diag only */ }
+                }
                 final int textLengthInChars = text.length();
                 for (int i = 0; i < textLengthInChars; i++) {
                     char firstChar = text.charAt(i);
@@ -1031,10 +1044,38 @@ public class TerminalView extends View {
      * https://cs.android.com/android/platform/superproject/+/master:frameworks/base/services/core/java/com/android/server/input/InputManagerService.java;l=2158
      * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r40:frameworks/base/services/core/jni/com_android_server_input_InputManagerService.cpp;l=616
      */
+    /**
+     * Bug #63 (vim keystrokes not reaching pty): when the window regains focus
+     * the InputMethodManager sometimes holds a stale InputConnection, so the
+     * soft keyboard ends up committing text into a dead editor. Kicking
+     * restartInput() forces the IME to re-bind against the current
+     * TerminalInputConnection. Cheap, side-effect-free, helps both Gboard and
+     * AOSP IMEs after an app like vim switches to the alternate screen.
+     */
+    @Override
+    public void onWindowFocusChanged(boolean hasWindowFocus) {
+        super.onWindowFocusChanged(hasWindowFocus);
+        if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
+            mClient.logInfo(LOG_TAG, "onWindowFocusChanged(hasWindowFocus=" + hasWindowFocus + ")");
+        if (hasWindowFocus) {
+            try {
+                InputMethodManager imm = (InputMethodManager) getContext()
+                    .getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null) imm.restartInput(this);
+            } catch (Throwable t) {
+                if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
+                    mClient.logInfo(LOG_TAG, "restartInput failed: " + t);
+            }
+        }
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
-            mClient.logInfo(LOG_TAG, "onKeyDown(keyCode=" + keyCode + ", isSystem()=" + event.isSystem() + ", event=" + event + ")");
+        if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
+            boolean alt = false;
+            try { alt = mEmulator != null && mEmulator.isAlternateBufferActive(); } catch (Throwable t) {}
+            mClient.logInfo(LOG_TAG, "onKeyDown(keyCode=" + keyCode + ", isSystem()=" + event.isSystem() + ", altBuffer=" + alt + ", event=" + event + ")");
+        }
         if (mEmulator == null) return true;
         if (isSelectingText()) {
             stopTextSelectionMode();
