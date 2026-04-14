@@ -7,7 +7,7 @@
 
 import React, { memo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Haptics from 'expo-haptics';
@@ -29,6 +29,7 @@ type Props = {
 };
 
 export const ApprovalBubble = memo(function ApprovalBubble({ data, onAskTeam }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [responded, setResponded] = useState<'approved' | 'denied' | null>(null);
   const borderColor = dangerLevelColor(data.dangerLevel);

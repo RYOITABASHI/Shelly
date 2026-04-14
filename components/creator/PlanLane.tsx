@@ -15,7 +15,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { CreatorPlan, CreatorSessionStatus } from '@/store/types';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -29,6 +29,7 @@ type Props = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function PlanLane({ status, plan, onConfirm, onCancel }: Props) {
+  const { t } = useTranslation();
   const isPlanning = status === 'planning';
   const isConfirming = status === 'confirming';
   const isBuilding = status === 'building' || status === 'done' || status === 'error';
@@ -80,7 +81,7 @@ export function PlanLane({ status, plan, onConfirm, onCancel }: Props) {
           {/* Meta */}
           <View style={styles.meta}>
             <Text style={styles.metaText}>
-              {t('creator.plan_files', { n: plan.estimatedFiles })} · {planTypeLabel(plan.projectType)}
+              {t('creator.plan_files', { n: plan.estimatedFiles })} · {planTypeLabel(plan.projectType, t)}
             </Text>
           </View>
 
@@ -113,7 +114,10 @@ export function PlanLane({ status, plan, onConfirm, onCancel }: Props) {
   );
 }
 
-function planTypeLabel(type: string): string {
+function planTypeLabel(
+  type: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
   const labels: Record<string, string> = {
     web: t('creator.type_web'),
     script: t('creator.type_script'),

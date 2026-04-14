@@ -8,7 +8,7 @@
 import React, { memo, useCallback } from 'react';
 import { colors as C } from '@/theme.config';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Haptics from 'expo-haptics';
@@ -46,6 +46,7 @@ const StepCard = memo(function StepCard({
   onExecute: (step: PlanStep) => void;
   onSkip: (step: PlanStep) => void;
 }) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const config = STATUS_CONFIG[step.status];
   const isActionable = step.status === 'pending';

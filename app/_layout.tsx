@@ -67,15 +67,6 @@ export default function RootLayout() {
   });
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
-  // bug #62: many components import the non-reactive `t()` helper from
-  // @/lib/i18n (which only reads useI18n.getState().locale once per render).
-  // Subscribing to the locale here and keying the whole Stack with it forces
-  // a re-render of the entire tree when the user toggles EN/JA in Settings,
-  // so even components using plain `t()` pick up the new strings.
-  // TODO(DEFERRED): migrate remaining `t()` callsites to `useTranslation()`
-  // for a per-component reactive subscription (see P3 list).
-  const locale = useI18n((s) => s.locale);
-
   // Runtime theme preset swap. applyThemePreset() rewrites the live
   // colors object in place, re-injects Text.defaultProps.style.fontFamily,
   // and bumps the theme-version store so ShellLayout's root re-mounts
@@ -233,7 +224,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-        <Stack key={locale} screenOptions={{ headerShown: false }}>
+        <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
         </Stack>
         <StatusBar style="light" />

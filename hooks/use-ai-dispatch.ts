@@ -27,7 +27,7 @@ import { parsePlanOutput } from '@/lib/parse-plan';
 import { usePlanStore } from '@/store/plan-store';
 import { useArenaStore } from '@/store/arena-store';
 import { selectArenaAgents } from '@/lib/arena-selector';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import { useExecutionLogStore } from '@/store/execution-log-store';
 import { groqChatStream, type GroqMessage } from '@/lib/groq';
 import { hasTerminalReference, getTerminalIntent, type TerminalIntent } from '@/lib/input-router';
@@ -429,6 +429,7 @@ function createThrottledUpdate(updateFn: (sid: string, mid: string, updates: Par
 }
 
 export function useAIDispatch() {
+  const { t } = useTranslation();
   const { addMessage, updateMessage: rawUpdateMessage } = useChatStore();
   const throttledUpdate = useMemo(() => createThrottledUpdate(rawUpdateMessage), [rawUpdateMessage]);
   useEffect(() => () => throttledUpdate.cleanup(), [throttledUpdate]);

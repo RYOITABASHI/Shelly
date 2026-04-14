@@ -14,7 +14,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { BuildStep, CreatorSessionStatus } from '@/store/types';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +26,7 @@ type Props = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function BuildLane({ status, steps }: Props) {
+  const { t } = useTranslation();
   const scrollRef = useRef<ScrollView>(null);
 
   // Auto-scroll to bottom when new steps appear

@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import { useMcpStore } from '@/store/mcp-store';
 import {
   MCP_CATALOG,
@@ -41,6 +41,7 @@ interface McpSectionProps {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
+  const { t } = useTranslation();
   const {
     servers,
     isLoaded,
@@ -378,6 +379,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function TypeBadge({ type }: { type: McpServerDef['type'] }) {
+  const { t } = useTranslation();
   const config = {
     local: { label: t('mcp.type_local'), color: '#34D399', bg: '#34D39920' },
     remote: { label: t('mcp.type_remote'), color: '#818CF8', bg: '#818CF820' },

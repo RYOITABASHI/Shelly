@@ -12,6 +12,54 @@
 - MEMORY.md や README.md に反映すべきものは **`→ sync:`** で明記
 - 新しい項目を追加するときは `## History` に日付 + 誰が気付いたか 1 行メモ
 
+---
+
+## 🟢 現状サマリ (2026-04-15)
+
+**v0.1.0 スモークテスト後の一括修正完了**:
+- Wave A (#28, #54, #55, #57, #67): ChatBubble / Font picker / Voice release ✅
+- Wave B (#27, #36, #58): IME paste P0 / PORTS JNI ✅
+- Wave C (#60, #63): Command Blocks 配線復活 / vim restartInput ✅
+- Wave D (#65): Immortal Sessions (Case C transcript replay) ✅
+- Wave E (#51, #52, #53, #56, #61, #62, #64, #66): Preview pane / CRT / i18n / reflow / rehydration / Savepoint ✅
+
+**一段落判定条件** (ユーザー合意):
+1. Shelly 本体の致命的バグが 0
+2. CLI (claude / gemini / codex) が AI ペイン or ターミナルで起動・対話できる
+
+→ ビルド完了後に Phase 6 実機検証で上記 2 点を確認次第、v0.1.0 RC タグ。
+
+---
+
+## 🟡 一段落後チェックリスト (手が空いた時に検証)
+
+これらは **スモークテスト未実施または薄い検証のみ** の項目。リリース候補判定後、時間があるときに順番に潰す。
+
+### 必須 (リリース判断に直結する可能性)
+- [ ] **CLI 起動** — `claude` / `gemini` / `codex` を AI ペインまたはターミナルで起動、1 往復対話。bug #63 修正で vim が動けば CLI も動くはず
+- [ ] **AI Edit golden path** — ファイル書き戻しフロー (前回 Cerebras レート制限でスキップ)
+- [ ] **Onboarding / SetupWizard** — 新規インストール時の初回体験
+- [ ] **LLM ローカル 1 往復** — llama.cpp でモデル起動・推論 (bug #32 絡み)
+
+### 品質確認 (出荷後の追加テスト)
+- [ ] **GitHub 連携** — リポジトリ追加 / clone / status / diff / commit / push
+- [ ] **Browser pane** — URL 入力 / ページ内検索 / 履歴 / share
+- [ ] **Markdown pane** — rendering / スクロール / リンクタップ
+- [ ] **Search 機能** — 右上 🔍 ボタン、検索スコープ
+- [ ] **Repository sidebar** — Shelly / Nacre / LLM-Bench-V2 切替、cwd 連動
+- [ ] **File tree** — サイドバーの FILE TREE (今回 "Add a repository above to browse" 表示だった)
+- [ ] **Ports セクション** — 開放ポートをタップした時のアクション
+- [ ] **Keyboard shortcuts** — Ctrl+C / Ctrl+V / Tab / ↑↓ / Paste / Alt など action bar のキー
+- [ ] **設定画面** — 各設定項目の反映 (通知、haptic、AI provider 切替 etc.)
+- [ ] **Notification / Toast** — エラーダイアログ以外の一般通知
+
+### 既知の制約 (確認して仕様として許容 or v0.1.1 対応)
+- [ ] **bug #34** (Known Limitations): `watch` コマンドが `/bin/date` を決め打ち → 代替ワークアラウンド記載済
+- [ ] **bug #35** (Known Limitations): `busybox` 未同梱 → curl/nc/python3 -m http.server 代替記載済
+- [ ] **bug #65 Case B 完全版**: 真の Immortal (対話状態まで保持) は Case C 応急実装中。v0.1.1 で SessionService 昇格予定 (Binder IPC 300 LoC)
+
+---
+
 ## ルール
 
 1. **README や Status 表にある機能を後回しにする場合は、必ず 🟡 / 🚫 の状態に降格させる**
@@ -25,13 +73,16 @@
 
 *空 (ここに項目が残っている間はタグ打ちしない)*
 
+解決済み:
+- ✅ **#27** ペースト末尾残留 (Wave B: commitText の二重フラッシュガードを mLastFinishFlush 比較に修正、TerminalView.java)
+- ✅ **#58** ペースト先頭 `:` 混入 (Wave B: mShadow/mLastCommitAt を外側クラスに昇格、middle-button paste で sync)
+- ✅ **#63** vim 脱出不可 (Wave C: onWindowFocusChanged で InputMethodManager.restartInput、診断ログ追加)
+
 ---
 
 ## P1 — v0.1.1 で対応推奨
 
-すべて GitHub Issues に登録済み (milestone: v0.1.1)。各項目の詳細 (実装ヒント、検証手順、影響範囲) は Issue 本文を参照。このセクションは要約インデックスのみ。
-
-| # | タイトル | Issue | 見積 |
+| # | タイトル | Issue / Status | 見積 |
 |---|---|---|---|
 | 1 | llama.cpp UI: pre-installed model 検出 + active server model 表示 | [#10](https://github.com/RYOITABASHI/Shelly/issues/10) | 60–90 分 |
 | 2 | Modal: 可視 BACK アフォーダンス追加 (MCP / llama / SSH) | [#11](https://github.com/RYOITABASHI/Shelly/issues/11) | 30–45 分 |
@@ -39,10 +90,22 @@
 | 4 | Typeless 音声入力の検証 (IME 全面改修後) | [#13](https://github.com/RYOITABASHI/Shelly/issues/13) | 15 分 (検証のみ) |
 | 5 | 端末 CJK フォント統合 — Misaki / Cica + GL atlas 更新 | [#14](https://github.com/RYOITABASHI/Shelly/issues/14) | 3–4 時間 |
 | 7 | 音声 / immortal / AlarmManager の実機スモークテスト | [#16](https://github.com/RYOITABASHI/Shelly/issues/16) | 80 分 |
-| ✅ 27 | ペースト + Enter でコマンドが実行されない — **修正済 (415304e5)**。前セッションで入れた `TerminalView.java` の `performEditorAction` / `sendKeyEvent` override を削除。Samsung Keyboard の副次 performEditorAction 発火で CR が重複し、BaseInputConnection の shadow-sync 競合で末尾 `"` が欠落していた。実機検証待ち | — | 済 |
-| ✅ 28 | UI 全面の Silkscreen 大文字問題 — **修正済 (415304e5)**。`@expo-google-fonts/jetbrains-mono` 追加、`theme.config.ts` / `theme-presets.ts` のデフォルトフォントを `JetBrainsMono_400Regular` に切替。'silkscreen' / 'pixel' プリセットのみ旧フォントを維持。Text.render monkey-patch で全 `<Text>` が自動追従するので個別修正不要。実機検証待ち | — | 済 |
-| ✅ 29 | 2 回目以降の Add Pane が効かない — **part 1 修正済 (0d7f0b40)**: `AddPaneSheet` で stale focusedPaneId を検出し `findLastLeafId(root)` にフォールバック。**part 2 修正済 (409b4642)**: `splitPane` で元 leaf の ID を保持し、newLeaf 側のみ新規 ID 割当。React key 変化による PaneSlot 再マウント → AI セッション/PTY/WebView state 喪失を防止。実機検証待ち | — | 済 |
-| ✅ 30 | Splitter (ペイン幅) のドラッグが効かない — **修正済 (409b4642)**。Divider の `marginHorizontal: -8` 負 margin トリックで flex slot net 幅が 0 となり Yoga / Android の hit-test が通らなかった。Divider を `position: 'absolute'` に変更、`splitSize` を state 化して `ratio * splitSize - 8` で絶対配置、`overflow: 'visible'` 追加。実機検証待ち | — | 済 |
+| ✅ 27 | ペースト + Enter でコマンドが実行されない | **Wave B 修正済** | 済 |
+| ✅ 28 | UI 全面の Silkscreen 大文字問題 | **Wave A 修正済** | 済 |
+| ✅ 29 | 2 回目以降の Add Pane が効かない | **前セッション修正済 (409b4642)** 実機検証待ち | 済 |
+| ✅ 30 | Splitter (ペイン幅) のドラッグが効かない | **前セッション修正済 (409b4642)** 実機検証待ち | 済 |
+| ✅ 36 | PORTS が listener を検知しない | **Wave B: JNI 直読に切替** | 済 |
+| ✅ 54 | Font picker が Silkscreen 以外反映されない | **Wave A: SettingsDropdown で applyThemePreset 配線** | 済 |
+| ✅ 55 | Theme 切替で色が残留する | **Wave A: ChatBubble markdownStyles トークン化** | 済 |
+| ✅ 56 | ペインコンテンツがペインサイズに最適化されない | **Wave E: fontSize 段階縮小 (Case 1)** + Case 2 (cols/reflow) 実装中 | 実装中 |
+| ✅ 57 | Groq 応答が ActionBlock 化されない | **Wave A: provider 非依存分岐 + markdownStyles 修正** | 済 |
+| ✅ 58 | ペースト先頭 `:` 混入 | **Wave B 修正済** | 済 |
+| ✅ 59 | @agent コマンドがインターセプトされない | **Wave C 波及 (#60 解決で自動修復)** | 済 |
+| ✅ 63 | vim から脱出できない | **Wave C 修正済** | 済 |
+| ✅ 65 | Immortal Sessions (tmux 復元) | **Wave D: Case C transcript replay** / Case B 完全版は実装中 | Case C 済 |
+| ✅ 67 | マイク占有 / 権限 revoke 再起動 | **Wave A: releaseRecorder を 3 箇所で await** | 済 |
+
+すべて GitHub Issues に登録済み (milestone: v0.1.1)。各項目の詳細 (実装ヒント、検証手順、影響範囲) は Issue 本文を参照。このセクションは要約インデックスのみ。
 
 ---
 
@@ -50,10 +113,18 @@
 
 ### GitHub Issues 登録済み
 
-| # | タイトル | Issue |
-|---|---|---|
-| 6 | **Cloud Config Sync** — 暗号化 GitHub バックアップ + ウィザード UX | [#15](https://github.com/RYOITABASHI/Shelly/issues/15) |
-| 8 | 日本語 i18n の完成 — ハードコード英語を `t()` でラップ | [#17](https://github.com/RYOITABASHI/Shelly/issues/17) |
+| # | タイトル | Issue | Status |
+|---|---|---|---|
+| 6 | **Cloud Config Sync** — 暗号化 GitHub バックアップ + ウィザード UX | [#15](https://github.com/RYOITABASHI/Shelly/issues/15) | 未着手 |
+| 8 | 日本語 i18n の完成 — ハードコード英語を `t()` でラップ | [#17](https://github.com/RYOITABASHI/Shelly/issues/17) | Wave E で再 mount hack, 完全移行は実装中 |
+| ✅ 51 | Theme presets (silkscreen/pixel/mono) が Settings に無い | — | **Wave E 修正済** |
+| ✅ 52 | Preview pane パス全部大文字 | — | **Wave E: FilesTab の font を JetBrainsMono に** |
+| ✅ 53 | Preview pane FILES タブが空 | — | **Wave E: find→ls -la parse に書き換え** |
+| ✅ 60 | Command Blocks 視覚装飾なし | — | **Wave C: onOutputDelta 配線復活 (#59 も波及解決)** |
+| ✅ 61 | CRT 全開で色ムラ | — | **Wave E: VIGNETTE_OPACITY_MAX 0.35→0.22** |
+| ✅ 62 | i18n 切替が UI に反映されない | — | **Wave E: Stack key 再 mount (応急) + 完全移行実装中** |
+| ✅ 64 | force-stop 後に Pane ヘッダー消失 | — | **Wave E: use-multi-pane に _hasHydrated フラグ** |
+| ✅ 66 | Savepoint 自動発火しない (💾 出ない) | — | **Wave E: app/_layout.tsx に bridge 追加 + ShellLayout に SaveBadge mount** |
 
 ### まだ Issue 化していない P2 項目 (必要になったら登録)
 
@@ -128,12 +199,17 @@
 
 ## P3 — 長期ロードマップ / 検討中
 
+### bug #65 Case B — 真の Immortal Sessions (対話状態保持)
+- **現状**: Wave D で Case C (transcript replay) を実装。見た目は「続きから再開」に見えるが vim / claude --continue / REPL の対話状態は失われる
+- **Case B 方針**: fork 親を TerminalSessionService (FG service) に移動、sessionRegistry を Service の Binder 経由で Module から再取得可能にする
+- **工数**: ~300 LoC Kotlin (Binder plumbing, Service lifecycle, event emitter 再配線)
+- **Why not now**: v0.1.0 は Case C で十分、Case B は独立した大型タスク
+- → sync: v0.1.1 milestone の目玉機能候補
+
 ### i18n: `t()` 呼び出しの `useTranslation()` 移行
-- **現状**: `lib/i18n/index.ts` は reactive な `useTranslation()` と非 reactive な `t()` の両方を export しており、40+ ファイルが後者を使っている
-- **一時対応 (bug #62, 2026-04-14)**: `app/_layout.tsx` の `<Stack>` を `key={locale}` で再 mount することで全ツリー再 render を強制。EN/JA 切替は即反映される
-- **Why not now**: 全 callsite (chelly/, components/creator/, components/snippets/, components/settings/McpSection, lib/input-router, lib/accessibility など) を `useTranslation()` に書き換えると差分が大きく、本リリースのスコープ外
-- **将来案**: 各コンポーネントで `const { t } = useTranslation()` に統一、module-scope の `t()` は system-prompt 系 (lib/gemini, lib/perplexity など getCurrentLocale 系) だけに限定
-- **スコープ感**: 半日〜1 日の機械的置換 + スモークテスト
+- **現状**: Wave E で `<Stack key={locale}>` hack を入れ、EN/JA 切替は即反映。完全移行 (40+ ファイルの module-scope `t()` → `useTranslation()`) は実装中
+- **Why not now**: 応急対応で動くので最優先ではない
+- **スコープ感**: 半日〜1 日の機械的置換
 
 ### インライン IME compose preview
 - **現状**: v0.1.0 では **採用せず** (`setComposingText` を PTY に書かない方針)
@@ -165,163 +241,16 @@
 
 ---
 
-## bug #67 — マイク権限「許可しない」設定で Shelly が再起動する / 音声入力がマイク占有しっぱなし (P1)
-
-**発見**: 2026-04-14 v0.1.0 スモークテスト後の追加報告
-**症状 1 (マイク占有)**: Shelly 起動中に音声入力を 1 回使うと、その後 Shelly がフォアグラウンド / バックグラウンドに関係なく他のアプリ (Typeless など) でマイクが使えなくなる。Typeless のログに「他のアプリでマイクを使用しています」と出る。= Shelly がマイクのリリースを怠っている、または AudioFocus を離していない可能性。
-**症状 2 (権限変更で再起動)**: デバイス設定 → アプリ → Shelly → 権限 → マイクを「許可しない」に変更した瞬間に Shelly プロセスが強制再起動される。これは Android の仕様で権限変更時のプロセス kill が走るため正常動作だが、**作業中の状態 (CLI セッション、履歴) が全部消えるのは致命的**。bug #65 (Immortal Sessions 未実装) と合わさると作業ロストが発生する。
-**ユーザー指摘**: 「許可しないにしたタイミングで、Shelly が再起動してしまう」「CLI を立ち上げた作業中だったらたまったものじゃない」(2026-04-14)
-**疑い**:
-1. `hooks/use-speech-input.ts` / `use-voice-chat.ts` で AudioRecorder.stop() 後の release() を呼び忘れている。前回 releaseRecorder() ヘルパー追加したが一部経路で漏れている可能性。
-2. AudioFocus が `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE` で取得されたまま release されていない。
-3. マイク権限 revoke 時のプロセス kill は Android の仕様 → bug #65 Immortal Sessions 実装で緩和可能。
-**優先度**: P1 (マイク占有は実用性阻害、権限変更 kill は Immortal Sessions 側で吸収)
-
----
-
-## bug #66 — Savepoint 自動発火が動作しない (💾バッジが出ない) (P2) — FIXED 2026-04-14 (Wave C)
-
-**発見**: 2026-04-14 Phase 5-10 Savepoint スモークテスト
-**症状**: `echo "savepoint test" > ~/save-test.txt` でファイル変更しても SaveBadge / SavepointBubble が一切表示されない。MEMORY.md では 2026-03-22 に実装済み (auto-savepoint.ts / savepoint-store / SaveBadge.tsx) となっているが動いていない。
-**根本原因** (Case B): Savepoint 実装そのもの (auto-savepoint.ts / savepoint-store) は健在で、use-terminal-output.ts:107 から `requestSavepoint('file-change-detected')` で store に pendingRequest を積んでいた。しかし **Plan B + Superset 移行で ChatScreen / ChatHeader が runtime から外れ、pendingRequest を消化して `checkAndSave` を呼ぶ購読者がいなくなっていた**。SaveBadge 自体もどこにも mount されていなかった (`chelly/` は staging で runtime ではない、`components/chat/ChatHeader.tsx` は import 元がゼロ)。
-**修正**:
-- `app/_layout.tsx`: voice-chain bridge と同じパターンで savepoint 購読者を追加。`useSavepointStore.subscribe` で pendingRequest を監視し、`useTerminalStore` の active session `currentDir` を拾って `initGitIfNeeded` + `checkAndSave` を `execCommand` (JNI) 経由で実行、成功時に `flashBadge()`。in-flight ガード付き。
-- `components/layout/ShellLayout.tsx`: CrtOverlay の直前に `<SaveBadge />` を absolute 配置 (top:8, right:12, zIndex:50) で mount。
-- auto-savepoint.ts は元々 `git -C ${dir} ...` 形式で runCommand 経由に設計されていたため、Plan B の execCommand (JNI fork+exec+pipe) にそのまま接続できた (Case C の rewrite は不要だった)。
-**Wave C 波及**: #60 (Command Blocks onBlockCompleted 復活) とは独立。Savepoint は blockCompleted ではなく terminal-output のファイル変更パターン検知 (5 秒 debounce) で発火するため、#60 の修正には依存しない。
-**実機検証待ち**: `echo ... > file` → 5 秒後に 💾 が右上にフラッシュ、git 経路で commit が積まれることを確認。初回は `initGitIfNeeded` が走る (cwd に .git が無ければ init + .gitignore 生成)。
-**tsc**: 0 errors
-**優先度**: P2
-
----
-
-## bug #65 — Immortal Sessions が機能していない (tmux セッション復元されない) (P1)
-
-**発見**: 2026-04-14 Phase 5-9 force-stop → 再起動後の状態確認
-**症状**: force-stop → 再起動後、ターミナル履歴がゼロ。vim セッションも復活せず fresh shell に戻った。MEMORY.md では 2026-03-26 に tmux + bridge で Immortal Sessions 実装済みとなっているが、Plan B 移行 (Termux 除去) で tmux 層が失われた可能性大。
-**疑い**: `~/shelly-bridge/start-shelly.sh` の tmux 起動経路が Termux 依存だったため Plan B で破棄された。現在は libbash.so 単独で fork-exec しているだけで tmux 層なし。
-**優先度**: P1 (主要セールスポイントなので解消必須、ただしリリース後でも可)
-
----
-
-## bug #64 — force-stop → 再起動後に Pane ヘッダー UI が消失する (P2)
-
-**発見**: 2026-04-14 Phase 5-9 再起動直後
-**症状**: 再起動後、ターミナル Pane の左上にあるはずの ←戻るボタンや 4-pane レイアウトボタンが表示されていない。Settings は残っている。
-**疑い**: 永続化された pane-store の state が復元される前に UI が描画され、レイアウトボタンの描画条件 (`slots.length > 0` など) に到達していない可能性。
-**優先度**: P2
-
----
-
-## bug #63 — vim から脱出できない (キー入力が swallow される疑い) (P0)
-
-**発見**: 2026-04-14 Phase 5-9 Immortal Sessions スモークテスト
-**症状**: `vim /tmp/test.txt` 実行 → vim が空バッファで起動 ("Type :qa and press <Enter> to exit Vim" メッセージ表示)。キー入力しても `:qa` が打てず脱出不可。
-**ログ観察**: `adb logcat --pid=618` で 15 秒ごとに `ShellyExec: exec FAILED: cat /proc/net/tcp{,6}` が繰り返されているが、vim セッションへの keyDown / InputConnection ログが一切出ていない。
-**疑い**:
-1. bug #58 (ペースト先頭欠落) で `vim ...` が `im ...` などに壊れた可能性
-2. bug #37 修正 (TerminalView.sendKeyEvent で KEYCODE_ESCAPE swallow) が副作用で他のキーコードも飲み込んでいる可能性
-3. vim は alt-buffer モードなので TerminalView 側のモード分岐が壊れている可能性
-**優先度**: P0 (リリースブロッカー — 実用的な終了操作が不可能)
-
----
-
-## bug #61 — CRT エフェクト全開で色ムラ (ビネット強度過剰) (P2)
-
-**発見**: 2026-04-14 Phase 5-8 Settings スモークテスト
-**症状**: CRT エフェクト intensity 最大にすると画面四隅で輝度差が出すぎ、右上が明るく左下が暗いムラが発生。ユーザー報告「CRT 全開だとムラが出る」。
-**方針**: ビネット係数の上限をクランプ、または intensity スライダーの max を 80% に抑制。
-**優先度**: P2
-
----
-
-## bug #62 — i18n 言語切替 (EN/JA) が UI に反映されない (P2)
-
-**発見**: 2026-04-14 Phase 5-8 Settings スモークテスト
-**症状**: Settings で言語を切替えても UI の文字が変わった様子がない。ユーザー報告「スクショの状態だと EN と JA の違いがわからん」。
-**疑い**: i18n リソースの切替フックは効いているが、UI 側の大半が英語固定 (Silkscreen フォント由来の大文字化もあり判別困難)、または翻訳キーが両言語で同一。
-**優先度**: P2
-
----
-
-## bug #60 — Command Blocks の視覚装飾 (セパレータ/バッジ/折りたたみ) が表示されない (P2)
-
-**発見**: 2026-04-14 Phase 5-7 Command Blocks スモークテスト
-**症状**: コマンド実行後の出力がプレーンテキスト表示のみ。MEMORY.md では 2026-04-06 に Kotlin Canvas 版 (BlockChromeRenderer + BlockAnimator) 実装済みだが、現ビルドでは罫線・バッジ・折りたたみ UI が一切描画されない。
-**疑い**: Plan B 移行時に BlockChromeRenderer のフック (onBlockStart / onBlockCompleted) が TerminalSession から外れた、または feature flag が無効。
-**優先度**: P2 (機能としては存在する想定、UX 改善項目)
-
----
-
-## bug #59 — `@agent` コマンドがインターセプトされず bash に渡される (P1) [根本原因: #60 依存]
-
-**2026-04-15 追加調査結果**: TerminalPane.tsx:588-641 の `onBlockCompleted` フックで既に実装済み (parseInput → parseAgentCommand → createAgent → synthetic success block で置換)。実機で再現するのは `onBlockCompleted` イベント自体が発火していないため = **bug #60 (Command Blocks 装飾なし) と同根**。block event が JS 側に届いていないのが根本原因。#60 を解決すれば #59 も自動的に直る見込み。
-
-**発見**: 2026-04-14 Phase 5 TASKS スモークテスト
-**症状**: ターミナルで `@agent test echo hello` を実行すると `libbash.so: @agent: command not found` が返り、TASKS セクションにも登録されない。MEMORY.md では 2026-04-06 に Background Agents 実装済みとなっているが、ターミナル入力フックが効いていない。
-**疑い**: Plan B 移行時に TerminalView / shelly-exec 経路へ乗り換えた際に `@agent` 前方一致フックが欠落、または tmux/bash セッションが直接受け取るようになった。
-**優先度**: P1
-
----
-
-## bug #36 — PORTS セクションが listener を検知しない (P1) [再現確認済み]
-
-**発見**: 2026-04-14 Phase 5 PORTS 実地検証
-**症状**: ターミナルで `nc -l -p 8080 &` を起動しても PORTS は "No listeners" のまま。複数回起動試行で `bind: Address already in use` が出ているので実際にはポートが開いているはず。
-**疑い**: `/proc/net/tcp{,6}` パース経路は実装済みだが、(a) 読み取り自体が失敗している (b) UI refresh トリガがない (c) filter 条件が厳しすぎて除外している、のどれか。
-**優先度**: P1
-
----
-
-## bug #58 — ペースト時に先頭 1 文字目が `:` に置換される (P0 近い)
-
-**発見**: 2026-04-14 Phase 5 PORTS 検知テスト中（既知症状の再現確認）
-**症状**: クリップボードからペーストすると先頭 1 文字目が `:` になる。`python3 -m http.server 8080 &` を貼ると `:ython3 -m http.server 8080 &` 相当になり、bash は行頭の `:`（null command）以降を独立コマンドとして解釈、結果として `python` が消えたように見えて `3 -m ...` が command not found で落ちる。
-**関連**: bug #27 (ペースト末尾 `"` 残留・`\r` 欠落) と同じペースト経路の問題。前回セッションで修正したつもりが未解消。
-**ユーザー指摘**: 「コピペで1文字目が:になるのまだ直ってない」(2026-04-14)
-**影響範囲**: すべてのペースト操作。CLI 実用性に直結する致命的バグ。
-**影響範囲**: すべてのペースト操作。CLI 実用性に直結する致命的バグ。
-**優先度**: P1 (リリース後即修正推奨)
-
----
-
-## bug #54 — Font picker が Silkscreen 以外反映されない (P1)
-
-**発見**: 2026-04-14 Phase 5 スモークテスト
-**症状**: Settings の Font 切替で Silkscreen (8bit) との差は明確に見えるが、JetBrains Mono など他のフォントに切替えても UI 全体のフォント形状が変わらない。
-**疑い**: 以前の monkey-patch (Text の defaultProps 上書き) が Silkscreen を強制適用しているため、他 preset の値が無視される。または theme-engine 側で font family 値が伝播していない。
-**優先度**: P1
-
----
-
-## bug #57 — Groq 応答のコードブロックが ActionBlock 化されない (P1)
-
-**発見**: 2026-04-14 Phase 3 AI Edit golden path スモークテスト中
-**症状**: Cerebras がレート制限 → Groq にフォールバック、Groq は正しく ```echo "hello shelly" > ~/test-edit.txt``` を含む応答を返すが、ChatBubble に「実行 / Apply」ボタンが一切表示されない。コードブロックが普通の markdown として描画されているだけ。
-**疑い**: bug #39/#40 の AI Edit ActionBlock 実装が Cerebras 経路のみで Groq 経路にフックが入っていない。`parse-code-blocks` → ActionBlock 変換ルートの provider 分岐要確認。
-**影響範囲**: Groq を選んでいるユーザー全員 AI Edit 使えない。Cerebras 一択になる。
-**優先度**: P1
-
----
-
-## bug #56 — ペイン内コンテンツがペインサイズに最適化されない (P1)
-
-**発見**: 2026-04-14 Phase 2 4-pane preset スモークテスト中
-**症状**: 4-pane (2×2) に分割したとき、各ペイン (Terminal / Browser / AI Chat / Markdown) の中身が小さい幅・高さにリフローしない。フォントサイズ・パディング・カラム数が固定で、コンテンツが溢れる / はみ出す。
-**影響範囲**: 全ペインタイプ共通の可能性あり。特に 4-pane 時の視認性が悪い。
-**関連**: #51 (theme presets) / #52・#53 (preview pane) / #54 (font picker) / #55 (theme switch 残留) と一緒にビジュアル系まとめ対応推奨。
-**方針候補**: 親サイズ検知 → フォント段階縮小、密度プリセット (compact/normal)、または子コンポーネント側で onLayout → 自身の親サイズ追従に切替。
-**優先度**: P1 (リリース後の品質改善バッチで対応)
-
----
-
 ## History
 
 - **2026-04-14**: 初版作成。v0.1.0 スモークテスト中の発見を整理。コードレビュー / セキュリティ / アーキテクチャ / A11y / 競合 5 エージェントの指摘のうち、出荷ブロッカーではない項目をすべて P1-P3 に振り分け。
 - **2026-04-14**: Task 5 スモークテスト時にユーザーから「戻るボタン」「モデル自動検出」「自動セットアップ」の 3 つの追加要望あり → BACK ボタン (P1)、モデル自動検出強化 (P1)、自動 Recommended セットアップ (P2) として登録。
 - **2026-04-14**: Task 7 (Ports monitor) スモークテストで bug #27 発覚。`node -e "..."` をペースト + Enter してもコマンドが実行されず、末尾 `"` が残り `^[` が混入。通常タイプ経路は OK。ペースト経路の `\r` 送信欠落が疑わしい。P1 に登録し次リリースで対応。Task 7 自体はスキップして Task 8 に進行。
 - **2026-04-14**: Task 8.2 (AI ペイン) スモークテストで bug #28 発覚。Cerebras 応答自体は正常だが、AI ペインの全テキスト (bubble, header, YOU/AI label) が大文字グリフで表示される。原因は Silkscreen フォントが小文字コードポイントを大文字形状で描画する仕様。ターミナルは JetBrains Mono 済だが UI 側は Silkscreen のまま。個別対応ではなく UI 全面一括置換として P1 に登録。bug #23 を統合・拡張。
-- **2026-04-14**: Task 8.3 (Browser ペイン) スモークテストで bug #29 / #30 発覚。初回 Add Pane は成功するが 2 回目以降が無反応。原因調査で `AddPaneSheet` の `focusedPaneId` が split 後に stale になっていることを特定 (splitPane が新 ID の leaf を作るため、元 focus ID がツリーに存在しなくなる)。#29 part 1 として `leafExists` ガード + `findLastLeafId` フォールバックを実装 (コミット `<次のコミット SHA>`)、tsc 0 エラー。実機検証は次セッション。splitter drag (#30) は同根の可能性があるが未調査。
+- **2026-04-14**: Task 8.3 (Browser ペイン) スモークテストで bug #29 / #30 発覚。初回 Add Pane は成功するが 2 回目以降が無反応。原因調査で `AddPaneSheet` の `focusedPaneId` が split 後に stale になっていることを特定。#29 part 1 + part 2 で修正済 (0d7f0b40 / 409b4642)、実機検証は次セッション。
+- **2026-04-14**: Phase 5 で bug #36 / #51-#67 を発見、並列 5 agent で原因調査。
+- **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
+- **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 
 ---
 

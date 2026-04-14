@@ -3,7 +3,7 @@ import { View, Text, Pressable, StyleSheet, Animated } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import type { AiBlock as AiBlockType } from '@/store/types';
 import { getTargetColor, getTargetLabel } from '@/lib/input-router';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 type Props = {
   block: AiBlockType;
@@ -30,6 +30,7 @@ export const AiBlock = React.memo(function AiBlock({
   onSelectTool,
   fontSize = 14,
 }: Props) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const targetColor = getTargetColor(block.target);
   const smallFont = Math.max(11, fontSize - 2);

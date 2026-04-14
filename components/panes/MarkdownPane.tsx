@@ -20,6 +20,7 @@ import { useTheme } from '@/lib/theme-engine';
 import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
+import { usePaneLayout } from '@/hooks/use-pane-density';
 
 // ── Module-level state for imperative openMarkdownFile ────────────────────────
 
@@ -58,11 +59,20 @@ export default function MarkdownPane() {
   // prose reflow instead of overflowing.
   const mp = useContext(MultiPaneContext);
   const pw = mp?.paneWidth ?? 0;
+  const ph = mp?.paneHeight ?? 0;
   const mdScale = pw > 0 && pw < 260 ? 0.65
                 : pw > 0 && pw < 360 ? 0.78
                 : pw > 0 && pw < 480 ? 0.9
                 : 1;
   const sf = (n: number) => Math.max(9, Math.round(n * mdScale));
+  // Wave F — cap prose width so long paragraphs reflow inside the pane
+  // instead of being pushed out by the right-hand chrome. We subtract a
+  // conservative padding budget (16 from scrollContent + 6 safety).
+  const layout = usePaneLayout(pw, ph);
+  const proseMaxWidth = Math.max(pw - 44, 200);
+  // When the pane drops to compact density, halve the bullet indent so
+  // list items don't wrap on every word.
+  const listIndent = layout.density === 'compact' ? 8 : 16;
 
   // Register setter so openMarkdownFile can push content in
   const stableSetContent = useCallback<SetContentFn>((c, fp) => {
@@ -94,6 +104,7 @@ export default function MarkdownPane() {
       color: theme.colors.foreground,
       fontSize: sf(14),
       lineHeight: sf(22),
+      maxWidth: proseMaxWidth,
     },
     heading1: {
       color: theme.colors.accent,
@@ -145,6 +156,7 @@ export default function MarkdownPane() {
       fontSize: sf(14),
       lineHeight: sf(22),
       marginVertical: 6,
+      maxWidth: proseMaxWidth,
     },
     code_inline: {
       backgroundColor: '#1A1A1A',
@@ -185,6 +197,8 @@ export default function MarkdownPane() {
       color: '#ECEDEE',
       fontSize: sf(14),
       lineHeight: sf(22),
+      maxWidth: proseMaxWidth,
+      paddingLeft: listIndent,
     },
     bullet_list_icon: {
       color: theme.colors.accent,

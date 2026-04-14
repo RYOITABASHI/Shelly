@@ -7,7 +7,7 @@
 
 import React, { memo, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView } from 'react-native';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import Animated, { SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Haptics from 'expo-haptics';
@@ -17,7 +17,8 @@ import type { SelectedElement } from '@/lib/click-to-edit';
 
 // ─── Presets ────────────────────────────────────────────────────────────────
 
-const getPresets = () => [
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+const getPresets = (t: TranslateFn) => [
   { label: t('edit_sheet.preset_larger'), icon: 'zoom-in' as const, instruction: t('edit_sheet.preset_larger_inst') },
   { label: t('edit_sheet.preset_smaller'), icon: 'zoom-out' as const, instruction: t('edit_sheet.preset_smaller_inst') },
   { label: t('edit_sheet.preset_color'), icon: 'palette' as const, instruction: t('edit_sheet.preset_color_inst') },
@@ -38,6 +39,7 @@ type Props = {
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export const EditSheet = memo(function EditSheet({ visible, element, onSubmit, onClose }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [instruction, setInstruction] = useState('');
 
@@ -48,7 +50,7 @@ export const EditSheet = memo(function EditSheet({ visible, element, onSubmit, o
     setInstruction('');
   }, [instruction, element, onSubmit]);
 
-  const PRESETS = getPresets();
+  const PRESETS = getPresets(t);
 
   const handlePreset = useCallback((preset: ReturnType<typeof getPresets>[number]) => {
     if (!element) return;

@@ -17,8 +17,8 @@ import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 
-/** Context to let child screens know their pane width */
-export const MultiPaneContext = createContext<{ paneWidth: number } | null>(null);
+/** Context to let child screens know their pane width/height */
+export const MultiPaneContext = createContext<{ paneWidth: number; paneHeight: number } | null>(null);
 
 /** Context to let child pane components know their leaf ID */
 export const PaneIdContext = React.createContext<string>('');
@@ -50,6 +50,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const [splitMenuVisible, setSplitMenuVisible] = useState(false);
   const [agentMenuVisible, setAgentMenuVisible] = useState(false);
   const [paneWidth, setPaneWidth] = useState(0);
+  const [paneHeight, setPaneHeight] = useState(0);
   const [notification, setNotification] = useState<{ status: 'done' | 'error' } | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasBrowserRef = useRef(tab === 'browser');
@@ -64,7 +65,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const activeRepoPath = useSidebarStore((s) => s.activeRepoPath);
   const Component = useMemo(() => entry.getComponent(), [tab]);
   const BrowserComponent = useMemo(() => PANE_REGISTRY['browser'].getComponent(), []);
-  const ctxValue = useMemo(() => ({ paneWidth }), [paneWidth]);
+  const ctxValue = useMemo(() => ({ paneWidth, paneHeight }), [paneWidth, paneHeight]);
 
   useEffect(() => {
     if (tab === 'browser') {
@@ -102,7 +103,10 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
     <View
       style={styles.pane}
       onTouchStart={() => setFocusedPane(leafId)}
-      onLayout={(e) => setPaneWidth(e.nativeEvent.layout.width)}
+      onLayout={(e) => {
+        setPaneWidth(e.nativeEvent.layout.width);
+        setPaneHeight(e.nativeEvent.layout.height);
+      }}
     >
       {/* Pane header */}
       <View style={[styles.header, { borderTopColor: agentColor }]}>

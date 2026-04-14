@@ -11,7 +11,13 @@ import java.io.FileOutputStream
 
 class ShellyTerminalSession(
     val sessionId: String,
-    private val emitEvent: (name: String, body: Map<String, Any?>) -> Unit,
+    /**
+     * JS-side event sink. Re-assignable so that if [TerminalEmulatorModule]
+     * is re-instantiated (RN reload, dev-client refresh) while this session is
+     * still alive in the Service registry, the new Module can rewire its
+     * sendEvent bridge without destroying the underlying PTY child.
+     */
+    @Volatile var emitEvent: (name: String, body: Map<String, Any?>) -> Unit,
     private val masterFd: Int,
     private val childPid: Int,
     rows: Int,

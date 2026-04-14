@@ -35,7 +35,7 @@ import {
   ValidationError,
 } from '@/lib/snippet-io';
 import { useSnippetStore } from '@/store/snippet-store';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,6 +55,7 @@ type Props = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ImportModal({ visible, onClose }: Props) {
+  const { t } = useTranslation();
   const { snippets, setSnippets } = useSnippetStore();
 
   const [step, setStep] = useState<Step>('idle');

@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { CreatorProject, CreatorSessionStatus } from '@/store/types';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ export function ResultLane({
   recipeSaved,
   termuxConnected = false,
 }: Props) {
+  const { t } = useTranslation();
   const isDone = status === 'done';
   const isError = status === 'error';
   const isActive = isDone || isError;
@@ -101,7 +102,7 @@ export function ResultLane({
           <View style={styles.infoBox}>
             <InfoRow label={t('creator.result_save_location')} value={`~/${project.path}`} />
             <InfoRow label={t('creator.result_file_count')} value={t('creator.result_files', { n: project.files.length })} />
-            <InfoRow label={t('creator.result_type')} value={typeLabel(project.projectType)} />
+            <InfoRow label={t('creator.result_type')} value={typeLabel(project.projectType, t)} />
           </View>
 
           {/* File list */}
@@ -194,7 +195,10 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function typeLabel(type: string): string {
+function typeLabel(
+  type: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
   const map: Record<string, string> = {
     web: t('creator.type_web'),
     script: t('creator.type_script'),

@@ -11,7 +11,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
 import { GEMINI_API_BASE } from '@/lib/gemini';
 import { groqTranscribe } from '@/lib/groq';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 /**
  * Tear down an expo-audio AudioRecorder completely.
@@ -75,6 +75,7 @@ type SpeechState = {
 };
 
 export function useSpeechInput() {
+  const { t } = useTranslation();
   const [state, setState] = useState<SpeechState>({
     status: 'idle',
     transcribedText: '',

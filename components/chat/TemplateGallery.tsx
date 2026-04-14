@@ -12,7 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { TEMPLATE_GALLERY, type TemplateWithWizard, type WizardStep } from '@/lib/project-templates';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Props ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,7 @@ type Props = {
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export const TemplateGallery = memo(function TemplateGallery({ onSelectTemplate, onFreeInput }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateWithWizard | null>(null);
   const [wizardStep, setWizardStep] = useState(0);

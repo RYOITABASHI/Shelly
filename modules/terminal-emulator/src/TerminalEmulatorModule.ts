@@ -8,7 +8,7 @@ export interface SessionConfig {
 }
 
 declare class TerminalEmulatorModuleType extends NativeModule {
-  createSession(config: SessionConfig): Promise<string>;
+  createSession(config: SessionConfig): Promise<{ sessionId: string; resumed: boolean }>;
   destroySession(sessionId: string): Promise<void>;
   writeToSession(sessionId: string, data: string): Promise<void>;
   sendKeyEvent(sessionId: string, keyCode: number, modifiers: number): Promise<void>;

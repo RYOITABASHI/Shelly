@@ -220,12 +220,20 @@ export default function TerminalScreen() {
       // Destroy any stale session
       try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch (_) {}
 
-      // Create session via JNI forkpty
-      await TerminalEmulator.createSession({
+      // Create session via JNI forkpty. If a live session with the same id
+      // already exists in the Service-owned registry (Case B — the foreground
+      // service kept the forked PTY child alive across app background / RN
+      // reload), the native side returns resumed=true and we skip the Case C
+      // transcript replay below.
+      const createResult = await TerminalEmulator.createSession({
         sessionId: session.nativeSessionId,
         rows: 24,
         cols: 80,
       });
+      const resumedLive = createResult?.resumed === true;
+      if (resumedLive) {
+        logInfo('Terminal', 'createNativeSession: resumed live session ' + session.nativeSessionId);
+      }
 
       // Start foreground service to prevent task-kill (may fail if Service class missing)
       try { await TerminalEmulator.startSessionService(); } catch (_) {}
@@ -237,10 +245,14 @@ export default function TerminalScreen() {
         ),
       }));
 
-      // bug #65: Immortal-ish — replay previous transcript snapshot into the
-      // fresh emulator so the user sees their last-session history on startup.
-      // This is visual-only (Case C pseudo-immortal); the shell itself is new.
-      if (session.transcriptSnapshot && session.transcriptSnapshot.length > 0) {
+      // bug #65: Case C fallback — only when the native side did NOT resume a
+      // live session (i.e. the process was killed and forked afresh). Replay
+      // the previous transcript snapshot into the fresh emulator so the user
+      // sees their last-session history on startup. Visual-only; the shell
+      // itself is new. When resumedLive is true the real interactive state
+      // (vim, claude --continue, REPLs) is still alive and replay would only
+      // double-print history, so we skip it.
+      if (!resumedLive && session.transcriptSnapshot && session.transcriptSnapshot.length > 0) {
         try {
           const header = '\r\n\x1b[2m── previous session (restored) ──\x1b[0m\r\n';
           const footer = '\r\n\x1b[2m── end of restored history — fresh shell below ──\x1b[0m\r\n';

@@ -36,7 +36,7 @@ import {
   DuplicateAction,
 } from '@/lib/project-io';
 import { useCreatorStore } from '@/store/creator-store';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,7 @@ type Props = {
 };
 
 export function ImportProjectsModal({ visible, onClose }: Props) {
+  const { t } = useTranslation();
   const { projects, setProjects } = useCreatorStore();
 
   const [step, setStep] = useState<Step>('idle');

@@ -6,7 +6,7 @@
  */
 
 import React, { useCallback, useEffect } from 'react';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import {
   View,
   Text,
@@ -52,6 +52,7 @@ const STATUS_ICONS: Record<VoiceChatStatus, keyof typeof MaterialIcons.glyphMap>
 };
 
 export function VoiceChat({ visible, onClose }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const {
     state,

@@ -7,7 +7,7 @@
 
 import React, { memo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Haptics from 'expo-haptics';
@@ -28,6 +28,7 @@ type Props = {
 };
 
 export const ErrorSummaryBubble = memo(function ErrorSummaryBubble({ data, onSuggestFix, onAskTeam, onExecuteFix }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
 
   // Try to extract a quick-fix command from common error patterns

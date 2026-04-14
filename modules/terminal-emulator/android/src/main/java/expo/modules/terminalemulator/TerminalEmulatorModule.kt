@@ -13,11 +13,17 @@ import expo.modules.kotlin.modules.ModuleDefinition
 class TerminalEmulatorModule : Module() {
 
     companion object {
-        /** Global session registry — TerminalViewModule reads from this to attach views */
-        val sessionRegistry = mutableMapOf<String, ShellyTerminalSession>()
+        /**
+         * Session registry — authoritative storage lives on
+         * [TerminalSessionService.sessionRegistry] so sessions can outlive
+         * Module re-instantiation. This accessor is kept as a backward-compat
+         * alias for [expo.modules.terminalview.TerminalViewModule], which reads
+         * the registry to attach native views.
+         */
+        val sessionRegistry get() = TerminalSessionService.sessionRegistry
     }
 
-    private val sessions get() = sessionRegistry
+    private val sessions get() = TerminalSessionService.sessionRegistry
 
     private var wakeLock: PowerManager.WakeLock? = null
     private val wakeLockLock = Any()
@@ -62,14 +68,42 @@ class TerminalEmulatorModule : Module() {
 
         Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize")
 
+        // Module (re-)instantiation: rewire emitEvent on any sessions that
+        // outlived the previous Module instance. Without this, live sessions
+        // from before an RN reload would keep calling a stale sendEvent that
+        // no longer reaches JS, and the UI would appear to freeze.
+        OnCreate {
+            for (session in sessions.values) {
+                session.emitEvent = ::emitEvent
+            }
+            Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
+        }
+
         AsyncFunction("createSession") { config: Map<String, Any?> ->
             val sessionId = config["sessionId"] as? String
                 ?: throw IllegalArgumentException("sessionId is required")
             val rows = (config["rows"] as? Number)?.toInt() ?: 24
             val cols = (config["cols"] as? Number)?.toInt() ?: 80
 
-            if (sessions.containsKey(sessionId)) {
-                return@AsyncFunction sessionId
+            // Case B reattach: live session already exists in the Service
+            // registry. Rewire its emitEvent to this Module instance (harmless
+            // no-op if already wired) and tell JS it was resumed so TerminalPane
+            // can skip the Case C transcript replay.
+            val existing = sessions[sessionId]
+            if (existing != null) {
+                existing.emitEvent = ::emitEvent
+                if (existing.isAlive()) {
+                    acquireWakeLock()
+                    return@AsyncFunction mapOf(
+                        "sessionId" to sessionId,
+                        "resumed" to true
+                    )
+                } else {
+                    // Stale entry — clean up and fall through to fresh fork.
+                    Log.w("TerminalEmulator", "Session $sessionId in registry but dead — recreating")
+                    try { existing.destroy() } catch (_: Exception) {}
+                    sessions.remove(sessionId)
+                }
             }
 
             val context = appContext.reactContext ?: throw IllegalStateException("No React context")
@@ -107,7 +141,10 @@ class TerminalEmulatorModule : Module() {
 
             sessions[sessionId] = session
             acquireWakeLock()
-            sessionId
+            mapOf(
+                "sessionId" to sessionId,
+                "resumed" to false
+            )
         }
 
         AsyncFunction("destroySession") { sessionId: String ->

@@ -112,19 +112,22 @@ const AGENT_LABEL_GLOWS: Record<string, TextStyle> = {
 type BubbleProps = {
   message: ChatMessage;
   isStreaming: boolean;
+  maxWidth?: number;
 };
 
 const MessageBubble = React.memo(function MessageBubble({
   message,
   isStreaming,
+  maxWidth,
 }: BubbleProps) {
+  const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
   const displayText = message.streamingText ?? message.content;
 
   if (message.role === 'system') {
     return (
-      <View style={bubbleStyles.systemRow}>
+      <View style={[bubbleStyles.systemRow, containerMaxWidth]}>
         <Text style={bubbleStyles.systemText}>{displayText}</Text>
       </View>
     );
@@ -132,7 +135,7 @@ const MessageBubble = React.memo(function MessageBubble({
 
   if (isUser) {
     return (
-      <View style={bubbleStyles.messageContainer}>
+      <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
         <Text style={bubbleStyles.roleLabel}>YOU</Text>
         <Text style={bubbleStyles.userText} selectable>{displayText}</Text>
       </View>
@@ -149,7 +152,7 @@ const MessageBubble = React.memo(function MessageBubble({
   const labelGlow = AGENT_LABEL_GLOWS[agentKey] ?? AGENT_LABEL_GLOWS.default;
 
   return (
-    <View style={bubbleStyles.messageContainer}>
+    <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
       <Text style={[bubbleStyles.roleLabelClaude, { color: labelColor }, labelGlow]}>
         {agentLabel}
       </Text>
@@ -233,10 +236,19 @@ export default function AIPane() {
   // clipped by the pane chrome.
   const mp = useContext(MultiPaneContext);
   const pw = mp?.paneWidth ?? 0;
+  const ph = mp?.paneHeight ?? 0;
   const isCompactPane = pw > 0 && pw < 360;
   const compactOverlay = isCompactPane
     ? { paddingHorizontal: 6 }
     : null;
+  // Wave F — cap chat bubble width at 85% of the pane so long responses
+  // do not run into the right-edge chrome in 2×2 grid layouts. Fall back
+  // to 0 (unconstrained) when paneWidth is not yet measured.
+  const bubbleMaxWidth = pw > 0 ? Math.max(Math.floor(pw * 0.85), 180) : 0;
+  // ph is captured for future height-aware tweaks (e.g. clamping the
+  // input-row footprint in short panes). Referenced to satisfy the
+  // noUnusedLocals compiler option.
+  void ph;
 
   const { dispatch, cancelStreaming, isStreaming: dispatchStreaming } = useAIPaneDispatch(paneId);
 
@@ -317,9 +329,10 @@ export default function AIPane() {
       <MessageBubble
         message={item}
         isStreaming={isStreaming}
+        maxWidth={bubbleMaxWidth}
       />
     ),
-    [isStreaming],
+    [isStreaming, bubbleMaxWidth],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);

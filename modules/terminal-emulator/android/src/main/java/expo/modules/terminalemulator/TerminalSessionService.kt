@@ -29,6 +29,20 @@ class TerminalSessionService : Service() {
         const val NOTIFICATION_ID = 7734  // "SHEL" on a phone keypad
         const val ACTION_UPDATE_NOTIFICATION = "expo.modules.terminalemulator.UPDATE_NOTIFICATION"
         const val ACTION_STOP = "expo.modules.terminalemulator.STOP"
+
+        /**
+         * Authoritative session registry. Lives here (Service companion) rather
+         * than on [TerminalEmulatorModule] so that live PTY sessions survive
+         * Module re-instantiation events (RN bridge reload, dev-client refresh,
+         * or any future scenario where the Expo Module is recreated without the
+         * OS process dying). As long as the foreground service is alive, the
+         * Linux process — and with it the forked PTY children — stays alive,
+         * so these ShellyTerminalSession handles remain valid.
+         *
+         * When the OS kernel OOM-kills the whole process, the companion object
+         * resets too and callers fall back to Case C (transcript replay).
+         */
+        val sessionRegistry = mutableMapOf<String, ShellyTerminalSession>()
     }
 
     override fun onCreate() {
@@ -111,7 +125,7 @@ class TerminalSessionService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val sessionCount = TerminalEmulatorModule.sessionRegistry.size
+        val sessionCount = sessionRegistry.size
         val contentText = when {
             extraInfo?.isNotBlank() == true -> extraInfo
             sessionCount == 1 -> "Terminal session active"
