@@ -278,6 +278,90 @@ async function getTerminalContextForPrompt(prompt: string, isWide: boolean): Pro
  * typical command + output pair. Per-line truncation avoids a single
  * 20k-char runaway line dominating the whole budget.
  */
+// ─── Edit-intent file context injection (bug #39) ───────────────────────────
+
+const EDIT_INTENT_RE = /(編集|変え|変更|直し|修正|書き換え|replace|edit|update|change|modify|fix|rewrite|rename)/i;
+/**
+ * Extract filename candidates from the user prompt and recent terminal output.
+ * Matches typical paths: `foo.js`, `./src/app.ts`, `src/components/X.tsx`, `README.md`.
+ */
+export function extractFileCandidates(prompt: string, terminalTail: string): string[] {
+  const text = `${prompt}\n${terminalTail}`;
+  const re = /(?:^|[\s"'`(])((?:\.{1,2}\/)?[\w./-]+\.[A-Za-z0-9]{1,6})/g;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const p = m[1];
+    // Filter noise: avoid all-numeric, version-like strings, and very long paths
+    if (/^\d+(?:\.\d+)+$/.test(p)) continue;
+    if (p.length > 200) continue;
+    if (!/\.[A-Za-z]/.test(p)) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/**
+ * Return true when the user prompt looks like an edit request.
+ */
+export function hasEditIntent(prompt: string): boolean {
+  return EDIT_INTENT_RE.test(prompt);
+}
+
+/**
+ * Read candidate files and build a context block for injection.
+ * Each file is capped at ~2000 chars (head+tail if larger).
+ * Returns empty string when nothing to inject.
+ */
+async function getFileContextForPrompt(
+  prompt: string,
+  runCommand: (cmd: string, opts?: Record<string, unknown>) => Promise<{ stdout?: string; exitCode?: number | null }>,
+): Promise<string> {
+  if (!hasEditIntent(prompt)) return '';
+
+  // Pull latest terminal tail for candidate extraction.
+  let terminalTail = '';
+  try {
+    const activeSessionId = useTerminalStore.getState().activeSessionId;
+    if (activeSessionId) {
+      terminalTail = await TerminalEmulator.getTranscriptText(activeSessionId, 20);
+    }
+  } catch {}
+
+  const candidates = extractFileCandidates(prompt, terminalTail);
+  if (candidates.length === 0) return '';
+
+  const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const blocks: string[] = [];
+  for (const path of candidates) {
+    try {
+      const res = await runCommand(`cat ${shQuote(path)} 2>/dev/null`, {});
+      const content = (res.stdout ?? '').toString();
+      if (!content) continue;
+      let snippet = content;
+      const MAX = 2000;
+      if (snippet.length > MAX) {
+        snippet = snippet.slice(0, MAX / 2) + '\n…[truncated]…\n' + snippet.slice(-MAX / 2);
+      }
+      blocks.push(`--- File: ${path} ---\n${snippet}`);
+      if (blocks.length >= 3) break;
+    } catch {}
+  }
+  if (blocks.length === 0) return '';
+
+  const suffix =
+    '\n---\nThe user wants to edit one of the files shown above. ' +
+    'Produce the edit as a unified diff inside a ```diff fenced block, ' +
+    'OR as an executable shell snippet inside a ```sh fenced block that rewrites the file ' +
+    '(for small files, `cat > path <<\'EOF\'` is fine; for single-line tweaks, prefer `sed -i`). ' +
+    'Do NOT explain the write mechanism in prose — return the runnable fenced block so the user can tap Execute.';
+  return `\n\n--- Edit Target Files ---\n${blocks.join('\n\n')}${suffix}`;
+}
+
 function truncateTerminalContext(raw: string): string {
   const MAX_CHARS = 4500;
   const MAX_LINE_CHARS = 400;
@@ -480,6 +564,7 @@ export function useAIDispatch() {
 
         // Cross-pane: inject terminal context
         const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
+        const fileCtx = await getFileContextForPrompt(prompt, bridgeRunCommand as any).catch(() => '');
 
         // Load all context layers in parallel
         const ollamaHistory = toOllamaHistory(messages);
@@ -530,7 +615,7 @@ export function useAIDispatch() {
           ollamaHistory,
           projectCtx || undefined,
           userProfile || undefined,
-          [customCtx, decisionLog ? `\n# Past Design Decisions\n${decisionLog}` : '', termCtx].filter(Boolean).join('\n') || undefined,
+          [customCtx, decisionLog ? `\n# Past Design Decisions\n${decisionLog}` : '', termCtx, fileCtx].filter(Boolean).join('\n') || undefined,
           undefined, // toolStatuses
           undefined, // defaultAgent
           signal,
@@ -598,7 +683,8 @@ export function useAIDispatch() {
 
         // Cross-pane: inject terminal context
         const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
-        const cerebrasPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
+        const fileCtx = await getFileContextForPrompt(prompt, bridgeRunCommand as any).catch(() => '');
+        const cerebrasPrompt = (termCtx || fileCtx) ? promptWithFiles + termCtx + fileCtx : promptWithFiles;
 
         const result = await cerebrasChatStream(
           cerebrasKey,
@@ -726,7 +812,8 @@ export function useAIDispatch() {
 
         // Cross-pane: inject terminal context
         const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
-        const groqPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
+        const fileCtx = await getFileContextForPrompt(prompt, bridgeRunCommand as any).catch(() => '');
+        const groqPrompt = (termCtx || fileCtx) ? promptWithFiles + termCtx + fileCtx : promptWithFiles;
 
         const result = await groqChatStream(
           groqKey,
@@ -863,7 +950,8 @@ export function useAIDispatch() {
         const pplxHistory = toPerplexityHistory(messages);
         // Cross-pane: inject terminal context
         const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
-        const pplxPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
+        const fileCtx = await getFileContextForPrompt(prompt, bridgeRunCommand as any).catch(() => '');
+        const pplxPrompt = (termCtx || fileCtx) ? promptWithFiles + termCtx + fileCtx : promptWithFiles;
         await perplexitySearchStream(apiKey, pplxPrompt, (chunk, done, cits) => {
           if (signal.aborted) return;
           if (chunk) {
@@ -903,7 +991,8 @@ export function useAIDispatch() {
       // APIキーなし → Gemini CLIをネイティブ実行
       if (!apiKey) {
         const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
-        const contextualPrompt = promptWithFiles + toTextContext(messages) + termCtx;
+        const fileCtx = await getFileContextForPrompt(prompt, bridgeRunCommand as any).catch(() => '');
+        const contextualPrompt = promptWithFiles + toTextContext(messages) + termCtx + fileCtx;
         const escaped = contextualPrompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
         const cliCommand = `gemini --prompt "${escaped}"`;
         let accumulated = `$ ${cliCommand}\n\n`;
@@ -954,7 +1043,8 @@ export function useAIDispatch() {
         const geminiHistory = toGeminiHistory(messages);
         // Cross-pane: inject terminal context
         const termCtx = await getTerminalContextForPrompt(prompt, isWide ?? false);
-        const geminiPrompt = termCtx ? promptWithFiles + termCtx : promptWithFiles;
+        const fileCtx = await getFileContextForPrompt(prompt, bridgeRunCommand as any).catch(() => '');
+        const geminiPrompt = (termCtx || fileCtx) ? promptWithFiles + termCtx + fileCtx : promptWithFiles;
         const result = await geminiChatStream(apiKey, geminiPrompt, (chunk, done) => {
           if (signal.aborted) return;
           if (chunk) {

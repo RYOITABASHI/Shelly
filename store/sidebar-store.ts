@@ -1,5 +1,7 @@
 // store/sidebar-store.ts
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { execCommand } from '@/hooks/use-native-exec';
 import { logInfo, logError } from '@/lib/debug-logger';
 
@@ -23,7 +25,10 @@ interface SidebarState {
   loadRepos: () => Promise<void>;
 }
 
-export const useSidebarStore = create<SidebarState>((set, get) => ({
+// bug #50: persist sidebar mode / open sections / repo list across lmkd kills
+export const useSidebarStore = create<SidebarState>()(
+  persist(
+    (set, get) => ({
   mode: 'expanded',
   openSections: { tasks: true, repos: true, files: true, device: false, ports: false, profiles: false },
   activeRepoPath: null,
@@ -63,4 +68,17 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
       logError('Sidebar', 'loadRepos failed', e);
     }
   },
-}));
+    }),
+    {
+      name: 'sidebar-store-v1',
+      storage: createJSONStorage(() => AsyncStorage),
+      partialize: (s) => ({
+        mode: s.mode,
+        openSections: s.openSections,
+        activeRepoPath: s.activeRepoPath,
+        repoPaths: s.repoPaths,
+      }),
+      version: 1,
+    }
+  )
+);

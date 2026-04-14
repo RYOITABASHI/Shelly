@@ -67,6 +67,7 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-multi-window",
     "./plugins/with-android-security",
     "./plugins/with-terminal-service",
+    "./plugins/with-saved-instance-state",
     [
       "expo-audio",
       {

@@ -7,10 +7,66 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
 import { GEMINI_API_BASE } from '@/lib/gemini';
 import { groqTranscribe } from '@/lib/groq';
 import { t } from '@/lib/i18n';
+
+/**
+ * Tear down an expo-audio AudioRecorder completely.
+ *
+ * bug #46 (mic stuck) の根本原因対応:
+ *   - recording.stop() だけでは native の MediaRecorder ハンドルも
+ *     Android AudioFocus も解放されず、次に他アプリがマイクを使おうと
+ *     すると「他のアプリで使用中」になる。
+ *   - SharedObject.release() でネイティブインスタンスを解放し、
+ *     setIsAudioActiveAsync(false) で AudioFocus を明示的に手放す。
+ *
+ * どの経路から呼ばれても throw しない (best-effort teardown)。
+ */
+export async function releaseRecorder(recording: any): Promise<void> {
+  if (!recording) return;
+  try {
+    if (recording.isRecording && typeof recording.stop === 'function') {
+      await recording.stop();
+    } else if (typeof recording.stop === 'function') {
+      // stop() は idempotent。既に止まっていても安全
+      try { await recording.stop(); } catch { /* already stopped */ }
+    } else if (typeof recording.stopAndUnloadAsync === 'function') {
+      try { await recording.stopAndUnloadAsync(); } catch { /* ignore */ }
+    }
+  } catch (e) {
+    console.warn('[SpeechInput] recorder.stop failed:', e);
+  }
+  try {
+    // SharedObject.release() — ネイティブハンドルを解放
+    if (typeof recording.release === 'function') {
+      recording.release();
+    } else if (typeof recording.remove === 'function') {
+      recording.remove();
+    }
+  } catch (e) {
+    console.warn('[SpeechInput] recorder.release failed:', e);
+  }
+  try {
+    const { AudioModule } = await import('expo-audio');
+    // AudioFocus を明示的に abandon (bug #45)
+    if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
+      await AudioModule.setIsAudioActiveAsync(false);
+    }
+    // allowsRecording を切って AudioSession / AudioManager を通常状態に戻す
+    if (typeof AudioModule.setAudioModeAsync === 'function') {
+      await AudioModule.setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        interruptionMode: 'mixWithOthers',
+      });
+    }
+  } catch (e) {
+    console.warn('[SpeechInput] AudioFocus abandon failed:', e);
+  }
+}
 
 type SpeechState = {
   status: 'idle' | 'recording' | 'transcribing';
@@ -35,10 +91,18 @@ export function useSpeechInput() {
         return;
       }
 
+      // bug #45: YouTube などのバックグラウンド再生を一時停止させるため
+      // interruptionMode: 'doNotMix' (= Android の AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+      // 相当) で排他的 AudioFocus を要求する。
       await AudioModule.setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
+        interruptionMode: 'doNotMix',
+        shouldRouteThroughEarpiece: false,
       });
+      if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
+        await AudioModule.setIsAudioActiveAsync(true);
+      }
 
       const recording = new AudioModule.AudioRecorder(
         RecordingPresets.HIGH_QUALITY,
@@ -49,6 +113,20 @@ export function useSpeechInput() {
       setState({ status: 'recording', transcribedText: '' });
     } catch (err) {
       console.warn('[SpeechInput] Recording failed:', err);
+      // 失敗時も必ず release してマイクを解放
+      const leaked = recordingRef.current;
+      recordingRef.current = null;
+      if (leaked) {
+        await releaseRecorder(leaked);
+      } else {
+        // recorder 生成前に失敗した場合でも AudioFocus を戻す
+        try {
+          const { AudioModule } = await import('expo-audio');
+          if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
+            await AudioModule.setIsAudioActiveAsync(false);
+          }
+        } catch { /* ignore */ }
+      }
       setState({
         status: 'idle',
         transcribedText: '',
@@ -63,6 +141,14 @@ export function useSpeechInput() {
 
     setState((s) => ({ ...s, status: 'transcribing' }));
 
+    let released = false;
+    const ensureReleased = async () => {
+      if (released) return;
+      released = true;
+      recordingRef.current = null;
+      await releaseRecorder(recording);
+    };
+
     try {
       // Stop recording and get URI
       let uri: string;
@@ -75,7 +161,6 @@ export function useSpeechInput() {
       } else {
         throw new Error('Unknown recording API');
       }
-      recordingRef.current = null;
 
       if (!uri) {
         setState({ status: 'idle', transcribedText: '', error: t('speech.file_not_found') });
@@ -162,12 +247,14 @@ export function useSpeechInput() {
         transcribedText: text,
       });
     } catch (err) {
-      recordingRef.current = null;
       setState({
         status: 'idle',
         transcribedText: '',
         error: t('speech.transcription_error', { error: String(err instanceof Error ? err.message : err) }),
       });
+    } finally {
+      // bug #46: 成功・失敗問わず必ず release する
+      await ensureReleased();
     }
   }, []);
 
@@ -175,14 +262,32 @@ export function useSpeechInput() {
   useEffect(() => {
     return () => {
       const recording = recordingRef.current;
+      recordingRef.current = null;
       if (recording) {
-        try {
-          if (typeof recording.stop === 'function') recording.stop();
-          else if (typeof recording.stopAndUnloadAsync === 'function') recording.stopAndUnloadAsync();
-        } catch { /* best effort */ }
-        recordingRef.current = null;
+        // unmount 時に await はできないので fire-and-forget
+        void releaseRecorder(recording);
       }
     };
+  }, []);
+
+  // bug #46: アプリがバックグラウンドに回った時に録音を強制停止 + release。
+  // 画面遷移や別アプリ切替で録音したままアプリを離れても、次回の音声入力で
+  // 「他のアプリで使用中」にならないようにする。
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        const recording = recordingRef.current;
+        if (recording) {
+          recordingRef.current = null;
+          void releaseRecorder(recording);
+          setState((s) =>
+            s.status === 'recording' ? { ...s, status: 'idle' } : s,
+          );
+        }
+      }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
   }, []);
 
   return { state, startRecording, stopRecording };

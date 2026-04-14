@@ -23,7 +23,7 @@ import { SavepointBubble } from '@/components/SavepointBubble';
 import { WebPreviewModal } from '@/components/WebPreviewModal';
 import { useSavepointStore } from '@/store/savepoint-store';
 import { useTerminalStore } from '@/store/terminal-store';
-import { parseCodeBlocks, hasCodeBlocks } from '@/lib/parse-code-blocks';
+import { parseCodeBlocks, hasCodeBlocks, stripThinkTags } from '@/lib/parse-code-blocks';
 import { ActionBlock } from '@/components/chat/ActionBlock';
 import { ActionsWizardBubble } from '@/components/chat/ActionsWizardBubble';
 import { AutoCheckProposalBubble } from '@/components/chat/AutoCheckProposalBubble';
@@ -135,7 +135,9 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
     } catch { /* cancelled */ }
   }, [message.content, message.streamingText, message.agent]);
 
-  const displayText = message.isStreaming ? (message.streamingText || '') : message.content;
+  // Strip reasoning-model <think> wrappers so genuine code fences become visible.
+  const rawDisplayText = message.isStreaming ? (message.streamingText || '') : message.content;
+  const displayText = rawDisplayText ? stripThinkTags(rawDisplayText) : rawDisplayText;
 
   // ── Arena Bubble ────────────────────────────────────────────────────────
   if (message.arenaId) {
@@ -302,7 +304,7 @@ export const ChatBubble = memo(function ChatBubble({ message, fontSize = 14, onR
           if (displayText) {
             return (
               <View style={styles.markdownWrap}>
-                {hasCodeBlocks(displayText) && !message.isStreaming ? (
+                {hasCodeBlocks(displayText) ? (
                   <>
                     {parseCodeBlocks(displayText).map((seg, i) =>
                       seg.type === 'text' ? (

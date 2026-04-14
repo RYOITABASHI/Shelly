@@ -202,6 +202,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
   setActiveSession: (id: string) => {
     set({ activeSessionId: id });
+    // bug #50: persist active tab across lmkd kills
+    get().saveSessionState();
   },
 
   clearSession: (sessionId?: string) => {

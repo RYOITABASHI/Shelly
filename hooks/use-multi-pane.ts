@@ -1,7 +1,26 @@
+// hooks/use-multi-pane.ts
+//
+// v0.1.1 — Preset-based multi-pane store.
+//
+// The old arbitrary-tree implementation (PaneSplit + PaneLeaf recursion) is
+// gone. It was flexible but triggered bugs #29 / #30 / #31 in v0.1.0 because:
+//  - splitPane re-minted leaf ids, wiping PTY/WebView/AI native state
+//  - N-1 dividers with negative-margin hit areas failed Yoga hit-testing
+//  - worklet closures reached Zustand setters across the UI-thread boundary
+//
+// The new model is a flat `slots[4]` + a preset id. At most 4 panes, at
+// most 2 dividers, and leaf ids are never rewritten after they are minted.
+// The old external API (`isMultiPane`, `root`, `splitPane`, `setLeafTab`,
+// `addPane`, `removePane`, `toggleMaximize`, `maximizedPaneId`, etc.) is
+// preserved as a thin compatibility shim over the new state so we do not
+// have to touch every caller.
+
 import { create } from 'zustand';
+import { persist, createJSONStorage, type PersistOptions } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Core types ──────────────────────────────────────────────────────────────
 
 export type PaneTab =
   | 'terminal'
@@ -10,38 +29,86 @@ export type PaneTab =
   | 'markdown'
   | 'preview';
 
+export type PresetId =
+  | 'p1'
+  | 'p2h'
+  | 'p2v'
+  | 'p3l'
+  | 'p3r'
+  | 'p3t'
+  | 'p4';
+
+export type Slot = {
+  /** Stable id. Minted on addPane, never rewritten afterwards. */
+  id: string;
+  tab: PaneTab;
+} | null;
+
+export type SlotIndex = 0 | 1 | 2 | 3;
+
+export type Ratios = {
+  mainH: number;
+  mainV: number;
+  rightV: number;
+  leftV: number;
+  bottomH: number;
+};
+
+export type MultiPaneCoreState = {
+  preset: PresetId;
+  slots: [Slot, Slot, Slot, Slot];
+  focusedSlot: SlotIndex;
+  ratios: Ratios;
+  maximizedSlot: SlotIndex | null;
+};
+
+// Preset → capacity
+export const PRESET_CAPACITY: Record<PresetId, number> = {
+  p1: 1,
+  p2h: 2,
+  p2v: 2,
+  p3l: 3,
+  p3r: 3,
+  p3t: 3,
+  p4: 4,
+};
+
+// ─── Legacy types (preserved for external consumers) ────────────────────────
+
 export type SplitDirection = 'horizontal' | 'vertical';
 
-/** A leaf node renders a single tab screen */
+/** Legacy leaf node shape. Produced only as a synthetic view for
+ *  CommandPalette / ai-edit and similar readers that still poke at the old
+ *  `.root` field. */
 export type PaneLeaf = {
   type: 'leaf';
   id: string;
   tab: PaneTab;
 };
 
-/** A split node divides space into two children */
 export type PaneSplit = {
   type: 'split';
   id: string;
   direction: SplitDirection;
-  /** Ratio of first child (0-1). Default 0.5 */
   ratio: number;
   children: [PaneNode, PaneNode];
 };
 
 export type PaneNode = PaneLeaf | PaneSplit;
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Id generation ──────────────────────────────────────────────────────────
 
 let _nextId = 1;
 function genId(): string {
-  return `pane-${_nextId++}`;
+  return `pane-${Date.now().toString(36)}-${_nextId++}`;
 }
 
+/** Legacy helpers. The new LayoutPicker does not call these, but v0.1.0's
+ *  LayoutPresetSheet builders still import them, and we keep them exported
+ *  so the tsc graph does not break. */
 export function makeLeaf(tab: PaneTab): PaneLeaf {
   return { type: 'leaf', id: genId(), tab };
 }
-
 export function makeSplit(
   direction: SplitDirection,
   first: PaneNode,
@@ -51,297 +118,627 @@ export function makeSplit(
   return { type: 'split', id: genId(), direction, ratio, children: [first, second] };
 }
 
-/** Count leaf nodes in tree */
-function countLeaves(node: PaneNode): number {
-  if (node.type === 'leaf') return 1;
-  return countLeaves(node.children[0]) + countLeaves(node.children[1]);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const DEFAULT_RATIOS: Ratios = {
+  mainH: 0.5,
+  mainV: 0.5,
+  rightV: 0.5,
+  leftV: 0.5,
+  bottomH: 0.5,
+};
+
+function clampRatio(r: number): number {
+  if (!Number.isFinite(r)) return 0.5;
+  if (r < 0.15) return 0.15;
+  if (r > 0.85) return 0.85;
+  return r;
 }
 
-/** Find a node by id and return it + its parent */
-function findNode(
-  root: PaneNode,
-  id: string,
-  parent: PaneSplit | null = null,
-  childIndex: 0 | 1 = 0,
-): { node: PaneNode; parent: PaneSplit | null; childIndex: 0 | 1 } | null {
-  if (root.id === id) return { node: root, parent, childIndex };
-  if (root.type === 'split') {
-    const left = findNode(root.children[0], id, root, 0);
-    if (left) return left;
-    return findNode(root.children[1], id, root, 1);
+function countSlots(slots: readonly Slot[]): number {
+  let n = 0;
+  for (const s of slots) if (s) n++;
+  return n;
+}
+
+function countTerminalSlots(slots: readonly Slot[]): number {
+  let n = 0;
+  for (const s of slots) if (s && s.tab === 'terminal') n++;
+  return n;
+}
+
+/** Left-pack non-null slots into the low indices, preserving order. */
+function compactSlots(
+  slots: readonly Slot[],
+): [Slot, Slot, Slot, Slot] {
+  const out: [Slot, Slot, Slot, Slot] = [null, null, null, null];
+  let w = 0;
+  for (const s of slots) {
+    if (s) {
+      out[w as SlotIndex] = s;
+      w++;
+    }
+  }
+  return out;
+}
+
+function firstFilledIndex(slots: readonly Slot[]): SlotIndex {
+  for (let i = 0; i < 4; i++) {
+    if (slots[i]) return i as SlotIndex;
+  }
+  return 0;
+}
+
+function firstEmptyIndex(slots: readonly Slot[], capacity: number): SlotIndex | null {
+  for (let i = 0; i < capacity; i++) {
+    if (!slots[i]) return i as SlotIndex;
   }
   return null;
 }
 
-/** Deep clone a pane tree (for immutable updates) */
-function cloneTree(node: PaneNode): PaneNode {
-  if (node.type === 'leaf') return { ...node };
-  return {
-    ...node,
-    children: [cloneTree(node.children[0]), cloneTree(node.children[1])],
-  };
+/** Preset promotion chain used by addPane when capacity is exhausted. */
+function promotePreset(p: PresetId): PresetId | null {
+  switch (p) {
+    case 'p1':  return 'p2h';
+    case 'p2h': return 'p3l';
+    case 'p2v': return 'p3t';
+    case 'p3l': return 'p4';
+    case 'p3r': return 'p4';
+    case 'p3t': return 'p4';
+    case 'p4':  return null;
+  }
 }
 
-/** Replace a node by id in a cloned tree */
-function replaceNode(root: PaneNode, id: string, replacement: PaneNode): PaneNode {
-  if (root.id === id) return replacement;
-  if (root.type === 'split') {
-    return {
-      ...root,
-      children: [
-        replaceNode(root.children[0], id, replacement),
-        replaceNode(root.children[1], id, replacement),
-      ],
+/** Pick a sensible preset for the number of panes in use. */
+function demotePreset(p: PresetId, used: number): PresetId {
+  if (used <= 1) return 'p1';
+  if (used === 2) {
+    if (p === 'p2v' || p === 'p3t') return 'p2v';
+    return 'p2h';
+  }
+  if (used === 3) {
+    if (p === 'p3r') return 'p3r';
+    if (p === 'p3t') return 'p3t';
+    return 'p3l';
+  }
+  return 'p4';
+}
+
+// ─── Legacy `.root` synthesis ───────────────────────────────────────────────
+//
+// CommandPalette and a couple of other call sites still read `.root` to
+// grab "some leaf id" for splitPane. We synthesize a minimal tree from
+// the flat slots so those readers keep working. This view is read-only —
+// mutating it does nothing.
+
+function synthesizeRoot(slots: readonly Slot[]): PaneNode | null {
+  const filled: PaneLeaf[] = [];
+  for (const s of slots) {
+    if (s) filled.push({ type: 'leaf', id: s.id, tab: s.tab });
+  }
+  if (filled.length === 0) return null;
+  if (filled.length === 1) return filled[0];
+  // Chain as right-leaning horizontal splits. CommandPalette reads
+  //   root.type === 'leaf' ? root.id
+  //     : root.children[0].type === 'leaf' ? root.children[0].id
+  //     : ''
+  // so we guarantee `root.children[0]` is always a leaf.
+  let node: PaneNode = filled[filled.length - 1];
+  for (let i = filled.length - 2; i >= 0; i--) {
+    node = {
+      type: 'split',
+      id: `synth-split-${i}`,
+      direction: 'horizontal',
+      ratio: 0.5,
+      children: [filled[i], node],
     };
   }
-  return root;
+  return node;
 }
 
-/** Remove a leaf by id, collapsing the parent split */
-function removeLeaf(root: PaneNode, leafId: string): PaneNode | null {
-  if (root.type === 'leaf') {
-    return root.id === leafId ? null : root;
-  }
-  // Check if either child is the target leaf
-  if (root.children[0].id === leafId) return cloneTree(root.children[1]);
-  if (root.children[1].id === leafId) return cloneTree(root.children[0]);
-  // Recurse into children
-  const newLeft = removeLeaf(root.children[0], leafId);
-  if (newLeft !== root.children[0] && newLeft !== null) {
-    return { ...root, children: [newLeft, cloneTree(root.children[1])] };
-  }
-  if (newLeft === null) return cloneTree(root.children[1]); // Left subtree collapsed entirely
-  const newRight = removeLeaf(root.children[1], leafId);
-  if (newRight !== root.children[1] && newRight !== null) {
-    return { ...root, children: [cloneTree(root.children[0]), newRight] };
-  }
-  if (newRight === null) return cloneTree(root.children[0]); // Right subtree collapsed entirely
-  return root;
-}
-
-/** Collect all leaf tabs */
-function collectTabs(node: PaneNode): PaneTab[] {
-  if (node.type === 'leaf') return [node.tab];
-  return [...collectTabs(node.children[0]), ...collectTabs(node.children[1])];
-}
-
-// ─── Store ───────────────────────────────────────────────────────────────────
-
-type MultiPaneState = {
-  isMultiPane: boolean;
-  /** Root of the pane tree (null when not in multi-pane mode) */
-  root: PaneNode | null;
-  /** Max total leaf panes allowed */
-  maxPanes: number;
-  /** When non-null, only this leaf is rendered full-screen */
-  maximizedPaneId: string | null;
-};
+// ─── Store type ──────────────────────────────────────────────────────────────
 
 type MultiPaneActions = {
+  // New preset API
+  setPreset: (preset: PresetId) => void;
+  focusSlot: (slot: SlotIndex) => void;
+  setRatio: (key: keyof Ratios, value: number) => void;
+  resetRatio: (key: keyof Ratios) => void;
+  maximizeSlot: (slot: SlotIndex | null) => void;
+  setSlotTab: (slot: SlotIndex, tab: PaneTab) => void;
+
+  // Legacy compatibility surface (keyed by leaf id where applicable)
+  addPane: (tab: PaneTab) => void;
+  removePane: (leafId: string) => void;
+  setLeafTab: (leafId: string, tab: PaneTab) => void;
+  splitPane: (leafId: string, direction: SplitDirection, newTab: PaneTab) => void;
+  toggleMaximize: (leafId: string) => void;
+  initShell: () => void;
   enableMultiPane: (initial?: PaneTab[]) => void;
   disableMultiPane: () => void;
   toggleMultiPane: () => void;
-  /** Change the tab of a leaf by its id */
-  setLeafTab: (leafId: string, tab: PaneTab) => void;
-  /** Split a leaf into two panes */
-  splitPane: (leafId: string, direction: SplitDirection, newTab: PaneTab) => void;
-  /** Remove a leaf pane (collapses parent split) */
-  removePane: (leafId: string) => void;
-  /** Update split ratio by split node id */
-  setSplitRatio: (splitId: string, ratio: number) => void;
-  /** Reset a split to 50/50 (double-tap handle) */
-  resetSplitRatio: (splitId: string) => void;
-  /** Update maxPanes */
   setMaxPanes: (max: number) => void;
-  /** Initialize for shell layout — always on, starts with 1 terminal pane */
-  initShell: () => void;
-  /** Toggle fullscreen for one leaf (null = restore) */
-  toggleMaximize: (leafId: string) => void;
-
-  // ── Backwards compat (still used by EmptyState CTA and older panes) ──
-  /** @deprecated Use root tree instead */
-  panes: PaneTab[];
-  /** @deprecated */
+  setSplitRatio: (splitId: string, ratio: number) => void;
+  resetSplitRatio: (splitId: string) => void;
   setPane: (index: number, tab: PaneTab) => void;
-  /** @deprecated */
-  addPane: (tab: PaneTab) => void;
 };
 
-export const useMultiPaneStore = create<MultiPaneState & MultiPaneActions>(
-  (set, get) => ({
-    isMultiPane: false,
-    root: null,
-    maxPanes: 4,
-    maximizedPaneId: null,
+type MultiPaneLegacyView = {
+  /** Always true in v0.1.1 — the shell layout is permanently multi-pane. */
+  isMultiPane: boolean;
+  /** Fixed at 4 (the preset grid cap). */
+  maxPanes: number;
+  /** Synthesized legacy tree view. Read-only. */
+  root: PaneNode | null;
+  /** Legacy alias for the maximized slot's leaf id. */
+  maximizedPaneId: string | null;
+  /** Legacy flat tab list. */
+  panes: PaneTab[];
+};
 
-    // Backwards compat getter
-    get panes() {
-      const { root } = get();
-      return root ? collectTabs(root) : [];
-    },
+export type MultiPaneStore =
+  MultiPaneCoreState & MultiPaneLegacyView & MultiPaneActions;
 
-    enableMultiPane: (initial) => {
-      const tabs = initial ?? ['terminal'];
-      // Build a simple horizontal split from the initial tabs
-      if (tabs.length <= 1) {
-        set({ isMultiPane: true, root: makeLeaf(tabs[0] ?? 'terminal') });
-      } else {
-        // Chain horizontal splits: [a, b, c] → split(a, split(b, c))
-        let node: PaneNode = makeLeaf(tabs[tabs.length - 1]);
-        for (let i = tabs.length - 2; i >= 0; i--) {
-          node = makeSplit('horizontal', makeLeaf(tabs[i]), node);
-        }
-        set({ isMultiPane: true, root: node });
-      }
-    },
+// ─── Initial state ──────────────────────────────────────────────────────────
 
-    disableMultiPane: () => {
-      // Two-phase teardown: hide first, then clear tree on next tick
-      // to give pane children time to unmount cleanly
-      set({ isMultiPane: false });
-      setTimeout(() => set({ root: null }), 0);
-    },
+function makeInitialCore(): MultiPaneCoreState {
+  return {
+    preset: 'p1',
+    slots: [{ id: genId(), tab: 'terminal' }, null, null, null],
+    focusedSlot: 0,
+    ratios: { ...DEFAULT_RATIOS },
+    maximizedSlot: null,
+  };
+}
 
-    toggleMultiPane: () => {
-      const { isMultiPane } = get();
-      if (isMultiPane) {
-        get().disableMultiPane();
-      } else {
-        get().enableMultiPane();
-      }
-    },
+// ─── Persist config ─────────────────────────────────────────────────────────
+//
+// We keep the v1 key (`multi-pane-state-v1`) as the persist name so migrate()
+// can see the old payload (the zustand middleware only invokes migrate when
+// the stored version is lower than the config version). Version bumps to 2
+// and the migrate below walks the old tree into the new flat slots.
 
-    setLeafTab: (leafId, tab) => {
-      const { root } = get();
-      if (!root) return;
-      const newRoot = cloneTree(root);
-      const found = findNode(newRoot, leafId);
-      if (found && found.node.type === 'leaf') {
-        found.node.tab = tab;
-        set({ root: newRoot });
-      }
-    },
+type PersistedV1 = {
+  root?: PaneNode | null;
+  maxPanes?: number;
+};
 
-    splitPane: (leafId, direction, newTab) => {
-      logInfo('MultiPane', 'Split: ' + leafId + ' → ' + direction + ' ' + newTab);
-      const { root, maxPanes } = get();
-      if (!root) return;
-      if (countLeaves(root) >= maxPanes) return;
-      // Cap terminal panes at 2 (Android phantom process killer limit)
-      if (newTab === 'terminal') {
-        const countTerminalLeaves = (node: PaneNode): number => {
-          if (node.type === 'leaf') return node.tab === 'terminal' ? 1 : 0;
-          return countTerminalLeaves(node.children[0]) + countTerminalLeaves(node.children[1]);
-        };
-        if (countTerminalLeaves(root) >= 2) return;
-      }
-      // IMPORTANT: preserve the original leaf id on the "old" side of the
-      // new split. makeLeaf() always mints a fresh id, and the tree's leaf
-      // id drives the React key on PaneSlot plus every native binding
-      // keyed by leafId (AI session uuid, PTY session, WebView instance,
-      // paneAgents registry, focusedPaneId, maximizedPaneId). Re-minting
-      // the id on every split would remount the old pane and silently
-      // wipe its native state — that is bug #29 part 2.
-      const found = findNode(root, leafId);
-      if (!found || found.node.type !== 'leaf') return;
-      const oldLeaf: PaneLeaf = { type: 'leaf', id: leafId, tab: found.node.tab };
-      const newLeaf = makeLeaf(newTab);
-      const split = makeSplit(direction, oldLeaf, newLeaf);
-      const newRoot = replaceNode(cloneTree(root), leafId, split);
-      set({ root: newRoot });
-    },
+type PersistedV2 = MultiPaneCoreState;
 
-    removePane: (leafId) => {
-      const { root } = get();
-      if (!root) return;
-      // Never let the user close the last pane. They ended up with an
-      // empty screen whose only recovery path was the Layout preset
-      // button, which is too obscure for daily use. If there is only
-      // one leaf left, ignore the close request outright.
-      if (countLeaves(root) <= 1) {
-        logInfo('MultiPane', 'Remove pane ignored — last pane: ' + leafId);
-        return;
-      }
-      logInfo('MultiPane', 'Remove pane: ' + leafId);
-      const result = removeLeaf(root, leafId);
-      if (!result) return;
-      set({ root: result });
-    },
-
-    setSplitRatio: (splitId, ratio) => {
-      const { root } = get();
-      if (!root) return;
-      const newRoot = cloneTree(root);
-      const found = findNode(newRoot, splitId);
-      if (found && found.node.type === 'split') {
-        found.node.ratio = Math.max(0.15, Math.min(0.85, ratio));
-        set({ root: newRoot });
-      }
-    },
-
-    resetSplitRatio: (splitId) => {
-      const { root } = get();
-      if (!root) return;
-      const newRoot = cloneTree(root);
-      const found = findNode(newRoot, splitId);
-      if (found && found.node.type === 'split') {
-        found.node.ratio = 0.5;
-        set({ root: newRoot });
-      }
-    },
-
-    toggleMaximize: (leafId) => {
-      const { maximizedPaneId } = get();
-      set({ maximizedPaneId: maximizedPaneId === leafId ? null : leafId });
-    },
-
-    setMaxPanes: (max) => {
-      set({ maxPanes: Math.max(2, Math.min(6, max)) });
-    },
-
-    initShell: () => {
-      logLifecycle('MultiPane', 'initShell');
-      const { root } = get();
-      // Only initialize if not already active
-      if (root) return;
-      set({ isMultiPane: true, root: makeLeaf('terminal') });
-    },
-
-    // ── Backwards compat actions ──
-    setPane: (index, tab) => {
-      const { root } = get();
-      if (!root) return;
-      const tabs = collectTabs(root);
-      if (index < 0 || index >= tabs.length) return;
-      // Find the nth leaf and change it
-      let count = 0;
-      const findNthLeaf = (node: PaneNode): string | null => {
-        if (node.type === 'leaf') {
-          if (count === index) return node.id;
-          count++;
-          return null;
-        }
-        return findNthLeaf(node.children[0]) ?? findNthLeaf(node.children[1]);
-      };
-      const leafId = findNthLeaf(root);
-      if (leafId) get().setLeafTab(leafId, tab);
-    },
-
-    addPane: (tab) => {
-      const { root, maxPanes } = get();
-      // Empty state — no root yet — just create a single leaf of the
-      // requested type so the EmptyState CTA can recover.
-      if (!root) {
-        set({ isMultiPane: true, root: makeLeaf(tab) });
-        return;
-      }
-      if (countLeaves(root) >= maxPanes) return;
-      // Find the last leaf and split it horizontally
-      const findLastLeaf = (node: PaneNode): string => {
-        if (node.type === 'leaf') return node.id;
-        return findLastLeaf(node.children[1]);
-      };
-      get().splitPane(findLastLeaf(root), 'horizontal', tab);
-    },
+const persistOptions: PersistOptions<MultiPaneStore, PersistedV2> = {
+  name: 'multi-pane-state-v1',
+  storage: createJSONStorage(() => AsyncStorage),
+  version: 2,
+  partialize: (s) => ({
+    preset: s.preset,
+    slots: s.slots,
+    focusedSlot: s.focusedSlot,
+    ratios: s.ratios,
+    maximizedSlot: s.maximizedSlot,
   }),
+  migrate: (persisted: unknown, version: number): PersistedV2 => {
+    // v2 already — return as-is after light validation.
+    if (version >= 2 && persisted && typeof persisted === 'object') {
+      const p = persisted as Partial<PersistedV2>;
+      if (Array.isArray(p.slots) && p.slots.length === 4 && p.preset) {
+        return {
+          preset: p.preset,
+          slots: p.slots as [Slot, Slot, Slot, Slot],
+          focusedSlot: (p.focusedSlot ?? 0) as SlotIndex,
+          ratios: { ...DEFAULT_RATIOS, ...(p.ratios ?? {}) },
+          maximizedSlot: (p.maximizedSlot ?? null) as SlotIndex | null,
+        };
+      }
+    }
+
+    // v1 — DFS-walk the tree and pull up to 4 left-most leaves. Leaves
+    // beyond the 4th are dropped. Leaf ids are preserved so any native
+    // binding (PTY, WebView, agent) keyed by leafId survives the upgrade.
+    const v1 = (persisted ?? {}) as PersistedV1;
+    const leaves: PaneLeaf[] = [];
+    const walk = (n: PaneNode | null | undefined): void => {
+      if (!n || leaves.length >= 4) return;
+      if (n.type === 'leaf') {
+        leaves.push({ type: 'leaf', id: n.id, tab: n.tab });
+        return;
+      }
+      walk(n.children[0]);
+      walk(n.children[1]);
+    };
+    if (v1.root) walk(v1.root);
+
+    const slots: [Slot, Slot, Slot, Slot] = [null, null, null, null];
+    if (leaves.length === 0) {
+      slots[0] = { id: genId(), tab: 'terminal' };
+    } else {
+      leaves.slice(0, 4).forEach((l, i) => {
+        slots[i as SlotIndex] = { id: l.id, tab: l.tab };
+      });
+    }
+    const used = countSlots(slots);
+    const preset: PresetId =
+      used <= 1 ? 'p1' :
+      used === 2 ? 'p2h' :
+      used === 3 ? 'p3l' :
+      'p4';
+    return {
+      preset,
+      slots,
+      focusedSlot: 0,
+      ratios: { ...DEFAULT_RATIOS },
+      maximizedSlot: null,
+    };
+  },
+  onRehydrateStorage: () => (state) => {
+    // Ensure the id generator does not clash with restored ids.
+    if (!state) return;
+    try {
+      let max = 0;
+      for (const s of state.slots) {
+        if (!s) continue;
+        const m = /pane-.*-(\d+)$/.exec(s.id) ?? /pane-(\d+)/.exec(s.id);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (Number.isFinite(n) && n > max) max = n;
+        }
+      }
+      if (max >= _nextId) _nextId = max + 1;
+    } catch {
+      /* non-fatal */
+    }
+  },
+};
+
+// ─── Store implementation ───────────────────────────────────────────────────
+
+export const useMultiPaneStore = create<MultiPaneStore>()(
+  persist(
+    (set, get) => {
+      const findSlotIndexById = (id: string): SlotIndex | null => {
+        const { slots } = get();
+        for (let i = 0; i < 4; i++) {
+          const s = slots[i];
+          if (s && s.id === id) return i as SlotIndex;
+        }
+        return null;
+      };
+
+      const doAddPane = (tab: PaneTab): void => {
+        let { preset } = get();
+        const { slots: currentSlots } = get();
+        let slots = currentSlots;
+
+        // Terminal cap — 2 terminals max (Android phantom process killer).
+        if (tab === 'terminal' && countTerminalSlots(slots) >= 2) {
+          logInfo('MultiPane', 'addPane terminal ignored — cap 2');
+          return;
+        }
+
+        let cap = PRESET_CAPACITY[preset];
+        let empty = firstEmptyIndex(slots, cap);
+
+        if (empty === null) {
+          // Capacity full — promote preset one level.
+          const next = promotePreset(preset);
+          if (!next) {
+            logInfo('MultiPane', 'addPane ignored — already at p4');
+            return;
+          }
+          preset = next;
+          cap = PRESET_CAPACITY[preset];
+          empty = firstEmptyIndex(slots, cap);
+          if (empty === null) return; // defensive — capacity check guarantees a slot
+        }
+
+        const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
+        newSlots[empty] = { id: genId(), tab };
+        set({ preset, slots: newSlots, focusedSlot: empty });
+      };
+
+      const doRemoveBySlot = (slotIdx: SlotIndex): void => {
+        const { slots, preset, focusedSlot, maximizedSlot } = get();
+        if (!slots[slotIdx]) return;
+        if (countSlots(slots) <= 1) {
+          logInfo('MultiPane', 'removePane ignored — last slot');
+          return;
+        }
+
+        const removedId = slots[slotIdx]?.id ?? null;
+        const focusedId = slots[focusedSlot]?.id ?? null;
+        const maximizedId =
+          maximizedSlot !== null ? slots[maximizedSlot]?.id ?? null : null;
+
+        const cleared = slots.slice() as [Slot, Slot, Slot, Slot];
+        cleared[slotIdx] = null;
+        const compacted = compactSlots(cleared);
+        const used = countSlots(compacted);
+        const newPreset = demotePreset(preset, used);
+
+        // Translate focus/maximized through the compact by id.
+        let newFocus: SlotIndex = firstFilledIndex(compacted);
+        if (focusedId && focusedId !== removedId) {
+          for (let i = 0; i < 4; i++) {
+            if (compacted[i]?.id === focusedId) { newFocus = i as SlotIndex; break; }
+          }
+        }
+        let newMaximized: SlotIndex | null = null;
+        if (maximizedId && maximizedId !== removedId) {
+          for (let i = 0; i < 4; i++) {
+            if (compacted[i]?.id === maximizedId) { newMaximized = i as SlotIndex; break; }
+          }
+        }
+
+        set({
+          slots: compacted,
+          preset: newPreset,
+          focusedSlot: newFocus,
+          maximizedSlot: newMaximized,
+        });
+      };
+
+      return {
+        // Core state
+        ...makeInitialCore(),
+
+        // ── Legacy view fields (recomputed on every access) ──
+        get isMultiPane() { return true; },
+        get maxPanes() { return 4; },
+        get root() { return synthesizeRoot(get().slots); },
+        get maximizedPaneId() {
+          const { slots, maximizedSlot } = get();
+          if (maximizedSlot === null) return null;
+          return slots[maximizedSlot]?.id ?? null;
+        },
+        get panes() {
+          return get().slots
+            .filter((s): s is NonNullable<Slot> => s !== null)
+            .map((s) => s.tab);
+        },
+
+        // ── New preset actions ──
+        setPreset: (preset) => {
+          const { slots } = get();
+          const used = countSlots(slots);
+          if (used > PRESET_CAPACITY[preset]) {
+            logInfo('MultiPane', `setPreset ${preset} ignored — ${used} panes open`);
+            return;
+          }
+          set({ preset, slots: compactSlots(slots) });
+        },
+
+        focusSlot: (slot) => {
+          const { slots } = get();
+          if (!slots[slot]) return;
+          set({ focusedSlot: slot });
+        },
+
+        setRatio: (key, value) => {
+          const { ratios } = get();
+          set({ ratios: { ...ratios, [key]: clampRatio(value) } });
+        },
+
+        resetRatio: (key) => {
+          const { ratios } = get();
+          set({ ratios: { ...ratios, [key]: 0.5 } });
+        },
+
+        maximizeSlot: (slot) => {
+          set({ maximizedSlot: slot });
+        },
+
+        setSlotTab: (slot, tab) => {
+          const { slots } = get();
+          const s = slots[slot];
+          if (!s) return;
+          const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
+          newSlots[slot] = { ...s, tab };
+          set({ slots: newSlots });
+        },
+
+        // ── Legacy action surface ──
+        addPane: (tab) => { doAddPane(tab); },
+
+        removePane: (leafId) => {
+          const idx = findSlotIndexById(leafId);
+          if (idx === null) return;
+          doRemoveBySlot(idx);
+        },
+
+        setLeafTab: (leafId, tab) => {
+          const idx = findSlotIndexById(leafId);
+          if (idx === null) return;
+          const { slots } = get();
+          const s = slots[idx];
+          if (!s) return;
+          const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
+          newSlots[idx] = { ...s, tab };
+          set({ slots: newSlots });
+        },
+
+        // splitPane is re-interpreted: "add a new pane of newTab via the
+        // normal preset promotion flow". The direction argument is ignored
+        // — the preset system chooses the layout shape. leafId, if still
+        // alive, becomes the focused slot first so promotion feels local.
+        splitPane: (leafId, _direction, newTab) => {
+          const idx = findSlotIndexById(leafId);
+          if (idx !== null) set({ focusedSlot: idx });
+          doAddPane(newTab);
+        },
+
+        toggleMaximize: (leafId) => {
+          const idx = findSlotIndexById(leafId);
+          if (idx === null) return;
+          const { maximizedSlot } = get();
+          set({ maximizedSlot: maximizedSlot === idx ? null : idx });
+        },
+
+        initShell: () => {
+          logLifecycle('MultiPane', 'initShell');
+          const { slots } = get();
+          if (countSlots(slots) === 0) {
+            set({
+              preset: 'p1',
+              slots: [{ id: genId(), tab: 'terminal' }, null, null, null],
+              focusedSlot: 0,
+              maximizedSlot: null,
+            });
+          }
+        },
+
+        enableMultiPane: (initial) => {
+          const tabs = initial && initial.length > 0 ? initial : ['terminal' as PaneTab];
+          const trimmed = tabs.slice(0, 4);
+          const newSlots: [Slot, Slot, Slot, Slot] = [null, null, null, null];
+          trimmed.forEach((t, i) => {
+            newSlots[i as SlotIndex] = { id: genId(), tab: t };
+          });
+          let preset: PresetId = 'p1';
+          if (trimmed.length === 2) preset = 'p2h';
+          else if (trimmed.length === 3) preset = 'p3l';
+          else if (trimmed.length >= 4) preset = 'p4';
+          set({
+            preset,
+            slots: newSlots,
+            focusedSlot: 0,
+            maximizedSlot: null,
+            ratios: { ...DEFAULT_RATIOS },
+          });
+        },
+
+        disableMultiPane: () => {
+          // v0.1.1: multi-pane is the only mode. Reset to a single terminal.
+          set({
+            preset: 'p1',
+            slots: [{ id: genId(), tab: 'terminal' }, null, null, null],
+            focusedSlot: 0,
+            maximizedSlot: null,
+          });
+        },
+
+        toggleMultiPane: () => { /* noop — always multi-pane */ },
+        setMaxPanes: (_max) => { /* noop — cap fixed at 4 */ },
+
+        // Legacy ratio-by-split-id API. New ratio system is keyed, so we
+        // ignore the unknown split id. Divider uses setRatio directly.
+        setSplitRatio: (_splitId, _ratio) => { /* legacy no-op */ },
+        resetSplitRatio: (_splitId) => { /* legacy no-op */ },
+
+        // Legacy index-based setter used only by a few old CTAs.
+        setPane: (index, tab) => {
+          if (index < 0 || index > 3) return;
+          const { slots } = get();
+          const s = slots[index];
+          if (!s) return;
+          const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
+          newSlots[index as SlotIndex] = { ...s, tab };
+          set({ slots: newSlots });
+        },
+      };
+    },
+    persistOptions,
+  ),
 );
+
+// ─── Pure layout computation ────────────────────────────────────────────────
+
+export type SlotRect = { x: number; y: number; w: number; h: number };
+export type DividerSpec =
+  | { kind: 'vertical';   x: number; y: number; h: number; ratioKey: keyof Ratios }
+  | { kind: 'horizontal'; x: number; y: number; w: number; ratioKey: keyof Ratios };
+
+export type ComputedLayout = {
+  slotRects: [SlotRect, SlotRect, SlotRect, SlotRect];
+  dividers: DividerSpec[];
+};
+
+const ZERO_RECT: SlotRect = { x: 0, y: 0, w: 0, h: 0 };
+
+/** Pure function — given a preset, ratios and the container pixel size,
+ *  compute each slot's absolute rect plus the divider specs. See the
+ *  2026-04-14 four-pane layout spec for the formulas. */
+export function getLayout(
+  preset: PresetId,
+  ratios: Ratios,
+  W: number,
+  H: number,
+): ComputedLayout {
+  const rects: [SlotRect, SlotRect, SlotRect, SlotRect] = [
+    ZERO_RECT, ZERO_RECT, ZERO_RECT, ZERO_RECT,
+  ];
+  const dividers: DividerSpec[] = [];
+  if (W <= 0 || H <= 0) return { slotRects: rects, dividers };
+
+  const mainH = ratios.mainH;
+  const mainV = ratios.mainV;
+
+  switch (preset) {
+    case 'p1': {
+      rects[0] = { x: 0, y: 0, w: W, h: H };
+      break;
+    }
+    case 'p2h': {
+      const mx = mainH * W;
+      rects[0] = { x: 0,  y: 0, w: mx,     h: H };
+      rects[1] = { x: mx, y: 0, w: W - mx, h: H };
+      dividers.push({ kind: 'vertical', x: mx, y: 0, h: H, ratioKey: 'mainH' });
+      break;
+    }
+    case 'p2v': {
+      const my = mainV * H;
+      rects[0] = { x: 0, y: 0,  w: W, h: my };
+      rects[1] = { x: 0, y: my, w: W, h: H - my };
+      dividers.push({ kind: 'horizontal', x: 0, y: my, w: W, ratioKey: 'mainV' });
+      break;
+    }
+    case 'p3l': {
+      const mx = mainH * W;
+      const ry = ratios.rightV * H;
+      rects[0] = { x: 0,  y: 0,  w: mx,     h: H };
+      rects[1] = { x: mx, y: 0,  w: W - mx, h: ry };
+      rects[2] = { x: mx, y: ry, w: W - mx, h: H - ry };
+      dividers.push(
+        { kind: 'vertical',   x: mx, y: 0,  h: H,      ratioKey: 'mainH' },
+        { kind: 'horizontal', x: mx, y: ry, w: W - mx, ratioKey: 'rightV' },
+      );
+      break;
+    }
+    case 'p3r': {
+      const mx = mainH * W;
+      const ly = ratios.leftV * H;
+      rects[0] = { x: 0,  y: 0,  w: mx,     h: ly };
+      rects[1] = { x: 0,  y: ly, w: mx,     h: H - ly };
+      rects[2] = { x: mx, y: 0,  w: W - mx, h: H };
+      dividers.push(
+        { kind: 'vertical',   x: mx, y: 0,  h: H, ratioKey: 'mainH' },
+        { kind: 'horizontal', x: 0,  y: ly, w: mx, ratioKey: 'leftV' },
+      );
+      break;
+    }
+    case 'p3t': {
+      const my = mainV * H;
+      const bx = ratios.bottomH * W;
+      rects[0] = { x: 0,  y: 0,  w: W,      h: my };
+      rects[1] = { x: 0,  y: my, w: bx,     h: H - my };
+      rects[2] = { x: bx, y: my, w: W - bx, h: H - my };
+      dividers.push(
+        { kind: 'horizontal', x: 0,  y: my, w: W,      ratioKey: 'mainV' },
+        { kind: 'vertical',   x: bx, y: my, h: H - my, ratioKey: 'bottomH' },
+      );
+      break;
+    }
+    case 'p4': {
+      const mx = mainH * W;
+      const my = mainV * H;
+      rects[0] = { x: 0,  y: 0,  w: mx,     h: my };
+      rects[1] = { x: mx, y: 0,  w: W - mx, h: my };
+      rects[2] = { x: 0,  y: my, w: mx,     h: H - my };
+      rects[3] = { x: mx, y: my, w: W - mx, h: H - my };
+      dividers.push(
+        { kind: 'vertical',   x: mx, y: 0,  h: H, ratioKey: 'mainH' },
+        { kind: 'horizontal', x: 0,  y: my, w: W, ratioKey: 'mainV' },
+      );
+      break;
+    }
+  }
+  return { slotRects: rects, dividers };
+}

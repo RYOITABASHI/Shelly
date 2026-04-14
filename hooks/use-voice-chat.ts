@@ -6,13 +6,15 @@
  * AI queries inject terminal context when referenced.
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
 import { speakText, stopSpeaking } from '@/lib/tts';
 import { GEMINI_API_BASE } from '@/lib/gemini';
 import { groqTranscribe } from '@/lib/groq';
 import { parseInput, hasTerminalReference } from '@/lib/input-router';
 import { summarizeForSpeech } from '@/lib/voice-chain-helpers';
+import { releaseRecorder } from '@/hooks/use-speech-input';
 
 export type VoiceChatStatus =
   | 'idle'
@@ -66,10 +68,16 @@ export function useVoiceChat() {
         return;
       }
 
+      // bug #45: YouTube などを一時停止させるため排他的 AudioFocus を要求
       await AudioModule.setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
+        interruptionMode: 'doNotMix',
+        shouldRouteThroughEarpiece: false,
       });
+      if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
+        await AudioModule.setIsAudioActiveAsync(true);
+      }
 
       const recording = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
       await recording.prepareToRecordAsync();
@@ -77,6 +85,19 @@ export function useVoiceChat() {
       recordingRef.current = recording;
       setState((s) => ({ ...s, status: 'listening', error: undefined }));
     } catch (err) {
+      // bug #46: 失敗時も必ず release
+      const leaked = recordingRef.current;
+      recordingRef.current = null;
+      if (leaked) {
+        await releaseRecorder(leaked);
+      } else {
+        try {
+          const { AudioModule } = await import('expo-audio');
+          if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
+            await AudioModule.setIsAudioActiveAsync(false);
+          }
+        } catch { /* ignore */ }
+      }
       setState((s) => ({
         ...s,
         status: 'idle',
@@ -91,6 +112,14 @@ export function useVoiceChat() {
 
     setState((s) => ({ ...s, status: 'transcribing' }));
 
+    let released = false;
+    const ensureReleased = async () => {
+      if (released) return;
+      released = true;
+      recordingRef.current = null;
+      await releaseRecorder(recording);
+    };
+
     try {
       // Stop recording
       let uri: string;
@@ -103,7 +132,6 @@ export function useVoiceChat() {
       } else {
         throw new Error('Unknown recording API');
       }
-      recordingRef.current = null;
 
       if (!uri) {
         setState((s) => ({ ...s, status: 'idle', error: 'Recording file not found' }));
@@ -140,7 +168,7 @@ export function useVoiceChat() {
               role: 'user',
               parts: [
                 { inline_data: { mime_type: 'audio/m4a', data: base64Audio } },
-                { text: 'Transcribe this audio exactly. Output only the transcribed text.' },
+                { text: 'Transcribe this audio exactly. The audio is likely Japanese or English — detect the language from the audio. Output only the transcribed text, nothing else.' },
               ],
             }],
             generationConfig: { maxOutputTokens: 1024, temperature: 0.1 },
@@ -285,6 +313,9 @@ export function useVoiceChat() {
           error: `Error: ${err instanceof Error ? err.message : String(err)}`,
         }));
       }
+    } finally {
+      // bug #46: 成功・失敗・Abort 問わず必ず release する
+      await ensureReleased();
     }
   }, []);
 
@@ -302,15 +333,11 @@ export function useVoiceChat() {
   const deactivate = useCallback(() => {
     stopSpeaking();
     abortRef.current?.abort();
-    if (recordingRef.current) {
-      try {
-        if (typeof recordingRef.current.stop === 'function') {
-          recordingRef.current.stop();
-        } else if (typeof recordingRef.current.stopAndUnloadAsync === 'function') {
-          recordingRef.current.stopAndUnloadAsync();
-        }
-      } catch {}
-      recordingRef.current = null;
+    const recording = recordingRef.current;
+    recordingRef.current = null;
+    if (recording) {
+      // bug #46: release まで確実に走らせる (fire-and-forget)
+      void releaseRecorder(recording);
     }
     setState({
       status: 'idle',
@@ -319,6 +346,37 @@ export function useVoiceChat() {
       response: '',
       autoContinue: true,
     });
+  }, []);
+
+  // bug #46: unmount 時の強制 release
+  useEffect(() => {
+    return () => {
+      const recording = recordingRef.current;
+      recordingRef.current = null;
+      if (recording) {
+        void releaseRecorder(recording);
+      }
+    };
+  }, []);
+
+  // bug #46: アプリがバックグラウンドに行った時に録音を強制停止 + release
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        const recording = recordingRef.current;
+        if (recording) {
+          recordingRef.current = null;
+          void releaseRecorder(recording);
+          setState((s) =>
+            s.status === 'listening' || s.status === 'transcribing'
+              ? { ...s, status: 'idle' }
+              : s,
+          );
+        }
+      }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
   }, []);
 
   const toggleAutoContinue = useCallback(() => {

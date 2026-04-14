@@ -136,6 +136,24 @@ export default function RootLayout() {
       });
     });
 
+    // bug #50: Start Foreground Service immediately at app launch so lmkd
+    // treats us as a foreground-adjacent process even before the first pane
+    // is created. Without this, switching to Termux for a few minutes would
+    // let lmkd reap Shelly and destroy all PTY state. Idempotent with the
+    // call already in TerminalPane.tsx:227.
+    import('@/modules/terminal-emulator/src/TerminalEmulatorModule').then((mod) => {
+      const TerminalEmulator: any = (mod as any).default ?? mod;
+      try {
+        TerminalEmulator.startSessionService?.().catch(() => {});
+      } catch {}
+      try {
+        TerminalEmulator.requestBatteryOptimizationExemption?.().catch(() => {});
+      } catch {}
+      logInfo('RootLayout', 'Loaded: FGS startup');
+    }).catch((e: any) => {
+      logError('RootLayout', 'FGS startup failed', e);
+    });
+
     // Initialize reduce-motion detection for sound/animation system
     useSoundStore.getState().initReduceMotion();
 

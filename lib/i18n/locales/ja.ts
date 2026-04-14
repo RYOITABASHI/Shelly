@@ -1019,7 +1019,7 @@ const ja: Record<string, string> = {
   'speech.mic_permission': 'マイクの権限が必要です',
   'speech.recording_error': '録音エラー: {{error}}',
   'speech.file_not_found': '録音ファイルが見つかりません',
-  'speech.transcription_prompt': 'この音声を正確に書き起こしてください。テキストのみ出力してください。余計な説明は不要です。',
+  'speech.transcription_prompt': 'この音声を正確に書き起こしてください。音声は主に日本語または英語です。音声から言語を判定してください。書き起こしテキストのみ出力し、余計な説明は不要です。',
   'speech.transcription_http_error': '文字起こしエラー: HTTP {{status}}',
   'speech.api_key_required': '音声文字起こしにはGroqまたはGemini APIキーが必要です。設定画面で入力してください。',
   'speech.transcription_error': '文字起こしエラー: {{error}}',

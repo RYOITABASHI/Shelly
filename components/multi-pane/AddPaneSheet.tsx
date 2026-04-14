@@ -7,7 +7,6 @@ import React from 'react';
 import { View, Text, Pressable, StyleSheet, Modal } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
-import { usePaneStore } from '@/store/pane-store';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
@@ -42,29 +41,10 @@ export function AddPaneSheet({ visible, onClose }: Props) {
       return;
     }
 
-    // Add a new pane: split the focused leaf — but only if that leaf is
-    // still alive in the tree. After a split, splitPane() allocates NEW
-    // leaf ids for both sides of the new split, so any focusedPaneId from
-    // before the split is stale and no longer resolves via findNode().
-    // Without this guard, the second Add Pane call would look up the old
-    // id, fail silently, and leave the tree untouched (bug #29).
-    const { root, splitPane } = useMultiPaneStore.getState();
-    if (!root) {
-      onClose();
-      return;
-    }
-
-    const focusedId = usePaneStore.getState().focusedPaneId;
-    const focusedStillAlive = focusedId ? leafExists(root, focusedId) : false;
-    const targetLeafId = focusedStillAlive
-      ? (focusedId as string)
-      : findLastLeafId(root);
-    if (!targetLeafId) {
-      onClose();
-      return;
-    }
-
-    splitPane(targetLeafId, 'horizontal', opt.id);
+    // v0.1.1: the preset-based store handles capacity, promotion and the
+    // terminal cap by itself. No focus tracking, no stale-id guards, no
+    // tree walking — it's just `addPane(tab)`.
+    useMultiPaneStore.getState().addPane(opt.id);
     onClose();
   };
 
@@ -97,19 +77,6 @@ export function AddPaneSheet({ visible, onClose }: Props) {
       </Pressable>
     </Modal>
   );
-}
-
-function findLastLeafId(node: any): string | null {
-  if (node.type === 'leaf') return node.id;
-  // Walk the right child first so new panes get appended to the right
-  // edge of the split layout — matching the user mental model of "add on
-  // the right side of what I already have".
-  return findLastLeafId(node.children[1]) ?? findLastLeafId(node.children[0]);
-}
-
-function leafExists(node: any, id: string): boolean {
-  if (node.type === 'leaf') return node.id === id;
-  return leafExists(node.children[0], id) || leafExists(node.children[1], id);
 }
 
 const styles = StyleSheet.create({

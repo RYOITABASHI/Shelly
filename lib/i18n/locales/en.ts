@@ -1037,7 +1037,7 @@ const en: Record<string, string> = {
   'speech.mic_permission': 'Microphone permission is required',
   'speech.recording_error': 'Recording error: {{error}}',
   'speech.file_not_found': 'Recording file not found',
-  'speech.transcription_prompt': 'Please transcribe this audio accurately. Output only text. No extra explanation needed.',
+  'speech.transcription_prompt': 'Please transcribe this audio accurately. The audio is likely Japanese or English — detect the language from the audio. Output only the transcribed text, no extra explanation.',
   'speech.transcription_http_error': 'Transcription error: HTTP {{status}}',
   'speech.api_key_required': 'Groq or Gemini API key is required for speech transcription. Please enter it in Settings.',
   'speech.transcription_error': 'Transcription error: {{error}}',
