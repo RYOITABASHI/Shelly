@@ -123,10 +123,15 @@ export type ThemePreset = {
 // ── Shelly palette — extracted pixel-by-pixel from docs/images/mock-*.jpg ──
 // This IS the mock. Do not drift without updating the spec first.
 export const shellyPalette: Palette = {
-  // Backgrounds (mock-exact)
-  bgDeep:     '#0A0A0A',
-  bgSurface:  '#111111',
-  bgSidebar:  '#0D0D0D',
+  // Backgrounds — pure black as the user's preferred default. Previously
+  // we shipped three slightly different dark greys (#0A0A0A / #111111 /
+  // #0D0D0D) to give the mock some layering, but on an OLED Fold device
+  // the near-blacks read as muddy banding instead of a clean surface.
+  // Collapse everything to #000000 so the Shelly preset looks the way
+  // the user expects.
+  bgDeep:     '#000000',
+  bgSurface:  '#000000',
+  bgSidebar:  '#000000',
   border:     '#1C1C1C',
 
   // Accents (mock-exact — note the red/green tweaks vs silkscreen)
@@ -162,21 +167,21 @@ export const shellyPalette: Palette = {
   badgeRunningText: '#F59E0B',
   badgeLinkedBg:    'rgba(74,222,128,0.15)',
   badgeLinkedText:  '#4ADE80',
-  badgeConnectBg:   '#111111',
+  badgeConnectBg:   '#000000',
   badgeConnectText: '#6B7280',
 
   // Layout buttons
   layoutActiveBg:     '#00D4AA',
   layoutActiveText:   '#000000',
-  layoutInactiveBg:   '#111111',
+  layoutInactiveBg:   '#000000',
   layoutInactiveText: '#6B7280',
 
   // CRT badge
-  crtBadgeBg:   '#0D0D0D',
+  crtBadgeBg:   '#000000',
   crtBadgeText: '#00D4AA',
 
   // Auto-save
-  autoSaveBg: '#111827',
+  autoSaveBg: '#000000',
 
   // Diff borders (mock-exact)
   diffAddBorder:    '#4ADE80',
