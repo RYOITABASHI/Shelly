@@ -237,6 +237,24 @@ export default function TerminalScreen() {
         ),
       }));
 
+      // bug #65: Immortal-ish — replay previous transcript snapshot into the
+      // fresh emulator so the user sees their last-session history on startup.
+      // This is visual-only (Case C pseudo-immortal); the shell itself is new.
+      if (session.transcriptSnapshot && session.transcriptSnapshot.length > 0) {
+        try {
+          const header = '\r\n\x1b[2m── previous session (restored) ──\x1b[0m\r\n';
+          const footer = '\r\n\x1b[2m── end of restored history — fresh shell below ──\x1b[0m\r\n';
+          // The native emulator consumes bytes via writeToEmulator (no shell involvement)
+          await TerminalEmulator.writeToEmulator(session.nativeSessionId, header);
+          // Normalise newlines to CRLF so the emulator wraps rows correctly
+          const normalised = session.transcriptSnapshot.replace(/\r?\n/g, '\r\n');
+          await TerminalEmulator.writeToEmulator(session.nativeSessionId, normalised);
+          await TerminalEmulator.writeToEmulator(session.nativeSessionId, footer);
+        } catch (e) {
+          logInfo('Terminal', 'transcript replay skipped: ' + String(e));
+        }
+      }
+
       // First-launch setup: run CLI install commands directly on the live terminal
       runFirstLaunchSetup(session.nativeSessionId);
     } catch (err: any) {

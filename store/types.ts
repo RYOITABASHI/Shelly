@@ -188,6 +188,13 @@ export type TabSession = {
   sessionStatus: SessionStatus;
   /** Whether the session process is alive */
   isAlive: boolean;
+  /**
+   * Transcript snapshot captured on save. Replayed into the emulator on next
+   * launch so users can scroll back through what they saw last time (bug #65
+   * / "Immortal Sessions" — Case C pseudo-immortal). This is visual-only —
+   * the underlying shell (cwd, running vim/claude, env) is not restored.
+   */
+  transcriptSnapshot?: string;
 };
 
 // ─── Snippets ─────────────────────────────────────────────────────────────────

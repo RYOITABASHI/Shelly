@@ -15,6 +15,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { useSettingsStore } from './settings-store';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { getHomePath } from '@/lib/home-path';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 // ─── Multi-session pool ────────────────────────────────────────────────
 
@@ -535,6 +536,25 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   saveSessionState: async () => {
     try {
       const { sessions, activeSessionId } = get();
+      // bug #65: capture transcript snapshots from every live native session
+      // so that on next launch we can replay the visible history into the
+      // freshly-forked emulator (pseudo-immortal, Case C).
+      const transcriptSnapshots: Record<string, string> = {};
+      await Promise.all(
+        sessions.map(async (s) => {
+          try {
+            const hasEmu = await TerminalEmulator.hasEmulator(s.nativeSessionId).catch(() => false);
+            if (!hasEmu) return;
+            const txt: string = await TerminalEmulator.getTranscriptText(s.nativeSessionId, 500);
+            if (txt && txt.length > 0) {
+              // Trim to a reasonable size to keep AsyncStorage small (~64 KB per session max)
+              transcriptSnapshots[s.id] = txt.length > 65536 ? txt.slice(-65536) : txt;
+            }
+          } catch (_) {
+            /* ignore — snapshot is best-effort */
+          }
+        })
+      );
       // Serialize sessions: keep last 50 blocks per session, strip running state
       const serializable = sessions.map((s) => ({
         id: s.id,
@@ -564,6 +584,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         nativeSessionId: s.nativeSessionId ?? s.tmuxSession ?? 'shelly-1',
         sessionStatus: 'starting',
         isAlive: false,
+        transcriptSnapshot: transcriptSnapshots[s.id] ?? s.transcriptSnapshot ?? undefined,
       }));
       await AsyncStorage.setItem('shelly_terminal_sessions', JSON.stringify({
         sessions: serializable,
@@ -606,6 +627,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         nativeSessionId: s.nativeSessionId || s.tmuxSession || SESSION_NAMES[index] || 'shelly-1',
         sessionStatus: 'starting' as const,
         isAlive: false,
+        transcriptSnapshot: typeof s.transcriptSnapshot === 'string' ? s.transcriptSnapshot : undefined,
       }));
       const activeId = parsed.activeSessionId && restored.some((s: TabSession) => s.id === parsed.activeSessionId)
         ? parsed.activeSessionId
