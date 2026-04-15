@@ -21,6 +21,7 @@ import { matchKeybinding, type KeyAction } from '@/lib/keybindings';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import { CrtOverlay } from '@/components/CrtOverlay';
 import { VoiceChat } from '@/components/VoiceChat';
 import { useSettingsStore } from '@/store/settings-store';
@@ -141,20 +142,35 @@ export function ShellLayout() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyAction]);
 
-  // Swipe gestures for sidebar on phone
+  // Swipe gestures for sidebar on phone. Gesture.Pan().onEnd runs on the UI
+  // (worklet) thread, so Zustand store access must be hopped back to JS via
+  // runOnJS — otherwise the worklet crashes with "undefined is not a function".
+  const openSidebar = useCallback(() => {
+    if (useSidebarStore.getState().mode === 'hidden') {
+      useSidebarStore.getState().setMode('expanded');
+    }
+  }, []);
+  const closeSidebar = useCallback(() => {
+    if (!layout.isWide) {
+      useSidebarStore.getState().setMode('hidden');
+    }
+  }, [layout.isWide]);
+
   const swipeRight = Gesture.Pan()
     .activeOffsetX(30)
     .onEnd((e) => {
-      if (e.translationX > 80 && useSidebarStore.getState().mode === 'hidden') {
-        useSidebarStore.getState().setMode('expanded');
+      'worklet';
+      if (e.translationX > 80) {
+        runOnJS(openSidebar)();
       }
     });
 
   const swipeLeft = Gesture.Pan()
     .activeOffsetX(-30)
     .onEnd((e) => {
-      if (e.translationX < -80 && !layout.isWide) {
-        useSidebarStore.getState().setMode('hidden');
+      'worklet';
+      if (e.translationX < -80) {
+        runOnJS(closeSidebar)();
       }
     });
 
