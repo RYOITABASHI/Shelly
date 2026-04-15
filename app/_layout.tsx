@@ -209,6 +209,7 @@ export default function RootLayout() {
       logError('RootLayout', 'FGS startup failed', e);
     });
 
+
     // Initialize reduce-motion detection for sound/animation system
     useSoundStore.getState().initReduceMotion();
 

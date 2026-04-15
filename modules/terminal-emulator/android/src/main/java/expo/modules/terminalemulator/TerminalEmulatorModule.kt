@@ -500,5 +500,15 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("readDir") { path: String ->
             ShellyJNI.readDir(path)
         }
+
+        // bug #73: expose the real Plan B HOME so JS-side path normalization
+        // never has to hardcode /data/data/<pkg>/files/home or /data/user/0/...
+        // The native side (HomeInitializer / shelly-exec.c) is the single
+        // source of truth; everything else asks at runtime.
+        AsyncFunction("getHomeDir") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            HomeInitializer.getHomeDir(context).absolutePath
+        }
     }
 }

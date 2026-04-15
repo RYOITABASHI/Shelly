@@ -57,7 +57,7 @@ export function Sidebar() {
   const theme = useTheme();
   const c = theme.colors;
 
-  const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo } =
+  const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo } =
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
   const runHistory = useAgentStore((s) => s.runHistory);
@@ -288,6 +288,17 @@ export function Sidebar() {
                   key={p}
                   style={[styles.repoRow, isActive && styles.repoRowActive]}
                   onPress={() => setActiveRepo(p)}
+                  onLongPress={() => {
+                    Alert.alert(
+                      'Remove repository',
+                      `Remove "${name}" from the sidebar? This does not delete the files on disk.`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Remove', style: 'destructive', onPress: () => removeRepo(p) },
+                      ],
+                    );
+                  }}
+                  delayLongPress={350}
                 >
                   <View style={[styles.repoIcon, { backgroundColor: isActive ? C.accent : C.btnSecondaryBg }]}>
                     <MaterialIcons
