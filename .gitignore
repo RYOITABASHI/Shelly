@@ -44,3 +44,6 @@ Thumbs.db
 # Local Claude Code working scratch — created accidentally inside Shelly
 .claude-config-backup/
 awesome-claude-plugins/
+
+# Worktrees
+.worktrees/
