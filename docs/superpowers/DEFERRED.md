@@ -71,6 +71,48 @@
 
 ## P0 — 次リリース前の必須対応 (v0.1.0 ブロッカー)
 
+### bug #92 — `/sdcard` 上のシェルスクリプトが読み込み不可 (P0)
+
+**発見**: 2026-04-16 Wave L 実機検証 (手動 codex patch 作業中)
+**症状**: Shelly ターミナルから `/sdcard/Download/*.sh` を `source` / `.` / `cat` のいずれで読もうとしても `Permission denied`。
+```
+~$ source /sdcard/Download/patch-codex.sh
+libbash.so: /sdcard/Download/patch-codex.sh: Permission denied
+~$ cat /sdcard/Download/patch-codex.sh > ~/patch.sh
+coreutils: /sdcard/Download/patch-codex.sh: Permission denied
+```
+**原因**: Android Scoped Storage (API 30+) と FUSE マウント。通常の Android アプリは `READ_EXTERNAL_STORAGE` だけでは `/sdcard` を直接 `open(2)` 出来ない。MediaStore / SAF 経由か、`MANAGE_EXTERNAL_STORAGE` (all-files-access) が必要。現在 `AndroidManifest.xml` は `READ_EXTERNAL_STORAGE` + `WRITE_EXTERNAL_STORAGE` のみで、Expo SDK 54 の既定 targetSdk は 34 なのでレガシー権限は無効。
+**影響**: ADB 経由で `adb push <file> /sdcard/Download` → Shelly 側で source して実行、という**標準のデバッグ / patch 投入ワークフローが完全に詰まる**。本日の手動 codex patch 検証で実際に足止めされた。
+**推奨修正案** (コスト順):
+1. **(a) MANAGE_EXTERNAL_STORAGE 追加** — `app.config.ts` の `permissions` 配列に追加 + 初回起動で `Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` Intent を投げる Modal。Play Store 非配布 (GitHub Releases / F-Droid) なので審査制約は低い。実装 30 分。**最速。**
+2. **(b) SAF ベースの「ファイルをインポート」UI** — `Intent.ACTION_OPEN_DOCUMENT` で `~/imported/` にコピー。ユーザーが都度選択。スクリプト用途には摩擦が大きいが最も行儀が良い。
+3. **(c) `~/shared/` シンボリック or JNI bridge** — 別アプリから Shelly の private data dir に書く手段が無いため実質不可 (ADB push なら可だが `/sdcard` 経由の利便性が無くなる)。
+**修正方針**: **(a) を採用推奨**。OSS 配布アプリとしては許容範囲。
+**最小実装ポインタ**:
+- `app.config.ts` L44 `permissions:` に `"android.permission.MANAGE_EXTERNAL_STORAGE"` 追加
+- `android/app/src/main/AndroidManifest.xml` に `<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>` 追加 (prebuild で自動生成されない場合は手書き)
+- 初回起動 (SetupWizard or Home mount) で `Environment.isExternalStorageManager()` チェック → false なら Modal + `Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)`
+**優先度**: P0 (開発ワークフロー自体が詰まるため出荷前に解消)
+**担当**: Session C 調査のみ。実装は別セッション。
+
+---
+
+### bug #94 — ペースト経路の根本設計見直し (P0 調査完了)
+
+**発見**: 2026-04-16 Wave L レビュー (bug #27 / #58 / #81 / #91 が全部ペースト経路由来と判明)
+**症状**: ペーストだけで独立バグが 4 件 (先頭バイト欠け / 末尾残留 / 先頭 `:` 混入 / 改行分割)。根本原因は**ペースト経路が 5 つ並列に存在し、それぞれで CR/LF 正規化と bracketed-paste ラッピングの扱いがバラバラ**。
+**調査結果**: `docs/superpowers/specs/2026-04-16-paste-pipeline-audit.md` に 5 経路のマッピング + `TerminalEmulator.paste()` 1 点集約の推奨設計を記載。
+**要点**:
+- Funnel α (IME commitText 経由) と Funnel β (`TerminalEmulator.paste()` 経由) の 2 本が併存
+- Funnel α は `\n→\r` のみで CRLF を collapse しないため、multi-line paste が `\r\r` 列になる → bug #91 の有力仮説
+- bracketed-paste wrap は Funnel β にしか無い
+**推奨設計**: すべての paste を `TerminalEmulator.paste()` に集約する `pasteViaEmulator(text)` ヘルパーを TerminalView 側に追加し、`commitText` の multi-line 分岐 + 中クリックを全部ここに流す。
+**優先度**: P0 (bug #91 の根本修正 = Session A の作業依存)
+**担当**: 調査 = Session C 完了。実装 = Session A (bug #91 と同時)。
+**commit**: 調査ドキュメント `docs(spec): audit paste pipeline routes (bug #94)` — (本ブランチ)
+
+---
+
 ### bug #73 — Sidebar repo のパス正規化漏れ (P1)
 
 **発見**: 2026-04-15 Phase 6-A Test 5-2 logcat 解析
