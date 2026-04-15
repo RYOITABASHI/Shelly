@@ -532,13 +532,7 @@ public class TerminalView extends View {
                             || commitStr.length() >= 16);
                     if (isPaste && mEmulator != null) {
                         Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length());
-                        mEmulator.paste(commitStr);
-                        // Keep the IME shadow in sync with what we just sent
-                        // so the follow-up deleteSurroundingText storm doesn't
-                        // eat the prompt. A paste resets the shadow the same
-                        // way a newline does (bash line editor owns it now).
-                        mLastImeCommitAt = android.os.SystemClock.uptimeMillis();
-                        mImeShadow.setLength(0);
+                        TerminalView.this.pasteViaEmulator(commitStr);
                     } else {
                         Log.d("ShellyIME", "commit=\"" + commitStr + "\"");
                         sendToPtyAndShadow(commitStr);
@@ -736,6 +730,48 @@ public class TerminalView extends View {
     @Override
     protected int computeVerticalScrollOffset() {
         return mEmulator == null ? 1 : mEmulator.getScreen().getActiveRows() + mTopRow - mEmulator.mRows;
+    }
+
+    /**
+     * bug #91 / #94: single entry point for paste-like payloads.
+     *
+     * All paste entry points (IME commitText multi-line, CommandKeyBar Paste
+     * button, middle-click mouse paste, system clipboard long-press menu)
+     * should funnel through this helper instead of the per-char
+     * sendTextToTerminal loop. It does three things:
+     *
+     *   1. Forwards the payload to {@link TerminalEmulator#paste(String)},
+     *      which strips ESC + C1 controls, normalizes CRLF → LF, and wraps
+     *      in bracketed-paste markers so readline-aware shells treat the
+     *      whole block as one paste event.
+     *   2. Seeds {@link #mImeShadow} with the pasted text so the IME's
+     *      deleteSurroundingText() resync storm that follows a commitText
+     *      doesn't eat the prompt (see bug #58 fix for the shadow design).
+     *      Shadow content after the last newline is preserved, not cleared,
+     *      so bash's line editor state matches what the IME thinks is still
+     *      on the line.
+     *   3. Stamps {@link #mLastImeCommitAt} so the "justCommitted" window
+     *      in deleteSurroundingText swallows IME resyncs for 250ms.
+     *
+     * This is intentionally package-private so the inner BaseInputConnection
+     * anonymous class can reach it via the outer-this reference.
+     */
+    void pasteViaEmulator(String text) {
+        if (mEmulator == null || text == null || text.isEmpty()) return;
+        mEmulator.paste(text);
+        mLastImeCommitAt = android.os.SystemClock.uptimeMillis();
+        mImeShadow.append(text);
+        // Mirror resetShadowAfterNewline's behaviour: if the paste
+        // contained a newline, bash's line editor now owns the line and
+        // our shadow should restart from whatever came after the last
+        // newline in the flushed text.
+        int idx = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r'));
+        if (idx >= 0) {
+            mImeShadow.setLength(0);
+            if (idx + 1 < text.length()) {
+                mImeShadow.append(text, idx + 1, text.length());
+            }
+        }
     }
 
     public void onScreenUpdated() {
@@ -944,20 +980,11 @@ public class TerminalView extends View {
                     if (clipItem != null) {
                         CharSequence text = clipItem.coerceToText(getContext());
                         if (!TextUtils.isEmpty(text)) {
-                            // FIX #58: Update shadow buffer and commit timestamp so the
-                            // subsequent IME deleteSurroundingText() resync storm
-                            // (justCommitted=false path) doesn't eat the first pasted char.
-                            String pasted = text.toString();
-                            mLastImeCommitAt = android.os.SystemClock.uptimeMillis();
-                            mImeShadow.append(pasted);
-                            int nl = Math.max(pasted.lastIndexOf('\n'), pasted.lastIndexOf('\r'));
-                            if (nl >= 0) {
-                                mImeShadow.setLength(0);
-                                if (nl + 1 < pasted.length()) {
-                                    mImeShadow.append(pasted, nl + 1, pasted.length());
-                                }
-                            }
-                            mEmulator.paste(pasted);
+                            // bug #58 + #91 + #94: funnel through pasteViaEmulator
+                            // so the shadow seeding, bracketed-paste wrapping,
+                            // and CRLF normalization all happen in one place
+                            // shared with the IME commitText path.
+                            pasteViaEmulator(text.toString());
                         }
                     }
                 }
