@@ -50,8 +50,13 @@ object HomeInitializer {
      *        view so the binary actually loads. The previous marker was
      *        just "proot", so we switch to a "shelly-proot" tag to force
      *        the sed to re-run on installs that already went through the
-     *        old marker. */
-    private const val BASHRC_VERSION = 18
+     *        old marker.
+     *    19: bug #93/#95 — add $HOME/bin/bash wrapper so `bash script.sh`
+     *        works (previously only libbash.so via linker64 existed). Also
+     *        add install.log for the CLI post-install pipeline so sed
+     *        patch failures are visible, and verify the codex.js patch
+     *        actually applied after sed runs. */
+    private const val BASHRC_VERSION = 19
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -142,6 +147,17 @@ object HomeInitializer {
             "\"\$@\"\n"
         )
         prootWrapper.setExecutable(true, false)
+
+        // bug #93: bash wrapper — Shelly launches bash as libbash.so via
+        // linker64, so there is no "bash" binary on PATH. Scripts that call
+        // `bash /path/to/script.sh` or `#!/usr/bin/env bash` shebangs fail.
+        // Place a thin wrapper at $HOME/bin/bash that delegates to linker64.
+        val bashWrapper = File(binDir, "bash")
+        bashWrapper.writeText(
+            "#!/system/bin/sh\n" +
+            "exec /system/bin/linker64 $libDir/libbash.so \"\$@\"\n"
+        )
+        bashWrapper.setExecutable(true, false)
 
         // Regenerate .bashrc if version changed
         val bashrc = File(home, ".bashrc")
@@ -241,22 +257,37 @@ object HomeInitializer {
             sb.appendLine("__shelly_now=\$(date +%s 2>/dev/null || printf '%(%s)T' -1 2>/dev/null || echo 0)")
             sb.appendLine("__shelly_last_update=\$(cat \"\$__shelly_update_marker\" 2>/dev/null || echo 0)")
             sb.appendLine("__shelly_bg_cli_update() {")
-            sb.appendLine("  exec </dev/null >/dev/null 2>&1")
+            sb.appendLine("  local __log=\"\$HOME/.shelly-cli/install.log\"")
             sb.appendLine("  mkdir -p \"\$__shelly_cli_dir\"")
+            sb.appendLine("  exec </dev/null >>\"\$__log\" 2>&1")
+            sb.appendLine("  echo \"--- \$(date) ---\"")
             // bug #76: @openai/codex has optionalDependencies for the platform-
             // specific native binary (@openai/codex-linux-arm64). On Android
             // npm doesn't auto-install them because Bionic libc isn't
             // recognized as a normal Linux target, so pass --include=optional
             // and --os=linux --cpu=arm64 to pull the arm64 build down.
+            sb.appendLine("  echo '[install] npm install start'")
             sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__shelly_cli_dir\" --include=optional --os=linux --cpu=arm64 @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
-            sb.appendLine("  # bug #76: patch codex.js to run the ET_EXEC native binary through")
-            sb.appendLine("  # proot+Alpine rootfs. The proot wrapper binds \$HOME to /root, so")
-            sb.appendLine("  # the binaryPath (which is always under \$HOME/.shelly-cli) has to be")
-            sb.appendLine("  # rewritten to its /root-view so proot can find it. We do the rewrite")
-            sb.appendLine("  # inline in the spawn call by replacing the \$HOME prefix with /root.")
+            sb.appendLine("  echo \"[install] npm install exit=\$?\"")
+            // bug #76 + #95: patch codex.js to run the ET_EXEC native binary
+            // through proot+Alpine rootfs. Previously this sed ran silently
+            // inside a background job with stdout/stderr sent to /dev/null, so
+            // failures were invisible. Now we log each step to install.log and
+            // wait for npm install to complete before patching.
             sb.appendLine("  __codex_js=\"\$__shelly_cli_dir/node_modules/@openai/codex/bin/codex.js\"")
-            sb.appendLine("  if [ -f \"\$__codex_js\" ] && ! grep -q 'shelly-proot' \"\$__codex_js\"; then")
-            sb.appendLine("    _run $libDir/coreutils --coreutils-prog=sed -i 's#spawn(binaryPath, process.argv.slice(2)#spawn(\"proot\", [binaryPath.replace(process.env.HOME, \"/root\"), ...process.argv.slice(2)] /*shelly-proot*/#' \"\$__codex_js\"")
+            sb.appendLine("  echo \"[patch] codex.js=\$__codex_js exists=\$([ -f \"\$__codex_js\" ] && echo yes || echo no)\"")
+            sb.appendLine("  if [ -f \"\$__codex_js\" ]; then")
+            sb.appendLine("    if grep -q 'shelly-proot' \"\$__codex_js\"; then")
+            sb.appendLine("      echo '[patch] codex.js already patched, skipping'")
+            sb.appendLine("    else")
+            sb.appendLine("      _run $libDir/coreutils --coreutils-prog=sed -i 's#spawn(binaryPath, process.argv.slice(2)#spawn(\"proot\", [binaryPath.replace(process.env.HOME, \"/root\"), ...process.argv.slice(2)] /*shelly-proot*/#' \"\$__codex_js\"")
+            sb.appendLine("      echo \"[patch] codex.js sed exit=\$?\"")
+            sb.appendLine("      if grep -q 'shelly-proot' \"\$__codex_js\"; then")
+            sb.appendLine("        echo '[patch] codex.js patch verified OK'")
+            sb.appendLine("      else")
+            sb.appendLine("        echo '[patch] WARNING: codex.js patch did NOT apply'")
+            sb.appendLine("      fi")
+            sb.appendLine("    fi")
             sb.appendLine("  fi")
             // bug #77: neutralize gemini-cli's hardcoded Termux check. The
             // bundle filename includes a content hash (chunk-XXXXX.js) so we
@@ -268,10 +299,12 @@ object HomeInitializer {
             sb.appendLine("      [ -f \"\$__f\" ] || continue")
             sb.appendLine("      if grep -q 'You need to install Termux' \"\$__f\"; then")
             sb.appendLine("        _run $libDir/coreutils --coreutils-prog=sed -i 's|throw new Error(\"You need to install Termux[^\"]*\")|undefined|g' \"\$__f\"")
+            sb.appendLine("        echo \"[patch] gemini \$__f sed exit=\$?\"")
             sb.appendLine("      fi")
             sb.appendLine("    done")
             sb.appendLine("  fi")
             sb.appendLine("  echo \"\$__shelly_now\" > \"\$__shelly_update_marker\"")
+            sb.appendLine("  echo '[install] done'")
             sb.appendLine("}")
             sb.appendLine("if [ \$(( __shelly_now - __shelly_last_update )) -ge \$__shelly_update_interval ]; then")
             sb.appendLine("  ( __shelly_bg_cli_update & )")

@@ -250,6 +250,8 @@ exit=1 stdout=0chars
 - ✅ **#27** ペースト末尾残留 (Wave B: commitText の二重フラッシュガードを mLastFinishFlush 比較に修正、TerminalView.java)
 - ✅ **#58** ペースト先頭 `:` 混入 (Wave B: mShadow/mLastCommitAt を外側クラスに昇格、middle-button paste で sync)
 - ✅ **#63** vim 脱出不可 (Wave C: onWindowFocusChanged で InputMethodManager.restartInput、診断ログ追加)
+- ✅ **#93** bash コマンドが PATH 外 ($HOME/bin/bash ラッパー追加、BASHRC_VERSION 19、HomeInitializer.kt)
+- ✅ **#95** codex.js sed patch が post-install 内で走らない (install.log 追記+sed exit code 検証+patch 適用確認ログ、HomeInitializer.kt)
 
 ---
 
