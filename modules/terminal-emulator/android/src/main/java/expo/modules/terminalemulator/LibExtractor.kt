@@ -73,9 +73,11 @@ object LibExtractor {
         "lib/arm64-v8a/libmake.so" to "make",
         // less
         "lib/arm64-v8a/libless.so" to "less",
-        // proot + deps (used by codex CLI to run ET_EXEC static binaries via Alpine rootfs)
+        // proot + deps (kept for future use with other ET_EXEC binaries)
         "lib/arm64-v8a/libproot.so" to "libproot.so",
         "lib/arm64-v8a/libtalloc.so" to "libtalloc.so.2",
+        // codex native binary (ET_DYN, built from codex-termux for Android/bionic)
+        "lib/arm64-v8a/libcodex_exec.so" to "codex_exec",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so"

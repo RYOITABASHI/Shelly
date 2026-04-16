@@ -79,8 +79,13 @@ object HomeInitializer {
      *        map so it never got extracted to termux-libs/. Also the
      *        codex.js sed patch used spawn("proot",...) which hits SELinux
      *        — changed to spawn("/system/bin/linker64", [libproot.so, ...])
-     *        with full proot args (rootfs, bind mounts, -0). */
-    private const val BASHRC_VERSION = 23
+     *        with full proot args (rootfs, bind mounts, -0).
+     *    24: bug #76 final — abandon proot approach entirely. Bundle the
+     *        codex-termux Android-native binary (ET_DYN, bionic-linked)
+     *        as libcodex_exec.so in jniLibs. The sed patch now replaces
+     *        the upstream musl binaryPath with the bundled codex_exec
+     *        via linker64 — same as node/git/bash. No proot, no rootfs. */
+    private const val BASHRC_VERSION = 24
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -324,20 +329,20 @@ object HomeInitializer {
             sb.appendLine("  echo '[install] npm install start'")
             sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__shelly_cli_dir\" --include=optional --os=linux --cpu=arm64 @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
             sb.appendLine("  echo \"[install] npm install exit=\$?\"")
-            // bug #76 + #95: patch codex.js to run the ET_EXEC native binary
-            // through proot+Alpine rootfs. Previously this sed ran silently
-            // inside a background job with stdout/stderr sent to /dev/null, so
-            // failures were invisible. Now we log each step to install.log and
-            // wait for npm install to complete before patching.
+            // bug #76: patch codex.js to use the bundled Android-native codex
+            // binary (ET_DYN, built by codex-termux) instead of the upstream
+            // musl ET_EXEC binary which can't be executed on Android 14+.
+            // The bundled binary is extracted to $libDir/codex_exec by
+            // LibExtractor and runs via linker64 like all other binaries.
             sb.appendLine("  __codex_js=\"\$__shelly_cli_dir/node_modules/@openai/codex/bin/codex.js\"")
             sb.appendLine("  echo \"[patch] codex.js=\$__codex_js exists=\$([ -f \"\$__codex_js\" ] && echo yes || echo no)\"")
             sb.appendLine("  if [ -f \"\$__codex_js\" ]; then")
-            sb.appendLine("    if grep -q 'shelly-proot' \"\$__codex_js\"; then")
+            sb.appendLine("    if grep -q 'shelly-codex' \"\$__codex_js\"; then")
             sb.appendLine("      echo '[patch] codex.js already patched, skipping'")
             sb.appendLine("    else")
-            sb.appendLine("      _run $libDir/coreutils --coreutils-prog=sed -i 's#spawn(binaryPath, process.argv.slice(2)#spawn(\"/system/bin/linker64\", [\"$libDir/libproot.so\", \"-0\", \"--kill-on-exit\", \"-r\", process.env.HOME + \"/.shelly-rootfs\", \"-b\", \"/dev\", \"-b\", \"/proc\", \"-b\", \"/sys\", \"-b\", process.env.HOME + \":/root\", \"-w\", \"/root\", binaryPath.replace(process.env.HOME, \"/root\"), ...process.argv.slice(2)] /*shelly-proot*/#' \"\$__codex_js\"")
+            sb.appendLine("      _run $libDir/coreutils --coreutils-prog=sed -i 's#spawn(binaryPath, process.argv.slice(2)#spawn(\"/system/bin/linker64\", [\"$libDir/codex_exec\", ...process.argv.slice(2)] /*shelly-codex*/#' \"\$__codex_js\"")
             sb.appendLine("      echo \"[patch] codex.js sed exit=\$?\"")
-            sb.appendLine("      if grep -q 'shelly-proot' \"\$__codex_js\"; then")
+            sb.appendLine("      if grep -q 'shelly-codex' \"\$__codex_js\"; then")
             sb.appendLine("        echo '[patch] codex.js patch verified OK'")
             sb.appendLine("      else")
             sb.appendLine("        echo '[patch] WARNING: codex.js patch did NOT apply'")

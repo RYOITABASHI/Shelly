@@ -27,6 +27,17 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Download codex-termux Android binary
+        run: |
+          CODEX_TERMUX_VERSION="v0.121.0-termux"
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          curl -L "https://github.com/DioNanos/codex-termux/releases/download/${CODEX_TERMUX_VERSION}/codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
+            -o /tmp/codex-termux.tar.gz
+          cd /tmp && tar xzf codex-termux.tar.gz
+          cp /tmp/codex-exec.bin "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
+
       - name: Bundle AI CLIs (Claude Code, Gemini CLI, Codex)
         run: |
           mkdir -p cli-bundle
