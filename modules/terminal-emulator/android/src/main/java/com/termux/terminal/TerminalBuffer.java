@@ -199,15 +199,18 @@ public final class TerminalBuffer {
     }
 
     public void setLineWrap(int row) {
-        mLines[externalToInternalRow(row)].mLineWrap = true;
+        TerminalRow line = mLines[externalToInternalRow(row)];
+        if (line != null) line.mLineWrap = true;
     }
 
     public boolean getLineWrap(int row) {
-        return mLines[externalToInternalRow(row)].mLineWrap;
+        TerminalRow line = mLines[externalToInternalRow(row)];
+        return line != null && line.mLineWrap;
     }
 
     public void clearLineWrap(int row) {
-        mLines[externalToInternalRow(row)].mLineWrap = false;
+        TerminalRow line = mLines[externalToInternalRow(row)];
+        if (line != null) line.mLineWrap = false;
     }
 
     /**
@@ -486,6 +489,7 @@ public final class TerminalBuffer {
                                  int bottom, int right) {
         for (int y = top; y < bottom; y++) {
             TerminalRow line = mLines[externalToInternalRow(y)];
+            if (line == null) continue;
             int startOfLine = (rectangular || y == top) ? left : leftMargin;
             int endOfLine = (rectangular || y + 1 == bottom) ? right : rightMargin;
             for (int x = startOfLine; x < endOfLine; x++) {
