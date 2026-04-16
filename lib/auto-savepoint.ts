@@ -19,6 +19,12 @@ const SECURITY_PATTERNS: { pattern: RegExp; label: string }[] = [
 
 const SENSITIVE_FILES = /\.(env|env\.local|env\.production|pem|key|p12|jks|keystore)$/;
 
+const SKIP_PREFIXES = [
+  '.npm/', 'node_modules/', '.shelly-cli/', '.shelly-rootfs/',
+  '.cache/', '.local/', '.config/', '.yarn/',
+];
+const MAX_FILES_TO_SCAN = 30;
+
 /** Scan staged files for secrets. Returns issues found. */
 export async function scanForSecrets(
   projectDir: string,
@@ -28,15 +34,20 @@ export async function scanForSecrets(
   const { stdout: stagedFiles } = await runCommand(`git -C ${dir} diff --cached --name-only`);
   if (!stagedFiles.trim()) return [];
 
+  const allFiles = stagedFiles.trim().split('\n').filter(Boolean);
+  const filesToScan = allFiles.filter(
+    (f) => !SKIP_PREFIXES.some((p) => f.startsWith(p)),
+  );
+
   const issues: SecurityIssue[] = [];
-  for (const file of stagedFiles.trim().split('\n')) {
-    if (!file) continue;
-    // Check filename patterns
+  let scanned = 0;
+  for (const file of filesToScan) {
     if (SENSITIVE_FILES.test(file)) {
       issues.push({ file, label: 'sensitive file', line: 0 });
       continue;
     }
-    // Check file content for secret patterns
+    if (scanned >= MAX_FILES_TO_SCAN) break;
+    scanned++;
     const { stdout: content, exitCode } = await runCommand(
       `git -C ${dir} show :${shellEscape(file)} 2>/dev/null | head -500`,
     );
