@@ -98,21 +98,12 @@ class ShellyInputHandler {
      * Handle a code point from IME input. Returns true if consumed.
      */
     fun onCodePoint(codePoint: Int, ctrlHeld: Boolean, session: TerminalSession?): Boolean {
-        if (session == null) return false
-
-        if (ctrlHeld || ctrlDown) {
-            // Ctrl+letter -> control character
-            val controlChar = toControlChar(codePoint)
-            if (controlChar != null) {
-                writeToSession(session, controlChar)
-                return true
-            }
-        }
-
-        // Normal character input
-        val chars = Character.toChars(codePoint)
-        writeToSession(session, String(chars))
-        return true
+        // Let TerminalView's inputCodePoint handle all character input via
+        // the standard Termux path (writeCodePoint → screen update → invalidate).
+        // Previously this method handled everything and returned true, which
+        // bypassed screen refresh and caused Enter/BS to appear stuck until
+        // the view was tapped (forcing an invalidate).
+        return false
     }
 
     /**
