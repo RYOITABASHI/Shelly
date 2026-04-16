@@ -74,8 +74,13 @@ object HomeInitializer {
      *        Replace the wrapper approach with a bash() shell function in
      *        .bashrc (same pattern as node/git/claude) so `bash -c '...'`
      *        and `bash script.sh` work. Also export -f bash so subshells
-     *        inherit the function. */
-    private const val BASHRC_VERSION = 22
+     *        inherit the function.
+     *    23: bug #76 — libproot.so was missing from LibExtractor's LIBS
+     *        map so it never got extracted to termux-libs/. Also the
+     *        codex.js sed patch used spawn("proot",...) which hits SELinux
+     *        — changed to spawn("/system/bin/linker64", [libproot.so, ...])
+     *        with full proot args (rootfs, bind mounts, -0). */
+    private const val BASHRC_VERSION = 23
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -330,7 +335,7 @@ object HomeInitializer {
             sb.appendLine("    if grep -q 'shelly-proot' \"\$__codex_js\"; then")
             sb.appendLine("      echo '[patch] codex.js already patched, skipping'")
             sb.appendLine("    else")
-            sb.appendLine("      _run $libDir/coreutils --coreutils-prog=sed -i 's#spawn(binaryPath, process.argv.slice(2)#spawn(\"proot\", [binaryPath.replace(process.env.HOME, \"/root\"), ...process.argv.slice(2)] /*shelly-proot*/#' \"\$__codex_js\"")
+            sb.appendLine("      _run $libDir/coreutils --coreutils-prog=sed -i 's#spawn(binaryPath, process.argv.slice(2)#spawn(\"/system/bin/linker64\", [\"$libDir/libproot.so\", \"-0\", \"--kill-on-exit\", \"-r\", process.env.HOME + \"/.shelly-rootfs\", \"-b\", \"/dev\", \"-b\", \"/proc\", \"-b\", \"/sys\", \"-b\", process.env.HOME + \":/root\", \"-w\", \"/root\", binaryPath.replace(process.env.HOME, \"/root\"), ...process.argv.slice(2)] /*shelly-proot*/#' \"\$__codex_js\"")
             sb.appendLine("      echo \"[patch] codex.js sed exit=\$?\"")
             sb.appendLine("      if grep -q 'shelly-proot' \"\$__codex_js\"; then")
             sb.appendLine("        echo '[patch] codex.js patch verified OK'")

@@ -73,6 +73,8 @@ object LibExtractor {
         "lib/arm64-v8a/libmake.so" to "make",
         // less
         "lib/arm64-v8a/libless.so" to "less",
+        // proot (used by codex CLI to run ET_EXEC static binaries via Alpine rootfs)
+        "lib/arm64-v8a/libproot.so" to "libproot.so",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so"
