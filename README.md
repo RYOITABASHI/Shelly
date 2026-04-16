@@ -80,7 +80,7 @@ After that, open **Settings → API Keys** (or run `shelly config` from the term
 
 ## How is Shelly different?
 
-Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Replit runs in the cloud. Claude Code on desktop is desktop-only. Shelly is the only tool that puts a native terminal and multi-agent AI side by side on your phone — with a browser pane, markdown viewer, code preview, sidebar, and agent bar all in one screen — and connects them so the AI reads your terminal output and edits your files with one tap.
+Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Replit runs in the cloud. Claude Code on desktop is desktop-only. To our knowledge, Shelly is the only tool that puts a native terminal and multi-agent AI side by side on your phone — with a browser pane, markdown viewer, code preview, sidebar, and agent bar all in one screen — and connects them so the AI reads your terminal output and edits your files with one tap.
 
 ---
 
@@ -553,6 +553,22 @@ Shelly is v0.1.0. Here's what we know isn't perfect yet.
 
 ---
 
+## Permissions
+
+Shelly is a terminal app that runs shell commands, edits files, calls AI APIs, and stores credentials. That combination requires more Android permissions than a typical app. Here's why each exists, what happens if you deny it, and what alternatives exist.
+
+| Permission | Why | If denied | Alternative |
+|---|---|---|---|
+| **MANAGE_EXTERNAL_STORAGE** | Lets the terminal read scripts in `/sdcard/Download` and other shared directories. The standard "adb push a file, source it from the shell" workflow requires this. | `source /sdcard/Download/*.sh` fails with `Permission denied`. Everything inside `$HOME` (the app's private data dir) still works. | SAF-based per-file import UI is planned for Play Store distribution (DEFERRED P3). For now, grant from Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files. |
+| **INTERNET** | AI API calls (Claude, Gemini, Groq, Perplexity, Cerebras). Also used by npm install for CLI auto-updates. | Cloud AI features stop working. Local LLM (`@local`) and all terminal features still work. | Use `@local` for fully on-device inference. |
+| **POST_NOTIFICATIONS** | CLI completion notifications (long-running commands surface a system notification). | You won't see the "command finished" toast. | — |
+| **FOREGROUND_SERVICE** | Keeps the terminal alive when the app is backgrounded. | Shell processes may be killed by the OS when you switch apps. | — |
+| **RECORD_AUDIO** | Voice input (VoiceChat + VoiceChain). | Voice features are disabled. Typing works normally. | — |
+
+Shelly is distributed via GitHub Releases and F-Droid, not Google Play. The `MANAGE_EXTERNAL_STORAGE` permission would require a Play Store all-files-access audit, which is why Play Store distribution is deferred until a SAF-based import path is available as a fallback.
+
+---
+
 ## Security
 
 Shelly runs commands on your device. The safety system is a best-effort layer, not a guarantee.
@@ -561,6 +577,7 @@ Shelly runs commands on your device. The safety system is a best-effort layer, n
 - **APK distribution is unsigned** — Release APKs from GitHub Actions are not code-signed. For verified builds, clone the repo and build locally with your own keystore. See [Building from source](#quick-start).
 - **Autonomous agents require explicit approval per action** — When using CLI agents (Claude Code, Gemini CLI) through Shelly, all file writes and command executions go through the approval proxy. The "all" auto-approve mode shows a security warning before activation.
 - **API keys are stored in SecureStore** — Keys are never written to logs or debug output. SecureStore uses Android Keystore encryption on supported devices.
+- **Convenience ≠ security** — Shelly combines shell execution, AI dispatch, file editing, API key storage, and broad storage access in a single app. This is powerful but means a compromise of any one layer could affect the others. Review the source, build from your own keystore, and treat Shelly as a development tool — not as a production server environment.
 
 To report a security issue, please open a [GitHub issue](https://github.com/RYOITABASHI/Shelly/issues) with the `security` label, or contact the maintainer directly.
 

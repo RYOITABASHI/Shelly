@@ -237,6 +237,39 @@ adb logcat -s ShellyPaste:D ShellyIME:D ShellyExec:D ShellyPTY:D HomeInitializer
 
 ---
 
+## Zustand ストア一覧
+
+first-time contributor が最も迷うのは「状態がどこにあるか」。以下がすべてのストア（`store/` ディレクトリ）:
+
+| ストア | 責務 | persist |
+|--------|------|---------|
+| `terminal-store` | セッションID、ブロック記録、cwd追跡 | ✅ |
+| `settings-store` | フォント、テーマ、APIキー（SecureStore連携）、全アプリ設定 | ✅ |
+| `pane-store` | フォーカスペインID、エージェントバインド | ✅ |
+| `sidebar-store` | サイドバーモード、リポジトリパス一覧 | ✅ |
+| `ai-pane-store` | ペインごとのAI会話（メッセージ、ストリーミング状態） | ✅ |
+| `browser-store` | ブックマーク、ナビゲーションシグナル | ✅ |
+| `cosmetic-store` | CRT、フォント、ハプティクス、サウンドプロファイル | ✅ |
+| `agent-store` | バックグラウンドエージェント定義、実行履歴 | ✅ |
+| `profile-store` | SSHプロファイル | ✅ |
+| `workspace-store` | リポジトリごとのワークスペース分離 | ✅ |
+| `snippet-store` | 保存済みスニペット（Command Palette 経由で実行） | ✅ |
+| `git-status-store` | dirtyCount（Sidebar/AgentBar badge用、20秒ポーリング） | — |
+| `ports-store` | ローカルリスナー一覧（/proc/net/tcp 15秒ポーリング） | — |
+| `theme-version-store` | テーマプリセット切替時のkey-remount用カウンタ | — |
+| `savepoint-store` | auto-savepoint のコミット履歴 | ✅ |
+| `preview-store` | Preview ペインの表示ファイルパス | — |
+| `execution-log-store` | コマンド実行ログ | — |
+| `arena-store` | Arena モードの比較状態 | — |
+| `mcp-store` | MCP サーバー接続状態 | ✅ |
+| `plan-store` | AIプランカード | — |
+| `usage-store` | API使用量トラッキング | ✅ |
+| `chat-store` | 旧チャット画面用（chelly/ 削除後は dead、v0.1.1 で削除予定） | ✅ |
+
+**触る前の確認**: ストアを新設する前に、既存ストアに追加できないか検討すること。20 個は多い。
+
+---
+
 ## 開発ルール
 
 - **言語**: コード内コメント・変数名は英語、UIテキストはi18nキー経由、コミットメッセージは英語

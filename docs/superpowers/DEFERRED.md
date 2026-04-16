@@ -368,6 +368,26 @@ error: "/data/data/dev.shelly.terminal/files/home/.shelly-cli/node_modules/@open
 
 ## P3 — 長期ロードマップ / 検討中
 
+### bug #98 — paste エッジケース 3 件 (Claude レビュー指摘, v0.1.1 IME 改善タイミング)
+
+**発見**: 2026-04-16 v0.1.0 外部レビュー (Claude Opus)
+**記録すべきエッジケース**:
+1. **Samsung Bookcover BT キーボード** — HW キーボードは IME を経由しないため `commitText` を通らない。`KeyEvent` 経由のペーストが pasteViaEmulator をバイパスする可能性。
+2. **CJK 変換中の `commitText`** — Samsung/Gboard は変換確定時に `setComposingText→commitText` を連続発火。multi-line 判定 (`length >= 16`) が誤作動するリスク。
+3. **TTS / アクセシビリティ入力** — `AccessibilityService` 経由のテキスト挿入は IME を迂回する。
+**優先度**: P3 — v0.1.0 では問題にならない。v0.1.1 の IME 改善タイミングで DEFERRED.md から拾い上げる。
+
+---
+
+### Play Store 配布時の SAF 並行実装 (Claude + Perplexity レビュー指摘)
+
+**背景**: v0.1.0 は MANAGE_EXTERNAL_STORAGE で /sdcard を直接読み書き。GitHub Releases / F-Droid 配布では問題ないが、Play Store は all-files-access に対して審査制限がある。
+**修正方針**: SAF (Storage Access Framework) ベースの「ファイルをインポート」UI を並行実装して、MANAGE_EXTERNAL_STORAGE がなくても最低限の外部ファイル取り込みが機能するようにする。
+**トリガー**: Play Store 配布を本格検討するタイミング。
+**優先度**: P3 (配布チャネル拡大は v0.2.0+ の話)
+
+---
+
 ### bug #65 Case B — 真の Immortal Sessions (対話状態保持)
 - **現状**: Wave D で Case C (transcript replay) を実装。見た目は「続きから再開」に見えるが vim / claude --continue / REPL の対話状態は失われる
 - **Case B 方針**: fork 親を TerminalSessionService (FG service) に移動、sessionRegistry を Service の Binder 経由で Module から再取得可能にする
@@ -421,6 +441,7 @@ error: "/data/data/dev.shelly.terminal/files/home/.shelly-cli/node_modules/@open
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
+- **2026-04-16**: v0.1.0 リリース前最終スイープ。Session A/B/C 並列実行で bug #68/#69/#70/#73/#74/#76/#91/#92/#93/#94/#95/#97 を修正。44 orphan files (~300 KB) + chelly/ + components/chat/ + use-ai-dispatch.ts を削除。README を 3 エージェント並列レビュー + 校正 + 校正で磨き上げ。外部 4 LLM (Claude/Perplexity/GPT/Gemini) のレビューを受けて権限説明独立節追加、"only" hedge 全箇所適用、paste エッジケース 3 件 + Play Store SAF を P3 登録、Zustand ストア一覧を CLAUDE.md に図示。
 - **2026-04-16**: v0.1.0 Wave L 実機検証セッション。Codex CLI を動かすために Alpine rootfs + proot wrapper を導入したが実機で複数の根本問題が顕在化。**bug #91** (ペースト改行分割、P0)、**bug #92** (/sdcard noexec/read 拒否、P0)、**bug #93** (`bash` コマンドが PATH 外、P1)、**bug #94** (ペースト経路設計がバラバラで同種バグが繰り返し発生、P0 調査)、**bug #95** (Wave L の codex.js sed patch が post-install 内で走らない、P1) を登録。bug #76 を Wave L 検証結果で更新。本日 v0.1.0 を出すのは **bug #91 を根本修正してから** という方針に変更。codex は v0.1.1 送り (claude + gemini の 2 本で v0.1.0 を出荷予定)。
 
 ---
