@@ -13,10 +13,10 @@
 //  - At most two Divider instances exist per preset, so worklet boundaries
 //    are tightly bounded.
 
-import React, { useRef } from 'react';
+import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { runOnJS } from 'react-native-reanimated';
+import { runOnJS, useSharedValue } from 'react-native-reanimated';
 import type { Ratios } from '@/hooks/use-multi-pane';
 import { colors as C } from '@/theme.config';
 
@@ -51,17 +51,12 @@ export function Divider(props: DividerProps) {
     onRatioChange, onReset,
   } = props;
 
-  // Mirror props into refs so the worklet closures below read stable values.
-  const startRatioRef = useRef(currentRatio);
-  startRatioRef.current = currentRatio;
+  const startRatio = useSharedValue(currentRatio);
+  const cSizeSV = useSharedValue(containerSize);
+  cSizeSV.value = containerSize;
 
-  const handleBegin = (): void => {
-    startRatioRef.current = currentRatio;
-  };
-
-  const handleUpdate = (delta: number): void => {
-    if (containerSize <= 0) return;
-    onRatioChange(ratioKey, startRatioRef.current + delta / containerSize);
+  const handleUpdate = (newRatio: number): void => {
+    onRatioChange(ratioKey, newRatio);
   };
 
   const handleReset = (): void => {
@@ -71,14 +66,17 @@ export function Divider(props: DividerProps) {
   const isVertical = kind === 'vertical';
 
   const pan = Gesture.Pan()
-    .onBegin(() => {
+    .onStart(() => {
       'worklet';
-      runOnJS(handleBegin)();
+      startRatio.value = currentRatio;
     })
     .onUpdate((e) => {
       'worklet';
+      const cSize = cSizeSV.value;
+      if (cSize <= 0) return;
       const delta = isVertical ? e.translationX : e.translationY;
-      runOnJS(handleUpdate)(delta);
+      const newRatio = startRatio.value + delta / cSize;
+      runOnJS(handleUpdate)(newRatio);
     });
 
   const doubleTap = Gesture.Tap()
