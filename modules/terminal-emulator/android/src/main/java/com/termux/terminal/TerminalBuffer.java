@@ -192,8 +192,8 @@ public final class TerminalBuffer {
      * @return The row corresponding to the input argument in the private coordinate system.
      */
     public int externalToInternalRow(int externalRow) {
-        if (externalRow < -mActiveTranscriptRows || externalRow > mScreenRows)
-            throw new IllegalArgumentException("extRow=" + externalRow + ", mScreenRows=" + mScreenRows + ", mActiveTranscriptRows=" + mActiveTranscriptRows);
+        if (externalRow < -mActiveTranscriptRows) externalRow = -mActiveTranscriptRows;
+        if (externalRow > mScreenRows) externalRow = mScreenRows > 0 ? mScreenRows - 1 : 0;
         final int internalRow = mScreenFirstRow + externalRow;
         return (internalRow < 0) ? (mTotalRows + internalRow) : (internalRow % mTotalRows);
     }
@@ -471,8 +471,8 @@ public final class TerminalBuffer {
     }
 
     public void setChar(int column, int row, int codePoint, long style) {
-        if (row  < 0 || row >= mScreenRows || column < 0 || column >= mColumns)
-            throw new IllegalArgumentException("TerminalBuffer.setChar(): row=" + row + ", column=" + column + ", mScreenRows=" + mScreenRows + ", mColumns=" + mColumns);
+        if (row < 0 || row >= mScreenRows || column < 0 || column >= mColumns)
+            return;
         row = externalToInternalRow(row);
         allocateFullLineIfNecessary(row).setChar(column, codePoint, style);
     }
