@@ -67,8 +67,15 @@ object HomeInitializer {
      *    21: bug #74 — pre-create $HOME/.bash_history and export HISTFILE /
      *        HISTSIZE / HISTFILESIZE so the first ↑ press on a cold session
      *        doesn't silently do nothing (bash was defaulting to an empty
-     *        in-memory history without persistence). */
-    private const val BASHRC_VERSION = 21
+     *        in-memory history without persistence).
+     *    22: bug #93 follow-up — the $HOME/bin/bash wrapper used
+     *        #!/system/bin/sh as its shebang, but SELinux on Android 14+
+     *        blocks execve of /system/bin/sh from app_data_file context.
+     *        Replace the wrapper approach with a bash() shell function in
+     *        .bashrc (same pattern as node/git/claude) so `bash -c '...'`
+     *        and `bash script.sh` work. Also export -f bash so subshells
+     *        inherit the function. */
+    private const val BASHRC_VERSION = 22
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -160,16 +167,12 @@ object HomeInitializer {
         )
         prootWrapper.setExecutable(true, false)
 
-        // bug #93: bash wrapper — Shelly launches bash as libbash.so via
-        // linker64, so there is no "bash" binary on PATH. Scripts that call
-        // `bash /path/to/script.sh` or `#!/usr/bin/env bash` shebangs fail.
-        // Place a thin wrapper at $HOME/bin/bash that delegates to linker64.
-        val bashWrapper = File(binDir, "bash")
-        bashWrapper.writeText(
-            "#!/system/bin/sh\n" +
-            "exec /system/bin/linker64 $libDir/libbash.so \"\$@\"\n"
-        )
-        bashWrapper.setExecutable(true, false)
+        // bug #93 v2: removed the shebang-based $HOME/bin/bash wrapper — SELinux
+        // blocks #!/system/bin/sh from app_data_file context. bash is now a shell
+        // function in .bashrc instead (same pattern as node/git/claude). Clean up
+        // the old wrapper if it exists so PATH doesn't find it first.
+        val oldBashWrapper = File(binDir, "bash")
+        if (oldBashWrapper.exists()) oldBashWrapper.delete()
 
         // Regenerate .bashrc if version changed
         val bashrc = File(home, ".bashrc")
@@ -245,6 +248,7 @@ object HomeInitializer {
             sb.appendLine()
 
             // Tool functions
+            sb.appendLine("bash() { _run $libDir/libbash.so \"\$@\"; }")
             sb.appendLine("node() { _run $libDir/node \"\$@\"; }")
             sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
             sb.appendLine("npm() { _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js \"\$@\"; }")
@@ -271,7 +275,7 @@ object HomeInitializer {
             sb.appendLine("claude() { _run $libDir/node \"\$__cli_dir/@anthropic-ai/claude-code/cli.js\" \"\$@\"; }")
             sb.appendLine("gemini() { _run $libDir/node \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
             sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
-            sb.appendLine("export -f claude gemini codex")
+            sb.appendLine("export -f bash claude gemini codex")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
