@@ -33,7 +33,7 @@ import { useExecutionLogStore } from '@/store/execution-log-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
-import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
+import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useUsageStore } from '@/store/usage-store';
 import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -84,8 +84,19 @@ export default function TerminalScreen() {
   const { colors: c } = useTheme();
   const { t } = useTranslation();
   const layout = useDeviceLayout();
-  const activeSession = useActiveSession();
+  const paneId = useContext(PaneIdContext);
+  const paneSessionId = useMultiPaneStore((s) => {
+    if (!paneId) return null;
+    for (const slot of s.slots) {
+      if (slot && slot.id === paneId && slot.sessionId) return slot.sessionId;
+    }
+    return null;
+  });
+  const globalActiveSession = useActiveSession();
   const { removeSession, sessions, settings } = useTerminalStore();
+  const activeSession = paneSessionId
+    ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
+    : globalActiveSession;
   const { refresh: refreshUsage } = useUsageStore();
 
   // Usage adapters — read/list via TerminalEmulator (no bridge needed)

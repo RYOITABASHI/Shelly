@@ -42,6 +42,8 @@ export type Slot = {
   /** Stable id. Minted on addPane, never rewritten afterwards. */
   id: string;
   tab: PaneTab;
+  /** Terminal session id bound to this pane (only for terminal panes). */
+  sessionId?: string;
 } | null;
 
 export type SlotIndex = 0 | 1 | 2 | 3;
@@ -442,7 +444,15 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         }
 
         const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
-        newSlots[empty] = { id: genId(), tab };
+        const slotId = genId();
+        if (tab === 'terminal') {
+          const { useTerminalStore } = require('@/store/terminal-store');
+          useTerminalStore.getState().addSession();
+          const newSessionId = useTerminalStore.getState().activeSessionId;
+          newSlots[empty] = { id: slotId, tab, sessionId: newSessionId };
+        } else {
+          newSlots[empty] = { id: slotId, tab };
+        }
         set({ preset, slots: newSlots, focusedSlot: empty });
       };
 
