@@ -63,8 +63,12 @@ object HomeInitializer {
      *        \e[201~ now (regardless of DECSET 2004), and readline parses
      *        it correctly as long as `set enable-bracketed-paste on` is
      *        bound. bash 4.4+ defaults to on but we bind explicitly so
-     *        older builds and user overrides still get the behaviour. */
-    private const val BASHRC_VERSION = 20
+     *        older builds and user overrides still get the behaviour.
+     *    21: bug #74 — pre-create $HOME/.bash_history and export HISTFILE /
+     *        HISTSIZE / HISTFILESIZE so the first ↑ press on a cold session
+     *        doesn't silently do nothing (bash was defaulting to an empty
+     *        in-memory history without persistence). */
+    private const val BASHRC_VERSION = 21
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -211,6 +215,17 @@ object HomeInitializer {
             // with the post-install sed below so a future gemini release that
             // moves to a different gating mechanism still gets neutralised.
             sb.appendLine("export TERMUX_VERSION=shelly")
+            // bug #74: explicit HISTFILE so `↑` works out of the box on a
+            // cold session. Without this, bash defaults HISTFILE to ~/.bash_history
+            // but only if `$HOME` is writable at startup — and on a fresh Shelly
+            // install the file doesn't exist yet, so the very first ↑ finds an
+            // empty history list and does nothing. Creating the file up front
+            // turns the "did the button break?" confusion into the expected
+            // "no history yet" beep behaviour.
+            sb.appendLine("export HISTFILE=\"\$HOME/.bash_history\"")
+            sb.appendLine("export HISTSIZE=10000")
+            sb.appendLine("export HISTFILESIZE=20000")
+            sb.appendLine("[ -f \"\$HISTFILE\" ] || touch \"\$HISTFILE\"")
             sb.appendLine()
 
             // bug #91/#94: enable readline bracketed-paste handling. Shelly's

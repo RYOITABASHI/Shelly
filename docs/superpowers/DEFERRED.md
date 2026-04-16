@@ -162,7 +162,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### bug #74 — 空履歴で ↑ を押した時の無反応 UX (P3)
+### ✅ bug #74 — 空履歴で ↑ を押した時の無反応 UX (修正済: HomeInitializer BASHRC_VERSION 21)
 
 **発見**: 2026-04-15 Phase 6-A Test 5-2
 **症状**: bash 起動直後で履歴が空の状態で action bar の ↑ を押しても画面が無変化。ユーザー視点では「ボタン壊れてる?」と混乱する。実際は `\x1b[A` を送信しており bash 側が無反応なだけ (後で `echo hello` 等を実行してから ↑ を押せば正常復元される)。
