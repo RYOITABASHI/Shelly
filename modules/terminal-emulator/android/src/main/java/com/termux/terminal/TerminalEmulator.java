@@ -2664,19 +2664,18 @@ public final class TerminalEmulator {
         // `bind -p`, so leaking the markers produces literal "[200~"
         // tokens that bash tries to execute. We use the DECSET state as
         // a proxy for "the guest can actually handle bracketed paste".
-        boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
         try {
+            boolean bm = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
             int nlCount = 0;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
                 if (c == '\n' || c == '\r') nlCount++;
             }
             String preview = text.length() > 32 ? text.substring(0, 32) + "…" : text;
-            // Replace non-printable chars in preview so the log stays readable.
             preview = preview.replace('\n', '↵').replace('\r', '⏎').replace('\t', '→');
             android.util.Log.d("ShellyPaste",
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
-                + ", nl=" + nlCount + ", bracketed=" + bracketedMode
+                + ", nl=" + nlCount + ", bracketed=" + bm
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
