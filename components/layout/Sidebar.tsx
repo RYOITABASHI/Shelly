@@ -32,7 +32,7 @@ import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
-import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
+import { neonTextGlow, neonDotGlow, neonBorderGlow, neonGlowSky, neonGlowAmber } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
 
 const WIDTH_ICONS = 48;
@@ -339,7 +339,7 @@ export function Sidebar() {
               return (
                 <Pressable
                   key={p}
-                  style={[styles.repoRow, isActive && styles.repoRowActive]}
+                  style={[styles.repoRow, isActive && styles.repoRowActive, isActive && neonBorderGlow]}
                   onPress={() => setActiveRepo(p)}
                   onLongPress={() => {
                     Alert.alert(
@@ -353,11 +353,12 @@ export function Sidebar() {
                   }}
                   delayLongPress={350}
                 >
-                  <View style={[styles.repoIcon, { backgroundColor: isActive ? C.accent : C.btnSecondaryBg }]}>
+                  <View style={[styles.repoIcon, { backgroundColor: isActive ? C.accent : C.btnSecondaryBg }, isActive && neonDotGlow]}>
                     <MaterialIcons
                       name="folder"
                       size={10}
-                      color={isActive ? C.btnPrimaryText : C.accentBlue}
+                      color={isActive ? C.btnPrimaryText : C.accentSky}
+                      style={isActive ? undefined : neonGlowSky}
                     />
                   </View>
                   <Text
@@ -368,11 +369,11 @@ export function Sidebar() {
                   </Text>
                   {isActive && gitDirtyCount !== null && gitDirtyCount > 0 && (
                     <View style={styles.gitDirtyBadge}>
-                      <Text style={styles.gitDirtyText}>{String(gitDirtyCount)}</Text>
+                      <Text style={[styles.gitDirtyText, neonGlowAmber]}>{String(gitDirtyCount)}</Text>
                     </View>
                   )}
                   {isActive && (
-                    <Text style={styles.repoVersion}>V9.2</Text>
+                    <Text style={[styles.repoVersion, neonGlowSky]}>V9.2</Text>
                   )}
                 </Pressable>
               );
@@ -408,7 +409,7 @@ export function Sidebar() {
               style={styles.deviceRow}
               onPress={() => setActiveRepo(path)}
             >
-              <MaterialIcons name={icon as any} size={13} color={C.accentBlue} />
+              <MaterialIcons name={icon as any} size={13} color={C.accentSky} style={neonGlowSky} />
               <Text style={styles.deviceLabel}>{label}</Text>
             </Pressable>
           ))}
@@ -602,12 +603,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: P.sidebarItem.px,
     height: S.sidebarItemHeight,
     borderRadius: R.badge,
-    borderLeftWidth: 0,
+    // Always reserve 2px on the left so toggling isActive does not shift
+    // the row horizontally — the only thing that changes is the colour.
+    borderLeftWidth: 2,
     borderLeftColor: 'transparent',
   },
   repoRowActive: {
-    backgroundColor: C.badgeRunningBg,
-    borderLeftWidth: 2,
+    // Teal-tinted glow instead of the muddy amber that clashed with the
+    // accent border. Pairs with neonBorderGlow (passed inline) for the
+    // subtle bleed effect.
+    backgroundColor: 'rgba(0, 212, 170, 0.12)',
     borderLeftColor: C.accent,
   },
   repoIcon: {
@@ -628,7 +633,9 @@ const styles = StyleSheet.create({
     fontSize: F.badge.size,
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
-    color: C.text2,
+    // Sky so it bleeds together with the neonGlowSky applied inline; using
+    // text2 (gray) made the glow look ghosted against a washed-out label.
+    color: C.accentSky,
   },
   emptyRepoHint: {
     fontSize: F.sidebarItem.size,
@@ -640,7 +647,9 @@ const styles = StyleSheet.create({
     lineHeight: 14,
   },
   gitDirtyBadge: {
-    backgroundColor: C.badgeRunningBg,
+    // Amber still signals "uncommitted changes" but we bump the alpha so
+    // the pill reads as a hot neon tag instead of a muddy swatch.
+    backgroundColor: 'rgba(245, 158, 11, 0.22)',
     borderRadius: R.badge,
     paddingHorizontal: 4,
     paddingVertical: 1,
