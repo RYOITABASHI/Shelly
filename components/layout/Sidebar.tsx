@@ -48,11 +48,11 @@ function formatTimeAgo(ts: number): string {
 }
 
 const QUICK_FOLDERS = [
-  { label: '~/', path: '~/', icon: 'home' },
-  { label: 'DCIM', path: '~/storage/dcim', icon: 'photo-camera' },
-  { label: 'DOWNLOAD', path: '~/storage/downloads', icon: 'download' },
-  { label: 'DOCUMENTS', path: '~/storage/shared/Documents', icon: 'description' },
-  { label: 'MUSIC', path: '~/storage/music', icon: 'music-note' },
+  { label: '~', path: '~/', icon: 'home' },
+  { label: 'DCIM', path: '/sdcard/DCIM', icon: 'photo-camera' },
+  { label: 'DOWNLOAD', path: '/sdcard/Download', icon: 'download' },
+  { label: 'DOCUMENT', path: '/sdcard/Documents', icon: 'description' },
+  { label: 'MUSIC', path: '/sdcard/Music', icon: 'music-note' },
 ] as const;
 
 export function Sidebar() {

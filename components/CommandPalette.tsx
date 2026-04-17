@@ -58,14 +58,8 @@ export function CommandPalette() {
 
   const actions = useMemo((): PaletteAction[] => {
     const list: PaletteAction[] = [
-      // Navigation actions (new layout — terminal is always visible, AI/projects are panes)
-      { id: 'tab-projects', label: 'Projects', hint: t('palette.hint_projects'), icon: 'folder', category: 'tab',
-        onExecute: () => { close(); } },
-      { id: 'tab-chat', label: 'Chat / AI', hint: t('palette.hint_chat'), icon: 'chat', category: 'tab',
-        onExecute: () => { (() => { const s = useMultiPaneStore.getState(); const root = s.root; if (root) { const leaf = root.type === 'leaf' ? root.id : root.children[0].type === 'leaf' ? root.children[0].id : ''; if (leaf) s.splitPane(leaf, 'horizontal', 'ai'); } })(); close(); } },
-      { id: 'tab-terminal', label: 'Terminal', hint: t('palette.hint_terminal'), icon: 'terminal', category: 'tab',
-        onExecute: () => { close(); } },
-      { id: 'tab-settings', label: 'Settings', hint: t('palette.hint_settings'), icon: 'settings', category: 'tab',
+      // Navigation
+      { id: 'tab-settings', label: 'Settings', hint: t('palette.hint_settings'), icon: 'settings', category: 'action',
         onExecute: () => { useSettingsStore.getState().setShowConfigTUI(true); close(); } },
 
       // Actions

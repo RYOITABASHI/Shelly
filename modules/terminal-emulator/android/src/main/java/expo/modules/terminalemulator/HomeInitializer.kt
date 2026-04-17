@@ -386,6 +386,7 @@ object HomeInitializer {
             sb.appendLine("__shelly_prompt() {")
             sb.appendLine("  local d")
             sb.appendLine("  d=\"\$(pwd -P 2>/dev/null || pwd)\"")
+            sb.appendLine("  printf '%s' \"\$d\" > \"\$HOME/.shelly_cwd\" 2>/dev/null")
             sb.appendLine("  # Replace home path with ~ (\\~ prevents tilde expansion in replacement)")
             sb.appendLine("  d=\"\${d/#\$SHELLY_HOME_REAL/\\~}\"")
             sb.appendLine("  d=\"\${d/#\$HOME/\\~}\"")

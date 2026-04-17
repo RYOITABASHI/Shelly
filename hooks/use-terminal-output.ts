@@ -13,7 +13,6 @@ import { useExecutionLogStore } from '@/store/execution-log-store';
 import { detectLocalhostUrl } from '@/lib/localhost-detector';
 import { usePreviewStore } from '@/store/preview-store';
 import { useSavepointStore } from '@/store/savepoint-store';
-import { useChatStore } from '@/store/chat-store';
 import { detectApprovalPrompt } from '@/lib/realtime-translate';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { generateId } from '@/lib/id';
@@ -110,76 +109,8 @@ export function useTerminalOutput() {
             }
           }
 
-          // Wide mode only: detect approval prompts
-          if (isWide && detectApprovalPrompt(line)) {
-            if (approvalDebounce.current) clearTimeout(approvalDebounce.current);
-            approvalDebounce.current = setTimeout(() => {
-              const store = useChatStore.getState();
-              const session = store.getActiveSession();
-              if (!session) return;
-              store.addMessage(session.id, {
-                id: generateId(),
-                role: 'system',
-                content: '',
-                timestamp: Date.now(),
-                approvalData: {
-                  sessionId: event.sessionId,
-                  command: line.trim(),
-                  translation: '',
-                  dangerLevel: 'MEDIUM',
-                },
-              });
-            }, 300);
-          }
-
-          // Wide mode only: detect error output
-          if (isWide) {
-            for (const pattern of ERROR_OUTPUT_PATTERNS) {
-              if (pattern.test(line)) {
-                errorAccum.current.push(line.replace(/\x1b\[[0-9;]*m/g, ''));
-                if (errorDebounce.current) clearTimeout(errorDebounce.current);
-                errorDebounce.current = setTimeout(() => {
-                  const errorText = errorAccum.current.join('\n');
-                  errorAccum.current = [];
-                  const store = useChatStore.getState();
-                  const session = store.getActiveSession();
-                  if (!session) return;
-                  store.addMessage(session.id, {
-                    id: generateId(),
-                    role: 'system',
-                    content: '',
-                    timestamp: Date.now(),
-                    errorSummaryData: { errorText, translation: '', provider: '' },
-                  });
-                }, 2000);
-                break;
-              }
-            }
-          }
-
-          // PackageDoctor: detect package manager errors
-          for (const pattern of PACKAGE_ERROR_PATTERNS) {
-            if (pattern.test(line)) {
-              pkgErrorAccum.current.push(line);
-              if (pkgErrorDebounce.current) clearTimeout(pkgErrorDebounce.current);
-              pkgErrorDebounce.current = setTimeout(() => {
-                const stderr = pkgErrorAccum.current.join('\n');
-                pkgErrorAccum.current = [];
-                const fix = diagnosePackageError(stderr);
-                if (!fix) return;
-                const store = useChatStore.getState();
-                const session = store.getActiveSession();
-                if (!session) return;
-                store.addMessage(session.id, {
-                  id: generateId(),
-                  role: 'system',
-                  content: `🔧 **Package Doctor**: ${fix.message}\n\nSuggested fix: \`${fix.fix}\`${fix.autoRun ? '\n_(Auto-repair available)_' : ''}`,
-                  timestamp: Date.now(),
-                });
-              }, 1500);
-              break;
-            }
-          }
+          // TODO: approval prompts, error detection, and PackageDoctor
+          // were routed to the deleted chat-store. Re-wire to AI pane in v0.2.
         }
       }, BATCH_INTERVAL);
     });

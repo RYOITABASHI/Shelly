@@ -18,20 +18,29 @@ function truncatePath(path: string, maxLen = 30): string {
 }
 
 export function ContextBar() {
-  const session = useTerminalStore((s) => {
-    const active = s.sessions.find((sess) => sess.id === s.activeSessionId);
-    return active;
-  });
-
-  const cwd = session?.currentDir ?? '~';
   const connectionMode = useTerminalStore((s) => s.connectionMode);
+  const home = getHomePath();
 
+  const [cwd, setCwd] = useState('~');
   const [gitBranch, setGitBranch] = useState<string | null>(null);
+
   useEffect(() => {
-    execCommand(`cd '${cwd}' && git branch --show-current 2>/dev/null`)
-      .then((r) => setGitBranch(r.exitCode === 0 ? r.stdout.trim() || null : null))
-      .catch(() => setGitBranch(null));
-  }, [cwd]);
+    let active = true;
+    const poll = async () => {
+      try {
+        const r = await execCommand(`cat '${home}/.shelly_cwd' 2>/dev/null`);
+        if (!active) return;
+        const dir = r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : home;
+        setCwd(dir);
+        const g = await execCommand(`cd '${dir}' && git branch --show-current 2>/dev/null`);
+        if (!active) return;
+        setGitBranch(g.exitCode === 0 ? g.stdout.trim() || null : null);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { active = false; clearInterval(id); };
+  }, [home]);
 
   const handleCopyPath = () => {
     Clipboard.setStringAsync(cwd);

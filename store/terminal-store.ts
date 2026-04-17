@@ -71,7 +71,7 @@ type TerminalState = {
   setActiveCli: (cli: TabSession['activeCli']) => void;
 
   // Actions — sessions
-  addSession: () => void;
+  addSession: () => string | undefined;
   removeSession: (id: string) => void;
   setActiveSession: (id: string) => void;
   clearSession: (sessionId?: string) => void;
@@ -176,11 +176,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
   // ── Session management ──────────────────────────────────────────────────────
 
-  addSession: () => {
+  addSession: (): string | undefined => {
     const { sessions } = get();
-    if (sessions.length >= MAX_SESSIONS) return;
+    if (sessions.length >= MAX_SESSIONS) return undefined;
     const sessionName = allocateSessionName(sessions);
-    if (!sessionName) return;
+    if (!sessionName) return undefined;
     const id = `session-${Date.now()}`;
     const name = `Terminal ${sessions.length + 1}`;
     logInfo('TerminalStore', 'Session added: ' + id + ' (' + name + ')');
@@ -189,6 +189,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       activeSessionId: id,
     }));
     get().saveSessionState();
+    return id;
   },
 
   removeSession: (id: string) => {

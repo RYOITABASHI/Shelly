@@ -447,8 +447,7 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         const slotId = genId();
         if (tab === 'terminal') {
           const { useTerminalStore } = require('@/store/terminal-store');
-          useTerminalStore.getState().addSession();
-          const newSessionId = useTerminalStore.getState().activeSessionId;
+          const newSessionId = useTerminalStore.getState().addSession();
           newSlots[empty] = { id: slotId, tab, sessionId: newSessionId };
         } else {
           newSlots[empty] = { id: slotId, tab };

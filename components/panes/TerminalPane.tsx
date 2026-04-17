@@ -48,7 +48,6 @@ import { FirstMateOverlay, shouldShowFirstMate } from '@/components/terminal/Fir
 import { isProcessKill } from '@/lib/process-guard';
 import { getTerminalTheme, type TerminalTheme } from '@/lib/terminal-theme';
 import type { TabSession, SessionStatus } from '@/store/types';
-import { useChatStore } from '@/store/chat-store';
 import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
 import { execCommand } from '@/hooks/use-native-exec';
@@ -189,22 +188,10 @@ export default function TerminalScreen() {
   const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
   const showSplitPreview = previewIsOpen && layout.isWide;
 
-  // Click-to-Edit: send edit prompt to Chat as a user message for AI dispatch.
-  // If no chat session exists, fall back to running the prompt as a terminal command.
-  const handleEditSubmit = useCallback((prompt: string) => {
-    const chatStore = useChatStore.getState();
-    const session = chatStore.getActiveSession();
-    if (!session) {
-      // No chat session — execute as terminal command so the input isn't swallowed
-      useTerminalStore.getState().runCommand(prompt);
-      return;
-    }
-    chatStore.addMessage(session.id, {
-      id: generateId(),
-      role: 'user',
-      content: prompt,
-      timestamp: Date.now(),
-    });
+  // Click-to-Edit: placeholder — AI edit dispatch will be routed through
+  // the AI pane in a future version. For now, log and ignore.
+  const handleEditSubmit = useCallback((_prompt: string) => {
+    logInfo('Terminal', 'handleEditSubmit: AI edit not yet routed to AI pane');
   }, []);
 
   // Create a native session via JNI forkpty (no TCP, no pty-helper)
