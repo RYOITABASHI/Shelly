@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { getStagedEdit, acceptStagedDiff } from '@/lib/ai-edit';
+import { playSound } from '@/lib/sounds';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -393,6 +394,7 @@ function DiffBlock({ initialHunks, rawBlock }: DiffBlockProps) {
       const singleHunkDiff = hunkToDiffBlock(hunk);
       const err = await acceptStagedDiff(singleHunkDiff);
       if (err === null) {
+        try { playSound('success'); } catch {}
         ToastAndroid.show('Hunk applied to file', ToastAndroid.SHORT);
         setHunks((prev) =>
           prev.map((h, i) => (i === index ? { ...h, status: 'accepted' } : h)),
@@ -412,6 +414,7 @@ function DiffBlock({ initialHunks, rawBlock }: DiffBlockProps) {
   }, [hunks]);
 
   const handleReject = useCallback((index: number) => {
+    try { playSound('mode_switch'); } catch {}
     ToastAndroid.show('Rejected', ToastAndroid.SHORT);
     setHunks((prev) =>
       prev.map((h, i) => (i === index ? { ...h, status: 'rejected' } : h)),
@@ -426,6 +429,7 @@ function DiffBlock({ initialHunks, rawBlock }: DiffBlockProps) {
     if (getStagedEdit()) {
       const err = await acceptStagedDiff(rawBlock);
       if (err === null) {
+        try { playSound('success'); } catch {}
         ToastAndroid.show('Applied to file', ToastAndroid.SHORT);
         setHunks((prev) =>
           prev.map((h) => (h.status === 'pending' ? { ...h, status: 'accepted' } : h)),

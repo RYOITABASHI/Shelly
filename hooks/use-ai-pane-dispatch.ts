@@ -26,6 +26,7 @@ import { parseAgentCommand, createAgent } from '@/lib/agent-manager';
 import { suggestTool } from '@/lib/agent-tool-router';
 import { tryAutoStageFromTerminal, getStagedEdit } from '@/lib/ai-edit';
 import { useTerminalStore } from '@/store/terminal-store';
+import { playSound } from '@/lib/sounds';
 import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
@@ -326,6 +327,11 @@ export function useAIPaneDispatch(paneId: string) {
       };
       store.addMessage(paneId, assistantPlaceholder);
       store.setStreaming(paneId, true);
+
+      // Superset-style lifecycle chime: fire as the assistant bubble
+      // flips to streaming so the user gets the "the agent heard you"
+      // feedback even before the first token arrives.
+      try { playSound('ai_start'); } catch {}
 
       // Abort any previous in-flight request
       abortRef.current?.abort();
@@ -703,6 +709,9 @@ export function useAIPaneDispatch(paneId: string) {
         });
       } finally {
         store.setStreaming(paneId, false);
+        // Agent-complete chime to match Superset.sh — user can be
+        // looking at another pane and still know the response landed.
+        try { playSound('ai_complete'); } catch {}
       }
     },
     [paneId, throttledUpdate],

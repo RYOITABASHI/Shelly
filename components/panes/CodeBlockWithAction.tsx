@@ -15,6 +15,7 @@ import * as Clipboard from 'expo-clipboard';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalStore } from '@/store/terminal-store';
 import { getStagedEdit, applyStagedEdit } from '@/lib/ai-edit';
+import { playSound } from '@/lib/sounds';
 import { colors as C, fonts as F } from '@/theme.config';
 
 type Props = {
@@ -58,6 +59,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
 
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(trimmed);
+    try { playSound('copy'); } catch {}
     if (Platform.OS === 'android') {
       ToastAndroid.show('Copied to clipboard', ToastAndroid.SHORT);
     }
@@ -77,6 +79,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
       // the snippet inline; for diff / json / other non-executable content
       // we let the user decide whether to keep the inserted text.
       await TerminalEmulator.writeToSession(sessionId, trimmed);
+      try { playSound('send'); } catch {}
       if (Platform.OS === 'android') {
         ToastAndroid.show('Inserted into terminal', ToastAndroid.SHORT);
       }
@@ -103,6 +106,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   const handleApplyToFile = useCallback(async () => {
     if (!staged) return;
     const err = await applyStagedEdit(trimmed);
+    try { playSound(err === null ? 'success' : 'error'); } catch {}
     if (Platform.OS === 'android') {
       ToastAndroid.show(
         err === null ? `Wrote ${staged.path}` : `Apply failed: ${err}`,
