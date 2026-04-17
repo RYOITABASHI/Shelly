@@ -312,3 +312,69 @@ export async function stageAiEdit(path: string): Promise<boolean> {
 
   return true;
 }
+
+// ── Auto-stage from terminal output ─────────────────────────────────
+//
+// Used by the AI pane dispatch layer so the cross-pane-intelligence
+// "error on the left → AI fixes it → one-tap apply" loop works without
+// the user having to pre-open the file in a Code pane. Looks at the
+// terminal snapshot for file:line references, resolves one to an
+// absolute path using the active session cwd, reads the file, and
+// stages it silently (no conversation-level "Staged X" system line
+// because the user never explicitly asked for this — we just want the
+// file write-back path wired when Accept eventually fires).
+
+const FILE_REF_RE =
+  /([A-Za-z0-9_./\\-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|c|cc|cpp|cxx|h|hh|hpp|hxx|sh|bash|zsh|rb|php|cs|swift|md|mdx|json|jsonc|yaml|yml|toml|html|css|scss|sass|less|vue|svelte)):(\d+)(?::(\d+))?/g;
+
+export function extractFileRefsFromOutput(output: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  FILE_REF_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FILE_REF_RE.exec(output)) !== null) {
+    const ref = m[1];
+    if (!seen.has(ref)) {
+      seen.add(ref);
+      out.push(ref);
+    }
+  }
+  return out;
+}
+
+export function resolveFileRef(cwd: string, ref: string): string {
+  if (ref.startsWith('/')) return ref;
+  if (ref.startsWith('~')) return ref; // caller substitutes $HOME as needed
+  // Normalise away any leading "./" and collapse any "/./" segments.
+  const rel = ref.replace(/^\.\/+/, '').replace(/\/\.\//g, '/');
+  return `${cwd.replace(/\/+$/, '')}/${rel}`;
+}
+
+/**
+ * Try to auto-stage the first readable file referenced in the terminal
+ * output. Returns the absolute path staged, or null if nothing matched
+ * or every candidate failed to read. Does NOT touch the pane store — the
+ * caller is responsible for weaving the file content into the system
+ * prompt.
+ */
+export async function tryAutoStageFromTerminal(
+  cwd: string,
+  terminalOutput: string,
+): Promise<{ path: string; content: string } | null> {
+  const refs = extractFileRefsFromOutput(terminalOutput);
+  if (refs.length === 0) return null;
+
+  for (const ref of refs) {
+    const absPath = resolveFileRef(cwd, ref);
+    try {
+      const content = await readFileContent(absPath);
+      stagedEdit = { path: absPath, originalContent: content };
+      return { path: absPath, content };
+    } catch {
+      // Try the next reference — common cause is a build-tool-relative
+      // path that doesn't line up with the terminal's cwd.
+      continue;
+    }
+  }
+  return null;
+}

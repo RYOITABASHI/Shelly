@@ -24,6 +24,8 @@ import { claudeCliStream } from '@/lib/claude-cli';
 import { parseInput } from '@/lib/input-router';
 import { parseAgentCommand, createAgent } from '@/lib/agent-manager';
 import { suggestTool } from '@/lib/agent-tool-router';
+import { tryAutoStageFromTerminal, getStagedEdit } from '@/lib/ai-edit';
+import { useTerminalStore } from '@/store/terminal-store';
 import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
@@ -285,6 +287,32 @@ export function useAIPaneDispatch(paneId: string) {
       logInfo('AIPaneDispatch', 'Terminal context: ' + (terminalCtx ? terminalCtx.length + ' chars' : 'none'));
       store.setTerminalContext(paneId, terminalCtx);
 
+      // Auto-stage a referenced file so InlineDiff's Accept can actually
+      // write the patch back to disk without the user first opening the
+      // file in a Code pane. This is the backbone of cross-pane
+      // intelligence: terminal shows "user.ts:4:12 error ..." → user asks
+      // "fix it" → we preload user.ts now, AI returns a diff, Accept
+      // writes the file.
+      let stagedFile: { path: string; content: string } | null = null;
+      const existing = getStagedEdit();
+      if (existing) {
+        // Explicit stageAiEdit() from a Code pane always wins; surface its
+        // content into the prompt so the model edits the right file.
+        stagedFile = { path: existing.path, content: existing.originalContent };
+      } else if (terminalCtx) {
+        try {
+          const sess = useTerminalStore.getState();
+          const active = sess.sessions.find((s) => s.id === sess.activeSessionId);
+          const cwd = active?.cwd || '/data/data/dev.shelly.terminal/files/home';
+          stagedFile = await tryAutoStageFromTerminal(cwd, terminalCtx);
+          if (stagedFile) {
+            logInfo('AIPaneDispatch', 'Auto-staged from terminal: ' + stagedFile.path);
+          }
+        } catch (err) {
+          logInfo('AIPaneDispatch', 'Auto-stage failed: ' + (err instanceof Error ? err.message : String(err)));
+        }
+      }
+
       // ── Create assistant placeholder ──
       const assistantId = generateId();
       const assistantPlaceholder: ChatMessage = {
@@ -305,7 +333,7 @@ export function useAIPaneDispatch(paneId: string) {
       const signal = abortRef.current.signal;
 
       try {
-        const systemPrompt = buildAIPaneSystemPrompt(terminalCtx, agent);
+        const systemPrompt = buildAIPaneSystemPrompt(terminalCtx, agent, stagedFile);
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder we just added
         const history = toOpenAIHistory(

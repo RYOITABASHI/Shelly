@@ -62,15 +62,19 @@ export function getTerminalSnapshot(maxLines = 50): string | null {
 // ─── System prompt builder ────────────────────────────────────────────────────
 
 /**
- * Build the system prompt for the AI Pane, optionally injecting terminal context.
+ * Build the system prompt for the AI Pane, optionally injecting terminal context
+ * and a staged-for-edit file body. When a file is staged, the prompt steers the
+ * model toward unified-diff responses so InlineDiff can parse + apply them.
  *
  * @param terminalContext Output of getTerminalSnapshot(), or null.
  * @param agentName       Agent bound to the current pane (e.g. "claude"), or null.
+ * @param stagedFile      File primed for editing (from auto-stage / stageAiEdit).
  * @returns Full system prompt string.
  */
 export function buildAIPaneSystemPrompt(
   terminalContext: string | null,
   agentName: string | null,
+  stagedFile?: { path: string; content: string } | null,
 ): string {
   const parts: string[] = [
     'You are Shelly AI, a terminal assistant. You can see the user\'s terminal output.',
@@ -83,6 +87,32 @@ export function buildAIPaneSystemPrompt(
   if (terminalContext) {
     parts.push(
       '\n[Terminal Output]\n' + terminalContext + '\n[End Terminal Output]',
+    );
+  }
+
+  if (stagedFile) {
+    // Number the lines so the model can target hunks precisely. Unified
+    // diff @@ headers need the right line numbers or InlineDiff's
+    // strict-apply path will reject the patch.
+    const numbered = stagedFile.content
+      .split('\n')
+      .map((line, i) => `${String(i + 1).padStart(4, ' ')}  ${line}`)
+      .join('\n');
+    parts.push(
+      `\n[File: ${stagedFile.path}]\n${numbered}\n[End File]\n\n` +
+      'When the user asks you to fix, refactor, or edit the file above, ' +
+      'respond with a unified diff ONLY (no surrounding prose, no code-fence ' +
+      'variants) in this format:\n\n' +
+      '```diff\n' +
+      `--- a${stagedFile.path}\n` +
+      `+++ b${stagedFile.path}\n` +
+      '@@ -<oldStart>,<oldCount> +<newStart>,<newCount> @@\n' +
+      ' context line (unchanged, leading single space)\n' +
+      '-removed line\n' +
+      '+added line\n' +
+      '```\n\n' +
+      'Keep hunks minimal: 2-3 lines of context above and below each change. ' +
+      'Never emit the whole file unless every line changes.',
     );
   }
 
