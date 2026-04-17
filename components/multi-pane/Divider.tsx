@@ -16,7 +16,7 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { runOnJS, useSharedValue } from 'react-native-reanimated';
+import Animated, { runOnJS, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import type { Ratios } from '@/hooks/use-multi-pane';
 import { colors as C } from '@/theme.config';
 
@@ -54,6 +54,10 @@ export function Divider(props: DividerProps) {
   const startRatio = useSharedValue(currentRatio);
   const cSizeSV = useSharedValue(containerSize);
   cSizeSV.value = containerSize;
+  // `active` drives the visual feedback — line brightens, grip glows,
+  // grip scales up ~10% — while the user is dragging. Goes back to a
+  // calm idle state on release.
+  const active = useSharedValue(0);
 
   const handleUpdate = (newRatio: number): void => {
     onRatioChange(ratioKey, newRatio);
@@ -69,6 +73,7 @@ export function Divider(props: DividerProps) {
     .onStart(() => {
       'worklet';
       startRatio.value = currentRatio;
+      active.value = withTiming(1, { duration: 120 });
     })
     .onUpdate((e) => {
       'worklet';
@@ -77,6 +82,10 @@ export function Divider(props: DividerProps) {
       const delta = isVertical ? e.translationX : e.translationY;
       const newRatio = startRatio.value + delta / cSize;
       runOnJS(handleUpdate)(newRatio);
+    })
+    .onFinalize(() => {
+      'worklet';
+      active.value = withTiming(0, { duration: 180 });
     });
 
   const doubleTap = Gesture.Tap()
@@ -108,15 +117,33 @@ export function Divider(props: DividerProps) {
 
   if ((isVertical && h <= 0) || (!isVertical && w <= 0)) return null;
 
+  const lineAnimStyle = useAnimatedStyle(() => ({
+    // Line lights up from a faint 0.18 opacity teal wash to a full
+    // neon teal during drag. Thickness also grows 1 → 2px for a
+    // subtle "I caught you" feel.
+    opacity: 0.18 + 0.7 * active.value,
+    transform: [{ scaleX: isVertical ? 1 + active.value : 1 }, { scaleY: isVertical ? 1 : 1 + active.value }],
+  }));
+
+  const gripAnimStyle = useAnimatedStyle(() => ({
+    // Grip scales 1 → 1.1 and the glow intensifies while dragging.
+    transform: [{ scale: 1 + 0.1 * active.value }],
+    shadowOpacity: 0.3 + 0.5 * active.value,
+    shadowRadius: 4 + 8 * active.value,
+  }));
+
+  const barAnimStyle = useAnimatedStyle(() => ({
+    // Inner bar fades the dots out and in a single capsule highlight.
+    opacity: 0.6 + 0.4 * active.value,
+  }));
+
   return (
     <GestureDetector gesture={composed}>
       <View style={[styles.hit, hitStyle]} pointerEvents="box-only">
-        <View style={isVertical ? styles.lineV : styles.lineH} />
-        <View style={isVertical ? styles.gripV : styles.gripH}>
-          <View style={styles.dot} />
-          <View style={styles.dot} />
-          <View style={styles.dot} />
-        </View>
+        <Animated.View style={[isVertical ? styles.lineV : styles.lineH, lineAnimStyle]} />
+        <Animated.View style={[isVertical ? styles.gripV : styles.gripH, gripAnimStyle]}>
+          <Animated.View style={[isVertical ? styles.barV : styles.barH, barAnimStyle]} />
+        </Animated.View>
       </View>
     </GestureDetector>
   );
@@ -128,44 +155,59 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 10,
   },
+  // Idle lines are 1px and dim; the animated opacity + scale on the
+  // container pops them to 2px + full teal neon when the user grabs.
   lineV: {
     position: 'absolute',
-    width: 2,
+    width: 1,
     height: '100%',
-    backgroundColor: 'rgba(0,212,170,0.45)',
+    backgroundColor: C.accent,
   },
   lineH: {
     position: 'absolute',
-    height: 2,
+    height: 1,
     width: '100%',
-    backgroundColor: 'rgba(0,212,170,0.45)',
+    backgroundColor: C.accent,
   },
+  // Grip: pill-shaped, translucent dark with a neon teal border and a
+  // teal shadow so it reads as a floating capsule. Native shadow works
+  // on iOS; Android falls back to elevation for a comparable lift.
   gripV: {
-    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 10,
-    height: 28,
+    width: 6,
+    height: 36,
     borderRadius: 3,
-    backgroundColor: C.bgSurface,
-    borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.55)',
-    gap: 2,
+    backgroundColor: 'rgba(0,212,170,0.10)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,212,170,0.7)',
+    shadowColor: C.accent,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
   },
   gripH: {
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 28,
-    height: 10,
+    width: 36,
+    height: 6,
     borderRadius: 3,
-    backgroundColor: C.bgSurface,
-    borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.55)',
-    gap: 2,
+    backgroundColor: 'rgba(0,212,170,0.10)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,212,170,0.7)',
+    shadowColor: C.accent,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
   },
-  dot: {
+  // Inner bar: a bright capsule highlight running the length of the
+  // grip so there's a second visual cue (line + bar) during drag.
+  barV: {
     width: 2,
+    height: 22,
+    borderRadius: 1,
+    backgroundColor: C.accent,
+  },
+  barH: {
+    width: 22,
     height: 2,
     borderRadius: 1,
     backgroundColor: C.accent,
