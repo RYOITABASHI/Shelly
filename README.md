@@ -282,7 +282,7 @@ Currently registered:
 |---|---|
 | Native PTY, sessions, tmux revival | ✅ shipping |
 | Multi-pane layout (5 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
-| Atomic paste (bracketed-paste enforced, single `TerminalEmulator.paste()` choke point) | ✅ shipping (bugs #91, #94) |
+| Atomic paste (bracketed-paste wrap when guest opts in via DECSET 2004, single `TerminalEmulator.paste()` choke point) | ✅ shipping (bugs #91, #94, #97) |
 | `/sdcard` access via `MANAGE_EXTERNAL_STORAGE` (first-launch grant flow) | ✅ shipping (bug #92) |
 | `bash` wrapper at `$HOME/bin/bash` for shebangs and `bash script.sh` | ✅ shipping (bug #93) |
 | `execSubprocess` JNI read loop (EAGAIN vs EOF distinction) | ✅ shipping (bug #70) |
@@ -299,10 +299,10 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Claude / Gemini CLIs bundled and ready on first launch | ✅ shipping |
-| Codex CLI bundled via Alpine rootfs + proot wrapper | ✅ implemented, device smoke-test pending (bug #76) |
+| Codex CLI bundled (codex-termux ET_DYN binary via linker64 shim, `codex.js` patched at first boot) | ✅ shipping (bugs #76, #96) |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
-| Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ✅ shipping |
+| Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ blocked on Android 10+ by SELinux on `/proc/net/tcp{,6}`; tracked as bug #99 (P1) — Netlink JNI or feature replacement in v0.1.1 |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |
