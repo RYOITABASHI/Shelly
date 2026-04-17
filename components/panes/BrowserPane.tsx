@@ -70,28 +70,59 @@ const FULLSCREEN_BRIDGE_JS = `
   };
   attach();
 
-  // 4: monkey-patch requestFullscreen so wrapper elements also fire
-  var origRF = HTMLElement.prototype.requestFullscreen;
-  if (origRF) {
-    HTMLElement.prototype.requestFullscreen = function() {
-      post('on');
-      return origRF.apply(this, arguments);
-    };
-  }
-  var origWF = HTMLElement.prototype.webkitRequestFullscreen;
-  if (origWF) {
-    HTMLElement.prototype.webkitRequestFullscreen = function() {
-      post('on');
-      return origWF.apply(this, arguments);
-    };
-  }
-  var origExit = Document.prototype.exitFullscreen;
-  if (origExit) {
-    Document.prototype.exitFullscreen = function() {
-      post('off');
-      return origExit.apply(this, arguments);
-    };
-  }
+  // 4: PANE-CONTAINED FULLSCREEN — YouTube / HTML5 video usually call
+  // element.requestFullscreen(), and Android's WebChromeClient answers
+  // by escalating to an Activity-level Dialog. That breaks the multi
+  // pane split entirely: the video covers the whole app. Replace the
+  // fullscreen API with a CSS-only fake that pins the element to the
+  // WebView viewport (== pane rectangle) and lies about
+  // document.fullscreenElement so page code that reads the state
+  // still behaves correctly.
+  var paneFsEl = null;
+  var paneFsStyle = null;
+  var PANE_FS_CSS = 'position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483647!important;margin:0!important;max-width:none!important;max-height:none!important;background:#000!important;';
+  var firePaneFs = function(kind) {
+    post(kind);
+    try {
+      var ev = new Event(kind === 'on' ? 'fullscreenchange' : 'fullscreenchange', { bubbles: true });
+      document.dispatchEvent(ev);
+      var wkev = new Event('webkitfullscreenchange', { bubbles: true });
+      document.dispatchEvent(wkev);
+    } catch (e) {}
+  };
+  var enterPaneFs = function(el) {
+    if (paneFsEl) return Promise.resolve();
+    paneFsEl = el;
+    paneFsStyle = el.getAttribute('style') || '';
+    el.setAttribute('style', paneFsStyle + ';' + PANE_FS_CSS);
+    firePaneFs('on');
+    return Promise.resolve();
+  };
+  var exitPaneFs = function() {
+    if (!paneFsEl) return Promise.resolve();
+    if (paneFsStyle === '') paneFsEl.removeAttribute('style');
+    else paneFsEl.setAttribute('style', paneFsStyle);
+    paneFsEl = null;
+    paneFsStyle = null;
+    firePaneFs('off');
+    return Promise.resolve();
+  };
+  HTMLElement.prototype.requestFullscreen = function() { return enterPaneFs(this); };
+  HTMLElement.prototype.webkitRequestFullscreen = function() { return enterPaneFs(this); };
+  Document.prototype.exitFullscreen = function() { return exitPaneFs(); };
+  Document.prototype.webkitExitFullscreen = function() { return exitPaneFs(); };
+  Object.defineProperty(Document.prototype, 'fullscreenElement', {
+    get: function() { return paneFsEl; },
+    configurable: true,
+  });
+  Object.defineProperty(Document.prototype, 'webkitFullscreenElement', {
+    get: function() { return paneFsEl; },
+    configurable: true,
+  });
+  Object.defineProperty(Document.prototype, 'fullscreenEnabled', {
+    get: function() { return true; },
+    configurable: true,
+  });
 })();
 true;
 `;
@@ -171,22 +202,39 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     };
   }, [exitFullscreen]);
 
+  // Fullscreen policy: default is PANE-CONTAINED — the video expands to
+  // fill the current pane rectangle but the multi-pane grid (sidebar,
+  // other panes, top/bottom bars) stays visible. This matches user
+  // intent when they split browser next to a terminal + tap YT's
+  // fullscreen button: they still want to see the other pane. Users
+  // who want immersive app-wide fullscreen can long-press the pane
+  // header → Maximize pane (separate affordance) before entering FS.
+  const fullscreenPolicy: 'pane' | 'app' = 'pane';
+
   const handleMessage = useCallback(
     (e: WebViewMessageEvent) => {
       const data = e.nativeEvent.data;
       if (!paneId) return;
       const store = useMultiPaneStore.getState();
       if (data === 'shelly:fs:on') {
-        wasMaximizedBeforeFs.current = store.maximizedPaneId === paneId;
-        if (!wasMaximizedBeforeFs.current) {
-          store.toggleMaximize(paneId);
+        if (fullscreenPolicy === 'app') {
+          wasMaximizedBeforeFs.current = store.maximizedPaneId === paneId;
+          if (!wasMaximizedBeforeFs.current) {
+            store.toggleMaximize(paneId);
+          }
+          enterFullscreen();
         }
-        enterFullscreen();
+        // In 'pane' mode we leave the layout untouched. The WebView's
+        // own fullscreen handling already expands the <video> element
+        // to fill the WebView's current bounds, which IS the pane, so
+        // nothing else needs to happen on the RN side.
       } else if (data === 'shelly:fs:off') {
-        if (!wasMaximizedBeforeFs.current && useMultiPaneStore.getState().maximizedPaneId === paneId) {
-          store.toggleMaximize(paneId);
+        if (fullscreenPolicy === 'app') {
+          if (!wasMaximizedBeforeFs.current && useMultiPaneStore.getState().maximizedPaneId === paneId) {
+            store.toggleMaximize(paneId);
+          }
+          exitFullscreen();
         }
-        exitFullscreen();
       }
     },
     [paneId, enterFullscreen, exitFullscreen],
