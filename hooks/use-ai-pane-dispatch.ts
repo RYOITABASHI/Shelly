@@ -27,6 +27,8 @@ import { suggestTool } from '@/lib/agent-tool-router';
 import { tryAutoStageFromTerminal, getStagedEdit } from '@/lib/ai-edit';
 import { useTerminalStore } from '@/store/terminal-store';
 import { playSound } from '@/lib/sounds';
+import { runTeamRoundtable, DEFAULT_TEAM_SETTINGS } from '@/lib/team-roundtable';
+import { execCommand } from '@/hooks/use-native-exec';
 import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
@@ -280,6 +282,118 @@ export function useAIPaneDispatch(paneId: string) {
           timestamp: Date.now(),
           agent: agent as ChatMessage['agent'],
         });
+        return;
+      }
+
+      // @team — fan the prompt out to every enabled provider (Claude
+      // CLI, Gemini CLI, Codex CLI, Perplexity API, Local LLM), stream
+      // each response into its own bubble, and finish with a
+      // facilitator-generated consolidated summary. Same intercept
+      // pattern as @agent above.
+      if (parsed.layer === 'mention' && parsed.target === 'team') {
+        const teamPrompt = parsed.prompt.trim();
+        if (!teamPrompt) {
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: 'Usage: @team <question>\nAsks every enabled provider in parallel and summarizes.',
+            timestamp: Date.now(),
+            agent: agent as ChatMessage['agent'],
+          });
+          return;
+        }
+
+        store.setStreaming(paneId, true);
+        try { playSound('ai_start'); } catch {}
+
+        // Facilitator summary placeholder — populated incrementally as
+        // chunks arrive so the user sees the recap forming live.
+        const summaryId = generateId();
+        let summaryOpened = false;
+        const openSummary = () => {
+          if (summaryOpened) return;
+          summaryOpened = true;
+          store.addMessage(paneId, {
+            id: summaryId,
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            agent: 'team' as ChatMessage['agent'],
+            isStreaming: true,
+            streamingText: '',
+          });
+        };
+
+        try {
+          const runner = (cmd: string) =>
+            execCommand(cmd, 180_000).then((r) => r.stdout || r.stderr || '');
+          const result = await runTeamRoundtable(teamPrompt, DEFAULT_TEAM_SETTINGS, {
+            runCommand: runner,
+            perplexityApiKey: settings.perplexityApiKey,
+            geminiApiKey: settings.geminiApiKey,
+            localLlmUrl: settings.localLlmUrl,
+            onMemberResult: (m) => {
+              // Per-member bubble. Errors surface as a "⚠" prefixed
+              // bubble so the user can see who failed at a glance.
+              const body = m.error
+                ? `⚠ ${m.error}`
+                : (m.response || '(empty response)');
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: `${m.emoji} ${m.label} · ${Math.round(m.durationMs / 100) / 10}s\n\n${body}`,
+                timestamp: Date.now(),
+                agent: m.memberId as ChatMessage['agent'],
+              });
+            },
+            onFacilitatorStart: () => openSummary(),
+            onFacilitatorChunk: (chunk) => {
+              openSummary();
+              // Accumulate the chunk into the placeholder bubble's
+              // streamingText. The store's updateMessage is the only
+              // streaming hook we have, so we compose the new suffix
+              // from the last known streamingText.
+              const conv = store.getOrCreate(paneId);
+              const prev = conv.messages.find((m) => m.id === summaryId);
+              const accumulated = (prev?.streamingText ?? '') + chunk;
+              store.updateMessage(paneId, summaryId, {
+                streamingText: accumulated,
+                content: accumulated,
+              });
+            },
+          });
+
+          // Finalize summary — flip streaming off whether we streamed a
+          // chunk body or not (short runs with only one member skip the
+          // facilitator path and we just post the precomputed summary).
+          if (!summaryOpened && result.facilitatorSummary) {
+            store.addMessage(paneId, {
+              id: summaryId,
+              role: 'assistant',
+              content: result.facilitatorSummary,
+              timestamp: Date.now(),
+              agent: 'team' as ChatMessage['agent'],
+            });
+          } else if (summaryOpened) {
+            store.updateMessage(paneId, summaryId, {
+              isStreaming: false,
+              streamingText: undefined,
+              content: result.facilitatorSummary,
+            });
+          }
+          try { playSound('ai_complete'); } catch {}
+        } catch (err) {
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: `[@team] error: ${err instanceof Error ? err.message : String(err)}`,
+            timestamp: Date.now(),
+            agent: agent as ChatMessage['agent'],
+          });
+          try { playSound('error'); } catch {}
+        } finally {
+          store.setStreaming(paneId, false);
+        }
         return;
       }
 
