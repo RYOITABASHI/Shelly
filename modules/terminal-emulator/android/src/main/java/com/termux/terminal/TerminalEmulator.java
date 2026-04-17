@@ -2656,6 +2656,15 @@ public final class TerminalEmulator {
         // future paste regressions can be diagnosed from logcat without
         // needing to reproduce interactively. Tag "ShellyPaste" to keep
         // it grep-friendly.
+        //
+        // bug #97: also log whether the guest shell has activated
+        // DECSET 2004 (bracketed-paste-mode). On Android/bionic bash 5.3
+        // the readline bracketed-paste-begin handler does not reliably
+        // fire on "\e[200~..\e[201~" even though the binding shows in
+        // `bind -p`, so leaking the markers produces literal "[200~"
+        // tokens that bash tries to execute. We use the DECSET state as
+        // a proxy for "the guest can actually handle bracketed paste".
+        boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
         try {
             int nlCount = 0;
             for (int i = 0; i < text.length(); i++) {
@@ -2667,23 +2676,34 @@ public final class TerminalEmulator {
             preview = preview.replace('\n', '↵').replace('\r', '⏎').replace('\t', '→');
             android.util.Log.d("ShellyPaste",
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
-                + ", nl=" + nlCount + ", preview=\"" + preview + "\")");
+                + ", nl=" + nlCount + ", bracketed=" + bracketedMode
+                + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
-        // bug #91: always wrap in bracketed-paste markers. readline-aware
-        // shells treat the whole block as one paste event (no per-line
-        // execution); dumb shells just see the literal markers which is a
-        // tolerable cosmetic regression compared to silent data loss.
+        // bug #97: only emit the bracketed-paste wrap when the guest shell
+        // has actually enabled DECSET 2004 (i.e. sent "\e[?2004h"). On
+        // Android/bionic bash 5.3 the readline handler silently fails to
+        // consume the keyseq even with the binding present, so leaking
+        // "\e[200~" bytes produces literal "[200~" tokens that bash then
+        // tries to execute. Checking the DECSET bit means we only emit
+        // markers when the guest explicitly opted in via readline
+        // initialization — on broken builds bash simply never sends the
+        // "h" so we fall through to the legacy \n→\r per-line submit.
         //
-        // bug #91 follow-up: the three-write version (prefix / payload /
-        // suffix as separate mSession.write calls) caused a race where
-        // readline consumed the \e[200~ in one PTY read and then saw the
-        // first bytes of the payload arrive in a second read *outside*
-        // the bracketed-paste context, clipping the leading characters.
-        // Concatenating everything into a single write ensures the prefix,
-        // payload, and suffix land in one kernel pipe buffer and are read
-        // atomically by the shell.
-        mSession.write("\033[200~" + text + "\033[201~");
+        // When DECSET 2004 is off: normalize LF to CR so each pasted line
+        // arrives as a separate Enter. Multi-line constructs (for/while,
+        // heredoc) still don't work on those builds, but that's no worse
+        // than before — and avoids the "[200~" garbage.
+        //
+        // Single atomic write regardless — the bug #91 race (readline
+        // reading the prefix in one PTY chunk then the payload in another
+        // outside paste context) is still real; we keep the concatenated
+        // single-write guarantee either way.
+        if (bracketedMode) {
+            mSession.write("\033[200~" + text + "\033[201~");
+        } else {
+            mSession.write(text.replaceAll("\r?\n", "\r"));
+        }
     }
 
     /** http://www.vt100.net/docs/vt510-rm/DECSC */
