@@ -14,6 +14,7 @@ import {
   Animated,
   Easing,
   TouchableOpacity,
+  KeyboardAvoidingView,
   type ListRenderItemInfo,
   type TextStyle,
 } from 'react-native';
@@ -338,7 +339,16 @@ export default function AIPane() {
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 
   return (
-    <View style={[paneStyles.container, compactOverlay]}>
+    // bug follow-up: edgeToEdgeEnabled on Android disables the free
+    // "activity resize pushes content above keyboard" behaviour, so the
+    // AI composer used to slide under the soft keyboard whenever the user
+    // tapped into it. KeyboardAvoidingView with padding gives us that
+    // behaviour back without needing insets plumbing.
+    <KeyboardAvoidingView
+      style={[paneStyles.container, compactOverlay]}
+      behavior="padding"
+      keyboardVerticalOffset={0}
+    >
       {/* Context badge — READING TERMINAL 1 */}
       {contextBadge && (
         <View style={paneStyles.contextBadge}>
@@ -398,7 +408,7 @@ export default function AIPane() {
         visible={voiceChatVisible}
         onClose={() => setVoiceChatVisible(false)}
       />
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
