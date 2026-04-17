@@ -566,6 +566,14 @@ class TerminalEmulatorModule : Module() {
             ShellyJNI.readDir(path)
         }
 
+        // Bug #99: NETLINK_SOCK_DIAG enumeration of the app's own TCP
+        // listen sockets. Primary replacement for readProcNetFile on
+        // Android 10+ where SELinux denies /proc/net/tcp{,6} reads from
+        // untrusted_app. Family arg is 4 or 6.
+        AsyncFunction("queryListenSockets") { family: Int ->
+            ShellyJNI.queryListenSockets(family)
+        }
+
         // bug #73: expose the real Plan B HOME so JS-side path normalization
         // never has to hardcode /data/data/<pkg>/files/home or /data/user/0/...
         // The native side (HomeInitializer / shelly-exec.c) is the single

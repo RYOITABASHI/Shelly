@@ -17,10 +17,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <linux/netlink.h>
+#include <linux/sock_diag.h>
+#include <linux/inet_diag.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include <android/log.h>
 
@@ -511,4 +518,130 @@ Java_expo_modules_terminalemulator_ShellyJNI_readDir(
     free(buf);
     (*env)->ReleaseStringUTFChars(env, pathJ, path);
     return result;
+}
+
+/*
+ * queryListenSockets — enumerate the app's TCP listen sockets via
+ * NETLINK_SOCK_DIAG. Works around bug #99: Android 10+ SELinux policy
+ * denies untrusted_app reads of /proc/net/tcp{,6}, so the old fopen
+ * path (readProcNetFile) returns EACCES and the Sidebar's Ports
+ * section permanently reads "No listeners" even when node / python
+ * are happily serving on localhost.
+ *
+ * The SOCK_DIAG netlink family is not blocked by the same SELinux
+ * rule and the kernel auto-filters by calling-process credentials,
+ * so we see only the sockets this app owns — exactly what the Sidebar
+ * wants.
+ *
+ * Output format mimics /proc/net/tcp so the existing parseProcNetTcp
+ * consumer can eat it verbatim. One header line (skipped by the
+ * parser) + one socket line per listen:
+ *
+ *   "  sl  local_address rem_address   st ...\n"
+ *   "   0: 00000000:0BB8 00000000:0000 0A ...\n"
+ *
+ * Both families (AF_INET and AF_INET6) are merged into a single
+ * string; the caller tags entries by family via the /proc/net path
+ * it was requested against (tcp vs tcp6) — we produce per-family
+ * strings from two successive JNI calls to keep that shape.
+ */
+static int netlink_dump_listen(int family, char *out, size_t cap, size_t *pos) {
+    int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_SOCK_DIAG);
+    if (fd < 0) {
+        LOGE("queryListenSockets: socket(AF_NETLINK) failed: %s", strerror(errno));
+        return -1;
+    }
+
+    struct {
+        struct nlmsghdr         nh;
+        struct inet_diag_req_v2 req;
+    } req;
+    memset(&req, 0, sizeof(req));
+    req.nh.nlmsg_len     = sizeof(req);
+    req.nh.nlmsg_type    = SOCK_DIAG_BY_FAMILY;
+    req.nh.nlmsg_flags   = NLM_F_REQUEST | NLM_F_DUMP;
+    req.nh.nlmsg_seq     = 1;
+    req.req.sdiag_family = (__u8)family;
+    req.req.sdiag_protocol = IPPROTO_TCP;
+    req.req.idiag_states = (__u32)(1U << TCP_LISTEN);
+
+    if (send(fd, &req, sizeof(req), 0) < 0) {
+        LOGE("queryListenSockets: send failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    char rbuf[8192];
+    int slot = 0;
+    for (;;) {
+        ssize_t n = recv(fd, rbuf, sizeof(rbuf), 0);
+        if (n <= 0) break;
+        struct nlmsghdr *nh;
+        for (nh = (struct nlmsghdr *)rbuf; NLMSG_OK(nh, n); nh = NLMSG_NEXT(nh, n)) {
+            if (nh->nlmsg_type == NLMSG_DONE) { close(fd); return 0; }
+            if (nh->nlmsg_type == NLMSG_ERROR) { close(fd); return -1; }
+            struct inet_diag_msg *msg = (struct inet_diag_msg *)NLMSG_DATA(nh);
+            uint16_t port = ntohs(msg->id.idiag_sport);
+
+            /* Build the IP hex for /proc-format. v4 is 8 little-endian hex
+             * chars, v6 is 32 hex chars (four 32-bit little-endian words). */
+            char ip_hex[33] = {0};
+            if (family == AF_INET) {
+                /* idiag_src[0] holds network-order v4 address; reverse
+                 * bytes to match /proc/net/tcp little-endian storage. */
+                uint8_t *src = (uint8_t *)&msg->id.idiag_src[0];
+                snprintf(ip_hex, sizeof(ip_hex), "%02X%02X%02X%02X",
+                         src[3], src[2], src[1], src[0]);
+            } else {
+                uint8_t *src = (uint8_t *)msg->id.idiag_src;
+                /* Group into four 32-bit little-endian words: reverse
+                 * bytes within each word. */
+                for (int w = 0; w < 4; w++) {
+                    snprintf(ip_hex + w * 8, 9, "%02X%02X%02X%02X",
+                             src[w * 4 + 3], src[w * 4 + 2],
+                             src[w * 4 + 1], src[w * 4 + 0]);
+                }
+            }
+
+            /* One line, /proc/net/tcp-compatible. UID is correct (we only
+             * see our own sockets); inode slot zeros are fine — the parser
+             * only looks at cols 0 (slot:), 1 (local_addr:port), 3 (state),
+             * which are exactly the four we emit meaningfully here. */
+            int written = snprintf(out + *pos, cap - *pos,
+                "%4d: %s:%04X 00000000:0000 0A 00000000:00000000 00:00000000 00000000 %d 0 0 0\n",
+                slot++, ip_hex, port, (int)msg->idiag_uid);
+            if (written < 0 || (size_t)written >= cap - *pos) {
+                /* Out of buffer space — return what we have. */
+                close(fd);
+                return 0;
+            }
+            *pos += written;
+        }
+    }
+
+    close(fd);
+    return 0;
+}
+
+JNIEXPORT jstring JNICALL
+Java_expo_modules_terminalemulator_ShellyJNI_queryListenSockets(
+        JNIEnv *env,
+        jclass  clazz __attribute__((unused)),
+        jint    familyJ)
+{
+    /* Header line so parseProcNetTcp's lines.slice(1) still lands on
+     * real data; contents irrelevant since the parser throws it away. */
+    char buf[16384];
+    size_t pos = snprintf(buf, sizeof(buf),
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
+
+    int family = (familyJ == 6) ? AF_INET6 : AF_INET;
+    int rc = netlink_dump_listen(family, buf, sizeof(buf), &pos);
+    if (rc < 0) {
+        LOGE("queryListenSockets: netlink_dump_listen(%d) failed", family);
+        return (*env)->NewStringUTF(env, "");
+    }
+    buf[pos] = '\0';
+    LOGI("queryListenSockets: family=%d -> %zu bytes", family, pos);
+    return (*env)->NewStringUTF(env, buf);
 }

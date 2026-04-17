@@ -2680,30 +2680,30 @@ public final class TerminalEmulator {
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
-        // bug #97: only emit the bracketed-paste wrap when the guest shell
-        // has actually enabled DECSET 2004 (i.e. sent "\e[?2004h"). On
-        // Android/bionic bash 5.3 the readline handler silently fails to
-        // consume the keyseq even with the binding present, so leaking
-        // "\e[200~" bytes produces literal "[200~" tokens that bash then
-        // tries to execute. Checking the DECSET bit means we only emit
-        // markers when the guest explicitly opted in via readline
-        // initialization — on broken builds bash simply never sends the
-        // "h" so we fall through to the legacy \n→\r per-line submit.
+        // bug #97 root fix: Shelly's bundled bash 5.3 on bionic enables
+        // DECSET 2004 at readline init (so the `bracketedMode` flag lights
+        // up) but its rl_dispatch_callback silently drops the `\e[200~`
+        // keyseq. The ESC gets swallowed by the meta-prefix handling and
+        // `[200~` leaks through as a literal token that bash tries to
+        // execute — textbook "[200~~$ bind...: command not found" spam.
         //
-        // When DECSET 2004 is off: normalize LF to CR so each pasted line
-        // arrives as a separate Enter. Multi-line constructs (for/while,
-        // heredoc) still don't work on those builds, but that's no worse
-        // than before — and avoids the "[200~" garbage.
+        // Trusting DECSET 2004 was a correct heuristic for a well-behaved
+        // guest, but it fires on our broken local bash too, so the wrap
+        // still lands in the hostile path. Flip to an unconditional
+        // \r?\n → \r normalization instead: every pasted line arrives as
+        // its own Enter, the same way the pre-#91 PTY did.
         //
-        // Single atomic write regardless — the bug #91 race (readline
-        // reading the prefix in one PTY chunk then the payload in another
-        // outside paste context) is still real; we keep the concatenated
-        // single-write guarantee either way.
-        if (bracketedMode) {
-            mSession.write("\033[200~" + text + "\033[201~");
-        } else {
-            mSession.write(text.replaceAll("\r?\n", "\r"));
-        }
+        // Trade-off: multi-line compound constructs (`for … done` spanning
+        // lines, here-docs typed across multiple lines) no longer replay
+        // atomically. In exchange nothing leaks — paste is reliable. If a
+        // future bash build fixes the dispatcher we can re-gate on
+        // bracketedMode without churn; the DECSET state is still tracked.
+        //
+        // We drop the atomic prefix+payload+suffix write too — there's
+        // nothing to keep together anymore, and a single string write is
+        // still one `mSession.write` call so the bug #91 race (prefix and
+        // payload landing in separate PTY reads) is moot.
+        mSession.write(text.replaceAll("\r?\n", "\r"));
     }
 
     /** http://www.vt100.net/docs/vt510-rm/DECSC */

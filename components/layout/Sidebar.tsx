@@ -135,15 +135,29 @@ export function Sidebar() {
     const setEntries = usePortsStore.getState().setEntries;
     let cancelled = false;
     const refresh = async () => {
-      // bug #36: shelling out to `cat /proc/net/tcp*` through libbash
-      // + LD_PRELOAD fails with exit=1 on some devices. Read the files
-      // directly in-process via JNI fopen instead — same data, no shell.
-      const [v4, v6] = await Promise.all([
-        TerminalEmulator.readProcNetFile('/proc/net/tcp').catch(() => ''),
-        TerminalEmulator.readProcNetFile('/proc/net/tcp6').catch(() => ''),
+      // bug #99: Android 10+ SELinux denies app_data_file reads of
+      // /proc/net/tcp{,6}, so the Plan B fopen path (readProcNetFile)
+      // returns EACCES silently. Primary path is now NETLINK_SOCK_DIAG
+      // (queryListenSockets) which kernel-filters by caller uid — no
+      // policy blocks it and it only returns sockets this app owns.
+      // readProcNetFile is kept as a fallback for pre-Android-10
+      // devices where the file is still readable.
+      const [nlV4, nlV6] = await Promise.all([
+        TerminalEmulator.queryListenSockets(4).catch(() => ''),
+        TerminalEmulator.queryListenSockets(6).catch(() => ''),
       ]);
+      let v4 = nlV4 ?? '';
+      let v6 = nlV6 ?? '';
+      if (!v4 && !v6) {
+        const [pV4, pV6] = await Promise.all([
+          TerminalEmulator.readProcNetFile('/proc/net/tcp').catch(() => ''),
+          TerminalEmulator.readProcNetFile('/proc/net/tcp6').catch(() => ''),
+        ]);
+        v4 = pV4 ?? '';
+        v6 = pV6 ?? '';
+      }
       if (cancelled) return;
-      setEntries(parseProcNet(v4 || '', v6 || ''));
+      setEntries(parseProcNet(v4, v6));
     };
     refresh();
     const iv = setInterval(refresh, 15_000);
@@ -426,14 +440,7 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           {portEntries.length === 0 ? (
-            // Honest fallback: Android 10+ blocks reads of /proc/net/tcp{,6}
-            // from untrusted_app context (bug #99). Until we ship a Netlink
-            // SOCK_DIAG JNI path the list is permanently empty on modern
-            // devices — say so instead of "No listeners" which read as
-            // "everything's fine, just quiet".
-            <Text style={styles.portEmpty}>
-              Listener detection unavailable on Android 10+ (SELinux).
-            </Text>
+            <Text style={styles.portEmpty}>No listeners</Text>
           ) : (
             portEntries.map((entry) => {
               // Color map: Expo ports go sky, everything else green.

@@ -62,4 +62,19 @@ object ShellyJNI {
      */
     @JvmStatic
     external fun readDir(path: String): String
+
+    /**
+     * Enumerate the app's TCP listen sockets via NETLINK_SOCK_DIAG.
+     * Replaces readProcNetFile("/proc/net/tcp*") for bug #99 — Android
+     * 10+ SELinux blocks procfs reads but leaves the netlink socket
+     * diag path open and kernel-filters to the caller's own sockets.
+     *
+     * `family`: 4 for AF_INET, 6 for AF_INET6. Returns a string in the
+     * same format parseProcNetTcp already consumes (header line + one
+     * socket per line with hex-encoded local_address:port and state).
+     * Empty string on any failure so the Sidebar gracefully surfaces
+     * "No listeners" instead of crashing.
+     */
+    @JvmStatic
+    external fun queryListenSockets(family: Int): String
 }

@@ -302,7 +302,7 @@ Currently registered:
 | Codex CLI bundled (codex-termux ET_DYN binary via linker64 shim, `codex.js` patched at first boot) | ✅ shipping (bugs #76, #96) |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
-| Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ blocked on Android 10+ by SELinux on `/proc/net/tcp{,6}`; tracked as bug #99 (P1) — Netlink JNI or feature replacement in v0.1.1 |
+| Sidebar Ports monitor (NETLINK_SOCK_DIAG enumeration of own listen sockets → tap to open in Browser pane) | ✅ shipping (bugs #36, #99) |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |

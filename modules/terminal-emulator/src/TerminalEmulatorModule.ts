@@ -33,6 +33,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   execCommand(command: string, timeoutMs?: number): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   readProcNetFile(path: string): Promise<string>;
   readDir(path: string): Promise<string>;
+  queryListenSockets(family: number): Promise<string>;
   getHomeDir(): Promise<string>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
 }
