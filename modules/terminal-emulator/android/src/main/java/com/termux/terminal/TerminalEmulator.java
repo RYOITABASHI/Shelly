@@ -2680,30 +2680,67 @@ public final class TerminalEmulator {
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
-        // bug #97 root fix: Shelly's bundled bash 5.3 on bionic enables
-        // DECSET 2004 at readline init (so the `bracketedMode` flag lights
-        // up) but its rl_dispatch_callback silently drops the `\e[200~`
-        // keyseq. The ESC gets swallowed by the meta-prefix handling and
-        // `[200~` leaks through as a literal token that bash tries to
-        // execute — textbook "[200~~$ bind...: command not found" spam.
+        // bug #97 follow-up: bash 5.3 on bionic silently drops the ESC in
+        // the `\e[200~` keyseq at readline dispatch, so sending the standard
+        // bracketed-paste BEGIN marker leaks `[200~` as literal text and
+        // bash tries to execute it as a command. The previous workaround
+        // (bug #97 root fix) skipped wrapping and sent `\r` between lines,
+        // which made every pasted multi-line block execute line-by-line —
+        // unusable for compound constructs, here-docs, and ordinary
+        // multi-command pastes.
         //
-        // Trusting DECSET 2004 was a correct heuristic for a well-behaved
-        // guest, but it fires on our broken local bash too, so the wrap
-        // still lands in the hostile path. Flip to an unconditional
-        // \r?\n → \r normalization instead: every pasted line arrives as
-        // its own Enter, the same way the pre-#91 PTY did.
+        // Root cause: dispatch treats ESC as a meta-prefix and swallows it
+        // before the full `\e[200~` keyseq completes. Fix: invoke
+        // `bracketed-paste-begin` through an ESC-free trigger. HomeInitializer
+        // (BASHRC_VERSION >= 27) binds `\C-x\C-b` (bytes 0x18 0x02) to that
+        // function in the emacs, vi-insert, and vi-command keymaps. Once
+        // the function is entered, it reads bytes directly via `rl_read_key`
+        // in a loop (readline/kill.c `_rl_bracketed_text`) until it sees the
+        // `\e[201~` END marker. That read path bypasses dispatch entirely,
+        // so the ESC in the END marker is preserved.
         //
-        // Trade-off: multi-line compound constructs (`for … done` spanning
-        // lines, here-docs typed across multiple lines) no longer replay
-        // atomically. In exchange nothing leaks — paste is reliable. If a
-        // future bash build fixes the dispatcher we can re-gate on
-        // bracketedMode without churn; the DECSET state is still tracked.
+        // DECSET 2004 gate: only wrap if the guest has advertised
+        // bracketed-paste mode. A readline guest (local bash with our bind,
+        // or remote bash over SSH) emits `\e[?2004h` on prompt display.
+        // Full-screen TUIs like vim/less/nano don't — for those, wrapping
+        // with `\C-x\C-b` would feed control bytes into the TUI's own key
+        // handling and cause weird behaviour (e.g. vim interpreting `\e`
+        // from the END marker as exit-insert). Fall back to the pre-#91
+        // `\r?\n → \r` normalization so each line arrives as its own
+        // Enter — this matches vim insert mode's expected newline behaviour
+        // and keeps less/nano usable.
         //
-        // We drop the atomic prefix+payload+suffix write too — there's
-        // nothing to keep together anymore, and a single string write is
-        // still one `mSession.write` call so the bug #91 race (prefix and
-        // payload landing in separate PTY reads) is moot.
-        mSession.write(text.replaceAll("\r?\n", "\r"));
+        // Remote SSH caveat: the remote bash ALSO enables DECSET 2004 (bash
+        // 4.4+ default) but doesn't have our `\C-x\C-b` bind, so the prefix
+        // hits an unbound keyseq and readline discards it. The payload then
+        // streams through dispatch as typed keys — each LF = accept-line →
+        // line-by-line execution. Same as the pre-fix bug #91 behaviour;
+        // no regression, documented as a known limitation for v0.1.0.
+        //
+        // Security invariant: line 2649 strips ALL ESC (0x1B) and C1
+        // control bytes [0x80,0x9F] from the user payload BEFORE this
+        // wrap is applied. This neutralises a would-be command-injection
+        // vector where a pasted terminal transcript containing the literal
+        // END marker `\e[201~` could terminate paste mode early and leak
+        // subsequent bytes (including `\n cmd`) to dispatch. After the
+        // strip, the payload cannot contain the END marker — only our
+        // own appended `\u001B[201~` does — so the paste mode terminates
+        // exactly where we intend.
+        if (text.isEmpty()) return;
+        boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+        if (bracketedMode) {
+            // BEGIN: 0x18 0x02 (C-x C-b → bracketed-paste-begin via .bashrc)
+            // END  : \e[201~  (consumed inside _rl_bracketed_text, not
+            //                  dispatched, so ESC is preserved)
+            mSession.write("\u0018\u0002" + text + "\u001B[201~");
+        } else {
+            // Non-readline guest (vim/less/nano/cat/raw PTY app). Send each
+            // line as its own \r so the guest's own input handling (if any)
+            // sees standard Enter semantics. Falls back to the pre-bug-#91
+            // behaviour — acceptable loss for multi-line paste in TUIs that
+            // don't support bracketed-paste anyway.
+            mSession.write(text.replaceAll("\r?\n", "\r"));
+        }
     }
 
     /** http://www.vt100.net/docs/vt510-rm/DECSC */

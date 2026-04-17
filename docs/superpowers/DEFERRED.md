@@ -71,6 +71,28 @@
 
 ## P0 — 次リリース前の必須対応 (v0.1.0 ブロッカー)
 
+### ✅ bug #97 follow-up — ペースト時に改行ごとに実行されるリグレッション (修正中: TerminalEmulator.java + HomeInitializer.kt BASHRC_VERSION 27)
+
+**発見**: 2026-04-17 v0.1.0 RC 実機テスト (更新インストール)
+**症状**: 複数行ペーストが bracketed-paste で wrap されず、`\n` → `\r` 置換で 1 行ずつ bash に到達 → 1 行ずつ Enter として実行される。ユーザー側では「ペーストすると 2 行目以降がコマンドとして誤実行」に見える。ログは `ShellyPaste: paste(raw=18, sanitized=17, nl=1, bracketed=true, preview="echo one↵echo two")` と出るが、`bracketed=true` は **DECSET 状態の診断用ログ**で実際の wrap 挙動とは別もの → 誤解を誘発。
+**原因**: bug #97 root fix (`TerminalEmulator.paste()` の `text.replaceAll("\r?\n", "\r")`) は「ESC 漏れを防ぐため wrap を諦める」という意図的なトレードオフだった。問題は readline dispatch が `\e[200~` キーシーケンスの ESC (0x1B) を meta-prefix として swallow してしまうことで、`[200~` がリテラル文字として bash に流れ command not found 祭りになる、という bionic bash 5.3 固有の挙動。
+**修正**: 入口の keyseq を ESC-free に変更 + 周辺 3 件の P0/P1 を同時対応:
+- `TerminalEmulator.paste()`: DECSET 2004 gate で分岐。(a) readline guest → `\C-x\C-b` (0x18 0x02) + payload + `\e[201~`。(b) TUI (vim/less/nano) → `\r?\n → \r` fallback。
+- `HomeInitializer.kt`: .bashrc に `bind '"\C-x\C-b": bracketed-paste-begin' 2>/dev/null` を emacs / vi-insert / vi-command 各 keymap に追加。BASHRC_VERSION 26 → 27。
+- `rl_bracketed_paste_begin` は呼び出し後 `rl_read_key` で直接バイトを読みながら `\e[201~` を探す実装 (readline/kill.c `_rl_bracketed_text`) なので、END 側の ESC は dispatch を通らず swallow されない。
+**並列レビューで検出した周辺問題 (この修正で同時対応)**:
+1. **P0 候補 — clipboard 内 `\e[201~` による command injection** → line 2649 の既存 sanitize (`text.replaceAll("(\u001B|[\u0080-\u009F])", "")`) が ESC を strip 済みなので mitigate されている。security invariant としてコメント追記。
+2. **P1 — vi-mode で `\C-x\C-b` が unbound** → `bind -m vi-insert` / `bind -m vi-command` 追加済み。
+3. **P1 — vim/less 等 TUI の foreground に wrap を送ると `\e[201~` が insert mode を exit して破壊的操作** → DECSET 2004 gate で TUI には fallback 経路を使う。
+**残る既知の制約 (v0.1.0 では許容、v0.1.1 以降で再検討)**:
+- **SSH / docker exec / sudo 経由のネスト bash**: remote bash は DECSET 2004 を advertise するので gate 通過、しかし `\C-x\C-b` bind は remote 側に無いので unbound → readline が discard → payload が dispatch に流れ line-by-line 実行 (旧 bug #97 挙動と同等、リグレッション無し)。将来的には `bind` を送信して remote に一時 install する手もあるが、SSH セッション確立検出が難しいので保留。
+- **古い tmux / immortal session で BASHRC_VERSION < 27 の .bashrc を保持しているケース**: shell 再起動で解消。ドキュメントに known limitation として追記検討。
+**副次効果**: 複数行 compound 構文 (`for…done`, here-doc, 関数定義) が atomic に貼り付け可能に復活。ユーザーが Enter を押すまで実行されない標準ブラケットペーストの挙動を取り戻す。
+**レビュー**: 3 並列エージェント (source-code verification / edge-case hunt / implementation-bug hunt) で妥当性確認済み。
+**優先度**: P0。再ビルド後実機検証で動作確認してから v0.1.0 確定。
+
+---
+
 ### ✅ bug #91 — ペースト時にコマンドが改行で分割される (修正済: 527a5d3a, 1e976712, bee63869)
 
 **発見**: 2026-04-16 Codex 手動パッチ検証中
@@ -275,6 +297,39 @@ error: "/data/data/dev.shelly.terminal/files/home/.shelly-cli/node_modules/@open
 | ✅ 67 | マイク占有 / 権限 revoke 再起動 | **Wave A: releaseRecorder を 3 箇所で await** | 済 |
 
 すべて GitHub Issues に登録済み (milestone: v0.1.1)。各項目の詳細 (実装ヒント、検証手順、影響範囲) は Issue 本文を参照。このセクションは要約インデックスのみ。
+
+---
+
+### bug #100 — auto-savepoint が Author identity unknown で毎回失敗する
+
+**発見**: 2026-04-17 実機 logcat 解析中 (bug #97 follow-up 調査の副産物)
+**症状**: logcat に 3 秒ごとに以下のスタックが繰り返される:
+```
+E TerminalEmulator: execCommand FAILED: exit=128 stderr=Author identity unknown
+E TerminalEmulator:
+E TerminalEmulator: *** Please tell me who you are.
+E TerminalEmulator:
+E TerminalEmulator: Run
+E TerminalEmulator:
+E TerminalEmulator:   git config --global user.email "you@example.com"
+E TerminalEmulator:   git config --global user.name "Your Name"
+E TerminalEmulator:
+E TerminalEmulator: to set your account's default identity.
+E TerminalEmulator: Omit --global to set the identity only in this repository.
+E TerminalEmulator:
+E TerminalEmulator: fatal: unable to auto-detect email address (got 'u0_a888@localhost.(none)')
+E TerminalEmulator:  cmd=git -C '/data/user/0/dev.shelly.terminal/files/home' commit -m "Auto: Created 70
+```
+**原因**: auto-savepoint 機能 (lib/savepoint-store.ts → git auto commit) が git user.email / user.name を要求する。Shelly は初回起動時に global config を設定していないので、commit が exit=128 で fail する。
+**影響**: savepoint が一度も作られないため 💾 インジケータが常に未発火。機能としての価値ゼロ。logcat も常にノイズが出続けるのでデバッグ効率が下がる。
+**修正方針** (コスト順):
+1. **HomeInitializer の .bashrc 生成時に `git config --global user.email` / `user.name` をデフォルト値で 1 回だけ書き込む** (例: `shelly@localhost` / `Shelly User`)。ユーザーが上書きすれば個人設定が優先。実装 5 分。**採用推奨**。
+2. auto-savepoint の git commit に `-c user.email=... -c user.name=...` を inline 注入。JS 側の変更のみで済むが、設定を 2 箇所に持つことになる。
+3. auto-savepoint を一旦無効化してユーザーが config 設定後に手動で有効化。UX 劣化。
+**優先度**: P1 (v0.1.0 出荷前に対応推奨、5 分作業で直る)
+**関連コード**:
+- `lib/savepoint-store.ts` (auto commit 呼び出し元)
+- `modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt` (.bashrc 生成箇所)
 
 ---
 

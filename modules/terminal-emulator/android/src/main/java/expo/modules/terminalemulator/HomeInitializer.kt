@@ -149,8 +149,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
      *        stdlib flat under $libDir/python3.13/ instead of the
      *        $PYTHONHOME/lib/python3.13/ path CPython's init code
      *        expects. Add PYTHONPATH=$libDir/python3.13 so the module
-     *        lookup finds encodings/ during early import. */
-    private const val BASHRC_VERSION = 26
+     *        lookup finds encodings/ during early import.
+     *    27: bug #97 follow-up — bash 5.3 on bionic silently drops the
+     *        ESC in the \e[200~ keyseq during readline dispatch, so the
+     *        standard bracketed-paste BEGIN marker leaked `[200~` as
+     *        literal text and broke every multi-line paste. Bind an
+     *        ESC-free trigger (\C-x\C-b) to bracketed-paste-begin in the
+     *        emacs, vi-insert, and vi-command keymaps so paste works in
+     *        either editing mode; once inside the function, bytes are
+     *        read directly (no dispatch) until the \e[201~ END marker,
+     *        so that ESC is preserved. TerminalEmulator.paste() now
+     *        gates the wrap on DECSET 2004 so full-screen TUIs (vim /
+     *        less / nano) still get the pre-#91 `\r?\n → \r` fallback
+     *        instead of having control bytes injected into their own
+     *        key handling. */
+    private const val BASHRC_VERSION = 27
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -312,15 +325,30 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             sb.appendLine("[ -f \"\$HISTFILE\" ] || touch \"\$HISTFILE\"")
             sb.appendLine()
 
-            // bug #91/#94: enable readline bracketed-paste handling. Shelly's
-            // TerminalEmulator.paste() always emits \e[200~ ... \e[201~ around
-            // pasted payloads regardless of DECSET 2004, so that multi-line
-            // pastes arrive as one atomic chunk. readline needs this bind to
-            // recognize the sequence as "paste, don't execute each line". bash
-            // 4.4+ defaults to on but we set it explicitly so older builds and
-            // user .inputrc overrides still get the behaviour.
-            sb.appendLine("# bug #91: ensure readline treats \\e[200~..\\e[201~ as paste")
+            // bug #91/#94: enable readline bracketed-paste handling so that
+            // `bracketed-paste-begin` is registered as a function (the
+            // standard `\e[200~` binding is also set, which is harmless on
+            // bionic and necessary on sane guests).
+            //
+            // bug #97 follow-up: the ESC in `\e[200~` gets swallowed during
+            // readline dispatch on bionic bash, so TerminalEmulator.paste()
+            // no longer sends that keyseq. Instead it sends `\C-x\C-b`
+            // (0x18 0x02) as the paste trigger — we bind that keyseq to
+            // bracketed-paste-begin here so the function is entered without
+            // any ESC bytes in the dispatch path. Once inside the function,
+            // readline reads bytes directly (bypassing dispatch) until the
+            // `\e[201~` END marker, so the ESC there is preserved and the
+            // payload is inserted atomically as one edit event.
+            sb.appendLine("# bug #91/#97: enable bracketed-paste + ESC-free trigger for Shelly's paste")
             sb.appendLine("bind 'set enable-bracketed-paste on' 2>/dev/null")
+            // Bind in all three keymaps (emacs is default; vi-insert and
+            // vi-command fire when the user flips editing-mode via `set -o vi`
+            // or .inputrc). Without the vi-mode binds, `\C-x\C-b` stays
+            // unbound in vi mode and the paste prefix beeps / streams the
+            // payload through dispatch (= bug #91 re-introduced).
+            sb.appendLine("bind '\"\\C-x\\C-b\": bracketed-paste-begin' 2>/dev/null")
+            sb.appendLine("bind -m vi-insert '\"\\C-x\\C-b\": bracketed-paste-begin' 2>/dev/null")
+            sb.appendLine("bind -m vi-command '\"\\C-x\\C-b\": bracketed-paste-begin' 2>/dev/null")
             sb.appendLine()
 
             // Linker64 helper function
