@@ -143,8 +143,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
      *        (Termux check still throws). Replace both sed calls with a
      *        small node patcher (shelly-patcher.js) written to $HOME on
      *        every regen — node is guaranteed bundled and already works
-     *        through the linker64 shim. */
-    private const val BASHRC_VERSION = 25
+     *        through the linker64 shim.
+     *    26: bug — python3 bailed at bootstrap with "No module named
+     *        'encodings'" because the bundled tar.gz layout puts the
+     *        stdlib flat under $libDir/python3.13/ instead of the
+     *        $PYTHONHOME/lib/python3.13/ path CPython's init code
+     *        expects. Add PYTHONPATH=$libDir/python3.13 so the module
+     *        lookup finds encodings/ during early import. */
+    private const val BASHRC_VERSION = 26
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -328,7 +334,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
             sb.appendLine("npm() { _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js \"\$@\"; }")
             sb.appendLine("npx() { _run $libDir/node $libDir/node_modules/npm/bin/npx-cli.js \"\$@\"; }")
-            sb.appendLine("python3() { PYTHONHOME=$libDir/python3.13 _run $libDir/python3 \"\$@\"; }")
+            // bug: the bundled python3.tar.gz extracts to $libDir/python3.13/
+            // with the stdlib directly at that level (e.g. python3.13/encodings/),
+            // not at python3.13/lib/python3.13/encodings/ as CPython expects
+            // when PYTHONHOME is set. Python bails during bootstrap with
+            // "ModuleNotFoundError: No module named 'encodings'" before it
+            // even evaluates user code. Setting PYTHONPATH to the same prefix
+            // is respected during bootstrap and unblocks the import lookup.
+            sb.appendLine("python3() { PYTHONHOME=$libDir/python3.13 PYTHONPATH=$libDir/python3.13 _run $libDir/python3 \"\$@\"; }")
             sb.appendLine("python() { python3 \"\$@\"; }")
             sb.appendLine("pip() { python3 -m pip \"\$@\"; }")
             sb.appendLine("pip3() { pip \"\$@\"; }")
