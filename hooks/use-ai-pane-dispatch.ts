@@ -327,11 +327,32 @@ export function useAIPaneDispatch(paneId: string) {
         try {
           const runner = (cmd: string) =>
             execCommand(cmd, 180_000).then((r) => r.stdout || r.stderr || '');
-          const result = await runTeamRoundtable(teamPrompt, DEFAULT_TEAM_SETTINGS, {
+
+          // Only invite members the user has actually configured. API
+          // members require the relevant key; Local LLM needs a URL;
+          // CLI members (Claude / Gemini / Codex) ship bundled so we
+          // default them on — the roundtable runner will still surface
+          // a ⚠ bubble if a CLI is missing at runtime. Deriving the
+          // settings dynamically means an absent key no longer throws
+          // a confusing "API key not set" error for a member the user
+          // never enabled.
+          const dyn = {
+            ...DEFAULT_TEAM_SETTINGS,
+            perplexityEnabled: !!settings.perplexityApiKey && DEFAULT_TEAM_SETTINGS.perplexityEnabled,
+            cerebrasEnabled:   !!settings.cerebrasApiKey   && DEFAULT_TEAM_SETTINGS.cerebrasEnabled,
+            groqEnabled:       !!settings.groqApiKey       && DEFAULT_TEAM_SETTINGS.groqEnabled,
+            geminiEnabled:     !!settings.geminiApiKey && DEFAULT_TEAM_SETTINGS.geminiEnabled,
+            localEnabled:      !!settings.localLlmUrl      && DEFAULT_TEAM_SETTINGS.localEnabled,
+            // Claude / Codex CLIs are bundled — keep the library's default.
+          };
+
+          const result = await runTeamRoundtable(teamPrompt, dyn, {
             runCommand: runner,
             perplexityApiKey: settings.perplexityApiKey,
             geminiApiKey: settings.geminiApiKey,
             localLlmUrl: settings.localLlmUrl,
+            cerebrasApiKey: settings.cerebrasApiKey,
+            groqApiKey: settings.groqApiKey,
             onMemberResult: (m) => {
               // Per-member bubble. Errors surface as a "⚠" prefixed
               // bubble so the user can see who failed at a glance.

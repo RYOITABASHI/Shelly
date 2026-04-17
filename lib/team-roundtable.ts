@@ -16,7 +16,14 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type TeamMemberId = 'claude' | 'gemini' | 'codex' | 'perplexity' | 'local';
+export type TeamMemberId =
+  | 'claude'
+  | 'gemini'
+  | 'codex'
+  | 'perplexity'
+  | 'local'
+  | 'cerebras'
+  | 'groq';
 
 export interface TeamMemberConfig {
   id: TeamMemberId;
@@ -55,6 +62,8 @@ export interface TeamSettings {
   codexEnabled: boolean;
   perplexityEnabled: boolean;
   localEnabled: boolean;
+  cerebrasEnabled: boolean;
+  groqEnabled: boolean;
   /** ファシリテーター優先順位（配列の先頭が最優先） */
   facilitatorPriority: TeamMemberId[];
   /** Codex CLIのコマンド名（デフォルト: 'codex'） */
@@ -71,7 +80,12 @@ export const DEFAULT_TEAM_SETTINGS: TeamSettings = {
   codexEnabled: false,
   perplexityEnabled: true,
   localEnabled: true,
-  facilitatorPriority: ['local', 'claude', 'gemini', 'codex', 'perplexity'],
+  cerebrasEnabled: true,
+  groqEnabled: true,
+  // Facilitator picks: Cerebras is both fast and smart (Qwen3-235B) so
+  // it sits near the top; groq is a fine secondary reasoner. Local LLM
+  // only wins when nothing cloud-side is configured.
+  facilitatorPriority: ['cerebras', 'groq', 'claude', 'gemini', 'codex', 'perplexity', 'local'],
   codexCmd: 'codex',
   claudeCmd: 'claude',
   geminiCmd: 'gemini',
@@ -125,6 +139,22 @@ export function buildTeamMembers(settings: TeamSettings): TeamMemberConfig[] {
       mode: 'local',
       enabled: settings.localEnabled,
     },
+    {
+      id: 'cerebras',
+      label: 'Cerebras (Qwen3)',
+      color: '#F97316',
+      emoji: '🧠',
+      mode: 'api',
+      enabled: settings.cerebrasEnabled,
+    },
+    {
+      id: 'groq',
+      label: 'Groq (Llama3)',
+      color: '#EF4444',
+      emoji: '⚡',
+      mode: 'api',
+      enabled: settings.groqEnabled,
+    },
   ];
 }
 
@@ -164,6 +194,10 @@ export async function runTeamMember(
     geminiModel?: string;
     localLlmUrl?: string;
     localLlmModel?: string;
+    cerebrasApiKey?: string;
+    cerebrasModel?: string;
+    groqApiKey?: string;
+    groqModel?: string;
     teamSettings: TeamSettings;
   },
 ): Promise<TeamMemberResult> {
@@ -212,6 +246,30 @@ export async function runTeamMember(
         (chunk: string, _done: boolean) => { accumulated += chunk; },
       );
       response = accumulated;
+    } else if (member.id === 'cerebras') {
+      if (!opts.cerebrasApiKey) throw new Error('Cerebras APIキーが設定されていません');
+      const { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } = await import('@/lib/cerebras');
+      let accumulated = '';
+      const result = await cerebrasChatStream(
+        opts.cerebrasApiKey,
+        prompt,
+        (text) => { accumulated += text; },
+        opts.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
+      );
+      if (!result.success && result.error) throw new Error(result.error);
+      response = accumulated;
+    } else if (member.id === 'groq') {
+      if (!opts.groqApiKey) throw new Error('Groq APIキーが設定されていません');
+      const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('@/lib/groq');
+      let accumulated = '';
+      const result = await groqChatStream(
+        opts.groqApiKey,
+        prompt,
+        (text) => { accumulated += text; },
+        opts.groqModel ?? GROQ_DEFAULT_MODEL,
+      );
+      if (!result.success && result.error) throw new Error(result.error);
+      response = accumulated;
     }
 
     return {
@@ -252,6 +310,10 @@ export async function runFacilitatorSummary(
     geminiModel?: string;
     localLlmUrl?: string;
     localLlmModel?: string;
+    cerebrasApiKey?: string;
+    cerebrasModel?: string;
+    groqApiKey?: string;
+    groqModel?: string;
     teamSettings: TeamSettings;
     onChunk?: FacilitatorChunkCallback;
   },
@@ -342,6 +404,28 @@ Reply in English.`;
         opts.perplexityModel ?? 'sonar-reasoning-pro',
       );
       return pplxFacili;
+    } else if (facilitator.id === 'cerebras') {
+      if (!opts.cerebrasApiKey) throw new Error('Cerebras APIキーなし');
+      const { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } = await import('@/lib/cerebras');
+      let cerebrasFacili = '';
+      await cerebrasChatStream(
+        opts.cerebrasApiKey,
+        facilitatorPrompt,
+        (text) => { cerebrasFacili += text; opts.onChunk?.(text); },
+        opts.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
+      );
+      return cerebrasFacili;
+    } else if (facilitator.id === 'groq') {
+      if (!opts.groqApiKey) throw new Error('Groq APIキーなし');
+      const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('@/lib/groq');
+      let groqFacili = '';
+      await groqChatStream(
+        opts.groqApiKey,
+        facilitatorPrompt,
+        (text) => { groqFacili += text; opts.onChunk?.(text); },
+        opts.groqModel ?? GROQ_DEFAULT_MODEL,
+      );
+      return groqFacili;
     }
   } catch (err) {
     const msg = `ファシリテーターエラー: ${err instanceof Error ? err.message : String(err)}`;
@@ -372,6 +456,10 @@ export async function runTeamRoundtable(
     geminiModel?: string;
     localLlmUrl?: string;
     localLlmModel?: string;
+    cerebrasApiKey?: string;
+    cerebrasModel?: string;
+    groqApiKey?: string;
+    groqModel?: string;
     onMemberResult?: TeamMemberCallback;
     onFacilitatorStart?: FacilitatorStartCallback;
     onFacilitatorChunk?: FacilitatorChunkCallback;
@@ -405,6 +493,10 @@ export async function runTeamRoundtable(
       geminiModel: opts.geminiModel,
       localLlmUrl: opts.localLlmUrl,
       localLlmModel: opts.localLlmModel,
+      cerebrasApiKey: opts.cerebrasApiKey,
+      cerebrasModel: opts.cerebrasModel,
+      groqApiKey: opts.groqApiKey,
+      groqModel: opts.groqModel,
       teamSettings: settings,
     }).then((result) => {
       // 回答が返ってきたらコールバックで即通知
@@ -433,6 +525,10 @@ export async function runTeamRoundtable(
         geminiModel: opts.geminiModel,
         localLlmUrl: opts.localLlmUrl,
         localLlmModel: opts.localLlmModel,
+        cerebrasApiKey: opts.cerebrasApiKey,
+        cerebrasModel: opts.cerebrasModel,
+        groqApiKey: opts.groqApiKey,
+        groqModel: opts.groqModel,
         teamSettings: settings,
         onChunk: opts.onFacilitatorChunk,
       },
