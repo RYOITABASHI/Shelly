@@ -1,6 +1,8 @@
 // components/layout/AgentBar.tsx
 //
-// Global top bar: layout preset button • add-pane button • search • settings.
+// Global top bar: single "+" (opens the unified LayoutAddSheet) • search •
+// settings. The old split "layout preset / add pane" buttons collapsed into
+// one sheet with ADD / LAYOUT tabs (mobile-optimised Superset model).
 // The old CLI tab strip (CLAUDE/GEMINI/CODEX/OPENCODE/COPILOT) moved into
 // each TerminalPane header as a per-pane tab bar (Superset-style), so this
 // bar no longer carries CLI tabs at all.
@@ -10,34 +12,24 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { useGitStatusStore } from '@/store/git-status-store';
 import { SettingsDropdown } from './SettingsDropdown';
-import { AddPaneSheet } from '@/components/multi-pane/AddPaneSheet';
-import { LayoutPresetSheet } from '@/components/multi-pane/LayoutPresetSheet';
+import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
 export function AgentBar() {
-  const [addPaneSheetVisible, setAddPaneSheetVisible] = useState(false);
-  const [layoutSheetVisible, setLayoutSheetVisible] = useState(false);
+  const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const dirtyCount = useGitStatusStore((s) => s.dirtyCount);
 
   return (
     <View style={styles.bar}>
-      {/* Layout preset button (left edge) */}
-      <Pressable
-        style={styles.layoutBtn}
-        onPress={() => setLayoutSheetVisible(true)}
-        hitSlop={10}
-        accessibilityLabel="Layout"
-      >
-        <MaterialIcons name="dashboard" size={18} color={C.accent} />
-      </Pressable>
-
-      {/* Add pane button */}
+      {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
+          Replaces the previous split into two adjacent buttons (dashboard
+          + plus) which users kept confusing with each other. */}
       <Pressable
         style={styles.addBtn}
         hitSlop={8}
-        onPress={() => setAddPaneSheetVisible(true)}
-        accessibilityLabel="Add pane"
+        onPress={() => setSheetVisible(true)}
+        accessibilityLabel="Add pane or change layout"
       >
         <Text style={styles.addBtnText}>+</Text>
       </Pressable>
@@ -74,8 +66,7 @@ export function AgentBar() {
       </View>
 
       <SettingsDropdown visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <AddPaneSheet visible={addPaneSheetVisible} onClose={() => setAddPaneSheetVisible(false)} />
-      <LayoutPresetSheet visible={layoutSheetVisible} onClose={() => setLayoutSheetVisible(false)} />
+      <LayoutAddSheet visible={sheetVisible} onClose={() => setSheetVisible(false)} />
     </View>
   );
 }
@@ -136,15 +127,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: C.accentAmber,
     letterSpacing: 0.3,
-  },
-  layoutBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginLeft: 6,
-    marginRight: 4,
-    borderRadius: R.agentTab,
-    borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.35)',
-    backgroundColor: 'rgba(0,212,170,0.08)',
   },
 });
