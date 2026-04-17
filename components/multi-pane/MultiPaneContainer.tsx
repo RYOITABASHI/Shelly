@@ -7,7 +7,7 @@
 // `getLayout()` function. Divider components are placed over the split
 // boundaries with a 16px hit strip.
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -21,9 +21,11 @@ import {
   getLayout,
   PRESET_CAPACITY,
   type PaneTab,
+  type PresetId,
   type Ratios,
   type SlotIndex,
 } from '@/hooks/use-multi-pane';
+import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { colors as C, fonts as F } from '@/theme.config';
@@ -119,6 +121,32 @@ export function MultiPaneContainer() {
   const splitPane    = useMultiPaneStore((s) => s.splitPane);
   const setRatio     = useMultiPaneStore((s) => s.setRatio);
   const resetRatio   = useMultiPaneStore((s) => s.resetRatio);
+  const setPreset    = useMultiPaneStore((s) => s.setPreset);
+
+  const { isWide } = useDeviceLayout();
+
+  // Auto-reorient horizontally-biased presets when the Z Fold 6 (or any
+  // foldable) closes into the narrow cover screen. 2-cols side-by-side
+  // reads as two very thin slits once the width collapses past ~380dp,
+  // so swap to a top/bottom stack that keeps each pane legible.
+  // Mapping: p2h → p2v, p3l / p3r → p3t. Leave p1 / p2v / p3t / p4 alone
+  // (already vertical-friendly) and don't auto-swap *back* to horizontal
+  // when reopening — the user may have deliberately picked vertical on
+  // the inner screen too.
+  const prevWideRef = useRef(isWide);
+  useEffect(() => {
+    const wasWide = prevWideRef.current;
+    prevWideRef.current = isWide;
+    if (wasWide && !isWide) {
+      const reorient: Partial<Record<PresetId, PresetId>> = {
+        p2h: 'p2v',
+        p3l: 'p3t',
+        p3r: 'p3t',
+      };
+      const next = reorient[preset];
+      if (next && next !== preset) setPreset(next);
+    }
+  }, [isWide, preset, setPreset]);
 
   const [size, setSize] = useState({ W: 0, H: 0 });
 
