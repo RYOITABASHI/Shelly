@@ -382,31 +382,17 @@ export default function AIPane() {
         </View>
       )}
 
-      {/* Input bar + mic */}
-      <View style={paneStyles.inputRow}>
-        <View style={paneStyles.inputBarWrapper}>
-          <PaneInputBar
-            placeholder={dispatchStreaming ? 'Responding...' : 'Ask anything...'}
-            onSubmit={handleSubmit}
-            onAttach={handleAttach}
-          />
-        </View>
-        <TouchableOpacity
-          onPress={handleMicPress}
-          onLongPress={handleMicLongPress}
-          delayLongPress={500}
-          style={[
-            paneStyles.micButton,
-            isRecording && { backgroundColor: C.accent },
-          ]}
-        >
-          <MaterialIcons
-            name={isRecording ? 'mic' : 'mic-none'}
-            size={18}
-            color={isRecording ? '#000' : C.text2}
-          />
-        </TouchableOpacity>
-      </View>
+      {/* Input bar (mic integrated so the attach/mic/send icons live inside
+          the same rounded pill rather than as separate large circles). */}
+      <PaneInputBar
+        placeholder={dispatchStreaming ? 'Responding...' : 'Ask anything...'}
+        onSubmit={handleSubmit}
+        onAttach={handleAttach}
+        showMic
+        isRecording={isRecording}
+        onMicPress={handleMicPress}
+        onMicLongPress={handleMicLongPress}
+      />
 
       <VoiceChat
         visible={voiceChatVisible}
@@ -492,23 +478,5 @@ const paneStyles = StyleSheet.create({
     height: 28,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  inputBarWrapper: {
-    flex: 1,
-  },
-  micButton: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: C.bgSurface,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-    borderLeftWidth: 1,
-    borderLeftColor: C.border,
   },
 });
