@@ -206,8 +206,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
      *        bash inside a Termux-inherited env the binary still launches.
      *        This path obviates the pre-2.0 JS pin entirely — we stay on
      *        `@latest` and get every upstream feature (/rewind, /bashes,
-     *        skills hot reload, Sonnet 4.5 default). */
-    private const val BASHRC_VERSION = 29
+     *        skills hot reload, Sonnet 4.5 default).
+     *    30: v29's musl-linker-via-linker64 approach failed on-device with
+     *        `Could not find a PHDR: broken executable?` — bionic's
+     *        /system/bin/linker64 refuses to load the Alpine musl
+     *        `ld-musl-aarch64.so.1` because its ELF program header layout
+     *        isn't what bionic's loader expects. On Termux the same
+     *        binary worked because Termux's shell does a real execve
+     *        (which on Termux's SELinux domain is permitted); on Shelly
+     *        untrusted_app blocks direct execve of app_data_file so we
+     *        have to go through a shim, and linker64 won't accept a
+     *        non-bionic ELF. Switch to the existing proot wrapper
+     *        (`$HOME/bin/proot`) which chroots into the bundled Alpine
+     *        minirootfs; inside the chroot `/lib/ld-musl-aarch64.so.1`
+     *        resolves naturally from PT_INTERP and proot's ptrace-based
+     *        loader handles the ET_EXEC layout without hitting
+     *        mmap_min_addr. The `$HOME:/root` bind mount in the proot
+     *        wrapper exposes the musl sub-package install path as
+     *        `/root/.shelly-cli/node_modules/.../claude` inside the
+     *        chroot. Same pattern we considered for codex before switching
+     *        to the codex-termux ET_DYN build; for claude we have no
+     *        bionic-compatible build so proot is the only viable path. */
+    private const val BASHRC_VERSION = 30
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -274,16 +294,36 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
         // plus the usual bind mounts so it re-maps the load segments
         // through its own ptrace-based loader.
         //
-        //   -0             fake uid 0 (required because musl's geteuid
-        //                  check refuses to run otherwise)
-        //   --kill-on-exit send SIGKILL to the tracee on proot exit
-        //   -r rootfs      use the bundled Alpine minirootfs
-        //   -b /dev        pass through real /dev
-        //   -b /proc       pass through real /proc
-        //   -b /sys        pass through real /sys
-        //   -b $HOME:/root bind Shelly HOME into /root so the user's
-        //                  files and .shelly-cli tree are visible to codex
-        //   -w /root       start in /root
+        // BASHRC_VERSION v30: additional binds for claude interactive mode.
+        // Claude Code v2.x's Bun-compiled musl binary internally spawns
+        // `node /path/to/cli.js` for its interactive REPL, and that node is
+        // our bundled bionic node at $libDir/node. Without the following
+        // bind mounts, the chroot would lack:
+        //   - /system/bin/linker64 (bionic node's PT_INTERP)
+        //   - /apex/com.android.runtime/lib64/bionic/* (Android 10+ bionic
+        //     libs moved out of /system into /apex)
+        //   - /linkerconfig/ld.config.txt (Android 10+ linker config)
+        //   - $libDir itself (where node and its node_modules live)
+        // so the spawned node fails to launch and interactive mode crashes
+        // with MODULE_NOT_FOUND for cli.js (or even before). We also bind
+        // $libDir onto a fixed path /shelly-bin so cli.js shims can refer
+        // to it by an absolute in-chroot path without guessing $libDir.
+        //
+        //   -0               fake uid 0 (required because musl's geteuid
+        //                    check refuses to run otherwise)
+        //   --kill-on-exit   send SIGKILL to the tracee on proot exit
+        //   -r rootfs        use the bundled Alpine minirootfs
+        //   -b /dev          pass through real /dev (ttys, null, urandom)
+        //   -b /proc         pass through real /proc
+        //   -b /sys          pass through real /sys
+        //   -b /system       expose bionic linker64 + libs for spawned node
+        //   -b /apex         expose Android 10+ bionic libc / libm / libdl
+        //   -b /linkerconfig expose Android 10+ dynamic linker config
+        //   -b $libDir:/shelly-bin bind Shelly's jniLibs so node/git/etc
+        //                    are reachable via /shelly-bin inside chroot
+        //   -b $HOME:/root   bind Shelly HOME into /root so the user's
+        //                    files and .shelly-cli tree are visible
+        //   -w /root         start in /root
         val binDir = File(home, "bin")
         binDir.mkdirs()
         val prootWrapper = File(binDir, "proot")
@@ -293,6 +333,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             "-0 --kill-on-exit " +
             "-r ${rootfsDir.absolutePath} " +
             "-b /dev -b /proc -b /sys " +
+            "-b /system " +
+            "-b /apex " +
+            "-b /linkerconfig " +
+            "-b $libDir:/shelly-bin " +
             "-b ${home.absolutePath}:/root " +
             "-w /root " +
             "\"\$@\"\n"
@@ -433,25 +477,40 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             sb.appendLine("  __cli_dir=\"$libDir/node_modules\"")
             sb.appendLine("fi")
             // @anthropic-ai/claude-code 2.x dispatch (see BASHRC_VERSION
-            // history entry 29 for full rationale). The real executable is
-            // a Bun-compiled ET_EXEC that lives under the musl sub-package
+            // history entry 29 / 30 for full rationale). The real executable
+            // is a Bun-compiled ET_EXEC that lives under the musl sub-package
             // and declares /lib/ld-musl-aarch64.so.1 as its interpreter.
-            // We launch it by invoking the bundled Alpine musl linker
-            // directly, same pattern as the codex_exec path. LD_PRELOAD is
-            // explicitly empty so a Termux-inherited preload (libtermux-
-            // exec-ld-preload.so) doesn't get dlopen'd by the musl ld and
-            // blow up on bionic-only symbol relocations. The legacy v1.x
-            // `cli.js` path is kept as a compat fallback for anyone with
-            // an older pinned install — once that install is overwritten
-            // by __shelly_bg_cli_update it'll never match again.
+            //
+            // v29 attempted to launch it via the linker64 shim pattern we use
+            // for codex_exec, but bionic's /system/bin/linker64 refuses the
+            // musl ld with "Could not find a PHDR: broken executable?" — its
+            // ELF layout doesn't match what bionic's loader expects. Direct
+            // execve is also blocked by SELinux on app_data_file.
+            //
+            // v30 uses the proot wrapper instead: proot chroots into the
+            // bundled Alpine minirootfs where /lib/ld-musl-aarch64.so.1
+            // exists at the path the claude binary's PT_INTERP declares,
+            // and proot's own ptrace-based loader handles the ET_EXEC
+            // without hitting bionic's mmap_min_addr collision.
+            //
+            // The v30 proot wrapper additionally binds /system, /apex,
+            // /linkerconfig and $libDir:/shelly-bin so that when the musl
+            // binary internally spawns `node cli.js` for its interactive
+            // REPL, the bundled bionic node can find its PT_INTERP
+            // (/system/bin/linker64) and bionic libs (/apex/.../libc.so)
+            // through the chroot. Without those binds, interactive mode
+            // hits MODULE_NOT_FOUND because node itself can't launch.
+            //
+            // The `cli.js` fallback that v29 kept has been removed —
+            // @anthropic-ai/claude-code hasn't shipped cli.js since v2.0
+            // (7 months ago as of 2026-04) and the musl sub-package branch
+            // is the only code path that ever resolves on Android.
             sb.appendLine("claude() {")
-            sb.appendLine("  local __musl_ld=\"\$HOME/.shelly-rootfs/lib/ld-musl-aarch64.so.1\"")
-            sb.appendLine("  local __claude_musl=\"\$__cli_dir/@anthropic-ai/claude-code-linux-arm64-musl/claude\"")
-            sb.appendLine("  local __claude_js=\"\$__cli_dir/@anthropic-ai/claude-code/cli.js\"")
-            sb.appendLine("  if [ -x \"\$__musl_ld\" ] && [ -f \"\$__claude_musl\" ]; then")
-            sb.appendLine("    LD_PRELOAD= _run \"\$__musl_ld\" \"\$__claude_musl\" \"\$@\";")
-            sb.appendLine("  elif [ -f \"\$__claude_js\" ]; then")
-            sb.appendLine("    _run $libDir/node \"\$__claude_js\" \"\$@\";")
+            sb.appendLine("  local __proot=\"\$HOME/bin/proot\"")
+            sb.appendLine("  local __claude_musl_host=\"\$__cli_dir/@anthropic-ai/claude-code-linux-arm64-musl/claude\"")
+            sb.appendLine("  local __claude_musl_chroot=\"/root/.shelly-cli/node_modules/@anthropic-ai/claude-code-linux-arm64-musl/claude\"")
+            sb.appendLine("  if [ -x \"\$__proot\" ] && [ -f \"\$__claude_musl_host\" ]; then")
+            sb.appendLine("    LD_PRELOAD= \"\$__proot\" \"\$__claude_musl_chroot\" \"\$@\";")
             sb.appendLine("  else")
             sb.appendLine("    echo \"claude CLI not installed — run __shelly_bg_cli_update and retry\" >&2; return 1;")
             sb.appendLine("  fi")
