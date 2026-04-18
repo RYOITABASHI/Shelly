@@ -31,7 +31,7 @@ object HomeInitializer {
 //   node shelly-patcher.js codex  <libDir> [<node_modules_root>]
 //   node shelly-patcher.js gemini         [<node_modules_root>]
 //
-// node_modules_root defaults to $HOME/.shelly-cli/node_modules so the
+// node_modules_root defaults to ${'$'}HOME/.shelly-cli/node_modules so the
 // patcher works against the live tree, but the update pipeline (v32+)
 // passes a staging path so patches land in the staged tree before it's
 // promoted.
