@@ -170,8 +170,44 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
      *        still pointed at the old `cli.js` path and every invocation
      *        failed with MODULE_NOT_FOUND. Rewrite the function to prefer
      *        `bin/claude.exe` when present and fall back to `cli.js`
-     *        only as a compat layer for older pinned installs. */
-    private const val BASHRC_VERSION = 28
+     *        only as a compat layer for older pinned installs.
+     *    29: @anthropic-ai/claude-code ≥ 2.0.0 (2025-09-29) ships Bun-compiled
+     *        SEA binaries. The top-level `bin/claude.exe` is a 500-byte
+     *        *placeholder stub* — the real executable lives in the
+     *        platform-specific optional sub-package
+     *        `@anthropic-ai/claude-code-linux-arm64-musl` (~100 MiB ET_EXEC
+     *        linked against musl). On the first live-device trace
+     *        (2026-04-18) we discovered:
+     *          1. npm refuses to install the sub-package on Android because
+     *             its package.json has `"os":"linux","libc":"glibc|musl"`
+     *             and Android reports `os=android, libc=undefined`. The
+     *             `--os=linux --cpu=arm64` flags weren't enough; we also
+     *             need `--libc=musl --force` to bypass the filter.
+     *          2. The install.cjs postinstall is Android-unaware (its
+     *             PLATFORMS map has darwin/linux/win32 only) so even when
+     *             the sub-package is manually installed, postinstall skips
+     *             copying the binary over bin/claude.exe.
+     *          3. The extracted sub-package binary is an ET_EXEC that
+     *             declares `/lib/ld-musl-aarch64.so.1` as its interpreter.
+     *             Android bionic doesn't have this path, but Shelly already
+     *             bundles an Alpine minirootfs (for codex) which contains
+     *             `ld-musl-aarch64.so.1` at
+     *             `$HOME/.shelly-rootfs/lib/ld-musl-aarch64.so.1`.
+     *        Solution: install the `-musl` sub-package by name with
+     *        `--force --libc=musl`, then invoke it via explicit linker
+     *        dispatch (same linker64-shim pattern we use for codex, but
+     *        targeting the musl ld instead of /system/bin/linker64). On
+     *        Termux this was validated end-to-end with `2.1.114 (Claude
+     *        Code)` printing successfully. LD_PRELOAD must be unset at
+     *        launch because Termux's own libtermux-exec-ld-preload.so is
+     *        bionic-specific and the musl ld chokes on its relocations; on
+     *        Shelly this isn't strictly needed (we don't set that preload)
+     *        but we unset it defensively so that if the user runs Shelly's
+     *        bash inside a Termux-inherited env the binary still launches.
+     *        This path obviates the pre-2.0 JS pin entirely — we stay on
+     *        `@latest` and get every upstream feature (/rewind, /bashes,
+     *        skills hot reload, Sonnet 4.5 default). */
+    private const val BASHRC_VERSION = 29
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -396,18 +432,29 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             sb.appendLine("else")
             sb.appendLine("  __cli_dir=\"$libDir/node_modules\"")
             sb.appendLine("fi")
-            // @anthropic-ai/claude-code ≥ 2026-04: entry moved from cli.js
-            // at the package root to bin/claude.exe (the ".exe" suffix is
-            // cosmetic — it's still a Node script with the usual shebang).
-            // package.json "bin": { "claude": "bin/claude.exe" }. Older
-            // installs that still have cli.js next to package.json are
-            // handled by the fallback branch.
+            // @anthropic-ai/claude-code 2.x dispatch (see BASHRC_VERSION
+            // history entry 29 for full rationale). The real executable is
+            // a Bun-compiled ET_EXEC that lives under the musl sub-package
+            // and declares /lib/ld-musl-aarch64.so.1 as its interpreter.
+            // We launch it by invoking the bundled Alpine musl linker
+            // directly, same pattern as the codex_exec path. LD_PRELOAD is
+            // explicitly empty so a Termux-inherited preload (libtermux-
+            // exec-ld-preload.so) doesn't get dlopen'd by the musl ld and
+            // blow up on bionic-only symbol relocations. The legacy v1.x
+            // `cli.js` path is kept as a compat fallback for anyone with
+            // an older pinned install — once that install is overwritten
+            // by __shelly_bg_cli_update it'll never match again.
             sb.appendLine("claude() {")
-            sb.appendLine("  local __c1=\"\$__cli_dir/@anthropic-ai/claude-code/bin/claude.exe\"")
-            sb.appendLine("  local __c2=\"\$__cli_dir/@anthropic-ai/claude-code/cli.js\"")
-            sb.appendLine("  if [ -f \"\$__c1\" ]; then _run $libDir/node \"\$__c1\" \"\$@\";")
-            sb.appendLine("  elif [ -f \"\$__c2\" ]; then _run $libDir/node \"\$__c2\" \"\$@\";")
-            sb.appendLine("  else echo \"claude CLI not installed — run __shelly_bg_cli_update and retry\" >&2; return 1; fi")
+            sb.appendLine("  local __musl_ld=\"\$HOME/.shelly-rootfs/lib/ld-musl-aarch64.so.1\"")
+            sb.appendLine("  local __claude_musl=\"\$__cli_dir/@anthropic-ai/claude-code-linux-arm64-musl/claude\"")
+            sb.appendLine("  local __claude_js=\"\$__cli_dir/@anthropic-ai/claude-code/cli.js\"")
+            sb.appendLine("  if [ -x \"\$__musl_ld\" ] && [ -f \"\$__claude_musl\" ]; then")
+            sb.appendLine("    LD_PRELOAD= _run \"\$__musl_ld\" \"\$__claude_musl\" \"\$@\";")
+            sb.appendLine("  elif [ -f \"\$__claude_js\" ]; then")
+            sb.appendLine("    _run $libDir/node \"\$__claude_js\" \"\$@\";")
+            sb.appendLine("  else")
+            sb.appendLine("    echo \"claude CLI not installed — run __shelly_bg_cli_update and retry\" >&2; return 1;")
+            sb.appendLine("  fi")
             sb.appendLine("}")
             sb.appendLine("gemini() { _run $libDir/node \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
             sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
@@ -452,9 +499,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             // npm doesn't auto-install them because Bionic libc isn't
             // recognized as a normal Linux target, so pass --include=optional
             // and --os=linux --cpu=arm64 to pull the arm64 build down.
+            //
+            // v29: @anthropic-ai/claude-code@2.x needs the musl sub-package
+            // installed explicitly (see BASHRC_VERSION history entry 29).
+            // Two install calls:
+            //   1. main package @latest with --os=linux --cpu=arm64 --libc=musl
+            //      (wrapper + postinstall + optional deps filtering)
+            //   2. the -musl sub-package by *name* with --force because npm
+            //      otherwise rejects it with EBADPLATFORM — the sub-package
+            //      declares `"libc":"musl"` and Android reports libc=undefined.
+            //      --force bypasses the check. Without this step the 226 MiB
+            //      binary never hits disk and the claude() shell function
+            //      falls back to the "not installed" branch.
+            //
+            // We nuke both dirs before install so any stale v1.x / mismatched-
+            // libc variant is cleared and npm materialises a clean tree.
             sb.appendLine("  echo '[install] npm install start'")
-            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__shelly_cli_dir\" --include=optional --os=linux --cpu=arm64 @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
+            sb.appendLine("  rm -rf \"\$__shelly_cli_dir/node_modules/@anthropic-ai/claude-code\" \"\$__shelly_cli_dir/node_modules/@anthropic-ai/claude-code-linux-arm64-musl\" 2>/dev/null")
+            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__shelly_cli_dir\" --include=optional --os=linux --cpu=arm64 --libc=musl @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
             sb.appendLine("  echo \"[install] npm install exit=\$?\"")
+            sb.appendLine("  echo '[install] force-install claude-code musl sub-package'")
+            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__shelly_cli_dir\" --force --no-save --os=linux --cpu=arm64 --libc=musl @anthropic-ai/claude-code-linux-arm64-musl@latest")
+            sb.appendLine("  echo \"[install] musl sub-package exit=\$?\"")
             // bug #76 / bug #96: patch codex.js to use the bundled Android-
             // native codex binary (ET_DYN, built by codex-termux) via linker64
             // instead of the upstream musl ET_EXEC, which can't be executed
