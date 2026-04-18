@@ -31,11 +31,6 @@
   <a href="#contributing"><b>Contributing</b></a>
 </p>
 
-<br>
-
-<p align="center">
-  <img src="docs/images/hero.jpg" alt="Shelly — terminal, AI, browser, markdown, and preview in a single screen" width="720">
-</p>
 
 <br>
 
