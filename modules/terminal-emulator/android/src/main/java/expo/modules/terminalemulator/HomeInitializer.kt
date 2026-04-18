@@ -226,8 +226,31 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
      *        `/root/.shelly-cli/node_modules/.../claude` inside the
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
-     *        bionic-compatible build so proot is the only viable path. */
-    private const val BASHRC_VERSION = 30
+     *        bionic-compatible build so proot is the only viable path.
+     *    31: 5-agent adversarial review of v30 surfaced a pile of blockers:
+     *        (1) Literal `$libDir` in the case pattern of `claude()` was
+     *            undefined at shell runtime — must substitute the resolved
+     *            Kotlin value at generation time.
+     *        (2) The Bun-compiled musl binary spawns `node cli.js` for
+     *            interactive + --bare mode. cli.js was removed in v2.0
+     *            (upstream bug #30104 et al.). Workaround: write a Node
+     *            shim at cli.js that re-execs the musl sub-package binary
+     *            with a recursion guard env var.
+     *        (3) Alpine minirootfs lacks /etc/resolv.conf, /etc/nsswitch.conf,
+     *            /etc/ssl/certs/ca-certificates.crt, /etc/hosts, /etc/machine-id,
+     *            /etc/passwd, /etc/group — all needed for DNS/TLS/OAuth/
+     *            fingerprinting to work. Populate on extraction, ship the
+     *            Mozilla CA bundle as an asset.
+     *        (4) proot wrapper additions: bind /storage/emulated/0:/sdcard,
+     *            /data/local/tmp, /dev/shm; unset ANDROID_ROOT / ANDROID_DATA /
+     *            TERMUX_VERSION / LD_PRELOAD; export PROOT_NO_SECCOMP=1
+     *            (Samsung Knox workaround on Z Fold6).
+     *        (5) __shelly_update_marker was written unconditionally on
+     *            install failure → 24h retry suppression. Gate on musl
+     *            binary existence.
+     *        (6) claude() exports SSL_CERT_FILE/SSL_CERT_DIR/
+     *            NODE_EXTRA_CA_CERTS/CURL_CA_BUNDLE and chroot-aware PATH. */
+    private const val BASHRC_VERSION = 31
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -279,7 +302,99 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
                 // land even on stripped rootfs builds.
                 File(rootfsDir, "root").mkdirs()
                 File(rootfsDir, "tmp").mkdirs()
+                File(rootfsDir, "tmp").setWritable(true, false)
                 File(rootfsDir, "usr/local/bin").mkdirs()
+                File(rootfsDir, "etc").mkdirs()
+                File(rootfsDir, "etc/ssl/certs").mkdirs()
+
+                // BASHRC_VERSION v31: comprehensive /etc/* initialization for
+                // claude-code runtime requirements. Adversarial 5-agent review
+                // flagged every one of these as a blocker:
+                //
+                // /etc/resolv.conf — Alpine ships this as a symlink to
+                // /run/resolvconf/resolv.conf which doesn't exist in a fresh
+                // chroot, so every DNS lookup (api.anthropic.com, npm registry,
+                // github) fails with EAI_AGAIN. Replace with a static resolver
+                // list pointing at public DNS so name resolution works under
+                // any carrier/WiFi.
+                val resolvConf = File(rootfsDir, "etc/resolv.conf")
+                try { resolvConf.delete() } catch (_: Exception) {}
+                resolvConf.writeText(
+                    "nameserver 1.1.1.1\n" +
+                    "nameserver 1.0.0.1\n" +
+                    "nameserver 8.8.8.8\n" +
+                    "nameserver 8.8.4.4\n" +
+                    "options edns0 timeout:2 attempts:3\n"
+                )
+
+                // /etc/nsswitch.conf — musl consults this before resolv.conf.
+                // Without it, getaddrinfo returns EAI_NONAME because musl
+                // defaults to files-only lookups for host entries (so only
+                // /etc/hosts entries resolve — DNS is skipped entirely).
+                File(rootfsDir, "etc/nsswitch.conf").writeText(
+                    "passwd: files\n" +
+                    "group: files\n" +
+                    "shadow: files\n" +
+                    "hosts: files dns\n" +
+                    "networks: files\n" +
+                    "services: files\n" +
+                    "protocols: files\n"
+                )
+
+                // /etc/hosts — localhost is needed for the OAuth callback
+                // flow (claude login spawns a local listener on 127.0.0.1
+                // for the Anthropic authorize redirect).
+                val hostsFile = File(rootfsDir, "etc/hosts")
+                if (!hostsFile.exists() || hostsFile.length() == 0L) {
+                    hostsFile.writeText(
+                        "127.0.0.1 localhost\n" +
+                        "::1 localhost ip6-localhost ip6-loopback\n"
+                    )
+                }
+
+                // /etc/ssl/certs/ca-certificates.crt — Alpine's minirootfs
+                // does NOT ship CA roots (requires `apk add ca-certificates`).
+                // Without this bundle, every HTTPS connection to
+                // api.anthropic.com fails with UNABLE_TO_GET_ISSUER_CERT_LOCALLY.
+                // The Mozilla CA bundle is shipped as a bundled asset.
+                val caFile = File(rootfsDir, "etc/ssl/certs/ca-certificates.crt")
+                if (!caFile.exists() || caFile.length() < 100_000) {
+                    try {
+                        context.assets.open("ca-certificates.crt").use { input ->
+                            caFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        // OpenSSL / musl's libressl both also check cert.pem
+                        val pem = File(rootfsDir, "etc/ssl/cert.pem")
+                        try { pem.delete() } catch (_: Exception) {}
+                        caFile.copyTo(pem, overwrite = true)
+                    } catch (e: Exception) {
+                        android.util.Log.e("HomeInitializer", "CA bundle copy failed: ${e.message}")
+                    }
+                }
+
+                // /etc/machine-id — stable per-install random ID so Claude
+                // Code's session dedup / Max-plan fingerprinting doesn't
+                // treat every launch as a new device and burn rate-limit.
+                val machineIdFile = File(rootfsDir, "etc/machine-id")
+                if (!machineIdFile.exists() || machineIdFile.length() < 32) {
+                    val id = java.util.UUID.randomUUID().toString().replace("-", "")
+                    machineIdFile.writeText(id + "\n")
+                }
+
+                // /etc/passwd + /etc/group — Alpine usually ships these, but
+                // write minimal fallbacks so `-0` fake-uid-0 lookups succeed
+                // even against stripped rootfs builds.
+                val passwdFile = File(rootfsDir, "etc/passwd")
+                if (!passwdFile.exists()) {
+                    passwdFile.writeText(
+                        "root:x:0:0:root:/root:/bin/sh\n" +
+                        "nobody:x:65534:65534:nobody:/:/bin/false\n"
+                    )
+                }
+                val groupFile = File(rootfsDir, "etc/group")
+                if (!groupFile.exists()) {
+                    groupFile.writeText("root:x:0:\nnobody:x:65534:\n")
+                }
             } catch (e: Exception) {
                 android.util.Log.e("HomeInitializer", "rootfs extraction failed: ${e.message}")
             }
@@ -329,6 +444,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
         val prootWrapper = File(binDir, "proot")
         prootWrapper.writeText(
             "#!/system/bin/sh\n" +
+            // BASHRC_VERSION v31 additions from Agent 2 review:
+            // - Scrub Android-specific env that confuses musl / Bun runtime
+            //   (ANDROID_ROOT leak causes musl to probe wrong /etc/passwd,
+            //   TERMUX_VERSION makes claude-code's platform detector branch
+            //   into Termux-only paths we don't want hit from Shelly).
+            // - LD_PRELOAD is cleared because the Alpine musl ld can't load
+            //   bionic-only preloads.
+            // - PROOT_NO_SECCOMP forces ptrace-only mode so Samsung Knox's
+            //   seccomp restrictions don't kill us silently on Z Fold6.
+            "unset LD_PRELOAD LD_LIBRARY_PATH ANDROID_ROOT ANDROID_DATA " +
+            "ANDROID_ASSETS ANDROID_STORAGE BOOTCLASSPATH SYSTEMSERVERCLASSPATH " +
+            "TERMUX_VERSION\n" +
+            "export PROOT_NO_SECCOMP=1\n" +
+            "export PROOT_TMP_DIR=\"${context.cacheDir.absolutePath}/proot\"\n" +
+            "mkdir -p \"\$PROOT_TMP_DIR\" 2>/dev/null\n" +
             "exec /system/bin/linker64 $libDir/libproot.so " +
             "-0 --kill-on-exit " +
             "-r ${rootfsDir.absolutePath} " +
@@ -336,6 +466,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             "-b /system " +
             "-b /apex " +
             "-b /linkerconfig " +
+            // Additional binds from Agent 2 review — required for
+            // subprocess work (locks in /data/local/tmp), user-file access
+            // under MANAGE_EXTERNAL_STORAGE, Bun SharedArrayBuffer via
+            // /dev/shm, and so on.
+            "-b /data/local/tmp " +
+            "-b /storage/emulated/0:/sdcard " +
+            "-b /dev/shm " +
             "-b $libDir:/shelly-bin " +
             "-b ${home.absolutePath}:/root " +
             "-w /root " +
@@ -508,9 +645,26 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             sb.appendLine("claude() {")
             sb.appendLine("  local __proot=\"\$HOME/bin/proot\"")
             sb.appendLine("  local __claude_musl_host=\"\$__cli_dir/@anthropic-ai/claude-code-linux-arm64-musl/claude\"")
-            sb.appendLine("  local __claude_musl_chroot=\"/root/.shelly-cli/node_modules/@anthropic-ai/claude-code-linux-arm64-musl/claude\"")
+            sb.appendLine("  # Derive in-chroot path from host __cli_dir via bind-mount prefix swap.")
+            sb.appendLine("  # The literal \$HOME and $libDir values are substituted at generation")
+            sb.appendLine("  # time by the Kotlin generator — \$libDir is NOT a shell variable at")
+            sb.appendLine("  # runtime, it's a literal absolute path from Android's jniLibs dir.")
+            sb.appendLine("  local __claude_musl_chroot")
+            sb.appendLine("  case \"\$__cli_dir\" in")
+            sb.appendLine("    \"\$HOME\"/*)    __claude_musl_chroot=\"/root\${__cli_dir#\"\$HOME\"}/@anthropic-ai/claude-code-linux-arm64-musl/claude\" ;;")
+            sb.appendLine("    \"$libDir\"/*)  __claude_musl_chroot=\"/shelly-bin\${__cli_dir#\"$libDir\"}/@anthropic-ai/claude-code-linux-arm64-musl/claude\" ;;")
+            sb.appendLine("    *)            echo \"claude: unexpected __cli_dir=\$__cli_dir\" >&2; return 1 ;;")
+            sb.appendLine("  esac")
             sb.appendLine("  if [ -x \"\$__proot\" ] && [ -f \"\$__claude_musl_host\" ]; then")
-            sb.appendLine("    LD_PRELOAD= \"\$__proot\" \"\$__claude_musl_chroot\" \"\$@\";")
+            sb.appendLine("    # SSL env vars point at the CA bundle we pre-populated in the")
+            sb.appendLine("    # Alpine rootfs (see HomeInitializer.kt rootfs init block). Without")
+            sb.appendLine("    # these, Node / curl / Bun TLS clients can't verify Anthropic API.")
+            sb.appendLine("    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\")
+            sb.appendLine("    SSL_CERT_DIR=/etc/ssl/certs \\")
+            sb.appendLine("    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \\")
+            sb.appendLine("    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \\")
+            sb.appendLine("    PATH=\"/shelly-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\" \\")
+            sb.appendLine("      \"\$__proot\" \"\$__claude_musl_chroot\" \"\$@\";")
             sb.appendLine("  else")
             sb.appendLine("    echo \"claude CLI not installed — run __shelly_bg_cli_update and retry\" >&2; return 1;")
             sb.appendLine("  fi")
@@ -595,8 +749,71 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             // under the bundle dir and rewrites the throw expression to
             // `undefined`, same as the sed pattern it replaces.
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" gemini")
-            sb.appendLine("  echo \"\$__shelly_now\" > \"\$__shelly_update_marker\"")
+            // Agent 3 review: @anthropic-ai/claude-code@2.x's Bun-compiled
+            // musl binary internally spawns `node cli.js` for interactive
+            // mode and --bare mode. cli.js was removed from the published
+            // package in v2.0 but the hardcoded spawn remains — this is a
+            // known upstream bug (GitHub issues #30104, #28465, #28839,
+            // #23634, #23665). The community workaround is to provide a
+            // cli.js shim that re-invokes the musl binary directly with a
+            // recursion guard to prevent infinite loops.
+            //
+            // Our shim runs inside the proot chroot (because it's spawned
+            // by the already-chrooted claude process), so the musl binary
+            // can be exec'd directly without re-wrapping in proot — the
+            // Alpine musl ld resolves its PT_INTERP naturally inside the
+            // chroot.
+            sb.appendLine("  _shelly_write_cli_js_shim")
+            // Only record the update timestamp if the musl sub-package
+            // actually landed on disk. Previously we wrote the marker
+            // unconditionally, so a failing npm install would suppress
+            // retries for 24h and leave users with no claude CLI.
+            sb.appendLine("  if [ -f \"\$__shelly_cli_dir/node_modules/@anthropic-ai/claude-code-linux-arm64-musl/claude\" ]; then")
+            sb.appendLine("    echo \"\$__shelly_now\" > \"\$__shelly_update_marker\"")
+            sb.appendLine("    echo '[install] marker written'")
+            sb.appendLine("  else")
+            sb.appendLine("    echo '[install] musl binary missing; marker NOT written, will retry next shell' >&2")
+            sb.appendLine("  fi")
             sb.appendLine("  echo '[install] done'")
+            sb.appendLine("}")
+            sb.appendLine()
+            // Helper function to materialize the cli.js shim in the right
+            // locations after npm install. Keeping it as a separate function
+            // so the inline __shelly_bg_cli_update stays readable.
+            sb.appendLine("_shelly_write_cli_js_shim() {")
+            sb.appendLine("  local __main_pkg=\"\$__shelly_cli_dir/node_modules/@anthropic-ai/claude-code\"")
+            sb.appendLine("  if [ ! -d \"\$__main_pkg\" ]; then")
+            sb.appendLine("    echo '[shim] main claude-code package missing, skipping shim' >&2")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
+            sb.appendLine("  cat > \"\$__main_pkg/cli.js\" <<'CLIJS_EOF'")
+            sb.appendLine("#!/usr/bin/env node")
+            sb.appendLine("// Shelly shim for claude-code v2.x (BASHRC_VERSION 31).")
+            sb.appendLine("// Upstream bug: the Bun-compiled musl binary hardcodes a spawn of")
+            sb.appendLine("// `node cli.js` for interactive + --bare modes, but cli.js was")
+            sb.appendLine("// removed from the published package in v2.0. We replace it with a")
+            sb.appendLine("// stub that re-invokes the sub-package binary directly. A recursion")
+            sb.appendLine("// guard env var prevents the (binary → cli.js → binary → cli.js)")
+            sb.appendLine("// infinite loop.")
+            sb.appendLine("if (process.env.__SHELLY_CLAUDE_CLIJS_GUARD === '1') {")
+            sb.appendLine("  process.stderr.write('[shelly-claude-shim] recursion detected, aborting to break loop\\n');")
+            sb.appendLine("  process.exit(1);")
+            sb.appendLine("}")
+            sb.appendLine("const { spawnSync } = require('child_process');")
+            sb.appendLine("const path = require('path');")
+            sb.appendLine("// Inside the proot chroot, the musl sub-package is under")
+            sb.appendLine("// /root/.shelly-cli/... (bind-mounted from $HOME). Resolve relative")
+            sb.appendLine("// to this shim's own directory in case paths shift between installs.")
+            sb.appendLine("const here = path.dirname(require.resolve('./package.json'));")
+            sb.appendLine("const muslBin = path.resolve(here, '..', 'claude-code-linux-arm64-musl', 'claude');")
+            sb.appendLine("const r = spawnSync(muslBin, process.argv.slice(2), {")
+            sb.appendLine("  stdio: 'inherit',")
+            sb.appendLine("  env: { ...process.env, __SHELLY_CLAUDE_CLIJS_GUARD: '1' },")
+            sb.appendLine("});")
+            sb.appendLine("process.exit(r.status ?? 1);")
+            sb.appendLine("CLIJS_EOF")
+            sb.appendLine("  chmod 644 \"\$__main_pkg/cli.js\"")
+            sb.appendLine("  echo '[shim] cli.js written to ' \"\$__main_pkg/cli.js\"")
             sb.appendLine("}")
             sb.appendLine("if [ \$(( __shelly_now - __shelly_last_update )) -ge \$__shelly_update_interval ]; then")
             sb.appendLine("  ( __shelly_bg_cli_update & )")
