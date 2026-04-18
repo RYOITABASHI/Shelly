@@ -32,6 +32,7 @@ import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
+import { WorktreesSection } from './WorktreesSection';
 import { neonTextGlow, neonDotGlow, neonBorderGlow, neonGlowSky, neonGlowAmber } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
 
@@ -399,6 +400,15 @@ export function Sidebar() {
             <Text style={styles.addRowText}>+ ADD REPOSITORY</Text>
           </Pressable>
         </SidebarSection>
+
+        {/* WORKTREES — parallel agent branches for the active repo (Phase 1).
+            Lives directly under REPOSITORIES because it's a child concept: a
+            worktree is always anchored to a specific repo. */}
+        <WorktreesSection
+          isOpen={openSections.worktrees}
+          onToggle={() => toggleSection('worktrees')}
+          iconsOnly={iconsOnly}
+        />
 
         {/* FILE TREE */}
         <SidebarSection
