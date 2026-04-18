@@ -14,9 +14,10 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable, Alert, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSidebarStore } from '@/store/sidebar-store';
-import { useWorktreeStore, type WorktreeAgent } from '@/store/worktree-store';
+import { useWorktreeStore, type WorktreeAgent, type Worktree } from '@/store/worktree-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useTerminalStore } from '@/store/terminal-store';
+import { usePaneStore } from '@/store/pane-store';
 import { WorktreeAddModal } from './WorktreeAddModal';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, sizes as S } from '@/theme.config';
@@ -35,6 +36,34 @@ const AGENT_EMOJI: Record<WorktreeAgent, string> = {
   none:   '⚪',
 };
 
+/** Phase 2: pick the right CLI invocation for a worktree. Once the agent
+ *  has been started at least once in this worktree we want the CLI to
+ *  resume its previous conversation instead of a cold start. */
+function resumeCommandFor(wt: Worktree): string | null {
+  if (wt.agent === 'none') return null;
+  if (!wt.agentStarted) return wt.agent;
+  // Claude Code: `claude --continue` resumes the most recent session in
+  //   the current directory. Well-documented + stable.
+  // Codex: `codex --continue` behaves analogously as of codex-termux.
+  // Gemini CLI: `gemini --continue` was added in 0.3.x; older bundles fall
+  //   back to a cold start, which is harmless.
+  return `${wt.agent} --continue`;
+}
+
+/** Render "3h ago" / "just now" / "2d ago" for the LastTouched badge. */
+function relativeTime(ms: number): string {
+  const delta = Math.max(0, Date.now() - ms);
+  const sec = Math.floor(delta / 1000);
+  if (sec < 30) return 'just now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  return `${d}d ago`;
+}
+
 type Props = {
   isOpen: boolean;
   onToggle: () => void;
@@ -46,6 +75,8 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
   const worktrees = useWorktreeStore((s) => s.worktrees);
   const removeWorktree = useWorktreeStore((s) => s.removeWorktree);
   const touch = useWorktreeStore((s) => s.touch);
+  const markAgentStarted = useWorktreeStore((s) => s.markAgentStarted);
+  const setSession = useWorktreeStore((s) => s.setSession);
 
   const [addVisible, setAddVisible] = useState(false);
   const [initialAgent, setInitialAgent] = useState<WorktreeAgent>('claude');
@@ -59,19 +90,55 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
       const wt = useWorktreeStore.getState().worktrees.find((w) => w.id === worktreeId);
       if (!wt) return;
 
-      // Mint a fresh terminal pane and queue a `cd` (plus the agent CLI
-      // when one is bound) to run as soon as the session is alive. The
-      // insertCommand / pendingCommand plumbing on terminal-store already
-      // handles the "wait for prompt → write" dance for us (bug #63).
+      // Phase 3 session pinning: if we spawned a tmux session for this
+      // worktree previously, attach to it so the exact bash process (with
+      // its env, history, and agent CLI still running) comes back. We
+      // delegate the attach dance to `tmux attach-session -t <id>` which
+      // returns to the prior TUI immediately on supported builds.
       useMultiPaneStore.getState().addPane('terminal');
       const shellEscapedPath = wt.worktreePath.replace(/'/g, "'\\''");
       const cdCmd = `cd '${shellEscapedPath}'`;
-      const fullCmd =
-        wt.agent === 'none' ? cdCmd : `${cdCmd} && ${wt.agent}`;
+      const agentCmd = resumeCommandFor(wt);
+
+      let fullCmd: string;
+      if (wt.sessionId) {
+        // Attempt to reattach first; if the session is gone the command
+        // falls through to a fresh new-session with the same id so the
+        // mapping in the store stays usable next time.
+        const s = wt.sessionId.replace(/[^A-Za-z0-9_-]/g, '');
+        fullCmd =
+          `${cdCmd} && (tmux attach-session -t ${s} 2>/dev/null` +
+          ` || tmux new-session -s ${s}${agentCmd ? ` '${agentCmd.replace(/'/g, "'\\''")}'` : ''})`;
+      } else {
+        // First-open path: spawn a brand new tmux session anchored to
+        // this worktree so subsequent taps can attach. The session id is
+        // derived from the worktree id so it's stable across app restarts.
+        const s = `shelly_${wt.id.replace(/[^A-Za-z0-9_-]/g, '')}`;
+        fullCmd = agentCmd
+          ? `${cdCmd} && tmux new-session -s ${s} '${agentCmd.replace(/'/g, "'\\''")}'`
+          : `${cdCmd} && tmux new-session -s ${s}`;
+        setSession(worktreeId, s);
+      }
+
       useTerminalStore.getState().insertCommand(fullCmd);
+
+      // Bind an AI pane (if one exists in the tree) to this worktree so
+      // stageAiEdit resolves file paths inside it. Phase 2 plumbing uses
+      // the pane-store's agent binding hook.
+      if (wt.agent !== 'none') {
+        try {
+          const paneAgents = usePaneStore.getState().paneAgents;
+          const focused = usePaneStore.getState().focusedPaneId;
+          if (focused && paneAgents[focused] == null) {
+            usePaneStore.getState().bindAgent(focused, wt.agent);
+          }
+        } catch { /* pane binding is best-effort */ }
+      }
+
       touch(worktreeId);
+      if (wt.agent !== 'none') markAgentStarted(worktreeId);
     },
-    [touch],
+    [touch, setSession, markAgentStarted],
   );
 
   const handleRemove = useCallback(
@@ -120,23 +187,35 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
             No worktrees yet. Add one per agent to work in parallel.
           </Text>
         ) : (
-          repoWorktrees.map((wt) => (
-            <View key={wt.id} style={styles.row}>
-              <Pressable style={styles.rowMain} onPress={() => handleOpen(wt.id)}>
-                <Text style={styles.emoji}>{AGENT_EMOJI[wt.agent]}</Text>
-                <Text style={[styles.branch, { color: AGENT_COLORS[wt.agent] }]} numberOfLines={1}>
-                  {wt.branch}
-                </Text>
-              </Pressable>
-              <Pressable
-                hitSlop={8}
-                onPress={() => handleRemove(wt.id, wt.branch)}
-                style={styles.removeBtn}
-              >
-                <MaterialIcons name="close" size={12} color={C.text3} />
-              </Pressable>
-            </View>
-          ))
+          repoWorktrees.map((wt) => {
+            const resumable = wt.agentStarted === true && wt.agent !== 'none';
+            return (
+              <View key={wt.id} style={styles.row}>
+                <Pressable style={styles.rowMain} onPress={() => handleOpen(wt.id)}>
+                  <Text style={styles.emoji}>{AGENT_EMOJI[wt.agent]}</Text>
+                  <View style={styles.rowText}>
+                    <Text style={[styles.branch, { color: AGENT_COLORS[wt.agent] }]} numberOfLines={1}>
+                      {wt.branch}
+                    </Text>
+                    <Text style={styles.meta} numberOfLines={1}>
+                      {relativeTime(wt.lastTouchedAt)}
+                      {resumable ? ' · resume' : ''}
+                    </Text>
+                  </View>
+                  {resumable ? (
+                    <MaterialIcons name="play-arrow" size={12} color={AGENT_COLORS[wt.agent]} />
+                  ) : null}
+                </Pressable>
+                <Pressable
+                  hitSlop={8}
+                  onPress={() => handleRemove(wt.id, wt.branch)}
+                  style={styles.removeBtn}
+                >
+                  <MaterialIcons name="close" size={12} color={C.text3} />
+                </Pressable>
+              </View>
+            );
+          })
         )}
 
         {/* Per-agent quick-add buttons — users pick the agent first so the
@@ -192,6 +271,10 @@ const styles = StyleSheet.create({
     gap: 6,
     flex: 1,
   },
+  rowText: {
+    flex: 1,
+    gap: 1,
+  },
   emoji: {
     fontSize: 10,
   },
@@ -200,7 +283,12 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: '700',
     letterSpacing: 0.3,
-    flex: 1,
+  },
+  meta: {
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    color: C.text3,
+    letterSpacing: 0.2,
   },
   removeBtn: {
     padding: 4,

@@ -39,6 +39,14 @@ export type Worktree = {
   /** ms epoch; used for the "last touched 2h ago" badge in later phases. */
   createdAt: number;
   lastTouchedAt: number;
+  /** Phase 3: pinned Immortal tmux session id so reopen resumes the same
+   *  shell process with its scrollback. Optional until the session is
+   *  actually spawned. */
+  sessionId?: string;
+  /** Phase 2: opaque marker for "this worktree has had its agent launched
+   *  at least once" — used by the CLI resume logic to pick `--continue` /
+   *  `resume` flags instead of a cold start. */
+  agentStarted?: boolean;
 };
 
 export type WorktreeCreateResult =
@@ -54,6 +62,10 @@ type WorktreeState = {
   addWorktree: (repoPath: string, branch: string, agent: WorktreeAgent) => Promise<WorktreeCreateResult>;
   removeWorktree: (id: string) => Promise<{ ok: boolean; error?: string }>;
   touch: (id: string) => void;
+  /** Phase 2: flag an agent launch so subsequent reopens use --continue */
+  markAgentStarted: (id: string) => void;
+  /** Phase 3: remember the tmux session id we spawned for this worktree */
+  setSession: (id: string, sessionId: string | undefined) => void;
 
   /** Read helpers */
   byRepo: (repoPath: string) => Worktree[];
@@ -197,6 +209,22 @@ export const useWorktreeStore = create<WorktreeState>()(
         set((s) => ({
           worktrees: s.worktrees.map((w) =>
             w.id === id ? { ...w, lastTouchedAt: Date.now() } : w,
+          ),
+        }));
+      },
+
+      markAgentStarted: (id) => {
+        set((s) => ({
+          worktrees: s.worktrees.map((w) =>
+            w.id === id ? { ...w, agentStarted: true, lastTouchedAt: Date.now() } : w,
+          ),
+        }));
+      },
+
+      setSession: (id, sessionId) => {
+        set((s) => ({
+          worktrees: s.worktrees.map((w) =>
+            w.id === id ? { ...w, sessionId, lastTouchedAt: Date.now() } : w,
           ),
         }));
       },
