@@ -162,8 +162,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
      *        gates the wrap on DECSET 2004 so full-screen TUIs (vim /
      *        less / nano) still get the pre-#91 `\r?\n → \r` fallback
      *        instead of having control bytes injected into their own
-     *        key handling. */
-    private const val BASHRC_VERSION = 27
+     *        key handling.
+     *    28: @anthropic-ai/claude-code ≥ 2026-04 restructured its package
+     *        layout: the top-level `cli.js` entry disappeared and the
+     *        shipped binary moved to `bin/claude.exe` per package.json's
+     *        new `bin` field. The pre-existing `claude()` shell function
+     *        still pointed at the old `cli.js` path and every invocation
+     *        failed with MODULE_NOT_FOUND. Rewrite the function to prefer
+     *        `bin/claude.exe` when present and fall back to `cli.js`
+     *        only as a compat layer for older pinned installs. */
+    private const val BASHRC_VERSION = 28
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -388,7 +396,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> | gemini"); p
             sb.appendLine("else")
             sb.appendLine("  __cli_dir=\"$libDir/node_modules\"")
             sb.appendLine("fi")
-            sb.appendLine("claude() { _run $libDir/node \"\$__cli_dir/@anthropic-ai/claude-code/cli.js\" \"\$@\"; }")
+            // @anthropic-ai/claude-code ≥ 2026-04: entry moved from cli.js
+            // at the package root to bin/claude.exe (the ".exe" suffix is
+            // cosmetic — it's still a Node script with the usual shebang).
+            // package.json "bin": { "claude": "bin/claude.exe" }. Older
+            // installs that still have cli.js next to package.json are
+            // handled by the fallback branch.
+            sb.appendLine("claude() {")
+            sb.appendLine("  local __c1=\"\$__cli_dir/@anthropic-ai/claude-code/bin/claude.exe\"")
+            sb.appendLine("  local __c2=\"\$__cli_dir/@anthropic-ai/claude-code/cli.js\"")
+            sb.appendLine("  if [ -f \"\$__c1\" ]; then _run $libDir/node \"\$__c1\" \"\$@\";")
+            sb.appendLine("  elif [ -f \"\$__c2\" ]; then _run $libDir/node \"\$__c2\" \"\$@\";")
+            sb.appendLine("  else echo \"claude CLI not installed — run __shelly_bg_cli_update and retry\" >&2; return 1; fi")
+            sb.appendLine("}")
             sb.appendLine("gemini() { _run $libDir/node \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
             sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
             sb.appendLine("export -f bash claude gemini codex")
