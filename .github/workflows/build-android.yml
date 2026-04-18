@@ -41,9 +41,27 @@ jobs:
       - name: Bundle AI CLIs (Claude Code, Gemini CLI, Codex)
         run: |
           mkdir -p cli-bundle
-          # Install CLIs with arm64 target (device is aarch64, CI is x86_64)
+          # Install CLIs with arm64 target (device is aarch64, CI is x86_64).
+          #
+          # @anthropic-ai/claude-code is pinned to 2.1.112 — the final
+          # release that still shipped cli.js as a pure-JS entry point.
+          # 2.1.113+ switched to a Bun-compiled SEA binary (bin/claude.exe)
+          # that requires a glibc/musl runtime we can't give it on Android
+          # bionic without a proot chroot. With cli.js gone, `_run node
+          # cli.js` (the dispatch strategy in HomeInitializer.kt v32+) has
+          # no entry point, so the three-tier fallback in claude() would
+          # always fall through to this bundled tier anyway. Pinning the
+          # bundle to 2.1.112 guarantees a working claude command even if
+          # a future auto-update fails its health check.
+          #
+          # Gemini + Codex remain @latest because gemini-cli is pure JS
+          # (Termux-guard patch is applied below) and @openai/codex's
+          # native binary is handled by the separate codex-termux fork
+          # step earlier in this workflow.
           npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
-            @anthropic-ai/claude-code @google/gemini-cli @openai/codex
+            @anthropic-ai/claude-code@2.1.112 \
+            @google/gemini-cli@latest \
+            @openai/codex@latest
           # Patch clipboardy: remove Termux guard so Gemini CLI starts without Termux
           # The check may be in clipboardy hoisted to various locations or bundled in chunks
           find cli-bundle/lib -name "*.js" -exec grep -l "TERMUX_VERSION" {} \; | while read f; do

@@ -234,6 +234,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    33: claude-code pinned to 2.1.112 (last cli.js-shipping release).
+     *        2.1.113 renamed the bin entry from `cli.js` to `bin/claude.exe`
+     *        (Bun-compiled SEA) and dropped the cli.js file from the tarball
+     *        entirely. cli-wrapper.cjs is just a platform-detect + spawn
+     *        launcher with no JS fallback, so there's nothing to patch.
+     *        Without cli.js the `_run node cli.js` dispatch in claude() has
+     *        no entry point on any version >= 2.1.113, so we pin to the
+     *        highest version it can still execute. Also fixes the cp -al
+     *        nesting bug in __shelly_bg_cli_update staging clone: the
+     *        `cp -al $src $dest` form created a nested .shelly-cli.staging/
+     *        .shelly-cli/ tree when dest pre-existed (stale from a prior
+     *        aborted run). Switched to `cp -al $src/. $dest/` so the copy
+     *        lands flat regardless of whether dest was already a directory.
      *    32: MAJOR COURSE CORRECTION. 5-agent survey of GitHub issues
      *        (#45541 et al.), Ishabdullah/claude-code-termux, Reddit,
      *        Qiita/Zenn, LINUX DO, skeptrune blog confirmed that the
@@ -259,7 +272,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
      *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 32
+    private const val BASHRC_VERSION = 33
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -610,15 +623,34 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  else")
             sb.appendLine("    mkdir -p \"\$__staging\"")
             sb.appendLine("  fi")
-            // 2. Install @latest into staging. --os=linux --cpu=arm64 tricks
+            // 2. Install into staging. --os=linux --cpu=arm64 tricks
             //    Anthropic's install.cjs postinstall out of its "Unsupported
             //    platform: android arm64" early-return (observed on fresh
             //    Termux installs since v2.1.114). --include=optional pulls
             //    the codex native binary so its optional dep resolves.
+            //
+            //    @anthropic-ai/claude-code is pinned to 2.1.112 — the final
+            //    release that shipped cli.js as a pure-JS entry point. From
+            //    2.1.113 the package dropped cli.js entirely in favour of a
+            //    Bun-compiled native binary (bin/claude.exe) that requires a
+            //    glibc/musl runtime our bundled bionic node can't load. We
+            //    investigated cli-wrapper.cjs — it's a thin launcher that
+            //    unconditionally spawns the native binary, so there's no JS
+            //    fallback we could patch into. Until we ship Codespace
+            //    integration (remote Linux executes claude-code) or revive
+            //    the proot-chroot strategy (abandoned after v28–v31 churn)
+            //    we pin to the last version that Shelly's `_run node
+            //    cli.js` dispatch in claude() can execute natively.
+            //
+            //    Gemini and Codex remain @latest: gemini-cli is pure JS and
+            //    Shelly patches the Termux guard via shelly-patcher.js; codex
+            //    is dispatched through the bundled codex-termux native binary
+            //    (libcodex_exec.so) via the codex.js sed patch.
+            //
             //    We DO NOT pass --libc=musl or force-install the claude-code
             //    -musl sub-package; we don't use the Bun ET_EXEC anymore.
-            sb.appendLine("  echo '[install] npm install start'")
-            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --include=optional --os=linux --cpu=arm64 @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
+            sb.appendLine("  echo '[install] npm install start (claude-code pinned to 2.1.112, last cli.js release)'")
+            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --include=optional --os=linux --cpu=arm64 @anthropic-ai/claude-code@2.1.112 @google/gemini-cli@latest @openai/codex@latest")
             sb.appendLine("  echo \"[install] npm install exit=\$?\"")
             // 3. Apply codex / gemini source patches to the staged tree
             //    (bug #76, #77, #96 — see earlier BASHRC_VERSION entries).
