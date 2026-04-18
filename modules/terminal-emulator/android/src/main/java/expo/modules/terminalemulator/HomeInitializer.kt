@@ -234,6 +234,27 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    34: ship shelly-cs — GitHub Codespaces CLI (pure Node, REST API
+     *        direct, no gh-CLI dependency). Script lives in APK assets at
+     *        modules/.../assets/shelly-cs.js (so it edits as normal JS
+     *        without Kotlin escaping), extracted on every launch into
+     *        $HOME/.shelly-cs/shelly-cs.js. Invoked via the `shelly-cs`
+     *        shell function which routes through the bundled bionic node.
+     *
+     *        Implements OAuth device flow against the Shelly OAuth App
+     *        (Client ID: Ov23liLDXUTGYlzzhlLG, override via
+     *        SHELLY_OAUTH_CLIENT_ID env for dev/staging), plus Codespaces
+     *        list/create/open/stop/delete/doctor. SSH tunneling is a
+     *        Phase 1.5 placeholder — for now `shelly-cs open <name>`
+     *        opens the codespace web URL via android VIEW intent, which
+     *        gives users the codespace's web terminal + claude-code
+     *        pre-installed (per the devcontainer template).
+     *
+     *        Strategic context: claude-code 2.1.113+ dropped cli.js in
+     *        favour of a Bun SEA binary that can't run on Android bionic.
+     *        Shelly's local CLI pin (2.1.112 via v33) keeps users on the
+     *        last mobile-native release; Codespaces integration is the
+     *        sustainable path to always-latest claude-code on mobile.
      *    33: claude-code pinned to 2.1.112 (last cli.js-shipping release).
      *        2.1.113 renamed the bin entry from `cli.js` to `bin/claude.exe`
      *        (Bun-compiled SEA) and dropped the cli.js file from the tarball
@@ -272,7 +293,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
      *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 33
+    private const val BASHRC_VERSION = 34
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -400,6 +421,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
         // gemini-cli bundle rewrites. Always overwrite so bumps to the
         // patcher logic ship with the bashrc regen.
         File(home, ".shelly-patcher.js").writeText(PATCHER_JS)
+
+        // v34: ship shelly-cs — the GitHub Codespaces CLI for Shelly
+        // (standalone, pure Node, no gh-CLI dependency). The script lives
+        // as an APK asset (modules/.../assets/shelly-cs.js) so it can be
+        // edited as normal JS without Kotlin string escaping, and is
+        // re-extracted on every launch so bashrc-version bumps include the
+        // latest script.
+        //
+        // Invoked via the `shelly-cs` shell function defined later in
+        // .bashrc, which routes through the bundled bionic node (same
+        // pattern as claude/gemini/codex).
+        val shellyCsDir = File(home, ".shelly-cs")
+        shellyCsDir.mkdirs()
+        val shellyCsScript = File(shellyCsDir, "shelly-cs.js")
+        try {
+            context.assets.open("shelly-cs.js").use { input ->
+                shellyCsScript.outputStream().use { output -> input.copyTo(output) }
+            }
+            shellyCsScript.setExecutable(true, false)
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-cs.js extract failed: ${e.message}")
+        }
 
         // Regenerate .bashrc if version changed
         val bashrc = File(home, ".bashrc")
@@ -570,7 +613,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("gemini() { _run $libDir/node \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
             sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex")
+            // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
+            // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
+            // bundled bionic node. See HomeInitializer.initialize() where the
+            // script is copied from assets/shelly-cs.js on every launch.
+            sb.appendLine("shelly-cs() { _run $libDir/node \"\$HOME/.shelly-cs/shelly-cs.js\" \"\$@\"; }")
+            sb.appendLine("export -f bash claude gemini codex shelly-cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
