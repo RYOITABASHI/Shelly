@@ -71,6 +71,93 @@
 
 ## P0 — 次リリース前の必須対応 (v0.1.0 ブロッカー)
 
+### ✅ claude-code v2.1.113+ の cli.js 消失問題 (対応済: BASHRC_VERSION 33 で 2.1.112 に pin)
+
+**発見**: 2026-04-18/19 v32 実機テスト中、install.log に繰り返し
+`[install] HEALTH CHECK FAILED` が記録されていることを発見。追跡した
+結果、**`@anthropic-ai/claude-code@2.1.113` で `cli.js` が tarball から
+削除された**ことが判明。
+
+**経緯** (npm registry 調査):
+- `2.1.112` — `bin.claude = "cli.js"`, tarball に `cli.js` (2.8 MB 純粋 JS) + `vendor/` 含む
+- `2.1.113` — `bin.claude = "bin/claude.exe"`, `cli.js` 消失、代わりに `bin/` + `cli-wrapper.cjs` + `install.cjs`
+- `2.1.114` — 同上
+
+**cli-wrapper.cjs の中身** (2.1.113 以降):
+```javascript
+// 126 行。platform-detect して native binary を spawnSync するだけ。
+// JS fallback は皆無。PLATFORMS マップに android-arm64 は無い。
+function main() {
+  const binaryPath = getBinaryPath();  // → Bun SEA 絶対パス
+  spawnSync(binaryPath, process.argv.slice(2), ...);
+}
+```
+
+**影響**: Shelly v32 の 3-tier fallback は `$HOME/.shelly-cli/node_modules/.../cli.js`
+を探すが、Tier 1 (auto-updated) が `cli.js` を持たない → 毎回 Tier 3
+(bundled golden = 2.1.105) に fall through する仕様に。
+
+**対応 (BASHRC_VERSION 33)**:
+- `.github/workflows/build-android.yml` の `Bundle AI CLIs` step で
+  `@anthropic-ai/claude-code@2.1.112` を明示 pin
+- `HomeInitializer.kt` の `__shelly_bg_cli_update` で同 pin
+- `--libc=musl` と `@anthropic-ai/claude-code-linux-arm64-musl` の強制 install を削除
+- 併せて `cp -al` の staging ディレクトリネスト bug を修正
+
+**戦略的影響**:
+- **ローカル claude-code は 2.1.112 で frozen**。2.1.113+ の新機能
+  (`/rewind`, `/bashes`, Skills hot reload, Sonnet 4.5 デフォルト化) は
+  ローカルでは使えない
+- **"常に最新 claude-code" は Codespaces 経由が唯一の道** に → shelly-cs
+  Phase 1 実装の戦略的裏付け (BASHRC_VERSION 34)
+
+**優先度**: 元 P0、解決済み。コミット: `b7061d57`, `15ee5843`。
+
+---
+
+### ✅ Codespaces 統合 Phase 1 minimum (実装済: BASHRC_VERSION 34, commit 15ee5843)
+
+**動機**: claude-code 2.1.113+ が Android bionic で動かなくなったため、
+**"本物の最新 claude-code" をモバイルで使う唯一の道は Codespaces 経由
+のリモート実行** になった。
+
+**Phase 1 minimum で landed した物**:
+1. `shelly-cs` CLI (Pure Node, ~450 LoC, `assets/shelly-cs.js`)
+2. OAuth device flow (GitHub OAuth App `Ov23liLDXUTGYlzzhlLG`)
+3. `list`, `create`, `open`, `stop`, `delete`, `doctor`, `logout`
+4. env-var overridable constants (`SHELLY_OAUTH_CLIENT_ID`,
+   `SHELLY_CS_DEFAULT_REPO`, `SHELLY_CS_SCOPE`)
+5. Template repo `RYOITABASHI/shelly-codespace-template` (Node 20 +
+   claude-code postCreateCommand)
+
+**Phase 1.5 送り (次スプリント)**:
+- **SSH tunneling**: GitHub Codespaces の native SSH は gh CLI の
+  proprietary tunnel infrastructure (WebSocket + JSON-RPC) 経由。
+  実装候補 3 通り (下記 "Phase 1.5 設計メモ" 参照)
+- **SecureStore bridge**: 現在 token は file (`$HOME/.shelly-cs/token`,
+  0600)。JSI 経由で expo-secure-store に橋渡し
+- **Browser Pane auto-open**: 現在 `am start -a VIEW` で OS 標準ブラウザ
+  起動。JSI hook で Shelly 内蔵 Browser Pane に切替
+- **Clipboard monitor**: device code copy → URL 自動オープンまで自動化
+- **Auth polling**: device flow 完了を auto-detect、Shelly 通知で完了表示
+
+**Phase 2 以降 (Sidebar 統合)**:
+- `Sidebar → CODESPACES` セクション (Worktrees pattern 踏襲)
+- タップで SSH 接続 → Terminal Pane に claude-code
+- 30 秒ポーリング or WebSocket で status 更新
+- 長押しメニュー (start / stop / rebuild / delete)
+
+**Phase 3 (透過化)**:
+- `claude()` 関数に Tier 0 (Codespace tunnel) 追加
+- `~/.shelly-cs/config.json` に default codespace 設定
+- `claude "hello"` 打つだけで裏で SSH tunnel 経由で remote claude-code 実行
+- ユーザー体験: "Android で `claude` 打てば動く" が完全復活 (ただし裏は
+  Codespace)
+
+**優先度**: Phase 1 min P0 (解決済み), Phase 1.5 P1 (次スプリント), 2/3 は P2。
+
+---
+
 ### ✅ bug #97 follow-up — ペースト時に改行ごとに実行されるリグレッション (修正中: TerminalEmulator.java + HomeInitializer.kt BASHRC_VERSION 27)
 
 **発見**: 2026-04-17 v0.1.0 RC 実機テスト (更新インストール)

@@ -8,6 +8,32 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Added
 
+- **`shelly-cs` — GitHub Codespaces CLI** (Phase 1 minimum). Pure-Node
+  helper that speaks the GitHub REST API directly. No gh CLI dependency,
+  no external binaries, bundled bionic `node` runs it unchanged. Ships
+  as an APK asset (`modules/.../assets/shelly-cs.js`) extracted to
+  `$HOME/.shelly-cs/shelly-cs.js` on every launch.
+
+  Commands: `auth` (OAuth device flow against the Shelly OAuth App),
+  `list`, `create [--repo O/R]` (defaults to
+  `RYOITABASHI/shelly-codespace-template` which pre-installs
+  `@anthropic-ai/claude-code`), `open`, `stop`, `delete --yes`,
+  `doctor`, `logout`. `ssh` is stubbed for Phase 1.5 — `open` gives
+  you the codespace's web terminal for now.
+
+  Env-overridable constants: `SHELLY_OAUTH_CLIENT_ID`,
+  `SHELLY_CS_DEFAULT_REPO`, `SHELLY_CS_SCOPE`, `SHELLY_CS_DEBUG`.
+
+- **Three-tier fallback for `claude`**: `$HOME/.shelly-cli` (auto-updated)
+  → `$HOME/.shelly-cli.prev` (last-known-good snapshot) →
+  `$libDir/node_modules` (APK-bundled golden). `claude()` walks the
+  tiers at invocation time, reporting which tier it landed on (unless
+  `SHELLY_SILENT_CLI_TIER=1`). The `__shelly_bg_cli_update` background
+  job now stages into `$HOME/.shelly-cli.staging`, runs a 15-second
+  `node cli.js --version` health check, and rotates only on success —
+  a broken `@latest` never reaches the live tree and never blocks the
+  `claude` command.
+
 - Four additional theme presets: **Dracula**, **Nord**, **Gruvbox**,
   **Tokyo Night**. Selectable from Settings → Display → Theme or the
   Command Palette (`theme-dracula`, `theme-nord`, `theme-gruvbox`,
@@ -29,6 +55,29 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Changed
 
+- **`claude` dispatch simplified** to `_run node cli.js` (v26 pattern
+  restored). The v28–v30 detour (Bun binary + proot + Alpine chroot +
+  musl sub-package + CA bundle + `/etc/*` population) turned out to be
+  over-engineering — the npm tarball for
+  `@anthropic-ai/claude-code@<=2.1.112` ships a plain-JS `cli.js` that
+  runs under Shelly's bundled bionic node unmodified. Five-agent survey
+  (GitHub issues, Ishabdullah/claude-code-termux, Qiita/Zenn/LINUX DO)
+  converged on the same dispatch.
+- **`claude-code` pinned to 2.1.112** — the final release that ships
+  `cli.js` as a pure-JS entry point. Both the CI bundle step and
+  `__shelly_bg_cli_update` pin explicitly. 2.1.113 replaced `cli.js`
+  with a Bun-compiled SEA binary (`bin/claude.exe`) whose only entry
+  point `cli-wrapper.cjs` is a platform-detect + spawn launcher with no
+  JS fallback. Latest claude-code on mobile now requires Codespaces —
+  see `shelly-cs` above.
+- **Paste pipeline (bug #97 root fix)** — multi-line paste now arrives
+  at bash as a single bracketed-paste chunk again. Earlier dispatch
+  failed on bionic bash's readline because the ESC in `\e[200~` was
+  swallowed by the meta-prefix handler; we now trigger
+  `bracketed-paste-begin` via an ESC-free `\C-x\C-b` keybind instead,
+  which `.bashrc` binds in the emacs, vi-insert, and vi-command
+  keymaps. `TerminalEmulator.paste()` gates the wrap on DECSET 2004 so
+  vim / less / nano still get the pre-#91 `\r?\n → \r` fallback.
 - **README** — Coming Soon trimmed to genuine unknowns only (app icon
   + store distribution, end-to-end device smoke tests). Status table
   rewritten to reflect shipping state of theme presets, MCP,
