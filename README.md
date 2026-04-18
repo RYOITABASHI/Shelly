@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="Shelly — AI reads your terminal error and suggests a fix with one-tap INSERT" width="800">
+  <img src="docs/images/hero.jpg" alt="Shelly — AI reads your terminal error and suggests a fix with COPY and INSERT buttons" width="800">
 </p>
 
 <p align="center">
@@ -69,7 +69,7 @@ pnpm install && pnpm android
 
 > **Requirements:** Android device. For building from source: Node.js 22+, pnpm, Android NDK r27+. Expo Go is not supported — Shelly uses native Kotlin/C modules.
 >
-> Termux is not required. Shelly ships with bash, Node.js, Python 3, git, curl, and sqlite3. For tools beyond the bundled set, Termux can be used alongside Shelly.
+> Termux is not required. Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and ripgrep. For tools beyond the bundled set, Termux can be used alongside Shelly.
 
 On first launch Shelly asks for **All files access** so the terminal can read scripts in `/sdcard/Download` and anywhere else on your phone. Tap **Allow** and you're done — `source /sdcard/Download/foo.sh` just works. (Shelly is distributed via GitHub Releases and F-Droid, not Google Play, so this permission is fine here.)
 
@@ -297,11 +297,11 @@ Currently registered:
 | Immortal sessions (tmux keep-alive) | ✅ implemented, device smoke-test pending |
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
-| Claude / Gemini CLIs bundled and ready on first launch | ✅ shipping |
+| Claude / Gemini CLIs auto-installed on first launch (via npm) | ✅ shipping |
 | Codex CLI bundled (codex-termux ET_DYN binary via linker64 shim, `codex.js` patched at first boot) | ✅ shipping (bugs #76, #96) |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
-| Sidebar Ports monitor (NETLINK_SOCK_DIAG enumeration of own listen sockets → tap to open in Browser pane) | ✅ shipping (bugs #36, #99) |
+| Sidebar Ports monitor (`/proc/net/tcp` + `/proc/net/tcp6` polling of listen sockets → tap to open in Browser pane) | ✅ shipping (bugs #36, #99) |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |
