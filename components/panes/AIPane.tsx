@@ -14,8 +14,6 @@ import {
   Animated,
   Easing,
   TouchableOpacity,
-  Keyboard,
-  Platform,
   type ListRenderItemInfo,
   type TextStyle,
 } from 'react-native';
@@ -285,18 +283,8 @@ export default function AIPane() {
     else startRecording();
   }, [isRecording, startRecording, stopRecording]);
 
-  // Keyboard height tracking — same pattern as TerminalPane
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKeyboardHeight(e.endCoordinates.height);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, []);
+  // Keyboard height tracking lifted to MultiPaneContainer so split
+  // layouts don't stack paddingBottom per-pane.
 
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
   const handleMicLongPress = useCallback(() => {
@@ -371,9 +359,12 @@ export default function AIPane() {
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 
   return (
-    <View
-      style={[paneStyles.container, compactOverlay, { paddingBottom: keyboardHeight }]}
-    >
+    // Keyboard avoidance moved to MultiPaneContainer — in a split
+    // layout every pane-level KAV stacked its own paddingBottom,
+    // which collapsed the terminal content to 0px. Container now
+    // shrinks the whole grid by keyboardHeight once, panes render
+    // at their natural size.
+    <View style={[paneStyles.container, compactOverlay]}>
       {/* Context badge — READING TERMINAL 1 */}
       {contextBadge && (
         <View style={paneStyles.contextBadge}>

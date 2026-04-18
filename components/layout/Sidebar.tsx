@@ -440,7 +440,13 @@ export function Sidebar() {
           iconsOnly={iconsOnly}
         >
           {portEntries.length === 0 ? (
-            <Text style={styles.portEmpty}>No listeners</Text>
+            // Android 10+ SELinux denies BOTH /proc/net/tcp reads AND
+            // NETLINK_SOCK_DIAG from untrusted_app, so this panel is
+            // permanently empty on modern phones until bug #99 gets a
+            // privileged-helper path. Say so plainly.
+            <Text style={styles.portEmpty}>
+              Listener detection unavailable on Android 10+ (SELinux).
+            </Text>
           ) : (
             portEntries.map((entry) => {
               // Color map: Expo ports go sky, everything else green.

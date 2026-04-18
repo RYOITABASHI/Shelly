@@ -595,8 +595,15 @@ export default function TerminalScreen() {
     removeSession(sessionId);
   }, [sessions, removeSession]);
 
+  // bug (post-v0.1.0): in a 3-pane split layout the per-pane paddingBottom:
+  // keyboardHeight double/triple-counted, so each terminal reserved the full
+  // keyboard height at the bottom and the content area collapsed to 0px.
+  // Keyboard avoidance is now done once at the MultiPaneContainer level, so
+  // individual panes must NOT add their own keyboardHeight padding — we keep
+  // the Keyboard listener around only because other UX pieces (scroll
+  // anchoring) may read it later.
   return (
-    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: keyboardHeight, backgroundColor: c.background }]}>
+    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: c.background }]}>
       {/* Headers moved into PaneSlot so each pane only pays for one header row */}
 
       {/* Preview Banner — slides in when localhost URL detected */}

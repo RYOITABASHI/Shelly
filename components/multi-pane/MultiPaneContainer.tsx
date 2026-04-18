@@ -13,8 +13,11 @@ import {
   Text,
   Pressable,
   StyleSheet,
+  Keyboard,
+  Platform,
   type LayoutChangeEvent,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import {
   useMultiPaneStore,
@@ -150,6 +153,23 @@ export function MultiPaneContainer() {
 
   const [size, setSize] = useState({ W: 0, H: 0 });
 
+  // Single source of truth for keyboard avoidance across the whole pane
+  // grid. Each individual pane used to add its own paddingBottom =
+  // keyboardHeight, which double/triple-counted in split layouts and
+  // collapsed terminal content to zero height (bug: post-v0.1.0). Now we
+  // reserve the space once at the container level so every child pane
+  // renders at its natural size.
+  const insets = useSafeAreaInsets();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const show = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(Math.max(0, e.endCoordinates.height - insets.bottom));
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, [insets.bottom]);
+
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
     setSize((prev) =>
@@ -192,10 +212,15 @@ export function MultiPaneContainer() {
     );
   }
 
-  const { slotRects, dividers } = getLayout(preset, ratios, size.W, size.H);
+  // Shrink the usable height by the keyboard size when the IME is up, so
+  // the entire grid (terminals + AI + dividers) slides above the keyboard
+  // as one unit. Without this, per-pane padding tried to compensate and
+  // ended up collapsing content in split layouts.
+  const gridHeight = size.H > 0 ? Math.max(0, size.H - keyboardHeight) : 0;
+  const { slotRects, dividers } = getLayout(preset, ratios, size.W, gridHeight);
 
   return (
-    <View style={styles.root} onLayout={onContainerLayout}>
+    <View style={[styles.root, { paddingBottom: keyboardHeight }]} onLayout={onContainerLayout}>
       {slots.map((slot, i) => {
         if (!slot) return null;
         const rect = slotRects[i as SlotIndex];
