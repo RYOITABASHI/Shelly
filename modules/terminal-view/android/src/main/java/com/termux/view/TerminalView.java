@@ -1172,6 +1172,43 @@ public class TerminalView extends View {
             mClient.logInfo(LOG_TAG, "onKeyDown(keyCode=" + keyCode + ", isSystem()=" + event.isSystem() + ", altBuffer=" + alt + ", event=" + event + ")");
         }
         if (mEmulator == null) return true;
+
+        // Intercept Ctrl+V / Cmd+V (hardware or scrcpy-forwarded) — scrcpy's
+        // Ctrl+V "type clipboard as key events" path bypasses the IME
+        // commitText route entirely, so Shelly's bracketed-paste pipeline
+        // never fires and multi-line scripts get mangled. Catch the Ctrl+V
+        // chord here, pull the text from the Android clipboard directly,
+        // and funnel it through pasteViaEmulator so it lands on a single
+        // TerminalEmulator.paste() call with bracketed markers intact.
+        //
+        // We leave Ctrl+Shift+V untouched — that's the customary paste
+        // chord in many terminal emulators but some users rely on it for
+        // selection-insert; if the app-level intercept swallowed it they'd
+        // lose that behaviour. Plain Ctrl+V is the universal "paste" chord
+        // on every major desktop OS, so intercepting only that is safe.
+        if (keyCode == KeyEvent.KEYCODE_V
+                && (event.isCtrlPressed() || (event.getMetaState() & KeyEvent.META_META_ON) != 0)
+                && !event.isAltPressed()) {
+            try {
+                android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getContext().getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                android.content.ClipData clip = cm != null ? cm.getPrimaryClip() : null;
+                if (clip != null && clip.getItemCount() > 0) {
+                    CharSequence text = clip.getItemAt(0).coerceToText(getContext());
+                    if (!android.text.TextUtils.isEmpty(text)) {
+                        android.util.Log.d("ShellyPaste",
+                            "ctrl-v intercept len=" + text.length());
+                        pasteViaEmulator(text.toString());
+                        return true;
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.d("ShellyPaste", "ctrl-v intercept failed: " + t.getMessage());
+            }
+            // Fall through to default handling if clipboard is empty or
+            // the ClipboardManager is unavailable for any reason.
+        }
+
         if (isSelectingText()) {
             stopTextSelectionMode();
         }
