@@ -19,6 +19,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/images/hero.jpg" alt="Shelly — AI reads your terminal error and suggests a fix with one-tap INSERT" width="800">
+</p>
+
+<p align="center">
   <a href="#quick-start"><b>Quick Start</b></a> &nbsp;&middot;&nbsp;
   <a href="#the-copy-paste-problem"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
