@@ -6,7 +6,7 @@ import {
   StyleSheet,
   Text,
   ScrollView,
-  KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from 'react-native';
 import WebView, { WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
@@ -145,6 +145,8 @@ function normalizeUrl(raw: string): string {
 
 export interface BrowserPaneProps {
   initialUrl?: string;
+  /** When false the pane is hidden — pause media to release codec handles. */
+  visible?: boolean;
 }
 
 // User-Agent strings. Mobile is the react-native-webview default, so when
@@ -156,11 +158,46 @@ const DESKTOP_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneProps) {
+export default function BrowserPane({ initialUrl = 'about:blank', visible = true }: BrowserPaneProps) {
   const theme = useTheme();
   const { background, surface, foreground, muted, accent, border } = theme.colors;
   const paneId = useContext(PaneIdContext);
+  const webviewRef = useRef<WebView>(null);
   const [desktopMode, setDesktopMode] = useState(false);
+
+  // Keyboard height tracking — same pattern as TerminalPane
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
+
+  // Pause/resume media when the pane is hidden/shown. This releases codec
+  // handles so YouTube doesn't get stuck when the user switches panes.
+  useEffect(() => {
+    if (!webviewRef.current) return;
+    if (visible) {
+      // Resume — nudge any paused videos back to life
+      webviewRef.current.injectJavaScript(`
+        document.querySelectorAll('video').forEach(v => {
+          if (v.dataset.shellyPaused === '1') { v.play().catch(()=>{}); delete v.dataset.shellyPaused; }
+        }); true;
+      `);
+    } else {
+      // Pause all playing videos and mark them so we can resume later
+      webviewRef.current.injectJavaScript(`
+        document.querySelectorAll('video').forEach(v => {
+          if (!v.paused) { v.pause(); v.dataset.shellyPaused = '1'; }
+        }); true;
+      `);
+    }
+  }, [visible]);
 
   // Fullscreen bridge: when the WebView posts 'shelly:fs:on' we maximize
   // this pane, force landscape orientation, and hide the system chrome so
@@ -247,7 +284,6 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     [userBookmarks],
   );
 
-  const webviewRef = useRef<WebView>(null);
   const [inputUrl, setInputUrl] = useState(initialUrl === 'about:blank' ? '' : initialUrl);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -315,9 +351,8 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   }, []);
 
   return (
-    <KeyboardAvoidingView
-      style={[styles.root, { backgroundColor: C.bgDeep }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <View
+      style={[styles.root, { backgroundColor: C.bgDeep, paddingBottom: keyboardHeight }]}
     >
       {/* URL bar */}
       <View style={styles.toolbar}>
@@ -450,6 +485,14 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           domStorageEnabled
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
+          thirdPartyCookiesEnabled
+          sharedCookiesEnabled
+          allowsInlineMediaPlayback
+          onError={() => {
+            // Reload on render-process crash so YouTube recovers instead
+            // of showing a blank white screen until manual refresh.
+            setTimeout(() => webviewRef.current?.reload(), 500);
+          }}
           startInLoadingState
           renderLoading={() => (
             <View style={styles.loadingOverlay}>
@@ -464,7 +507,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
         placeholder="Search or enter URL..."
         onSubmit={handleBottomBarSubmit}
       />
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 

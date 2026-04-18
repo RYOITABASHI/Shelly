@@ -216,7 +216,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
               {tab !== 'browser' && <Component />}
               {(tab === 'browser' || wasBrowserRef.current) && (
                 <View style={tab === 'browser' ? styles.fill : styles.hidden}>
-                  <BrowserComponent />
+                  {React.createElement(BrowserComponent as any, { visible: tab === 'browser' })}
                 </View>
               )}
             </PaneIdContext.Provider>

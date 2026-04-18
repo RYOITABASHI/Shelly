@@ -5,7 +5,7 @@
  * - "Edit" button shows toast directing user to vim in terminal
  * - Export openMarkdownFile(path) reads file via execCommand and sets content
  */
-import React, { useState, useCallback, useContext } from 'react';
+import React, { useState, useCallback, useContext, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,8 @@ import {
   ToastAndroid,
   StyleSheet,
   ActivityIndicator,
+  Keyboard,
+  Platform,
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { useTheme } from '@/lib/theme-engine';
@@ -53,6 +55,19 @@ export default function MarkdownPane() {
   const [content, setContent] = useState<string | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Keyboard height tracking — same pattern as TerminalPane
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
 
   // Bug #56 — density scaling for grid layouts. Scale the markdown
   // typography down when the pane drops below ~420dp so headings and
@@ -240,7 +255,7 @@ export default function MarkdownPane() {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: keyboardHeight }]}>
       {/* Header bar */}
       <View style={[styles.header, { borderBottomColor: theme.colors.border }]}>
         <Text style={[styles.headerTitle, { color: theme.colors.muted }]} numberOfLines={1}>

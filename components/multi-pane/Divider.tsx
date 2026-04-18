@@ -58,6 +58,11 @@ export function Divider(props: DividerProps) {
   // grip scales up ~10% — while the user is dragging. Goes back to a
   // calm idle state on release.
   const active = useSharedValue(0);
+  // Throttle JS-thread updates to avoid flooding Zustand with 60+ set()
+  // calls per second. The last value is always flushed in onFinalize so
+  // the drop position is never lost.
+  const lastJsUpdate = useSharedValue(0);
+  const latestRatio = useSharedValue(currentRatio);
 
   const handleUpdate = (newRatio: number): void => {
     onRatioChange(ratioKey, newRatio);
@@ -69,10 +74,13 @@ export function Divider(props: DividerProps) {
 
   const isVertical = kind === 'vertical';
 
+  const THROTTLE_MS = 32; // ~30fps for JS-thread updates (UI stays 60fps)
+
   const pan = Gesture.Pan()
     .onStart(() => {
       'worklet';
       startRatio.value = currentRatio;
+      lastJsUpdate.value = 0;
       active.value = withTiming(1, { duration: 120 });
     })
     .onUpdate((e) => {
@@ -81,10 +89,17 @@ export function Divider(props: DividerProps) {
       if (cSize <= 0) return;
       const delta = isVertical ? e.translationX : e.translationY;
       const newRatio = startRatio.value + delta / cSize;
-      runOnJS(handleUpdate)(newRatio);
+      latestRatio.value = newRatio;
+      const now = Date.now();
+      if (now - lastJsUpdate.value >= THROTTLE_MS) {
+        lastJsUpdate.value = now;
+        runOnJS(handleUpdate)(newRatio);
+      }
     })
     .onFinalize(() => {
       'worklet';
+      // Always flush the final ratio so the drop position is exact
+      runOnJS(handleUpdate)(latestRatio.value);
       active.value = withTiming(0, { duration: 180 });
     });
 

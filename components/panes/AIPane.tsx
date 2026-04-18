@@ -14,7 +14,8 @@ import {
   Animated,
   Easing,
   TouchableOpacity,
-  KeyboardAvoidingView,
+  Keyboard,
+  Platform,
   type ListRenderItemInfo,
   type TextStyle,
 } from 'react-native';
@@ -284,6 +285,19 @@ export default function AIPane() {
     else startRecording();
   }, [isRecording, startRecording, stopRecording]);
 
+  // Keyboard height tracking — same pattern as TerminalPane
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
+
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
   const handleMicLongPress = useCallback(() => {
     setVoiceChatVisible(true);
@@ -357,15 +371,8 @@ export default function AIPane() {
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 
   return (
-    // bug follow-up: edgeToEdgeEnabled on Android disables the free
-    // "activity resize pushes content above keyboard" behaviour, so the
-    // AI composer used to slide under the soft keyboard whenever the user
-    // tapped into it. KeyboardAvoidingView with padding gives us that
-    // behaviour back without needing insets plumbing.
-    <KeyboardAvoidingView
-      style={[paneStyles.container, compactOverlay]}
-      behavior="padding"
-      keyboardVerticalOffset={0}
+    <View
+      style={[paneStyles.container, compactOverlay, { paddingBottom: keyboardHeight }]}
     >
       {/* Context badge — READING TERMINAL 1 */}
       {contextBadge && (
@@ -426,7 +433,7 @@ export default function AIPane() {
         visible={voiceChatVisible}
         onClose={() => setVoiceChatVisible(false)}
       />
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
