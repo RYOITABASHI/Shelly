@@ -616,12 +616,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //    copy if coreutils' cp refuses --archive-links on this
             //    target filesystem.
             sb.appendLine("  rm -rf \"\$__staging\"")
+            sb.appendLine("  mkdir -p \"\$__staging\"")
             sb.appendLine("  if [ -d \"\$__shelly_cli_dir/node_modules\" ]; then")
-            sb.appendLine("    echo '[stage] cloning live tree → staging'")
-            sb.appendLine("    cp -al \"\$__shelly_cli_dir\" \"\$__staging\" 2>/dev/null || \\")
-            sb.appendLine("      cp -r \"\$__shelly_cli_dir\" \"\$__staging\"")
-            sb.appendLine("  else")
-            sb.appendLine("    mkdir -p \"\$__staging\"")
+            sb.appendLine("    echo '[stage] cloning live tree → staging (flat copy)'")
+            // Use `<src>/. <dest>/` form so the copy lands flat in $__staging
+            // whether or not $__staging already exists as a directory. The
+            // previous `cp -al $src $dest` form nested the tree as
+            // $__staging/.shelly-cli/... when rm -rf left a stub behind
+            // (observed in install.log from v32 builds).
+            sb.appendLine("    cp -al \"\$__shelly_cli_dir/.\" \"\$__staging/\" 2>/dev/null || \\")
+            sb.appendLine("      cp -r \"\$__shelly_cli_dir/.\" \"\$__staging/\"")
             sb.appendLine("  fi")
             // 2. Install into staging. --os=linux --cpu=arm64 tricks
             //    Anthropic's install.cjs postinstall out of its "Unsupported
