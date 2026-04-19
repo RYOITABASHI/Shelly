@@ -45,37 +45,38 @@ export function LayoutPicker({ onPicked }: { onPicked?: () => void }) {
     [slots],
   );
 
+  // Every tile is now tappable. Downsizing to a smaller preset trims surplus
+  // panes in setPreset; disabling tiles for `used > capacity` was the old
+  // behavior and it trapped users in p4 with no UI path back to p1.
   return (
     <View style={styles.root}>
       <Text style={styles.title}>LAYOUT</Text>
       <View style={styles.grid}>
         {PRESETS.map((p) => {
           const capacity = PRESET_CAPACITY[p.id];
-          const disabled = used > capacity;
+          const willTrim = used > capacity;
           const active = preset === p.id;
           return (
             <Pressable
               key={p.id}
-              disabled={disabled}
               style={[
                 styles.tile,
                 active && styles.tileActive,
-                disabled && styles.tileDisabled,
               ]}
               onPress={() => {
                 setPreset(p.id);
                 onPicked?.();
               }}
             >
-              <PresetThumbnail preset={p.id} active={active} disabled={disabled} />
+              <PresetThumbnail preset={p.id} active={active} disabled={false} />
               <Text
                 style={[
                   styles.label,
                   active && styles.labelActive,
-                  disabled && styles.labelDisabled,
                 ]}
               >
                 {p.label}
+                {willTrim ? ` (-${used - capacity})` : ''}
               </Text>
             </Pressable>
           );

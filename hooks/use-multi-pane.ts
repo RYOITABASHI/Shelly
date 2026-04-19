@@ -520,14 +520,38 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         },
 
         // ── New preset actions ──
+        // Picking a smaller preset used to be refused when `used > capacity`,
+        // which meant that once a user reached p4 (2×2) they had no UI path
+        // back to single-pane without tapping [×] on every pane individually.
+        // Worse, the LayoutPicker tiles for smaller presets were disabled, so
+        // the user couldn't even tell that was the reason — the app just
+        // looked broken. Downsize now by trimming surplus slots after compaction;
+        // the low-index slots are kept and the rest are dropped. Native
+        // session cleanup for trimmed terminal panes happens when the
+        // PaneSlot unmounts (TerminalPane's effect path).
         setPreset: (preset) => {
           const { slots } = get();
-          const used = countSlots(slots);
-          if (used > PRESET_CAPACITY[preset]) {
-            logInfo('MultiPane', `setPreset ${preset} ignored — ${used} panes open`);
+          const compacted = compactSlots(slots);
+          const cap = PRESET_CAPACITY[preset];
+          const used = countSlots(compacted);
+          if (used > cap) {
+            const trimmed: [Slot, Slot, Slot, Slot] = [null, null, null, null];
+            for (let i = 0; i < cap; i++) trimmed[i] = compacted[i];
+            const droppedIds = compacted
+              .slice(cap)
+              .filter((s): s is NonNullable<Slot> => s !== null)
+              .map((s) => s.id);
+            logInfo(
+              'MultiPane',
+              `setPreset ${preset} — trimmed ${droppedIds.length} surplus pane(s): ${droppedIds.join(',')}`,
+            );
+            const { focusedSlot, maximizedSlot } = get();
+            const safeFocus: SlotIndex = (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
+            const safeMax = maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
+            set({ preset, slots: trimmed, focusedSlot: safeFocus, maximizedSlot: safeMax });
             return;
           }
-          set({ preset, slots: compactSlots(slots) });
+          set({ preset, slots: compacted });
         },
 
         focusSlot: (slot) => {
