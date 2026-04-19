@@ -6,17 +6,28 @@ finds the current step.
 
 ## Commit plan (one commit per bullet)
 
-### Commit 1 — Lazy-install skeleton + version pins
-- [ ] `shelly-cs.js`: add `ensureTunnelingDeps()` — checks for marker
-      file, runs `node npm-cli.js install --prefix $CONFIG_DIR @microsoft/
-      dev-tunnels-connections@1.3.x @grpc/grpc-js@^1.9 ssh2@^1.15 ws@^8`,
-      writes the marker on success.
-- [ ] `cmdSSH` — call `ensureTunnelingDeps()` first, then `throw` a
-      "tunneling deps installed, protocol not yet implemented" message.
-      Users can run `shelly-cs ssh <name>` once to pre-install (UX: no
-      surprise latency on the "real" first use in commit 3).
-- [ ] `shelly-cs doctor` — add a "SSH tunneling deps: installed/missing"
-      row.
+### Commit 1 — Lazy-install skeleton + version pins ✅ (shipped on branch)
+- [x] `shelly-cs.js`: `ensureTunnelingDeps()` — checks for marker file
+      + sentinel (node_modules actually populated), writes a
+      `package.json` with an `overrides: { websocket: 'npm:ws@^8' }`
+      into `$HOME/.shelly-cs/`, then runs the bundled
+      `node npm-cli.js install --prefix $CONFIG_DIR --no-audit --no-fund
+      --no-save @microsoft/dev-tunnels-connections@^1.3
+      @grpc/grpc-js@^1.9 ssh2@^1.15 ws@^8`. Marker at
+      `$HOME/.shelly-cs/.tunnel-deps-installed` on success.
+- [x] `cmdSSH` — after `ensureTunnelingDeps()`, tries to `require()`
+      each of the three key packages from `$HOME/.shelly-cs/node_modules/`.
+      On success, prints the Day 1 checkpoint message and exits.
+      Subsequent `shelly-cs ssh` invocations skip the install.
+- [x] `shelly-cs doctor` — new row:
+      `SSH tunneling:  ✓ deps installed` (or `(not installed yet)`).
+
+**Commit SHA**: (filled in on push)
+**Device verification status**: pending — needs an APK built from this
+branch. Local `npm install` works on dev machine but the real test is
+that the bundled Android bionic node actually resolves the packages,
+that `websocket` → `ws` override is honored, and that `ssh2`'s optional
+`cpu-features` binding is correctly skipped on bionic.
 
 ### Commit 2 — Vendor .proto + generate gRPC stubs
 - [ ] Copy `codespaceHost.proto` + `sshServer.proto` from
