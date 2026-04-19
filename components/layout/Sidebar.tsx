@@ -163,14 +163,25 @@ export function Sidebar() {
       if (cancelled) return;
       setEntries(parseProcNet(v4, v6));
     };
+    // bug #103: actually pause polling while backgrounded. Earlier revision
+    // kept the setInterval running and only added an extra refresh on
+    // resume, which defeated the purpose. Track the timer in a ref-style
+    // holder and tear it down on blur / rebuild on focus.
+    let ivHandle: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (ivHandle !== null) return;
+      ivHandle = setInterval(refresh, 15_000);
+    };
+    const stopPolling = () => {
+      if (ivHandle !== null) { clearInterval(ivHandle); ivHandle = null; }
+    };
     refresh();
-    // bug #103: pause polling while backgrounded so the app is not spawning
-    // JNI subprocesses every 15 s while the user is in another app.
-    const iv = setInterval(refresh, 15_000);
+    startPolling();
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') refresh();
+      if (state === 'active') { refresh(); startPolling(); }
+      else { stopPolling(); }
     });
-    return () => { cancelled = true; clearInterval(iv); sub.remove(); };
+    return () => { cancelled = true; stopPolling(); sub.remove(); };
   }, []);
 
   // Count uncommitted changes in the active repo. Sidebar owns the
@@ -196,13 +207,23 @@ export function Sidebar() {
       const n = parseInt((r.stdout || '').trim(), 10);
       setDirty(Number.isNaN(n) ? null : n);
     };
+    // bug #103: genuinely pause polling while backgrounded (see ports
+    // section above — same pattern).
+    let ivHandle: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (ivHandle !== null) return;
+      ivHandle = setInterval(refresh, 20_000);
+    };
+    const stopPolling = () => {
+      if (ivHandle !== null) { clearInterval(ivHandle); ivHandle = null; }
+    };
     refresh();
-    // bug #103: pause polling while backgrounded; refresh once on resume.
-    const iv = setInterval(refresh, 20_000);
+    startPolling();
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') refresh();
+      if (state === 'active') { refresh(); startPolling(); }
+      else { stopPolling(); }
     });
-    return () => { cancelled = true; clearInterval(iv); sub.remove(); };
+    return () => { cancelled = true; stopPolling(); sub.remove(); };
   }, [activeRepoPath]);
 
   // Derive recent completed tasks from run history

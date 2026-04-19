@@ -671,17 +671,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export TMPDIR=\"\$HOME/.claude-tmp\"")
             sb.appendLine("export TMP=\"\$HOME/.claude-tmp\"")
             sb.appendLine("export TEMP=\"\$HOME/.claude-tmp\"")
-            // bug #100: auto-savepoint runs `git commit` every few seconds,
-            // and on a fresh Shelly install git has no default identity, so
-            // every commit fails with "Author identity unknown / unable to
-            // auto-detect email address (got 'u0_a888@localhost.(none)')",
-            // which floods logcat with E lines (observed 2026-04-17 smoke
-            // test) and means the 💾 indicator never fires. Seed defaults
-            // only if the user hasn't configured a real identity — their
-            // `git config --global` takes precedence on any subsequent shell
-            // launch. Cheap: git config read is a one-line file lookup.
-            sb.appendLine("[ -z \"\$(command git config --global user.email 2>/dev/null)\" ] && command git config --global user.email 'shelly@localhost' 2>/dev/null")
-            sb.appendLine("[ -z \"\$(command git config --global user.name  2>/dev/null)\" ] && command git config --global user.name  'Shelly User'       2>/dev/null")
+            // bug #100 seed is emitted AFTER the git() shell function is
+            // defined (near line 739 — search for `git() {`) so that plain
+            // `git config ...` resolves to the function and reaches the
+            // bundled libgit.so via linker64. Writing it here would have
+            // used `command git`, which bypasses the function on purpose
+            // and then fails because $libDir/git is an ET_DYN .so and not
+            // directly executable — the seed would silently no-op.
             // bug #77: gemini-cli bundles a hardcoded check that throws if
             // process.env.TERMUX_VERSION is undefined on Android, even though
             // it never actually needs Termux for the chat path. Setting any
@@ -737,6 +733,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("bash() { _run $libDir/libbash.so \"\$@\"; }")
             sb.appendLine("node() { _run $libDir/node \"\$@\"; }")
             sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
+            // bug #100: seed default identity for auto-savepoint. Runs now
+            // (AFTER git() is defined) so bare `git config` resolves to the
+            // shell function -> _run linker64 $libDir/git. User-set values
+            // take precedence because we only write when the config key is
+            // unset. Redirect all output so a fresh shell doesn't print a
+            // git error line on every prompt if libgit init has a hiccup.
+            sb.appendLine("[ -z \"\$(git config --global user.email 2>/dev/null)\" ] && git config --global user.email 'shelly@localhost' >/dev/null 2>&1")
+            sb.appendLine("[ -z \"\$(git config --global user.name  2>/dev/null)\" ] && git config --global user.name  'Shelly User'       >/dev/null 2>&1")
             sb.appendLine("npm() { _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js \"\$@\"; }")
             sb.appendLine("npx() { _run $libDir/node $libDir/node_modules/npm/bin/npx-cli.js \"\$@\"; }")
             // bug: the bundled python3.tar.gz extracts to $libDir/python3.13/

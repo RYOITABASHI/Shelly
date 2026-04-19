@@ -53,17 +53,22 @@ export function ContextBar() {
         setGitBranch(branch || null);
       } catch { /* ignore */ }
     };
+    // bug #103 (post-v41 review fix): genuinely pause the interval when
+    // the app is backgrounded — the earlier revision left setInterval
+    // running and only fired an extra poll on resume, so JNI
+    // execSubprocess was still being spawned every 15 s in the background.
+    let id: ReturnType<typeof setInterval> | null = null;
+    const start = () => { if (id === null) id = setInterval(poll, 15000); };
+    const stop = () => { if (id !== null) { clearInterval(id); id = null; } };
     poll();
-    const id = setInterval(poll, 15000);
-    // Skip polling while the app is backgrounded. AppState 'active' fires
-    // one poll immediately on resume so the user sees fresh data without
-    // another 15 s wait.
+    start();
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') poll();
+      if (state === 'active') { poll(); start(); }
+      else { stop(); }
     });
     return () => {
       active = false;
-      clearInterval(id);
+      stop();
       sub.remove();
     };
   }, [home]);
