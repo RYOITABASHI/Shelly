@@ -35,6 +35,7 @@ import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useUsageStore } from '@/store/usage-store';
+import { useFocusStore } from '@/store/focus-store';
 import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
@@ -367,6 +368,22 @@ export default function TerminalScreen() {
     });
     return () => sub.remove();
   }, [ensureNativeSessions]);
+
+  // bug #112: focus recovery after Modal dismiss. Closing LayoutAddSheet,
+  // ConfigTUI, CommandPalette, or any other Modal leaves the Activity's
+  // window focus unset on Android edge-to-edge (dumpsys window shows
+  // `mCurrentFocus=null`). The soft keyboard stays visible but no view
+  // receives commitText, so the user has to tap the terminal before
+  // typing works again. The focus-store counter is incremented by each
+  // Modal's close handler; we observe it here and call the native
+  // TerminalView.focus(tag) helper which does requestFocus +
+  // showSoftInput and restores typing without the stray tap.
+  const refocusTick = useFocusStore((s) => s.refocusTick);
+  useEffect(() => {
+    if (refocusTick === 0) return; // initial mount, nothing to do
+    const tag = findNodeHandle(terminalViewRef.current);
+    if (tag) TerminalViewModule.focus(tag);
+  }, [refocusTick]);
 
   // Request battery optimization exemption on first mount
   useEffect(() => {

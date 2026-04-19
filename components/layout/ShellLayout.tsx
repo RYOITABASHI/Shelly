@@ -25,6 +25,7 @@ import { VoiceChat } from '@/components/VoiceChat';
 import { useSettingsStore } from '@/store/settings-store';
 import { ConfigTUI } from '@/components/config/ConfigTUI';
 import { SaveBadge } from '@/components/SaveBadge';
+import { useFocusStore } from '@/store/focus-store';
 
 export function ShellLayout() {
   const theme = useTheme();
@@ -89,15 +90,22 @@ export function ShellLayout() {
     }
   }, [layout.isFoldInner]);
 
-  // Full-screen voice mode — triggered by `shelly voice` or long-press mic
+  // Full-screen voice mode — triggered by `shelly voice` or long-press mic.
+  // bug #112: trigger a terminal refocus after any overlay closes so the
+  // activity's window focus returns to the terminal view instead of going
+  // null (keyboard would stay visible but commitText would nowhere-land).
   const showVoice = useSettingsStore((s) => s.showVoiceMode);
-  const closeVoice = useCallback(() => useSettingsStore.getState().setShowVoiceMode(false), []);
+  const closeVoice = useCallback(() => {
+    useSettingsStore.getState().setShowVoiceMode(false);
+    useFocusStore.getState().requestTerminalRefocus();
+  }, []);
 
   // Settings TUI — triggered by gear button or `shelly config`
   const showConfig = useSettingsStore((s) => s.showConfigTUI);
   const closeConfig = useCallback(() => {
     logInfo('ShellLayout', 'ConfigTUI: close');
     useSettingsStore.getState().setShowConfigTUI(false);
+    useFocusStore.getState().requestTerminalRefocus();
   }, []);
 
   useEffect(() => {

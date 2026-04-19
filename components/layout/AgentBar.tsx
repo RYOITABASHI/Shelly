@@ -13,12 +13,23 @@ import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { useGitStatusStore } from '@/store/git-status-store';
 import { SettingsDropdown } from './SettingsDropdown';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
+import { useFocusStore } from '@/store/focus-store';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const dirtyCount = useGitStatusStore((s) => s.dirtyCount);
+
+  // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
+  // with mCurrentFocus=null, so the keyboard stays visible but commitText
+  // events go nowhere until the user taps the terminal. Route close through
+  // a helper that bumps the focus store so TerminalPane calls
+  // TerminalView.focus() immediately on dismiss.
+  const closeWithRefocus = (setter: (v: boolean) => void) => () => {
+    setter(false);
+    useFocusStore.getState().requestTerminalRefocus();
+  };
 
   return (
     <View style={styles.bar}>
@@ -65,8 +76,8 @@ export function AgentBar() {
         </Pressable>
       </View>
 
-      <SettingsDropdown visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <LayoutAddSheet visible={sheetVisible} onClose={() => setSheetVisible(false)} />
+      <SettingsDropdown visible={settingsOpen} onClose={closeWithRefocus(setSettingsOpen)} />
+      <LayoutAddSheet visible={sheetVisible} onClose={closeWithRefocus(setSheetVisible)} />
     </View>
   );
 }
