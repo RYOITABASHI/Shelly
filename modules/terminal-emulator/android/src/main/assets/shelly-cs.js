@@ -557,7 +557,7 @@ async function ensureTunnelingDeps() {
 
 async function cmdSSH(args) {
   const name = args._[0];
-  if (!name) throw new Error('Usage: shelly-cs ssh <codespace-name>');
+  if (!name) throw new Error('Usage: shelly-cs ssh <codespace-name> [--probe-tunnel]');
 
   // Day 1: ensure deps are installed. Actual tunnel/RPC/SSH
   // orchestration lands in Day 2-5 (see docs/ssh-tunneling-day1.md).
@@ -586,8 +586,41 @@ async function cmdSSH(args) {
 
   console.log('');
   console.log(`  ${C.green}✓${C.reset} Tunneling deps ready`);
+
+  // Day 2 wire-up: --probe-tunnel exercises the tunnel-client library
+  // end-to-end. It:
+  //   1. Reads the OAuth token
+  //   2. GETs /user/codespaces/{name}?internal=true → tunnelProperties
+  //   3. Opens the websocket tunnel via @microsoft/dev-tunnels-connections
+  //   4. Prints connection info, disposes the client, exits
+  //
+  // No SSH yet (that's Day 3 — StartSSHServer RPC + local forwarder).
+  // This is a "can we even establish the tunnel?" checkpoint so we
+  // can confirm the dev-tunnels-connections bindings work on bionic
+  // node before building the SSH bridge on top.
+  if (args['--probe-tunnel']) {
+    const token = readToken();
+    if (!token) {
+      throw new Error('Not signed in. Run `shelly-cs auth` first.');
+    }
+    console.log(`  ${C.yellow}▶ probing tunnel for ${name}…${C.reset}`);
+    const tunnelLib = require(path.join(__dirname, 'shelly-cs-tunnel.js'));
+    const info = await tunnelLib.probeTunnel(name, token);
+    console.log('');
+    console.log(`  ${C.green}✓ tunnel established${C.reset}`);
+    console.log(`  ${C.gray}  tunnel id   :${C.reset} ${info.tunnelId}`);
+    console.log(`  ${C.gray}  cluster     :${C.reset} ${info.cluster}`);
+    console.log(`  ${C.gray}  domain      :${C.reset} ${info.domain}`);
+    console.log(`  ${C.gray}  service uri :${C.reset} ${info.serviceUri ?? '(none)'}`);
+    console.log('');
+    console.log(`  ${C.cyan}Day 2 checkpoint${C.reset} — SSH server RPC + local forwarder land in Day 3.`);
+    console.log('');
+    return;
+  }
+
   console.log(`  ${C.yellow}Day 1 checkpoint${C.reset} — tunnel protocol implementation lands next.`);
-  console.log(`  ${C.gray}For now use${C.reset} ${C.cyan}shelly-cs open ${name}${C.reset} ${C.gray}to reach the codespace's web terminal.${C.reset}`);
+  console.log(`  ${C.gray}Pass${C.reset} ${C.cyan}--probe-tunnel${C.reset} ${C.gray}to exercise the Day 2 tunnel dial (WS connect only, no SSH).${C.reset}`);
+  console.log(`  ${C.gray}Or use${C.reset} ${C.cyan}shelly-cs open ${name}${C.reset} ${C.gray}to reach the codespace's web terminal.${C.reset}`);
   console.log('');
 }
 
@@ -666,7 +699,7 @@ function usage() {
   console.error(`                                            ${C.gray}(no arg → default / only running)${C.reset}`);
   console.error(`  ${C.cyan}stop${C.reset} <name>                               Stop codespace (pauses billing)`);
   console.error(`  ${C.cyan}delete${C.reset} <name> --yes                       Delete codespace (requires --yes)`);
-  console.error(`  ${C.cyan}ssh${C.reset} <name>                                SSH to codespace (Phase 1.5)`);
+  console.error(`  ${C.cyan}ssh${C.reset} <name> [--probe-tunnel]               SSH to codespace (Phase 1.5 — probe only)`);
   console.error(`  ${C.cyan}doctor${C.reset}                                    Diagnose configuration issues`);
   console.error(`  ${C.cyan}logout${C.reset}                                    Clear saved credentials`);
   console.error('');
