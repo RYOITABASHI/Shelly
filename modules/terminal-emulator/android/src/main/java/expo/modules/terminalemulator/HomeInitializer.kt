@@ -371,7 +371,25 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        ... & )` when called interactively, leaving the user's main
      *        shell untouched. Observed 2026-04-19 v39 smoke test —
      *        user typed __shelly_bg_cli_update, shell died. */
-    private const val BASHRC_VERSION = 40
+    // v41 bump covers several pipeline / bashrc changes that already landed
+    // in the code but never triggered a regeneration because v40 stayed put:
+    //   - commit ec19fa07: npm_config_os/cpu/libc + --force + --omit=optional
+    //     in __shelly_bg_cli_update so npm's platform check truly yields.
+    //   - commit d613f78c: CLAUDE_CODE_TMPDIR export + mkdir so Claude's
+    //     OAuth PKCE state persists (bug #102 mitigation).
+    //   - 2026-04-20 pass: TMPDIR/TMP/TEMP aliases on top of
+    //     CLAUDE_CODE_TMPDIR so every Node.js os.tmpdir() consumer (MCP
+    //     subprocesses, future claude internal paths) lands in the same
+    //     writable dir (bug #102 belt-and-suspenders).
+    //   - 2026-04-20 pass: codex-vendor shim (mkdir + ln -sfn in
+    //     __shelly_bg_cli_update) so codex.js stops throwing "Missing
+    //     optional dependency @openai/codex-linux-arm64" before the
+    //     shelly-patcher spawn rewrite can run (bug #105).
+    //   - 2026-04-20 pass: default `git config --global user.email/name`
+    //     on shell start if the user hasn't set their own, so
+    //     auto-savepoint commits stop failing with "Author identity
+    //     unknown" (bug #100).
+    private const val BASHRC_VERSION = 41
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -641,6 +659,29 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // without the user needing to mkdir manually.
             sb.appendLine("export CLAUDE_CODE_TMPDIR=\"\$HOME/.claude-tmp\"")
             sb.appendLine("mkdir -p \"\$CLAUDE_CODE_TMPDIR\" 2>/dev/null")
+            // v41 belt-and-suspenders: the manual sed fix for `/tmp/claude`
+            // string-literals did NOT stop the OAuth 400 on 2026-04-20, which
+            // suggests a code path is reaching Node's os.tmpdir() instead of
+            // the sed'd literal. os.tmpdir() resolves to the first defined
+            // of TMPDIR / TMP / TEMP before falling back to /tmp, so
+            // exporting all three to the same writable dir patches every
+            // Node.js tmp-path consumer in one shot — including MCP
+            // subprocesses and future claude-code internal rewrites that
+            // don't use CLAUDE_CODE_TMPDIR. Cheap, no known regression.
+            sb.appendLine("export TMPDIR=\"\$HOME/.claude-tmp\"")
+            sb.appendLine("export TMP=\"\$HOME/.claude-tmp\"")
+            sb.appendLine("export TEMP=\"\$HOME/.claude-tmp\"")
+            // bug #100: auto-savepoint runs `git commit` every few seconds,
+            // and on a fresh Shelly install git has no default identity, so
+            // every commit fails with "Author identity unknown / unable to
+            // auto-detect email address (got 'u0_a888@localhost.(none)')",
+            // which floods logcat with E lines (observed 2026-04-17 smoke
+            // test) and means the 💾 indicator never fires. Seed defaults
+            // only if the user hasn't configured a real identity — their
+            // `git config --global` takes precedence on any subsequent shell
+            // launch. Cheap: git config read is a one-line file lookup.
+            sb.appendLine("[ -z \"\$(command git config --global user.email 2>/dev/null)\" ] && command git config --global user.email 'shelly@localhost' 2>/dev/null")
+            sb.appendLine("[ -z \"\$(command git config --global user.name  2>/dev/null)\" ] && command git config --global user.name  'Shelly User'       2>/dev/null")
             // bug #77: gemini-cli bundles a hardcoded check that throws if
             // process.env.TERMUX_VERSION is undefined on Android, even though
             // it never actually needs Termux for the chat path. Setting any
@@ -928,6 +969,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //    Both are idempotent: safe to re-run on already-patched files.
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" codex \"$libDir\" \"\$__staging/node_modules\" || true")
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" gemini \"\$__staging/node_modules\" || true")
+            // bug #105 (codex vendor shim): codex.js 0.121.0 has an
+            //   if (!existsSync(path.join(..., 'vendor', 'aarch64-unknown-
+            //   linux-musl', 'codex', 'codex'))) throw new Error('Missing
+            //   optional dependency @openai/codex-linux-arm64')
+            // guard that fires BEFORE the shelly-patcher's spawn rewrite
+            // runs. Symlinking our bundled codex_exec into the expected
+            // vendor path lets existsSync pass. The symlink's TARGET is
+            // never actually spawned — the patched spawn goes straight to
+            // linker64 + codex_exec — so any mismatch in ET_EXEC class or
+            // libc is immaterial. Run after patching so we're guaranteed
+            // to have the @openai/codex directory tree on disk.
+            sb.appendLine("  local __codex_vendor=\"\$__staging/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/codex\"")
+            sb.appendLine("  mkdir -p \"\$__codex_vendor\" 2>/dev/null && ln -sfn \"$libDir/codex_exec\" \"\$__codex_vendor/codex\" && echo \"[install] codex-vendor shim OK\" || echo \"[install] codex-vendor shim FAILED\"")
             // 4. Health check: the new claude cli.js must exist AND print a
             //    recognisable version string within 15s. Anthropic's v2.1.114
             //    regression (missing cli.js after postinstall bails) fails

@@ -284,10 +284,21 @@ export default function RootLayout() {
     };
   }, []);
 
+  // bug #62 (regression restore): Wave E added `<Stack key={locale}>` as the
+  // emergency fix for "i18n language switch doesn't update UI strings" —
+  // module-scope `t()` calls are evaluated at import time, so swapping EN/JA
+  // at runtime leaves components rendering the old language until a full
+  // refresh. Keying the Stack on the current locale forces a remount on
+  // language change, which is ugly but reliable until the full
+  // useTranslation() migration lands. The key got dropped in an unrelated
+  // refactor; reinstate it so switching EN/JA in Settings actually takes
+  // effect without relaunching the app.
+  const locale = useI18n((s) => s.locale);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-        <Stack screenOptions={{ headerShown: false }}>
+        <Stack key={locale} screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
         </Stack>
         <StatusBar style="light" />
