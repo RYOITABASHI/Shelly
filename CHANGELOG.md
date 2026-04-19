@@ -8,6 +8,51 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Added
 
+- **Ask Pane** — Shelly's self-documenting assistant (Stage 1). New
+  pane type `ask` opens via the "+" menu or pane switcher. Users ask
+  natural-language questions ("can Shelly do X?" / "how do I use Y?")
+  and the built-in feature catalog + curated shipping/roadmap snippets
+  feed into a Groq-backed answer via the existing streaming dispatch.
+  Each response ends with a coloured status badge:
+
+    ✅ **AVAILABLE**       — feature ships today; answer walks through it.
+    ⏳ **PLANNED**          — on the DEFERRED backlog; priority surfaced
+                             when stated.
+    ❌ **NOT_AVAILABLE**    — no evidence in docs; Stage 2 will add a
+                             one-tap "Create GitHub issue" button here.
+
+  No new LLM plumbing: reuses `groqChatStream` via `systemPromptOverride`.
+  Zero native/Kotlin changes.
+
+- **`shelly-cs open` routes into Shelly's Browser Pane via deep link**.
+  A custom `shelly://browser?url=<encoded>` scheme is registered on
+  Shelly's `MainActivity` (the `shelly://` family was already in the
+  manifest from expo-router scaffolding — we just added a handler in
+  `app/_layout.tsx`). The codespace web URL lands inside Shelly's
+  in-app WebView instead of kicking out to Chrome. Falls back to the
+  raw VIEW intent (external browser) if the deep-link start fails.
+
+- **`cs` shortcut + default codespace**. `cs` is a `.bashrc` alias for
+  `shelly-cs`. `shelly-cs use <name>` persists a default codespace to
+  `$HOME/.shelly-cs/config.json` (verified via REST before saving).
+  `shelly-cs open` with no args resolves in order: positional arg →
+  default → the only Available/Shutdown codespace → helpful error.
+  `shelly-cs list` marks the default with a yellow ★. `shelly-cs`
+  with no command falls through to `open` when authenticated.
+
+  Target UX from any `$PWD`:
+  ```
+  cs use sturdy-cod-557j97jgggjc7p4w   # one-time
+  cs                                    # → codespace in Browser Pane
+  ```
+
+- **Clipboard auto-copy during `shelly-cs auth`**. The OAuth device
+  code is written to the Android clipboard via a new `shelly://
+  clipboard?text=<encoded>` deep link handled by the same
+  `app/_layout.tsx` Linking listener. `app/_layout.tsx` calls
+  `Clipboard.setStringAsync` (already a project dep). Paste directly
+  in the browser instead of retyping the 8-char pair.
+
 - **`shelly-cs` — GitHub Codespaces CLI** (Phase 1 minimum). Pure-Node
   helper that speaks the GitHub REST API directly. No gh CLI dependency,
   no external binaries, bundled bionic `node` runs it unchanged. Ships

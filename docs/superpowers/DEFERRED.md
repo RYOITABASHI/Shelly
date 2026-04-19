@@ -115,6 +115,35 @@ function main() {
 
 ---
 
+### ✅ Ask Pane Stage 1 — Shelly self-documenting assistant (実装済: commit 6de28e13)
+
+**動機**: Shelly の機能が多すぎて覚えてられない。AI に聞いたときに「その機能はない」と言われたら、そのまま issue に投げられたら超便利。
+
+**Stage 1 で shipped 範囲**:
+- 新 pane type `'ask'` 追加 (hooks/use-multi-pane.ts, pane-registry.ts)
+- `components/panes/AskPane.tsx` — 質問入力 + Groq streaming 回答 + ステータスバッジ (✅/⏳/❌)
+- `lib/ask-context.ts` — PRIMER + FEATURE_CATALOG dump + curated shipping/roadmap snippets
+- 既存 `groqChatStream` を `systemPromptOverride` 経由で流用 — 新規 LLM plumbing ゼロ
+- AddPaneSheet / LayoutAddSheet / PaneSlot の選択肢に統合
+
+**Stage 2 予定** (設計完了、実装未着手 — docs/ask-pane-stage2-design.md 参照):
+- `[📝 Create GitHub issue]` ActionBlock (NOT_AVAILABLE 時に表示)
+- Issue 作成 flow: 質問 + AI 回答 + 環境情報を template に pre-populate、editable modal で preview → POST /repos/RYOITABASHI/Shelly/issues
+- Token は `~/.shelly-cs/token` (0600、`shelly-cs auth` で保存済) を expo-file-system で読み込み
+- `labels: ['from-ask-pane']` 一律付与
+
+**Stage 3+ (将来)**:
+- dedup search (既存 open issue との類似性チェック)
+- category label 自動付与 (feature-catalog.category ベース)
+- "What's new" card (CHANGELOG [Unreleased] の自動引用)
+- pane-local history (AsyncStorage)
+- voice input (PaneInputBar 統合)
+- README/CLAUDE.md/DEFERRED.md 全文 ingestion via CI-generated docs-content.ts
+
+**優先度**: Stage 1 済み、Stage 2 は P1 (1-1.5 日工数)。
+
+---
+
 ### ✅ Codespaces 統合 Phase 1 minimum (実装済: BASHRC_VERSION 34, commit 15ee5843)
 
 **動機**: claude-code 2.1.113+ が Android bionic で動かなくなったため、

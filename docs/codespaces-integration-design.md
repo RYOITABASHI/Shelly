@@ -163,39 +163,167 @@ Gracefully degrades to file-based storage if the bridge isn't
 available (e.g. running `shelly-cs` from a detached tmux session after
 Shelly has been force-stopped).
 
-#### E. SSH tunneling
+#### E. SSH tunneling — concrete implementation plan
 
-The tricky one. GitHub Codespaces doesn't expose standard SSH by
-default; `gh codespace ssh` uses a proprietary tunnel:
+**Investigation outcome (2026-04-19)**: GitHub Codespaces do NOT
+expose raw TCP to the public internet. Every approach that looked
+simpler on paper (sshd devcontainer feature + standard SSH, public
+forwarded-port, Codespaces public SSH endpoints) turned out to be a
+dead end — the codespace's SSH port is only reachable via Microsoft's
+**dev-tunnels relay**, the same mechanism `gh codespace ssh` uses.
 
-> 1. POST `/user/codespaces/{name}/start` to ensure it's running
-> 2. Open a WebSocket to `{codespace-host}/api/codespaces/connect`
-> 3. Inside the WebSocket, speak JSON-RPC for session management
-> 4. The actual SSH traffic rides an SSH-over-WebSocket stream
+See the two agent reports under the "SSH Tunneling" commit history
+(2026-04-19 parallel agent run) for the full investigation of gh's
+source, the npm ecosystem, and Android-bionic compatibility. The
+decision summary:
 
-Three implementation candidates, in increasing order of fidelity:
+**Approach A: port gh's tunnel client to Node.js** using the
+Microsoft-published TypeScript SDK for dev-tunnels + ssh2 as the SSH
+client. This is the ONLY approach that works on Android, and it's
+what Phase 1.5's `shelly-cs ssh <name>` will implement.
 
-1. **Port gh's tunnel client logic to Node.** The reference is
-   [`github.com/cli/cli/pkg/cmd/codespace/`](https://github.com/cli/cli/tree/trunk/pkg/cmd/codespace).
-   Estimated 1,500–2,500 LoC of JS. Uses `ws` library (no WebSocket in
-   bundled node built-ins pre-v22 — bundling adds ~20 KB).
+**Why sshd-feature + raw SSH doesn't work**: the sshd devcontainer
+feature installs openssh-server inside the codespace, but port 22 is
+private to the codespace. GitHub's public-port surface speaks
+HTTP/WebSocket (cookie-auth), not raw TCP — you cannot `CONNECT`
+traditional SSH through it.
 
-2. **Enable Codespaces SSH-server feature + use direct SSH.** The
-   template repo can include `"features": { "ghcr.io/devcontainers/
-   features/sshd:1": {} }`. The codespace then listens on a forwarded
-   port; Shelly's bundled `ssh` connects to `ssh.github.com` with the
-   port forwarded. Needs SSH key generation + upload to
-   `/user/keys` first.
+##### Protocol — what happens under `shelly-cs ssh <name>`
 
-3. **Use the `web_url` + terminal browser automation.** Not really an
-   SSH; script the web terminal via Selenium-equivalent. Ugly.
+Traced from [`cli/cli/pkg/cmd/codespace/ssh.go`](https://github.com/cli/cli/blob/trunk/pkg/cmd/codespace/ssh.go),
+[`internal/codespaces/connection/connection.go`](https://github.com/cli/cli/blob/trunk/internal/codespaces/connection/connection.go),
+[`internal/codespaces/rpc/invoker.go`](https://github.com/cli/cli/blob/trunk/internal/codespaces/rpc/invoker.go):
 
-Ranking: (2) is the cleanest if the feature is stable in
-devcontainers. (1) is the most faithful to how users expect `gh cs
-ssh` to behave. (3) is a no-go.
+1. **Fetch tunnel properties** — `GET /user/codespaces/{name}?internal=true&refresh=true`
+   returns `connection.tunnelProperties` with fields
+   `{ connectAccessToken, managePortsAccessToken, serviceUri,
+   tunnelId, clusterId, domain }`.
 
-**Phase 1.5 target**: (2) for key-based SSH via the
-sshd devcontainer feature. Phase 2+ may add (1) for feature parity.
+2. **Open dev-tunnels WebSocket** — dial
+   `wss://{cluster}-data.rel.tunnels.api.visualstudio.com/api/v1/Client/Connect/{tunnelId}`
+   with subprotocol `tunnel-relay-client`, header
+   `Authorization: Tunnel {connectAccessToken}`. This is the only
+   public ingress point Microsoft exposes for codespace tunnels.
+
+3. **SSH-over-tunnel** — the relay wraps a dev-tunnels-ssh channel.
+   Inside this channel, open a gRPC connection on the codespace's
+   internal port `16634` and call
+   `CodespaceHost.StartSSHServerWithOptions({publicKey})`. The
+   codespace-side agent adds `publicKey` to its `authorized_keys`,
+   spawns `sshd` on an ephemeral port, and returns
+   `{ serverPort, sshUser }`.
+
+4. **Local SSH client** — open a second dev-tunnels channel that
+   pipes bytes to the ephemeral `serverPort` on the codespace side,
+   bind a local TCP listener, forward the two together, then exec
+   the bundled `$libDir/ssh` against `localhost:<localPort>` with
+   `-i ~/.shelly-cs/id_ed25519` and the returned `sshUser`. The
+   SSH handshake goes through the tunnel and the user sees a bash
+   prompt in Shelly's Terminal Pane.
+
+##### npm dependencies
+
+```
+@microsoft/dev-tunnels-connections  ~365 KB   tunnel transport
+@microsoft/dev-tunnels-management   ~200 KB   tunnel metadata
+@grpc/grpc-js                       ~450 KB   StartSSHServer RPC
+ssh2                                ~500 KB   SSH client (pure JS, no native crypto)
+ws                                  ~50 KB    WebSocket (override for `websocket`)
+                                    ─────────
+total added                         ~1.5 MB
+```
+
+**Override needed**: `@microsoft/dev-tunnels-connections@^1.3` pulls
+`websocket@1.x` transitively, which wants the native `bufferutil` +
+`utf-8-validate` addons. Add a `"overrides"` block in `package.json`
+to force `ws` instead — pure JS, no node-gyp, clean on bionic.
+
+**Vendored .proto files**: `codespaceHost.proto`, `sshServer.proto`
+are checked into gh's tree. Copy them into
+`modules/terminal-emulator/android/src/main/assets/shelly-cs/proto/`
+and generate gRPC stubs at build time with `grpc-tools`.
+
+##### Lazy install (no APK bloat for non-users)
+
+Don't ship 1.5 MB of npm packages to every user. Instead, install
+them on first `shelly-cs ssh <name>` invocation:
+
+```javascript
+// shelly-cs.js
+async function ensureTunnelingDeps() {
+  const marker = path.join(CONFIG_DIR, 'tunnels-installed');
+  if (fs.existsSync(marker)) return;
+  console.log('  [one-time] Installing SSH tunneling deps (~30s, ~1.5 MB)…');
+  const r = spawnSync(process.execPath, [
+    NPM_CLI_JS, 'install',
+    '--prefix', CONFIG_DIR,
+    '@microsoft/dev-tunnels-connections@^1.3',
+    '@grpc/grpc-js@^1.9',
+    'ssh2@^1.15',
+    'ws@^8',
+  ], { stdio: 'inherit' });
+  if (r.status !== 0) throw new Error('npm install failed');
+  fs.writeFileSync(marker, new Date().toISOString());
+}
+```
+
+First `shelly-cs ssh` takes ~30s extra. Subsequent invocations are
+instant. No APK size increase for users who only use the web-URL
+path via `shelly-cs open`.
+
+##### SSH key lifecycle
+
+```javascript
+async function ensureSSHKey() {
+  const priv = path.join(CONFIG_DIR, 'id_ed25519');
+  if (!fs.existsSync(priv)) {
+    spawnSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-f', priv,
+      '-C', `shelly-cs-${os.hostname()}-${Date.now()}`]);
+  }
+  return priv;
+}
+```
+
+Public key is passed to `StartSSHServerWithOptions` RPC per
+connection — gh CLI does the same. No need to upload to
+`/user/keys` globally.
+
+##### Expected timings
+
+- Cold codespace (Shutdown): `/start` (~30-60s) → tunnel dial
+  (~800ms) → SSH handshake (~500ms) → **~40s total to bash prompt**.
+- Warm codespace (Available): tunnel dial (~800ms) → RPC + key
+  install (~400ms) → SSH handshake (~500ms) → **~1.7s to bash
+  prompt**, matches `gh codespace ssh` benchmarks.
+- Tunnel reconnect on disconnect: ~2s, automatic via library.
+
+##### Risks / maintenance cost
+
+- **Undocumented RPC schema**. `codespaceHost.proto` /
+  `sshServer.proto` are in gh's tree, not Microsoft's public docs.
+  Breaking changes have happened roughly every 6 months in the past
+  (gh CLI ships the update synchronously — we'd lag).
+- **Undocumented `tunnelProperties` response shape**. Safe for now
+  (shipped to gh users for 3+ years) but could silently change.
+- **Microsoft SDK churn** — `@microsoft/dev-tunnels-*` packages are
+  on v1.x but have rewritten their API twice in the last year.
+  Pin exact minor versions.
+
+Mitigations: pin npm package minors, vendor .proto files (don't
+fetch at runtime), add a health-check step in `shelly-cs doctor`
+that actually attempts a tunnel dial and reports the protocol
+version mismatch if anything has shifted.
+
+##### Estimated Phase 1.5 SSH implementation
+
+- `shelly-cs-tunnel.js` — tunnel client wiring, ~200 LoC.
+- `shelly-cs-rpc.js` — gRPC + proto consumption, ~150 LoC.
+- `shelly-cs.js ssh` — integration, ~100 LoC.
+- `ssh2` pty + shell + stdin/stdout forwarding, ~200 LoC.
+- Error handling + retries + disconnect UI, ~100 LoC.
+- **Total ~750 LoC + 1.5 MB deps (lazy install)**.
+- **Calendar time: 3-5 days** for a working prototype, add 2 days
+  for polish + error handling + dogfood iteration.
 
 SSH key generation:
 
