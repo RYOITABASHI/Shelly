@@ -385,11 +385,21 @@ export default function TerminalScreen() {
     refreshUsage(readFileAdapter, listFilesAdapter);
   }, []);
 
-  // Battery optimization exemption — prompt once on unexpected disconnect
+  // Battery optimization exemption — prompt once per app launch on
+  // unexpected disconnect. Earlier revisions fired this on every
+  // onSessionExit, including intentional tab closes and `exit` commands,
+  // which made the modal spam across add/remove cycles (observed
+  // 2026-04-19 running __shelly_bg_cli_update). Gate with a ref so one
+  // dismissal is enough for this session, and the caller further gates
+  // on isProcessKill() so only SIGKILL exits (Android battery-optimiser
+  // killing us) trigger the prompt.
+  const batteryPromptShownRef = useRef(false);
   const checkBatteryExemption = useCallback(async () => {
+    if (batteryPromptShownRef.current) return;
     try {
       const isExempted = await TerminalEmulator.isIgnoringBatteryOptimizations();
       if (!isExempted) {
+        batteryPromptShownRef.current = true;
         Alert.alert(
           'Terminal Connection',
           'To keep the terminal stable, allow Shelly to run in the background without battery restrictions.',
@@ -413,9 +423,13 @@ export default function TerminalScreen() {
         if (killCountRef.current >= 2) {
           setShowProcessGuard(true);
         }
+        // Only prompt battery exemption on actual SIGKILLs (= Android
+        // killed our child due to battery optimisation, the thing the
+        // exemption is actually for). Prompting on every session exit,
+        // including intentional tab closes and user-typed `exit`, made
+        // the modal spam during normal session add/remove cycles.
+        checkBatteryExemption();
       }
-      // Prompt battery exemption on session exit
-      checkBatteryExemption();
     });
     return () => sub.remove();
   }, [checkBatteryExemption]);

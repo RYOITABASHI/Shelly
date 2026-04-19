@@ -361,8 +361,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        (rustls was bailing with "no native root CA certificates
      *        found" during 2026-04-19 smoke test). Also fixes a class of
      *        silent HTTPS failures across any bundled TLS client —
-     *        tested curl, node fetch, python requests. */
-    private const val BASHRC_VERSION = 39
+     *        tested curl, node fetch, python requests.
+     *    40: __shelly_bg_cli_update auto-subshells when invoked from an
+     *        interactive shell. Previously, running the function directly
+     *        to force-upgrade claude-code exec'd `</dev/null` over the
+     *        main shell's stdin → bash hit EOF → exited with
+     *        "[Process completed - press Enter]". Now the function re-
+     *        invokes itself as a detached `( __SHELLY_CLI_UPDATE_SUBSHELL=1
+     *        ... & )` when called interactively, leaving the user's main
+     *        shell untouched. Observed 2026-04-19 v39 smoke test —
+     *        user typed __shelly_bg_cli_update, shell died. */
+    private const val BASHRC_VERSION = 40
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -816,6 +825,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("__shelly_now=\$(date +%s 2>/dev/null || printf '%(%s)T' -1 2>/dev/null || echo 0)")
             sb.appendLine("__shelly_last_update=\$(cat \"\$__shelly_update_marker\" 2>/dev/null || echo 0)")
             sb.appendLine("__shelly_bg_cli_update() {")
+            // If the user invoked us directly from an interactive shell
+            // (e.g. to force-upgrade claude-code), the exec redirection
+            // below would close the main shell's stdin (→ EOF → bash
+            // exits → "[Process completed - press Enter]"). Re-invoke
+            // ourselves as a detached subshell so the main shell is
+            // unaffected. The env-var guard prevents infinite recursion.
+            sb.appendLine("  if [ -z \"\$__SHELLY_CLI_UPDATE_SUBSHELL\" ]; then")
+            sb.appendLine("    ( __SHELLY_CLI_UPDATE_SUBSHELL=1 __shelly_bg_cli_update </dev/null >/dev/null 2>&1 & )")
+            sb.appendLine("    echo '[shelly] background CLI update started. tail -f ~/.shelly-cli/install.log for progress' >&2")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
             sb.appendLine("  local __log=\"\$HOME/.shelly-cli/install.log\"")
             sb.appendLine("  local __staging=\"\$HOME/.shelly-cli.staging\"")
             sb.appendLine("  local __prev=\"\$HOME/.shelly-cli.prev\"")
