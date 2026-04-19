@@ -14,7 +14,7 @@
  * via the existing `shelly://browser?url=…` deep link.
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -29,7 +29,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
-import { buildDraft, createIssue, type IssueDraft } from '@/lib/github-issues';
+import { buildDraft, createIssue, getEnvInfo, type IssueDraft } from '@/lib/github-issues';
 
 type Props = {
   question: string;
@@ -54,9 +54,31 @@ export default function IssueDraftAction({
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ number: number; html_url: string } | null>(null);
 
+  // Env info — loaded once on mount so the draft body has real values
+  // (Shelly version + BASHRC_VERSION) instead of "(unknown)". Missing
+  // info still posts fine; this is purely cosmetic.
+  const [envInfo, setEnvInfo] = useState<{ shellyVersion: string; bashrcVersion: string }>({
+    shellyVersion: shellyVersion ?? '(unknown)',
+    bashrcVersion: bashrcVersion ?? '(unknown)',
+  });
+  useEffect(() => {
+    // Skip auto-load if the parent explicitly passed values (tests, etc.)
+    if (shellyVersion && bashrcVersion) return;
+    let cancelled = false;
+    getEnvInfo().then((info) => {
+      if (!cancelled) setEnvInfo(info);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [shellyVersion, bashrcVersion]);
+
   const initialDraft = useMemo<IssueDraft>(
-    () => buildDraft({ question, answer, shellyVersion, bashrcVersion }),
-    [question, answer, shellyVersion, bashrcVersion],
+    () => buildDraft({
+      question,
+      answer,
+      shellyVersion: envInfo.shellyVersion,
+      bashrcVersion: envInfo.bashrcVersion,
+    }),
+    [question, answer, envInfo.shellyVersion, envInfo.bashrcVersion],
   );
   const [title, setTitle] = useState(initialDraft.title);
   const [body, setBody] = useState(initialDraft.body);
