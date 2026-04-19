@@ -223,12 +223,45 @@ class ShellyTerminalView(
             }
         }
 
-        // Post updateSize to ensure layout is complete
+        // Post updateSize to ensure layout is complete.
+        //
+        // Fix for the "new-session prompt invisible until I switch away and
+        // back" bug: the FIRST attach of a just-created session happens
+        // before TerminalView has been laid out (splitPane creates the slot,
+        // React mounts NativeTerminalView, ShellyTerminalView.attachShellySession
+        // runs — but the view's onLayout hasn't fired yet, so .width/.height
+        // are still 0). The old code silently skipped the initial blit in
+        // that case, leaving the emulator's buffered PS1 bytes on screen as
+        // a black rectangle. Switching panes and coming back used to be the
+        // only way out because the re-attach path ran after layout had
+        // completed, so width was non-zero and the blit succeeded.
+        //
+        // Now: if the view isn't laid out yet, attach a one-shot
+        // OnLayoutChangeListener that fires as soon as it has real
+        // dimensions, then does the same updateSize()+invalidate() pair.
+        // Listener detaches itself so it only fires once.
         terminalView.post {
             if (terminalView.width > 0 && terminalView.height > 0) {
                 Log.i(TAG, "attachSession.post: TerminalView=${terminalView.width}x${terminalView.height}")
                 terminalView.updateSize()
                 terminalView.invalidate()
+            } else {
+                Log.i(TAG, "attachSession.post: TerminalView not laid out yet (w=${terminalView.width}, h=${terminalView.height}) — deferring blit to onLayout")
+                terminalView.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                    override fun onLayoutChange(
+                        v: View?, left: Int, top: Int, right: Int, bottom: Int,
+                        oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int
+                    ) {
+                        val w = right - left
+                        val h = bottom - top
+                        if (w > 0 && h > 0) {
+                            terminalView.removeOnLayoutChangeListener(this)
+                            Log.i(TAG, "attachSession.onLayout: TerminalView=${w}x${h}")
+                            terminalView.updateSize()
+                            terminalView.invalidate()
+                        }
+                    }
+                })
             }
         }
     }
