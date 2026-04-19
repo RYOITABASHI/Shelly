@@ -488,10 +488,17 @@ async function cmdDelete(args) {
 const TUNNEL_DEPS = [
   '@microsoft/dev-tunnels-connections@^1.3',
   '@grpc/grpc-js@^1.9',
+  // Day 3 adds @grpc/proto-loader for runtime .proto compilation of the
+  // inlined SshServerHost definition. ~80 KB pure JS; no native build.
+  '@grpc/proto-loader@^0.7',
   'ssh2@^1.15',
   'ws@^8',
 ];
-const TUNNEL_DEPS_MARKER = path.join(CONFIG_DIR, '.tunnel-deps-installed');
+// Bumped marker suffix with Day 3 deps so existing installs refresh the
+// tree on next `shelly-cs ssh` invocation. Without this, Day 2 users
+// would skip the install (marker set) and hit "proto-loader not found"
+// the first time they try --start-ssh.
+const TUNNEL_DEPS_MARKER = path.join(CONFIG_DIR, '.tunnel-deps-installed-v2');
 
 function tunnelDepsInstalled() {
   if (!fs.existsSync(TUNNEL_DEPS_MARKER)) return false;
@@ -557,7 +564,7 @@ async function ensureTunnelingDeps() {
 
 async function cmdSSH(args) {
   const name = args._[0];
-  if (!name) throw new Error('Usage: shelly-cs ssh <codespace-name> [--probe-tunnel]');
+  if (!name) throw new Error('Usage: shelly-cs ssh <codespace-name> [--probe-tunnel | --start-ssh]');
 
   // Day 1: ensure deps are installed. Actual tunnel/RPC/SSH
   // orchestration lands in Day 2-5 (see docs/ssh-tunneling-day1.md).
@@ -586,6 +593,32 @@ async function cmdSSH(args) {
 
   console.log('');
   console.log(`  ${C.green}✓${C.reset} Tunneling deps ready`);
+
+  // Day 3: --start-ssh runs probe-tunnel + asks the codespace to start
+  // its SSH server over gRPC and returns {serverPort, sshUser} plus the
+  // path of the auto-generated ed25519 public key. No local ssh spawn
+  // yet — that's Day 4. This is the "can we actually trigger sshd on
+  // the codespace" checkpoint.
+  if (args['--start-ssh']) {
+    const token = readToken();
+    if (!token) throw new Error('Not signed in. Run `shelly-cs auth` first.');
+    console.log(`  ${C.yellow}▶ requesting codespace SSH server for ${name}…${C.reset}`);
+    const tunnelLib = require(path.join(__dirname, 'shelly-cs-tunnel.js'));
+    const info = await tunnelLib.probeSshServer(name, token);
+    console.log('');
+    console.log(`  ${C.green}✓ SSH server started on codespace${C.reset}`);
+    console.log(`  ${C.gray}  tunnel id      :${C.reset} ${info.tunnelId}`);
+    console.log(`  ${C.gray}  cluster        :${C.reset} ${info.cluster}`);
+    console.log(`  ${C.gray}  domain         :${C.reset} ${info.domain}`);
+    console.log(`  ${C.gray}  ssh server port:${C.reset} ${info.sshServerPort}`);
+    console.log(`  ${C.gray}  ssh user       :${C.reset} ${info.sshUser}`);
+    console.log(`  ${C.gray}  public key     :${C.reset} ${info.publicKeyPath}`);
+    if (info.sshMessage) console.log(`  ${C.gray}  message        :${C.reset} ${info.sshMessage}`);
+    console.log('');
+    console.log(`  ${C.cyan}Day 3 checkpoint${C.reset} — local ssh(1) bridge lands in Day 4.`);
+    console.log('');
+    return;
+  }
 
   // Day 2 wire-up: --probe-tunnel exercises the tunnel-client library
   // end-to-end. It:
@@ -699,7 +732,7 @@ function usage() {
   console.error(`                                            ${C.gray}(no arg → default / only running)${C.reset}`);
   console.error(`  ${C.cyan}stop${C.reset} <name>                               Stop codespace (pauses billing)`);
   console.error(`  ${C.cyan}delete${C.reset} <name> --yes                       Delete codespace (requires --yes)`);
-  console.error(`  ${C.cyan}ssh${C.reset} <name> [--probe-tunnel]               SSH to codespace (Phase 1.5 — probe only)`);
+  console.error(`  ${C.cyan}ssh${C.reset} <name> [--probe-tunnel|--start-ssh]   SSH to codespace (Phase 1.5 — probes, no session yet)`);
   console.error(`  ${C.cyan}doctor${C.reset}                                    Diagnose configuration issues`);
   console.error(`  ${C.cyan}logout${C.reset}                                    Clear saved credentials`);
   console.error('');
