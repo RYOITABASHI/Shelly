@@ -627,6 +627,20 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export CURL_CA_BUNDLE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
             sb.appendLine("export NODE_EXTRA_CA_CERTS=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
             sb.appendLine("export REQUESTS_CA_BUNDLE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
+            // v41 Claude Code OAuth 400 fix. Claude Code writes OAuth PKCE
+            // state (code_verifier, state nonce) into a tmp dir it
+            // hardcodes to /tmp/claude. On Android /tmp is not writable
+            // from an app sandbox ("Permission denied" confirmed on-device
+            // 2026-04-19 for ls/mkdir/touch under /tmp), so the write
+            // silently no-ops. On the second leg of the OAuth flow (token
+            // exchange) the PKCE verifier is missing and Anthropic's OAuth
+            // server responds with "Request failed with status code 400".
+            // Claude Code 2.1.5+ honours CLAUDE_CODE_TMPDIR as an override;
+            // point it at a writable dir inside HOME. Pre-create the dir
+            // at bash startup so the very first `claude /login` works
+            // without the user needing to mkdir manually.
+            sb.appendLine("export CLAUDE_CODE_TMPDIR=\"\$HOME/.claude-tmp\"")
+            sb.appendLine("mkdir -p \"\$CLAUDE_CODE_TMPDIR\" 2>/dev/null")
             // bug #77: gemini-cli bundles a hardcoded check that throws if
             // process.env.TERMUX_VERSION is undefined on Android, even though
             // it never actually needs Termux for the chat path. Setting any
