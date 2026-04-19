@@ -4,6 +4,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useGitStatusStore } from '@/store/git-status-store';
 import { usePortsStore, parseProcNet, portLabel } from '@/store/ports-store';
+import { useFocusStore } from '@/store/focus-store';
 import {
   View,
   Text,
@@ -13,6 +14,7 @@ import {
   TextInput,
   Modal,
   Alert,
+  AppState,
 } from 'react-native';
 import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -116,6 +118,7 @@ export function Sidebar() {
     setActiveRepo(path);
     setRepoInput('');
     setAddRepoVisible(false);
+    useFocusStore.getState().requestTerminalRefocus();
   };
 
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
@@ -161,8 +164,13 @@ export function Sidebar() {
       setEntries(parseProcNet(v4, v6));
     };
     refresh();
+    // bug #103: pause polling while backgrounded so the app is not spawning
+    // JNI subprocesses every 15 s while the user is in another app.
     const iv = setInterval(refresh, 15_000);
-    return () => { cancelled = true; clearInterval(iv); };
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refresh();
+    });
+    return () => { cancelled = true; clearInterval(iv); sub.remove(); };
   }, []);
 
   // Count uncommitted changes in the active repo. Sidebar owns the
@@ -189,8 +197,12 @@ export function Sidebar() {
       setDirty(Number.isNaN(n) ? null : n);
     };
     refresh();
+    // bug #103: pause polling while backgrounded; refresh once on resume.
     const iv = setInterval(refresh, 20_000);
-    return () => { cancelled = true; clearInterval(iv); };
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refresh();
+    });
+    return () => { cancelled = true; clearInterval(iv); sub.remove(); };
   }, [activeRepoPath]);
 
   // Derive recent completed tasks from run history
@@ -497,9 +509,9 @@ export function Sidebar() {
         visible={addRepoVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setAddRepoVisible(false)}
+        onRequestClose={() => { setAddRepoVisible(false); useFocusStore.getState().requestTerminalRefocus(); }}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setAddRepoVisible(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => { setAddRepoVisible(false); useFocusStore.getState().requestTerminalRefocus(); }}>
           <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>ADD REPOSITORY</Text>
             <TextInput
@@ -516,7 +528,7 @@ export function Sidebar() {
             <View style={styles.modalBtns}>
               <Pressable
                 style={styles.modalCancelBtn}
-                onPress={() => { setRepoInput(''); setAddRepoVisible(false); }}
+                onPress={() => { setRepoInput(''); setAddRepoVisible(false); useFocusStore.getState().requestTerminalRefocus(); }}
               >
                 <Text style={styles.modalCancelText}>CANCEL</Text>
               </Pressable>

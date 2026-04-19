@@ -4,7 +4,7 @@
 // Triggered by the "+" button in AgentBar.
 
 import React from 'react';
-import { View, Text, Pressable, StyleSheet, Modal } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Modal, Alert } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
@@ -47,7 +47,22 @@ export function AddPaneSheet({ visible, onClose }: Props) {
     // v0.1.1: the preset-based store handles capacity, promotion and the
     // terminal cap by itself. No focus tracking, no stale-id guards, no
     // tree walking — it's just `addPane(tab)`.
-    useMultiPaneStore.getState().addPane(opt.id);
+    // bug #108: Alert when a cap is hit so "+" doesn't feel broken.
+    const result = useMultiPaneStore.getState().addPane(opt.id);
+    if (result === 'terminal_cap') {
+      Alert.alert(
+        'ターミナルの上限',
+        'ターミナルは 2 ペインまでです。これ以上増やすと Android がバックグラウンドで既存のセッションを殺す可能性があります。',
+      );
+      return;
+    }
+    if (result === 'layout_full') {
+      Alert.alert(
+        'レイアウト満杯',
+        '既に 4 ペイン使用中です。追加するにはいずれかのペインを閉じてください。',
+      );
+      return;
+    }
     onClose();
   };
 

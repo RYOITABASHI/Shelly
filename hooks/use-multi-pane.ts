@@ -251,7 +251,8 @@ type MultiPaneActions = {
   setSlotTab: (slot: SlotIndex, tab: PaneTab) => void;
 
   // Legacy compatibility surface (keyed by leaf id where applicable)
-  addPane: (tab: PaneTab) => void;
+  /** Returns null on success, or a failure reason so callers can surface a toast/alert. */
+  addPane: (tab: PaneTab) => null | 'terminal_cap' | 'layout_full';
   removePane: (leafId: string) => void;
   setLeafTab: (leafId: string, tab: PaneTab) => void;
   splitPane: (leafId: string, direction: SplitDirection, newTab: PaneTab) => void;
@@ -417,7 +418,10 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         return null;
       };
 
-      const doAddPane = (tab: PaneTab): void => {
+      // Returns null on success, or a failure reason string so the caller can
+      // surface it to the user (bug #108 — the sheet just silently closed with
+      // no feedback when cap was hit).
+      const doAddPane = (tab: PaneTab): null | 'terminal_cap' | 'layout_full' => {
         let { preset } = get();
         const { slots: currentSlots } = get();
         let slots = currentSlots;
@@ -425,7 +429,7 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         // Terminal cap — 2 terminals max (Android phantom process killer).
         if (tab === 'terminal' && countTerminalSlots(slots) >= 2) {
           logInfo('MultiPane', 'addPane terminal ignored — cap 2');
-          return;
+          return 'terminal_cap';
         }
 
         let cap = PRESET_CAPACITY[preset];
@@ -436,12 +440,12 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           const next = promotePreset(preset);
           if (!next) {
             logInfo('MultiPane', 'addPane ignored — already at p4');
-            return;
+            return 'layout_full';
           }
           preset = next;
           cap = PRESET_CAPACITY[preset];
           empty = firstEmptyIndex(slots, cap);
-          if (empty === null) return; // defensive — capacity check guarantees a slot
+          if (empty === null) return 'layout_full'; // defensive
         }
 
         const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
@@ -454,6 +458,33 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           newSlots[empty] = { id: slotId, tab };
         }
         set({ preset, slots: newSlots, focusedSlot: empty });
+        return null;
+      };
+
+      // Cascade cleanup for a terminal slot that is about to be dropped from
+      // the layout: destroy the native PTY session and remove the entry from
+      // terminal-store. Without this, `removePane` and `setPreset` trim both
+      // leaked PTY child processes and bloated the `sessions[]` list until
+      // MAX_SESSIONS (4) hit and further addSession silently refused. Best
+      // effort: destroySession is fire-and-forget because the registry lookup
+      // may miss if the session already exited, and terminal-store blocks
+      // removing the very last entry (so 1 orphan may remain — acceptable).
+      const cleanupDroppedSlot = (slot: Slot): void => {
+        if (!slot || slot.tab !== 'terminal' || !slot.sessionId) return;
+        try {
+          const { useTerminalStore } = require('@/store/terminal-store');
+          const state = useTerminalStore.getState();
+          const session = state.sessions.find((s: any) => s.id === slot.sessionId);
+          if (session?.nativeSessionId) {
+            try {
+              const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+              TerminalEmulator.destroySession(session.nativeSessionId).catch(() => {});
+            } catch { /* native module unavailable (web/tests) */ }
+          }
+          state.removeSession(slot.sessionId);
+        } catch (e) {
+          logInfo('MultiPane', 'cleanupDroppedSlot failed: ' + String(e));
+        }
       };
 
       const doRemoveBySlot = (slotIdx: SlotIndex): void => {
@@ -463,6 +494,9 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           logInfo('MultiPane', 'removePane ignored — last slot');
           return;
         }
+
+        // Cascade destroy for the slot being removed (terminal only).
+        cleanupDroppedSlot(slots[slotIdx]);
 
         const removedId = slots[slotIdx]?.id ?? null;
         const focusedId = slots[focusedSlot]?.id ?? null;
@@ -525,10 +559,10 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         // back to single-pane without tapping [×] on every pane individually.
         // Worse, the LayoutPicker tiles for smaller presets were disabled, so
         // the user couldn't even tell that was the reason — the app just
-        // looked broken. Downsize now by trimming surplus slots after compaction;
-        // the low-index slots are kept and the rest are dropped. Native
-        // session cleanup for trimmed terminal panes happens when the
-        // PaneSlot unmounts (TerminalPane's effect path).
+        // looked broken. Downsize now by trimming surplus slots after
+        // compaction, AND cascading native session destruction for any
+        // terminal slot that gets dropped (otherwise PTY child processes
+        // leak and MAX_SESSIONS ceiling hits faster than necessary).
         setPreset: (preset) => {
           const { slots } = get();
           const compacted = compactSlots(slots);
@@ -537,14 +571,18 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           if (used > cap) {
             const trimmed: [Slot, Slot, Slot, Slot] = [null, null, null, null];
             for (let i = 0; i < cap; i++) trimmed[i] = compacted[i];
-            const droppedIds = compacted
+            const dropped = compacted
               .slice(cap)
-              .filter((s): s is NonNullable<Slot> => s !== null)
-              .map((s) => s.id);
+              .filter((s): s is NonNullable<Slot> => s !== null);
+            const droppedIds = dropped.map((s) => s.id);
             logInfo(
               'MultiPane',
               `setPreset ${preset} — trimmed ${droppedIds.length} surplus pane(s): ${droppedIds.join(',')}`,
             );
+            // Cascade-destroy native sessions for trimmed terminal panes.
+            // Without this, switching p4 → p1 would orphan up to 3 forkpty
+            // children and consume MAX_SESSIONS slots for nothing.
+            for (const slot of dropped) cleanupDroppedSlot(slot);
             const { focusedSlot, maximizedSlot } = get();
             const safeFocus: SlotIndex = (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
             const safeMax = maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
@@ -584,7 +622,7 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         },
 
         // ── Legacy action surface ──
-        addPane: (tab) => { doAddPane(tab); },
+        addPane: (tab) => doAddPane(tab),
 
         removePane: (leafId) => {
           const idx = findSlotIndexById(leafId);

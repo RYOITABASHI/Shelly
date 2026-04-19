@@ -9,7 +9,7 @@
 // Replaces the old AddPaneSheet + LayoutPresetSheet pair in AgentBar.
 
 import React, { useState } from 'react';
-import { View, Text, Pressable, StyleSheet, Modal, ScrollView } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Modal, ScrollView, Alert } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LayoutPicker } from './LayoutPicker';
 import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
@@ -48,7 +48,24 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
       onClose();
       return;
     }
-    useMultiPaneStore.getState().addPane(opt.id);
+    // bug #108: silently returning from addPane when a cap is hit made
+    // the sheet just close with no feedback ("+ ボタン壊れてる?"). Surface
+    // the reason via Alert so the user understands why nothing happened.
+    const result = useMultiPaneStore.getState().addPane(opt.id);
+    if (result === 'terminal_cap') {
+      Alert.alert(
+        'ターミナルの上限',
+        'ターミナルは 2 ペインまでです。Android のバックグラウンドプロセス制限のため、これ以上増やすと既存のセッションが殺される可能性があります。',
+      );
+      return;
+    }
+    if (result === 'layout_full') {
+      Alert.alert(
+        'レイアウト満杯',
+        '既に 4 ペイン使用中です。追加するには、いずれかのペインを閉じてください。',
+      );
+      return;
+    }
     onClose();
   };
 

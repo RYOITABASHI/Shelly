@@ -873,7 +873,11 @@ export default function TerminalScreen() {
       {/* ProcessGuard Modal — shown after 2+ SIGKILL detections */}
       <ProcessGuardModal
         visible={showProcessGuard}
-        onClose={() => { setShowProcessGuard(false); killCountRef.current = 0; }}
+        onClose={() => {
+          setShowProcessGuard(false);
+          killCountRef.current = 0;
+          useFocusStore.getState().requestTerminalRefocus();
+        }}
       />
 
       {/* FirstMate Overlay — first-time onboarding */}

@@ -16,6 +16,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useFocusStore } from '@/store/focus-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { buildTmuxListCommand } from '@/lib/session-restore';
 import { useTranslation } from '@/lib/i18n';
@@ -282,6 +283,9 @@ export function CommandPalette() {
   const handleClose = useCallback(() => {
     setQuery('');
     close();
+    // bug #112: Modal dismiss leaves mCurrentFocus=null on edge-to-edge —
+    // re-focus the active terminal so the user can keep typing.
+    useFocusStore.getState().requestTerminalRefocus();
   }, [close]);
 
   const categoryLabel = (cat: string) => {

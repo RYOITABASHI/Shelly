@@ -521,31 +521,26 @@ public class TerminalView extends View {
                     // payload through the single CR/LF-normalized + bracketed
                     // path instead of sendTextToTerminal's per-char loop.
                     //
-                    // bug #106: the old threshold (>= 16 chars) was dropping
-                    // every short command (e.g. `codex --version` = 15 chars)
-                    // onto the per-char typing path, where an IME resync storm
-                    // or a prompt-echo race could eat the first byte (seen
-                    // as `odex --version`, `a -la $F`, etc.). Tighten the
-                    // heuristic: any commit containing whitespace and with
-                    // length >= 4 is treated as a paste, even without a
-                    // newline. Real typing commits are 1-3 chars (single
-                    // char, CJK compose, emoji); word-suggestion accepts
-                    // rarely contain spaces. Length >= 16 without space is
-                    // still classified as paste to catch long URL-like
-                    // pastes from clipboard autocomplete.
+                    // bug #106 (rollback): the earlier "whitespace && len >= 4"
+                    // heuristic misclassified CJK IME commits like `あ い`
+                    // (space-separated words from Japanese candidate acceptance)
+                    // as paste and fed them through bracketed-paste wrap, which
+                    // corrupted in-line typing. Restore the conservative
+                    // threshold: only commits that CONTAIN a newline or are
+                    // long enough to obviously not be typing (>= 16 chars)
+                    // route through pasteViaEmulator. Short commands like
+                    // `codex --version` (15 chars, no newline) still go through
+                    // the per-char path — the first-char loss those hit is a
+                    // separate issue (IME deleteSurrounding SWALLOW window
+                    // vs PTY prompt echo) that needs its own fix.
                     boolean hasNewline = commitStr.indexOf('\n') >= 0 || commitStr.indexOf('\r') >= 0;
-                    boolean hasWhitespace = commitStr.indexOf(' ') >= 0 || commitStr.indexOf('\t') >= 0;
                     boolean isPaste = commitStr.length() > 1
-                        && (hasNewline
-                            || (hasWhitespace && commitStr.length() >= 4)
-                            || commitStr.length() >= 16);
+                        && (hasNewline || commitStr.length() >= 16);
                     if (isPaste && mEmulator != null) {
-                        Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length()
-                            + " nl=" + hasNewline + " ws=" + hasWhitespace);
+                        Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length() + " nl=" + hasNewline);
                         TerminalView.this.pasteViaEmulator(commitStr);
                     } else {
-                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length()
-                            + " text=\"" + commitStr + "\"");
+                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " text=\"" + commitStr + "\"");
                         sendToPtyAndShadow(commitStr);
                     }
                 }
@@ -1241,8 +1236,58 @@ public class TerminalView extends View {
             return true;
         } else if (event.isSystem() && (!mClient.shouldBackButtonBeMappedToEscape() || keyCode != KeyEvent.KEYCODE_BACK)) {
             return super.onKeyDown(keyCode, event);
-        } else if (event.getAction() == KeyEvent.ACTION_MULTIPLE && keyCode == KeyEvent.KEYCODE_UNKNOWN) {
-            mTermSession.write(event.getCharacters());
+        } else if (keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+            // bug #113: scrcpy's default SDK keyboard mode sends key events
+            // with KEYCODE_UNKNOWN because the IME (e.g. Nacre) does not
+            // publish an HW keymap. The characters payload carries the
+            // unicode the user typed on the PC keyboard.
+            //
+            // Upstream Termux only handled ACTION_MULTIPLE here and wrote
+            // event.getCharacters() raw to the PTY, which (1) bypasses
+            // bracketed-paste wrap (multi-line pastes execute line-by-line),
+            // (2) NPEs when getCharacters() returns null (Android 29+
+            // deprecated ACTION_MULTIPLE so it rarely fires), and (3) misses
+            // scrcpy's ACTION_DOWN / ACTION_UP entirely — every typed char
+            // from the PC keyboard was silently dropped.
+            //
+            // New behaviour: read the unicode codepoint from getUnicodeChar()
+            // first (works for ACTION_DOWN). Fall back to getCharacters()
+            // for legacy ACTION_MULTIPLE. Route through pasteViaEmulator
+            // when we got more than one char so bracketed-paste wrap and
+            // the IME shadow stay consistent.
+            String characters = event.getCharacters();
+            int action = event.getAction();
+            if (characters != null && characters.length() > 0) {
+                if (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_MULTIPLE) {
+                    // Single-character payloads go through the per-char
+                    // typing path regardless of codepoint — bracketed-paste
+                    // wrap for length-1 is meaningless overhead and would
+                    // flood logcat with `ShellyPaste` lines. Only use the
+                    // paste funnel when the IME/scrcpy actually sent a
+                    // chunk that could benefit from atomic submission.
+                    if (characters.length() == 1) {
+                        sendTextToTerminal(characters);
+                    } else if (mEmulator != null) {
+                        android.util.Log.d("ShellyPaste",
+                            "KEYCODE_UNKNOWN action=" + action + " chars.len=" + characters.length());
+                        pasteViaEmulator(characters);
+                    } else {
+                        mTermSession.write(characters);
+                    }
+                }
+                return true;
+            }
+            if (action == KeyEvent.ACTION_DOWN) {
+                int code = event.getUnicodeChar(event.getMetaState());
+                if (code != 0) {
+                    android.util.Log.d("ShellyPaste",
+                        "KEYCODE_UNKNOWN unicodeChar=0x" + Integer.toHexString(code));
+                    sendTextToTerminal(new String(Character.toChars(code)));
+                    return true;
+                }
+            }
+            // Unknown key with no payload — swallow so it doesn't escape
+            // to some upstream handler that might interpret it.
             return true;
         } else if (keyCode == KeyEvent.KEYCODE_LANGUAGE_SWITCH) {
             return super.onKeyDown(keyCode, event);
