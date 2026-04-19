@@ -28,6 +28,7 @@ import {
   type Ratios,
   type SlotIndex,
 } from '@/hooks/use-multi-pane';
+import { logInfo } from '@/lib/debug-logger';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
@@ -163,10 +164,25 @@ export function MultiPaneContainer() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
     if (Platform.OS !== 'android') return;
+    // bug #104 diagnostic: edge-to-edge + adjustResize is not resizing the window
+    // on Android 15+. Log raw endCoordinates so we can verify whether
+    // keyboardDidShow fires at all and what height is reported.
+    logInfo('Keyboard', 'listener attached', { insetsBottom: insets.bottom });
     const show = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKeyboardHeight(Math.max(0, e.endCoordinates.height - insets.bottom));
+      const raw = e.endCoordinates.height;
+      const adjusted = Math.max(0, raw - insets.bottom);
+      logInfo('Keyboard', 'didShow', {
+        raw,
+        insetsBottom: insets.bottom,
+        adjusted,
+        endCoordinates: e.endCoordinates,
+      });
+      setKeyboardHeight(adjusted);
     });
-    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      logInfo('Keyboard', 'didHide');
+      setKeyboardHeight(0);
+    });
     return () => { show.remove(); hide.remove(); };
   }, [insets.bottom]);
 
