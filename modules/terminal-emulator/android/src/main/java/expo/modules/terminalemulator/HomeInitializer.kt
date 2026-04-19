@@ -888,16 +888,26 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //    We DO NOT pass --libc=musl or force-install the claude-code
             //    -musl sub-package; we don't use the Bun ET_EXEC anymore.
             sb.appendLine("  echo '[install] npm install start (claude-code pinned to 2.1.112, last cli.js release)'")
-            // v40 smoke test caught that --libc=musl had to come back — some
-            // package in the set (@openai/codex optional deps, probably)
-            // pins `engines.libc=musl` and without the flag npm detects
-            // Android bionic as "libc: undefined" and refuses the install
-            // with `notsup`. The v32 comment below argued we didn't need
-            // --libc=musl anymore because we dropped the Bun ET_EXEC; the
-            // flag is still required purely to satisfy npm's platform
-            // check against the optional native deps, not because we
-            // actually need musl at runtime.
-            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --include=optional --os=linux --cpu=arm64 --libc=musl @anthropic-ai/claude-code@2.1.112 @google/gemini-cli@latest @openai/codex@latest")
+            // v41 smoke test: --libc=musl alone was not enough. npm's
+            // platform detection kept reporting "Actual os: android"
+            // regardless of the --os flag, rejecting claude-code's
+            // required sub-package @anthropic-ai/claude-code-linux-arm64-
+            // musl@2.1.114 with EBADPLATFORM. Three things combined to
+            // finally bypass the check cleanly:
+            //   1. npm_config_os=linux / npm_config_cpu=arm64 /
+            //      npm_config_libc=musl env vars (the CLI --os/--cpu/
+            //      --libc flags alone turned out not to be honoured for
+            //      transitive platform checks in this npm version)
+            //   2. --force (tells npm to install even when platform
+            //      check fails — the sub-package binary goes into
+            //      node_modules but we never invoke it, so the "wrong"
+            //      libc is immaterial)
+            //   3. --omit=optional (skip optional platform-specific
+            //      binaries; with --force they'd get extracted anyway
+            //      but --omit keeps the tree smaller)
+            // Manually verified 2026-04-19: install produces a working
+            // Tier 1 tree with claude-code 2.1.112 cli.js.
+            sb.appendLine("  npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@2.1.112 @google/gemini-cli@latest @openai/codex@latest")
             sb.appendLine("  echo \"[install] npm install exit=\$?\"")
             // 3. Apply codex / gemini source patches to the staged tree
             //    (bug #76, #77, #96 — see earlier BASHRC_VERSION entries).
