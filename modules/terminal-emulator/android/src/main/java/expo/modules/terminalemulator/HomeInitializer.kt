@@ -234,6 +234,27 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    38: `gemini` interactive mode was throwing
+     *        `error: expected absolute path: "--max-old-space-size=5557"`
+     *        followed by `has bad ELF magic: 23212f75` on a fresh shell.
+     *        Root cause: gemini-cli 0.38+ relaunches itself with a bigger
+     *        heap via `spawn2(process.execPath, ['--max-old-space-size=5557',
+     *        gemini.js])`. On Shelly, `process.execPath` is \$libDir/node
+     *        (a shared library invoked through /system/bin/linker64), so
+     *        the child execve ends up passing gemini.js to linker64 as its
+     *        binary — not valid ELF.
+     *
+     *        Fix: set `GEMINI_CLI_NO_RELAUNCH=true` (gemini-cli honours it
+     *        at bundle/gemini.js:14445 as a relaunch kill-switch) and pass
+     *        `--max-old-space-size=5557` in the initial `_run` so the
+     *        heap-size check (target > current) short-circuits before the
+     *        respawn anyway. Two fences because the relaunch code path is
+     *        upstream-maintained and may introduce new code paths between
+     *        versions.
+     *
+     *        `--version` kept working because it short-circuits before the
+     *        relaunch check, which is why the issue only surfaced in
+     *        interactive invocations.
      *    37: Phase 1.5 UX polish — two small adds on the shelly-cs auth
      *        flow:
      *        (a) Clipboard auto-copy: cmdAuth now fires a
@@ -330,7 +351,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
      *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 37
+    private const val BASHRC_VERSION = 38
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -648,7 +669,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  _run $libDir/node \"\$__cli_js\" \"\$@\"")
             sb.appendLine("}")
-            sb.appendLine("gemini() { _run $libDir/node \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
+            // Gemini CLI 0.38+ relaunches itself with a bigger heap
+            // (--max-old-space-size=5557) via `spawn2(process.execPath, ...)`.
+            // On Shelly, process.execPath is \$libDir/node which is a shared
+            // library accessed through /system/bin/linker64, so the child
+            // exec gets linker64 with gemini.js as the binary and dies with
+            // "has bad ELF magic: 23212f75" (hex for `#!/u`).
+            //
+            // Mitigation: set GEMINI_CLI_NO_RELAUNCH=true (gemini-cli honours
+            // it as a kill-switch for the relaunch, see bundle/gemini.js
+            // line 14445: `if (process.env["GEMINI_CLI_NO_RELAUNCH"])`) and
+            // pass --max-old-space-size=5557 up front so the initial node
+            // already has the heap the relaunch would have given it —
+            // gemini-cli's heap-size check (target > current) then stays
+            // false and the no-op guard holds. Belt + suspenders.
+            sb.appendLine("gemini() { GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
             sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
             // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
             // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
