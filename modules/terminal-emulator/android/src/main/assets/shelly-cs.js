@@ -188,6 +188,19 @@ function openUrl(url) {
   }
 }
 
+function writeClipboard(text) {
+  // Best-effort clipboard write via the Shelly `shelly://clipboard?text=...`
+  // deep link. app/_layout.tsx handles it with expo-clipboard.
+  // Silent failure is OK — the code is always visible on screen too.
+  const deepLink = `shelly://clipboard?text=${encodeURIComponent(text)}`;
+  try {
+    spawnSync('am', ['start', '-a', 'android.intent.action.VIEW', '-d', deepLink], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Commands
 // ─────────────────────────────────────────────────────────────
@@ -217,9 +230,19 @@ async function cmdAuth() {
   console.log(`  │  URL:  ${d.verification_uri}`.padEnd(51, ' ') + '│');
   console.log(`  └${line}┘`);
   console.log('');
+  // Best-effort: auto-copy the device code to the clipboard via the
+  // `shelly://clipboard?text=...` deep link. Takes one tap off the user
+  // ("copy code" → just "paste in browser"). Silent fail is fine —
+  // the code is always visible on screen too.
+  const copied = writeClipboard(d.user_code);
+  if (copied) {
+    console.log(`  ${C.green}✓${C.reset} Code copied to clipboard`);
+  }
   console.log(`  ${C.gray}Opening ${d.verification_uri} in browser…${C.reset}`);
   openUrl(d.verification_uri);
-  console.log(`  ${C.gray}Enter the code above, authorize, then come back here.${C.reset}`);
+  console.log(`  ${C.gray}Enter the code above (paste with long-press), authorize, come back here.${C.reset}`);
+  console.log(`  ${C.gray}Can't see a browser? Any device works — GitHub.com/login/device on your PC is fine too.${C.reset}`);
+  console.log(`  ${C.gray}Ctrl+C to cancel (the code stays valid for 15 min).${C.reset}`);
   console.log('');
   process.stdout.write('  Waiting for authorization');
 

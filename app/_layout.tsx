@@ -21,6 +21,7 @@ import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
 import { useSettingsStore } from '@/store/settings-store';
 import * as Linking from 'expo-linking';
+import * as Clipboard from 'expo-clipboard';
 import { useBrowserStore } from '@/store/browser-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 
@@ -243,6 +244,19 @@ export default function RootLayout() {
             try { useMultiPaneStore.getState().addPane('browser'); } catch {}
             useBrowserStore.getState().openUrl(target);
             logInfo('DeepLink', `openUrl dispatched: ${target}`);
+          }
+        } else if (parsed.hostname === 'clipboard') {
+          // shelly://clipboard?text=<encoded>
+          // Used by shelly-cs auth to copy the OAuth device code to the
+          // clipboard automatically. Avoids making the user squint at the
+          // terminal and type the 8-char code by hand.
+          const rawText = parsed.queryParams?.text;
+          const text = Array.isArray(rawText) ? rawText[0] : rawText;
+          if (typeof text === 'string' && text.length > 0) {
+            Clipboard.setStringAsync(text).catch((e) => {
+              logError('DeepLink', 'clipboard set failed', e);
+            });
+            logInfo('DeepLink', `clipboard set (${text.length} chars)`);
           }
         }
       } catch (e) {

@@ -234,6 +234,22 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    37: Phase 1.5 UX polish — two small adds on the shelly-cs auth
+     *        flow:
+     *        (a) Clipboard auto-copy: cmdAuth now fires a
+     *            shelly://clipboard?text=<code> deep link alongside
+     *            displaying the device code, so users can paste directly
+     *            into the browser instead of retyping the 8-char pair.
+     *            app/_layout.tsx handles the clipboard scheme via
+     *            expo-clipboard (already a project dep). Silent fail
+     *            is accepted — the code is always on screen too.
+     *        (b) Auth UX copy: explicit "any device works — github.com/
+     *            login/device on your PC is fine too" hint (from
+     *            observed user confusion when the Android VIEW intent
+     *            didn't hit an installed browser) and a "Ctrl+C to
+     *            cancel" line so the polling loop feels escapable.
+     *        Non-goals for v37: detached/async polling, SSH tunneling,
+     *        SecureStore bridge. Those are the heavier v38+ items.
      *    36: shelly-cs convenience layer — zero-arg `cs` opens the
      *        user's default codespace in the Browser Pane. Adds
      *        `shelly-cs use <name>` to persist the default, changes
@@ -314,7 +330,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
      *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 36
+    private const val BASHRC_VERSION = 37
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
