@@ -37,6 +37,7 @@ import { getApiKey } from '@/lib/secure-store';
 import { buildAskSystemPrompt, extractStatus, stripStatusTag, type AskStatus } from '@/lib/ask-context';
 import { groqChatStream } from '@/lib/groq';
 import { logInfo, logError } from '@/lib/debug-logger';
+import IssueDraftAction from '@/components/panes/IssueDraftAction';
 
 type Turn = {
   id: string;
@@ -192,12 +193,15 @@ export default function AskPane() {
                     </View>
                   )}
                   {t.status === 'NOT_AVAILABLE' && !t.streaming && (
-                    <View style={styles.stagedActionRow}>
-                      <MaterialIcons name="info-outline" size={12} color={theme.colors.muted} />
-                      <Text style={styles.stagedActionText}>
-                        Issue 作成機能は Stage 2 で実装予定 (shelly-cs OAuth token 経由)
-                      </Text>
-                    </View>
+                    // Stage 2: real "Create GitHub Issue" ActionBlock.
+                    // Opens a preview/edit modal, posts via shelly-cs
+                    // OAuth token, renders "✓ Issue #NN" chip with a
+                    // View link on success. See lib/github-issues.ts
+                    // + components/panes/IssueDraftAction.tsx.
+                    <IssueDraftAction
+                      question={t.question}
+                      answer={t.answer}
+                    />
                   )}
                 </>
               )}
