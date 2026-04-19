@@ -20,6 +20,9 @@ import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
 import { useSettingsStore } from '@/store/settings-store';
+import * as Linking from 'expo-linking';
+import { useBrowserStore } from '@/store/browser-store';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -213,13 +216,58 @@ export default function RootLayout() {
     // Initialize reduce-motion detection for sound/animation system
     useSoundStore.getState().initReduceMotion();
 
+    // Deep-link handler — routes `shelly://` URLs into the right in-app
+    // surface instead of kicking users out to an external browser.
+    //
+    // Supported schemes so far:
+    //   shelly://browser?url=<encoded>  — navigate the Browser Pane to a URL.
+    //                                     Adds a browser pane if none exists.
+    //
+    // Primary client today is `shelly-cs open <codespace>` which fires
+    //   am start -a android.intent.action.VIEW \
+    //     -d 'shelly://browser?url=https%3A%2F%2F<name>.github.dev'
+    // to keep the codespace web UI inside Shelly instead of Chrome.
+    const handleDeepLink = (url: string) => {
+      try {
+        const parsed = Linking.parse(url);
+        logInfo('DeepLink', `received: ${url} → host=${parsed.hostname ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`);
+        if (parsed.hostname === 'browser') {
+          const raw = parsed.queryParams?.url;
+          const target = Array.isArray(raw) ? raw[0] : raw;
+          if (typeof target === 'string' && target.length > 0) {
+            // Ensure a Browser pane exists before firing the openSignal —
+            // otherwise navigations fire into the void if the user has no
+            // Browser pane materialised yet. addPane is idempotent with
+            // respect to 'browser' type (the multi-pane store merges into
+            // an existing slot when available).
+            try { useMultiPaneStore.getState().addPane('browser'); } catch {}
+            useBrowserStore.getState().openUrl(target);
+            logInfo('DeepLink', `openUrl dispatched: ${target}`);
+          }
+        }
+      } catch (e) {
+        logError('DeepLink', 'parse failed', e);
+      }
+    };
+    const linkSub = Linking.addEventListener('url', (event) => {
+      handleDeepLink(event.url);
+    });
+    // Cold-start case: app launched directly from the deep link (no prior
+    // process to receive the 'url' event).
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink(url);
+    }).catch(() => {});
+
     // Unload sounds when app goes to background
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'background') {
         unloadSounds();
       }
     });
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      linkSub.remove();
+    };
   }, []);
 
   return (

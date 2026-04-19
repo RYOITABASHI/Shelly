@@ -127,8 +127,24 @@ async function ghApi(apiPath, opts = {}) {
 // ─────────────────────────────────────────────────────────────
 
 function openUrl(url) {
-  // Opens URL via Android VIEW intent. Hits OS default browser (Chrome / Samsung Internet / etc.).
-  // Phase 1.5 will prefer Shelly's in-app Browser Pane via a JS↔Kotlin bridge.
+  // Preferred: in-app Browser Pane via the `shelly://browser?url=...` deep
+  // link. app/_layout.tsx registers a Linking listener that routes matching
+  // hosts into useBrowserStore.openUrl() + useMultiPaneStore.addPane('browser'),
+  // so the URL lands in Shelly's WebView instead of kicking to Chrome.
+  //
+  // We fire the deep link first and accept it will launch Shelly (the
+  // intent target is Shelly itself via the scheme registration in
+  // android/app/src/main/AndroidManifest.xml). If the deep-link intent
+  // fails for any reason — scheme not registered on this build, Shelly
+  // foregrounded by another activity that swallows the VIEW — fall back
+  // to the raw URL so users still reach the destination.
+  const deepLink = `shelly://browser?url=${encodeURIComponent(url)}`;
+  try {
+    const r = spawnSync('am', ['start', '-a', 'android.intent.action.VIEW', '-d', deepLink], { stdio: 'ignore' });
+    if (r && r.status === 0) return;
+  } catch {
+    // fall through to external
+  }
   try {
     spawnSync('am', ['start', '-a', 'android.intent.action.VIEW', '-d', url], { stdio: 'ignore' });
   } catch {

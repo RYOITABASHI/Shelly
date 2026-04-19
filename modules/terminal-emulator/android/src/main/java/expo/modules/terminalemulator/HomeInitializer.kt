@@ -234,6 +234,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    35: shelly-cs openUrl() prefers the `shelly://browser?url=...`
+     *        deep link so codespace web URLs land in Shelly's in-app
+     *        Browser Pane (WebView) instead of kicking to Chrome /
+     *        Samsung Internet. app/_layout.tsx registers a Linking
+     *        listener that parses the URL, calls
+     *        useMultiPaneStore.addPane('browser') to ensure the pane
+     *        exists, and useBrowserStore.openUrl(target) to navigate.
+     *        Falls back to the raw VIEW intent (OS browser) if the deep
+     *        link fails — so older APK installs that haven't regenerated
+     *        their shelly-cs.js yet still reach the destination.
      *    34: ship shelly-cs — GitHub Codespaces CLI (pure Node, REST API
      *        direct, no gh-CLI dependency). Script lives in APK assets at
      *        modules/.../assets/shelly-cs.js (so it edits as normal JS
@@ -293,7 +303,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
      *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 34
+    private const val BASHRC_VERSION = 35
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
