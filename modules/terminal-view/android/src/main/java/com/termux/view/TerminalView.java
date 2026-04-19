@@ -1259,14 +1259,17 @@ public class TerminalView extends View {
             int action = event.getAction();
             if (characters != null && characters.length() > 0) {
                 if (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_MULTIPLE) {
-                    // Single-character payloads go through the per-char
-                    // typing path regardless of codepoint — bracketed-paste
-                    // wrap for length-1 is meaningless overhead and would
-                    // flood logcat with `ShellyPaste` lines. Only use the
-                    // paste funnel when the IME/scrcpy actually sent a
-                    // chunk that could benefit from atomic submission.
+                    // Single-character payloads go straight to the PTY via
+                    // mTermSession.write — bracketed-paste wrap for length-1
+                    // is meaningless overhead and would flood logcat with
+                    // `ShellyPaste` lines. Use the paste funnel only when
+                    // the IME/scrcpy actually sent a chunk that benefits
+                    // from atomic submission. sendTextToTerminal() lives on
+                    // the inner InputConnection class and is not visible
+                    // from onKeyDown — write directly, matching the
+                    // pre-existing upstream `ACTION_MULTIPLE` branch.
                     if (characters.length() == 1) {
-                        sendTextToTerminal(characters);
+                        mTermSession.write(characters);
                     } else if (mEmulator != null) {
                         android.util.Log.d("ShellyPaste",
                             "KEYCODE_UNKNOWN action=" + action + " chars.len=" + characters.length());
@@ -1282,7 +1285,7 @@ public class TerminalView extends View {
                 if (code != 0) {
                     android.util.Log.d("ShellyPaste",
                         "KEYCODE_UNKNOWN unicodeChar=0x" + Integer.toHexString(code));
-                    sendTextToTerminal(new String(Character.toChars(code)));
+                    mTermSession.write(new String(Character.toChars(code)));
                     return true;
                 }
             }
