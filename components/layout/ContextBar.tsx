@@ -1,6 +1,6 @@
 // components/layout/ContextBar.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet, AppState } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -26,20 +26,46 @@ export function ContextBar() {
 
   useEffect(() => {
     let active = true;
+    // bug #103: combine cwd + git branch into a single exec. The old
+    // path spawned two subprocesses (fork + exec + pipe × 2) every 3 s
+    // which, combined with Sidebar's polling, meant five or more
+    // execSubprocess calls per interval. The UI thread spent more time
+    // marshalling JNI call results than processing IME events, so user
+    // keystrokes lagged visibly and first-char drops during paste
+    // became reproducible.
+    //
+    // Merged form: read .shelly_cwd, then chain a `git branch` in the
+    // same shell so we pay for one fork. Interval raised from 3 s to
+    // 15 s — cwd only changes when the user runs `cd`, and git branch
+    // changes only when they `git switch`/`checkout`, neither of which
+    // needs 3-second visual latency. The explicit `refresh()` on mount
+    // still hits immediately for first paint.
     const poll = async () => {
       try {
-        const r = await execCommand(`cat '${home}/.shelly_cwd' 2>/dev/null`);
+        const cmd = `cat '${home}/.shelly_cwd' 2>/dev/null; echo '---'; cd "$(cat '${home}/.shelly_cwd' 2>/dev/null || echo '${home}')" && git branch --show-current 2>/dev/null`;
+        const r = await execCommand(cmd);
         if (!active) return;
-        const dir = r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : home;
+        if (r.exitCode !== 0) return;
+        const [cwdPart, branchPart = ''] = r.stdout.split('---\n');
+        const dir = cwdPart.trim() || home;
         setCwd(dir);
-        const g = await execCommand(`cd '${dir}' && git branch --show-current 2>/dev/null`);
-        if (!active) return;
-        setGitBranch(g.exitCode === 0 ? g.stdout.trim() || null : null);
+        const branch = branchPart.trim();
+        setGitBranch(branch || null);
       } catch { /* ignore */ }
     };
     poll();
-    const id = setInterval(poll, 3000);
-    return () => { active = false; clearInterval(id); };
+    const id = setInterval(poll, 15000);
+    // Skip polling while the app is backgrounded. AppState 'active' fires
+    // one poll immediately on resume so the user sees fresh data without
+    // another 15 s wait.
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') poll();
+    });
+    return () => {
+      active = false;
+      clearInterval(id);
+      sub.remove();
+    };
   }, [home]);
 
   const handleCopyPath = () => {

@@ -519,22 +519,33 @@ public class TerminalView extends View {
                     // chunk bigger than a realistic typed keystroke, treat it as
                     // a paste. Routing through mEmulator.paste() funnels the
                     // payload through the single CR/LF-normalized + bracketed
-                    // path instead of sendTextToTerminal's per-char loop. The
-                    // per-char loop rewrote every embedded newline to \r and
-                    // streamed them straight to the PTY, which made bash
-                    // execute each line of a pasted block immediately and let
-                    // the early lines race the view's own echo (hence the
-                    // "first byte clipped" / "sed: no pattern" symptoms users
-                    // were seeing when they pasted long one-liners).
+                    // path instead of sendTextToTerminal's per-char loop.
+                    //
+                    // bug #106: the old threshold (>= 16 chars) was dropping
+                    // every short command (e.g. `codex --version` = 15 chars)
+                    // onto the per-char typing path, where an IME resync storm
+                    // or a prompt-echo race could eat the first byte (seen
+                    // as `odex --version`, `a -la $F`, etc.). Tighten the
+                    // heuristic: any commit containing whitespace and with
+                    // length >= 4 is treated as a paste, even without a
+                    // newline. Real typing commits are 1-3 chars (single
+                    // char, CJK compose, emoji); word-suggestion accepts
+                    // rarely contain spaces. Length >= 16 without space is
+                    // still classified as paste to catch long URL-like
+                    // pastes from clipboard autocomplete.
+                    boolean hasNewline = commitStr.indexOf('\n') >= 0 || commitStr.indexOf('\r') >= 0;
+                    boolean hasWhitespace = commitStr.indexOf(' ') >= 0 || commitStr.indexOf('\t') >= 0;
                     boolean isPaste = commitStr.length() > 1
-                        && (commitStr.indexOf('\n') >= 0
-                            || commitStr.indexOf('\r') >= 0
+                        && (hasNewline
+                            || (hasWhitespace && commitStr.length() >= 4)
                             || commitStr.length() >= 16);
                     if (isPaste && mEmulator != null) {
-                        Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length());
+                        Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length()
+                            + " nl=" + hasNewline + " ws=" + hasWhitespace);
                         TerminalView.this.pasteViaEmulator(commitStr);
                     } else {
-                        Log.d("ShellyIME", "commit=\"" + commitStr + "\"");
+                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length()
+                            + " text=\"" + commitStr + "\"");
                         sendToPtyAndShadow(commitStr);
                     }
                 }
