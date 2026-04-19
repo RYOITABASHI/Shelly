@@ -25,6 +25,9 @@ const OPTIONS: SheetOption[] = [
   { kind: 'pane', id: 'browser',  label: 'Browser',     icon: 'language' },
   { kind: 'pane', id: 'preview',  label: 'Preview',     icon: 'preview' },
   { kind: 'pane', id: 'markdown', label: 'Markdown',    icon: 'description' },
+  // ASK — Shelly's self-documenting assistant. Answers "can Shelly do X?"
+  // using the bundled feature catalog via Groq (free tier by default).
+  { kind: 'pane', id: 'ask',      label: 'Ask Shelly',  icon: 'help-outline' },
   { kind: 'sidebar', id: 'fileTree', label: 'File Tree', icon: 'folder-open' },
 ];
 

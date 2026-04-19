@@ -43,4 +43,13 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
     icon: 'preview',
     getComponent: () => require('@/components/panes/PreviewPane').default,
   },
+  // ASK Pane — Shelly's self-documenting assistant. Answers "can Shelly
+  // do X?" / "how do I use Y?" using the bundled feature-catalog as
+  // context and routes unknown features into GitHub issues via the
+  // shelly-cs OAuth token.
+  ask: {
+    title: 'Ask',
+    icon: 'help-outline',
+    getComponent: () => require('@/components/panes/AskPane').default,
+  },
 };

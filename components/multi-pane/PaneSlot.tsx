@@ -295,7 +295,7 @@ function SplitMenu({
     onClose();
   };
 
-  const suggestedTab: PaneTab = (['terminal', 'ai', 'browser', 'markdown'] as PaneTab[])
+  const suggestedTab: PaneTab = (['terminal', 'ai', 'browser', 'markdown', 'ask'] as PaneTab[])
     .find((t) => t !== currentTab) ?? 'terminal';
 
   return (
@@ -316,7 +316,7 @@ function SplitMenu({
         ) : (
           <>
             <Text style={menuStyles.title}>Open In New Pane</Text>
-            {(['terminal', 'ai', 'browser', 'markdown'] as PaneTab[]).map((t) => (
+            {(['terminal', 'ai', 'browser', 'markdown', 'ask'] as PaneTab[]).map((t) => (
               <Pressable
                 key={t}
                 style={[menuStyles.option, t === suggestedTab && menuStyles.optionHighlight]}

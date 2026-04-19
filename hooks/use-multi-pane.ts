@@ -27,7 +27,8 @@ export type PaneTab =
   | 'ai'
   | 'browser'
   | 'markdown'
-  | 'preview';
+  | 'preview'
+  | 'ask';
 
 export type PresetId =
   | 'p1'

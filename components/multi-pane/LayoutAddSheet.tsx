@@ -33,6 +33,7 @@ const ADD_OPTIONS: AddOption[] = [
   { kind: 'pane', id: 'browser',  label: 'Browser',  icon: 'language' },
   { kind: 'pane', id: 'preview',  label: 'Preview',  icon: 'preview' },
   { kind: 'pane', id: 'markdown', label: 'Markdown', icon: 'description' },
+  { kind: 'pane', id: 'ask',      label: 'Ask Shelly', icon: 'help-outline' },
   { kind: 'sidebar', id: 'fileTree', label: 'File Tree', icon: 'folder-open' },
 ];
 
