@@ -888,7 +888,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //    We DO NOT pass --libc=musl or force-install the claude-code
             //    -musl sub-package; we don't use the Bun ET_EXEC anymore.
             sb.appendLine("  echo '[install] npm install start (claude-code pinned to 2.1.112, last cli.js release)'")
-            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --include=optional --os=linux --cpu=arm64 @anthropic-ai/claude-code@2.1.112 @google/gemini-cli@latest @openai/codex@latest")
+            // v40 smoke test caught that --libc=musl had to come back — some
+            // package in the set (@openai/codex optional deps, probably)
+            // pins `engines.libc=musl` and without the flag npm detects
+            // Android bionic as "libc: undefined" and refuses the install
+            // with `notsup`. The v32 comment below argued we didn't need
+            // --libc=musl anymore because we dropped the Bun ET_EXEC; the
+            // flag is still required purely to satisfy npm's platform
+            // check against the optional native deps, not because we
+            // actually need musl at runtime.
+            sb.appendLine("  _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --include=optional --os=linux --cpu=arm64 --libc=musl @anthropic-ai/claude-code@2.1.112 @google/gemini-cli@latest @openai/codex@latest")
             sb.appendLine("  echo \"[install] npm install exit=\$?\"")
             // 3. Apply codex / gemini source patches to the staged tree
             //    (bug #76, #77, #96 — see earlier BASHRC_VERSION entries).
