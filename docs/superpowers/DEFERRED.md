@@ -187,6 +187,135 @@ function main() {
 
 ---
 
+### bug #104 — ソフトキーボード回避失敗 (edge-to-edge + Android 15+)
+
+**発見**: 2026-04-20 最新ビルド `d613f78c` 実機検証 (Z Fold6 / Android 16)
+**症状**: ソフトキーボードを起動するとターミナルペインの action bar (Ctrl+C/Tab/↑↓/Paste/Alt) と入力プロンプト行が完全にキーボードの下に隠れる。`KeyboardAvoidingView` が機能しておらず、ペインが 2160px 高さのまま描画されてキーボードが上に重なっている。
+**logcat で確認した事実**:
+- adb dumpsys window InputMethod で IME frame `[0,1303][1856,2160]` = キーボード高 857px を計測できている
+- つまりシステム側は ime insets を通知しているが、RN 側がそれを使っていない
+**原因仮説**:
+- `android/gradle.properties` で `edgeToEdgeEnabled=true` (Android 15+ デフォルト)。edge-to-edge 有効時はシステムが自動で ime insets を適用しないため、アプリ側で `WindowInsets.Type.ime()` を明示的に padding に加える実装が必要
+- 直近コミット `32cdad50 fix: keyboard avoidance for all panes` が入っているが効いていない → 特定ペイン / 特定 IME (Samsung Keyboard) で効かない可能性
+**影響**: **ターミナル入力が物理的に不可能**。v0.1.0 最大のブロッカー。
+**次アクション**: `react-native-safe-area-context` の `useSafeAreaInsets()` に加えて、`useAnimatedKeyboard()` (react-native-reanimated 3) or 手動 `Keyboard.addListener('keyboardDidShow', ...)` で `ime` inset を取得して padding に加える。`KeyboardAvoidingView` を自前実装に置き換える必要がありそう。
+**優先度**: **P0 最優先**
+
+---
+
+### bug #101 — codex TLS: Rust rustls が CA bundle env vars を見ない
+
+**発見**: 2026-04-20 `codex "hello"` 実行時、logcat transcript 再描画で判明
+**症状**: codex-termux バイナリ (0.121.0-termux) が OpenAI API に接続しようとして
+```
+ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket:
+IO error: no native root CA certificates found (errors: []), url: wss://api.openai.com/v1/responses
+ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header,
+url: https://api.openai.com/v1/responses
+```
+**原因**: Shelly は `$SSL_CERT_FILE` / `$CURL_CA_BUNDLE` / `$NODE_EXTRA_CA_CERTS` / `$REQUESTS_CA_BUNDLE` を `.bashrc` で export しているが、**Rust の `rustls-native-certs` は OS のネイティブ証明書ストアを直接読む設計** で env var を見ない。Android にはそのネイティブストアが無いので no native root CA certificates。
+**関連コミット**: `6f0b4e16 feat(v39): Mozilla CA bundle + codex-login device-auth` で Mozilla CA bundle を導入したが codex-termux binary 側で使用されていない可能性
+**次アクション**:
+1. codex-termux に env var `SSL_CERT_FILE` / `CA_BUNDLE` を見るオプションがあるか upstream (github.com/DioNanos/codex-termux) を確認
+2. もしくは codex-termux を rebuild して rustls-native-certs を `rustls-pemfile` + env var 経由に置換
+3. 暫定: `codex` 関数で `SSL_CERT_FILE` を明示的に変数展開してから exec
+**優先度**: P0 (codex CLI 完全に動かない)
+
+---
+
+### bug #102 — claude OAuth 400 は sed 後も継続
+
+**発見**: 2026-04-20 claude /login 実機検証
+**経緯**:
+1. MEMORY.md 既知の `/tmp/claude` ハードコード対処として `sed -i "s|/tmp/claude|\$HOME/.claude-tmp|g"` を `~/.shelly-cli/.../cli.js` に適用
+2. `grep -c "/tmp/claude"` → 0, `grep -c ".claude-tmp"` → 7 で置換は完全完了
+3. しかし `claude /login` → 認証コード貼付 → **同じ "OAuth error: Request failed with status code 400"**
+4. `CLAUDE_CODE_TMPDIR=$HOME/.claude-tmp` は bashrc で export 済、mkdir 済 (bug d613f78c 最新ビルドで修正入り)
+**真因未確定**. 可能性:
+- cli.js とは別の場所 (子プロセス、mcp サーバー) が PKCE state を書いている
+- Samsung Internet ブラウザが OAuth URL の state / code_challenge を rewrite している (loopback callback で verifier ミスマッチ)
+- Claude Code 2.1.112 は古い、2.1.114 にしたら直る可能性
+- `claude` 関数のプロセス分離でメモリ上の古いコードが生きている (sed 後に再起動しても転写が走った後なので新コードが使われているはず)
+**次アクション**:
+1. claude を 2.1.114 にアップグレードして再現確認
+2. Chrome で /login 試す (Samsung Internet 疑い)
+3. `strace -f -e openat` or Android の `statvfs` trace で PKCE state の実際の書き込み先を特定
+**優先度**: P0 (claude CLI 認証不可)
+
+---
+
+### bug #103 — サイドバー polling の CPU 連打でターミナル UI 遅延
+
+**発見**: 2026-04-20 実機 logcat 解析 (Ctrl+C / Enter の反応が数秒遅延)
+**症状**: Shelly アクティブ中、約 **3 秒ごと** に以下のシーケンスが連発される:
+```
+LibExtractor: Attempting CLI tools extraction...
+LibExtractor: cli-tools.tar.gz: already extracted (...)
+LibExtractor: CLI tools extraction done, checking launchers...
+TerminalEmulator: execCommand: bash exists=true lib exists=true files=55
+ShellyExec: execSubprocess: child pid=XXXXX ...
+[Shelly][NativeExec] exec: cd '/data/.../home' && git branch --show-current 2>/dev/null
+[Shelly][NativeExec] exec: cat '/data/.../home/.shelly_cwd' 2>/dev/null
+```
+**原因**: サイドバーの自動更新 polling が git branch / cwd / PORTS / その他を 3 秒毎に複数 execCommand で取得しており、さらに毎回 LibExtractor が冪等チェック (全 lib エントリの存在確認) を走らせる。UI スレッドが詰まってキー入力イベントの処理が遅延する。
+**次アクション**:
+1. polling interval を 3 秒 → 15 秒に緩和
+2. LibExtractor の冪等チェックは app 起動時 1 回でよい、polling ごとに呼ぶ必要なし
+3. git branch / cwd / ports を 1 つの複合 exec にまとめる (N+1 問題)
+**優先度**: P0 (UX 破綻レベルのレイテンシ)
+
+---
+
+### bug #105 — codex vendor ディレクトリ欠落で Missing optional dependency
+
+**発見**: 2026-04-20 `codex "hello"` 起動時
+**症状**: shelly-patcher が codex.js の `spawn(binaryPath, ...)` を `spawn(linker64, [codex_exec])` に書き換えても、codex.js 実行フローが spawn に到達する前に
+```
+throw new Error(`Missing optional dependency @openai/codex-linux-arm64. Reinstall Codex: ...`)
+```
+で落ちる。
+**原因**: `@openai/codex@0.121.0` の codex.js 84-98 行に、`require.resolve("@openai/codex-linux-arm64/package.json")` に失敗した時の fallback として `path.join(__dirname, "..", "vendor", "aarch64-unknown-linux-musl", "codex", "codex")` の `existsSync` チェックがあり、**両方 false なら throw**。Shelly は `@openai/codex-linux-arm64` を install しない (Android で musl ET_EXEC なので動かない) + vendor ディレクトリも作らない → throw 確定。
+**実機で確認した回避**:
+```bash
+V=~/.shelly-cli/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/codex
+mkdir -p $V
+ln -sf $LD_LIBRARY_PATH/codex_exec $V/codex
+```
+この symlink で `existsSync` が true になり throw 回避 → shelly-patcher 済 spawn に到達 → codex が起動する。
+**次アクション (Shelly 本体)**:
+- **A案 (推奨)**: `HomeInitializer.kt` の post-install で `patchCodex` 成功後に vendor symlink を作成
+- **B案**: `shelly-patcher.js` の `patchCodex()` に 2 つ目の needle 追加 (`throw new Error(\`Missing optional dependency` → コメントアウト)
+**優先度**: P0 (codex 起動不可、hack なしでは動かない)
+
+---
+
+### bug #106 — ペースト複数症状 (bug #97 修正後の別クラスタ)
+
+**発見**: 2026-04-20 ビルド `d613f78c` 実機検証 (セッション中に複数回再現)
+**観測された症状 (全 4 パターン)**:
+1. **先頭文字欠落** — `mkdir -p $V` → 1 行目丸ごと消滅、`codex --version` → `odex`、`ls -la $F` → `a -la $F`
+2. **複数行ペーストの一部消失** — 3 行貼り付けのうち 1 行目が完全欠落、別パターンでは真ん中が飛ぶ
+3. **長文コマンドの途中欠損** — `sed -i "s|/tmp/claude|$HOME/.claude-tmp|g" $F` のように 1 行で長いコマンドを貼ると、途中から欠ける or 表示が尻切れ (画面上 `<elly-cli/...` のような truncate 表示)
+4. **行頭に `<` 記号が混入** — ペースト後のプロンプト折り返し表示で `<` が行頭に現れる (bash prompt の truncate 表示? 要検証)
+
+bug #97 (改行ごと実行) は修正済だが、**別クラスタのペーストバグ** が残っている。
+
+**仮説** (確度順):
+- **A. bracketed-paste END トリガ欠落**: `\C-x\C-b` (begin) は `.bashrc` の bind で有効化されているが、`\e[201~` (end) が IME commitText 境界で切断され、bash が「ペースト中」状態のまま次の入力を wait → 一部バイトが fallthrough。bug #97 follow-up の副作用の可能性
+- **B. Samsung Keyboard の `setComposingText` → `commitText` 境界問題**: DEFERRED.md bug #98 の Samsung Keyboard / CJK commitText ケース。長いペーストが 1 回の commitText ではなく複数回に分割されて届き、pasteViaEmulator の閾値判定 (16 chars) が誤動作
+- **C. bug #91 修正 `pasteViaEmulator` 集約の不完全さ**: 全経路が emulator.paste() に集約されているはずだが、IME 固有の経路 (古い Android setComposingRegion?) が取り漏れている
+- **D. 端末 ANSI エスケープの余剰**: `\<` の混入はプロンプトのescape処理漏れでアプリ側の描画の話。実際に bash に届いている内容とは別問題かも
+
+**次アクション** (デスクトップ版で):
+1. TerminalView.java の `ShellyPaste:` 診断ログ (bug #97 修正時導入) を全ペースト経路で grep 出力し、raw bytes / sanitized bytes / 送信 bytes の 3 点を比較
+2. Samsung Keyboard 以外 (Gboard) で再現テストして IME 固有か切り分け
+3. DECSET 2004 gate が TUI 外 (bash readline) に wrap を送る実装になっているか `paste()` の分岐を再検証
+4. bug #98 のエッジケース 3 件と統合検討
+
+**優先度**: **P0** (今日のデバッグ作業中に頻発、v0.1.0 ブロッカー。ターミナルでまともなコマンドを打てないレベル)
+
+---
+
 ### ✅ bug #97 follow-up — ペースト時に改行ごとに実行されるリグレッション (修正中: TerminalEmulator.java + HomeInitializer.kt BASHRC_VERSION 27)
 
 **発見**: 2026-04-17 v0.1.0 RC 実機テスト (更新インストール)
