@@ -226,25 +226,38 @@ class ShellyTerminalView(
         // Post updateSize to ensure layout is complete.
         //
         // Fix for the "new-session prompt invisible until I switch away and
-        // back" bug: the FIRST attach of a just-created session happens
-        // before TerminalView has been laid out (splitPane creates the slot,
-        // React mounts NativeTerminalView, ShellyTerminalView.attachShellySession
-        // runs — but the view's onLayout hasn't fired yet, so .width/.height
-        // are still 0). The old code silently skipped the initial blit in
-        // that case, leaving the emulator's buffered PS1 bytes on screen as
-        // a black rectangle. Switching panes and coming back used to be the
-        // only way out because the re-attach path ran after layout had
-        // completed, so width was non-zero and the blit succeeded.
+        // back" bug. TWO root causes had to be addressed:
         //
-        // Now: if the view isn't laid out yet, attach a one-shot
-        // OnLayoutChangeListener that fires as soon as it has real
-        // dimensions, then does the same updateSize()+invalidate() pair.
-        // Listener detaches itself so it only fires once.
+        //   (1) Layout race (previous fix, retained): on a fresh splitPane
+        //       the very first attachShellySession() can run before
+        //       TerminalView.onLayout has fired, so .width/.height are
+        //       still 0 and updateSize()+invalidate() below would silently
+        //       skip. The OnLayoutChangeListener branch defers the blit
+        //       until the view actually has dimensions.
+        //
+        //   (2) Buffer-content race (new, real cause observed on device):
+        //       even when the view IS laid out, attach runs ~18ms after
+        //       PTY fork — bash hasn't finished reading .bashrc and
+        //       emitting PS1 yet. The emulator buffer is empty at blit
+        //       time, so the screen paints blank. onScreenUpdateCallback
+        //       *should* pick up the later PS1 arrival and re-invalidate,
+        //       but on-device logcat showed that handoff is lossy for the
+        //       very first screen write (likely a threading race between
+        //       registering the callback and the PTY read loop delivering
+        //       bytes). Switching panes and coming back worked because the
+        //       re-attach blit ran against a now-populated buffer.
+        //
+        // Fix for (2): schedule follow-up invalidate() passes at 150ms,
+        // 400ms, and 1000ms after attach. Bash startup on Android
+        // typically completes in 100-300ms; the three passes bracket the
+        // fast, normal, and slow cases without observable flicker
+        // (invalidate is a no-op when the view area is already up to date).
         terminalView.post {
             if (terminalView.width > 0 && terminalView.height > 0) {
                 Log.i(TAG, "attachSession.post: TerminalView=${terminalView.width}x${terminalView.height}")
                 terminalView.updateSize()
                 terminalView.invalidate()
+                scheduleCatchupBlits()
             } else {
                 Log.i(TAG, "attachSession.post: TerminalView not laid out yet (w=${terminalView.width}, h=${terminalView.height}) — deferring blit to onLayout")
                 terminalView.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
@@ -259,10 +272,28 @@ class ShellyTerminalView(
                             Log.i(TAG, "attachSession.onLayout: TerminalView=${w}x${h}")
                             terminalView.updateSize()
                             terminalView.invalidate()
+                            scheduleCatchupBlits()
                         }
                     }
                 })
             }
+        }
+    }
+
+    /**
+     * After the initial attach blit, schedule three follow-up invalidate()
+     * passes to catch bash's PS1 emission even if it lands after attach
+     * and onScreenUpdateCallback loses the first write to a threading
+     * race. See the buffer-content race comment in attachShellySession.
+     */
+    private fun scheduleCatchupBlits() {
+        val delays = longArrayOf(150, 400, 1000)
+        for (d in delays) {
+            terminalView.postDelayed({
+                if (terminalView.width > 0 && currentShellySession != null) {
+                    terminalView.invalidate()
+                }
+            }, d)
         }
     }
 
