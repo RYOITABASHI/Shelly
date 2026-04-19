@@ -22,6 +22,7 @@
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import { initHomePath, getHomePath } from '@/lib/home-path';
+import { execCommand } from '@/hooks/use-native-exec';
 import { logInfo, logError } from '@/lib/debug-logger';
 
 /** Where shelly-cs persists the OAuth user-access token. */
@@ -38,20 +39,48 @@ export const ASK_PANE_LABEL = 'from-ask-pane';
 // ─────────────────────────────────────────────────────────────
 
 export async function readShellyCSToken(): Promise<string | null> {
+  // Try expo-file-system first. In Expo SDK 52+ the scoping is relaxed
+  // for any path under documentDirectory, which on Shelly IS the
+  // directory containing ~/.shelly-cs/. If the API surface changes or
+  // the path resolves to the symlink form (/data/data/...), fall
+  // through to the JNI execCommand bridge we know works.
   try {
     await initHomePath();
     const home = getHomePath();
-    if (!home) return null;
-    const uri = `file://${home}/${SHELLY_CS_TOKEN_PATH}`;
-    const info = await FileSystem.getInfoAsync(uri);
-    if (!info.exists) return null;
-    const raw = await FileSystem.readAsStringAsync(uri);
-    const token = raw.trim();
-    return token.length > 0 ? token : null;
+    if (home) {
+      const uri = `file://${home}/${SHELLY_CS_TOKEN_PATH}`;
+      const info = await FileSystem.getInfoAsync(uri);
+      if (info.exists) {
+        const raw = await FileSystem.readAsStringAsync(uri);
+        const token = raw.trim();
+        if (token.length > 0) {
+          logInfo('github-issues', 'token read via FileSystem');
+          return token;
+        }
+      }
+    }
   } catch (e) {
-    logError('github-issues', 'token read failed', e);
-    return null;
+    logError('github-issues', 'FileSystem read failed, falling back to execCommand', e);
   }
+
+  // Fallback: shell out via the JNI execCommand bridge. shelly-cs wrote
+  // the file from its own bundled node process; reading it back through
+  // bash works because both processes share the app UID and the file is
+  // 0600. This path is strictly more reliable than expo-file-system on
+  // older SDK versions or if the app's documentDirectory resolver
+  // disagrees with the native getHomeDir() result.
+  try {
+    const r = await execCommand('cat "$HOME/.shelly-cs/token" 2>/dev/null', 5000);
+    const token = r.stdout.trim();
+    if (r.exitCode === 0 && token.length > 0) {
+      logInfo('github-issues', 'token read via execCommand');
+      return token;
+    }
+  } catch (e) {
+    logError('github-issues', 'execCommand read failed', e);
+  }
+
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────
