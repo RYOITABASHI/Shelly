@@ -89,6 +89,42 @@ function deleteToken() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Config (default codespace, etc.)
+// ─────────────────────────────────────────────────────────────
+
+function readConfig() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
+}
+
+function writeConfig(config) {
+  ensureConfigDir();
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+}
+
+async function resolveCodespaceName(explicit) {
+  // Priority:
+  //   1. explicit --repo-name / positional arg (pass-through)
+  //   2. config.defaultCodespace (set via `shelly-cs use <name>`)
+  //   3. the only Available/Shutdown codespace (if exactly one exists)
+  //   4. throw with a helpful hint
+  if (explicit) return { name: explicit, source: 'explicit' };
+  const config = readConfig();
+  if (config.defaultCodespace) return { name: config.defaultCodespace, source: 'default' };
+  const { codespaces = [] } = await ghApi('/user/codespaces');
+  const candidates = codespaces.filter(c => c.state === 'Available' || c.state === 'Shutdown');
+  if (candidates.length === 1) return { name: candidates[0].name, source: 'only' };
+  if (candidates.length === 0) {
+    throw new Error('No codespaces. Run: shelly-cs create');
+  }
+  const list = candidates.map(c => `    ${c.name}  (${c.state})`).join('\n');
+  throw new Error(
+    `Multiple codespaces exist. Pick one:\n${list}\n\n` +
+    `  shelly-cs use <name>    set as default\n` +
+    `  shelly-cs open <name>   one-off open`
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // HTTP helpers (native fetch — Node 18+)
 // ─────────────────────────────────────────────────────────────
 
@@ -229,9 +265,10 @@ async function cmdList() {
   const r = await ghApi('/user/codespaces');
   const codespaces = r.codespaces || [];
   if (!codespaces.length) {
-    console.log(`  ${C.gray}(no codespaces — run \`shelly-cs create --repo <owner/repo>\`)${C.reset}`);
+    console.log(`  ${C.gray}(no codespaces — run \`shelly-cs create\`)${C.reset}`);
     return;
   }
+  const defaultName = readConfig().defaultCodespace;
   console.log('');
   for (const cs of codespaces) {
     const icon = {
@@ -245,9 +282,14 @@ async function cmdList() {
     const repo = cs.repository?.full_name || '(unknown)';
     const machine = cs.machine?.display_name || cs.machine?.name || 'unknown';
     const lastUsed = cs.last_used_at ? new Date(cs.last_used_at).toISOString().slice(0, 16).replace('T', ' ') : '—';
-    console.log(`  ${icon}  ${C.bold}${cs.name}${C.reset}  ${C.gray}(${cs.state})${C.reset}`);
+    const star = (cs.name === defaultName) ? ` ${C.yellow}★ default${C.reset}` : '';
+    console.log(`  ${icon}  ${C.bold}${cs.name}${C.reset}  ${C.gray}(${cs.state})${C.reset}${star}`);
     console.log(`      ${repo}  ·  ${machine}`);
     console.log(`      last used: ${lastUsed}`);
+    console.log('');
+  }
+  if (!defaultName && codespaces.length > 1) {
+    console.log(`  ${C.gray}Hint: \`shelly-cs use <name>\` to set a default. Then \`cs\` is enough.${C.reset}`);
     console.log('');
   }
 }
@@ -311,8 +353,11 @@ async function cmdCreate(args) {
 }
 
 async function cmdOpen(args) {
-  const name = args._[0];
-  if (!name) throw new Error('Usage: shelly-cs open <codespace-name>');
+  const resolved = await resolveCodespaceName(args._[0]);
+  const name = resolved.name;
+  if (resolved.source !== 'explicit') {
+    console.log(`  ${C.gray}(using ${resolved.source === 'default' ? 'default' : 'only'}: ${name})${C.reset}`);
+  }
 
   let cs = await ghApi(`/user/codespaces/${name}`);
   if (cs.state !== 'Available') {
@@ -332,6 +377,36 @@ async function cmdOpen(args) {
   console.log(`  ${C.green}✓${C.reset} ${cs.name} is running`);
   console.log(`  Opening ${cs.web_url}…`);
   openUrl(cs.web_url);
+}
+
+async function cmdUse(args) {
+  const name = args._[0];
+  if (!name) {
+    const config = readConfig();
+    if (config.defaultCodespace) {
+      console.log(`  Default codespace: ${C.bold}${config.defaultCodespace}${C.reset}`);
+      console.log(`  ${C.gray}Change: shelly-cs use <name>${C.reset}`);
+      console.log(`  ${C.gray}Clear:  shelly-cs use --clear${C.reset}`);
+    } else {
+      console.log(`  ${C.gray}No default codespace set.${C.reset}`);
+      console.log(`  ${C.gray}Set one with: shelly-cs use <name>${C.reset}`);
+    }
+    return;
+  }
+  if (args['--clear']) {
+    const config = readConfig();
+    delete config.defaultCodespace;
+    writeConfig(config);
+    console.log(`  ${C.green}✓${C.reset} Default codespace cleared`);
+    return;
+  }
+  // Verify the codespace exists (throws 404 if not)
+  await ghApi(`/user/codespaces/${name}`);
+  const config = readConfig();
+  config.defaultCodespace = name;
+  writeConfig(config);
+  console.log(`  ${C.green}✓${C.reset} Default codespace: ${C.bold}${name}${C.reset}`);
+  console.log(`  ${C.gray}Next: \`shelly-cs open\` (no args) opens it. \`cs\` also works.${C.reset}`);
 }
 
 async function cmdStop(args) {
@@ -367,11 +442,13 @@ async function cmdDoctor() {
   console.log('');
   console.log(`  ${C.bold}shelly-cs doctor${C.reset}`);
   console.log('  ' + '─'.repeat(48));
+  const cfg = readConfig();
   console.log(`    Client ID:      ${CLIENT_ID.slice(0, 10)}…${CLIENT_ID.slice(-4)}${CLIENT_ID === DEFAULT_CLIENT_ID ? C.gray + ' (default)' + C.reset : C.yellow + ' (overridden)' + C.reset}`);
   console.log(`    Template repo:  ${DEFAULT_TEMPLATE_REPO}`);
   console.log(`    Scope:          ${DEVICE_FLOW_SCOPE}`);
   console.log(`    Config dir:     ${CONFIG_DIR}`);
   console.log(`    Token:          ${readToken() ? C.green + '✓ present' + C.reset : C.red + '✗ missing' + C.reset + C.gray + ' (run `shelly-cs auth`)' + C.reset}`);
+  console.log(`    Default CS:     ${cfg.defaultCodespace ? C.bold + cfg.defaultCodespace + C.reset : C.gray + '(unset — \`shelly-cs use <name>\`)' + C.reset}`);
   try {
     const user = await ghApi('/user');
     console.log(`    Authenticated:  ${C.green}✓${C.reset} ${user.login}  ${C.gray}(${user.email || 'email hidden'})${C.reset}`);
@@ -417,12 +494,20 @@ function parseArgs(argv) {
 function usage() {
   console.error(`${C.bold}shelly-cs${C.reset} — GitHub Codespaces CLI for Shelly`);
   console.error('');
+  console.error('Quick start:');
+  console.error(`  ${C.cyan}shelly-cs auth${C.reset}                 sign in with GitHub`);
+  console.error(`  ${C.cyan}shelly-cs create${C.reset}               make a codespace (default template)`);
+  console.error(`  ${C.cyan}shelly-cs use <name>${C.reset}           remember it as your default`);
+  console.error(`  ${C.cyan}cs${C.reset}                             open default in Browser Pane (then claude ready)`);
+  console.error('');
   console.error('Commands:');
   console.error(`  ${C.cyan}auth${C.reset}                                      OAuth device-flow sign-in`);
-  console.error(`  ${C.cyan}list${C.reset}                                      List your codespaces`);
+  console.error(`  ${C.cyan}list${C.reset}                                      List your codespaces (★ marks default)`);
   console.error(`  ${C.cyan}create${C.reset} [--repo <owner/repo>] [--machine X]  Create a codespace`);
   console.error(`                                            ${C.gray}(default: ${DEFAULT_TEMPLATE_REPO})${C.reset}`);
-  console.error(`  ${C.cyan}open${C.reset} <name>                               Open codespace web URL (starts if needed)`);
+  console.error(`  ${C.cyan}use${C.reset} <name> | --clear                      Set or clear default codespace`);
+  console.error(`  ${C.cyan}open${C.reset} [name]                               Open codespace web URL in Browser Pane`);
+  console.error(`                                            ${C.gray}(no arg → default / only running)${C.reset}`);
   console.error(`  ${C.cyan}stop${C.reset} <name>                               Stop codespace (pauses billing)`);
   console.error(`  ${C.cyan}delete${C.reset} <name> --yes                       Delete codespace (requires --yes)`);
   console.error(`  ${C.cyan}ssh${C.reset} <name>                                SSH to codespace (Phase 1.5)`);
@@ -446,6 +531,7 @@ function usage() {
     ls: cmdList,
     create: cmdCreate,
     'new': cmdCreate,
+    use: cmdUse,
     open: cmdOpen,
     stop: cmdStop,
     'delete': cmdDelete,
@@ -455,11 +541,23 @@ function usage() {
     logout: cmdLogout,
     help: () => usage(),
   };
-  if (!cmd || !commands[cmd]) {
+  // No args → if authenticated, fall through to `open` with smart
+  // defaults (makes `cs` a zero-arg one-shot to your codespace).
+  // If not authenticated, show usage so newcomers discover `auth`.
+  let effectiveCmd = cmd;
+  let effectiveArgs = args;
+  if (!cmd) {
+    if (readToken()) {
+      effectiveCmd = 'open';
+      effectiveArgs = { _: [] };
+    } else {
+      usage();
+    }
+  } else if (!commands[cmd]) {
     usage();
   }
   try {
-    await commands[cmd](args);
+    await commands[effectiveCmd](effectiveArgs);
   } catch (e) {
     console.error('');
     console.error(`  ${C.red}✗${C.reset} ${e.message}`);

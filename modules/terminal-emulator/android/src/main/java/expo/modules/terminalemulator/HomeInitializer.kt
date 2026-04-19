@@ -234,6 +234,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    36: shelly-cs convenience layer — zero-arg `cs` opens the
+     *        user's default codespace in the Browser Pane. Adds
+     *        `shelly-cs use <name>` to persist the default, changes
+     *        `shelly-cs open` to fall back to the default (or the only
+     *        running codespace when no default is set), marks the
+     *        default with ★ in `shelly-cs list`, surfaces it in
+     *        `shelly-cs doctor`, and aliases `cs` → `shelly-cs` in
+     *        .bashrc so typing two letters is enough once the default
+     *        is remembered. Rounds out the Phase 1 UX target: from a
+     *        fresh shell in any cwd, `cs` → Codespace + claude-code
+     *        ready in Shelly's in-app Browser Pane.
      *    35: shelly-cs openUrl() prefers the `shelly://browser?url=...`
      *        deep link so codespace web URLs land in Shelly's in-app
      *        Browser Pane (WebView) instead of kicking to Chrome /
@@ -303,7 +314,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
      *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 35
+    private const val BASHRC_VERSION = 36
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -628,7 +639,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // bundled bionic node. See HomeInitializer.initialize() where the
             // script is copied from assets/shelly-cs.js on every launch.
             sb.appendLine("shelly-cs() { _run $libDir/node \"\$HOME/.shelly-cs/shelly-cs.js\" \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex shelly-cs")
+            // `cs` shortcut — v36 convenience. Lets the user get from any cwd
+            // to their default codespace with a single two-letter command:
+            //   cs use <name>    (first time)
+            //   cs               (every subsequent time — opens default in
+            //                     Browser Pane, claude pre-installed there)
+            sb.appendLine("cs() { shelly-cs \"\$@\"; }")
+            sb.appendLine("export -f bash claude gemini codex shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
