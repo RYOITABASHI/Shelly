@@ -510,7 +510,15 @@ class ShellyTerminalView(
         imm?.showSoftInput(terminalView, 0)
     }
 
-    override fun shouldBackButtonBeMappedToEscape(): Boolean = true
+    // Bug: Samsung / Gboard soft keyboards fire KEYCODE_BACK when the
+    // user taps the "hide keyboard" button. When this mapping was true,
+    // BACK turned into ESC and reached the PTY — gemini exited with
+    // "escape was pressed", vim popped out of insert mode, any REPL
+    // doing ESC-bracket-seq parsing saw a bare ESC and cancelled.
+    // Users have a dedicated Esc button on CommandKeyBar for intentional
+    // ESC, so disabling this mapping is net-positive UX: hide-keyboard
+    // just hides the keyboard like everywhere else in Android.
+    override fun shouldBackButtonBeMappedToEscape(): Boolean = false
     // Leave char-based input OFF so TerminalView picks the
     // TYPE_CLASS_TEXT | NO_SUGGESTIONS branch. This keeps the IME's
     // composing path alive — Japanese / CJK users can see the in-progress

@@ -633,10 +633,22 @@ public class TerminalView extends View {
                 }
 
                 if (kc == KeyEvent.KEYCODE_ESCAPE) {
+                    // Samsung's OneUI keyboard on Galaxy Z Fold6 was observed
+                    // on-device to NOT set FLAG_SOFT_KEYBOARD on the hide-
+                    // keyboard ESC event (2026-04-19 smoke test, gemini
+                    // exited with "escape was pressed" when user tapped the
+                    // keyboard-hide icon). Broaden the detection: also treat
+                    // deviceId == VIRTUAL_KEYBOARD (-1) as soft, since any
+                    // event attributed to the virtual input device is
+                    // definitionally an IME synthesized one — no physical
+                    // keyboard reports that deviceId. Combined check keeps
+                    // hardware/DeX keyboards working (they have real
+                    // deviceIds and often set the flag anyway).
                     boolean isSoft = (event.getFlags() & KeyEvent.FLAG_SOFT_KEYBOARD) != 0;
-                    if (isSoft) {
+                    boolean isVirtual = event.getDeviceId() == android.view.KeyCharacterMap.VIRTUAL_KEYBOARD;
+                    if (isSoft || isVirtual) {
                         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
-                            mClient.logInfo(LOG_TAG, "IME: sendKeyEvent(ESC) swallowed (soft kb hide button)");
+                            mClient.logInfo(LOG_TAG, "IME: sendKeyEvent(ESC) swallowed (soft=" + isSoft + ", virtual=" + isVirtual + ")");
                         }
                         return true;
                     }
