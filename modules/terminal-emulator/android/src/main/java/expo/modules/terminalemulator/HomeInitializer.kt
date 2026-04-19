@@ -234,6 +234,27 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        chroot. Same pattern we considered for codex before switching
      *        to the codex-termux ET_DYN build; for claude we have no
      *        bionic-compatible build so proot is the only viable path.
+     *    38: `gemini` interactive mode was throwing
+     *        `error: expected absolute path: "--max-old-space-size=5557"`
+     *        followed by `has bad ELF magic: 23212f75` on a fresh shell.
+     *        Root cause: gemini-cli 0.38+ relaunches itself with a bigger
+     *        heap via `spawn2(process.execPath, ['--max-old-space-size=5557',
+     *        gemini.js])`. On Shelly, `process.execPath` is \$libDir/node
+     *        (a shared library invoked through /system/bin/linker64), so
+     *        the child execve ends up passing gemini.js to linker64 as its
+     *        binary — not valid ELF.
+     *
+     *        Fix: set `GEMINI_CLI_NO_RELAUNCH=true` (gemini-cli honours it
+     *        at bundle/gemini.js:14445 as a relaunch kill-switch) and pass
+     *        `--max-old-space-size=5557` in the initial `_run` so the
+     *        heap-size check (target > current) short-circuits before the
+     *        respawn anyway. Two fences because the relaunch code path is
+     *        upstream-maintained and may introduce new code paths between
+     *        versions.
+     *
+     *        `--version` kept working because it short-circuits before the
+     *        relaunch check, which is why the issue only surfaced in
+     *        interactive invocations.
      *    37: Phase 1.5 UX polish — two small adds on the shelly-cs auth
      *        flow:
      *        (a) Clipboard auto-copy: cmdAuth now fires a
@@ -329,8 +350,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        Future risk: v2.1.114 has been observed to drop cli.js on
      *        fresh `npm install -g` in plain Termux. If the same regression
      *        hits our `--os=linux` override, the health check fails and
-     *        we stay on the prior working tree — no fleet breakage. */
-    private const val BASHRC_VERSION = 37
+     *        we stay on the prior working tree — no fleet breakage.
+     *    39: ship Mozilla CA bundle (~/.shelly-ssl/ca-certificates.crt,
+     *        extracted from APK asset on every launch) and wire
+     *        SSL_CERT_FILE / SSL_CERT_DIR / CURL_CA_BUNDLE /
+     *        NODE_EXTRA_CA_CERTS / REQUESTS_CA_BUNDLE so bundled
+     *        curl/node/codex_exec/python stop failing HTTPS because
+     *        Android's system trust store is in a location openssl/rustls
+     *        don't probe. Prerequisite for Track 1 codex native login
+     *        (rustls was bailing with "no native root CA certificates
+     *        found" during 2026-04-19 smoke test). Also fixes a class of
+     *        silent HTTPS failures across any bundled TLS client —
+     *        tested curl, node fetch, python requests. */
+    private const val BASHRC_VERSION = 39
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -481,6 +513,63 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             android.util.Log.e("HomeInitializer", "shelly-cs.js extract failed: ${e.message}")
         }
 
+        // v39: shelly-codex-auth — pure-JS ChatGPT subscription device-auth
+        // for the Codex CLI. Upstream codex-rs ships `codex login
+        // --device-auth` but codex-termux (the community rebuild we bundle
+        // for the Android native binary path) has the login subcommand
+        // compiled out. Rather than re-compile codex-termux with login
+        // re-enabled, we drive the exact same HTTPS flow in JavaScript:
+        //
+        //   1. POST /api/accounts/deviceauth/usercode
+        //   2. poll /api/accounts/deviceauth/token
+        //   3. POST /oauth/token                  (form-encoded)
+        //   4. write ~/.codex/auth.json (mode 0600, auth_mode="chatgpt")
+        //
+        // The script needs the v39 CA bundle wiring (NODE_EXTRA_CA_CERTS)
+        // to negotiate TLS with auth.openai.com; see the ca-certificates
+        // extraction below.
+        val codexAuthScript = File(home, ".shelly-codex-auth.js")
+        try {
+            context.assets.open("shelly-codex-auth.js").use { input ->
+                codexAuthScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
+        }
+
+        // v39: Mozilla CA bundle for TLS clients that don't consult the
+        // Android system trust store. Three classes of clients need this:
+        //   1. Bundled bionic `curl` — built without an embedded bundle,
+        //      fails with "SSL certificate problem: unable to get local
+        //      issuer certificate" against any HTTPS endpoint unless
+        //      CURL_CA_BUNDLE points at a PEM list.
+        //   2. Bundled bionic `node` — its built-in TLS pulls from
+        //      openssl's compiled-in default path, which on Android
+        //      resolves to /system/etc/security/cacerts.d that doesn't
+        //      exist. Affects fetch(), https module, undici, anything
+        //      TLS-using. `NODE_EXTRA_CA_CERTS` augments the empty
+        //      default set.
+        //   3. Bundled bionic `codex_exec` (ChatGPT subscription auth via
+        //      rustls) — Rust's native-tls sees zero roots on Android,
+        //      fails login with "no native root CA certificates found"
+        //      observed during smoke test 2026-04-19. SSL_CERT_FILE is
+        //      the standard rustls/openssl override.
+        //
+        // The bundle is the Mozilla cacert.pem snapshot bundled in the
+        // APK (assets/ca-certificates.crt, 226 KiB). Refresh on every
+        // launch — rewrite is cheap and APK upgrades need to propagate
+        // updated roots (expired certs retired, new ones issued).
+        val sslDir = File(home, ".shelly-ssl")
+        sslDir.mkdirs()
+        val caBundle = File(sslDir, "ca-certificates.crt")
+        try {
+            context.assets.open("ca-certificates.crt").use { input ->
+                caBundle.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "ca-certificates.crt extract failed: ${e.message}")
+        }
+
         // Regenerate .bashrc if version changed
         val bashrc = File(home, ".bashrc")
         val versionFile = File(home, ".bashrc_version")
@@ -518,6 +607,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export SHELL=\"$libDir/libbash.so\"")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir:/system/bin:/vendor/bin}\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
+            // v39: point every bundled TLS client at the Mozilla CA bundle
+            // we extract to ~/.shelly-ssl/. Without these exports curl/node/
+            // codex_exec all fail HTTPS because Android's system trust
+            // store is not in any of the locations openssl/rustls probe by
+            // default. See HomeInitializer.initialize() above for the
+            // extraction step and BASHRC_VERSION 39 comment for rationale.
+            sb.appendLine("export SSL_CERT_FILE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
+            sb.appendLine("export SSL_CERT_DIR=\"\$HOME/.shelly-ssl\"")
+            sb.appendLine("export CURL_CA_BUNDLE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
+            sb.appendLine("export NODE_EXTRA_CA_CERTS=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
+            sb.appendLine("export REQUESTS_CA_BUNDLE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
             // bug #77: gemini-cli bundles a hardcoded check that throws if
             // process.env.TERMUX_VERSION is undefined on Android, even though
             // it never actually needs Termux for the chat path. Setting any
@@ -648,8 +748,31 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  _run $libDir/node \"\$__cli_js\" \"\$@\"")
             sb.appendLine("}")
-            sb.appendLine("gemini() { _run $libDir/node \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
+            // Gemini CLI 0.38+ relaunches itself with a bigger heap
+            // (--max-old-space-size=5557) via `spawn2(process.execPath, ...)`.
+            // On Shelly, process.execPath is \$libDir/node which is a shared
+            // library accessed through /system/bin/linker64, so the child
+            // exec gets linker64 with gemini.js as the binary and dies with
+            // "has bad ELF magic: 23212f75" (hex for `#!/u`).
+            //
+            // Mitigation: set GEMINI_CLI_NO_RELAUNCH=true (gemini-cli honours
+            // it as a kill-switch for the relaunch, see bundle/gemini.js
+            // line 14445: `if (process.env["GEMINI_CLI_NO_RELAUNCH"])`) and
+            // pass --max-old-space-size=5557 up front so the initial node
+            // already has the heap the relaunch would have given it —
+            // gemini-cli's heap-size check (target > current) then stays
+            // false and the no-op guard holds. Belt + suspenders.
+            sb.appendLine("gemini() { GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
             sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
+            // v39: codex-login — ChatGPT subscription device-auth via
+            // pure-JS helper extracted from assets/shelly-codex-auth.js.
+            // Upstream codex-rs ships `codex login --device-auth`; the
+            // community codex-termux rebuild we bundle has that compiled
+            // out, so we re-implement the HTTPS flow in JavaScript.
+            // `--open` asks the Shelly Browser Pane to load the
+            // verification URL via the shelly://browser deep link instead
+            // of requiring the user to switch apps manually.
+            sb.appendLine("codex-login() { _run $libDir/node \"\$HOME/.shelly-codex-auth.js\" \"\$@\"; }")
             // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
             // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
             // bundled bionic node. See HomeInitializer.initialize() where the
@@ -661,7 +784,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   cs               (every subsequent time — opens default in
             //                     Browser Pane, claude pre-installed there)
             sb.appendLine("cs() { shelly-cs \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex shelly-cs cs")
+            sb.appendLine("export -f bash claude gemini codex codex-login shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
@@ -832,8 +955,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  printf '\\n'")
             sb.appendLine("  printf '  お持ちのアカウントでログインしてください:\\n'")
             sb.appendLine("  printf '\\n'")
-            sb.appendLine("  printf '    \\033[90m\$\\033[0m claude auth login\\n'")
-            sb.appendLine("  printf '    \\033[90m\$\\033[0m gemini auth login\\n'")
+            // v39: corrected login hints.
+            //   - `claude auth login` is wrong — Claude Code doesn't have a
+            //     standalone auth subcommand. Users launch `claude` and
+            //     type `/login` inside the REPL.
+            //   - `codex-login` is Shelly's new JS helper (v39) that drives
+            //     the ChatGPT subscription device-auth flow and writes
+            //     ~/.codex/auth.json. Previously there was no way to
+            //     authenticate codex on-device because codex-termux has
+            //     the login subcommand compiled out.
+            sb.appendLine("  printf '    \\033[90m\$\\033[0m claude           \\033[90m(then type /login)\\033[0m\\n'")
+            sb.appendLine("  printf '    \\033[90m\$\\033[0m gemini           \\033[90m(then /auth)\\033[0m\\n'")
+            sb.appendLine("  printf '    \\033[90m\$\\033[0m codex-login      \\033[90m(ChatGPT subscription)\\033[0m\\n'")
             sb.appendLine("  printf '\\n'")
             sb.appendLine("  printf '\\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m\\n'")
             sb.appendLine("  printf '\\n'")
