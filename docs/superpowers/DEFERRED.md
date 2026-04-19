@@ -14,6 +14,24 @@
 
 ---
 
+## 🟠 現状サマリ (2026-04-20 overnight session)
+
+**ユーザー就寝中のデスクトップ夜間セッションで bug #62 / #100 / #103 / #105 / #106 / #108 / #111 / #112 / #113 に fix を投入、`0e2ac6fa` まで push 済**。詳細は [`specs/2026-04-20-overnight-fix-handoff.md`](specs/2026-04-20-overnight-fix-handoff.md) を最優先で読む。
+
+**実機に届く時期**:
+- build `24635607242` (f038ee0c) 完走済、install 可
+- build `24635800179` (0e2ac6fa, BASHRC_VERSION 41 + #62/#100/#102/#105) 完走待ち — これが**起床後 install すべきビルド**
+
+**未解決 P0 (起床後継続)**:
+- **#101** codex rustls CA — 暫定のみ、恒久は codex-termux 再ビルド
+- **#102** claude OAuth 400 — TMPDIR/TMP/TEMP 3 本 export 追加で belt-and-suspenders、根因は未特定 (Samsung Internet 疑い最有力)
+- **#104** keyboard 回避 — 診断ログのみ、実機値未確認
+
+**未着手 / 別ブランチ**:
+- shelly-cs Phase 1.5 SSH tunneling: `feat/ssh-tunneling` で Day 3 まで、Day 4/5 未完
+
+---
+
 ## 🟢 現状サマリ (2026-04-15)
 
 **v0.1.0 スモークテスト後の一括修正完了**:
