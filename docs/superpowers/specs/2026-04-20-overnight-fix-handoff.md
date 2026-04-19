@@ -35,10 +35,11 @@
 ## 2. 現在のビルド状態
 
 - **`d613f78c`** (install 済、00:15:20 時点)
-- **`24635607242`** (f038ee0c): build 完走
-- **`24635800179`** (0e2ac6fa, 全 fix 統合): **起床後 install すべきは基本これ**
+- **`24635607242`** (f038ee0c): **build FAILED** — `TerminalView.java:1269` で `sendTextToTerminal` が inner-class scope にしかなく outer `onKeyDown` から見えないコンパイル error
+- `24635800179` / `24635864186` / `24635913877`: 同 error を継承するため build FAILED 見込み
+- **`24635940831`** (d23165dd, コンパイル fix): `mTermSession.write(...)` に置換、ビルド中。**これが起床後 install すべき APK**
 
-> 注: install 直前に最終 review agent の結果を反映するかも。必ず `docs/superpowers/specs/2026-04-20-overnight-fix-handoff.md` のバージョン欄を見てから install。
+> 注: 確実を期すため、install 前に `gh run list --repo RYOITABASHI/Shelly --limit 5` で `24635940831` が `completed success` になっていることを必ず確認。
 
 ---
 
