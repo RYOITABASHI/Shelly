@@ -426,9 +426,17 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         const { slots: currentSlots } = get();
         let slots = currentSlots;
 
-        // Terminal cap — 2 terminals max (Android phantom process killer).
-        if (tab === 'terminal' && countTerminalSlots(slots) >= 2) {
-          logInfo('MultiPane', 'addPane terminal ignored — cap 2');
+        // Terminal cap — 3 terminals max. Android 12+ phantom process killer
+        // caps app-owned subprocess count at ~32; each idle terminal occupies
+        // ~1 subprocess (bash), bumped to 5-10 once a CLI (claude/codex/
+        // gemini) starts its node helper and spawns tools. 3 panes × ~10 peak
+        // = 30 processes fits comfortably under 32 on Samsung (the strictest
+        // OEM we support). Bumping above 3 needs a Foreground Service
+        // (bug #65 Case B) to keep children out of the phantom pool. This
+        // cap was 2 before 2026-04-20; revert if users hit "process killed"
+        // regressions and we haven't shipped the FG service yet.
+        if (tab === 'terminal' && countTerminalSlots(slots) >= 3) {
+          logInfo('MultiPane', 'addPane terminal ignored — cap 3');
           return 'terminal_cap';
         }
 

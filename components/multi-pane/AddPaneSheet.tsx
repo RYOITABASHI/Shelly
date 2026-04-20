@@ -52,7 +52,7 @@ export function AddPaneSheet({ visible, onClose }: Props) {
     if (result === 'terminal_cap') {
       Alert.alert(
         'ターミナルの上限',
-        'ターミナルは 2 ペインまでです。これ以上増やすと Android がバックグラウンドで既存のセッションを殺す可能性があります。',
+        'ターミナルは 3 ペインまでです。これ以上増やすと Android の phantom process killer がバックグラウンドのセッションを殺す可能性があります。',
       );
       return;
     }

@@ -55,7 +55,7 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
     if (result === 'terminal_cap') {
       Alert.alert(
         'ターミナルの上限',
-        'ターミナルは 2 ペインまでです。Android のバックグラウンドプロセス制限のため、これ以上増やすと既存のセッションが殺される可能性があります。',
+        'ターミナルは 3 ペインまでです。Android の phantom process killer がバックグラウンドのセッションを殺す可能性があるため上限を設けています。',
       );
       return;
     }
