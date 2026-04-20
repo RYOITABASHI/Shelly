@@ -241,24 +241,51 @@ url: https://api.openai.com/v1/responses
 
 ---
 
-### bug #102 — claude OAuth 400 は sed 後も継続
+### 🟡 bug #102 — claude OAuth 400 (回避策確立、恒久修正は未実装)
 
-**発見**: 2026-04-20 claude /login 実機検証
-**経緯**:
-1. MEMORY.md 既知の `/tmp/claude` ハードコード対処として `sed -i "s|/tmp/claude|\$HOME/.claude-tmp|g"` を `~/.shelly-cli/.../cli.js` に適用
-2. `grep -c "/tmp/claude"` → 0, `grep -c ".claude-tmp"` → 7 で置換は完全完了
-3. しかし `claude /login` → 認証コード貼付 → **同じ "OAuth error: Request failed with status code 400"**
-4. `CLAUDE_CODE_TMPDIR=$HOME/.claude-tmp` は bashrc で export 済、mkdir 済 (bug d613f78c 最新ビルドで修正入り)
-**真因未確定**. 可能性:
-- cli.js とは別の場所 (子プロセス、mcp サーバー) が PKCE state を書いている
-- Samsung Internet ブラウザが OAuth URL の state / code_challenge を rewrite している (loopback callback で verifier ミスマッチ)
-- Claude Code 2.1.112 は古い、2.1.114 にしたら直る可能性
-- `claude` 関数のプロセス分離でメモリ上の古いコードが生きている (sed 後に再起動しても転写が走った後なので新コードが使われているはず)
-**次アクション**:
-1. claude を 2.1.114 にアップグレードして再現確認
-2. Chrome で /login 試す (Samsung Internet 疑い)
-3. `strace -f -e openat` or Android の `statvfs` trace で PKCE state の実際の書き込み先を特定
-**優先度**: P0 (claude CLI 認証不可)
+**現状 (2026-04-20 10:04 JST 実機検証)**: credentials transplant で完全動作確認。Shelly 内での /login フローは依然 400 のまま (恒久修正は v0.1.1 以降)。
+
+**真の原因** (夜間 dev handoff §4-1 + 10:04 実証で確定):
+- claude は Shelly に `xdg-open` / `termux-open` / `open` のいずれも無いため **manual paste mode** にフォールバック
+- 対策として `$HOME/bin/xdg-open` に `am start -a VIEW -d $1` ラッパーを置いたが claude は依然 manual paste mode → xdg-open の有無以外の signal を見ている可能性 (要追加調査)
+- manual paste mode での PKCE verifier 保存先が謎、コード貼り付け後に 400
+- MEMORY.md に書いてあった `/tmp/claude` sed や CLAUDE_CODE_TMPDIR 系は **2.1.112 cli.js で既に dead code** → 対処しても無意味
+
+**✅ 実証済の回避策 (credentials transplant)**:
+
+事前条件: 別環境 (Termux 等) で claude 認証を完了させた `.credentials.json` + `.claude.json` を持っている。
+
+```bash
+# Termux 側 (Claude Code が動く環境)
+cp ~/.claude.json /sdcard/Download/shelly-claude-root.json          # 32KB
+tar czf /sdcard/Download/termux-claude-dir.tar.gz -C ~/.claude .     # 948MB (history.jsonl 込み、小さくしたければ excludes で絞る)
+gunzip -k /sdcard/Download/termux-claude-dir.tar.gz                  # 1.8GB 展開形 (Shelly の tar が /bin/zcat ハードコードなので uncompressed 必要)
+
+# Shelly 側
+cp /sdcard/Download/shelly-claude-root.json ~/.claude.json
+chmod 600 ~/.claude.json
+cd ~/.claude && tar xf /sdcard/Download/termux-claude-dir.tar        # ~/.claude/ 全体を上書き
+claude                                                                # → onboarding スキップ、"Welcome back XXX" が出れば勝ち
+```
+
+**決定的な発見**:
+- **`~/.claude.json` ($HOME 直下、32KB)** が onboarding 完了 + 認証本体の正本
+- **`~/.claude/.credentials.json` (OAuth トークン) だけでは不十分** ← 09:38 に credentials.json だけ置いて失敗した原因
+- `~/.claude/` 全体の transplant は補助 (settings.json / projects/ でセッション継続に便利)
+
+**制約**:
+- `expires_at` 約 9 時間 (Termux 側の access_token の残り期限) → 期限切れ後は Termux で再 /login して transplant やり直し
+- refresh token が Cloudflare WAF で弾かれる可能性 ([#47754](https://github.com/anthropics/claude-code/issues/47754)) → 確認 TODO
+- Termux 側も 2.1.113+ にアップグレードされると cli.js 消失で /login 自体不可 ([#50270](https://github.com/anthropics/claude-code/issues/50270)、2.1.112 pin 必須)
+
+**恒久修正候補 (v0.1.1)**:
+1. **Shelly 内 credentials import UI** — Sidebar に「Import from external claude install」ボタン追加、/sdcard/Download/ からピック
+2. **shelly-claude-auth.js 自作** (dev handoff §4-1 回避策 3, ~250 LoC) — codex-login と対称のデバイスフロー実装、PKCE + am start で完結させる
+3. **xdg-open 以外の signal を特定して潰す** — claude 2.1.112 cli.js を再解析、`isTTY` / `terminal.type` 等の detector を探す
+
+**優先度**: P1 (回避策で当面運用可能、恒久修正は v0.1.1)
+
+**→ sync**: MEMORY.md / new handoff spec に transplant 手順を記録済
 
 ---
 
