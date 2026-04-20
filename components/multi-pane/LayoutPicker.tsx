@@ -32,6 +32,7 @@ const PRESETS: PresetEntry[] = [
   { id: 'p3l', label: 'L 1+2' },
   { id: 'p3r', label: 'R 2+1' },
   { id: 'p3t', label: 'T 1+2' },
+  { id: 'p3b', label: 'B 2+1' },
   { id: 'p4',  label: '2×2' },
 ];
 
@@ -141,6 +142,14 @@ function thumbRects(preset: PresetId): Rect[] {
         { left: 0,  top: 0,  width: W, height: my },
         { left: 0,  top: my, width: bx, height: H - my },
         { left: bx, top: my, width: W - bx, height: H - my },
+      ];
+    }
+    case 'p3b': {
+      const my = half(H), tx = half(W);
+      return [
+        { left: 0,  top: 0,  width: tx, height: my },
+        { left: tx, top: 0,  width: W - tx, height: my },
+        { left: 0,  top: my, width: W, height: H - my },
       ];
     }
     case 'p4': {

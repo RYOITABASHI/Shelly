@@ -30,6 +30,7 @@ export function applyLayoutPreset(id: string): void {
     p3l: 'p3l',
     p3r: 'p3r',
     p3t: 'p3t',
+    p3b: 'p3b',
     '2x2': 'p4',
     '4term': 'p4',
     p4: 'p4',

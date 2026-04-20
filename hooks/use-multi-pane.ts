@@ -37,6 +37,7 @@ export type PresetId =
   | 'p3l'
   | 'p3r'
   | 'p3t'
+  | 'p3b'
   | 'p4';
 
 export type Slot = {
@@ -55,6 +56,7 @@ export type Ratios = {
   rightV: number;
   leftV: number;
   bottomH: number;
+  topH: number;   // p3b only: divider between slot 0 (top-left) and slot 1 (top-right)
 };
 
 export type MultiPaneCoreState = {
@@ -73,6 +75,7 @@ export const PRESET_CAPACITY: Record<PresetId, number> = {
   p3l: 3,
   p3r: 3,
   p3t: 3,
+  p3b: 3,
   p4: 4,
 };
 
@@ -129,6 +132,7 @@ const DEFAULT_RATIOS: Ratios = {
   rightV: 0.5,
   leftV: 0.5,
   bottomH: 0.5,
+  topH: 0.5,
 };
 
 function clampRatio(r: number): number {
@@ -188,6 +192,7 @@ function promotePreset(p: PresetId): PresetId | null {
     case 'p3l': return 'p4';
     case 'p3r': return 'p4';
     case 'p3t': return 'p4';
+    case 'p3b': return 'p4';
     case 'p4':  return null;
   }
 }
@@ -202,6 +207,7 @@ function demotePreset(p: PresetId, used: number): PresetId {
   if (used === 3) {
     if (p === 'p3r') return 'p3r';
     if (p === 'p3t') return 'p3t';
+    if (p === 'p3b') return 'p3b';
     return 'p3l';
   }
   return 'p4';
@@ -817,6 +823,20 @@ export function getLayout(
       dividers.push(
         { kind: 'horizontal', x: 0,  y: my, w: W,      ratioKey: 'mainV' },
         { kind: 'vertical',   x: bx, y: my, h: H - my, ratioKey: 'bottomH' },
+      );
+      break;
+    }
+    case 'p3b': {
+      // Mirror of p3t: two panes on top, one full-width pane on the bottom.
+      //   slot 0 = top-left, slot 1 = top-right, slot 2 = bottom (full width)
+      const my = mainV * H;
+      const tx = ratios.topH * W;
+      rects[0] = { x: 0,  y: 0,  w: tx,     h: my };
+      rects[1] = { x: tx, y: 0,  w: W - tx, h: my };
+      rects[2] = { x: 0,  y: my, w: W,      h: H - my };
+      dividers.push(
+        { kind: 'vertical',   x: tx, y: 0,  h: my, ratioKey: 'topH' },
+        { kind: 'horizontal', x: 0,  y: my, w: W,  ratioKey: 'mainV' },
       );
       break;
     }
