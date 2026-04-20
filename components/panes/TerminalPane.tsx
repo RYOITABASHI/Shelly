@@ -36,6 +36,7 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useUsageStore } from '@/store/usage-store';
 import { useFocusStore } from '@/store/focus-store';
+import { usePaneStore } from '@/store/pane-store';
 import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
@@ -384,6 +385,21 @@ export default function TerminalScreen() {
     const tag = findNodeHandle(terminalViewRef.current);
     if (tag) TerminalViewModule.focus(tag);
   }, [refocusTick]);
+
+  // bug #116: Per-pane focus follow. When the user taps another terminal
+  // pane, `PaneSlot.onTouchStart` -> `handleFocusPane` updates
+  // `usePaneStore.focusedPaneId`, and every mounted TerminalPane observes
+  // whether it just became the focused one. If so, move the native view
+  // focus so keyboard input lands here instead of the previously-focused
+  // pane. The `refocusTick` effect above covers modal-dismiss recovery
+  // (global bump); this effect covers inter-pane switching (per-pane edge).
+  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
+  useEffect(() => {
+    if (!paneId) return;
+    if (focusedPaneId !== paneId) return;
+    const tag = findNodeHandle(terminalViewRef.current);
+    if (tag) TerminalViewModule.focus(tag);
+  }, [focusedPaneId, paneId]);
 
   // Request battery optimization exemption on first mount
   useEffect(() => {

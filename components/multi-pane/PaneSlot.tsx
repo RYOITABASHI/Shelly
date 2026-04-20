@@ -1,4 +1,4 @@
-import React, { useState, useMemo, createContext, useEffect, useRef } from 'react';
+import React, { useState, useMemo, createContext, useEffect, useRef, useCallback } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
@@ -6,9 +6,11 @@ import { PANE_REGISTRY } from './pane-registry';
 import { PaneSelector } from './PaneSelector';
 import PaneCliTabs from './PaneCliTabs';
 import type { PaneTab } from '@/hooks/use-multi-pane';
-import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore, getAgentColor, AGENT_COLORS } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
+import { useTerminalStore } from '@/store/terminal-store';
+import { useFocusStore } from '@/store/focus-store';
 import { onCommandComplete } from '@/lib/cli-notification';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useBrowserStore } from '@/store/browser-store';
@@ -61,6 +63,15 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const { bindAgent } = usePaneStore();
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const { setFocusedPane } = usePaneStore();
+  // Pane's own terminal session id. Read from the MultiPane slot matching
+  // `leafId`, NOT from `useTerminalStore.activeSessionId` (which is global
+  // and cross-contaminates when another pane is focused).
+  const paneSessionId = useMultiPaneStore((s) => {
+    for (const slot of s.slots) {
+      if (slot && slot.id === leafId && slot.tab === 'terminal') return slot.sessionId ?? null;
+    }
+    return null;
+  });
   const teamMembers = useSettingsStore((s) => s.settings.teamMembers);
   const activeRepoPath = useSidebarStore((s) => s.activeRepoPath);
   const Component = useMemo(() => entry.getComponent(), [tab]);
@@ -87,6 +98,32 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
     };
   }, [leafId, focusedPaneId]);
 
+  // Multi-layer focus handoff when the user taps a pane. Four stores need to
+  // agree on which pane owns keyboard input:
+  //   1. `usePaneStore.focusedPaneId`       — per-pane chrome (green ring, bind dropdown)
+  //   2. `useMultiPaneStore.focusedSlot`    — layout-level focus (tracked per slot index)
+  //   3. `useTerminalStore.activeSessionId` — which PTY session is "active" globally
+  //   4. native TerminalView focus          — which Android view receives commitText
+  // Without this handoff, tapping a different terminal pane leaves the IME
+  // writing to whichever pane was last tapped, because nothing consumes
+  // `focusedPaneId` to move native view focus or switch the active session.
+  // Triggering `requestTerminalRefocus()` fires the existing refocus effect
+  // in TerminalPane so the right native view gets `requestFocus()` +
+  // `showSoftInput()`.
+  const handleFocusPane = useCallback(() => {
+    setFocusedPane(leafId);
+    const mps = useMultiPaneStore.getState();
+    const slotIdx = mps.slots.findIndex((s) => s?.id === leafId);
+    if (slotIdx >= 0 && slotIdx < 4) {
+      mps.focusSlot(slotIdx as SlotIndex);
+      const slot = mps.slots[slotIdx];
+      if (slot && slot.tab === 'terminal' && slot.sessionId) {
+        useTerminalStore.getState().setActiveSession(slot.sessionId);
+      }
+    }
+    useFocusStore.getState().requestTerminalRefocus();
+  }, [leafId, setFocusedPane]);
+
   const paneTitle = getPaneTitle(tab);
   const cwdDisplay = activeRepoPath
     ? `— ${activeRepoPath.replace(/^\/data\/data\/com\.termux\/files\/home/, '~')}`
@@ -102,7 +139,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   return (
     <View
       style={styles.pane}
-      onTouchStart={() => setFocusedPane(leafId)}
+      onTouchStart={handleFocusPane}
       onLayout={(e) => {
         setPaneWidth(e.nativeEvent.layout.width);
         setPaneHeight(e.nativeEvent.layout.height);
@@ -159,7 +196,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
           </Pressable>
         ) : tab === 'terminal' ? (
-          <PaneCliTabs />
+          <PaneCliTabs paneSessionId={paneSessionId} />
         ) : null}
 
         {notification && (

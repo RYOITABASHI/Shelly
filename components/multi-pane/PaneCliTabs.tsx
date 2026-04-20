@@ -21,12 +21,30 @@ import { colors as C, fonts as F } from '@/theme.config';
 
 const MAX_TABS = 4;
 
-export default function PaneCliTabs() {
+type Props = {
+  /**
+   * Terminal session id owned by THIS pane (derived from
+   * `useMultiPaneStore.slots[i].sessionId`). Required so the green ● dot
+   * and [×] close button reflect the per-pane session rather than the
+   * global `useTerminalStore.activeSessionId`, which only matches the
+   * most-recently focused pane and therefore bled across pane boundaries
+   * (bug #116 — users saw the active indicator never move when tapping a
+   * different terminal pane).
+   */
+  paneSessionId?: string | null;
+};
+
+export default function PaneCliTabs({ paneSessionId }: Props = {}) {
   const sessions = useTerminalStore((s) => s.sessions);
-  const activeSessionId = useTerminalStore((s) => s.activeSessionId);
+  const globalActiveSessionId = useTerminalStore((s) => s.activeSessionId);
   const setActiveSession = useTerminalStore((s) => s.setActiveSession);
   const addSession = useTerminalStore((s) => s.addSession);
   const removeSession = useTerminalStore((s) => s.removeSession);
+
+  // Prefer the pane-scoped session id. Fall back to the global one only for
+  // legacy call sites (e.g. non-pane usage) that haven't threaded the prop
+  // yet — this keeps backward compatibility.
+  const effectiveActiveId = paneSessionId ?? globalActiveSessionId;
 
   const canAdd = sessions.length < MAX_TABS;
   const canClose = sessions.length > 1;
@@ -39,7 +57,7 @@ export default function PaneCliTabs() {
       style={styles.scroll}
     >
       {sessions.map((sess) => {
-        const isActive = sess.id === activeSessionId;
+        const isActive = sess.id === effectiveActiveId;
         const label = (sess.activeCli ?? 'shell').toUpperCase();
         return (
           <Pressable
