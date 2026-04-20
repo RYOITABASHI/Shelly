@@ -294,6 +294,49 @@ claude                                                                # → onbo
 
 ---
 
+### 🟡 bug #115 — gemini CLI `/auth` 400 (回避策確立、claude #102 と同族)
+
+**現状 (2026-04-20 11:15 JST 実機検証)**: gemini も transplant で完全動作確認。Shelly 内での `/auth` loopback フローは 2 段階で詰む。
+
+**失敗経路**:
+1. **xdg-open EACCES**: gemini-cli は auth URL を `spawn('xdg-open', [url])` で開こうとする → `Failed to open browser with error: spawn xdg-open EACCES`。今朝 10:30 頃に置いた `~/bin/xdg-open` ラッパーは chmod +x 済みだったはずだが何かの post-install で権限剥がれた可能性 (要調査、claude transplant 後に /auth 試したので state が汚れてる)
+2. **手動ブラウザで URL 開いても 400**: 出力された auth URL (`https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http://127.0.0.1:41319/oauth2callback&...`) を Chrome にコピペしても Google OAuth サーバーが "要求の形式が正しくありません (400)" を返す。redirect_uri のポート (`41319`) が OAuth client の登録済 URL リストに無いか、loopback redirect がドメインポリシー違反扱いか
+
+claude #102 と同じく、**Shelly 内で OAuth loopback を完結させるのは事実上不可能**。
+
+**✅ 実証済の回避策 (credentials transplant)**:
+
+gemini の認証状態は `~/.gemini/` ディレクトリ**だけ**で完結 (claude の `~/.claude.json` のような $HOME 直下の特別ファイルは不要)。サイズも小さい (110KB tar)。
+
+```bash
+# Termux 側 (gemini が動く環境、事前に /auth 完了済)
+tar cf /sdcard/Download/termux-gemini-dir.tar -C ~/.gemini .
+
+# Shelly 側
+mkdir -p ~/.gemini
+cd ~/.gemini && tar xf /sdcard/Download/termux-gemini-dir.tar
+gemini              # → "Signed in with Google" で対話プロンプト直行
+```
+
+**重要なファイル**:
+- `~/.gemini/oauth_creds.json` (~1.8KB) — Google OAuth access + refresh token
+- `~/.gemini/google_accounts.json` (~55B) — アカウント紐付け
+- `~/.gemini/trustedFolders.json` (~56B) — trust 済フォルダ記録 (これが無いと初回 trust prompt が出る)
+- `~/.gemini/settings.json` / `state.json` / `projects.json` — 設定と履歴
+
+**制約**:
+- claude #102 と同じく、Shelly をゼロ状態ユーザーに使わせる用途ではない。別環境で `gemini` 認証を完了した人向けの運用
+- Google OAuth refresh token の失効条件は Anthropic より緩い想定だが、長期の実運用データはまだ無い
+- Termux 側も `@google/gemini-cli` の upstream 変更で破綻する可能性 → 現在 `0.38.2` で動作確認
+
+**🎯 スコープ判断**: bug #102 と同じく **P2**。Shelly での `/auth` 完結は Chelly 側の責務として外す。
+
+**→ sync**:
+- README.md の "Bring your own credentials" セクションに gemini 版を追加 (本コミットで対応)
+- 2026-04-20-claude-credentials-transplant.md に gemini の手順も追記推奨
+
+---
+
 ### bug #103 — サイドバー polling の CPU 連打でターミナル UI 遅延
 
 **発見**: 2026-04-20 実機 logcat 解析 (Ctrl+C / Enter の反応が数秒遅延)
