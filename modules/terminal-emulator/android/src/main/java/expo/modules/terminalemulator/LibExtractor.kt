@@ -77,7 +77,12 @@ object LibExtractor {
         "lib/arm64-v8a/libproot.so" to "libproot.so",
         "lib/arm64-v8a/libtalloc.so" to "libtalloc.so.2",
         // codex native binary (ET_DYN, built from codex-termux for Android/bionic)
+        // exec variant: 1-shot runner for `codex exec/resume/review` subcommands
         "lib/arm64-v8a/libcodex_exec.so" to "codex_exec",
+        // tui variant: full interactive REPL (used when `codex` is invoked with
+        // no subcommand, or with a bare prompt). Same RUNPATH=$ORIGIN, no extra
+        // shared libs needed — all deps are standard bionic (libc/libm/libdl/libz).
+        "lib/arm64-v8a/libcodex_tui.so" to "codex_tui",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so"

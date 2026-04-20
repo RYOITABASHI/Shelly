@@ -49,6 +49,11 @@ function patchCodex(libDir) {
   if (s.includes("shelly-codex")) { console.log("[patch] codex.js already patched"); return; }
   const needle = "spawn(binaryPath, process.argv.slice(2)";
   if (!s.includes(needle)) { console.log("[patch] codex.js needle not found"); return; }
+  // This patches the legacy 1-shot entry point used by npm `@openai/codex`.
+  // Bash wrapper in .bashrc actually routes TUI vs exec itself (see the
+  // `codex()` function generation below) — this patch just ensures that IF
+  // somebody invokes codex.js directly (e.g. other tools that don't go
+  // through bash), it still hits a working binary (codex_exec).
   const replacement = 'spawn("/system/bin/linker64", ["' + libDir + '/codex_exec", ...process.argv.slice(2)] /*shelly-codex*/';
   s = s.replace(needle, replacement);
   fs.writeFileSync(p, s);
@@ -389,7 +394,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     on shell start if the user hasn't set their own, so
     //     auto-savepoint commits stop failing with "Author identity
     //     unknown" (bug #100).
-    private const val BASHRC_VERSION = 41
+    //  42: codex TUI wiring — codex() bash function routes bare/free-form
+    //     invocation to `codex_tui` (new LibExtractor entry, upstream
+    //     ratatui-based REPL) and known subcommands (exec/resume/review/
+    //     help/mcp/completion/login/logout) to `codex_exec` for 1-shot
+    //     execution. Fixes bug #114 "codex-termux has no interactive mode"
+    //     — the TUI binary was always shipped in the npm tarball but CI
+    //     was only copying codex-exec.bin into jniLibs.
+    private const val BASHRC_VERSION = 42
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -831,7 +843,43 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // gemini-cli's heap-size check (target > current) then stays
             // false and the no-op guard holds. Belt + suspenders.
             sb.appendLine("gemini() { GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
-            sb.appendLine("codex() { _run $libDir/node \"\$__cli_dir/@openai/codex/bin/codex.js\" \"\$@\"; }")
+            // codex: route `codex` (no args / options / bare prompt) to the
+            // full ratatui TUI binary, and known `exec/resume/review/help`
+            // subcommands to the lighter 1-shot exec binary. Both ship in the
+            // codex-termux tarball (v0.121.0-termux) but Shelly historically
+            // only extracted codex_exec; codex_tui is added in v42+.
+            // Errors out with guidance if a required binary is missing rather
+            // than silently routing to the other one.
+            sb.appendLine("codex() {")
+            sb.appendLine("  local __tui=\"$libDir/codex_tui\"")
+            sb.appendLine("  local __exec=\"$libDir/codex_exec\"")
+            sb.appendLine("  local __first=\"\${1:-}\"")
+            sb.appendLine("  # Known codex subcommands handled by the 1-shot exec binary.")
+            sb.appendLine("  # (login/logout are intentionally NOT listed — Shelly implements")
+            sb.appendLine("  # auth via the separate codex-login pure-JS helper since the fork")
+            sb.appendLine("  # compiled out device-auth. mcp/completion are hit through TUI")
+            sb.appendLine("  # too since the fork's help output only exposes exec/resume/review.)")
+            sb.appendLine("  # _run already invokes /system/bin/linker64 \"\$@\", so we pass the")
+            sb.appendLine("  # binary path as first arg (NOT prepending linker64 again).")
+            sb.appendLine("  case \"\$__first\" in")
+            sb.appendLine("    exec|resume|review|help)")
+            sb.appendLine("      if [ -x \"\$__exec\" ]; then")
+            sb.appendLine("        _run \"\$__exec\" \"\$@\"")
+            sb.appendLine("        return \$?")
+            sb.appendLine("      else")
+            sb.appendLine("        echo \"codex: codex_exec binary missing at \$__exec — rebuild Shelly or run __shelly_bg_cli_update\" >&2")
+            sb.appendLine("        return 127")
+            sb.appendLine("      fi")
+            sb.appendLine("      ;;")
+            sb.appendLine("  esac")
+            sb.appendLine("  # Bare invocation / option flag / free-form prompt → TUI.")
+            sb.appendLine("  if [ -x \"\$__tui\" ]; then")
+            sb.appendLine("    _run \"\$__tui\" \"\$@\"")
+            sb.appendLine("    return \$?")
+            sb.appendLine("  fi")
+            sb.appendLine("  echo \"codex: codex_tui binary missing at \$__tui — upgrade to APK v42+ or reinstall\" >&2")
+            sb.appendLine("  return 127")
+            sb.appendLine("}")
             // v39: codex-login — ChatGPT subscription device-auth via
             // pure-JS helper extracted from assets/shelly-codex-auth.js.
             // Upstream codex-rs ships `codex login --device-auth`; the

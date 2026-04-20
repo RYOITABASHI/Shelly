@@ -27,16 +27,20 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Download codex-termux Android binary
+      - name: Download codex-termux Android binaries (exec + TUI)
         run: |
           CODEX_TERMUX_VERSION="v0.121.0-termux"
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           curl -L "https://github.com/DioNanos/codex-termux/releases/download/${CODEX_TERMUX_VERSION}/codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
             -o /tmp/codex-termux.tar.gz
           cd /tmp && tar xzf codex-termux.tar.gz
+          # 1-shot exec binary (used by `codex exec/resume/review` subcommands)
           cp /tmp/codex-exec.bin "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
+          # Full TUI binary (used by `codex` with no subcommand — interactive mode)
+          cp /tmp/codex.bin "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
 
       - name: Bundle AI CLIs (Claude Code, Gemini CLI, Codex)
         run: |
