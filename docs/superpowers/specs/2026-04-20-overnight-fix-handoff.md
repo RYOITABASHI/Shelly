@@ -70,20 +70,40 @@
 
 ## 4. まだ完全には直っていない / 未着手
 
-### 4-1. bug #102 — Claude Code `/login` の OAuth 400 (P0、mitigation のみ)
+### 4-1. bug #102 — Claude Code `/login` の OAuth 400 (P0、原因絞り込み完了、fix 未実装)
 
-**現状**: CLAUDE_CODE_TMPDIR + TMPDIR/TMP/TEMP 3 本は export 済。しかし**「sed 後も 400 継続」**という元の症状が本当に tmpdir 由来かは不明。
+**実機検証 + cli.js 解析 + Web リサーチ後の確定事実**:
+- `function Xu7(){return"prod"}` 固定 → claude は **prod 設定** (CLIENT_ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`, TOKEN_URL `https://platform.claude.com/v1/oauth/token`) を使う
+- `22422756-...` は LOCAL OAUTH 用 (`OAUTH_FILE_SUFFIX:"-local-oauth"`)、prod 経路では送られない
+- PC からの curl で `9d1c250a` + 偽コード → `{"error":"invalid_grant","error_description":"Invalid 'code' in request."}` (HTTP 400) — **OAuth 標準の invalid-code エラー**、サーバ稼働中
+- claude-code 2.1.112 cli.js は `os.tmpdir` を **0 回**使用 → v41 の TMPDIR/TMP/TEMP exports は無関係 (`/tmp/claude` 文字列も既に消滅)
+- `~/.claude/.credentials.json` 不在 (login 失敗のため未保存)、`~/.claude/backups/` に過去試行のバックアップ 5 件
+- localhost listen は Shelly 上で OK (`node ... listen(54545,'127.0.0.1') → OK`)
+- claude は **manual code paste mode** にフォールバック (Shelly に `xdg-open`/`open`/`termux-open` が無いため)
+- `BROWSER=~/bin/browser-shelly` (`am start -a VIEW -d $1` ラッパー) を export して試したが **claude は依然 manual paste mode** — claude 側で Android 検出して loopback 拒否か、別 detector を見ている
 
-**真因候補**:
-- Samsung Internet ブラウザが OAuth URL の state / code_challenge を rewrite (loopback callback で verifier ミスマッチ)
-- Node の `os.tmpdir()` 以外に PKCE state を書く subprocess / MCP サーバー
-- claude-code 2.1.112 固有のバグ — 2.1.114 で直るかも、ただし 2.1.113+ は cli.js 消失で Tier 1 path が使えないため pin 外せない
+**Web リサーチ (一次情報) で見つけた近似 issue**:
+- [#21678](https://github.com/anthropics/claude-code/issues/21678) Cloudflare WAF が non-residential IP で token exchange ブロック (closed not-planned)
+- [#34555](https://github.com/anthropics/claude-code/issues/34555) 狭いターミナルで OAuth URL wrap → コピー時に空白混入で code_challenge 破損
+- [#22398](https://github.com/anthropics/claude-code/issues/22398) Termux で PKCE method が `s256` 小文字になる regression (closed-stale)
+- [#10719](https://github.com/anthropics/claude-code/issues/10719) 過去同症状、当時のサーバ outage
+- [#50270](https://github.com/anthropics/claude-code/issues/50270) 2.1.113+ Termux 不可確定 (pin 維持正解)
 
-**起床後アクション**:
-1. 新 APK install 後に `claude /login` → 400 が消えるか
-2. 消えなければ、**デフォルトブラウザを Chrome に切替**して再試行 (Samsung Internet 疑い切り分け)
-3. それでも 400 なら `strace -f -e openat,connect` か `adb logcat | grep -iE 'claude|oauth'` を録って、PKCE state の write 先と token exchange リクエストの内容を確認
-4. 恒久解は codex-login 方式 (pure-JS device auth) を claude にも作る、または shelly-browser pane 経由の in-app OAuth redirect
+**3 つの実装可能な回避策** (難易度順):
+1. **`claude setup-token` を非 Android 環境で実行** → 出力 `sk-ant-oat01-XXX` を `CLAUDE_CODE_OAUTH_TOKEN` env で Shelly に設定 ([公式 docs](https://code.claude.com/docs/en/authentication) precedence #5)。Pro/Max 対応、1 年有効、推論専用。**ユーザー「だるい」と却下**。
+2. **`~/.claude/.credentials.json` transplant** — 動作する PC で `/login` 完了させた後 `.credentials.json` を adb push。Termux コミュニティ標準回避策。Refresh token が Cloudflare WAF に当たる可能性 ([#47754](https://github.com/anthropics/claude-code/issues/47754))。
+3. **`shelly-claude-auth.js` 自作** (codex-login の対称) — PKCE 生成 → `am` で authorize URL open → コード入力プロンプト → `platform.claude.com/v1/oauth/token` POST → `~/.claude/.credentials.json` 書込み。**製品としての正解だが ~250 LoC + Shelly commit + APK rebuild + reinstall 必要**。
+
+**着手していない hardening** ([#50270](https://github.com/anthropics/claude-code/issues/50270) 推奨):
+- `DISABLE_AUTOUPDATER=1` env と `chmod a-w $cli_dir/` で Anthropic の silent rollforward を防ぐ
+- `__shelly_bg_cli_update` に組み込むと安全マージン増える
+
+**避けるべき rabbit hole**:
+- TMPDIR 系 env (cli.js 未使用)
+- `/tmp/claude` sed (文字列既に削除済)
+- `client_id 22422756 not found` パニック (LOCAL config のもの、無視)
+- `stty cols 300` (claude UI が物理幅に収まらず崩壊)
+- `claude /login` (CLI 引数) と REPL 内 `/login` の混同 — ユーザーは正しく後者を使ってる
 
 ### 4-2. bug #101 — codex rustls native roots (P0、暫定のみ)
 
