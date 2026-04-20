@@ -14,18 +14,31 @@
 
 ---
 
-## 🟠 現状サマリ (2026-04-20 overnight session)
+## 🟢 現状サマリ (2026-04-20 Termux afternoon session)
 
-**ユーザー就寝中のデスクトップ夜間セッションで bug #62 / #100 / #103 / #105 / #106 / #108 / #111 / #112 / #113 に fix を投入、`0e2ac6fa` まで push 済**。詳細は [`specs/2026-04-20-overnight-fix-handoff.md`](specs/2026-04-20-overnight-fix-handoff.md) を最優先で読む。
+**CLI 3/3 実機動作確定**。Shelly で claude / codex / gemini すべて対話モード起動 & 1 往復チャット成功。
 
-**実機に届く時期**:
-- build `24635607242` (f038ee0c) 完走済、install 可
-- build `24635800179` (0e2ac6fa, BASHRC_VERSION 41 + #62/#100/#102/#105) 完走待ち — これが**起床後 install すべきビルド**
+| CLI | 状態 | 認証方式 |
+|---|---|---|
+| **claude** | ✅ 対話 REPL 動作 | 別環境で `/login` → `~/.claude.json` + `~/.claude/.credentials.json` を /sdcard 経由 transplant |
+| **codex** | ✅ **TUI REPL 動作** (本日実装) | **Shelly 単独完結** (`shelly-codex-auth.js` device-auth、PKCE 自前実装) |
+| **gemini** | ✅ 対話 REPL 動作 | 別環境で `/auth` → `~/.gemini/` 全体 transplant |
 
-**未解決 P0 (起床後継続)**:
-- **#101** codex rustls CA — 暫定のみ、恒久は codex-termux 再ビルド
-- **#102** claude OAuth 400 — TMPDIR/TMP/TEMP 3 本 export 追加で belt-and-suspenders、根因は未特定 (Samsung Internet 疑い最有力)
-- **#104** keyboard 回避 — 診断ログのみ、実機値未確認
+**今日投入された主な fix** (commit `b445073f` → `7000c578`):
+- #114 codex TUI wiring: `codex.bin` (154MB) を `libcodex_tui.so` として追加バンドル、bash 関数書き直し、BASHRC_VERSION 41 → 42
+- #102 credentials transplant 実証: `~/.claude.json` が onboarding 完了状態の本体と特定
+- #115 gemini transplant 実証: `~/.gemini/` 一括コピーで認証引き継ぎ可能
+
+**最新インストール済み APK**: `acd13d5e` (build `24644652433`, 596MB)
+
+**未解決 P0 (v0.1.0 RC ブロッカー)**:
+- **#104** keyboard 回避失敗 — edge-to-edge + Android 15+ で ime insets が RN に届かない
+- **#106** paste 複数症状 — 先頭文字欠落、複数行の一部消失、長文途中欠損
+
+**降格した旧 P0**:
+- #101 codex rustls CA → P1 (実機で 401 消えたため、観測継続)
+- #102 claude OAuth 400 → P2 (Chelly の責務として Shelly 本体 scope 外と判断)
+- #115 gemini /auth 400 → P2 (同上)
 
 **未着手 / 別ブランチ**:
 - shelly-cs Phase 1.5 SSH tunneling: `feat/ssh-tunneling` で Day 3 まで、Day 4/5 未完
@@ -221,23 +234,48 @@ function main() {
 
 ---
 
-### bug #101 — codex TLS: Rust rustls が CA bundle env vars を見ない
+### ✅ bug #114 — codex TUI wiring (解決済: commit acd13d5e + BASHRC_VERSION 42)
 
-**発見**: 2026-04-20 `codex "hello"` 実行時、logcat transcript 再描画で判明
-**症状**: codex-termux バイナリ (0.121.0-termux) が OpenAI API に接続しようとして
+**発見**: 2026-04-20 TUI エージェント調査。`codex help` の Commands が `resume/review/help` の 3 つだけで、対話モードに入れなかった。
+**判明した真因**: codex-termux tarball には実は 2 つのバイナリが同梱されている:
+- `codex-exec.bin` (106 MB) — 1-shot 実行専用 (`exec/resume/review/help` サブコマンド処理)
+- `codex.bin` (154 MB) — **完全な ratatui TUI REPL** (引数なし or bare prompt 起動)
+
+Shelly の CI ワークフローは従来 `codex-exec.bin` だけを `libcodex_exec.so` として jniLibs に配置していて、**TUI バイナリを完全に捨てていた**。`codex.js` の shelly-patcher も `codex_exec` に固定 spawn していたため、`codex` コマンドは常に 1-shot モードしか動かなかった。
+**実装内容** (commit `acd13d5e`):
+- `.github/workflows/build-android.yml`: `codex.bin` を `libcodex_tui.so` として追加 copy (+154 MB APK)
+- `LibExtractor.kt`: `libcodex_tui.so → termux-libs/codex_tui` 展開エントリ追加
+- `HomeInitializer.kt`:
+  - `codex()` bash 関数を全書き直し: `exec/resume/review/help` サブコマンド → `codex_exec`、それ以外 (bare invocation, options, 自由記述 prompt) → `codex_tui`
+  - 不在時に silent fallback ではなく明示的エラー + exit 127
+  - `_run` が既に `linker64` を呼ぶので二重呼び回避 (レビューで blocking 検出)
+  - whitelist から `mcp/completion/login/logout` 除外 (fork 未サポート、codex-login は別ルート)
+  - BASHRC_VERSION 41 → 42 (.bashrc 強制再生成)
+**実機検証 (2026-04-20 14:31 JST)**: 新 APK (`24644652433`) install 後に `codex` (引数なし) 起動 → **ratatui REPL 表示**。model `gpt-5.4`、/statusline、/model、Tip hint、placeholder `Improve documentation in @filename` すべて出現。認証は既に shelly-codex-auth.js 経由で済んでいたため /login 不要。
+**副次効果**: APK サイズ約 441 MB → 596 MB (+155 MB)。GitHub Releases 配布前提なので許容範囲。
+**優先度**: ✅ 解決済 → v0.1.0 RC 含む
+
+---
+
+### 🟡 bug #101 — codex TLS: rustls-native-certs 問題 (実機で解消を観測、真因不明)
+
+**発見**: 2026-04-20 朝、`codex "hello"` logcat transcript 再描画で確認
+**症状 (朝 01:16 時点)**: codex-termux バイナリが OpenAI API 接続時に
 ```
 ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket:
 IO error: no native root CA certificates found (errors: []), url: wss://api.openai.com/v1/responses
-ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header,
-url: https://api.openai.com/v1/responses
+ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header
 ```
-**原因**: Shelly は `$SSL_CERT_FILE` / `$CURL_CA_BUNDLE` / `$NODE_EXTRA_CA_CERTS` / `$REQUESTS_CA_BUNDLE` を `.bashrc` で export しているが、**Rust の `rustls-native-certs` は OS のネイティブ証明書ストアを直接読む設計** で env var を見ない。Android にはそのネイティブストアが無いので no native root CA certificates。
-**関連コミット**: `6f0b4e16 feat(v39): Mozilla CA bundle + codex-login device-auth` で Mozilla CA bundle を導入したが codex-termux binary 側で使用されていない可能性
+**当時の仮説**: Shelly は `$SSL_CERT_FILE` / `$CURL_CA_BUNDLE` / `$NODE_EXTRA_CA_CERTS` / `$REQUESTS_CA_BUNDLE` を `.bashrc` で export しているが、**Rust の `rustls-native-certs` は OS のネイティブ証明書ストアを直接読む設計** で env var を見ない。Android にはそのネイティブストアが無いので no native root CA certificates。
+
+**更新 (2026-04-20 14:31 JST 実機検証)**: 新 APK (bug #114 fix 入り, BASHRC_VERSION 42) で `codex` TUI 起動後、`codex "hello"` も 401 を出さずに `Hello. How can I help?` を返した。BASHRC 再生成で CA bundle 参照が効いた可能性、もしくは朝の 401 は別要因 (auth.json が壊れていた、refresh token 一時失効など) の可能性。
+
 **次アクション**:
-1. codex-termux に env var `SSL_CERT_FILE` / `CA_BUNDLE` を見るオプションがあるか upstream (github.com/DioNanos/codex-termux) を確認
-2. もしくは codex-termux を rebuild して rustls-native-certs を `rustls-pemfile` + env var 経由に置換
-3. 暫定: `codex` 関数で `SSL_CERT_FILE` を明示的に変数展開してから exec
-**優先度**: P0 (codex CLI 完全に動かない)
+- 継続観測: `codex "何か長めの質問"` を時間空けて叩き続け、再現するか
+- 再現した場合のみ: codex-termux upstream に `rustls-tls-webpki-roots` feature 有効化 request
+- 現状: ユーザー可視の不具合なしとして優先度を下げる
+
+**優先度**: P0 → **P1** (実機では動作中、観測継続が必要)
 
 ---
 
