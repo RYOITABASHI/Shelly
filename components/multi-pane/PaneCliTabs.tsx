@@ -8,16 +8,27 @@
  * height back.
  *
  * Shows each shell-N session as a small pill, plus a [+] add button.
- * Tap to switch active session; long-press is handled by TerminalPane's
- * own Reset/Close flow so nothing is lost.
+ * Tap to switch THIS pane's active session; long-press is handled by
+ * TerminalPane's own Reset/Close flow so nothing is lost.
+ *
+ * Multi-pane semantics (fixed after Phase C):
+ *   - Each pane owns its own `slot.sessionId`. Tapping a tab in pane 2
+ *     updates ONLY pane 2's slot — pane 1 is untouched. The old code
+ *     called the global `useTerminalStore.setActiveSession`, which
+ *     combined with a single pane's paneSessionId being null (pre-#117
+ *     state) caused every tab tap anywhere to move pane 1's highlight.
+ *   - Close button rebinds the slot to the first remaining session.
+ *   - Add button binds the freshly-minted session to THIS pane's slot.
  */
 
 import React from 'react';
 import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { colors as C, fonts as F } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 const MAX_TABS = 4;
 
@@ -32,14 +43,22 @@ type Props = {
    * different terminal pane).
    */
   paneSessionId?: string | null;
+  /**
+   * Leaf id of the pane slot this tab row belongs to. When supplied, tab
+   * taps update `slots[leafId].sessionId` via setSlotSessionId, giving
+   * every pane an independent tab bar. When null, we fall back to the
+   * global setActiveSession (legacy / non-pane callers).
+   */
+  leafId?: string | null;
 };
 
-export default function PaneCliTabs({ paneSessionId }: Props = {}) {
+export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
   const sessions = useTerminalStore((s) => s.sessions);
   const globalActiveSessionId = useTerminalStore((s) => s.activeSessionId);
   const setActiveSession = useTerminalStore((s) => s.setActiveSession);
   const addSession = useTerminalStore((s) => s.addSession);
   const removeSession = useTerminalStore((s) => s.removeSession);
+  const setSlotSessionId = useMultiPaneStore((s) => s.setSlotSessionId);
 
   // Prefer the pane-scoped session id. Fall back to the global one only for
   // legacy call sites (e.g. non-pane usage) that haven't threaded the prop
@@ -48,6 +67,41 @@ export default function PaneCliTabs({ paneSessionId }: Props = {}) {
 
   const canAdd = sessions.length < MAX_TABS;
   const canClose = sessions.length > 1;
+
+  const switchTo = (sessId: string) => {
+    if (leafId) {
+      // Per-pane tab switch: rebind this slot. Also update the global so
+      // consumers that read activeSessionId (pendingCommand effect, cwd
+      // tracking via onBlockCompleted) stay in sync with the pane the user
+      // is actively interacting with.
+      setSlotSessionId(leafId, sessId);
+    }
+    setActiveSession(sessId);
+  };
+
+  const closeTab = async (sessId: string) => {
+    try {
+      const sess = sessions.find((s) => s.id === sessId);
+      if (sess) await TerminalEmulator.destroySession(sess.nativeSessionId);
+    } catch {}
+    // If the slot currently points at the session we're closing, rebind
+    // the slot to whichever session remains so the pane keeps rendering
+    // a live terminal instead of flipping to the global fallback.
+    if (leafId && paneSessionId === sessId) {
+      const remaining = sessions.find((s) => s.id !== sessId);
+      setSlotSessionId(leafId, remaining?.id ?? null);
+    }
+    removeSession(sessId);
+  };
+
+  const addTab = () => {
+    const newId = addSession();
+    if (!newId) return;
+    // Bind the freshly-created session to THIS pane so the new tab opens
+    // here rather than silently becoming the global active and leaving
+    // the clicked pane on its old session.
+    if (leafId) setSlotSessionId(leafId, newId);
+  };
 
   return (
     <ScrollView
@@ -62,8 +116,14 @@ export default function PaneCliTabs({ paneSessionId }: Props = {}) {
         return (
           <Pressable
             key={sess.id}
-            onPress={() => setActiveSession(sess.id)}
-            style={[styles.tab, isActive && styles.tabActive]}
+            onPress={() => switchTo(sess.id)}
+            style={[
+              styles.tab,
+              isActive && {
+                backgroundColor: withAlpha(C.accent, 0.12),
+                borderColor: withAlpha(C.accent, 0.55),
+              },
+            ]}
             hitSlop={4}
           >
             <View
@@ -83,12 +143,9 @@ export default function PaneCliTabs({ paneSessionId }: Props = {}) {
             </Text>
             {canClose && isActive && (
               <Pressable
-                onPress={async (e) => {
+                onPress={(e) => {
                   e.stopPropagation();
-                  try {
-                    await TerminalEmulator.destroySession(sess.nativeSessionId);
-                  } catch {}
-                  removeSession(sess.id);
+                  void closeTab(sess.id);
                 }}
                 hitSlop={6}
                 style={styles.closeBtn}
@@ -101,7 +158,7 @@ export default function PaneCliTabs({ paneSessionId }: Props = {}) {
       })}
       {canAdd && (
         <Pressable
-          onPress={() => addSession()}
+          onPress={addTab}
           hitSlop={6}
           style={styles.addBtn}
           accessibilityLabel="Add terminal tab"
@@ -133,10 +190,6 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     borderWidth: 1,
     borderColor: 'transparent',
-  },
-  tabActive: {
-    backgroundColor: 'rgba(0,212,170,0.08)',
-    borderColor: 'rgba(0,212,170,0.35)',
   },
   dot: {
     width: 4,

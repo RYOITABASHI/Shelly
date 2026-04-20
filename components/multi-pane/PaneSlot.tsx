@@ -196,7 +196,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
           </Pressable>
         ) : tab === 'terminal' ? (
-          <PaneCliTabs paneSessionId={paneSessionId} />
+          <PaneCliTabs paneSessionId={paneSessionId} leafId={leafId} />
         ) : null}
 
         {notification && (

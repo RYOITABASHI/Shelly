@@ -261,6 +261,12 @@ type MultiPaneActions = {
   addPane: (tab: PaneTab) => null | 'terminal_cap' | 'layout_full';
   removePane: (leafId: string) => void;
   setLeafTab: (leafId: string, tab: PaneTab) => void;
+  /** Rebind the terminal session shown in a specific pane. Used by the
+   *  per-pane tab bar (PaneCliTabs) so tapping a tab in pane 2 switches
+   *  pane 2's view — not the global activeSessionId fallback that used to
+   *  leak across pane boundaries (bug #118 / follow-on to #117). Pass null
+   *  to unbind (reconcile on next render will backfill). */
+  setSlotSessionId: (leafId: string, sessionId: string | null) => void;
   splitPane: (leafId: string, direction: SplitDirection, newTab: PaneTab) => void;
   toggleMaximize: (leafId: string) => void;
   initShell: () => void;
@@ -633,6 +639,24 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
           newSlots[slot] = { ...s, tab };
           set({ slots: newSlots });
+        },
+
+        setSlotSessionId: (leafId, sessionId) => {
+          const { slots } = get();
+          const idx = slots.findIndex((s) => s?.id === leafId);
+          if (idx < 0) return;
+          const slot = slots[idx];
+          if (!slot) return;
+          // No-op early out — prevents a needless re-render on repeated
+          // taps of the already-active tab.
+          if (slot.sessionId === sessionId) return;
+          const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
+          newSlots[idx] = { ...slot, sessionId: sessionId ?? undefined };
+          set({ slots: newSlots });
+          logInfo(
+            'MultiPane',
+            `setSlotSessionId: leaf=${leafId} session=${sessionId ?? 'null'}`,
+          );
         },
 
         // ── Legacy action surface ──
