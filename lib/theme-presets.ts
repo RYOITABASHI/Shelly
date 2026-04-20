@@ -122,72 +122,86 @@ export type ThemePreset = {
   colors: Palette;
 };
 
-// ── Shelly palette — extracted pixel-by-pixel from docs/images/mock-*.jpg ──
-// This IS the mock. Do not drift without updating the spec first.
+// ── Shelly palette — Phase C neon-arcade refresh ────────────────────
+// User direction (2026-04-20): "カラフルでネオン感ビカビカで". The previous
+// mock-extracted values landed inside Tailwind 500-ish pastel range
+// which reads tasteful but not LOUD. Shelly's identity is the Tokyo
+// night-street arcade billboard, not a tailwind dashboard. Accents
+// are pushed to pure saturated neon hues (cyan / magenta / hot pink
+// / neon lime / electric yellow) so they glow instead of tint. The
+// black background stays (anything else dilutes the neon).
+//
+// Guardrails kept:
+//  - text1 stays readable (#F5F7FF), text3 stays dim enough for
+//    tertiary metadata to recede
+//  - background hex still pure #000 so OLED panels draw no power on
+//    blank surfaces
+//  - diffAdd / errorText deltas remain within WCAG AA on the black bg
 export const shellyPalette: Palette = {
-  // Backgrounds — pure black as the user's preferred default. Previously
-  // we shipped three slightly different dark greys (#0A0A0A / #111111 /
-  // #0D0D0D) to give the mock some layering, but on an OLED Fold device
-  // the near-blacks read as muddy banding instead of a clean surface.
-  // Collapse everything to #000000 so the Shelly preset looks the way
-  // the user expects.
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#1C1C1C',
+  border:     '#1F1F2E',
 
-  // Accents (mock-exact — note the red/green tweaks vs silkscreen)
-  accent:        '#00D4AA',  // teal — active, prompts, READING TERMINAL
-  accentGreen:   '#4ADE80',  // + diff, LINKED, :3000, branch
-  accentBlue:    '#60A5FA',  // YOU, folder/file, DEVICE, APP/ ls-dir
-  accentSky:     '#38BDF8',  // COMPONENTS/ ls-dir, :8081 EXPO
-  accentPurple:  '#A78BFA',  // IMPORT/FROM/USESTATE, CLAUDE label
-  accentPink:    '#EC4899',  // string literals 'REACT'
-  accentAmber:   '#F59E0B',  // BASH warning, EDIT dot, ALLOW, RUNNING
-  accentCode:    '#60A5FA',  // alias for accentBlue, used by file-icon colorizer
-  warning:       '#F59E0B',  // alias for accentAmber
+  // Neon accents — each one is a distinct arcade-sign hue. Grouping:
+  //   accent / accentGreen / accentBlue / accentSky are the "cool" family
+  //   accentPurple / accentPink are the "hot" family
+  //   accentAmber is the "warm highlight"
+  accent:        '#00F0C8',  // cyan-teal — primary neon, replaces #00D4AA
+  accentGreen:   '#39FF14',  // neon lime (+diff, LINKED, branch, prompts)
+  accentBlue:    '#0AF0FF',  // electric cyan-blue (YOU, folder/file)
+  accentSky:     '#38E1FF',  // lighter cyan (COMPONENTS, :8081 EXPO)
+  accentPurple:  '#B14AFF',  // neon violet (IMPORT/FROM, CLAUDE label)
+  accentPink:    '#FF2ED3',  // hot magenta-pink (strings, voice)
+  accentAmber:   '#FFE500',  // neon yellow (BASH warning, RUNNING)
+  accentCode:    '#0AF0FF',  // alias for accentBlue
+  warning:       '#FFE500',  // alias for accentAmber
 
-  // Text (mock-exact, note text2 softer than silkscreen)
-  text1:      '#E5E7EB',
-  text2:      '#9CA3AF',
-  text3:      '#6B7280',
+  // Text pushed to pure-ish white for the brightest possible read on
+  // black. Secondary / tertiary stay cool so they recede behind the
+  // neon accents rather than fighting for attention.
+  text1:      '#F5F7FF',
+  text2:      '#A9B0CF',
+  text3:      '#5C6385',
 
-  // Semantic (mock-exact — F87171 red instead of EF4444)
-  errorText:  '#F87171',
-  errorBg:    'rgba(248,113,113,0.12)',
-  addText:    '#4ADE80',
-  addBg:      'rgba(74,222,128,0.12)',
+  // Semantic — neon red-pink instead of coral; matches the "hot" accent
+  // family so the error colour does not read as a fourth distinct hue.
+  errorText:  '#FF3366',
+  errorBg:    'rgba(255,51,102,0.14)',
+  addText:    '#39FF14',
+  addBg:      'rgba(57,255,20,0.14)',
 
   // Buttons
-  btnPrimaryBg:     '#00D4AA',
+  btnPrimaryBg:     '#00F0C8',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#1F2937',
-  btnSecondaryText: '#E5E7EB',
+  btnSecondaryBg:   '#1A1A2E',
+  btnSecondaryText: '#F5F7FF',
 
-  // Badges (mock-exact with translucent fills)
-  badgeRunningBg:   'rgba(245,158,11,0.15)',
-  badgeRunningText: '#F59E0B',
-  badgeLinkedBg:    'rgba(74,222,128,0.15)',
-  badgeLinkedText:  '#4ADE80',
+  // Badges — translucent fills scaled up slightly (0.15 → 0.18) so the
+  // neon hue reads under the black bg without turning muddy.
+  badgeRunningBg:   'rgba(255,229,0,0.18)',
+  badgeRunningText: '#FFE500',
+  badgeLinkedBg:    'rgba(57,255,20,0.18)',
+  badgeLinkedText:  '#39FF14',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#6B7280',
+  badgeConnectText: '#5C6385',
 
   // Layout buttons
-  layoutActiveBg:     '#00D4AA',
+  layoutActiveBg:     '#00F0C8',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#6B7280',
+  layoutInactiveText: '#5C6385',
 
   // CRT badge
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#00D4AA',
+  crtBadgeText: '#00F0C8',
 
   // Auto-save
   autoSaveBg: '#000000',
 
-  // Diff borders (mock-exact)
-  diffAddBorder:    '#4ADE80',
-  diffRemoveBorder: '#F87171',
+  // Diff borders — neon lime / neon red to match add/errorText
+  diffAddBorder:    '#39FF14',
+  diffRemoveBorder: '#FF3366',
 };
 
 // ── Silkscreen palette — the previous static theme.config.ts values,
