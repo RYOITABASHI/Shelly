@@ -10,7 +10,6 @@ import React, { useState } from 'react';
 import { View, Pressable, StyleSheet, Text } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
-import { useGitStatusStore } from '@/store/git-status-store';
 import { SettingsDropdown } from './SettingsDropdown';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { useFocusStore } from '@/store/focus-store';
@@ -19,7 +18,6 @@ import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const dirtyCount = useGitStatusStore((s) => s.dirtyCount);
 
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
@@ -47,19 +45,17 @@ export function AgentBar() {
 
       <View style={{ flex: 1 }} />
 
-      {/* Right-side: git dirty + search + settings */}
+      {/* Right-side: search + settings.
+          The git-dirty badge was removed 2026-04-21 — it was counting
+          `git status --porcelain` in `$HOME` which is not a sane repo
+          context (BASHRC_VERSION writes, CLI install logs, npm caches and
+          .claude state files all registered as "dirty"), so users saw
+          alarming 3-digit numbers that did not correspond to any work in
+          progress. The underlying git-status-store was deleted alongside
+          this UI. If a per-repo dirty count returns later it should read
+          from a repo-scoped source (e.g. the active repo row in the
+          REPOSITORIES sidebar, not the global active session). */}
       <View style={styles.rightBtns}>
-        {dirtyCount !== null && dirtyCount > 0 && (
-          <Pressable
-            style={styles.gitBadge}
-            onPress={() => useCommandPaletteStore.getState().open()}
-            hitSlop={6}
-            accessibilityLabel="Uncommitted changes"
-          >
-            <MaterialIcons name="fiber-manual-record" size={8} color={C.accentAmber} />
-            <Text style={styles.gitBadgeText}>{String(dirtyCount)}</Text>
-          </Pressable>
-        )}
         <Pressable
           style={styles.iconBtn}
           onPress={() => useCommandPaletteStore.getState().toggle()}
@@ -120,23 +116,5 @@ const styles = StyleSheet.create({
   iconBtn: {
     padding: 4,
     borderRadius: R.agentTab,
-  },
-  gitBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: R.badge,
-    backgroundColor: 'rgba(245,158,11,0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(245,158,11,0.35)',
-  },
-  gitBadgeText: {
-    fontSize: F.badge.size,
-    fontFamily: F.family,
-    fontWeight: '700',
-    color: C.accentAmber,
-    letterSpacing: 0.3,
   },
 });

@@ -254,7 +254,6 @@ first-time contributor が最も迷うのは「状態がどこにあるか」。
 | `profile-store` | SSHプロファイル | ✅ |
 | `workspace-store` | リポジトリごとのワークスペース分離 | ✅ |
 | `snippet-store` | 保存済みスニペット（Command Palette 経由で実行） | ✅ |
-| `git-status-store` | dirtyCount（Sidebar/AgentBar badge用、20秒ポーリング） | — |
 | `ports-store` | ローカルリスナー一覧（/proc/net/tcp 15秒ポーリング） | — |
 | `theme-version-store` | テーマプリセット切替時のkey-remount用カウンタ | — |
 | `savepoint-store` | auto-savepoint のコミット履歴 | ✅ |

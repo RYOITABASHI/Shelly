@@ -1,8 +1,6 @@
 // components/layout/Sidebar.tsx
 import React, { useState, useEffect } from 'react';
-import { execCommand } from '@/hooks/use-native-exec';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { useGitStatusStore } from '@/store/git-status-store';
 import { usePortsStore, parseProcNet, portLabel } from '@/store/ports-store';
 import { useFocusStore } from '@/store/focus-store';
 import {
@@ -35,7 +33,7 @@ import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
-import { neonTextGlow, neonDotGlow, neonBorderGlow, neonGlowSky, neonGlowAmber } from '@/lib/neon-glow';
+import { neonTextGlow, neonDotGlow, neonBorderGlow, neonGlowSky } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
 
 const WIDTH_ICONS = 48;
@@ -184,47 +182,13 @@ export function Sidebar() {
     return () => { cancelled = true; stopPolling(); sub.remove(); };
   }, []);
 
-  // Count uncommitted changes in the active repo. Sidebar owns the
-  // single 20-second poller; results go into useGitStatusStore so the
-  // Sidebar badge and the AgentBar badge stay in sync without running
-  // two loops.
-  const gitDirtyCount = useGitStatusStore((s) => s.dirtyCount);
-  useEffect(() => {
-    const setDirty = useGitStatusStore.getState().setDirty;
-    if (!activeRepoPath) {
-      setDirty(null);
-      return;
-    }
-    let cancelled = false;
-    const refresh = async () => {
-      // bug #43: normalize `~/` so the single-quoted cd target resolves.
-      const repo = normalizePath(activeRepoPath);
-      const r = await execCommand(
-        `cd '${repo.replace(/'/g, "'\\''")}' && git status --porcelain 2>/dev/null | wc -l`,
-        5_000,
-      );
-      if (cancelled) return;
-      const n = parseInt((r.stdout || '').trim(), 10);
-      setDirty(Number.isNaN(n) ? null : n);
-    };
-    // bug #103: genuinely pause polling while backgrounded (see ports
-    // section above — same pattern).
-    let ivHandle: ReturnType<typeof setInterval> | null = null;
-    const startPolling = () => {
-      if (ivHandle !== null) return;
-      ivHandle = setInterval(refresh, 20_000);
-    };
-    const stopPolling = () => {
-      if (ivHandle !== null) { clearInterval(ivHandle); ivHandle = null; }
-    };
-    refresh();
-    startPolling();
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') { refresh(); startPolling(); }
-      else { stopPolling(); }
-    });
-    return () => { cancelled = true; stopPolling(); sub.remove(); };
-  }, [activeRepoPath]);
+  // Git dirty-count polling removed 2026-04-21. The count was run against
+  // `$HOME` which is not a sane repo context — CLI bg updates, install
+  // logs, npm caches, and .claude state all counted as "dirty", surfacing
+  // alarming 3-digit numbers that did not track any real work in progress.
+  // If this returns it should be scoped to a real repo path (a row in
+  // REPOSITORIES) and use git's own per-file metadata rather than a
+  // porcelain line count.
 
   // Derive recent completed tasks from run history
   const recentTasks = React.useMemo(() => {
@@ -417,11 +381,6 @@ export function Sidebar() {
                   >
                     {name.toUpperCase()}
                   </Text>
-                  {isActive && gitDirtyCount !== null && gitDirtyCount > 0 && (
-                    <View style={styles.gitDirtyBadge}>
-                      <Text style={[styles.gitDirtyText, neonGlowAmber]}>{String(gitDirtyCount)}</Text>
-                    </View>
-                  )}
                   {isActive && (
                     <Text style={[styles.repoVersion, neonGlowSky]}>V9.2</Text>
                   )}
@@ -710,22 +669,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontStyle: 'italic',
     lineHeight: 14,
-  },
-  gitDirtyBadge: {
-    // Amber still signals "uncommitted changes" but we bump the alpha so
-    // the pill reads as a hot neon tag instead of a muddy swatch.
-    backgroundColor: 'rgba(245, 158, 11, 0.22)',
-    borderRadius: R.badge,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    marginRight: 4,
-  },
-  gitDirtyText: {
-    fontSize: F.badge.size,
-    fontFamily: F.family,
-    fontWeight: '700',
-    color: C.badgeRunningText,
-    letterSpacing: 0.3,
   },
   addRow: {
     paddingHorizontal: P.sidebarItem.px,

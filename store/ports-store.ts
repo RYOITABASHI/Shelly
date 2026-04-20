@@ -4,9 +4,11 @@
 // `ss` / `netstat` / `lsof` binaries are not bundled, so we read
 // `/proc/net/tcp` and `/proc/net/tcp6` directly and decode the hex
 // `local_address` / `st` columns. The Sidebar is the single writer —
-// it owns the 15 s interval and publishes into this store, same
-// pattern as git-status-store, so the list stays stable across
-// renders without multiple components racing each other.
+// it owns the 15 s interval and publishes into this store so the list
+// stays stable across renders without multiple components racing each
+// other. (Earlier versions had a git-status-store using the same
+// single-writer pattern; that store was removed 2026-04-21 along with
+// the unreliable $HOME dirty-count badge.)
 
 import { create } from 'zustand';
 
