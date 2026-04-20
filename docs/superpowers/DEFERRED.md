@@ -844,6 +844,78 @@ coreutils: /proc/self/net/tcp6: Permission denied
 
 ## P3 — 長期ロードマップ / 検討中
 
+### 📦 OSS integration roadmap — Shelly に載せる候補 10 本 (2026-04-20 調査)
+
+**ソース**: 2026-04-20 並列エージェント 2 本で 20 候補を洗い出し、重複排除 + ROI 評価で 10 本に絞ったもの。詳細レポートは本セッションの history 参照。
+
+**方針**: v0.1.0 RC は現状機能で出す。以下はリリース後の運用フィードバックを見てから順次投入。
+
+---
+
+#### 🥇 Tier S — 即採用レベル (v0.1.1 候補)
+
+| # | OSS | License | Size | 配置 | 理由 |
+|---|---|---|---|---|---|
+| 1 | [**lazygit**](https://github.com/jesseduffield/lazygit) | MIT | 15MB Go | Terminal pane | 親指で git 操作完結、auto-savepoint 直結 |
+| 2 | [**atuin**](https://github.com/atuinsh/atuin) | MIT | 15MB Rust | Command Palette backend + sidebar | シェル履歴を SQLite で全文検索、↑連打の苦行解消 |
+| 3 | [**fzf**](https://github.com/junegunn/fzf) | MIT | 3MB Go | Command Palette 裏 + Ctrl-R/Ctrl-T | fuzzy 検索の定番、atuin のフロントにも |
+| 4 | [**delta**](https://github.com/dandavison/delta) | MIT | 6MB Rust | git pager + DiffViewerModal | diff を syntax highlight + side-by-side |
+
+**推奨採用順** (v0.1.1): fzf → atuin → lazygit → delta。fzf と atuin は相互強化、lazygit は auto-savepoint と自然に統合、delta は diff viewer の裏で効く。
+
+#### 🥈 Tier A — 差別化 (v0.2.0 候補)
+
+| # | OSS | License | Size | 配置 | 理由 |
+|---|---|---|---|---|---|
+| 5 | [**chafa + libsixel**](https://github.com/hpjansson/chafa) | LGPL-3.0 / MIT | medium | GLTerminalView 拡張 | **Terminal pane に画像インライン描画**。Termux にできない絵作り ★スクショ映え No.1 |
+| 6 | [**whisper.cpp (grammar-constrained)**](https://github.com/ggml-org/whisper.cpp) | MIT | 31MB (tiny.en-q5_1) | キーボード行マイクボタン | 「ホールド → 音声コマンド → 正しい shell 入力」。grammar constraint で誤爆防止 ★**差別化 No.1** |
+| 7 | [**glow**](https://github.com/charmbracelet/glow) | MIT | 12MB Go | Markdown pane のターミナル版 | Markdown を TUI 描画、README / docs を terminal から即プレビュー |
+
+#### 🥉 Tier B — 後回しでも良いが効く (v0.3.0+)
+
+| # | OSS | License | Size | 配置 | 理由 |
+|---|---|---|---|---|---|
+| 8 | [**age / rage**](https://github.com/FiloSottile/age) | BSD-3 / MIT-Apache | 5MB Go/Rust | Settings → Secrets vault | `.env` / transplant credentials を暗号化、Biometric Prompt 連携 |
+| 9 | [**dedoc**](https://github.com/toiletbril/dedoc) | MIT | Rust | 新 Docs pane type | DevDocs を terminal で読む、Fold 展開時に右 pane で off-line リファレンス |
+| 10 | [**Mosh**](https://github.com/mobile-shell/mosh) | GPL-3.0 | Termux レシピあり | Terminal pane + sidebar hosts | UDP ベースで IP 変更に強い、「閉じて電車で開いても SSH 生きてる」 |
+
+---
+
+#### 🎯 「これだけは載せろ」の 2 本 (Shelly のアイデンティティ形成)
+
+1. **chafa (sixel)** — terminal に画像が出る Android アプリ、Twitter で話題になる
+2. **whisper.cpp grammar 音声** — ホールド & 話して CLI 操作、誰もやってない
+
+この 2 本を v0.2.0 で出せれば、Shelly は「Termux の延長」ではなく「**新しいプラットフォーム**」として立つ。
+
+---
+
+#### 外した候補 (理由付き)
+
+- **gitui**: lazygit と重複、UX 上は lazygit が優位
+- **zoxide**: atuin に食われる (atuin が cwd context 持つ)
+- **gitleaks**: 必要になってから。先に auto-savepoint が成熟してから pre-commit hook 拡張
+- **harlequin**: SQLite pane は魅力的だが Python 依存 + Textual + pyarrow が重く v0.2 以降
+- **zellij**: tmux と衝突、選択肢過剰
+- **blessed-contrib**: Node で可能なので「shelly top」用の小物として軽く、フル機能不要
+- **taskwarrior**: 既存の AI 管理と被る、優先度低
+- **bandit-wargame**: Chelly (別プロジェクト) 側の教育向け機能として分離が筋
+- **Iroh CRDT**: 魅力的だが複雑、まず immortal sessions (bug #65) を片付けてから
+
+---
+
+#### 採用フェーズ全体像
+
+- **v0.1.0**: 現状機能で出荷 (OSS 追加なし)
+- **v0.1.1**: Tier S (fzf / atuin / lazygit / delta) — ROI 高、単独で効く
+- **v0.2.0**: Tier A (chafa / whisper 音声 / glow) — 差別化、APK サイズ +50-100MB 覚悟
+- **v0.3.0+**: Tier B (age / dedoc / Mosh) — 成熟ユーザー向け
+- **除外**: 上記 9 件は候補復活時に再評価
+
+**優先度**: P3 (ロードマップ)。実装タスクは各 Tier のリリース milestone に合わせて個別 issue 化。
+
+---
+
 ### bug #98 — paste エッジケース 3 件 (Claude レビュー指摘, v0.1.1 IME 改善タイミング)
 
 **発見**: 2026-04-16 v0.1.0 外部レビュー (Claude Opus)
