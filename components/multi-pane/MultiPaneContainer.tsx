@@ -34,6 +34,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { colors as C, fonts as F } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
@@ -77,7 +78,7 @@ const emptyStyles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: 10,
     letterSpacing: 1,
-    textShadowColor: 'rgba(0,212,170,0.9)',
+    textShadowColor: withAlpha(C.accent, 0.9),
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 8,
   },
@@ -99,8 +100,8 @@ const emptyStyles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 5,
     borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.45)',
-    backgroundColor: 'rgba(0,212,170,0.08)',
+    borderColor: withAlpha(C.accent, 0.45),
+    backgroundColor: withAlpha(C.accent, 0.08),
   },
   btnLabel: {
     color: C.accent,

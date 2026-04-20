@@ -32,6 +32,20 @@ import { withAlpha } from '@/lib/theme-utils';
 
 const MAX_TABS = 4;
 
+/**
+ * Per-session neon hue. Sessions are indexed in creation order and get a
+ * distinct accent so the "three SHELL tabs that all look the same" problem
+ * from the v0.1.0 screenshot is replaced by a colour-coded tab strip. We
+ * cycle through four hues — teal / pink / purple / amber — which matches
+ * the MAX_TABS cap. All four are shellyPalette tokens so theme swaps pull
+ * the equivalent pastel from TokyoNight / Catppuccin / Rose Pine
+ * automatically.
+ */
+function sessionHue(index: number): string {
+  const colors = [C.accent, C.accentPink, C.accentPurple, C.accentAmber];
+  return colors[index % colors.length] ?? C.accent;
+}
+
 type Props = {
   /**
    * Terminal session id owned by THIS pane (derived from
@@ -110,9 +124,10 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
       contentContainerStyle={styles.row}
       style={styles.scroll}
     >
-      {sessions.map((sess) => {
+      {sessions.map((sess, idx) => {
         const isActive = sess.id === effectiveActiveId;
         const label = (sess.activeCli ?? 'shell').toUpperCase();
+        const hue = sessionHue(idx);
         return (
           <Pressable
             key={sess.id}
@@ -120,8 +135,8 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
             style={[
               styles.tab,
               isActive && {
-                backgroundColor: withAlpha(C.accent, 0.12),
-                borderColor: withAlpha(C.accent, 0.55),
+                backgroundColor: withAlpha(hue, 0.14),
+                borderColor: withAlpha(hue, 0.6),
               },
             ]}
             hitSlop={4}
@@ -129,7 +144,7 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
             <View
               style={[
                 styles.dot,
-                { backgroundColor: isActive ? C.accent : C.text3 },
+                { backgroundColor: isActive ? hue : withAlpha(hue, 0.35) },
               ]}
             />
             <Text

@@ -41,6 +41,7 @@ import { usePaneVoice } from '@/hooks/use-pane-voice';
 import { useSettingsStore } from '@/store/settings-store';
 import { VoiceChat } from '@/components/VoiceChat';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -446,8 +447,8 @@ const paneStyles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 3,
     borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.35)',
-    backgroundColor: 'rgba(0,212,170,0.08)',
+    borderColor: withAlpha(C.accent, 0.35),
+    backgroundColor: withAlpha(C.accent, 0.08),
   },
   contextDot: {
     width: 6,
@@ -462,7 +463,7 @@ const paneStyles = StyleSheet.create({
     letterSpacing: 0.6,
     fontWeight: '700',
     color: C.accent,
-    textShadowColor: 'rgba(0, 212, 170, 0.9)',
+    textShadowColor: withAlpha(C.accent, 0.9),
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 8,
   },

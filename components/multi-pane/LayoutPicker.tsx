@@ -19,6 +19,7 @@ import {
   type PresetId,
 } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 type PresetEntry = {
   id: PresetId;
@@ -177,8 +178,8 @@ function PresetThumbnail({
   const cellColor = disabled
     ? 'rgba(255,255,255,0.08)'
     : active
-      ? 'rgba(0,212,170,0.55)'
-      : 'rgba(0,212,170,0.25)';
+      ? withAlpha(C.accent, 0.55)
+      : withAlpha(C.accent, 0.25);
   return (
     <View
       style={{
@@ -243,7 +244,7 @@ const styles = StyleSheet.create({
   },
   tileActive: {
     borderColor: C.accent,
-    backgroundColor: 'rgba(0,212,170,0.10)',
+    backgroundColor: withAlpha(C.accent, 0.10),
   },
   tileDisabled: {
     opacity: 0.35,

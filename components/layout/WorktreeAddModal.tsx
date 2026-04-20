@@ -19,6 +19,7 @@ import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useWorktreeStore, type WorktreeAgent } from '@/store/worktree-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 type Props = {
   visible: boolean;
@@ -88,7 +89,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
               <Pressable
                 key={a.id}
                 onPress={() => setAgent(a.id)}
-                style={[styles.agentChip, agent === a.id && { borderColor: a.color, backgroundColor: 'rgba(0,212,170,0.06)' }]}
+                style={[styles.agentChip, agent === a.id && { borderColor: a.color, backgroundColor: withAlpha(C.accent, 0.06) }]}
               >
                 <Text style={[styles.agentEmoji]}>{a.emoji}</Text>
                 <Text style={[styles.agentLabel, agent === a.id && { color: a.color }]}>

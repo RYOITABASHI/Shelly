@@ -12,6 +12,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { PANE_REGISTRY } from './pane-registry';
 import type { PaneTab } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 const ALL_TABS = Object.keys(PANE_REGISTRY) as PaneTab[];
 
@@ -99,7 +100,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   itemActive: {
-    backgroundColor: 'rgba(0,212,170,0.1)',
+    backgroundColor: withAlpha(C.accent, 0.1),
   },
   itemText: {
     color: C.text1,

@@ -20,6 +20,7 @@ import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useI18n } from '@/lib/i18n';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
 import { applyThemePreset } from '@/lib/theme-presets';
@@ -694,8 +695,8 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.25)',
-    backgroundColor: 'rgba(0,212,170,0.06)',
+    borderColor: withAlpha(C.accent, 0.25),
+    backgroundColor: withAlpha(C.accent, 0.06),
   },
   defaultAgentLabel: {
     color: C.text1,
@@ -720,7 +721,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   pickerRowActive: {
-    backgroundColor: 'rgba(0,212,170,0.10)',
+    backgroundColor: withAlpha(C.accent, 0.10),
   },
   pickerLabel: {
     color: C.text2,
@@ -741,7 +742,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   switchTrackOn: {
-    backgroundColor: 'rgba(0,212,170,0.35)',
+    backgroundColor: withAlpha(C.accent, 0.35),
   },
   switchThumb: {
     width: 10,
@@ -807,7 +808,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   segBtnActive: {
-    backgroundColor: 'rgba(0,212,170,0.15)',
+    backgroundColor: withAlpha(C.accent, 0.15),
   },
   segLabel: {
     color: C.text2,

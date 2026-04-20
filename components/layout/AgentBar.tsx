@@ -14,6 +14,7 @@ import { SettingsDropdown } from './SettingsDropdown';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { useFocusStore } from '@/store/focus-store';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -97,8 +98,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: R.agentTab,
     borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.35)',
-    backgroundColor: 'rgba(0,212,170,0.08)',
+    borderColor: withAlpha(C.accent, 0.35),
+    backgroundColor: withAlpha(C.accent, 0.08),
   },
   addBtnText: {
     color: C.accent,

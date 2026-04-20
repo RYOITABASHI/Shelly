@@ -17,6 +17,7 @@ import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 type Props = {
   visible: boolean;
@@ -207,7 +208,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 212, 170, 0.10)',
+    backgroundColor: withAlpha(C.accent, 0.10),
   },
   optionLabel: {
     flex: 1,

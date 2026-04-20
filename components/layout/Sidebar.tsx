@@ -33,8 +33,20 @@ import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
-import { neonTextGlow, neonDotGlow, neonBorderGlow, neonGlowSky } from '@/lib/neon-glow';
+import {
+  neonTextGlow,
+  neonDotGlow,
+  neonBorderGlow,
+  neonGlowSky,
+  neonGlowPink,
+  neonGlowPurple,
+  neonGlowAmber,
+  neonGlowGreen,
+  neonGlowBlue,
+  neonGlowTeal,
+} from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
@@ -48,12 +60,16 @@ function formatTimeAgo(ts: number): string {
   return `${Math.floor(diff / 86400)}D AGO`;
 }
 
+// Per-quick-folder neon palette. Each shortcut gets its own hue so the
+// DEVICE section reads as a colour-coded grid instead of a teal column.
+// Uses shellyPalette accent tokens so theme swaps flow through (TokyoNight
+// / Catppuccin pastels replace the shelly neons automatically).
 const QUICK_FOLDERS = [
-  { label: '~', path: '~/', icon: 'home' },
-  { label: 'DCIM', path: '/sdcard/DCIM', icon: 'photo-camera' },
-  { label: 'DOWNLOAD', path: '/sdcard/Download', icon: 'download' },
-  { label: 'DOCUMENT', path: '/sdcard/Documents', icon: 'description' },
-  { label: 'MUSIC', path: '/sdcard/Music', icon: 'music-note' },
+  { label: '~',        path: '~/',                 icon: 'home',          color: C.accentPink,   glow: neonGlowPink },
+  { label: 'DCIM',     path: '/sdcard/DCIM',       icon: 'photo-camera',  color: C.accentAmber,  glow: neonGlowAmber },
+  { label: 'DOWNLOAD', path: '/sdcard/Download',   icon: 'download',      color: C.accentBlue,   glow: neonGlowBlue },
+  { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description',   color: C.accentPurple, glow: neonGlowPurple },
+  { label: 'MUSIC',    path: '/sdcard/Music',      icon: 'music-note',    color: C.accentGreen,  glow: neonGlowGreen },
 ] as const;
 
 export function Sidebar() {
@@ -243,11 +259,13 @@ export function Sidebar() {
         {/* TASKS */}
         <SidebarSection
           title="TASKS"
-          icon="smart-toy"
+          icon="task-alt"
           isOpen={openSections.tasks}
           onToggle={() => toggleSection('tasks')}
           badge={runningAgents.length}
           iconsOnly={iconsOnly}
+          accent={C.accentPink}
+          glow={neonGlowPink}
         >
           {runningAgents.map((agent) => (
             <View key={`running-${agent.id}`} style={styles.taskRow}>
@@ -341,6 +359,8 @@ export function Sidebar() {
           isOpen={openSections.repos}
           onToggle={() => toggleSection('repos')}
           iconsOnly={iconsOnly}
+          accent={C.accent}
+          glow={neonGlowTeal}
         >
           {repoPaths.length === 0 ? (
             <Text style={styles.emptyRepoHint}>
@@ -405,10 +425,12 @@ export function Sidebar() {
         {/* FILE TREE */}
         <SidebarSection
           title="FILE TREE"
-          icon="folder-open"
+          icon="description"
           isOpen={openSections.files}
           onToggle={() => toggleSection('files')}
           iconsOnly={iconsOnly}
+          accent={C.accentSky}
+          glow={neonGlowSky}
         >
           <FileTree />
         </SidebarSection>
@@ -416,19 +438,23 @@ export function Sidebar() {
         {/* DEVICE */}
         <SidebarSection
           title="DEVICE"
-          icon="smartphone"
+          icon="stay-current-portrait"
           isOpen={openSections.device}
           onToggle={() => toggleSection('device')}
           iconsOnly={iconsOnly}
+          accent={C.accentAmber}
+          glow={neonGlowAmber}
         >
-          {QUICK_FOLDERS.map(({ label, path, icon }) => (
+          {QUICK_FOLDERS.map(({ label, path, icon, color, glow }) => (
             <Pressable
               key={path}
               style={styles.deviceRow}
               onPress={() => setActiveRepo(path)}
             >
-              <MaterialIcons name={icon as any} size={13} color={C.accentSky} style={neonGlowSky} />
-              <Text style={styles.deviceLabel}>{label}</Text>
+              <MaterialIcons name={icon as any} size={13} color={color} style={glow} />
+              <Text style={[styles.deviceLabel, { color }]} numberOfLines={1} ellipsizeMode="tail">
+                {label}
+              </Text>
             </Pressable>
           ))}
         </SidebarSection>
@@ -440,6 +466,8 @@ export function Sidebar() {
           isOpen={openSections.ports}
           onToggle={() => toggleSection('ports')}
           iconsOnly={iconsOnly}
+          accent={C.accentGreen}
+          glow={neonGlowGreen}
         >
           {portEntries.length === 0 ? (
             // Android 10+ SELinux denies BOTH /proc/net/tcp reads AND
@@ -479,6 +507,8 @@ export function Sidebar() {
           isOpen={openSections.profiles}
           onToggle={() => toggleSection('profiles')}
           iconsOnly={iconsOnly}
+          accent={C.accentBlue}
+          glow={neonGlowBlue}
         >
           <ProfilesSection />
         </SidebarSection>
@@ -636,7 +666,7 @@ const styles = StyleSheet.create({
     // Teal-tinted glow instead of the muddy amber that clashed with the
     // accent border. Pairs with neonBorderGlow (passed inline) for the
     // subtle bleed effect.
-    backgroundColor: 'rgba(0, 212, 170, 0.12)',
+    backgroundColor: withAlpha(C.accent, 0.12),
     borderLeftColor: C.accent,
   },
   repoIcon: {
@@ -690,9 +720,13 @@ const styles = StyleSheet.create({
     height: S.sidebarItemHeight,
   },
   deviceLabel: {
+    flex: 1,
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
+    // Default colour is overridden inline per-row (QUICK_FOLDERS carries
+    // a per-folder neon hue); text1 stays as the fallback for any other
+    // caller that reuses this style.
     color: C.text1,
     letterSpacing: 0.3,
   },

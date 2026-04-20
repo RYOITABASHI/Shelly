@@ -16,6 +16,7 @@ import { useSidebarStore } from '@/store/sidebar-store';
 import { useBrowserStore } from '@/store/browser-store';
 import { neonTextGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -454,8 +455,8 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(0,212,170,0.25)',
-    backgroundColor: 'rgba(0,212,170,0.06)',
+    borderColor: withAlpha(C.accent, 0.25),
+    backgroundColor: withAlpha(C.accent, 0.06),
     flexShrink: 0,
   },
   agentBadge: {
@@ -626,7 +627,7 @@ const menuStyles = StyleSheet.create({
     borderRadius: 6,
   },
   optionHighlight: {
-    backgroundColor: 'rgba(0,212,170,0.08)',
+    backgroundColor: withAlpha(C.accent, 0.08),
   },
   optionText: {
     color: C.text1,
@@ -653,7 +654,7 @@ const agentStyles = StyleSheet.create({
     borderRadius: 6,
   },
   rowActive: {
-    backgroundColor: 'rgba(0,212,170,0.08)',
+    backgroundColor: withAlpha(C.accent, 0.08),
   },
   dot: {
     width: 8,

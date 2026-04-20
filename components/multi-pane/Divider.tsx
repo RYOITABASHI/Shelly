@@ -19,6 +19,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import type { Ratios } from '@/hooks/use-multi-pane';
 import { colors as C } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 export type DividerProps = {
   kind: 'vertical' | 'horizontal';
@@ -193,9 +194,9 @@ const styles = StyleSheet.create({
     width: 6,
     height: 36,
     borderRadius: 3,
-    backgroundColor: 'rgba(0,212,170,0.10)',
+    backgroundColor: withAlpha(C.accent, 0.10),
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,212,170,0.7)',
+    borderColor: withAlpha(C.accent, 0.7),
     shadowColor: C.accent,
     shadowOffset: { width: 0, height: 0 },
     elevation: 6,
@@ -206,9 +207,9 @@ const styles = StyleSheet.create({
     width: 36,
     height: 6,
     borderRadius: 3,
-    backgroundColor: 'rgba(0,212,170,0.10)',
+    backgroundColor: withAlpha(C.accent, 0.10),
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(0,212,170,0.7)',
+    borderColor: withAlpha(C.accent, 0.7),
     shadowColor: C.accent,
     shadowOffset: { width: 0, height: 0 },
     elevation: 6,

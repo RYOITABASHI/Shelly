@@ -22,6 +22,7 @@ import { usePaneStore } from '@/store/pane-store';
 import { WorktreeAddModal } from './WorktreeAddModal';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, sizes as S } from '@/theme.config';
+import { neonGlowPurple } from '@/lib/neon-glow';
 
 const AGENT_COLORS: Record<WorktreeAgent, string> = {
   claude: '#A78BFA',
@@ -184,6 +185,8 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
         isOpen={isOpen}
         onToggle={onToggle}
         iconsOnly={iconsOnly}
+        accent={C.accentPurple}
+        glow={neonGlowPurple}
       >
         {!activeRepoPath ? (
           <Text style={styles.empty}>

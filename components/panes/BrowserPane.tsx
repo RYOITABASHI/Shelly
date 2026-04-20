@@ -17,6 +17,7 @@ import PaneInputBar from '@/components/panes/PaneInputBar';
 import { PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 
 // JS injected before the page loads so our fullscreen hooks are in place
 // before YouTube or any other video app tries to go fullscreen.
@@ -398,7 +399,7 @@ export default function BrowserPane({ initialUrl = 'about:blank', visible = true
           onPress={() => setDesktopMode((v) => !v)}
           style={[
             styles.navBtn,
-            desktopMode && { backgroundColor: 'rgba(0,212,170,0.12)' },
+            desktopMode && { backgroundColor: withAlpha(C.accent, 0.12) },
           ]}
           accessibilityLabel={desktopMode ? 'Switch to mobile view' : 'Switch to desktop view'}
         >

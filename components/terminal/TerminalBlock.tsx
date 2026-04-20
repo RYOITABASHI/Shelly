@@ -887,7 +887,7 @@ const styles = StyleSheet.create({
   prompt: {
     fontFamily: F.family,
     fontWeight: '700',
-    textShadowColor: 'rgba(0, 212, 170, 0.95)',
+    textShadowColor: withAlpha(C.accent, 0.95),
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 10,
   },
