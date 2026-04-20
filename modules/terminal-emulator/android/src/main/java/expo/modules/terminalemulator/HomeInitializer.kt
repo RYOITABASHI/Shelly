@@ -401,7 +401,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     execution. Fixes bug #114 "codex-termux has no interactive mode"
     //     — the TUI binary was always shipped in the npm tarball but CI
     //     was only copying codex-exec.bin into jniLibs.
-    private const val BASHRC_VERSION = 42
+    //  43: drop dead TMPDIR/TMP/TEMP exports (cli.js never calls os.tmpdir;
+    //     verified via grep — see #102 investigation in
+    //     specs/2026-04-20-overnight-fix-handoff.md). Add explicit
+    //     PS2='> ' to neutralise the "<` line-prefix" hypothesis raised in
+    //     the #106 paste-display review (one of the surviving symptoms is a
+    //     literal `<` showing up at column 0; if PS2 was ever overridden by
+    //     something to that, this hardcodes the bash default). Add
+    //     DISABLE_AUTOUPDATER=1 to claude's environment as recommended by
+    //     issue #50270 — the 2.1.112 pin is fragile because the bundled
+    //     auto-updater can silently fetch a 2.1.113+ Bun SEA tarball that
+    //     bricks Android. The chmod a-w on the cli dir is the second half
+    //     of that defense and lives in __shelly_bg_cli_update below.
+    private const val BASHRC_VERSION = 43
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -671,18 +683,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // without the user needing to mkdir manually.
             sb.appendLine("export CLAUDE_CODE_TMPDIR=\"\$HOME/.claude-tmp\"")
             sb.appendLine("mkdir -p \"\$CLAUDE_CODE_TMPDIR\" 2>/dev/null")
-            // v41 belt-and-suspenders: the manual sed fix for `/tmp/claude`
-            // string-literals did NOT stop the OAuth 400 on 2026-04-20, which
-            // suggests a code path is reaching Node's os.tmpdir() instead of
-            // the sed'd literal. os.tmpdir() resolves to the first defined
-            // of TMPDIR / TMP / TEMP before falling back to /tmp, so
-            // exporting all three to the same writable dir patches every
-            // Node.js tmp-path consumer in one shot — including MCP
-            // subprocesses and future claude-code internal rewrites that
-            // don't use CLAUDE_CODE_TMPDIR. Cheap, no known regression.
-            sb.appendLine("export TMPDIR=\"\$HOME/.claude-tmp\"")
-            sb.appendLine("export TMP=\"\$HOME/.claude-tmp\"")
-            sb.appendLine("export TEMP=\"\$HOME/.claude-tmp\"")
+            // v43: TMPDIR/TMP/TEMP exports REMOVED. The 2026-04-20 #102
+            // investigation grep'd cli.js for `os.tmpdir` / `process.env.TMPDIR`
+            // and found 0 hits — claude-code 2.1.112 does not consult Node's
+            // tmpdir at all. The exports were dead code. Keeping them risked
+            // silently retargeting unrelated tools (npm cache, etc.) at
+            // ~/.claude-tmp on a fresh install where the dir didn't exist
+            // yet. Removed.
+            // bug #106 part B: explicit PS2 so a wrapped or unclosed paste
+            // never confuses the user with a non-default continuation
+            // prompt. The literal `<` line-prefix observed during
+            // multi-line paste display corruption is most likely bash's
+            // continuation-prompt rendering of an unclosed quote — pinning
+            // PS2 to the canonical `> ` makes that diagnosis verifiable.
+            sb.appendLine("export PS2='> '")
+            // [#50270](https://github.com/anthropics/claude-code/issues/50270):
+            // claude-code 2.1.113+ ships a Bun SEA binary that does not
+            // run on Android bionic. The bundled auto-updater would
+            // happily fetch a 2.1.113+ tarball mid-session and brick the
+            // CLI. Setting DISABLE_AUTOUPDATER=1 stops that. The chmod
+            // a-w on the cli dir (in __shelly_bg_cli_update) is the
+            // second half of the same defense.
+            sb.appendLine("export DISABLE_AUTOUPDATER=1")
             // bug #100 seed is emitted AFTER the git() shell function is
             // defined (near line 739 — search for `git() {`) so that plain
             // `git config ...` resolves to the function and reaches the
@@ -1058,6 +1080,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("    mkdir -p \"\$__shelly_cli_dir\"")
             sb.appendLine("    mv \"\$__staging\" \"\$__shelly_cli_dir\"")
+            // [#50270](https://github.com/anthropics/claude-code/issues/50270)
+            // belt + suspenders alongside DISABLE_AUTOUPDATER=1: drop write
+            // permission on the claude-code module dir so even if the env
+            // var is dropped the bundled updater can't replace cli.js with
+            // a 2.1.113+ Bun SEA blob. `2>/dev/null` because chmod can fail
+            // on filesystems that don't honour the bits — that's fine, the
+            // env var still does the job.
+            sb.appendLine("    chmod -R a-w \"\$__shelly_cli_dir/node_modules/@anthropic-ai/claude-code\" 2>/dev/null || true")
             sb.appendLine("    echo \"\$__shelly_now\" > \"\$__shelly_update_marker\"")
             sb.appendLine("    echo '[install] committed — live tree updated, .prev snapshot refreshed'")
             sb.appendLine("  else")

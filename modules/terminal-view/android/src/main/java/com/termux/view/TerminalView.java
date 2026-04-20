@@ -439,6 +439,16 @@ public class TerminalView extends View {
             private int mDeleteBurst = 0;
             /** Window (ms) after a commit during which DELs are treated as IME resync, not user BS */
             private static final long IME_RESYNC_WINDOW_MS = 250;
+            /** bug #106 diag: timestamp of the previous commitText, used to detect IME chunk-splitting.
+             *  Samsung Keyboard / Nacre have been observed splitting a single paste into multiple
+             *  commitText calls within ~10ms; the gap between paste-pipeline (length >= 16) and
+             *  per-char (length < 16) routing for the two halves is what produces the
+             *  "<te|.json" display-corruption symptom even though bytes reach bash correctly.
+             *  This is a logging-only hook for now — when consecutive commits land within
+             *  COMMIT_BURST_WINDOW_MS we emit a marker line so logcat traces show the split.
+             *  The actual coalescing fix lives in a follow-up commit guarded on this data. */
+            private long mPrevCommitAt = 0;
+            private static final long COMMIT_BURST_WINDOW_MS = 50;
 
             private void resetShadowAfterNewline(String text) {
                 // If the text that just flew to the PTY contained a newline,
@@ -536,11 +546,22 @@ public class TerminalView extends View {
                     boolean hasNewline = commitStr.indexOf('\n') >= 0 || commitStr.indexOf('\r') >= 0;
                     boolean isPaste = commitStr.length() > 1
                         && (hasNewline || commitStr.length() >= 16);
+                    // bug #106 diag: emit a burst marker when this commit lands
+                    // within COMMIT_BURST_WINDOW_MS of the previous one. If we
+                    // see commit-as-paste followed by commit-as-typed within
+                    // that window, the IME split a single paste and the two
+                    // halves took different routing → screen corruption.
+                    long now = android.os.SystemClock.uptimeMillis();
+                    long delta = mPrevCommitAt == 0 ? -1 : now - mPrevCommitAt;
+                    mPrevCommitAt = now;
+                    if (delta >= 0 && delta < COMMIT_BURST_WINDOW_MS) {
+                        Log.d("ShellyIME", "commit BURST delta=" + delta + "ms (likely IME chunk-split — see #106)");
+                    }
                     if (isPaste && mEmulator != null) {
-                        Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length() + " nl=" + hasNewline);
+                        Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length() + " nl=" + hasNewline + " delta=" + delta + "ms");
                         TerminalView.this.pasteViaEmulator(commitStr);
                     } else {
-                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " text=\"" + commitStr + "\"");
+                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " text=\"" + commitStr + "\" delta=" + delta + "ms");
                         sendToPtyAndShadow(commitStr);
                     }
                 }

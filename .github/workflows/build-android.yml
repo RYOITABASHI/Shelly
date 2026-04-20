@@ -34,6 +34,17 @@ jobs:
           curl -L "https://github.com/DioNanos/codex-termux/releases/download/${CODEX_TERMUX_VERSION}/codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
             -o /tmp/codex-termux.tar.gz
           cd /tmp && tar xzf codex-termux.tar.gz
+          # Verify the upstream tarball still ships both binaries we depend on.
+          # If DioNanos/codex-termux ever renames or drops one of these files,
+          # the next green build would silently produce an APK with codex
+          # broken on-device. Fail loud here instead.
+          for f in /tmp/codex-exec.bin /tmp/codex.bin; do
+            if [ ! -f "$f" ]; then
+              echo "FATAL: expected $f in codex-termux tarball; tarball contents:" >&2
+              ls -la /tmp >&2
+              exit 1
+            fi
+          done
           # 1-shot exec binary (used by `codex exec/resume/review` subcommands)
           cp /tmp/codex-exec.bin "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
