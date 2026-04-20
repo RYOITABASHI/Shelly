@@ -278,14 +278,19 @@ claude                                                                # → onbo
 - refresh token が Cloudflare WAF で弾かれる可能性 ([#47754](https://github.com/anthropics/claude-code/issues/47754)) → 確認 TODO
 - Termux 側も 2.1.113+ にアップグレードされると cli.js 消失で /login 自体不可 ([#50270](https://github.com/anthropics/claude-code/issues/50270)、2.1.112 pin 必須)
 
-**恒久修正候補 (v0.1.1)**:
-1. **Shelly 内 credentials import UI** — Sidebar に「Import from external claude install」ボタン追加、/sdcard/Download/ からピック
+**🎯 スコープ判断 (2026-04-20)**: Shelly は **ゼロ状態ユーザー向けではなく、既に開発環境を持つユーザー向け** のツールとして再定義。初心者向けの「ブラウザから直接 /login 完結」体験は **Chelly (Chat UI を別リポで OSS 化する姉妹プロジェクト)** の責務。Shelly 本体での /login 完結実装は **スコープ外**。
+
+→ **優先度**: P2 (Shelly の設計思想と合わない。v0.1.0 では README に transplant 手順を明記して「上級者向けの手作業セットアップ」として出荷)
+
+**恒久修正候補** (もし Chelly 連携が遅れた場合の Shelly 側 fallback、v0.2.0 以降):
+1. **Shelly 内 credentials import UI** — Sidebar に「Import from external claude install」ボタン追加、/sdcard/Download/ からピック (最小工数)
 2. **shelly-claude-auth.js 自作** (dev handoff §4-1 回避策 3, ~250 LoC) — codex-login と対称のデバイスフロー実装、PKCE + am start で完結させる
 3. **xdg-open 以外の signal を特定して潰す** — claude 2.1.112 cli.js を再解析、`isTTY` / `terminal.type` 等の detector を探す
 
-**優先度**: P1 (回避策で当面運用可能、恒久修正は v0.1.1)
-
-**→ sync**: MEMORY.md / new handoff spec に transplant 手順を記録済
+**→ sync**:
+- README.md に credentials transplant 手順を明記 (done TODO → 本コミットで対応)
+- MEMORY.md / `2026-04-20-claude-credentials-transplant.md` に transplant 手順を記録済
+- Chelly プロジェクト側に「credentials 生成 → Shelly 転送経路」の設計タスクを渡す
 
 ---
 

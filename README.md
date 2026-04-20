@@ -549,6 +549,42 @@ Shelly is v0.1.0. Here's what we know isn't perfect yet.
 - **Silkscreen is not monospaced** — `ls -la` columns may drift slightly; switch to the `Mono` font preset from the Command Palette if you need strict columns.
 - **Codex CLI runs through a rewritten `codex.js`** — `@openai/codex` ships a statically-linked ET_EXEC aarch64 binary (`@openai/codex-linux-arm64`) that Android's `mmap_min_addr` refuses to load. Shelly replaces the upstream binary with the `codex-termux` ET_DYN build (extracted from jniLibs as `codex_exec`) and patches `codex.js` at post-install to spawn it through `/system/bin/linker64`. The old Alpine rootfs + proot path has been retired. If `codex --version` fails, check `~/.shelly-cli/install.log` for the `[patch] codex.js OK` line. Tracked as bugs #76 (ET_DYN swap) and #96 (node-based patcher replacing the broken coreutils sed).
 - **`/sdcard` access requires MANAGE_EXTERNAL_STORAGE** — Android 11+ Scoped Storage blocks direct `open(2)` on `/sdcard` paths without this permission. Shelly asks for it on first launch; if you deny it, `source /sdcard/Download/foo.sh` will fail with `Permission denied`. Re-grant from system Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files.
+- **Claude Code login cannot complete inside Shelly** — Anthropic's OAuth flow tries a loopback callback that requires a registered browser handler (`xdg-open` / `termux-open`); under Shelly the flow falls back to manual code paste, and the paste step rejects with `OAuth error: status code 400` for reasons we haven't fully traced. Workaround: complete `/login` in another environment (Termux, PC, GitHub Codespaces, anywhere Claude Code already works), then transplant the credentials — details in [Bring your own Claude credentials](#bring-your-own-claude-credentials) below. This is an intentional scope limitation: first-run zero-setup authentication is the job of the sister project **Chelly**, not Shelly. Tracked as bug #102.
+
+### Bring your own Claude credentials
+
+Claude Code stores its authentication in two files on whatever machine you ran `/login` on:
+
+- `~/.claude.json` — account + onboarding completion state (~32 KB)
+- `~/.claude/.credentials.json` — OAuth access + refresh tokens (~500 B)
+
+Both need to land in the corresponding paths inside Shelly's home directory. The shortest route is `/sdcard` as a shared drop point:
+
+**On the working machine** (Termux, laptop, Codespaces, …) after a successful `/login`:
+
+```bash
+# Drop both files onto shared storage. On desktop, use scp/rsync/adb push
+# to put them under /sdcard/Download/ on the phone instead.
+cp ~/.claude.json                /sdcard/Download/shelly-claude-root.json
+tar cf  /sdcard/Download/termux-claude-dir.tar -C ~/.claude .
+# If your tar defaults to gzip, use `tar cf` (no `z`) — Shelly's bundled
+# tar cannot exec /bin/zcat and will fail on tar.gz.
+```
+
+**On Shelly**, in a terminal pane:
+
+```bash
+cp /sdcard/Download/shelly-claude-root.json ~/.claude.json
+chmod 600 ~/.claude.json
+cd ~/.claude && tar xf /sdcard/Download/termux-claude-dir.tar
+claude              # "Welcome back <you>" means success; an onboarding picker means a file is missing
+```
+
+Caveats:
+
+- Access tokens are short-lived (~9 hours). When the refresh token eventually rotates or Cloudflare's WAF rejects an Android-origin refresh, Shelly's `claude` will stop authenticating and you'll need to repeat the copy from a working environment. The community has reported refresh failures in [anthropics/claude-code#47754](https://github.com/anthropics/claude-code/issues/47754); we have not yet seen it in Shelly testing, but it is the expected long-tail failure mode.
+- Keep the source environment on `@anthropic-ai/claude-code@2.1.112`. The 2.1.113 release [shipped without `cli.js`](https://github.com/anthropics/claude-code/issues/50270), which breaks the whole toolchain — not specific to Shelly but worth knowing before `npm i -g` on the donor machine.
+- These files are highly sensitive (anyone holding them can talk to Anthropic as you). Treat the `/sdcard/Download/` copies as single-use — delete them after the transplant lands.
 
 ---
 
