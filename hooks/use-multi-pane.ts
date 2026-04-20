@@ -695,18 +695,31 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
             // (from pre-fix persists) get one bound now. Without this step
             // existing users would stay broken after upgrade until they
             // manually close and re-add every pane.
+            //
+            // Also defends against duplicate sessionIds across slots — if a
+            // future persist migration (or a hand-edited store) ends up with
+            // two terminal slots pointing at the same session, all but the
+            // first get a fresh mint. Without this, reconcile's early-return
+            // on truthy sessionId would leave the dup in place and both
+            // panes would keep rendering the same PTY.
             const { useTerminalStore } = require('@/store/terminal-store');
             const store = useTerminalStore.getState();
+            const seen = new Set<string>();
             let changed = false;
             const next = slots.map((slot) => {
-              if (!slot || slot.tab !== 'terminal' || slot.sessionId) return slot;
+              if (!slot || slot.tab !== 'terminal') return slot;
+              if (slot.sessionId && !seen.has(slot.sessionId)) {
+                seen.add(slot.sessionId);
+                return slot;
+              }
               const nid = store.addSession();
               if (!nid) return slot;
+              seen.add(nid);
               changed = true;
               return { ...slot, sessionId: nid };
             }) as [Slot, Slot, Slot, Slot];
             if (changed) {
-              logInfo('MultiPane', 'initShell: backfilled sessionIds for pre-existing slots');
+              logInfo('MultiPane', 'initShell: reconciled sessionIds (missing or duplicate)');
               set({ slots: next });
             }
           }
@@ -752,9 +765,22 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         disableMultiPane: () => {
           // v0.1.1: multi-pane is the only mode. Reset to a single terminal.
+          // Mint the session up front for the same reason as initShell —
+          // leaving sessionId undefined would make TerminalPane fall back to
+          // globalActiveSession, which re-creates bug #117 if the user later
+          // adds a second pane.
+          const { useTerminalStore } = require('@/store/terminal-store');
+          const nid = useTerminalStore.getState().addSession();
           set({
             preset: 'p1',
-            slots: [{ id: genId(), tab: 'terminal' }, null, null, null],
+            slots: [
+              nid
+                ? { id: genId(), tab: 'terminal', sessionId: nid }
+                : { id: genId(), tab: 'terminal' },
+              null,
+              null,
+              null,
+            ],
             focusedSlot: 0,
             maximizedSlot: null,
           });
