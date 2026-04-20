@@ -271,16 +271,32 @@ export function FileTree() {
             onLongPress={() => handleLongPress(item)}
             delayLongPress={350}
           >
-            <MaterialIcons
-              name={item.isDirectory ? 'folder' : 'insert-drive-file'}
-              size={I.fileIcon}
-              color={fileIconColor(item.name, item.isDirectory)}
-            />
+            {/* oil.nvim-style compact row: dirs get a chevron + trailing
+                slash, files get a tiny colored dot keyed to file type.
+                No boxed file icon, no bordered row — the color alone
+                conveys extension. */}
+            {item.isDirectory ? (
+              <MaterialIcons
+                name="chevron-right"
+                size={I.fileIcon}
+                color={fileIconColor(item.name, true)}
+              />
+            ) : (
+              <View
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: 2.5,
+                  backgroundColor: fileIconColor(item.name, false),
+                  marginHorizontal: 3,
+                }}
+              />
+            )}
             <Text
               style={[styles.fileName, { color: fileNameColor(item.name) }]}
               numberOfLines={1}
             >
-              {item.name}
+              {item.name}{item.isDirectory ? '/' : ''}
             </Text>
           </Pressable>
         )}
@@ -417,6 +433,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   searchRow: {
+    // oil.nvim style: no divider. The focus-ring on the TextInput below
+    // gives the row enough visual identity without a full-width border.
     flexDirection: 'row',
     alignItems: 'center',
     marginHorizontal: 6,
@@ -424,8 +442,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     height: 18,
     gap: 4,
-    borderBottomWidth: S.borderWidth,
-    borderBottomColor: C.border,
   },
   search: {
     flex: 1,

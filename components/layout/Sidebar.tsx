@@ -373,7 +373,7 @@ export function Sidebar() {
         {/* REPOSITORIES */}
         <SidebarSection
           title="REPOSITORIES"
-          icon="folder-special"
+          icon="folder"
           isOpen={openSections.repos}
           onToggle={() => toggleSection('repos')}
           iconsOnly={iconsOnly}
@@ -457,7 +457,7 @@ export function Sidebar() {
         {/* DEVICE */}
         <SidebarSection
           title="DEVICE"
-          icon="phone-android"
+          icon="smartphone"
           isOpen={openSections.device}
           onToggle={() => toggleSection('device')}
           iconsOnly={iconsOnly}
@@ -477,7 +477,7 @@ export function Sidebar() {
         {/* PORTS — live /proc/net/tcp{,6} scan every 15s (see useEffect above) */}
         <SidebarSection
           title="PORTS"
-          icon="lan"
+          icon="hub"
           isOpen={openSections.ports}
           onToggle={() => toggleSection('ports')}
           iconsOnly={iconsOnly}
@@ -516,7 +516,7 @@ export function Sidebar() {
         {/* PROFILES */}
         <SidebarSection
           title="PROFILES"
-          icon="manage-accounts"
+          icon="person-outline"
           isOpen={openSections.profiles}
           onToggle={() => toggleSection('profiles')}
           iconsOnly={iconsOnly}

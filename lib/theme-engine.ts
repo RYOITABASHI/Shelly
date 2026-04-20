@@ -404,6 +404,90 @@ export const BUILTIN_THEMES: Theme[] = [
     },
   },
   {
+    id: 'catppuccin-mocha',
+    name: 'Catppuccin Mocha',
+    author: 'Catppuccin org',
+    type: 'dark',
+    colors: {
+      // Official Catppuccin Mocha palette (catppuccin/catppuccin).
+      // Warm pastel-dark, currently the most popular "premium" terminal
+      // look in WezTerm / neovim communities. Pairs well with transparent
+      // backgrounds + Nerd Font — gives a Tokyo-Night-like vibe with
+      // warmer hues and a more forgiving contrast ratio.
+      background: '#1E1E2E',      // base
+      surface: '#181825',         // mantle
+      surfaceAlt: '#313244',      // surface0
+      foreground: '#CDD6F4',      // text
+      muted: '#6C7086',           // overlay0
+      accent: '#89B4FA',          // blue
+      border: '#313244',          // surface0
+      success: '#A6E3A1',         // green
+      warning: '#F9E2AF',         // yellow
+      error: '#F38BA8',           // red
+      prompt: '#A6E3A1',          // green
+      command: '#89B4FA',         // blue
+      inactive: '#6C7086',        // overlay0
+      ansiBlack: '#45475A',       // surface1
+      ansiRed: '#F38BA8',
+      ansiGreen: '#A6E3A1',
+      ansiYellow: '#F9E2AF',
+      ansiBlue: '#89B4FA',
+      ansiMagenta: '#F5C2E7',     // pink
+      ansiCyan: '#94E2D5',        // teal
+      ansiWhite: '#BAC2DE',       // subtext1
+      ansiBrightBlack: '#585B70', // surface2
+      ansiBrightRed: '#F38BA8',
+      ansiBrightGreen: '#A6E3A1',
+      ansiBrightYellow: '#F9E2AF',
+      ansiBrightBlue: '#89B4FA',
+      ansiBrightMagenta: '#F5C2E7',
+      ansiBrightCyan: '#94E2D5',
+      ansiBrightWhite: '#A6ADC8', // subtext0
+    },
+  },
+  {
+    id: 'rose-pine',
+    name: 'Rose Pine',
+    author: 'rose-pine org',
+    type: 'dark',
+    colors: {
+      // Official Rosé Pine palette (rose-pine/rose-pine).
+      // Muted mono-violet background with peach/gold/rose accents —
+      // distinctive "cozy low-contrast" vibe. Compared to Tokyo Night
+      // this reads warmer and less saturated, good for long-form terminal
+      // work where the eye will rest on text for hours.
+      background: '#191724',      // base
+      surface: '#1F1D2E',         // surface
+      surfaceAlt: '#26233A',      // overlay
+      foreground: '#E0DEF4',      // text
+      muted: '#6E6A86',           // subtle
+      accent: '#C4A7E7',          // iris (violet accent)
+      border: '#26233A',          // overlay
+      success: '#9CCFD8',         // foam (cyan-green)
+      warning: '#F6C177',         // gold
+      error: '#EB6F92',           // love (pink-red)
+      prompt: '#9CCFD8',          // foam
+      command: '#C4A7E7',         // iris
+      inactive: '#6E6A86',        // subtle
+      ansiBlack: '#26233A',       // overlay
+      ansiRed: '#EB6F92',         // love
+      ansiGreen: '#9CCFD8',       // foam (approx)
+      ansiYellow: '#F6C177',      // gold
+      ansiBlue: '#31748F',        // pine
+      ansiMagenta: '#C4A7E7',     // iris
+      ansiCyan: '#9CCFD8',        // foam
+      ansiWhite: '#E0DEF4',       // text
+      ansiBrightBlack: '#6E6A86', // subtle
+      ansiBrightRed: '#EB6F92',
+      ansiBrightGreen: '#9CCFD8',
+      ansiBrightYellow: '#F6C177',
+      ansiBrightBlue: '#31748F',
+      ansiBrightMagenta: '#C4A7E7',
+      ansiBrightCyan: '#9CCFD8',
+      ansiBrightWhite: '#E0DEF4',
+    },
+  },
+  {
     id: 'monokai',
     name: 'Monokai',
     author: 'Wimer Hazenberg',
