@@ -19,7 +19,7 @@ import {
   View,
   Text,
   TextInput,
-  Modal,
+  
   Pressable,
   StyleSheet,
   ActivityIndicator,
@@ -27,6 +27,7 @@ import {
   Linking,
   Platform,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
 import { buildDraft, createIssue, getEnvInfo, type IssueDraft } from '@/lib/github-issues';
@@ -151,7 +152,7 @@ export default function IssueDraftAction({
         <Text style={styles.actionText}>GitHub Issue を作成</Text>
       </Pressable>
 
-      <Modal
+      <ShellyModal
         visible={open}
         transparent
         animationType="slide"
@@ -222,7 +223,7 @@ export default function IssueDraftAction({
             </View>
           </Pressable>
         </Pressable>
-      </Modal>
+      </ShellyModal>
     </>
   );
 }

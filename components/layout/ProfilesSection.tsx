@@ -7,8 +7,9 @@ import {
   Alert,
   StyleSheet,
   TextInput,
-  Modal,
+  
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme-engine';
@@ -71,7 +72,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
   const labelStyle = [styles.label, { color: c.muted }];
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <ShellyModal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={[styles.modalBox, { backgroundColor: c.background, borderColor: c.border }]}>
           {/* Leading BACK affordance for users whose device doesn't have
@@ -127,7 +128,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
           </View>
         </View>
       </View>
-    </Modal>
+    </ShellyModal>
   );
 }
 

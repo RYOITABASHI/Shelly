@@ -4,11 +4,12 @@ import {
   Text,
   Pressable,
   StyleSheet,
-  Modal,
+  
   TouchableOpacity,
   TouchableWithoutFeedback,
   Linking,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -129,7 +130,7 @@ function ActionMenu({
   onSaveSnippet, onRerun, isSaved, colors,
 }: ActionMenuProps) {
   return (
-    <Modal
+    <ShellyModal
       visible={visible}
       transparent
       animationType="fade"
@@ -187,7 +188,7 @@ function ActionMenu({
           </TouchableWithoutFeedback>
         </View>
       </TouchableWithoutFeedback>
-    </Modal>
+    </ShellyModal>
   );
 }
 
@@ -447,7 +448,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
       )}
 
       {/* Duplicate snippet confirmation dialog */}
-      <Modal
+      <ShellyModal
         visible={dupDialogVisible}
         transparent
         animationType="fade"
@@ -478,7 +479,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
             </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
-      </Modal>
+      </ShellyModal>
 
       {/* User command bubble (right-aligned) */}
       <Animated.View

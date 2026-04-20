@@ -8,13 +8,14 @@ import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
-  Modal,
+  
   Pressable,
   TextInput,
   StyleSheet,
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useWorktreeStore, type WorktreeAgent } from '@/store/worktree-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
@@ -64,7 +65,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
   const canSubmit = !busy && repoPath != null && branch.trim().length > 0;
 
   return (
-    <Modal
+    <ShellyModal
       visible={visible}
       transparent
       animationType="slide"
@@ -137,7 +138,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
           </View>
         </Pressable>
       </Pressable>
-    </Modal>
+    </ShellyModal>
   );
 }
 

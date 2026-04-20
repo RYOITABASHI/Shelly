@@ -4,8 +4,9 @@
  */
 import React from 'react';
 import {
-  Modal, View, Text, ScrollView, Pressable, StyleSheet,
+  View, Text, ScrollView, Pressable, StyleSheet,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/lib/theme-engine';
@@ -25,7 +26,7 @@ export function DiffViewerModal({ visible, diff, onClose }: Props) {
   const lines = diff.split('\n');
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <ShellyModal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={[styles.overlay, { paddingTop: insets.top }]}>
         <View style={[styles.container, { backgroundColor: colors.background }]}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -63,7 +64,7 @@ export function DiffViewerModal({ visible, diff, onClose }: Props) {
           </ScrollView>
         </View>
       </View>
-    </Modal>
+    </ShellyModal>
   );
 }
 

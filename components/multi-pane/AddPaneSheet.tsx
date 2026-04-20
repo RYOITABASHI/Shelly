@@ -4,9 +4,11 @@
 // Triggered by the "+" button in AgentBar.
 
 import React from 'react';
-import { View, Text, Pressable, StyleSheet, Modal, Alert } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
+import { useAddPane } from '@/hooks/use-add-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
@@ -32,6 +34,7 @@ const OPTIONS: SheetOption[] = [
 ];
 
 export function AddPaneSheet({ visible, onClose }: Props) {
+  const addPane = useAddPane();
   const handleSelect = (opt: SheetOption) => {
     if (opt.kind === 'sidebar') {
       // Open the sidebar expanded; the File Tree section is open by default.
@@ -43,31 +46,13 @@ export function AddPaneSheet({ visible, onClose }: Props) {
       onClose();
       return;
     }
-
-    // v0.1.1: the preset-based store handles capacity, promotion and the
-    // terminal cap by itself. No focus tracking, no stale-id guards, no
-    // tree walking — it's just `addPane(tab)`.
-    // bug #108: Alert when a cap is hit so "+" doesn't feel broken.
-    const result = useMultiPaneStore.getState().addPane(opt.id);
-    if (result === 'terminal_cap') {
-      Alert.alert(
-        'ターミナルの上限',
-        'ターミナルは 3 ペインまでです。これ以上増やすと Android の phantom process killer がバックグラウンドのセッションを殺す可能性があります。',
-      );
-      return;
-    }
-    if (result === 'layout_full') {
-      Alert.alert(
-        'レイアウト満杯',
-        '既に 4 ペイン使用中です。追加するにはいずれかのペインを閉じてください。',
-      );
-      return;
-    }
-    onClose();
+    // bug #108: useAddPane shows the cap-reached alert; close on success.
+    const result = addPane(opt.id);
+    if (result === null) onClose();
   };
 
   return (
-    <Modal
+    <ShellyModal
       visible={visible}
       transparent
       animationType="slide"
@@ -93,7 +78,7 @@ export function AddPaneSheet({ visible, onClose }: Props) {
           ))}
         </Pressable>
       </Pressable>
-    </Modal>
+    </ShellyModal>
   );
 }
 

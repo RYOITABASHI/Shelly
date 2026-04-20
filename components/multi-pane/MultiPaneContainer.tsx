@@ -30,6 +30,7 @@ import {
 } from '@/hooks/use-multi-pane';
 import { logInfo } from '@/lib/debug-logger';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
+import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { colors as C, fonts as F } from '@/theme.config';
@@ -37,7 +38,7 @@ import { colors as C, fonts as F } from '@/theme.config';
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
 function EmptyState() {
-  const addPane = useMultiPaneStore((s) => s.addPane);
+  const addPane = useAddPane();
   const options: { tab: PaneTab; label: string; icon: string }[] = [
     { tab: 'terminal', label: 'Terminal', icon: 'terminal' },
     { tab: 'ai',       label: 'AI Chat',  icon: 'auto-awesome' },

@@ -5,13 +5,14 @@
 
 import React from 'react';
 import {
-  Modal,
+  
   View,
   Text,
   TouchableOpacity,
   TouchableWithoutFeedback,
   StyleSheet,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -77,7 +78,7 @@ export function LinkContextMenu({
   };
 
   return (
-    <Modal
+    <ShellyModal
       visible={visible}
       transparent
       animationType="fade"
@@ -143,7 +144,7 @@ export function LinkContextMenu({
           </TouchableWithoutFeedback>
         </View>
       </TouchableWithoutFeedback>
-    </Modal>
+    </ShellyModal>
   );
 }
 

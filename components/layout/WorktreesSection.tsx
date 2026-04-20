@@ -16,6 +16,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useWorktreeStore, type WorktreeAgent, type Worktree } from '@/store/worktree-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { usePaneStore } from '@/store/pane-store';
 import { WorktreeAddModal } from './WorktreeAddModal';
@@ -80,6 +81,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
 
   const [addVisible, setAddVisible] = useState(false);
   const [initialAgent, setInitialAgent] = useState<WorktreeAgent>('claude');
+  const addPane = useAddPane();
 
   const repoWorktrees = activeRepoPath
     ? worktrees.filter((w) => w.repoPath === activeRepoPath)
@@ -95,7 +97,12 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
       // its env, history, and agent CLI still running) comes back. We
       // delegate the attach dance to `tmux attach-session -t <id>` which
       // returns to the prior TUI immediately on supported builds.
-      useMultiPaneStore.getState().addPane('terminal');
+      const addResult = addPane('terminal');
+      if (addResult !== null) {
+        // Cap reached — Alert shown by useAddPane. Bail out so we don't
+        // try to write to a pane that wasn't created.
+        return;
+      }
       const shellEscapedPath = wt.worktreePath.replace(/'/g, "'\\''");
       const cdCmd = `cd '${shellEscapedPath}'`;
       const agentCmd = resumeCommandFor(wt);
@@ -138,7 +145,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
       touch(worktreeId);
       if (wt.agent !== 'none') markAgentStarted(worktreeId);
     },
-    [touch, setSession, markAgentStarted],
+    [touch, setSession, markAgentStarted, addPane],
   );
 
   const handleRemove = useCallback(

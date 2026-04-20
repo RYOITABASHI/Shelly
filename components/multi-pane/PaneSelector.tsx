@@ -1,12 +1,13 @@
 import React from 'react';
 import {
-  Modal,
+  
   View,
   Text,
   Pressable,
   StyleSheet,
   FlatList,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { PANE_REGISTRY } from './pane-registry';
 import type { PaneTab } from '@/hooks/use-multi-pane';
@@ -23,7 +24,7 @@ type Props = {
 
 export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) {
   return (
-    <Modal
+    <ShellyModal
       transparent
       animationType="fade"
       visible={visible}
@@ -60,7 +61,7 @@ export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) 
           />
         </View>
       </Pressable>
-    </Modal>
+    </ShellyModal>
   );
 }
 

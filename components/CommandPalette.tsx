@@ -17,6 +17,7 @@ import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useFocusStore } from '@/store/focus-store';
+import { useAddPane } from '@/hooks/use-add-pane';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { buildTmuxListCommand } from '@/lib/session-restore';
 import { useTranslation } from '@/lib/i18n';
@@ -56,6 +57,7 @@ export function CommandPalette() {
   const snippets = useSnippetStore((s) => s.snippets);
   const [query, setQuery] = useState('');
   const { t } = useTranslation();
+  const addPane = useAddPane();
 
   const actions = useMemo((): PaletteAction[] => {
     const list: PaletteAction[] = [
@@ -129,15 +131,15 @@ export function CommandPalette() {
       // which splits the last leaf horizontally. Empty state also
       // handled (it creates a root leaf of the requested tab).
       { id: 'pane-add-terminal', label: 'Pane: Add Terminal', hint: 'split current layout', icon: 'terminal', category: 'pane',
-        onExecute: () => { useMultiPaneStore.getState().addPane('terminal'); close(); } },
+        onExecute: () => { addPane('terminal'); close(); } },
       { id: 'pane-add-ai', label: 'Pane: Add AI', hint: 'split current layout', icon: 'smart-toy', category: 'pane',
-        onExecute: () => { useMultiPaneStore.getState().addPane('ai'); close(); } },
+        onExecute: () => { addPane('ai'); close(); } },
       { id: 'pane-add-browser', label: 'Pane: Add Browser', hint: 'split current layout', icon: 'public', category: 'pane',
-        onExecute: () => { useMultiPaneStore.getState().addPane('browser'); close(); } },
+        onExecute: () => { addPane('browser'); close(); } },
       { id: 'pane-add-markdown', label: 'Pane: Add Markdown', hint: 'split current layout', icon: 'article', category: 'pane',
-        onExecute: () => { useMultiPaneStore.getState().addPane('markdown'); close(); } },
+        onExecute: () => { addPane('markdown'); close(); } },
       { id: 'pane-add-preview', label: 'Pane: Add Preview', hint: 'split current layout', icon: 'preview', category: 'pane',
-        onExecute: () => { useMultiPaneStore.getState().addPane('preview'); close(); } },
+        onExecute: () => { addPane('preview'); close(); } },
 
       // Font preset — flips uiFont in settings, RootLayout's effect
       // picks the change up and calls applyThemePreset automatically.
@@ -225,7 +227,7 @@ export function CommandPalette() {
     });
 
     return list;
-  }, [snippets, isMultiPane, layout.isWide]);
+  }, [snippets, isMultiPane, layout.isWide, addPane, close, t, enableMultiPane, disableMultiPane]);
 
   const searchResults = useMemo(() => {
     if (!query.trim()) return null; // null = show sectioned view

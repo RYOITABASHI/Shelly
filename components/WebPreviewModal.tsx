@@ -3,7 +3,8 @@
  * The "correct reincarnation" of the deleted Browser tab.
  */
 import React from 'react';
-import { Modal, View, Pressable, StyleSheet, Text } from 'react-native';
+import { View, Pressable, StyleSheet, Text } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -36,7 +37,7 @@ export function WebPreviewModal({ visible, html, onClose }: Props) {
   const safeHtml = wrapHtmlWithCSP(html);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <ShellyModal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={[styles.overlay, { paddingTop: insets.top }]}>
         <View style={[styles.container, { backgroundColor: colors.background }]}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -60,7 +61,7 @@ export function WebPreviewModal({ visible, html, onClose }: Props) {
           />
         </View>
       </View>
-    </Modal>
+    </ShellyModal>
   );
 }
 

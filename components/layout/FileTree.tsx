@@ -1,6 +1,7 @@
 // components/layout/FileTree.tsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, Pressable, FlatList, TextInput, StyleSheet, Alert, ToastAndroid, Modal } from 'react-native';
+import { View, Text, Pressable, FlatList, TextInput, StyleSheet, Alert, ToastAndroid } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import { useSidebarStore } from '@/store/sidebar-store';
@@ -286,7 +287,7 @@ export function FileTree() {
       />
 
       {/* Create file/folder prompt */}
-      <Modal visible={createMode !== null} transparent animationType="fade" onRequestClose={() => setCreateMode(null)}>
+      <ShellyModal visible={createMode !== null} transparent animationType="fade" onRequestClose={() => setCreateMode(null)}>
         <Pressable style={promptStyles.backdrop} onPress={() => setCreateMode(null)}>
           <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
             <Text style={promptStyles.title}>
@@ -311,10 +312,10 @@ export function FileTree() {
             </View>
           </Pressable>
         </Pressable>
-      </Modal>
+      </ShellyModal>
 
       {/* Rename prompt */}
-      <Modal visible={renameTarget !== null} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}>
+      <ShellyModal visible={renameTarget !== null} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}>
         <Pressable style={promptStyles.backdrop} onPress={() => setRenameTarget(null)}>
           <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
             <Text style={promptStyles.title}>Rename</Text>
@@ -335,7 +336,7 @@ export function FileTree() {
             </View>
           </Pressable>
         </Pressable>
-      </Modal>
+      </ShellyModal>
     </View>
   );
 }

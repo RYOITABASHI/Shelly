@@ -9,10 +9,12 @@
 // Replaces the old AddPaneSheet + LayoutPresetSheet pair in AgentBar.
 
 import React, { useState } from 'react';
-import { View, Text, Pressable, StyleSheet, Modal, ScrollView, Alert } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LayoutPicker } from './LayoutPicker';
 import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
+import { useAddPane } from '@/hooks/use-add-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 
@@ -39,6 +41,7 @@ const ADD_OPTIONS: AddOption[] = [
 
 export function LayoutAddSheet({ visible, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('add');
+  const addPane = useAddPane();
 
   const handleAdd = (opt: AddOption) => {
     if (opt.kind === 'sidebar') {
@@ -48,29 +51,15 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
       onClose();
       return;
     }
-    // bug #108: silently returning from addPane when a cap is hit made
-    // the sheet just close with no feedback ("+ ボタン壊れてる?"). Surface
-    // the reason via Alert so the user understands why nothing happened.
-    const result = useMultiPaneStore.getState().addPane(opt.id);
-    if (result === 'terminal_cap') {
-      Alert.alert(
-        'ターミナルの上限',
-        'ターミナルは 3 ペインまでです。Android の phantom process killer がバックグラウンドのセッションを殺す可能性があるため上限を設けています。',
-      );
-      return;
-    }
-    if (result === 'layout_full') {
-      Alert.alert(
-        'レイアウト満杯',
-        '既に 4 ペイン使用中です。追加するには、いずれかのペインを閉じてください。',
-      );
-      return;
-    }
-    onClose();
+    // bug #108: useAddPane shows the cap-reached Alert for us; only close
+    // the sheet on success so the user can pick a different pane type
+    // immediately after dismissing the alert.
+    const result = addPane(opt.id);
+    if (result === null) onClose();
   };
 
   return (
-    <Modal
+    <ShellyModal
       visible={visible}
       transparent
       animationType="slide"
@@ -136,7 +125,7 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
           </ScrollView>
         </Pressable>
       </Pressable>
-    </Modal>
+    </ShellyModal>
   );
 }
 

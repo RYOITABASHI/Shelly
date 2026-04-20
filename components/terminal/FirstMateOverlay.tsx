@@ -8,8 +8,9 @@
 
 import React, { memo, useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, Modal, TouchableOpacity, ActivityIndicator,
+  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
@@ -113,7 +114,7 @@ export const FirstMateOverlay = memo(function FirstMateOverlay({ visible, onClos
   }, [onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleSkip}>
+    <ShellyModal visible={visible} transparent animationType="fade" onRequestClose={handleSkip}>
       <View style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.88)' }]}>
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           {installing ? (
@@ -166,7 +167,7 @@ export const FirstMateOverlay = memo(function FirstMateOverlay({ visible, onClos
           )}
         </View>
       </View>
-    </Modal>
+    </ShellyModal>
   );
 });
 

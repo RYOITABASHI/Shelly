@@ -10,7 +10,8 @@
 // be assigned into the new store and would silently fail.
 
 import React from 'react';
-import { View, Pressable, StyleSheet, Modal } from 'react-native';
+import { View, Pressable, StyleSheet } from 'react-native';
+import { ShellyModal } from '@/components/layout/ShellyModal';
 import { LayoutPicker } from './LayoutPicker';
 import { useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { colors as C, sizes as S } from '@/theme.config';
@@ -47,7 +48,7 @@ type Props = {
 
 export function LayoutPresetSheet({ visible, onClose }: Props) {
   return (
-    <Modal
+    <ShellyModal
       visible={visible}
       transparent
       animationType="slide"
@@ -60,7 +61,7 @@ export function LayoutPresetSheet({ visible, onClose }: Props) {
           <LayoutPicker onPicked={onClose} />
         </Pressable>
       </Pressable>
-    </Modal>
+    </ShellyModal>
   );
 }
 
