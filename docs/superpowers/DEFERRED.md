@@ -14,34 +14,54 @@
 
 ---
 
-## 🟢 現状サマリ (2026-04-20 Termux afternoon session)
+## 🟢 現状サマリ (2026-04-20 evening、BASHRC_VERSION 43)
 
-**CLI 3/3 実機動作確定**。Shelly で claude / codex / gemini すべて対話モード起動 & 1 往復チャット成功。
+**CLI 3/3 実機動作確定** (Termux 午後セッション)。Shelly で claude / codex / gemini すべて対話モード起動 & 1 往復チャット成功:
 
 | CLI | 状態 | 認証方式 |
 |---|---|---|
 | **claude** | ✅ 対話 REPL 動作 | 別環境で `/login` → `~/.claude.json` + `~/.claude/.credentials.json` を /sdcard 経由 transplant |
-| **codex** | ✅ **TUI REPL 動作** (本日実装) | **Shelly 単独完結** (`shelly-codex-auth.js` device-auth、PKCE 自前実装) |
+| **codex** | ✅ **TUI REPL 動作** | **Shelly 単独完結** (`shelly-codex-auth.js` device-auth、PKCE 自前実装、#114) |
 | **gemini** | ✅ 対話 REPL 動作 | 別環境で `/auth` → `~/.gemini/` 全体 transplant |
 
-**今日投入された主な fix** (commit `b445073f` → `7000c578`):
-- #114 codex TUI wiring: `codex.bin` (154MB) を `libcodex_tui.so` として追加バンドル、bash 関数書き直し、BASHRC_VERSION 41 → 42
-- #102 credentials transplant 実証: `~/.claude.json` が onboarding 完了状態の本体と特定
-- #115 gemini transplant 実証: `~/.gemini/` 一括コピーで認証引き継ぎ可能
+**今日投入された主な fix** (commit 列: `b445073f` → `7000c578` → `e7328b2e` → BASHRC_VERSION 43 hardening pass):
 
-**最新インストール済み APK**: `acd13d5e` (build `24644652433`, 596MB)
+Termux 午後セッション (Termux Claude Code):
+- #114 codex TUI wiring (`codex.bin` 154MB bundle、BASHRC_VERSION 42)
+- #102/#115 scope decision: claude/gemini transplant docs 整備
+- #116 multi-pane keyboard input routing fix (e85694a3)
+- #101 demote P0→P1 (実機で 401 消えた、観測継続)
+
+Evening hardening pass (desktop、BASHRC_VERSION 43):
+- #108 addPane silent failure → `useAddPane` hook で全 callsite 統一
+- #112 Modal refocus → `<ShellyModal>` wrapper で構造的解決
+- #106 表示破損 IME burst diag log (`commit BURST delta=Xms`)
+- #100/#103 再検証 (git default identity の actually-writes、polling AppState gate の genuine pause)
+- bashrc hardening: dead TMPDIR 削除、PS2='> ' 明示、DISABLE_AUTOUPDATER=1 (claude pin 防衛)
+- CI codex.bin verify loud fail
+
+**install 推奨**: 最新 build (BASHRC_VERSION 43)
 
 **未解決 P0 (v0.1.0 RC ブロッカー)**:
 - **#104** keyboard 回避失敗 — edge-to-edge + Android 15+ で ime insets が RN に届かない
-- **#106** paste 複数症状 — 先頭文字欠落、複数行の一部消失、長文途中欠損
+- **#106** paste 表示破損 — バイトは正しいが画面が崩壊、burst diag で chunk-split 仮説確定待ち
 
-**降格した旧 P0**:
-- #101 codex rustls CA → P1 (実機で 401 消えたため、観測継続)
-- #102 claude OAuth 400 → P2 (Chelly の責務として Shelly 本体 scope 外と判断)
-- #115 gemini /auth 400 → P2 (同上)
+**Scope decision (Shelly では fix しない、別パス):**
+- **#101** codex rustls CA → P1 (実機 401 消、観測継続、恒久は codex-termux 再ビルド)
+- **#102** claude OAuth → P2 (Chelly 責務、Shelly scope 外)
+- **#115** gemini OAuth → P2 (同上)
 
-**未着手 / 別ブランチ**:
+**未解決 P0 (継続):**
+- **#101** codex rustls CA — 暫定のみ、恒久は codex-termux 再ビルド (multi-day)
+- **#104** keyboard 回避 — 診断ログのみ、実機値の logcat 未取得
+
+**P1 (実装 / 検証残):**
+- **#106 表示破損** (バイトは正しいが画面が崩壊) — IME chunk-split 仮説、diag log (`commit BURST delta=`) 入れた次回 install で確定。修正は coalescing 追加。
+- BASHRC_VERSION 43 install 後に #100/#103/#108/#111/#112 全部実機検証必要
+
+**未着手 / 別ブランチ:**
 - shelly-cs Phase 1.5 SSH tunneling: `feat/ssh-tunneling` で Day 3 まで、Day 4/5 未完
+- shelly-claude-auth.js / shelly-gemini-auth.js (codex-login pattern、in-app device flow) — ユーザー dismiss 済、当面 transplant で運用
 
 ---
 
