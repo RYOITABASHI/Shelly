@@ -23,8 +23,14 @@ interface CosmeticState {
 }
 
 export const useCosmeticStore = create<CosmeticState>((set, get) => ({
-  crtEnabled: true,
-  crtIntensity: 11,
+  // Phase C (2026-04-20): CRT defaults to OFF. Scanlines + phosphor
+  // tint are opt-in now — users who want the retro look toggle from
+  // Settings. Keeps the default install looking modern and stops
+  // surprising users who later switch to Tokyo Night / Catppuccin.
+  // Intensity seeded at a visible 35 (old 11 was nearly invisible) so
+  // when users DO flip the switch they see an immediate effect.
+  crtEnabled: false,
+  crtIntensity: 35,
   soundProfile: 'modern',
   fontFamily: 'jetbrains-mono',
   crtFont: 'pixel-mplus',
