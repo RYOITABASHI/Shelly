@@ -8,6 +8,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 function truncatePath(path: string, maxLen = 30): string {
   if (path.length <= maxLen) return path;
@@ -77,8 +78,10 @@ export function ContextBar() {
     Clipboard.setStringAsync(cwd);
   };
 
+  const barBg = usePanelBackground(C.bgSidebar);
+
   return (
-    <View style={styles.bar}>
+    <View style={[styles.bar, { backgroundColor: barBg }]}>
       {/* CWD */}
       <Pressable onPress={handleCopyPath} style={styles.segment} hitSlop={4}>
         <MaterialIcons name="folder" size={10} color={C.text2} />

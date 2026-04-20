@@ -33,17 +33,21 @@ import { withAlpha } from '@/lib/theme-utils';
 const MAX_TABS = 4;
 
 /**
- * Per-session neon hue. Sessions are indexed in creation order and get a
- * distinct accent so the "three SHELL tabs that all look the same" problem
- * from the v0.1.0 screenshot is replaced by a colour-coded tab strip. We
- * cycle through four hues — teal / pink / purple / amber — which matches
- * the MAX_TABS cap. All four are shellyPalette tokens so theme swaps pull
- * the equivalent pastel from TokyoNight / Catppuccin / Rose Pine
- * automatically.
+ * Per-session neon hue. Colour is picked by a stable hash of the session
+ * id rather than its current index in `sessions[]`, so closing the middle
+ * tab (or adding/removing sessions in any order) does not shuffle the
+ * surviving tabs' colours. All four hues are shellyPalette tokens so
+ * theme swaps pull the equivalent pastel from TokyoNight / Catppuccin /
+ * Rose Pine automatically.
  */
-function sessionHue(index: number): string {
+function sessionHue(sessionId: string): string {
   const colors = [C.accent, C.accentPink, C.accentPurple, C.accentAmber];
-  return colors[index % colors.length] ?? C.accent;
+  // Simple sum-of-charcodes — collision-prone in theory, but sessions
+  // share a `session-${Date.now()}` prefix so their low bits drift
+  // enough across rapid adds to land in different buckets in practice.
+  let h = 0;
+  for (let i = 0; i < sessionId.length; i++) h = (h + sessionId.charCodeAt(i)) | 0;
+  return colors[Math.abs(h) % colors.length] ?? C.accent;
 }
 
 type Props = {
@@ -124,10 +128,10 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
       contentContainerStyle={styles.row}
       style={styles.scroll}
     >
-      {sessions.map((sess, idx) => {
+      {sessions.map((sess) => {
         const isActive = sess.id === effectiveActiveId;
         const label = (sess.activeCli ?? 'shell').toUpperCase();
-        const hue = sessionHue(idx);
+        const hue = sessionHue(sess.id);
         return (
           <Pressable
             key={sess.id}

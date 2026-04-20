@@ -17,6 +17,7 @@ import { useBrowserStore } from '@/store/browser-store';
 import { neonTextGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -137,9 +138,16 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const isNarrow = paneWidth > 0 && paneWidth < 360;
   const isVeryNarrow = paneWidth > 0 && paneWidth < 260;
 
+  // Phase B: pane body + header honour wallpaper transparency. The body
+  // uses bgDeep (which is the root BackgroundLayer colour), so when a
+  // wallpaper is set we take it to transparent so the image shows. The
+  // header keeps its bgSurface tint so pane chrome is always legible.
+  const paneBg = usePanelBackground(C.bgDeep);
+  const headerBg = usePanelBackground(C.bgSurface);
+
   return (
     <View
-      style={styles.pane}
+      style={[styles.pane, { backgroundColor: paneBg }]}
       onTouchStart={handleFocusPane}
       onLayout={(e) => {
         setPaneWidth(e.nativeEvent.layout.width);
@@ -147,7 +155,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
       }}
     >
       {/* Pane header */}
-      <View style={[styles.header, { borderTopColor: agentColor }]}>
+      <View style={[styles.header, { borderTopColor: agentColor, backgroundColor: headerBg }]}>
         {/* Pane-type pill — tap to switch this pane between Terminal / AI /
             Browser / Markdown. The dropdown chevron makes it obvious that
             this is interactive. */}

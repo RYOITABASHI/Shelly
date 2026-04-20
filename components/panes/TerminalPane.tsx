@@ -933,7 +933,15 @@ const styles = StyleSheet.create({
   // doesn't crash into the pane edge. The native updateSize() subtracts
   // getPaddingLeft/Right before computing cols, so this correctly reduces
   // the reflow width instead of just cropping the rightmost column.
-  terminalView: { backgroundColor: '#000', paddingHorizontal: 6, paddingVertical: 2 },
+  //
+  // Phase B (2026-04-21): backgroundColor removed from the RN wrapper.
+  // The native terminal view itself still paints opaque (#000 or the
+  // active colour-scheme bg) — so on a wallpaper-enabled install the
+  // terminal body stays opaque while the chrome around it (Sidebar,
+  // AgentBar, ContextBar, pane header) shows the wallpaper through.
+  // Proper terminal transparency needs a native Kotlin change to
+  // honour an alpha-channel scheme background; tracked as a follow-up.
+  terminalView: { paddingHorizontal: 6, paddingVertical: 2 },
 
   // Error state
   errorContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 },

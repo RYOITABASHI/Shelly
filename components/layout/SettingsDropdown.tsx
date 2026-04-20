@@ -14,8 +14,12 @@ import {
   PanResponder,
   Modal,
   TextInput,
+  Alert,
+  Image,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useI18n } from '@/lib/i18n';
@@ -68,6 +72,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
 
           <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
             <DisplaySection />
+            <WallpaperSection />
             <LanguageSection />
             <AgentsSection />
             <ApiKeysSection />
@@ -130,6 +135,175 @@ function IntegrationsSection({
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
     </Section>
+  );
+}
+
+// ─── Wallpaper (Phase B) ─────────────────────────────────────────────────────
+//
+// User-picked background image + transparency sliders. expo-image-picker
+// handles the photo-gallery permission prompt automatically (READ_MEDIA_IMAGES
+// on API 33+, READ_EXTERNAL_STORAGE below — Shelly already holds
+// MANAGE_EXTERNAL_STORAGE from bug #92 so the prompt is usually skipped).
+//
+// The picked file is copied into app document storage so it survives cache
+// eviction and OS cleanup; the source URI under /data/user/0/.../cache would
+// eventually be purged and leave the wallpaper blank.
+//
+// CRT + wallpaper both enabled reads poorly (scanlines over a photo =
+// visual mud), so we warn on toggle but do not hard-block — some users
+// might actually want that retro-monitor-over-poster look.
+
+function WallpaperSection() {
+  const wallpaperUri = useCosmeticStore((s) => s.wallpaperUri);
+  const wallpaperOpacity = useCosmeticStore((s) => s.wallpaperOpacity);
+  const panelOpacity = useCosmeticStore((s) => s.panelOpacity);
+  const setWallpaper = useCosmeticStore((s) => s.setWallpaper);
+  const setWallpaperOpacity = useCosmeticStore((s) => s.setWallpaperOpacity);
+  const setPanelOpacity = useCosmeticStore((s) => s.setPanelOpacity);
+  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
+  // Note: blurEnabled / blurIntensity still live in cosmetic-store but no
+  // UI toggle renders today — there is no chrome BlurView consumer yet,
+  // so exposing a toggle would be a dead switch. Store fields stay so the
+  // consumer can land later without a persisted-state migration.
+
+  const pick = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          'Permission needed',
+          'Shelly needs access to your photo library to pick a wallpaper.',
+        );
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        // expo-image-picker 17 deprecated the `MediaTypeOptions.Images`
+        // enum in favour of the string-array form; accepting both with a
+        // console warning. We use the new form to stay warning-free.
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 1,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const picked = result.assets[0];
+      // Copy into app document dir so the URI survives cache eviction.
+      const ext = picked.uri.split('.').pop()?.split('?')[0] ?? 'jpg';
+      const dest = `${FileSystem.documentDirectory}wallpaper-${Date.now()}.${ext}`;
+      await FileSystem.copyAsync({ from: picked.uri, to: dest });
+      // Delete the previous wallpaper file (best-effort) so repeated
+      // picks don't accumulate orphan files in documentDirectory. Run
+      // AFTER the new copy succeeds so a mid-flight crash can't leave
+      // the user wallpaper-less.
+      if (wallpaperUri) {
+        FileSystem.deleteAsync(wallpaperUri, { idempotent: true }).catch(() => {});
+      }
+      setWallpaper(dest);
+      if (crtEnabled) {
+        Alert.alert(
+          'CRT + Wallpaper',
+          'CRT scanlines tend to read as visual noise over a photo. Disable CRT?',
+          [
+            { text: 'Keep both', style: 'cancel' },
+            { text: 'Disable CRT', onPress: () => useCosmeticStore.getState().setCrt(false) },
+          ],
+        );
+      }
+    } catch (e) {
+      Alert.alert('Pick failed', String((e as Error)?.message ?? e));
+    }
+  };
+
+  const clear = () => {
+    if (!wallpaperUri) return;
+    // Best-effort delete; ignore failures (user can always overwrite next pick).
+    FileSystem.deleteAsync(wallpaperUri, { idempotent: true }).catch(() => {});
+    setWallpaper(null);
+  };
+
+  return (
+    <Section title="WALLPAPER">
+      <Row label="Image">
+        <View style={styles.wallpaperRow}>
+          {wallpaperUri ? (
+            <Image source={{ uri: wallpaperUri }} style={styles.wallpaperPreview} />
+          ) : (
+            <View style={[styles.wallpaperPreview, styles.wallpaperPreviewEmpty]}>
+              <MaterialIcons name="image" size={14} color={C.text3} />
+            </View>
+          )}
+          <Pressable style={styles.wallpaperBtn} onPress={pick} hitSlop={4}>
+            <Text style={styles.wallpaperBtnText}>
+              {wallpaperUri ? 'Change' : 'Pick'}
+            </Text>
+          </Pressable>
+          {wallpaperUri && (
+            <Pressable style={[styles.wallpaperBtn, styles.wallpaperBtnGhost]} onPress={clear} hitSlop={4}>
+              <Text style={[styles.wallpaperBtnText, { color: C.text2 }]}>Clear</Text>
+            </Pressable>
+          )}
+        </View>
+      </Row>
+
+      {wallpaperUri && (
+        <>
+          <SliderRow
+            label="Image Opacity"
+            value={wallpaperOpacity}
+            onChange={setWallpaperOpacity}
+          />
+          <SliderRow
+            label="Panel Opacity"
+            value={panelOpacity}
+            onChange={setPanelOpacity}
+          />
+        </>
+      )}
+    </Section>
+  );
+}
+
+/**
+ * Small reusable 0-100 slider row. Extracted so WallpaperSection can
+ * reuse the same geometry as DisplaySection's CRT Intensity control
+ * without copy-pasting the PanResponder boilerplate.
+ */
+function SliderRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  const trackWidth = 140;
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => {
+        const x = e.nativeEvent.locationX;
+        onChange(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
+      },
+      onPanResponderMove: (e) => {
+        const x = e.nativeEvent.locationX;
+        onChange(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
+      },
+    })
+  ).current;
+  const fillWidth = (value / 100) * trackWidth;
+  return (
+    <Row label={label}>
+      <View style={styles.sliderGroup}>
+        <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
+          <View style={styles.sliderTrack}>
+            <View style={[styles.sliderFill, { width: fillWidth }]} />
+            <View style={[styles.sliderThumb, { left: fillWidth - 5 }]} />
+          </View>
+        </View>
+        <Text style={styles.sliderPercent}>{value}%</Text>
+      </View>
+    </Row>
   );
 }
 
@@ -228,7 +402,10 @@ type UiFontId =
   | 'gruvbox'
   | 'tokyo-night'
   | 'catppuccin-mocha'
-  | 'rose-pine';
+  | 'rose-pine'
+  | 'kanagawa'
+  | 'everforest'
+  | 'one-dark';
 
 function FontFamilyRow() {
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
@@ -289,6 +466,9 @@ function ThemeRow() {
     { value: 'tokyo-night',      label: 'Tokyo' },
     { value: 'catppuccin-mocha', label: 'Catppuccin' },
     { value: 'rose-pine',        label: 'Rose Pine' },
+    { value: 'kanagawa',         label: 'Kanagawa' },
+    { value: 'everforest',       label: 'Everforest' },
+    { value: 'one-dark',         label: 'One Dark' },
   ];
   return (
     <Row label="Theme">
@@ -792,6 +972,43 @@ const styles = StyleSheet.create({
     fontWeight: F.badge.weight,
     minWidth: 28,
     textAlign: 'right',
+  },
+  // Wallpaper picker row (Phase B)
+  wallpaperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  wallpaperPreview: {
+    width: 28,
+    height: 28,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: C.border,
+    backgroundColor: C.bgDeep,
+  },
+  wallpaperPreviewEmpty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wallpaperBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: withAlpha(C.accent, 0.14),
+    borderWidth: 1,
+    borderColor: withAlpha(C.accent, 0.4),
+  },
+  wallpaperBtnGhost: {
+    backgroundColor: 'transparent',
+    borderColor: C.border,
+  },
+  wallpaperBtnText: {
+    color: C.accent,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   // Segmented (font size)
   segGroup: {

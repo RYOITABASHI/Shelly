@@ -15,10 +15,12 @@ import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { useFocusStore } from '@/store/focus-store';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const barBg = usePanelBackground(C.bgSidebar);
 
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
@@ -31,7 +33,7 @@ export function AgentBar() {
   };
 
   return (
-    <View style={styles.bar}>
+    <View style={[styles.bar, { backgroundColor: barBg }]}>
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
           Replaces the previous split into two adjacent buttons (dashboard
           + plus) which users kept confusing with each other. */}

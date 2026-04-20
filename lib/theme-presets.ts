@@ -114,7 +114,10 @@ export type ThemePresetId =
   | 'gruvbox'
   | 'tokyo-night'
   | 'catppuccin-mocha'
-  | 'rose-pine';
+  | 'rose-pine'
+  | 'kanagawa'
+  | 'everforest'
+  | 'one-dark';
 
 export type ThemePreset = {
   id: ThemePresetId;
@@ -521,6 +524,144 @@ export const rosePinePalette: Palette = {
   diffRemoveBorder: '#EB6F92',
 };
 
+// ── Kanagawa ──────────────────────────────────────────────────────
+// Official palette from rebelot/kanagawa.nvim "wave" variant. Sumi-ink
+// bases + crystal-blue accent + sakura / surimi pops. Popular in the
+// Japanese neovim community; reads as a moody, low-saturation dark.
+export const kanagawaPalette: Palette = {
+  bgDeep:     '#1F1F28', // sumiInk1
+  bgSurface:  '#2A2A37', // sumiInk3
+  bgSidebar:  '#16161D', // sumiInk0
+  border:     '#363646', // sumiInk4
+  accent:        '#7E9CD8', // crystalBlue
+  accentGreen:   '#98BB6C', // springGreen
+  accentBlue:    '#7E9CD8',
+  accentSky:     '#7FB4CA', // waveBlue
+  accentPurple:  '#957FB8', // oniViolet
+  accentPink:    '#D27E99', // sakuraPink
+  accentAmber:   '#FFA066', // surimiOrange
+  accentCode:    '#7E9CD8',
+  warning:       '#FFA066',
+  text1:         '#DCD7BA', // fujiWhite
+  text2:         '#C8C093', // oldWhite
+  text3:         '#727169', // fujiGray
+  errorText:     '#E82424', // samuraiRed
+  errorBg:       'rgba(232,36,36,0.12)',
+  addText:       '#98BB6C',
+  addBg:         'rgba(152,187,108,0.12)',
+  btnPrimaryBg:     '#7E9CD8',
+  btnPrimaryText:   '#1F1F28',
+  btnSecondaryBg:   '#363646',
+  btnSecondaryText: '#DCD7BA',
+  badgeRunningBg:   'rgba(255,160,102,0.15)',
+  badgeRunningText: '#FFA066',
+  badgeLinkedBg:    'rgba(152,187,108,0.15)',
+  badgeLinkedText:  '#98BB6C',
+  badgeConnectBg:   '#2A2A37',
+  badgeConnectText: '#727169',
+  layoutActiveBg:     '#7E9CD8',
+  layoutActiveText:   '#1F1F28',
+  layoutInactiveBg:   '#2A2A37',
+  layoutInactiveText: '#727169',
+  crtBadgeBg:   '#16161D',
+  crtBadgeText: '#7E9CD8',
+  autoSaveBg:   '#2A2A37',
+  diffAddBorder:    '#98BB6C',
+  diffRemoveBorder: '#E82424',
+};
+
+// ── Everforest ────────────────────────────────────────────────────
+// Official palette from sainnhe/everforest "dark hard" variant.
+// Gruvbox-adjacent but cooler and noticeably softer on the eyes —
+// a common pick for long terminal / editor sessions.
+export const everforestPalette: Palette = {
+  bgDeep:     '#2D353B', // bg0
+  bgSurface:  '#343F44', // bg1
+  bgSidebar:  '#232A2E', // bg_dim
+  border:     '#4A555B', // bg4
+  accent:        '#A7C080', // green
+  accentGreen:   '#A7C080',
+  accentBlue:    '#7FBBB3', // blue
+  accentSky:     '#83C092', // aqua
+  accentPurple:  '#D699B6', // purple
+  accentPink:    '#D699B6',
+  accentAmber:   '#DBBC7F', // yellow
+  accentCode:    '#7FBBB3',
+  warning:       '#E69875', // orange
+  text1:         '#D3C6AA', // fg
+  text2:         '#9DA9A0', // grey1
+  text3:         '#859289', // grey0
+  errorText:     '#E67E80', // red
+  errorBg:       'rgba(230,126,128,0.12)',
+  addText:       '#A7C080',
+  addBg:         'rgba(167,192,128,0.12)',
+  btnPrimaryBg:     '#A7C080',
+  btnPrimaryText:   '#2D353B',
+  btnSecondaryBg:   '#4A555B',
+  btnSecondaryText: '#D3C6AA',
+  badgeRunningBg:   'rgba(219,188,127,0.15)',
+  badgeRunningText: '#DBBC7F',
+  badgeLinkedBg:    'rgba(167,192,128,0.15)',
+  badgeLinkedText:  '#A7C080',
+  badgeConnectBg:   '#343F44',
+  badgeConnectText: '#859289',
+  layoutActiveBg:     '#A7C080',
+  layoutActiveText:   '#2D353B',
+  layoutInactiveBg:   '#343F44',
+  layoutInactiveText: '#859289',
+  crtBadgeBg:   '#232A2E',
+  crtBadgeText: '#A7C080',
+  autoSaveBg:   '#343F44',
+  diffAddBorder:    '#A7C080',
+  diffRemoveBorder: '#E67E80',
+};
+
+// ── One Dark ──────────────────────────────────────────────────────
+// Atom's One Dark (navarasu/onedark.nvim "dark" variant). Broadly
+// familiar from GitHub / VSCode / Atom; reads more blueish than
+// Dracula and without the fluorescent pop shelly/tokyo-night have.
+export const oneDarkPalette: Palette = {
+  bgDeep:     '#282C34', // bg0
+  bgSurface:  '#2C323B', // bg1
+  bgSidebar:  '#21252B', // bg_dark
+  border:     '#3E4451', // bg2
+  accent:        '#61AFEF', // blue
+  accentGreen:   '#98C379', // green
+  accentBlue:    '#61AFEF',
+  accentSky:     '#56B6C2', // cyan
+  accentPurple:  '#C678DD', // purple
+  accentPink:    '#E06C75', // "red" used as pink tone
+  accentAmber:   '#E5C07B', // yellow
+  accentCode:    '#61AFEF',
+  warning:       '#D19A66', // orange
+  text1:         '#ABB2BF', // fg
+  text2:         '#9DA5B4',
+  text3:         '#5C6370', // grey
+  errorText:     '#BE5046', // dark red
+  errorBg:       'rgba(190,80,70,0.14)',
+  addText:       '#98C379',
+  addBg:         'rgba(152,195,121,0.12)',
+  btnPrimaryBg:     '#61AFEF',
+  btnPrimaryText:   '#282C34',
+  btnSecondaryBg:   '#3E4451',
+  btnSecondaryText: '#ABB2BF',
+  badgeRunningBg:   'rgba(229,192,123,0.15)',
+  badgeRunningText: '#E5C07B',
+  badgeLinkedBg:    'rgba(152,195,121,0.15)',
+  badgeLinkedText:  '#98C379',
+  badgeConnectBg:   '#2C323B',
+  badgeConnectText: '#5C6370',
+  layoutActiveBg:     '#61AFEF',
+  layoutActiveText:   '#282C34',
+  layoutInactiveBg:   '#2C323B',
+  layoutInactiveText: '#5C6370',
+  crtBadgeBg:   '#21252B',
+  crtBadgeText: '#61AFEF',
+  autoSaveBg:   '#2C323B',
+  diffAddBorder:    '#98C379',
+  diffRemoveBorder: '#E06C75',
+};
+
 // NOTE: after bug #28, every preset except the explicit 'silkscreen' /
 // 'pixel' opt-ins defaults to JetBrainsMono_400Regular so lowercase UI
 // text renders as lowercase. The Silkscreen preset still ships for users
@@ -536,6 +677,9 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
   'tokyo-night':{ id: 'tokyo-night',  font: 'JetBrainsMono_400Regular', colors: tokyoNightPalette },
   'catppuccin-mocha': { id: 'catppuccin-mocha', font: 'JetBrainsMono_400Regular', colors: catppuccinMochaPalette },
   'rose-pine':  { id: 'rose-pine',    font: 'JetBrainsMono_400Regular', colors: rosePinePalette },
+  kanagawa:     { id: 'kanagawa',     font: 'JetBrainsMono_400Regular', colors: kanagawaPalette },
+  everforest:   { id: 'everforest',   font: 'JetBrainsMono_400Regular', colors: everforestPalette },
+  'one-dark':   { id: 'one-dark',     font: 'JetBrainsMono_400Regular', colors: oneDarkPalette },
 };
 
 // ── Runtime apply ──────────────────────────────────────────────────
@@ -555,13 +699,23 @@ export function applyThemePreset(id: ThemePresetId) {
   const themeConfig = require('@/theme.config');
   Object.assign(themeConfig.colors, preset.colors);
 
-  // 2. Install the Text.render monkey-patch (idempotent) and update the
+  // 2. Re-bind the shared neon-glow style objects. They hold
+  //    textShadowColor / shadowColor values keyed to the OLD palette;
+  //    refreshing mutates them in place so consumers holding a
+  //    reference get the new halo on the next render. Must run BEFORE
+  //    the version bump so the remount picks up fresh halos, not stale
+  //    ones.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { refreshNeonGlows } = require('@/lib/neon-glow');
+  refreshNeonGlows();
+
+  // 3. Install the Text.render monkey-patch (idempotent) and update the
   //    currently-active font family. Every Text component re-renders
-  //    with the new family after the version bump in step 3.
+  //    with the new family after the version bump in step 4.
   patchTextRenderOnce();
   currentFontFamily = preset.font;
 
-  // 3. Bump the theme version so ShellLayout forces a full re-render
+  // 4. Bump the theme version so ShellLayout forces a full re-render
   //    of the tree through its key={version} root <View>.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { useThemeVersionStore } = require('@/store/theme-version-store');

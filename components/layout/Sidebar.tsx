@@ -47,6 +47,7 @@ import {
 } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
@@ -247,10 +248,16 @@ export function Sidebar() {
     else setMode('expanded');
   }
 
+  // usePanelBackground MUST be called before any early return to satisfy
+  // Rules of Hooks. It picks up wallpaper state from cosmetic-store and
+  // returns either the solid C.bgSidebar or a half-alpha variant when
+  // the user has a wallpaper set.
+  const sidebarBg = usePanelBackground(C.bgSidebar);
+
   if (mode === 'hidden') return null;
 
   return (
-    <Animated.View style={[styles.container, animatedStyle, { backgroundColor: C.bgSidebar, borderRightColor: C.border }]}>
+    <Animated.View style={[styles.container, animatedStyle, { backgroundColor: sidebarBg, borderRightColor: C.border }]}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}

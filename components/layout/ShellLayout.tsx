@@ -21,6 +21,7 @@ import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { CrtOverlay } from '@/components/CrtOverlay';
+import { BackgroundLayer } from '@/components/BackgroundLayer';
 import { VoiceChat } from '@/components/VoiceChat';
 import { useSettingsStore } from '@/store/settings-store';
 import { ConfigTUI } from '@/components/config/ConfigTUI';
@@ -185,9 +186,15 @@ export function ShellLayout() {
   return (
     <View
       key={`theme-${themeVersion}`}
-      style={[styles.root, { backgroundColor: c.background, paddingTop: insets.top, paddingBottom: insets.bottom }]}
+      style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
     >
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+
+      {/* Background — wallpaper or flat theme color. Must be FIRST so it
+          lives behind every subsequent layer. Replaces the root View's
+          backgroundColor (removed above) because when a wallpaper is set
+          that solid colour would punch a hole through the image. */}
+      <BackgroundLayer />
 
       {/* Agent Bar (top) */}
       <AgentBar />
