@@ -112,7 +112,9 @@ export type ThemePresetId =
   | 'dracula'
   | 'nord'
   | 'gruvbox'
-  | 'tokyo-night';
+  | 'tokyo-night'
+  | 'catppuccin-mocha'
+  | 'rose-pine';
 
 export type ThemePreset = {
   id: ThemePresetId;
@@ -413,6 +415,98 @@ export const tokyoNightPalette: Palette = {
   diffRemoveBorder: '#F7768E',
 };
 
+// ── Catppuccin Mocha ──────────────────────────────────────────────
+// Official palette from catppuccin/catppuccin — warm pastel dark that
+// reads noticeably softer than Tokyo Night. Currently the most-installed
+// theme in WezTerm / neovim / VSCode communities.
+export const catppuccinMochaPalette: Palette = {
+  bgDeep:     '#1E1E2E', // base
+  bgSurface:  '#313244', // surface0
+  bgSidebar:  '#181825', // mantle
+  border:     '#45475A', // surface1
+  accent:        '#89B4FA', // blue
+  accentGreen:   '#A6E3A1', // green
+  accentBlue:    '#89B4FA',
+  accentSky:     '#74C7EC', // sapphire
+  accentPurple:  '#CBA6F7', // mauve
+  accentPink:    '#F5C2E7', // pink
+  accentAmber:   '#F9E2AF', // yellow
+  accentCode:    '#89B4FA',
+  warning:       '#FAB387', // peach
+  text1:         '#CDD6F4', // text
+  text2:         '#BAC2DE', // subtext1
+  text3:         '#6C7086', // overlay0
+  errorText:     '#F38BA8', // red
+  errorBg:       'rgba(243,139,168,0.12)',
+  addText:       '#A6E3A1',
+  addBg:         'rgba(166,227,161,0.12)',
+  btnPrimaryBg:     '#89B4FA',
+  btnPrimaryText:   '#1E1E2E',
+  btnSecondaryBg:   '#45475A',
+  btnSecondaryText: '#CDD6F4',
+  badgeRunningBg:   'rgba(249,226,175,0.15)',
+  badgeRunningText: '#F9E2AF',
+  badgeLinkedBg:    'rgba(166,227,161,0.15)',
+  badgeLinkedText:  '#A6E3A1',
+  badgeConnectBg:   '#313244',
+  badgeConnectText: '#6C7086',
+  layoutActiveBg:     '#89B4FA',
+  layoutActiveText:   '#1E1E2E',
+  layoutInactiveBg:   '#313244',
+  layoutInactiveText: '#6C7086',
+  crtBadgeBg:   '#181825',
+  crtBadgeText: '#89B4FA',
+  autoSaveBg:   '#313244',
+  diffAddBorder:    '#A6E3A1',
+  diffRemoveBorder: '#F38BA8',
+};
+
+// ── Rose Pine ──────────────────────────────────────────────────────
+// Official palette from rose-pine/rose-pine — muted violet base with
+// peach / gold / rose accents. Lower saturation than Tokyo Night; kind
+// on the eyes for long-form terminal work.
+export const rosePinePalette: Palette = {
+  bgDeep:     '#191724', // base
+  bgSurface:  '#26233A', // overlay
+  bgSidebar:  '#1F1D2E', // surface
+  border:     '#403D52', // highlight med
+  accent:        '#C4A7E7', // iris (violet)
+  accentGreen:   '#9CCFD8', // foam (teal-green)
+  accentBlue:    '#31748F', // pine
+  accentSky:     '#9CCFD8',
+  accentPurple:  '#C4A7E7',
+  accentPink:    '#EBBCBA', // rose
+  accentAmber:   '#F6C177', // gold
+  accentCode:    '#C4A7E7',
+  warning:       '#F6C177',
+  text1:         '#E0DEF4', // text
+  text2:         '#908CAA', // subtle
+  text3:         '#6E6A86',
+  errorText:     '#EB6F92', // love
+  errorBg:       'rgba(235,111,146,0.12)',
+  addText:       '#9CCFD8',
+  addBg:         'rgba(156,207,216,0.12)',
+  btnPrimaryBg:     '#C4A7E7',
+  btnPrimaryText:   '#191724',
+  btnSecondaryBg:   '#403D52',
+  btnSecondaryText: '#E0DEF4',
+  badgeRunningBg:   'rgba(246,193,119,0.15)',
+  badgeRunningText: '#F6C177',
+  badgeLinkedBg:    'rgba(156,207,216,0.15)',
+  badgeLinkedText:  '#9CCFD8',
+  badgeConnectBg:   '#26233A',
+  badgeConnectText: '#6E6A86',
+  layoutActiveBg:     '#C4A7E7',
+  layoutActiveText:   '#191724',
+  layoutInactiveBg:   '#26233A',
+  layoutInactiveText: '#6E6A86',
+  crtBadgeBg:   '#1F1D2E',
+  crtBadgeText: '#C4A7E7',
+  autoSaveBg:   '#26233A',
+  diffAddBorder:    '#9CCFD8',
+  diffRemoveBorder: '#EB6F92',
+};
+
 // NOTE: after bug #28, every preset except the explicit 'silkscreen' /
 // 'pixel' opt-ins defaults to JetBrainsMono_400Regular so lowercase UI
 // text renders as lowercase. The Silkscreen preset still ships for users
@@ -426,6 +520,8 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
   nord:         { id: 'nord',         font: 'JetBrainsMono_400Regular', colors: nordPalette },
   gruvbox:      { id: 'gruvbox',      font: 'JetBrainsMono_400Regular', colors: gruvboxPalette },
   'tokyo-night':{ id: 'tokyo-night',  font: 'JetBrainsMono_400Regular', colors: tokyoNightPalette },
+  'catppuccin-mocha': { id: 'catppuccin-mocha', font: 'JetBrainsMono_400Regular', colors: catppuccinMochaPalette },
+  'rose-pine':  { id: 'rose-pine',    font: 'JetBrainsMono_400Regular', colors: rosePinePalette },
 };
 
 // ── Runtime apply ──────────────────────────────────────────────────

@@ -225,7 +225,9 @@ type UiFontId =
   | 'dracula'
   | 'nord'
   | 'gruvbox'
-  | 'tokyo-night';
+  | 'tokyo-night'
+  | 'catppuccin-mocha'
+  | 'rose-pine';
 
 function FontFamilyRow() {
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
@@ -276,14 +278,16 @@ function ThemeRow() {
   // 'shelly' is shared with FontFamilyRow — picking it here resets both the
   // palette and the font to Shelly defaults in one tap.
   const options: Array<{ value: UiFontId; label: string }> = [
-    { value: 'shelly',      label: 'Default' },
-    { value: 'silkscreen',  label: 'Silk' },
-    { value: 'pixel',       label: '8bit' },
-    { value: 'mono',        label: 'Mono' },
-    { value: 'dracula',     label: 'Dracula' },
-    { value: 'nord',        label: 'Nord' },
-    { value: 'gruvbox',     label: 'Gruvbox' },
-    { value: 'tokyo-night', label: 'Tokyo' },
+    { value: 'shelly',           label: 'Default' },
+    { value: 'silkscreen',       label: 'Silk' },
+    { value: 'pixel',            label: '8bit' },
+    { value: 'mono',             label: 'Mono' },
+    { value: 'dracula',          label: 'Dracula' },
+    { value: 'nord',             label: 'Nord' },
+    { value: 'gruvbox',          label: 'Gruvbox' },
+    { value: 'tokyo-night',      label: 'Tokyo' },
+    { value: 'catppuccin-mocha', label: 'Catppuccin' },
+    { value: 'rose-pine',        label: 'Rose Pine' },
   ];
   return (
     <Row label="Theme">
