@@ -676,12 +676,39 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           logLifecycle('MultiPane', 'initShell');
           const { slots } = get();
           if (countSlots(slots) === 0) {
+            // bug: initShell and enableMultiPane historically left the
+            // first terminal slot with `sessionId: undefined`, so when the
+            // user later opened a second terminal pane both slots fell
+            // back to terminal-store.activeSessionId (the newest session)
+            // and rendered IDENTICAL content. Mint a session upfront so
+            // each slot has its own PTY from the start.
+            const { useTerminalStore } = require('@/store/terminal-store');
+            const newSessionId = useTerminalStore.getState().addSession();
             set({
               preset: 'p1',
-              slots: [{ id: genId(), tab: 'terminal' }, null, null, null],
+              slots: [{ id: genId(), tab: 'terminal', sessionId: newSessionId }, null, null, null],
               focusedSlot: 0,
               maximizedSlot: null,
             });
+          } else {
+            // Reconcile: any pre-existing terminal slots missing a sessionId
+            // (from pre-fix persists) get one bound now. Without this step
+            // existing users would stay broken after upgrade until they
+            // manually close and re-add every pane.
+            const { useTerminalStore } = require('@/store/terminal-store');
+            const store = useTerminalStore.getState();
+            let changed = false;
+            const next = slots.map((slot) => {
+              if (!slot || slot.tab !== 'terminal' || slot.sessionId) return slot;
+              const nid = store.addSession();
+              if (!nid) return slot;
+              changed = true;
+              return { ...slot, sessionId: nid };
+            }) as [Slot, Slot, Slot, Slot];
+            if (changed) {
+              logInfo('MultiPane', 'initShell: backfilled sessionIds for pre-existing slots');
+              set({ slots: next });
+            }
           }
         },
 
@@ -689,8 +716,26 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           const tabs = initial && initial.length > 0 ? initial : ['terminal' as PaneTab];
           const trimmed = tabs.slice(0, 4);
           const newSlots: [Slot, Slot, Slot, Slot] = [null, null, null, null];
+          // Mint a session per terminal slot up front — same reasoning as
+          // the initShell fix: without this the first and second terminal
+          // panes both resolve to the globally-active session and render
+          // identical content.
+          const { useTerminalStore } = require('@/store/terminal-store');
+          const tstore = useTerminalStore.getState();
           trimmed.forEach((t, i) => {
-            newSlots[i as SlotIndex] = { id: genId(), tab: t };
+            if (t === 'terminal') {
+              const nid = tstore.addSession();
+              newSlots[i as SlotIndex] = nid
+                ? { id: genId(), tab: t, sessionId: nid }
+                // MAX_SESSIONS hit: fall back to an unbound slot rather
+                // than dropping the pane. This is the same shape the pre-
+                // fix code produced, so it is safe; the user will just
+                // see the global active session in this slot until they
+                // close another one.
+                : { id: genId(), tab: t };
+            } else {
+              newSlots[i as SlotIndex] = { id: genId(), tab: t };
+            }
           });
           let preset: PresetId = 'p1';
           if (trimmed.length === 2) preset = 'p2h';
