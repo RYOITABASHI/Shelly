@@ -12,6 +12,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
+import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
@@ -28,6 +29,7 @@ const SHELLY_LOGO =
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const barBg = usePanelBackground(C.bgSidebar);
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
@@ -80,6 +82,15 @@ export function AgentBar() {
         </Pressable>
         <Pressable
           style={styles.iconBtn}
+          onPress={() => setLogsOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Show recent logs"
+        >
+          <MaterialIcons name="history" size={16} color={C.text2} />
+        </Pressable>
+        <Pressable
+          style={styles.iconBtn}
           onPress={() => setSettingsOpen((v) => !v)}
           hitSlop={8}
         >
@@ -88,6 +99,7 @@ export function AgentBar() {
       </View>
 
       <SettingsDropdown visible={settingsOpen} onClose={closeWithRefocus(setSettingsOpen)} />
+      <RecentLogsModal visible={logsOpen} onClose={closeWithRefocus(setLogsOpen)} />
       <LayoutAddSheet visible={sheetVisible} onClose={closeWithRefocus(setSheetVisible)} />
     </View>
   );

@@ -18,61 +18,50 @@ function truncatePath(path: string, maxLen = 30): string {
   return '...' + short.slice(short.length - maxLen + 3);
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 export function ContextBar() {
   const connectionMode = useTerminalStore((s) => s.connectionMode);
   const home = getHomePath();
+  const currentDir = useTerminalStore((s) => {
+    const session = s.sessions.find((item) => item.id === s.activeSessionId);
+    return session?.currentDir;
+  });
 
   const [cwd, setCwd] = useState('~');
   const [gitBranch, setGitBranch] = useState<string | null>(null);
 
   useEffect(() => {
+    setCwd(currentDir || home);
+  }, [currentDir, home]);
+
+  useEffect(() => {
     let active = true;
-    // bug #103: combine cwd + git branch into a single exec. The old
-    // path spawned two subprocesses (fork + exec + pipe × 2) every 3 s
-    // which, combined with Sidebar's polling, meant five or more
-    // execSubprocess calls per interval. The UI thread spent more time
-    // marshalling JNI call results than processing IME events, so user
-    // keystrokes lagged visibly and first-char drops during paste
-    // became reproducible.
-    //
-    // Merged form: read .shelly_cwd, then chain a `git branch` in the
-    // same shell so we pay for one fork. Interval raised from 3 s to
-    // 15 s — cwd only changes when the user runs `cd`, and git branch
-    // changes only when they `git switch`/`checkout`, neither of which
-    // needs 3-second visual latency. The explicit `refresh()` on mount
-    // still hits immediately for first paint.
-    const poll = async () => {
+    const refreshBranch = async () => {
       try {
-        const cmd = `cat '${home}/.shelly_cwd' 2>/dev/null; echo '---'; cd "$(cat '${home}/.shelly_cwd' 2>/dev/null || echo '${home}')" && git branch --show-current 2>/dev/null`;
-        const r = await execCommand(cmd);
+        const dir = currentDir || home;
+        if (dir === home) {
+          if (active) setGitBranch(null);
+          return;
+        }
+        const r = await execCommand(`cd ${shellQuote(dir)} && git branch --show-current 2>/dev/null`);
         if (!active) return;
         if (r.exitCode !== 0) return;
-        const [cwdPart, branchPart = ''] = r.stdout.split('---\n');
-        const dir = cwdPart.trim() || home;
-        setCwd(dir);
-        const branch = branchPart.trim();
+        const branch = r.stdout.trim();
         setGitBranch(branch || null);
       } catch { /* ignore */ }
     };
-    // bug #103 (post-v41 review fix): genuinely pause the interval when
-    // the app is backgrounded — the earlier revision left setInterval
-    // running and only fired an extra poll on resume, so JNI
-    // execSubprocess was still being spawned every 15 s in the background.
-    let id: ReturnType<typeof setInterval> | null = null;
-    const start = () => { if (id === null) id = setInterval(poll, 15000); };
-    const stop = () => { if (id !== null) { clearInterval(id); id = null; } };
-    poll();
-    start();
+    refreshBranch();
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') { poll(); start(); }
-      else { stop(); }
+      if (state === 'active') refreshBranch();
     });
     return () => {
       active = false;
-      stop();
       sub.remove();
     };
-  }, [home]);
+  }, [currentDir, home]);
 
   const handleCopyPath = () => {
     Clipboard.setStringAsync(cwd);

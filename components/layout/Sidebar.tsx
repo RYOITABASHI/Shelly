@@ -139,6 +139,7 @@ export function Sidebar() {
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const setLeafTab = useMultiPaneStore((s) => s.setLeafTab);
   const openUrl = useBrowserStore((s) => s.openUrl);
+  const portsSectionOpen = useSidebarStore((s) => s.openSections.ports);
 
   // Poll active localhost listeners every 15s. Single-writer pattern
   // (Sidebar owns the interval, usePortsStore is the one state source)
@@ -153,7 +154,9 @@ export function Sidebar() {
   useEffect(() => {
     const setEntries = usePortsStore.getState().setEntries;
     let cancelled = false;
+    let disabledAfterFailure = false;
     const refresh = async () => {
+      if (disabledAfterFailure) return;
       // bug #99: Android 10+ SELinux denies app_data_file reads of
       // /proc/net/tcp{,6}, so the Plan B fopen path (readProcNetFile)
       // returns EACCES silently. Primary path is now NETLINK_SOCK_DIAG
@@ -176,6 +179,10 @@ export function Sidebar() {
         v6 = pV6 ?? '';
       }
       if (cancelled) return;
+      if (!v4 && !v6) {
+        disabledAfterFailure = true;
+        return;
+      }
       setEntries(parseProcNet(v4, v6));
     };
     // bug #103: actually pause polling while backgrounded. Earlier revision
@@ -190,14 +197,16 @@ export function Sidebar() {
     const stopPolling = () => {
       if (ivHandle !== null) { clearInterval(ivHandle); ivHandle = null; }
     };
-    refresh();
-    startPolling();
+    if (portsSectionOpen) {
+      refresh();
+      startPolling();
+    }
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') { refresh(); startPolling(); }
+      if (state === 'active' && portsSectionOpen) { refresh(); startPolling(); }
       else { stopPolling(); }
     });
     return () => { cancelled = true; stopPolling(); sub.remove(); };
-  }, []);
+  }, [portsSectionOpen]);
 
   // Git dirty-count polling removed 2026-04-21. The count was run against
   // `$HOME` which is not a sane repo context — CLI bg updates, install
