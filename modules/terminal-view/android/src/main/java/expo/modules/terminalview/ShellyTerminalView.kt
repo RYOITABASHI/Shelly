@@ -548,14 +548,33 @@ class ShellyTerminalView(
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 2.0f)
 
     override fun onSingleTapUp(e: MotionEvent) {
-        terminalView.requestFocus()
+        // Speculative fix (bug #116 follow-up 2): in multi-pane layouts,
+        // tapping the right pane's body fired onSingleTapUp but the IME
+        // stayed hidden because:
+        //   (a) a sibling TerminalView (left pane) already owned focus
+        //       so requestFocus() could refuse to hand it over, and
+        //   (b) some ROMs ignore showSoftInput when the target view isn't
+        //       currently the focused one.
+        // Force clear any prior focus, flip the focusable flags on, then
+        // request focus in touch mode. This matches how Termux's own
+        // TerminalView initializes focus in onCreate.
+        terminalView.isFocusable = true
+        terminalView.isFocusableInTouchMode = true
+        val rootFocused = rootView?.findFocus()
+        if (rootFocused != null && rootFocused !== terminalView) {
+            rootFocused.clearFocus()
+        }
+        val reqOk = terminalView.requestFocusFromTouch()
+        val hasWinFocus = terminalView.hasWindowFocus()
+        val isFocused = terminalView.isFocused
+        val isFocusable = terminalView.isFocusable
+        val visibility = terminalView.visibility
+        val width = terminalView.width
+        val height = terminalView.height
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.showSoftInput(terminalView, 0)
-        // Emit to JS so the owning PaneSlot can run the 4-store focus
-        // handoff. Body taps on a non-focused pane would otherwise leave
-        // IME commitText landing on the last-focused pane's TerminalSession.
+        val imeShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
         val sid = currentSessionId ?: ""
-        Log.i(TAG, "onSingleTapUp: emitting onFocusRequested sessionId=$sid")
+        Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} imeShow=$imeShown prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
         onFocusRequested(mapOf("sessionId" to sid))
     }
 
