@@ -97,6 +97,7 @@ Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Rep
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **5 pane types** | Terminal, AI, Browser (+ background audio), Markdown, Preview. Split up to 4 live panes freely. |
 | **Multi-agent AI** | Claude Code, Gemini, Cerebras, Groq, Perplexity, Codex, Local LLM. Auto-routed or `@mention`. |
+| **Latest Claude Code on Android** | The only Android app that runs claude-code 2.1.113+ (Bun SEA) natively via a Shelly-patched musl loader. No proot, no root. APK auto-bundles the newest release via nightly CI. |
 | **Shelly theme preset** | Mock-faithful teal-on-black palette with Silkscreen pixel font. Runtime swap — your shell survives the switch. |
 | **Voice input** | Speak your commands or AI prompts. VoiceChain ties speech to the same input router the keyboard uses. |
 | **CRT mode** | Scanlines + phosphor green + vignette. Retro 8-bit sounds. Pixel fonts. Just for fun. |
@@ -242,7 +243,7 @@ Currently registered:
 <summary><strong>Theme &amp; Fonts</strong></summary>
 
 - **"Shelly" preset** — new default. Mock-faithful palette with 8 neon accents (teal / green / blue / sky / purple / pink / amber / red) on a `#0A0A0A` background. Paired with Silkscreen.
-- **Other presets** — Silkscreen (previous greener palette), 8bit (PressStart2P), Mono (system monospace), plus four classic editor palettes: **Dracula**, **Nord**, **Gruvbox**, and **Tokyo Night**. Switch from Settings → Display → Theme or from the Command Palette (`theme-dracula`, `theme-nord`, `theme-gruvbox`, `theme-tokyo-night`).
+- **Other presets** — Silkscreen (previous greener palette), 8bit (PressStart2P), Mono (system monospace), plus eleven classic editor palettes: **Dracula**, **Nord**, **Gruvbox**, **Tokyo Night**, **Catppuccin Mocha**, **Rose Pine**, **Kanagawa**, **Everforest**, **One Dark**, **Blackline** (pure black, low-distraction), and **Modal** (high-contrast modal ui theme). Switch from Settings → Display → Theme or the Command Palette.
 - **Runtime swap** — presets are swapped by mutating the live `colors` object in place (identity preserved) and bumping a theme-version store that key-remounts the shell layout. PTY sessions survive the switch — your vim stays open.
 - **Single-weight rendering** — every Text is forced through Silkscreen Regular regardless of its `fontWeight`. A two-weight mix (bold section headers against regular inline buttons) read as visibly inconsistent, so Shelly commits to one pixel weight everywhere.
 - **Text.render monkey-patch** — `Text.defaultProps.style` is replaced (not merged) when a child passes its own `style`, which would otherwise let 100+ call sites escape the theme font. The patch prepends `{ fontFamily }` to every Text's style array so the preset font reaches every call site without touching them.
@@ -270,6 +271,8 @@ Currently registered:
 - **Command safety** — regex-based 5-level risk assessment (seatbelt, not firewall — see [Security](#security))
 - **Workspace isolation** — per-project cwd / env / AI context
 - **Background agents** — `@agent` schedule + AlarmManager-triggered runs under tmux; skeleton is in place, end-to-end runs are still being validated on device
+- **Managed CLI runtime updater** — `shelly runtime-update` downloads the latest `claude` (musl) and `codex` (codex-termux) binaries, verifies integrity, smoke-tests on-device, then hot-swaps `~/.shelly-runtime/<cli>/current` without an APK update
+- **`shelly doctor`** — diagnostic command that checks PTY health, CLI binary presence, musl loader, resolv.conf, and credential state; run it when something feels broken
 
 </details>
 
@@ -281,7 +284,7 @@ Currently registered:
 |---|---|
 | Native PTY, sessions, tmux revival | ✅ shipping |
 | Multi-pane layout (5 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
-| Atomic paste (bracketed-paste wrap when guest opts in via DECSET 2004, single `TerminalEmulator.paste()` choke point) | ✅ shipping (bugs #91, #94, #97) |
+| Atomic paste (bracketed-paste wrap when guest opts in via DECSET 2004, single `TerminalEmulator.paste()` choke point, IME chunk-split coalesced) | ✅ shipping (bugs #91, #94, #97, #106) |
 | `/sdcard` access via `MANAGE_EXTERNAL_STORAGE` (first-launch grant flow) | ✅ shipping (bug #92) |
 | `bash` wrapper at `$HOME/bin/bash` for shebangs and `bash script.sh` | ✅ shipping (bug #93) |
 | `execSubprocess` JNI read loop (EAGAIN vs EOF distinction) | ✅ shipping (bug #70) |
@@ -289,7 +292,7 @@ Currently registered:
 | FileTree CRUD (create / rename / delete / copy path) | ✅ shipping |
 | Command Palette — tabs, terminal, git, panes, layouts, font, CRT, voice | ✅ shipping |
 | Browser fullscreen, desktop UA toggle, link capture, bookmarks | ✅ shipping |
-| Theme presets — Shelly / Silkscreen / 8-bit / Mono + Dracula / Nord / Gruvbox / Tokyo Night (runtime swap, single-weight Text monkey-patch) | ✅ shipping |
+| Theme presets — Shelly / Silkscreen / 8-bit / Mono + Dracula / Nord / Gruvbox / Tokyo Night / Catppuccin Mocha / Rose Pine / Kanagawa / Everforest / One Dark / Blackline / Modal (runtime swap, single-weight Text monkey-patch) | ✅ shipping |
 | AgentBar + Sidebar git dirty badge (single-writer poll) | ✅ shipping |
 | Sidebar Add Repository existence check + Alert on ghost path | ✅ shipping (bug #73) |
 | AI pane Local LLM routing (URL-driven, no enable toggle) | ✅ shipping (bug #68) |
@@ -298,7 +301,9 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Claude / Gemini CLIs auto-installed on first launch (via npm) | ✅ shipping |
-| Codex CLI bundled (codex-termux ET_DYN binary via linker64 shim, `codex.js` patched at first boot) | ✅ shipping (bugs #76, #96) |
+| Claude Code 2.1.113+ (Bun SEA) on Android bionic via musl trampoline loader — only Android app to support latest claude-code natively (bug #117 Path C-bis) | ✅ shipping |
+| Codex CLI bundled (codex-termux ET_DYN binary, `codex.js` patched at first boot) | ✅ shipping (bugs #76, #96) |
+| Managed CLI runtime updater (`shelly runtime-update`) + `shelly doctor` diagnostics | ✅ shipping |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked as bug #99 (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in v0.1.1 |
@@ -316,7 +321,7 @@ Full validation checklist: [`docs/superpowers/specs/2026-04-13-validation-checkl
 Parts of the app are written but not yet verified. These are on the short-term roadmap, not in the current build:
 
 - **Play Store / F-Droid distribution** — the APK is published via GitHub Releases only; store submission flow not yet done
-- **End-to-end device validation** for voice dialogue, immortal sessions, Codex CLI launch via proot, and background agent AlarmManager scheduling — all wired but not yet smoke-tested on the target device
+- **End-to-end device validation** for voice dialogue, immortal sessions, and background agent AlarmManager scheduling — all wired but not yet smoke-tested on the target device
 - **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in the v0.1.0 cleanup. Snippets can still be added by editing `~/.shelly/snippets.json` directly or via `shelly config`.
 
 ---
@@ -547,7 +552,7 @@ Shelly is v0.1.0. Here's what we know isn't perfect yet.
 - **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once; a cost warning is shown before execution.
 - **Multi-hunk Accept against a partially-edited file** — per-hunk Accept uses fuzzy re-anchoring so successive hunks land, but if the AI's diff references context that has already been edited to something else, the hunk will be rejected with a toast asking you to regenerate.
 - **Silkscreen is not monospaced** — `ls -la` columns may drift slightly; switch to the `Mono` font preset from the Command Palette if you need strict columns.
-- **Codex CLI runs through a rewritten `codex.js`** — `@openai/codex` ships a statically-linked ET_EXEC aarch64 binary (`@openai/codex-linux-arm64`) that Android's `mmap_min_addr` refuses to load. Shelly replaces the upstream binary with the `codex-termux` ET_DYN build (extracted from jniLibs as `codex_exec`) and patches `codex.js` at post-install to spawn it through `/system/bin/linker64`. The old Alpine rootfs + proot path has been retired. If `codex --version` fails, check `~/.shelly-cli/install.log` for the `[patch] codex.js OK` line. Tracked as bugs #76 (ET_DYN swap) and #96 (node-based patcher replacing the broken coreutils sed).
+- **Codex CLI runs through a rewritten `codex.js`** — `@openai/codex` ships a statically-linked ET_EXEC aarch64 binary that Android's `mmap_min_addr` refuses to load. Shelly replaces it with the `codex-termux` ET_DYN build and patches `codex.js` at post-install to spawn it through `/system/bin/linker64`. If `codex --version` fails, run `shelly doctor` or check `~/.shelly-cli/install.log` for the `[patch] codex.js OK` line. Tracked as bugs #76 and #96.
 - **`/sdcard` access requires MANAGE_EXTERNAL_STORAGE** — Android 11+ Scoped Storage blocks direct `open(2)` on `/sdcard` paths without this permission. Shelly asks for it on first launch; if you deny it, `source /sdcard/Download/foo.sh` will fail with `Permission denied`. Re-grant from system Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files.
 - **Claude Code login cannot complete inside Shelly** — Anthropic's OAuth flow tries a loopback callback that requires a registered browser handler (`xdg-open` / `termux-open`); under Shelly the flow falls back to manual code paste, and the paste step rejects with `OAuth error: status code 400` for reasons we haven't fully traced. Workaround: complete `/login` in another environment (Termux, PC, GitHub Codespaces, anywhere Claude Code already works), then transplant the credentials — details in [Bring your own credentials](#bring-your-own-credentials) below. This is an intentional scope limitation: first-run zero-setup authentication is the job of the sister project **Chelly**, not Shelly. Tracked as bug #102.
 - **Gemini CLI `/auth` cannot complete inside Shelly either** — same pattern as Claude: gemini-cli tries to `spawn('xdg-open', [url])` and gets `EACCES`, and copying the OAuth URL into an external browser returns HTTP 400 from Google (the registered loopback port in the gemini-cli OAuth client doesn't match what the CLI picked). Workaround is identical: authenticate on another machine, then transplant `~/.gemini/` — see [Bring your own credentials](#bring-your-own-credentials). Tracked as bug #115.
@@ -588,18 +593,7 @@ claude              # "Welcome back <you>" means success; an onboarding picker m
 Caveats:
 
 - Access tokens are short-lived (~9 hours). When the refresh token eventually rotates or Cloudflare's WAF rejects an Android-origin refresh, Shelly's `claude` will stop authenticating and you'll need to repeat the copy from a working environment. The community has reported refresh failures in [anthropics/claude-code#47754](https://github.com/anthropics/claude-code/issues/47754); we have not yet seen it in Shelly testing, but it is the expected long-tail failure mode.
-- **Pin `@anthropic-ai/claude-code@2.1.112` on the donor machine and lock it against auto-update.** The 2.1.113 release [replaced `cli.js` with a Bun-compiled SEA binary](https://github.com/anthropics/claude-code/issues/50270) that requires glibc/musl and therefore won't run under Android bionic. Claude Code also auto-updates whenever it starts, so a freshly-pinned install gets clobbered the next time you run `claude`. Two reliable ways to keep it stable:
-
-  ```bash
-  # Option A — re-pin whenever auto-update strikes (manual, but explicit)
-  npm i -g @anthropic-ai/claude-code@2.1.112
-
-  # Option B — pin once, then make the directory immutable (recommended)
-  npm i -g @anthropic-ai/claude-code@2.1.112
-  chmod a-w "$(npm root -g)/@anthropic-ai/claude-code"
-  ```
-
-  We hit this in the field on 2026-04-21 when a background update pushed the donor Termux install to 2.1.116 and `claude` started failing with `MODULE_NOT_FOUND`. Restoring the directory with option B above prevented the recurrence.
+- The donor machine's `claude` version does not matter for credential transplants — **any version** of claude-code produces compatible `~/.claude.json` and `.credentials.json` files. Shelly bundles the latest claude-code musl binary natively (bug #117 Path C-bis), so no pinning is needed on either side.
 - These files are highly sensitive (anyone holding them can talk to Anthropic as you). Treat the `/sdcard/Download/` copies as single-use — delete them after the transplant lands.
 
 #### Gemini CLI
