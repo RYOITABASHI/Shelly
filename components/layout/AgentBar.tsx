@@ -18,13 +18,18 @@ import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
+// Calvin S figlet-style 3-line ASCII logo for SHELLY.
+// Uses box-drawing chars — requires JetBrainsMono_400Regular (loaded in _layout.tsx).
+const SHELLY_LOGO =
+  '╔═╗╦ ╦╔═╗╦  ╦  ╦ ╦\n' +
+  '╚═╗╠═╣║╣ ║  ║  ╚╦╝\n' +
+  '╚═╝╩ ╩╚═╝╩═╝╩═╝ ╩ ';
+
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const barBg = usePanelBackground(C.bgSidebar);
-  const logoPrompt = uiFont === 'blackline' ? '~$' : uiFont === 'modal' ? ':' : '>_';
-
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
   // events go nowhere until the user taps the terminal. Route close through
@@ -38,8 +43,7 @@ export function AgentBar() {
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
       <View style={styles.logoMark} pointerEvents="none">
-        <Text style={styles.logoPrompt}>{logoPrompt}</Text>
-        <Text style={styles.logoText}>SHELLY</Text>
+        <Text style={styles.asciiLogo}>{SHELLY_LOGO}</Text>
       </View>
 
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
@@ -104,25 +108,16 @@ const styles = StyleSheet.create({
     height: 28,
     marginLeft: 6,
     marginRight: 2,
-    paddingHorizontal: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+    paddingHorizontal: 4,
+    justifyContent: 'center',
   },
-  logoPrompt: {
+  asciiLogo: {
     color: C.accent,
-    fontFamily: F.family,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 12,
-  },
-  logoText: {
-    color: C.text1,
-    fontFamily: F.family,
-    fontSize: 10,
-    fontWeight: '700',
+    fontFamily: 'JetBrainsMono_400Regular',
+    fontSize: 5.5,
+    lineHeight: 7,
+    includeFontPadding: false,
     letterSpacing: 0,
-    lineHeight: 12,
   },
   addBtn: {
     width: 32,
