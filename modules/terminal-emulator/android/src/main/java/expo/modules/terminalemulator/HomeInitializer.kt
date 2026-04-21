@@ -431,7 +431,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     ~/.shelly-runtime/<tool>/current after staged download, integrity
     //     verification, and --version smoke test. APK binaries remain the
     //     known-good fallback.
-    private const val BASHRC_VERSION = 47
+    // v48 (2026-04-21): shelly-doctor — read-only CLI diagnostics for
+    //     runtime updater state, CLI versions, and auth file presence.
+    private const val BASHRC_VERSION = 48
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -616,6 +618,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-runtime-update.js extract failed: ${e.message}")
+        }
+
+        val doctorScript = File(home, ".shelly-doctor.js")
+        try {
+            context.assets.open("shelly-doctor.js").use { input ->
+                doctorScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-doctor.js extract failed: ${e.message}")
         }
 
         // v39: Mozilla CA bundle for TLS clients that don't consult the
@@ -1036,6 +1047,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // verifies, smoke-tests, then flips ~/.shelly-runtime/*/current.
             sb.appendLine("# Shelly-managed native CLI runtime update (background, once per day)")
             sb.appendLine("shelly-update-clis() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" \"\$@\"; }")
+            sb.appendLine("shelly-doctor() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-doctor.js\" \"\$@\"; }")
             sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
             sb.appendLine("__shelly_runtime_update_interval=86400")
             sb.appendLine("__shelly_runtime_now=\$(date +%s 2>/dev/null || printf '%(%s)T' -1 2>/dev/null || echo 0)")
