@@ -334,7 +334,10 @@ claude                                                                # → onbo
 **制約**:
 - `expires_at` 約 9 時間 (Termux 側の access_token の残り期限) → 期限切れ後は Termux で再 /login して transplant やり直し
 - refresh token が Cloudflare WAF で弾かれる可能性 ([#47754](https://github.com/anthropics/claude-code/issues/47754)) → 確認 TODO
-- Termux 側も 2.1.113+ にアップグレードされると cli.js 消失で /login 自体不可 ([#50270](https://github.com/anthropics/claude-code/issues/50270)、2.1.112 pin 必須)
+- **⚠️ Termux 側 claude-code は `@2.1.112` で pin 必須**。2.1.113+ は cli.js が Bun SEA バイナリに置き換わり、`node cli.js` 経路が死ぬ ([#50270](https://github.com/anthropics/claude-code/issues/50270))。**2026-04-21 に実際に Termux 側が 2.1.116 に auto-update されて claude 起動不可になる事故が発生**。毎回 `claude` 起動時に自動更新が走る仕様なので、以下いずれかの対処必須:
+  - **A. 起動前に pin 戻し**: `npm i -g @anthropic-ai/claude-code@2.1.112`
+  - **B. 書込み禁止でロック** (推奨): `npm i -g @anthropic-ai/claude-code@2.1.112 && chmod a-w /data/data/com.termux/files/usr/lib/node_modules/@anthropic-ai/claude-code`。以後 auto-update が permission denied で無害化
+  - **C. `DISABLE_AUTOUPDATER=1` export** (未確認、v2.1.112 で効くかは Anthropic upstream コード次第)
 
 **🎯 スコープ判断 (2026-04-20)**: Shelly は **ゼロ状態ユーザー向けではなく、既に開発環境を持つユーザー向け** のツールとして再定義。初心者向けの「ブラウザから直接 /login 完結」体験は **Chelly (Chat UI を別リポで OSS 化する姉妹プロジェクト)** の責務。Shelly 本体での /login 完結実装は **スコープ外**。
 
@@ -913,6 +916,29 @@ coreutils: /proc/self/net/tcp6: Permission denied
 - **除外**: 上記 9 件は候補復活時に再評価
 
 **優先度**: P3 (ロードマップ)。実装タスクは各 Tier のリリース milestone に合わせて個別 issue 化。
+
+---
+
+### bug #117 — claude-code 2.1.113+ (Bun SEA) を Android bionic で動かせるか調査
+
+**背景**: Anthropic が 2.1.113 で `cli.js` 純 JS → Bun SEA (Single Executable Application) バイナリに切り替え。`bin/claude.exe` が glibc/musl リンクで bionic 上 exec 不可。2.1.112 で pin するのが現状の回避策だが、以下の問題が積み重なる:
+- 新機能 (プロバイダ追加 / bug fix / セキュリティ) が取り込めない
+- Anthropic が古いバージョンのサーバ側サポートを切ると一気に詰む
+- ユーザーが `npm i -g @anthropic-ai/claude-code@latest` を不用意に叩くたび死ぬ (2026-04-21 実際に発生)
+
+**対応候補** (難易度順):
+
+1. **linker64 ディスパッチで Bun SEA を強制起動** — codex-termux と同じ手法で `/system/bin/linker64 bin/claude.exe`。Bun が glibc 固有 API (epoll 等) を叩かなければ通る可能性。要実験。**最短数時間**
+2. **Bun の Android bionic build を用意** — Bun は公式に Android arm64 をサポート中 ([bun Android issue](https://github.com/oven-sh/bun/issues/8745))。Bun を bionic 向けに build し、`bun cli.js` で claude を起動する wrapper を書く。**数日〜1 週間**
+3. **claude-code を unbundle** — Bun SEA を `bun build --no-bundle` で解いて cli.js 相当に戻す (そもそも可能か不明)。**不可能性あり**
+4. **Anthropic 公式 issue/PR** — Android 対応 or SEA でなく node 形式の optional パッケージを要求。**数週間〜数ヶ月 or 無視される**
+5. **Shelly 自前実装 (shelly-claude-auth.js 拡張)** — claude-code CLI を使わず、自前で Anthropic API を直叩きする独自クライアント。UI は Shelly のペインに統合。**数週間〜v0.3.0 規模**、別物になる
+
+**推奨**: v0.1.0 出荷後、候補 1 を数時間実験して動くか確認。動けば即解決、動かないなら候補 2 で Bun bionic port に時間投資。候補 4 (upstream PR) と並行して進める。
+
+**優先度**: P3 (v0.1.0 は 2.1.112 pin で出荷できる、恒久対応は余裕が出てから)
+
+**関連**: bug #102 transplant / [#50270](https://github.com/anthropics/claude-code/issues/50270) / [Bun Android support](https://github.com/oven-sh/bun/issues/8745)
 
 ---
 

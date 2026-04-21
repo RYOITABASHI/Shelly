@@ -588,7 +588,18 @@ claude              # "Welcome back <you>" means success; an onboarding picker m
 Caveats:
 
 - Access tokens are short-lived (~9 hours). When the refresh token eventually rotates or Cloudflare's WAF rejects an Android-origin refresh, Shelly's `claude` will stop authenticating and you'll need to repeat the copy from a working environment. The community has reported refresh failures in [anthropics/claude-code#47754](https://github.com/anthropics/claude-code/issues/47754); we have not yet seen it in Shelly testing, but it is the expected long-tail failure mode.
-- Keep the source environment on `@anthropic-ai/claude-code@2.1.112`. The 2.1.113 release [shipped without `cli.js`](https://github.com/anthropics/claude-code/issues/50270), which breaks the whole toolchain — not specific to Shelly but worth knowing before `npm i -g` on the donor machine.
+- **Pin `@anthropic-ai/claude-code@2.1.112` on the donor machine and lock it against auto-update.** The 2.1.113 release [replaced `cli.js` with a Bun-compiled SEA binary](https://github.com/anthropics/claude-code/issues/50270) that requires glibc/musl and therefore won't run under Android bionic. Claude Code also auto-updates whenever it starts, so a freshly-pinned install gets clobbered the next time you run `claude`. Two reliable ways to keep it stable:
+
+  ```bash
+  # Option A — re-pin whenever auto-update strikes (manual, but explicit)
+  npm i -g @anthropic-ai/claude-code@2.1.112
+
+  # Option B — pin once, then make the directory immutable (recommended)
+  npm i -g @anthropic-ai/claude-code@2.1.112
+  chmod a-w "$(npm root -g)/@anthropic-ai/claude-code"
+  ```
+
+  We hit this in the field on 2026-04-21 when a background update pushed the donor Termux install to 2.1.116 and `claude` started failing with `MODULE_NOT_FOUND`. Restoring the directory with option B above prevented the recurrence.
 - These files are highly sensitive (anyone holding them can talk to Anthropic as you). Treat the `/sdcard/Download/` copies as single-use — delete them after the transplant lands.
 
 #### Gemini CLI
