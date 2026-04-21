@@ -33,14 +33,25 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Set up QEMU (for Alpine aarch64 musl build)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Build patched musl libc for claude-code 2.1.113+ (bug #117 Path C-bis)
-        # Cross-compile musl v1.2.4 with the hardcoded /etc/resolv.conf path
-        # rewritten to live under Shelly's app-writable home. bionic has no
-        # /etc/resolv.conf (it uses net.dns* properties), and LD_PRELOAD
-        # can't intercept musl's inline syscalls — so we bake the path in
-        # at build time. Alpine 3.19 ships musl 1.2.4; pinning the source
-        # tag keeps ABI compatibility with claude-code-linux-arm64-musl,
-        # which is linked against that minor release.
+        # Natively compile musl v1.2.4 inside an aarch64 Alpine container
+        # (emulated via qemu-user-static) with the hardcoded
+        # /etc/resolv.conf path rewritten to Shelly's app-writable home.
+        # bionic has no /etc/resolv.conf (it uses net.dns* properties),
+        # and LD_PRELOAD can't intercept musl's inline syscalls — so we
+        # bake the path in at build time. Alpine 3.19 ships musl 1.2.4;
+        # pinning the source tag keeps ABI compatibility with the
+        # claude-code-linux-arm64-musl prebuilt.
+        #
+        # A cross-compile via musl.cc used to live here, but musl.cc was
+        # unreachable from GitHub-hosted runners (connect timeout) in
+        # initial CI trials. Native-in-qemu is ~3× slower (~5 min vs
+        # ~90 s) but removes the third-party hosting dependency.
         #
         # Proof-of-concept verified on Termux/Galaxy Z Fold6 (2026-04-21):
         # `./ld-musl-aarch64.so.1 ./claude --print ...` round-trips
@@ -48,39 +59,36 @@ jobs:
         run: |
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           RESOLV_CONF_PATH="/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf"
-          TOOLCHAIN_URL="https://musl.cc/aarch64-linux-musl-cross.tgz"
 
-          echo "[musl] fetching pre-built aarch64-linux-musl cross toolchain"
-          curl -fsSL "${TOOLCHAIN_URL}" -o /tmp/aarch64-linux-musl-cross.tgz
-          tar xzf /tmp/aarch64-linux-musl-cross.tgz -C /tmp
-          export PATH="/tmp/aarch64-linux-musl-cross/bin:${PATH}"
-          aarch64-linux-musl-gcc --version | head -1
-
-          echo "[musl] cloning musl v1.2.4 source"
-          git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl /tmp/musl-src
-
-          echo "[musl] patching resolv.conf path → ${RESOLV_CONF_PATH}"
-          # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC — doesn't
-          # survive the shell→make→shell round-trip because make re-invokes
-          # /bin/sh which strips the quoted literal. Direct sed of the
-          # string literal in src/network/resolvconf.c is foolproof.
-          sed -i "s|\"/etc/resolv.conf\"|\"${RESOLV_CONF_PATH}\"|g" /tmp/musl-src/src/network/resolvconf.c
-          grep -q "${RESOLV_CONF_PATH}" /tmp/musl-src/src/network/resolvconf.c || { echo "sed failed"; exit 1; }
-
-          echo "[musl] configure + build"
-          (
-            cd /tmp/musl-src
-            CC=aarch64-linux-musl-gcc ./configure --target=aarch64-linux-musl --prefix=/tmp/musl-out >/tmp/configure.log 2>&1 || { tail -30 /tmp/configure.log; exit 1; }
-            make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
-          )
-
-          echo "[musl] stripping and staging"
-          aarch64-linux-musl-strip --strip-unneeded /tmp/musl-src/lib/libc.so
-          cp /tmp/musl-src/lib/libc.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          mkdir -p /tmp/musl-out
+          docker run --rm --platform linux/arm64 \
+            -v /tmp/musl-out:/out \
+            -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
+            alpine:3.19 sh -euxc '
+              apk add --no-progress build-base git
+              cd /tmp
+              git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl
+              cd musl
+              # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC —
+              # does not survive the shell→make→shell round-trip because
+              # make re-invokes /bin/sh which strips the quoted literal.
+              # Direct sed of the string literal in src/network/resolvconf.c
+              # is foolproof.
+              sed -i "s|\"/etc/resolv.conf\"|\"${RESOLV_CONF_PATH}\"|g" src/network/resolvconf.c
+              grep -q "${RESOLV_CONF_PATH}" src/network/resolvconf.c
+              ./configure --prefix=/tmp/musl-out >/tmp/configure.log 2>&1 || { tail -30 /tmp/configure.log; exit 1; }
+              make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
+              strip --strip-unneeded lib/libc.so
+              cp lib/libc.so /out/libld_musl_shelly.so
+              # Sanity checks inside the container — readelf/strings are
+              # the Alpine aarch64 natives, no cross-tool needed.
+              readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
+              strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
+            '
+          cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          aarch64-linux-musl-readelf -h "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" | grep -E 'Type|Machine'
-          aarch64-linux-musl-strings "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
+          file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
 
       - name: Bundle claude-code musl binary (bug #117 Path C-bis)
         # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
