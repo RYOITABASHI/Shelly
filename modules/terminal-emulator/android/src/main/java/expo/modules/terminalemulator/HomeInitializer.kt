@@ -843,7 +843,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
-            sb.appendLine("  if [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
             // time — bionic has no /etc/resolv.conf so without this seed
@@ -862,7 +862,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      0)")
             sb.appendLine("        return 0")
             sb.appendLine("        ;;")
-            sb.appendLine("      132|133|134|135|136|137|138|139|159)")
+            sb.appendLine("      126|127|132|133|134|135|136|137|138|139|159)")
             sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
             sb.appendLine("          echo \"[shelly] claude: Path C-bis failed (exit \$__musl_rc), falling back to cli.js tiers\" >&2")
             sb.appendLine("        fi")

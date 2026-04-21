@@ -74,6 +74,25 @@ static int phdr_prot(uint32_t flags) {
   return prot;
 }
 
+static void zero_range_with_prot(uintptr_t start, uintptr_t end, int prot, long page_size) {
+  if (end <= start) return;
+  uintptr_t page_start = PAGE_ALIGN_DOWN(start, page_size);
+  uintptr_t page_end = PAGE_ALIGN_UP(end, page_size);
+  size_t span = (size_t)(page_end - page_start);
+  bool need_restore = (prot & PROT_WRITE) == 0;
+  if (need_restore) {
+    if (mprotect((void *)page_start, span, prot | PROT_WRITE) != 0) {
+      die_errno("mprotect add write for bss tail failed");
+    }
+  }
+  memset((void *)start, 0, (size_t)(end - start));
+  if (need_restore) {
+    if (mprotect((void *)page_start, span, prot) != 0) {
+      die_errno("mprotect restore prot for bss tail failed");
+    }
+  }
+}
+
 static struct loaded_elf map_elf_load_segments(const char *path, long page_size) {
   struct loaded_elf out = {0};
   int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -147,8 +166,9 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size)
     uintptr_t seg_mem_end = load_bias + (uintptr_t)ph[i].p_vaddr + (uintptr_t)ph[i].p_memsz;
 
     if (seg_mem_end > seg_data_end) {
-      if (seg_page_end_file > 0 && seg_data_end < seg_page_end_file) {
-        memset((void *)seg_data_end, 0, seg_page_end_file - seg_data_end);
+      uintptr_t tail_end = seg_page_end_file < seg_mem_end ? seg_page_end_file : seg_mem_end;
+      if (tail_end > seg_data_end) {
+        zero_range_with_prot(seg_data_end, tail_end, prot, page_size);
       }
       if (seg_page_end_mem > seg_page_end_file) {
         void *anon = mmap((void *)seg_page_end_file,

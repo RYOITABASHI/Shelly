@@ -541,6 +541,7 @@ public class TerminalView extends View {
                 // the trailing Enter/quote characters from pasted text.
                 if (!commitStr.isEmpty() && commitStr.equals(mLastFinishFlush)) {
                     Log.d("ShellyIME", "commit SUPPRESSED (already flushed via finishComposing) =\"" + commitStr + "\"");
+                    mPrevCommitWasPaste = false;
                 } else if (!commitStr.isEmpty()) {
                     // bug #91: if the IME just handed us a multi-line block or a
                     // chunk bigger than a realistic typed keystroke, treat it as

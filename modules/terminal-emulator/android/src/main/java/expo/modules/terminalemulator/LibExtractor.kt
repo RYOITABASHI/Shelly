@@ -7,6 +7,7 @@ import java.util.zip.ZipFile
 
 object LibExtractor {
     private const val TAG = "LibExtractor"
+    private const val EXTRACT_MARKER = ".extract_version"
 
     private val LIBS = mapOf(
         // bash + deps
@@ -107,6 +108,12 @@ object LibExtractor {
 
     fun extractAll(context: Context): File {
         val libDir = getLibDir(context)
+        val markerFile = File(libDir, EXTRACT_MARKER)
+        val currentVersion = appVersionMarker(context)
+        val forceRefresh = !markerFile.exists() || markerFile.readText().trim() != currentVersion
+        if (forceRefresh) {
+            Log.i(TAG, "extract refresh required: marker=${markerFile.takeIf { it.exists() }?.readText()?.trim()} current=$currentVersion")
+        }
 
         // Extract native binaries from APK
         val apkPath = context.applicationInfo.sourceDir
@@ -114,7 +121,8 @@ object LibExtractor {
         try {
             for ((apkEntry, fileName) in LIBS) {
                 val outFile = File(libDir, fileName)
-                if (outFile.exists() && outFile.length() > 0) continue
+                if (!forceRefresh && outFile.exists() && outFile.length() > 0) continue
+                if (forceRefresh && outFile.exists()) outFile.delete()
                 val entry = zipFile.getEntry(apkEntry) ?: continue
                 zipFile.getInputStream(entry).use { input ->
                     outFile.outputStream().use { output ->
@@ -130,6 +138,7 @@ object LibExtractor {
         // Extract npm from assets (tar → node_modules/npm/)
         // Note: aapt strips .gz compression, so assets contain .tar not .tar.gz
         val npmDir = File(libDir, "node_modules/npm")
+        if (forceRefresh && npmDir.exists()) npmDir.deleteRecursively()
         if (!npmDir.exists()) {
             try {
                 // Try .tar first (aapt-decompressed), fall back to .tar.gz (original)
@@ -161,15 +170,15 @@ object LibExtractor {
         }
 
         // Extract python stdlib from assets
-        extractTarGzAsset(context, "python3.tar.gz", libDir, "python3.13")
+        extractTarGzAsset(context, "python3.tar.gz", libDir, "python3.13", forceRefresh)
 
         // Extract pip from assets → python3.13/site-packages/pip/
         val sitePackages = File(libDir, "python3.13/site-packages")
-        extractTarGzAsset(context, "pip.tar.gz", sitePackages, "pip")
+        extractTarGzAsset(context, "pip.tar.gz", sitePackages, "pip", forceRefresh)
 
         // Extract bundled AI CLIs (Claude Code, Gemini CLI, Codex)
         Log.i(TAG, "Attempting CLI tools extraction...")
-        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code")
+        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code", forceRefresh)
         Log.i(TAG, "CLI tools extraction done, checking launchers...")
 
         // Note: CLI launchers (claude, gemini, codex) are defined as bash functions
@@ -178,7 +187,13 @@ object LibExtractor {
         // from app_data_file directories. The LD_PRELOAD exec wrapper (libexec_wrapper.so)
         // handles all child process execution transparently.
 
+        markerFile.writeText(currentVersion)
         return libDir
+    }
+
+    private fun appVersionMarker(context: Context): String {
+        val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        return packageInfo.longVersionCode.toString()
     }
 
     /** Try .tar first (aapt strips .gz), fall back to .tar.gz */
@@ -192,8 +207,17 @@ object LibExtractor {
         throw java.io.FileNotFoundException("None of ${candidates.toList()} found in assets")
     }
 
-    private fun extractTarGzAsset(context: Context, assetName: String, destDir: File, checkDir: String) {
+    private fun extractTarGzAsset(
+        context: Context,
+        assetName: String,
+        destDir: File,
+        checkDir: String,
+        forceRefresh: Boolean
+    ) {
         val checkPath = File(destDir, checkDir)
+        if (forceRefresh && checkPath.exists()) {
+            checkPath.deleteRecursively()
+        }
         if (checkPath.exists()) {
             Log.i(TAG, "$assetName: already extracted (${checkPath.absolutePath} exists)")
             return
