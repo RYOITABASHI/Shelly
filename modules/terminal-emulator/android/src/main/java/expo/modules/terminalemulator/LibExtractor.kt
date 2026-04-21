@@ -85,7 +85,17 @@ object LibExtractor {
         "lib/arm64-v8a/libcodex_tui.so" to "codex_tui",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
-        "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so"
+        "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so",
+        // bug #117 Path C-bis: claude-code 2.1.113+ Bun SEA binary + matching
+        // Shelly-patched musl libc loader. claude is ET_EXEC (~220 MB) and
+        // can't be exec'd by bionic's linker64 directly; ld-musl-aarch64.so.1
+        // is ET_DYN so it loads fine via `_run $libDir/ld-musl-aarch64.so.1
+        // $libDir/claude ...`, and the musl loader then mmaps the ET_EXEC
+        // payload. The CI-baked musl libc has its /etc/resolv.conf hardcode
+        // redirected to $HOME/.shelly-ssl/resolv.conf (seeded at shell
+        // launch — see HomeInitializer.kt's claude() wrapper).
+        "lib/arm64-v8a/libclaude.so" to "claude",
+        "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1"
     )
 
     fun getLibDir(context: Context): File =

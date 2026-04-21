@@ -413,7 +413,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     auto-updater can silently fetch a 2.1.113+ Bun SEA tarball that
     //     bricks Android. The chmod a-w on the cli dir is the second half
     //     of that defense and lives in __shelly_bg_cli_update below.
-    private const val BASHRC_VERSION = 43
+    // v44 (2026-04-21): bug #117 Path C-bis — claude() now prefers the
+    //     APK-bundled musl claude-code 2.1.113+ Bun SEA binary loaded via
+    //     the Shelly-patched ld-musl-aarch64.so.1. resolv.conf is seeded
+    //     at ~/.shelly-ssl/ on demand so musl's hardcoded DNS lookup
+    //     works on bionic (which has no /etc/resolv.conf). The legacy
+    //     three-tier cli.js chain is kept as a fallback in case the
+    //     bundled binaries are missing on an older installed APK.
+    private const val BASHRC_VERSION = 44
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -826,7 +833,30 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // guarantees Tier 2 is always known-good: a failing install
             // never reaches the live tree, so Tier 1 either works or falls
             // through to Tier 2/3 on the next invocation.
+            // bug #117 Path C-bis: primary tier is the APK-bundled Bun SEA
+            // binary + Shelly-patched musl loader. Legacy cli.js chain
+            // (auto/prev/bundled) survives as a fallback so an older APK
+            // whose build predates Path C-bis still boots a working claude.
             sb.appendLine("claude() {")
+            sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
+            sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
+            sb.appendLine("  if [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
+            // Seed resolv.conf on first use. The musl libc shipped here
+            // has /etc/resolv.conf rewritten to this exact path at build
+            // time — bionic has no /etc/resolv.conf so without this seed
+            // musl falls back to 127.0.0.1:53 and the API call hangs.
+            sb.appendLine("    if [ ! -s \"\$HOME/.shelly-ssl/resolv.conf\" ]; then")
+            sb.appendLine("      mkdir -p \"\$HOME/.shelly-ssl\"")
+            sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
+            sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
+            sb.appendLine("    fi")
+            sb.appendLine("    _run \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("    return \$?")
+            sb.appendLine("  fi")
+            sb.appendLine("  # Legacy fallback: pre-2.1.113 cli.js three-tier chain")
             sb.appendLine("  local __cli_js=\"\"")
             sb.appendLine("  local __tier=\"\"")
             sb.appendLine("  for __pair in \\")
