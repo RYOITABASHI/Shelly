@@ -53,6 +53,12 @@ export interface ScrollStateChangedEvent {
   };
 }
 
+export interface FocusRequestedEvent {
+  nativeEvent: {
+    sessionId: string;
+  };
+}
+
 export interface NativeTerminalViewProps extends ViewProps {
   sessionId: string;
   fontFamily: FontFamily;
@@ -77,6 +83,7 @@ export interface NativeTerminalViewProps extends ViewProps {
   onTitleChanged?: (event: TitleChangedEvent) => void;
   onResize?: (event: ResizeEvent) => void;
   onScrollStateChanged?: (event: ScrollStateChangedEvent) => void;
+  onFocusRequested?: (event: FocusRequestedEvent) => void;
 }
 
 export const NativeTerminalView =

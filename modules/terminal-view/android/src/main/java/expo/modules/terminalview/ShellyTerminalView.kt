@@ -551,6 +551,12 @@ class ShellyTerminalView(
         terminalView.requestFocus()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.showSoftInput(terminalView, 0)
+        // Emit to JS so the owning PaneSlot can run the 4-store focus
+        // handoff. Body taps on a non-focused pane would otherwise leave
+        // IME commitText landing on the last-focused pane's TerminalSession.
+        val sid = currentSessionId ?: ""
+        Log.i(TAG, "onSingleTapUp: emitting onFocusRequested sessionId=$sid")
+        onFocusRequested(mapOf("sessionId" to sid))
     }
 
     // Bug: Samsung / Gboard soft keyboards fire KEYCODE_BACK when the
@@ -608,6 +614,13 @@ class ShellyTerminalView(
     private val onResize by EventDispatcher()
     private val onScrollStateChanged by EventDispatcher()
     private val onBlockLongPress by EventDispatcher()
+    // bug #116 follow-up: RN's onTouchStart on the parent <View> never fires
+    // for taps inside the terminal body because TerminalView calls
+    // requestDisallowInterceptTouchEvent(true). So `handleFocusPane` in
+    // PaneSlot only ran for header/tab taps, leaving body taps with stale
+    // per-pane focus. This event lets JS learn a pane was tapped and run
+    // the same 4-store handoff regardless of which region was touched.
+    private val onFocusRequested by EventDispatcher()
 
     /**
      * Called by TerminalView when the emulator is (re)set after updateSize().

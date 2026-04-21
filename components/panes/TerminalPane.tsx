@@ -693,6 +693,27 @@ export default function TerminalScreen() {
             transparentBackground={wallpaperActive}
             style={[styles.terminalView, { flex: showSplitPreview ? splitRatio : 1 }]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
+            onFocusRequested={(e) => {
+              // Native bridge for bug #116 follow-up. Body taps inside the
+              // terminal don't reach PaneSlot.onTouchStart because the
+              // Termux TerminalView calls requestDisallowInterceptTouchEvent.
+              // We mirror handleFocusPane here so every tap — header, tab,
+              // or body — drives the same 4-store focus handoff.
+              if (!paneId) return;
+              const evSessId = e.nativeEvent.sessionId || '';
+              console.log('[Shelly][Pane] onFocusRequested paneId=' + paneId + ' sessId=' + evSessId);
+              usePaneStore.getState().setFocusedPane(paneId);
+              const mps = useMultiPaneStore.getState();
+              const idx = mps.slots.findIndex((s) => s?.id === paneId);
+              if (idx >= 0 && idx < 4) {
+                mps.focusSlot(idx as 0 | 1 | 2 | 3);
+                const slot = mps.slots[idx];
+                if (slot && slot.tab === 'terminal' && slot.sessionId) {
+                  useTerminalStore.getState().setActiveSession(slot.sessionId);
+                }
+              }
+              useFocusStore.getState().requestTerminalRefocus();
+            }}
             onOutput={() => {}}
             onBlockCompleted={(e) => {
               const { command, output, exitCode } = e.nativeEvent;

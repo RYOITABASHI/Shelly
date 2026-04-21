@@ -30,7 +30,8 @@ class TerminalViewModule : Module() {
                 "onBell",
                 "onTitleChanged",
                 "onResize",
-                "onScrollStateChanged"
+                "onScrollStateChanged",
+                "onFocusRequested"
             )
 
             // --- Props ---
