@@ -115,11 +115,21 @@ jobs:
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so" | head -1
 
       - name: Download codex-termux Android binaries (exec + TUI)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          CODEX_TERMUX_VERSION="v0.121.0-termux"
+          CODEX_TERMUX_VERSION="$(gh release view --repo DioNanos/codex-termux --json tagName --jq .tagName)"
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          curl -L "https://github.com/DioNanos/codex-termux/releases/download/${CODEX_TERMUX_VERSION}/codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
-            -o /tmp/codex-termux.tar.gz
+          echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION}"
+          gh release download "${CODEX_TERMUX_VERSION}" \
+            --repo DioNanos/codex-termux \
+            --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
+            --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256" \
+            --dir /tmp \
+            --clobber
+          cd /tmp
+          sha256sum -c "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256"
+          mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
           cd /tmp && tar xzf codex-termux.tar.gz
           # Verify the upstream tarball still ships both binaries we depend on.
           # If DioNanos/codex-termux ever renames or drops one of these files,

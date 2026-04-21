@@ -422,7 +422,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     via shelly_musl_exec (kernel-like stack/auxv bootstrap for ld-musl)
     //     and only falls through to legacy cli.js tiers when the musl path
     //     crashes with a signal-style exit status.
-    private const val BASHRC_VERSION = 45
+    // v46 (2026-04-21): bug #117 on-device smoke — Path C-bis inherited
+    //     the PTY-wide bionic LD_PRELOAD=libexec_wrapper.so. musl tried to
+    //     relocate that bionic preload and failed on __register_atfork,
+    //     __open_2, and __errno before falling back to 2.1.112. Clear
+    //     LD_PRELOAD for the musl claude launch only.
+    // v47 (2026-04-21): Shelly-managed runtime updater — claude/codex prefer
+    //     ~/.shelly-runtime/<tool>/current after staged download, integrity
+    //     verification, and --version smoke test. APK binaries remain the
+    //     known-good fallback.
+    private const val BASHRC_VERSION = 47
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -595,6 +604,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
+        }
+
+        // v47: Shelly-managed runtime updater for Claude Code and Codex.
+        // Extract every launch so updater fixes ship without relying on an
+        // existing .bashrc regeneration.
+        val runtimeUpdateScript = File(home, ".shelly-runtime-update.js")
+        try {
+            context.assets.open("shelly-runtime-update.js").use { input ->
+                runtimeUpdateScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-runtime-update.js extract failed: ${e.message}")
         }
 
         // v39: Mozilla CA bundle for TLS clients that don't consult the
@@ -843,6 +864,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
+            sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
@@ -852,11 +874,32 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      mkdir -p \"\$HOME/.shelly-ssl\"")
             sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
             sb.appendLine("    fi")
+            sb.appendLine("    if [ -x \"\$__runtime_claude\" ]; then")
+            sb.appendLine("      if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
+            sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
+            sb.appendLine("      fi")
+            sb.appendLine("      LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
+            sb.appendLine("      local __runtime_rc=$?")
+            sb.appendLine("      case \"\$__runtime_rc\" in")
+            sb.appendLine("        0)")
+            sb.appendLine("          return 0")
+            sb.appendLine("          ;;")
+            sb.appendLine("        126|127|132|133|134|135|136|137|138|139|159)")
+            sb.appendLine("          if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
+            sb.appendLine("            echo \"[shelly] claude: runtime latest failed (exit \$__runtime_rc), falling back to APK musl\" >&2")
+            sb.appendLine("          fi")
+            sb.appendLine("          ;;")
+            sb.appendLine("        *)")
+            sb.appendLine("          return \"\$__runtime_rc\"")
+            sb.appendLine("          ;;")
+            sb.appendLine("      esac")
+            sb.appendLine("    fi")
             sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
-            sb.appendLine("    _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("    LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
             sb.appendLine("    case \"\$__musl_rc\" in")
             sb.appendLine("      0)")
@@ -914,13 +957,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // codex: route `codex` (no args / options / bare prompt) to the
             // full ratatui TUI binary, and known `exec/resume/review/help`
             // subcommands to the lighter 1-shot exec binary. Both ship in the
-            // codex-termux tarball (v0.121.0-termux) but Shelly historically
+            // codex-termux tarball (latest release in CI) but Shelly historically
             // only extracted codex_exec; codex_tui is added in v42+.
             // Errors out with guidance if a required binary is missing rather
             // than silently routing to the other one.
             sb.appendLine("codex() {")
             sb.appendLine("  local __tui=\"$libDir/codex_tui\"")
             sb.appendLine("  local __exec=\"$libDir/codex_exec\"")
+            sb.appendLine("  local __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  local __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
             sb.appendLine("  local __first=\"\${1:-}\"")
             sb.appendLine("  # Known codex subcommands handled by the 1-shot exec binary.")
             sb.appendLine("  # (login/logout are intentionally NOT listed — Shelly implements")
@@ -931,8 +976,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  # binary path as first arg (NOT prepending linker64 again).")
             sb.appendLine("  case \"\$__first\" in")
             sb.appendLine("    exec|resume|review|help)")
-            sb.appendLine("      if [ -x \"\$__exec\" ]; then")
-            sb.appendLine("        _run \"\$__exec\" \"\$@\"")
+            sb.appendLine("      local __chosen_exec=\"\$__exec\"")
+            sb.appendLine("      [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("      if [ -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("        _run \"\$__chosen_exec\" \"\$@\"")
             sb.appendLine("        return \$?")
             sb.appendLine("      else")
             sb.appendLine("        echo \"codex: codex_exec binary missing at \$__exec — rebuild Shelly or run __shelly_bg_cli_update\" >&2")
@@ -941,8 +988,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      ;;")
             sb.appendLine("  esac")
             sb.appendLine("  # Bare invocation / option flag / free-form prompt → TUI.")
-            sb.appendLine("  if [ -x \"\$__tui\" ]; then")
-            sb.appendLine("    _run \"\$__tui\" \"\$@\"")
+            sb.appendLine("  local __chosen_tui=\"\$__tui\"")
+            sb.appendLine("  [ -x \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("  if [ -x \"\$__chosen_tui\" ]; then")
+            sb.appendLine("    _run \"\$__chosen_tui\" \"\$@\"")
             sb.appendLine("    return \$?")
             sb.appendLine("  fi")
             sb.appendLine("  echo \"codex: codex_tui binary missing at \$__tui — upgrade to APK v42+ or reinstall\" >&2")
@@ -979,6 +1028,31 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
                 if (applet in bashBuiltins) continue
                 sb.appendLine("$applet() { _run $libDir/coreutils --coreutils-prog=$applet \"\$@\"; }")
             }
+            sb.appendLine()
+
+            // v47: Shelly-managed native CLI runtime updater. This updates the
+            // Android-executable Claude Code musl binary and codex-termux
+            // binaries without requiring a new APK. The updater stages,
+            // verifies, smoke-tests, then flips ~/.shelly-runtime/*/current.
+            sb.appendLine("# Shelly-managed native CLI runtime update (background, once per day)")
+            sb.appendLine("shelly-update-clis() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" \"\$@\"; }")
+            sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
+            sb.appendLine("__shelly_runtime_update_interval=86400")
+            sb.appendLine("__shelly_runtime_now=\$(date +%s 2>/dev/null || printf '%(%s)T' -1 2>/dev/null || echo 0)")
+            sb.appendLine("__shelly_runtime_last_update=\$(cat \"\$__shelly_runtime_update_marker\" 2>/dev/null || echo 0)")
+            sb.appendLine("__shelly_bg_runtime_update() {")
+            sb.appendLine("  if [ -z \"\$__SHELLY_RUNTIME_UPDATE_SUBSHELL\" ]; then")
+            sb.appendLine("    ( __SHELLY_RUNTIME_UPDATE_SUBSHELL=1 __shelly_bg_runtime_update </dev/null >/dev/null 2>&1 & )")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
+            sb.appendLine("  mkdir -p \"\$HOME/.shelly-runtime\"")
+            sb.appendLine("  if shelly-update-clis; then")
+            sb.appendLine("    echo \"\$__shelly_runtime_now\" > \"\$__shelly_runtime_update_marker\"")
+            sb.appendLine("  fi")
+            sb.appendLine("}")
+            sb.appendLine("if [ \$(( __shelly_runtime_now - __shelly_runtime_last_update )) -ge \$__shelly_runtime_update_interval ]; then")
+            sb.appendLine("  ( __shelly_bg_runtime_update & )")
+            sb.appendLine("fi")
             sb.appendLine()
 
             // CLI auto-update (background, once per day)

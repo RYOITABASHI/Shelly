@@ -293,8 +293,13 @@ int main(int argc, char *argv[], char *envp[]) {
   size_t envc = count_env(envp);
   char **new_env = calloc(envc, sizeof(char *));
   if (!new_env) die_errno("calloc new_env failed");
+  size_t new_envc = 0;
   for (size_t i = 0; i < envc; i++) {
-    new_env[i] = stack_strdup(&sp, envp[i]);
+    /* The parent PTY preloads a bionic exec wrapper so normal bionic tools
+     * can spawn app-data binaries through linker64. musl cannot relocate
+     * that bionic .so, so never propagate it into the musl loader. */
+    if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0) continue;
+    new_env[new_envc++] = stack_strdup(&sp, envp[i]);
   }
 
   Elf64_auxv_t *old_auxv = find_auxv(envp);
@@ -322,7 +327,7 @@ int main(int argc, char *argv[], char *envp[]) {
   auxc = aux_upsert(new_auxv, auxc, aux_cap, AT_EXECFN, (unsigned long)new_argv[0]);
   aux_set(new_auxv, auxc, AT_RANDOM, (unsigned long)random_on_stack);
 
-  size_t ptr_count = 1 + (new_argc + 1) + (envc + 1);
+  size_t ptr_count = 1 + (new_argc + 1) + (new_envc + 1);
   size_t words_for_auxv = auxc * 2;
   size_t total_words = ptr_count + words_for_auxv;
 
@@ -334,7 +339,7 @@ int main(int argc, char *argv[], char *envp[]) {
   w[k++] = (uintptr_t)new_argc;
   for (size_t i = 0; i < new_argc; i++) w[k++] = (uintptr_t)new_argv[i];
   w[k++] = 0;
-  for (size_t i = 0; i < envc; i++) w[k++] = (uintptr_t)new_env[i];
+  for (size_t i = 0; i < new_envc; i++) w[k++] = (uintptr_t)new_env[i];
   w[k++] = 0;
   for (size_t i = 0; i < auxc; i++) {
     w[k++] = (uintptr_t)new_auxv[i].a_type;
