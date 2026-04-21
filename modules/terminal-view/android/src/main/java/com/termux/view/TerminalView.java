@@ -464,6 +464,8 @@ public class TerminalView extends View {
              *  The actual coalescing fix lives in a follow-up commit guarded on this data. */
             private long mPrevCommitAt = 0;
             private static final long COMMIT_BURST_WINDOW_MS = 50;
+            /** Whether the previous commitText chunk was routed through pasteViaEmulator(). */
+            private boolean mPrevCommitWasPaste = false;
 
             private void resetShadowAfterNewline(String text) {
                 // If the text that just flew to the PTY contained a newline,
@@ -572,12 +574,28 @@ public class TerminalView extends View {
                     if (delta >= 0 && delta < COMMIT_BURST_WINDOW_MS) {
                         Log.d("ShellyIME", "commit BURST delta=" + delta + "ms (likely IME chunk-split — see #106)");
                     }
+                    // bug #106 follow-up: some IMEs split one clipboard paste
+                    // into multiple commitText chunks (often newline-only tails)
+                    // that arrive within a few ms. If chunk-1 matched paste
+                    // heuristics but chunk-2 didn't, routing diverges and the
+                    // payload gets mixed between atomic paste + per-char path.
+                    // Keep chunk-2 on the paste rail when it immediately
+                    // follows a paste chunk in the burst window.
+                    if (!isPaste
+                        && mPrevCommitWasPaste
+                        && delta >= 0
+                        && delta < COMMIT_BURST_WINDOW_MS) {
+                        isPaste = true;
+                        Log.d("ShellyIME", "commit BURST-COALESCE -> paste len=" + commitStr.length());
+                    }
                     if (isPaste && mEmulator != null) {
                         Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length() + " nl=" + hasNewline + " delta=" + delta + "ms");
                         TerminalView.this.pasteViaEmulator(commitStr);
+                        mPrevCommitWasPaste = true;
                     } else {
                         Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " text=\"" + commitStr + "\" delta=" + delta + "ms");
                         sendToPtyAndShadow(commitStr);
+                        mPrevCommitWasPaste = false;
                     }
                 }
 
