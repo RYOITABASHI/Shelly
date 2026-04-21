@@ -14,6 +14,22 @@ commit: 587ae514 feat(cli): add managed runtime updater
 build run: 24712613556
 ```
 
+Latest APK build for the current UI/theme pass:
+
+```text
+commit: db9dec07 feat(ui): add black editor theme presets
+build run: 24714496665
+status: completed
+conclusion: failure
+failed step: Download codex-termux Android binaries (exec + TUI)
+```
+
+Recent UI/logging follow-up:
+
+```text
+commit: 4aaa7a3c feat(ui): add recent logs modal
+```
+
 ## What Changed
 
 ### Claude Code
@@ -203,6 +219,13 @@ strip ESC / C1 controls
 send via bracketed paste
 ```
 
+### UI / Performance Follow-up
+
+- `ContextBar` now reads cwd directly instead of forking a shell every 15s.
+- `Sidebar` Ports polling only runs while the Ports section is open and stops retrying after a permission failure.
+- `AgentBar` now exposes a recent logs button that opens an in-app viewer.
+- `ConfigTUI -> Export Logs` and the new viewer share the same formatter.
+
 ## Build / Verification
 
 Local checks passed:
@@ -216,9 +239,10 @@ GitHub Actions build started:
 
 ```text
 workflow: Build Android APK
-run: 24712613556
-status at handoff: in_progress
-started: 2026-04-21T08:37:15Z
+run: 24714496665
+status: completed
+conclusion: failure
+started: 2026-04-21T09:21:00Z
 ```
 
 ## Next APK Smoke Test
@@ -227,19 +251,27 @@ After installing the produced APK:
 
 ```bash
 cat ~/.bashrc_version
-# expect: 47
+# expect: 48
 
 claude --version
 # expect runtime latest or APK Path C-bis, not legacy 2.1.112
+# observed on-device: 2.1.116 (Claude Code)
 
 codex --version
 # expect latest codex-termux, e.g. 0.122.2-termux or newer
+# if this fails, the APK likely stopped before the codex bundle step
 
 shelly-update-clis --force
 tail -f ~/.shelly-runtime/update.log
 
 claude --version
 codex --version
+
+# open the in-app logs viewer and confirm:
+# - latest terminal output is visible
+# - Copy works
+# - Share works
+# - long output scrolls without lag
 ```
 
 Expected routing after updater succeeds:
@@ -252,6 +284,16 @@ Codex has no tier banner; inspect:
 
 ```bash
 readlink ~/.shelly-runtime/codex/current
+codex --version
+```
+
+This harness is now keyed to the latest installed APK. The exact APK build can
+lag the runtime updater commit, but the verification target is unchanged:
+
+```bash
+shelly-update-clis --force
+tail -f ~/.shelly-runtime/update.log
+claude --version
 codex --version
 ```
 

@@ -9,8 +9,8 @@
 # ターミナルで (PC 側):
 /tmp/gh-cli/bin/gh.exe run list --repo RYOITABASHI/Shelly --limit 3
 
-# 期待: 一番上が success (fix build 完了)
-# 一番上: fix(ask-pane): token read... → completed success
+# 期待: 一番上が success
+# 直近の最新 APK は UI/theme 反映後の build を使う
 ```
 
 自動 install script が走ってたはず:
@@ -20,7 +20,31 @@ cat "C:\Users\info\AppData\Local\Temp\claude\C--Users-info-Desktop\d40507f4-6c36
 # 末尾に "=== AUTO-INSTALL COMPLETE ===" があれば install 済み
 ```
 
-## 🎯 検証 1: Stage 2 Issue 作成フロー (本日の優先課題)
+## 🎯 検証 1: 最新 APK の CLI ハーネス
+
+**前提条件 - 事前確認**:
+- Shelly の最新 APK をインストール済み
+- `shelly-update-clis --force` が実行できる
+- `claude --version` と `codex --version` を更新後に再確認する
+
+**手順**:
+1. `cat ~/.bashrc_version` を確認
+2. `claude --version` を実行
+3. `codex --version` を実行
+4. `shelly-update-clis --force`
+5. `tail -f ~/.shelly-runtime/update.log`
+6. `claude --version`
+7. `codex --version`
+8. AgentBar の履歴アイコンを開き、Recent Logs モーダルで直近出力を確認
+9. Copy / Share をそれぞれ 1 回ずつ試す
+
+**期待**:
+- Claude は Path C-bis か runtime latest に乗る
+- Codex は最新 `codex-termux` を返す
+- 失敗時は `~/.shelly-runtime/update.log` の内容を起点に追う
+- Recent Logs モーダルに最新の端末出力が表示され、スクロールと共有ができる
+
+## 🎯 検証 2: Stage 2 Issue 作成フロー (本日の優先課題)
 
 **前提条件 - 事前確認**:
 - Shelly 起動済み
@@ -52,7 +76,7 @@ cat "C:\Users\info\AppData\Local\Temp\claude\C--Users-info-Desktop\d40507f4-6c36
 
 成功すれば → **Phase ② 完全完了 → `v0.1.0-rc2` tag 切り**。
 
-## 🎯 検証 2 (optional): SSH Day 1 (feat/ssh-tunneling ブランチ)
+## 🎯 検証 3 (optional): SSH Day 1 (feat/ssh-tunneling ブランチ)
 
 まだ main にマージしていない branch。確認したければ手動 build 必要。
 
