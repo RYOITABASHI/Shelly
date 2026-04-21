@@ -972,13 +972,111 @@ env -i HOME=$HOME PATH=$PATH ./lib/ld-musl-aarch64.so.1 ./package/claude --versi
 | **E. upstream issue** | ❌ 無応答 | [#50270](https://github.com/anthropics/claude-code/issues/50270) 開発者返答なし、6-18 ヶ月待ち想定 |
 | **F. opencode-termux Bun port** | ⏸️ 不要 | [guysoft/opencode-termux](https://github.com/guysoft/opencode-termux) で Bun 自体を bionic port する案、Path C で解決するので不要 |
 
-**残る未検証項目**:
-1. **対話モード (`claude /login`, インタラクティブ chat)** が動くか — `--version`/`--help` は出たが timeout した。auth 周りで停止してるだけと推測。Shelly の transplant credentials を食わせて実動作確認が必要
-2. **JIT / signal handler** で crash しないか — エージェント指摘ポイント。長時間動作試験
-3. **Shelly 実機 (非 Termux)** で LD_PRELOAD 問題なしに動くか
-4. **Play Store 配布時の execmem policy** — app_data からの実行可能 mmap は neverallow policy に触れる可能性、F-Droid/GitHub Releases なら問題なし
+#### 2026-04-21 後続調査: 対話モード hang の原因は DNS (musl libc の `/etc/resolv.conf` ハードコード)
 
-**優先度**: P2 (v0.1.0 後の v0.1.1 目玉機能候補、Path C で実装可能と確定)
+`claude --print "hi"` で timeout した件を strace で追跡:
+
+```
+openat(AT_FDCWD, "/etc/hosts", O_RDONLY|...) = ...      # OK
+openat(AT_FDCWD, "/etc/resolv.conf", ...) = -1 ENOENT   # ★ここで停止源
+sendto(16, "\7+\1\0\0\1\0\0\0\0\0\0\3api\tanthropic\3com\0\0"..., 35,
+       MSG_NOSIGNAL, {sa_family=AF_INET, sin_port=htons(53),
+                     sin_addr=inet_addr("127.0.0.1")}, 16) = 35
+# 127.0.0.1:53 に DNS query → 応答なし → 永久 hang
+```
+
+**根本原因**: musl libc は `/etc/resolv.conf` を**ハードコードで参照**する ([musl src/network/resolvconf.c](https://git.musl-libc.org/cgit/musl/tree/src/network/resolvconf.c))。Android では `/etc` が `/system/etc` への readonly symlink で `resolv.conf` が存在しない (bionic は `net.dns1` property で DNS を解決する別経路)。musl はファイルが無いと fallback で `127.0.0.1:53` に問い合わせるが、Android では当然 port 53 で listen してない → query が永遠に待つ。
+
+**`--version` と `--help` が動いた理由**: DNS 解決を必要としないから。対話モード / `--print` は API call で DNS が要るので死ぬ。
+
+**解決方針**: **LD_PRELOAD shim で `openat("/etc/resolv.conf")` を app 配下の書き換え可能パスにリダイレクト**。
+
+```c
+// resolv_shim.c (musl-gcc でビルド、Shelly APK に同梱)
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <string.h>
+#include <dlfcn.h>
+
+int openat(int dirfd, const char *pathname, int flags, ...) {
+    static int (*real_openat)(int, const char *, int, ...) = 0;
+    if (!real_openat) real_openat = dlsym(RTLD_NEXT, "openat");
+    if (pathname && strcmp(pathname, "/etc/resolv.conf") == 0) {
+        pathname = "/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf";
+    }
+    // forward to real_openat (fflags + vararg handling)
+    ...
+}
+```
+
+app 側が `$HOME/.shelly-ssl/resolv.conf` に `nameserver 8.8.8.8` 等を書き出す HomeInitializer init step を追加。bionic の DNS は Wi-Fi/セル情報から `getaddrinfo` 内部で自動解決するが、musl に渡す用には明示 nameserver 必須。
+
+**実装 3 点セット (v0.1.1)**:
+1. **`libclaude.so`** = musl variant claude バイナリ (~220 MB)
+2. **`libld_musl.so`** = Alpine の `ld-musl-aarch64.so.1` (~723 KB)
+3. **`libresolv_shim.so`** = 上記 shim (musl-gcc でビルド、~5 KB)
+
+`.bashrc` で:
+```bash
+claude() {
+    LD_PRELOAD=$libDir/resolv_shim $libDir/ld_musl $libDir/claude "$@"
+}
+```
+
+**自動追従 (v0.1.1)**:
+- CI で毎 push 時に `npm pack @anthropic-ai/claude-code-linux-arm64-musl@latest` → 最新バイナリが APK に入る
+- 追加で `.github/workflows/build-android.yml` に cron (毎日 UTC 0:00) 追加すれば **Anthropic リリースの 24 時間以内に Shelly も追従**
+- Shelly のリリース頻度が CLI の頻度を決める (週 1 〜数週間)
+
+#### 2026-04-21 追加調査: LD_PRELOAD 方式は musl では効かない (custom musl build が必要)
+
+**試したこと**:
+1. musl-dev apk (Alpine aarch64) を展開して `/usr/include` を取得
+2. Termux の clang で `--target=aarch64-linux-musl -nostdinc -isystem alpine/musl-dev/usr/include` で `resolv_shim_musl.so` を build (3.6 KB、NEEDED 空)
+3. `LD_PRELOAD=resolv_shim_musl.so ld-musl ./claude --version` で実行
+4. strace で shim が**ロードはされている**ことは確認
+
+**失敗した**: shim ロード後も strace に依然 `openat(AT_FDCWD, "/etc/resolv.conf", ...) = -1 ENOENT` が出る。**LD_PRELOAD の `openat()` シンボルを musl が呼んでいない**。
+
+**根本原因**: **musl libc は自身の syscall を `__syscall_openat` (インライン asm で SYS_openat 直接発行) で実装**している ([musl src/internal/syscall_arch.h](https://git.musl-libc.org/cgit/musl/tree/arch/aarch64/syscall_arch.h))。glibc のように libc 関数 → syscall wrapper で 1 段経由しないので、**LD_PRELOAD で openat を上書きしても resolver は通過しない**。これは musl の設計思想 (static linking first) の副作用。
+
+**唯一残る現実的解決策 (恒久対応は v0.1.1 or PC 環境での検証)**:
+
+**Path C-bis: musl libc を Shelly 専用にカスタムビルド**
+- Alpine 公式 musl source を取得
+- `src/network/resolvconf.c` の hardcoded path `"/etc/resolv.conf"` を **ビルド時定数で上書き可能に patch**:
+  ```c
+  #ifndef MUSL_RESOLV_CONF_PATH
+  #define MUSL_RESOLV_CONF_PATH "/etc/resolv.conf"
+  #endif
+  ```
+  → `-DMUSL_RESOLV_CONF_PATH=\"/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf\"` で置換
+- `./configure --prefix=... && make && make install` で **Shelly 専用 `libc.musl-aarch64.so.1`** を生成
+- Shelly の CI で自動ビルド → jniLibs に `libld_musl_shelly.so` として同梱
+- APK size +1-2 MB (musl libc は軽量)
+
+**所要工数**: musl build 環境整備 (1-2 時間) + CI 化 (1 時間) + 実機検証 (30 分) = **3-4 時間**
+
+**代替案 (別ルート)**:
+- **Path G: `ldconfig` フック** — musl の `ldconfig` 相当で名前解決ファイルパスを注入できないか? 未調査
+- **Path H: `getaddrinfo` 自体を shim で完全置き換え** — musl の getaddrinfo は libc 内部呼び出しだが、dynamic 版なら dlsym で介入可能? 未検証
+
+**次セッション (PC 環境) でやること**:
+1. Alpine musl source を clone
+2. `src/network/resolvconf.c` の PATH を `MUSL_RESOLV_CONF_PATH` マクロに置換
+3. musl cross-compile (aarch64-linux-musl target) で libc.musl-aarch64.so.1 を build
+4. Shelly の CI workflow に musl build ステップを追加 (or GitHub Actions で事前ビルドして Release artifact 化)
+5. LibExtractor + HomeInitializer に組込み
+6. 実機で対話モード最終確認
+
+#### 残る未検証項目
+1. ~~musl-gcc で shim ビルド~~ → 完了、**LD_PRELOAD 方式は不可** と判明
+2. **custom musl libc build** (PC 環境で実施予定)
+3. **Shelly 実機 (非 Termux)** で musl binary の dlopen が `libexec_wrapper.so` と干渉しないか (Termux では symbol 不在で弾かれる挙動あり)
+4. **JIT / signal handler** で crash しないか — 長時間対話試験
+5. **Play Store 配布時の execmem policy** — app_data からの実行可能 mmap は neverallow policy に触れる可能性、F-Droid/GitHub Releases なら問題なし
+
+**優先度**: P2 (v0.1.0 後の v0.1.1 目玉機能候補、Path C-bis (custom musl build) で実装可能と見込み)
 
 **関連**:
 - [#50270 claude-code 2.1.113+ broken on Termux](https://github.com/anthropics/claude-code/issues/50270)
