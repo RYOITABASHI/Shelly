@@ -71,6 +71,13 @@ class ShellyTerminalView(
     private var lastWidth = -1
     private var lastHeight = -1
 
+    // Phase B: when a wallpaper is set on the JS side, this flips on and
+    // both this ExpoView wrapper and the inner TerminalView stop painting
+    // an opaque background behind the terminal content. The Termux
+    // renderer already skips the default-bg cell fill (TerminalRenderer
+    // line 231), so transparency propagates through for free.
+    private var transparentBackground = false
+
     // Event callbacks set by the Expo module
     var onOutputEvent: ((text: String, isError: Boolean) -> Unit)? = null
     var onBlockCompletedEvent: ((command: String, output: String, exitCode: Int) -> Unit)? = null
@@ -92,8 +99,10 @@ class ShellyTerminalView(
     private val linkDetector = LinkDetector
 
     init {
-        // Black background like a real terminal
+        // Black background like a real terminal. Flipped off in
+        // setTransparentBackground(true) when the user picks a wallpaper.
         setBackgroundColor(0xFF000000.toInt())
+        terminalView.setBackgroundColor(0xFF000000.toInt())
 
         val padPx = (4 * context.resources.displayMetrics.density).toInt()
         terminalView.setPadding(padPx, 0, padPx, 0)
@@ -340,6 +349,33 @@ class ShellyTerminalView(
     }
 
     /**
+     * Phase B wallpaper support. When `enabled`, both this ExpoView
+     * wrapper and the inner Termux TerminalView drop their opaque black
+     * background so the wallpaper behind the whole ShellLayout tree can
+     * show through. Cells with a non-default background still paint
+     * normally (TerminalRenderer guards default-bg cells at line 231),
+     * so prompt colours / syntax highlights stay visible as expected.
+     *
+     * We also flip the inner TerminalView's `transparentBackground`
+     * flag so its padding-region paint at onDraw is skipped in the
+     * transparent path. Without that, the padding under mode-line-ish
+     * prompts would fill with solid black over the wallpaper.
+     */
+    fun setTransparentBackground(enabled: Boolean) {
+        transparentBackground = enabled
+        val color = if (enabled) 0x00000000 else 0xFF000000.toInt()
+        setBackgroundColor(color)
+        terminalView.setBackgroundColor(color)
+        terminalView.setTransparentBackground(enabled)
+        terminalView.invalidate()
+        // GPU path (when gpuRendering=true): flip the GLSurfaceView's
+        // own background AND the renderer's clearColor. Without the
+        // renderer forward, glClear would still paint opaque black
+        // every frame and hide the wallpaper.
+        glTerminalView?.setTransparentBackground(enabled)
+    }
+
+    /**
      * Apply a terminal color theme. Expects a map with keys:
      * color0-color15 (ANSI 16), foreground, background, cursor.
      * Values are hex color strings like "#FF5555".
@@ -360,9 +396,16 @@ class ShellyTerminalView(
             TerminalColors.COLOR_SCHEME.updateWith(props)
             // Reset current session colors to apply the new scheme
             terminalView.mEmulator?.mColors?.reset()
-            // Update background color of the view
-            val bgColor = TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
-            setBackgroundColor(bgColor)
+            // Update background color of the view — but only when we are
+            // NOT in wallpaper-transparent mode. In transparent mode the
+            // view has to stay fully see-through regardless of scheme
+            // swaps, otherwise picking a new theme would repaint opaque
+            // over the user's wallpaper.
+            if (!transparentBackground) {
+                val bgColor = TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
+                setBackgroundColor(bgColor)
+                terminalView.setBackgroundColor(bgColor)
+            }
             terminalView.invalidate()
             Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")
         } catch (e: Exception) {

@@ -52,7 +52,8 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
         renderMode = RENDERMODE_WHEN_DIRTY
         preserveEGLContextOnPause = true
 
-        // Black background to match terminal
+        // Black background to match terminal. Flipped to transparent by
+        // setTransparentBackground() when the user picks a wallpaper.
         setBackgroundColor(0xFF000000.toInt())
 
         isFocusable = true
@@ -84,6 +85,19 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
                 return true
             }
         })
+    }
+
+    /**
+     * Phase B (2026-04-21): forward the transparency flag to the GL
+     * renderer (so its glClearColor flips) AND the SurfaceView's own
+     * background (so the pre-first-frame pixel is see-through). A
+     * requestRender() forces the new clear colour to land on the next
+     * draw without waiting for an idle tick.
+     */
+    fun setTransparentBackground(enabled: Boolean) {
+        setBackgroundColor(if (enabled) 0x00000000 else 0xFF000000.toInt())
+        renderer.transparentBackground = enabled
+        requestRender()
     }
 
     fun attachSession(session: ShellyTerminalSession, handler: ShellyInputHandler) {

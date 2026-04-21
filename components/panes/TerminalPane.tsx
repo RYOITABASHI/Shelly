@@ -37,6 +37,7 @@ import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlo
 import { useUsageStore } from '@/store/usage-store';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
@@ -95,6 +96,11 @@ export default function TerminalScreen() {
   });
   const globalActiveSession = useActiveSession();
   const { removeSession, sessions, settings } = useTerminalStore();
+  // Phase B: when a wallpaper is set, ask the native TerminalView to drop
+  // its opaque background + padding fill so the wallpaper shows through.
+  // Cells with non-default backgrounds still paint, so prompt colours /
+  // syntax highlights stay visible as expected.
+  const wallpaperActive = useCosmeticStore((s) => !!s.wallpaperUri);
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;
@@ -684,6 +690,7 @@ export default function TerminalScreen() {
             cursorBlink={true}
             colorScheme={terminalColorScheme}
             gpuRendering={settings.gpuRendering ?? false}
+            transparentBackground={wallpaperActive}
             style={[styles.terminalView, { flex: showSplitPreview ? splitRatio : 1 }]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
             onOutput={() => {}}

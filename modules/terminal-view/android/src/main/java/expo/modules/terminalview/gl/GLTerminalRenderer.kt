@@ -116,11 +116,27 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
     // === GLSurfaceView.Renderer ===
 
+    /**
+     * Phase B (2026-04-21): when true, the GL clear colour flips to
+     * (0,0,0,0) so the SurfaceView composites over the underlying
+     * wallpaper. Cells with non-default backgrounds still paint via the
+     * bg shader so prompt / syntax colours remain visible.
+     *
+     * Propagated from ShellyTerminalView.setTransparentBackground which
+     * mirrors the CPU path's behaviour. We re-issue glClearColor in
+     * onDrawFrame so a flag toggled AFTER onSurfaceCreated still takes
+     * effect on the next frame — without this, a user who enables
+     * GPU rendering AFTER picking a wallpaper wouldn't see the change
+     * until the surface is recreated.
+     */
+    var transparentBackground: Boolean = false
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         Log.i(TAG, "onSurfaceCreated")
         startTime = System.nanoTime()
 
-        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        val a = if (transparentBackground) 0f else 1f
+        GLES30.glClearColor(0f, 0f, 0f, a)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
@@ -191,6 +207,11 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         // Post-process: begin
         postProcessor.beginRender()
 
+        // Re-apply the clear colour every frame so a transparentBackground
+        // toggle after onSurfaceCreated takes effect without surface
+        // recreation (Phase B).
+        val a = if (transparentBackground) 0f else 1f
+        GLES30.glClearColor(0f, 0f, 0f, a)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
         if (emulator != null) {

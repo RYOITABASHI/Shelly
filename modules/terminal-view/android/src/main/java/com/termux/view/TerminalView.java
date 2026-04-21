@@ -87,6 +87,21 @@ public class TerminalView extends View {
     public static final int TERMINAL_CURSOR_BLINK_RATE_MIN = 100;
     public static final int TERMINAL_CURSOR_BLINK_RATE_MAX = 2000;
 
+    /**
+     * Phase B (2026-04-21): when true, the padding-region bg fill and
+     * the "no emulator" fallback black wash in onDraw() are skipped so
+     * a wallpaper behind the view shows through. Cells with the default
+     * scheme bg are already skipped by TerminalRenderer.render (see the
+     * `backColor != palette[BG]` guard); this flag covers the remaining
+     * two paint sites.
+     */
+    private boolean mTransparentBackground;
+
+    public void setTransparentBackground(boolean enabled) {
+        mTransparentBackground = enabled;
+        invalidate();
+    }
+
     /** The top row of text to display. Ranges from -activeTranscriptRows to 0. */
     int mTopRow;
     int[] mDefaultSelectors = new int[]{-1,-1,-1,-1};
@@ -1544,20 +1559,31 @@ public class TerminalView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         if (mEmulator == null) {
-            canvas.drawColor(0XFF000000);
+            // Phase B: skip the black fallback when transparent mode is on so
+            // a wallpaper under the view can show while PTY state is still
+            // spinning up (typically 50-100ms on first mount).
+            if (!mTransparentBackground) {
+                canvas.drawColor(0XFF000000);
+            }
         } else {
             // bug #82: paint the padding region in the terminal background
             // so it visually merges with the content, then translate so the
             // renderer still draws from origin. The columns/rows count was
             // already computed against the padding-shrunk width in
             // updateSize(), so this keeps the text away from the pane edge.
+            //
+            // Phase B: in transparent mode we skip the padding drawColor so
+            // the wallpaper bleeds through the gutters too — otherwise we'd
+            // paint an opaque strip around every terminal pane.
             int padL = getPaddingLeft();
             int padT = getPaddingTop();
             int padR = getPaddingRight();
             int padB = getPaddingBottom();
             if (padL != 0 || padT != 0 || padR != 0 || padB != 0) {
-                int bg = mEmulator.mColors.mCurrentColors[com.termux.terminal.TextStyle.COLOR_INDEX_BACKGROUND];
-                canvas.drawColor(bg);
+                if (!mTransparentBackground) {
+                    int bg = mEmulator.mColors.mCurrentColors[com.termux.terminal.TextStyle.COLOR_INDEX_BACKGROUND];
+                    canvas.drawColor(bg);
+                }
                 canvas.save();
                 canvas.translate(padL, padT);
             }

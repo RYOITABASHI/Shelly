@@ -81,6 +81,17 @@ class TerminalViewModule : Module() {
                 }
             }
 
+            // Phase B (2026-04-21): when the user sets a wallpaper, the JS
+            // side flips this on so the terminal view + its inner TerminalView
+            // stop painting an opaque background behind the text. Cells with
+            // the default scheme background are already skipped by
+            // TerminalRenderer.render (see the `backColor != palette[BG]`
+            // guard at TerminalRenderer:231), so making the Android View
+            // itself transparent is enough to let the wallpaper bleed through.
+            Prop("transparentBackground") { view: ShellyTerminalView, enabled: Boolean? ->
+                view.setTransparentBackground(enabled ?: false)
+            }
+
             OnViewDestroys { view: ShellyTerminalView ->
                 view.destroy()
             }
