@@ -128,7 +128,18 @@ jobs:
             --dir /tmp \
             --clobber
           cd /tmp
-          sha256sum -c "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256"
+          # DioNanos/codex-termux .sha256 files contain a bare hex digest
+          # (no filename suffix), so sha256sum -c rejects them with
+          # "no properly formatted checksum lines found". Read and compare manually.
+          EXPECTED_HASH="$(tr -d '[:space:]' < "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256")"
+          ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
+          if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
+            echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
+            echo "  expected: ${EXPECTED_HASH}" >&2
+            echo "  actual:   ${ACTUAL_HASH}" >&2
+            exit 1
+          fi
+          echo "[codex] sha256 OK: ${ACTUAL_HASH}"
           mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
           cd /tmp && tar xzf codex-termux.tar.gz
           # Verify the upstream tarball still ships both binaries we depend on.
