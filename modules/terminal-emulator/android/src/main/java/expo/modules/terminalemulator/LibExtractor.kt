@@ -94,6 +94,7 @@ object LibExtractor {
         // payload. The CI-baked musl libc has its /etc/resolv.conf hardcode
         // redirected to $HOME/.shelly-ssl/resolv.conf (seeded at shell
         // launch — see HomeInitializer.kt's claude() wrapper).
+        "lib/arm64-v8a/libshelly_musl_exec.so" to "shelly_musl_exec",
         "lib/arm64-v8a/libclaude.so" to "claude",
         "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1"
     )

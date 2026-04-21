@@ -189,6 +189,20 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Build shelly-musl trampoline loader (bug #117)
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-musl-exec.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_musl_exec.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
+            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
       - name: Build APK
         run: |
           cd android
