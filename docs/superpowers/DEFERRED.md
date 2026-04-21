@@ -919,26 +919,72 @@ coreutils: /proc/self/net/tcp6: Permission denied
 
 ---
 
-### bug #117 — claude-code 2.1.113+ (Bun SEA) を Android bionic で動かせるか調査
+### 🟢 bug #117 — claude-code 2.1.113+ (Bun SEA) を Android bionic で動かす (Path C で起動確認 2026-04-21)
 
-**背景**: Anthropic が 2.1.113 で `cli.js` 純 JS → Bun SEA (Single Executable Application) バイナリに切り替え。`bin/claude.exe` が glibc/musl リンクで bionic 上 exec 不可。2.1.112 で pin するのが現状の回避策だが、以下の問題が積み重なる:
+**背景**: Anthropic が 2.1.113 で `cli.js` 純 JS → Bun SEA (Single Executable Application) バイナリに切り替え。Top-level `bin/claude.exe` は 500-byte の shell stub、実本体は `optionalDependencies` 経由で `@anthropic-ai/claude-code-linux-arm64-musl` (220 MB, ET_EXEC aarch64 musl) or glibc 版が配布される。2.1.112 pin が現状の回避策だが、以下の問題:
+- Shelly ユーザーが `npm i -g @anthropic-ai/claude-code@latest` を踏むたび死ぬ (2026-04-21 実際に発生)
 - 新機能 (プロバイダ追加 / bug fix / セキュリティ) が取り込めない
-- Anthropic が古いバージョンのサーバ側サポートを切ると一気に詰む
-- ユーザーが `npm i -g @anthropic-ai/claude-code@latest` を不用意に叩くたび死ぬ (2026-04-21 実際に発生)
 
-**対応候補** (難易度順):
+**検証済ルート (✅ 起動成功)**:
 
-1. **linker64 ディスパッチで Bun SEA を強制起動** — codex-termux と同じ手法で `/system/bin/linker64 bin/claude.exe`。Bun が glibc 固有 API (epoll 等) を叩かなければ通る可能性。要実験。**最短数時間**
-2. **Bun の Android bionic build を用意** — Bun は公式に Android arm64 をサポート中 ([bun Android issue](https://github.com/oven-sh/bun/issues/8745))。Bun を bionic 向けに build し、`bun cli.js` で claude を起動する wrapper を書く。**数日〜1 週間**
-3. **claude-code を unbundle** — Bun SEA を `bun build --no-bundle` で解いて cli.js 相当に戻す (そもそも可能か不明)。**不可能性あり**
-4. **Anthropic 公式 issue/PR** — Android 対応 or SEA でなく node 形式の optional パッケージを要求。**数週間〜数ヶ月 or 無視される**
-5. **Shelly 自前実装 (shelly-claude-auth.js 拡張)** — claude-code CLI を使わず、自前で Anthropic API を直叩きする独自クライアント。UI は Shelly のペインに統合。**数週間〜v0.3.0 規模**、別物になる
+#### Path C — musl ld-musl 経由で 2.1.116 起動 (2026-04-21 実機確認)
 
-**推奨**: v0.1.0 出荷後、候補 1 を数時間実験して動くか確認。動けば即解決、動かないなら候補 2 で Bun bionic port に時間投資。候補 4 (upstream PR) と並行して進める。
+実施コマンド (Termux, uid=u0_a488, bionic 環境):
+```bash
+# 1. claude-code 2.1.116 (musl variant) 取得
+npm pack @anthropic-ai/claude-code-linux-arm64-musl@2.1.116
+tar xzf anthropic-ai-claude-code-linux-arm64-musl-2.1.116.tgz
 
-**優先度**: P3 (v0.1.0 は 2.1.112 pin で出荷できる、恒久対応は余裕が出てから)
+# 2. Alpine musl libc 取得 (ld-musl-aarch64.so.1 が標準 loader として使える)
+curl -sL https://dl-cdn.alpinelinux.org/alpine/v3.19/main/aarch64/musl-1.2.4_git20230717-r6.apk | tar xz
 
-**関連**: bug #102 transplant / [#50270](https://github.com/anthropics/claude-code/issues/50270) / [Bun Android support](https://github.com/oven-sh/bun/issues/8745)
+# 3. Termux 特有の LD_PRELOAD を避けて ld-musl loader 経由で起動
+env -i HOME=$HOME PATH=$PATH ./lib/ld-musl-aarch64.so.1 ./package/claude --version
+# → 2.1.116 (Claude Code)
+```
+
+`--help` も完全に動作。musl ld は ET_DYN として bionic linker で起動可能、かつ自身が第二段 loader として ET_EXEC の claude を mmap できる (fixed address を回避して relocatable mode でロードする)。bionic linker の `unexpected e_type: 2` 拒否を迂回。
+
+**条件**:
+- **Alpine musl libc bundle (415 KB apk, 展開後 ld-musl-aarch64.so.1 = 723 KB)** を APK に同梱
+- `env -i` で `libtermux-exec-ld-preload.so` をクリア必要 (Termux 環境の relocation 不整合回避)。**Shelly 環境では `libexec_wrapper.so` を使うため同問題は起きない見込み** (要実機確認)
+- **ET_EXEC + 起動時 relocation** なので、Shelly の既存 `_run linker64 $bin` 経路とは別の wrapper が必要 — `_run_musl $bin` 的な関数を `.bashrc` に追加する形
+
+**Path C 実装計画 (v0.1.1 候補)**:
+1. CI ワークフローで `@anthropic-ai/claude-code-linux-arm64-musl@latest` + `musl-*-aarch64.apk` を取得
+2. `libclaude_musl.so` (claude binary) + `libld_musl.so` (ld-musl-aarch64.so.1) の 2 ファイルを `jniLibs/arm64-v8a/` に配置
+3. LibExtractor で `termux-libs/claude_musl` + `termux-libs/ld_musl` に展開 (lib prefix / .so suffix 剥がす既存仕組み流用)
+4. `.bashrc` の `claude()` 関数を 2 経路 fallback に変更:
+   - Tier A (新 Bun SEA 版): `env -i HOME=$HOME PATH=$PATH $libDir/ld_musl $libDir/claude_musl "$@"`
+   - Tier B (既存 2.1.112 node cli.js 版): `_run $libDir/node "$__cli_dir/@anthropic-ai/claude-code/cli.js" "$@"`
+5. BASHRC_VERSION bump
+
+**APK サイズ影響**: +220 MB (claude musl binary) + 1 MB (ld-musl) = **約 +221 MB**。現在 596 MB → 817 MB に膨張。codex_tui (154 MB) 込みで **1 GB に近づく**。OTA / initial download UX に悪影響の可能性、**optional download UI** 検討必要。
+
+#### 他候補の判定 (調査完了 2026-04-21)
+
+| Path | 結論 | 根拠 |
+|---|---|---|
+| **A. patchelf flip ET_EXEC → ET_DYN** | ❌ Blocked | mainline patchelf に `--set-type` なし。[#50270](https://github.com/anthropics/claude-code/issues/50270) で "patchelf でも PHDR エラー" と報告済。Bun SEA は JSC JIT が canonical layout 前提なので hex edit でも壊れる |
+| **B. userland stub loader** | ⏸️ 不要 | 2-4 weeks 工数だが Path C で解決するので保留。[tribixbite/bun-on-termux](https://github.com/tribixbite/bun-on-termux) に先行実装あり |
+| **✅ C. ld-musl loader** | **動作確認済** | 上記実機検証 |
+| **D. proot-less chroot** | ❌ Blocked | `chroot(2)` は CAP_SYS_CHROOT 必須、unrooted Android では不可能 |
+| **E. upstream issue** | ❌ 無応答 | [#50270](https://github.com/anthropics/claude-code/issues/50270) 開発者返答なし、6-18 ヶ月待ち想定 |
+| **F. opencode-termux Bun port** | ⏸️ 不要 | [guysoft/opencode-termux](https://github.com/guysoft/opencode-termux) で Bun 自体を bionic port する案、Path C で解決するので不要 |
+
+**残る未検証項目**:
+1. **対話モード (`claude /login`, インタラクティブ chat)** が動くか — `--version`/`--help` は出たが timeout した。auth 周りで停止してるだけと推測。Shelly の transplant credentials を食わせて実動作確認が必要
+2. **JIT / signal handler** で crash しないか — エージェント指摘ポイント。長時間動作試験
+3. **Shelly 実機 (非 Termux)** で LD_PRELOAD 問題なしに動くか
+4. **Play Store 配布時の execmem policy** — app_data からの実行可能 mmap は neverallow policy に触れる可能性、F-Droid/GitHub Releases なら問題なし
+
+**優先度**: P2 (v0.1.0 後の v0.1.1 目玉機能候補、Path C で実装可能と確定)
+
+**関連**:
+- [#50270 claude-code 2.1.113+ broken on Termux](https://github.com/anthropics/claude-code/issues/50270)
+- [tribixbite/bun-on-termux](https://github.com/tribixbite/bun-on-termux) — 同戦略の先行事例
+- [guysoft/opencode-termux](https://github.com/guysoft/opencode-termux) — Bun 本体 port (Path F)
+- [Bun SEA bundler docs](https://bun.com/docs/bundler/executables)
 
 ---
 
