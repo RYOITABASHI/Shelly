@@ -195,16 +195,70 @@ v0.1.1 リリース後の運用:
 
 ## 4. 次セッション (PC) での具体手順
 
+### 4-0. PC / Termux 役割分担
+
+| フェーズ | 実施環境 | 理由 |
+|---|---|---|
+| **musl source patch + cross-compile** | ✅ **PC** (Docker alpine:3.19) | ビルドツールチェーン整備済、再現性高い、CI yaml に直接コピー可能 |
+| **ビルド成果物の動作確認** | Termux (adb push or curl で転送) | 実機 bionic 環境が必要 |
+| **Shelly CI workflow 化** | ✅ **PC** | yaml 編集 + PR レビュー |
+| **LibExtractor / HomeInitializer 実装** | ✅ **PC** | Kotlin 編集 + tsc チェック |
+| **APK install + 最終動作確認** | Termux (ワイヤレス ADB) | 実機 GUI 検証 |
+
+**要点**: **ビルドは一切 Termux でやらない**。
+- PC で Docker 使って musl を再現性高くビルド → adb push or GitHub Release artifact で Termux に転送して動作確認
+- 最終的に CI workflow に組み込んでしまえば、それ以降は PC での CLI 操作すらなく、GitHub Actions が毎回自動ビルド
+
+### 4-1. ステップ
+
 1. このファイル + `DEFERRED.md` bug #117 を精読
-2. `git pull` で最新 (commit は後述)
-3. musl patch + cross-compile の PoC を **PC (x86 Linux or macOS)** で実施:
-   - docker / podman で alpine:3.19 コンテナ
-   - `apk add musl-dev musl-utils build-base`
-   - source clone + patch + build
-4. 生成された `libc.musl-aarch64.so.1` を手動で Termux に持ち込み、**実機で claude 対話モード完全動作確認**
-5. 動けば Shelly CI に build step を追加 (自動化)
+2. `git pull` で最新 (`c9786078`)
+3. **PC で** musl patch + cross-compile を Docker で実施:
+
+   ```bash
+   # PC 側、任意のディレクトリで
+   mkdir shelly-musl-poc && cd shelly-musl-poc
+   docker run --rm -v $PWD:/out alpine:3.19 sh -c '
+     apk add build-base git linux-headers
+     cd /tmp && git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl
+     cd musl
+     # resolv.conf path を macro で上書き可能に patch
+     sed -i "s|\"/etc/resolv.conf\"|MUSL_RESOLV_CONF_PATH|g" src/network/resolvconf.c
+     # patch 用 header を冒頭に挿入
+     printf "#ifndef MUSL_RESOLV_CONF_PATH\n#define MUSL_RESOLV_CONF_PATH \"/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf\"\n#endif\n" | cat - src/network/resolvconf.c > /tmp/rc.c && mv /tmp/rc.c src/network/resolvconf.c
+     # cross-compile (alpine:3.19 はネイティブで aarch64-linux-musl ターゲット)
+     ./configure --target=aarch64-linux-musl --prefix=/tmp/out
+     make -j$(nproc) && make install
+     cp /tmp/out/lib/libc.so /out/libc.musl-aarch64.so.1
+   '
+   ls -lh libc.musl-aarch64.so.1  # ~700 KB 程度の想定
+   ```
+
+4. 生成物を **Termux に転送して実機確認**:
+
+   ```bash
+   # PC → Termux (ワイヤレス ADB 経由)
+   adb push libc.musl-aarch64.so.1 /sdcard/Download/
+   ```
+
+   ```bash
+   # Termux 側で、既存の bun-sea-test 構成を流用
+   cd /data/data/com.termux/files/usr/tmp/bun-sea-test
+   cp /sdcard/Download/libc.musl-aarch64.so.1 alpine/lib/  # 上書き
+   mkdir -p ~/.shelly-ssl
+   echo "nameserver 8.8.8.8" > ~/.shelly-ssl/resolv.conf
+   echo "nameserver 1.1.1.1" >> ~/.shelly-ssl/resolv.conf
+
+   # 実行 (credentials は ~/.claude に既に配置済)
+   env -i HOME=$HOME PATH=$PATH TERM=xterm-256color \
+     ./alpine/lib/ld-musl-aarch64.so.1 \
+     ./musl/package/claude --print "reply with OK"
+   # → "OK" が返れば勝ち
+   ```
+
+5. 動けば **PC で** Shelly CI に musl build step を追加 (`.github/workflows/build-android.yml`)
 6. LibExtractor + HomeInitializer + BASHRC_VERSION 43 を実装
-7. ビルド → APK install → 検証
+7. ビルド → APK install → Shelly 実機で `claude` 対話モード完走
 8. 動けば v0.1.1 リリース、README の **ヒーロー文言を「Android で最新 Claude Code を動かせる唯一のアプリ」に変更**
 
 ---
