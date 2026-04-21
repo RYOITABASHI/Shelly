@@ -17,6 +17,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { KEY_BAR_HEIGHT, BORDER_WIDTH } from '@/lib/layout-constants';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
 import { fonts as F } from '@/theme.config';
+import { themePresets, type ThemePresetId } from '@/lib/theme-presets';
 
 type Props = {
   sendKey: (keyCode: string) => void;
@@ -118,6 +119,46 @@ const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong }: Props) {
   const { colors: c } = useTheme();
   const { settings } = useTerminalStore();
+  const visualPreset = settings.uiFont === 'blackline' ? 'blackline' : settings.uiFont === 'modal' ? 'modal' : 'studio';
+  const presetColors = themePresets[settings.uiFont as ThemePresetId]?.colors;
+  const accent = presetColors?.accent ?? c.accent;
+  const success = presetColors?.accentGreen ?? c.success;
+  const foreground = presetColors?.text1 ?? c.foreground;
+  const muted = presetColors?.text2 ?? c.muted;
+  const border = presetColors?.border ?? c.border;
+  const keyChrome = useMemo(() => {
+    if (visualPreset === 'blackline') {
+      return {
+        key: {
+          backgroundColor: withAlpha(accent, 0.06),
+          borderColor: withAlpha(accent, 0.42),
+          borderRadius: 2,
+        },
+        textColor: accent,
+        iconColor: accent,
+      };
+    }
+    if (visualPreset === 'modal') {
+      return {
+        key: {
+          backgroundColor: withAlpha(success, 0.05),
+          borderColor: withAlpha(success, 0.46),
+          borderRadius: 3,
+        },
+        textColor: success,
+        iconColor: success,
+      };
+    }
+    return {
+      key: {
+        backgroundColor: withAlpha(foreground, 0.06),
+        borderColor: border,
+        borderRadius: 5,
+      },
+      textColor: foreground,
+      iconColor: foreground,
+    };
+  }, [accent, border, foreground, success, visualPreset]);
   // bug #48: Gate the Vim key page behind a settings toggle. Vim users opt in
   // via Settings → Terminal → "Show Vim key bar" (default off). Until then
   // ":w / :q / :wq / dd" don't clutter the bar for non-vim users.
@@ -211,10 +252,10 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
             key={`${setId}-${i}`}
             style={[
               styles.key,
-              { backgroundColor: withAlpha(c.foreground, 0.06), borderColor: c.borderLight },
+              keyChrome.key,
               key.action === 'alt-toggle' && altActive && {
-                backgroundColor: withAlpha(c.accent, 0.2),
-                borderColor: c.accent,
+                backgroundColor: withAlpha(accent, 0.2),
+                borderColor: accent,
               },
             ]}
             onPress={() => handleKeyPress(key)}
@@ -222,11 +263,11 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
             accessibilityLabel={key.label}
           >
             {key.icon ? (
-              <MaterialIcons name={key.icon} size={14} color={c.foreground} />
+              <MaterialIcons name={key.icon} size={14} color={keyChrome.iconColor} />
             ) : (
               <Text style={[
                 styles.keyText,
-                { color: key.action === 'alt-toggle' && altActive ? c.accent : c.foreground },
+                { color: key.action === 'alt-toggle' && altActive ? accent : keyChrome.textColor },
               ]}>
                 {isCompact ? key.compactLabel : key.label}
               </Text>
@@ -235,16 +276,16 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
         ))}
       </View>
     );
-  }, [barWidth, c, altActive, isCompact, handleKeyPress]);
+  }, [barWidth, accent, altActive, isCompact, handleKeyPress, keyChrome]);
 
   return (
-    <View style={[styles.container, { backgroundColor: c.surfaceHigh, borderTopColor: c.border }]} onLayout={onBarLayout}>
+    <View style={[styles.container, { backgroundColor: '#000000', borderTopColor: border }]} onLayout={onBarLayout}>
       {/* Single row: attach/voice + swipeable keys + dots */}
       <View style={styles.singleRow}>
         {/* Attach + Voice mini buttons */}
         {onAttach && (
           <Pressable onPress={onAttach} hitSlop={6} style={styles.miniBtn}>
-            <MaterialIcons name="attach-file" size={13} color={c.muted} />
+            <MaterialIcons name="attach-file" size={13} color={muted} />
           </Pressable>
         )}
         {onVoice && (
@@ -255,13 +296,9 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
             hitSlop={6}
             style={styles.miniBtn}
           >
-            <MaterialIcons
-              name="mic"
-              size={13}
-              color={isRecording || isTranscribing ? c.accent : c.muted}
-            />
+            <MaterialIcons name="mic" size={13} color={isRecording || isTranscribing ? accent : muted} />
             {(isRecording || isTranscribing) && (
-              <View style={[styles.recordingDot, { backgroundColor: c.accent }]} />
+              <View style={[styles.recordingDot, { backgroundColor: accent }]} />
             )}
           </Pressable>
         )}
@@ -287,9 +324,9 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
               <Pressable key={id} onPress={() => switchSet(id)} hitSlop={6}>
                 <View style={[
                   styles.dot,
-                  { backgroundColor: id === activeSet ? c.accent : withAlpha(c.foreground, 0.2) },
+                  { backgroundColor: id === activeSet ? accent : withAlpha(foreground, 0.2) },
                   id === suggestedSet && id !== activeSet && styles.suggestedDot,
-                  id === suggestedSet && id !== activeSet && { borderColor: c.accent },
+                  id === suggestedSet && id !== activeSet && { borderColor: accent },
                 ]} />
               </Pressable>
             ))}

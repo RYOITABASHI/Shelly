@@ -112,7 +112,7 @@ export default function IssueDraftAction({
       labels: initialDraft.labels,
     });
     setSubmitting(false);
-    if (result.ok) {
+    if (result.ok === true) {
       setCreated({ number: result.number, html_url: result.html_url });
       setOpen(false);
       onCreated?.({ number: result.number, html_url: result.html_url });

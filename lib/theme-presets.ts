@@ -106,6 +106,8 @@ export type Palette = {
 
 export type ThemePresetId =
   | 'shelly'
+  | 'blackline'
+  | 'modal'
   | 'silkscreen'
   | 'pixel'
   | 'mono'
@@ -205,6 +207,114 @@ export const shellyPalette: Palette = {
   // Diff borders — neon lime / neon red to match add/errorText
   diffAddBorder:    '#39FF14',
   diffRemoveBorder: '#FF3366',
+};
+
+// ── Blackline palette — WezTerm-inspired terminal workstation.
+// Pure black surfaces keep transparency compatible; the theme difference
+// comes from crisp blue chrome, cool secondary text, and low-fill buttons.
+export const blacklinePalette: Palette = {
+  bgDeep:     '#000000',
+  bgSurface:  '#000000',
+  bgSidebar:  '#000000',
+  border:     '#243040',
+
+  accent:        '#4DA3FF',
+  accentGreen:   '#35D07F',
+  accentBlue:    '#4DA3FF',
+  accentSky:     '#65D7FF',
+  accentPurple:  '#9B8CFF',
+  accentPink:    '#FF5C9A',
+  accentAmber:   '#FFD166',
+  accentCode:    '#65D7FF',
+  warning:       '#FFD166',
+
+  text1:      '#E8EEF8',
+  text2:      '#97A6BA',
+  text3:      '#526070',
+
+  errorText:  '#FF5C7A',
+  errorBg:    'rgba(255,92,122,0.12)',
+  addText:    '#35D07F',
+  addBg:      'rgba(53,208,127,0.12)',
+
+  btnPrimaryBg:     '#4DA3FF',
+  btnPrimaryText:   '#000000',
+  btnSecondaryBg:   '#000000',
+  btnSecondaryText: '#E8EEF8',
+
+  badgeRunningBg:   'rgba(255,209,102,0.14)',
+  badgeRunningText: '#FFD166',
+  badgeLinkedBg:    'rgba(53,208,127,0.14)',
+  badgeLinkedText:  '#35D07F',
+  badgeConnectBg:   '#000000',
+  badgeConnectText: '#526070',
+
+  layoutActiveBg:     '#4DA3FF',
+  layoutActiveText:   '#000000',
+  layoutInactiveBg:   '#000000',
+  layoutInactiveText: '#526070',
+
+  crtBadgeBg:   '#000000',
+  crtBadgeText: '#4DA3FF',
+
+  autoSaveBg: '#000000',
+
+  diffAddBorder:    '#35D07F',
+  diffRemoveBorder: '#FF5C7A',
+};
+
+// ── Modal palette — NeoVim-inspired modal editing surface.
+// Green is the normal-mode anchor; blue/purple/yellow act as insert,
+// visual, and command-mode cues without changing actual behavior.
+export const modalPalette: Palette = {
+  bgDeep:     '#000000',
+  bgSurface:  '#000000',
+  bgSidebar:  '#000000',
+  border:     '#1E3322',
+
+  accent:        '#7CFF6B',
+  accentGreen:   '#7CFF6B',
+  accentBlue:    '#5AA9FF',
+  accentSky:     '#66E7FF',
+  accentPurple:  '#B98CFF',
+  accentPink:    '#FF6BB5',
+  accentAmber:   '#FFD76A',
+  accentCode:    '#5AA9FF',
+  warning:       '#FFD76A',
+
+  text1:      '#E7F5E7',
+  text2:      '#9FB09F',
+  text3:      '#526052',
+
+  errorText:  '#FF5F87',
+  errorBg:    'rgba(255,95,135,0.12)',
+  addText:    '#7CFF6B',
+  addBg:      'rgba(124,255,107,0.12)',
+
+  btnPrimaryBg:     '#7CFF6B',
+  btnPrimaryText:   '#000000',
+  btnSecondaryBg:   '#000000',
+  btnSecondaryText: '#E7F5E7',
+
+  badgeRunningBg:   'rgba(255,215,106,0.14)',
+  badgeRunningText: '#FFD76A',
+  badgeLinkedBg:    'rgba(124,255,107,0.14)',
+  badgeLinkedText:  '#7CFF6B',
+  badgeConnectBg:   '#000000',
+  badgeConnectText: '#526052',
+
+  layoutActiveBg:     '#7CFF6B',
+  layoutActiveText:   '#000000',
+  layoutInactiveBg:   '#000000',
+  layoutInactiveText: '#526052',
+
+  crtBadgeBg:   '#000000',
+  crtBadgeText: '#7CFF6B',
+
+  autoSaveBg: '#000000',
+
+  diffAddBorder:    '#7CFF6B',
+  diffRemoveBorder: '#FF5F87',
 };
 
 // ── Silkscreen palette — the previous static theme.config.ts values,
@@ -668,6 +778,8 @@ export const oneDarkPalette: Palette = {
 // who want the original aesthetic, but it is no longer the default.
 export const themePresets: Record<ThemePresetId, ThemePreset> = {
   shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: shellyPalette },
+  blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: blacklinePalette },
+  modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: modalPalette },
   silkscreen:   { id: 'silkscreen',   font: 'Silkscreen',               colors: silkscreenPalette },
   pixel:        { id: 'pixel',        font: 'PressStart2P',             colors: silkscreenPalette },
   mono:         { id: 'mono',         font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },

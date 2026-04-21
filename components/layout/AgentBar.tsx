@@ -13,14 +13,17 @@ import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { useFocusStore } from '@/store/focus-store';
-import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { useSettingsStore } from '@/store/settings-store';
+import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const barBg = usePanelBackground(C.bgSidebar);
+  const logoPrompt = uiFont === 'blackline' ? '~$' : uiFont === 'modal' ? ':' : '>_';
 
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
@@ -34,6 +37,11 @@ export function AgentBar() {
 
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
+      <View style={styles.logoMark} pointerEvents="none">
+        <Text style={styles.logoPrompt}>{logoPrompt}</Text>
+        <Text style={styles.logoText}>SHELLY</Text>
+      </View>
+
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
           Replaces the previous split into two adjacent buttons (dashboard
           + plus) which users kept confusing with each other. */}
@@ -91,6 +99,30 @@ const styles = StyleSheet.create({
     borderBottomWidth: S.borderWidth,
     borderBottomColor: C.border,
     backgroundColor: C.bgSidebar,
+  },
+  logoMark: {
+    height: 28,
+    marginLeft: 6,
+    marginRight: 2,
+    paddingHorizontal: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  logoPrompt: {
+    color: C.accent,
+    fontFamily: F.family,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 12,
+  },
+  logoText: {
+    color: C.text1,
+    fontFamily: F.family,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0,
+    lineHeight: 12,
   },
   addBtn: {
     width: 32,

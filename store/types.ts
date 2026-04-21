@@ -423,9 +423,23 @@ export type AppSettings = {
    * PTY-state auto-detection.
    */
   showVimKeyBar?: boolean;
-  /** UI font family: 'silkscreen' (mock default, readable pixel),
-   *  'pixel' (PressStart2P 8×8 grid), or 'mono' (system monospace) */
-  uiFont?: 'shelly' | 'silkscreen' | 'pixel' | 'mono' | 'dracula' | 'nord' | 'gruvbox' | 'tokyo-night';
+  /** UI visual preset. Legacy ids remain accepted for existing installs. */
+  uiFont?:
+    | 'shelly'
+    | 'blackline'
+    | 'modal'
+    | 'silkscreen'
+    | 'pixel'
+    | 'mono'
+    | 'dracula'
+    | 'nord'
+    | 'gruvbox'
+    | 'tokyo-night'
+    | 'catppuccin-mocha'
+    | 'rose-pine'
+    | 'kanagawa'
+    | 'everforest'
+    | 'one-dark';
 };
 
 // ─── Background Agents ──────────────────────────────────────────────────────
