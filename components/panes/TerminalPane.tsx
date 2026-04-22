@@ -656,7 +656,7 @@ export default function TerminalScreen() {
   // the Keyboard listener around only because other UX pieces (scroll
   // anchoring) may read it later.
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: c.background }]}>
+    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: terminalColorScheme.background }]}>
       {/* Headers moved into PaneSlot so each pane only pays for one header row */}
 
       {/* Preview Banner — slides in when localhost URL detected */}
@@ -691,7 +691,13 @@ export default function TerminalScreen() {
             colorScheme={terminalColorScheme}
             gpuRendering={settings.gpuRendering ?? false}
             transparentBackground={wallpaperActive}
-            style={[styles.terminalView, { flex: showSplitPreview ? splitRatio : 1 }]}
+            style={[
+              styles.terminalView,
+              {
+                flex: showSplitPreview ? splitRatio : 1,
+                backgroundColor: terminalColorScheme.background,
+              },
+            ]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
             onFocusRequested={(e) => {
               // Native bridge for bug #116 follow-up. Body taps inside the
