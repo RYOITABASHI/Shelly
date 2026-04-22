@@ -16,6 +16,11 @@
  * Because LD_PRELOAD is inherited by child processes, this fix propagates
  * through the entire process tree: bash -> node -> git -> etc.
  *
+ * Some Linux-native CLIs also hard-code /bin/sh for tool execution. Android
+ * exposes the shell at /system/bin/sh instead, so we rewrite that path before
+ * falling through. This keeps Codex's internal shell tool working without a
+ * proot/chroot just to provide /bin/sh.
+ *
  * Build: added to CMakeLists.txt as a SHARED library (libexec_wrapper.so).
  * At runtime, LibExtractor extracts it alongside other .so files, and
  * shelly-pty.c sets LD_PRELOAD before launching the bash PTY.
@@ -48,6 +53,10 @@ static int is_elf(const char *path) {
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     typedef int (*orig_t)(const char *, char *const [], char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execve");
+
+    if (pathname && strcmp(pathname, "/bin/sh") == 0) {
+        return orig("/system/bin/sh", argv, envp);
+    }
 
     /* Pass through for: null path, linker64 itself, system/vendor/apex binaries,
      * and non-ELF files (scripts, etc. -- those use shebang which the
