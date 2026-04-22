@@ -92,6 +92,20 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
       // consumers that read activeSessionId (pendingCommand effect, cwd
       // tracking via onBlockCompleted) stay in sync with the pane the user
       // is actively interacting with.
+      const mps = useMultiPaneStore.getState();
+      const currentSlot = mps.slots.find((s) => s?.id === leafId);
+      const ownerSlot = mps.slots.find(
+        (s) => s?.id !== leafId && s?.tab === 'terminal' && s?.sessionId === sessId,
+      );
+
+      // A single native TerminalSession is not safe to render in multiple
+      // TerminalViews at once: each attach resizes the shared emulator and
+      // overwrites the session's redraw callback. If the requested session
+      // is already visible in another pane, swap bindings instead of letting
+      // both panes point at the same PTY.
+      if (ownerSlot && currentSlot?.sessionId) {
+        setSlotSessionId(ownerSlot.id, currentSlot.sessionId);
+      }
       setSlotSessionId(leafId, sessId);
     }
     setActiveSession(sessId);
@@ -102,12 +116,18 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
       const sess = sessions.find((s) => s.id === sessId);
       if (sess) await TerminalEmulator.destroySession(sess.nativeSessionId);
     } catch {}
-    // If the slot currently points at the session we're closing, rebind
-    // the slot to whichever session remains so the pane keeps rendering
-    // a live terminal instead of flipping to the global fallback.
-    if (leafId && paneSessionId === sessId) {
+    // Rebind every pane pointing at the session being closed. The tab row
+    // is global, so the user can close a session from any pane while the
+    // same id is still referenced by persisted slot state.
+    if (leafId) {
       const remaining = sessions.find((s) => s.id !== sessId);
-      setSlotSessionId(leafId, remaining?.id ?? null);
+      const nextId = remaining?.id ?? null;
+      const mps = useMultiPaneStore.getState();
+      for (const slot of mps.slots) {
+        if (slot?.tab === 'terminal' && slot.sessionId === sessId) {
+          setSlotSessionId(slot.id, nextId);
+        }
+      }
     }
     removeSession(sessId);
   };
