@@ -22,12 +22,16 @@ export type PortEntry = {
 
 type PortsState = {
   entries: PortEntry[];
+  pollingDisabled: boolean;
   setEntries: (entries: PortEntry[]) => void;
+  setPollingDisabled: (disabled: boolean) => void;
 };
 
 export const usePortsStore = create<PortsState>((set) => ({
   entries: [],
+  pollingDisabled: false,
   setEntries: (entries) => set({ entries }),
+  setPollingDisabled: (disabled) => set({ pollingDisabled: disabled }),
 }));
 
 // ── /proc/net/tcp parser ────────────────────────────────────────────
