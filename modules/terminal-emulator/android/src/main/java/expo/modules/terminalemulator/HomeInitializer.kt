@@ -584,6 +584,23 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             android.util.Log.e("HomeInitializer", "shelly-cs.js extract failed: ${e.message}")
         }
 
+        // Phase 1.5 Day 2: ship shelly-cs-tunnel.js alongside the main
+        // script. shelly-cs.js lazy-require's this library only when the
+        // user runs `shelly-cs ssh <name> --probe-tunnel`, so it doesn't
+        // run at all on a plain `shelly-cs open` path (no @microsoft/
+        // dev-tunnels-connections cost for users who don't use SSH).
+        // Refresh on every launch so APK upgrades that change the tunnel
+        // protocol (new API version, new tunnel relay hosts, etc.)
+        // propagate without the user deleting ~/.shelly-cs/.
+        val shellyCsTunnelScript = File(shellyCsDir, "shelly-cs-tunnel.js")
+        try {
+            context.assets.open("shelly-cs-tunnel.js").use { input ->
+                shellyCsTunnelScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-cs-tunnel.js extract failed: ${e.message}")
+        }
+
         // v39: shelly-codex-auth — pure-JS ChatGPT subscription device-auth
         // for the Codex CLI. Upstream codex-rs ships `codex login
         // --device-auth` but codex-termux (the community rebuild we bundle

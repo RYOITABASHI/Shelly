@@ -451,14 +451,210 @@ async function cmdDelete(args) {
   console.log(`  ${C.green}✓${C.reset} ${name} deleted`);
 }
 
-async function cmdSSH() {
-  // Phase 1.5: implement SSH tunneling via GitHub's connection infrastructure.
-  // Options under evaluation:
-  //   1. Port gh CLI's tunnel client logic (WebSocket + JSON-RPC).
-  //   2. Enable SSH Server feature in the codespace + public key auth.
-  //   3. Use Codespace's forwarded ports API with a local proxy.
-  console.log(`  ${C.yellow}ssh is Phase 1.5 — use${C.reset} ${C.cyan}shelly-cs open <name>${C.reset} ${C.yellow}for now.${C.reset}`);
-  console.log(`  ${C.gray}(Opens the codespace's web terminal in the browser.)${C.reset}`);
+// ─────────────────────────────────────────────────────────────
+// SSH tunneling (Phase 1.5)
+// ─────────────────────────────────────────────────────────────
+//
+// Investigation outcome (2026-04-19):
+//   Microsoft dev-tunnels relay is the ONLY path to reach a codespace's
+//   SSH server from outside. Raw TCP (port 22) is VM-private.
+//
+// Protocol trace from gh CLI source:
+//   1. GET /user/codespaces/{name}?internal=true&refresh=true
+//      → connection.tunnelProperties = { connectAccessToken, tunnelId,
+//        clusterId, domain, serviceUri }
+//   2. wss://{cluster}-data.rel.tunnels.api.visualstudio.com/.../{tunnelId}
+//      subprotocol: tunnel-relay-client
+//      Authorization: Tunnel {connectAccessToken}
+//   3. gRPC over tunnel channel on codespace port 16634:
+//      CodespaceHost.StartSSHServerWithOptions({publicKey}) → {serverPort, sshUser}
+//   4. Forward {serverPort} to a local TCP listener, spawn bundled ssh:
+//      $libDir/ssh -i ~/.shelly-cs/id_ed25519 -p <local> <user>@localhost
+//
+// Deps (~1.5 MB, lazy-installed on first `shelly-cs ssh` invocation so
+// the APK doesn't grow for users who only use the web-URL path):
+//   @microsoft/dev-tunnels-connections  tunnel transport
+//   @grpc/grpc-js                       codespace RPC
+//   ssh2                                pure-JS SSH client (fallback — we
+//                                       prefer bundled $libDir/ssh)
+//   ws                                  WebSocket (override for `websocket`)
+//
+// Current status (v0.1.1-alpha.1): Day 1 — lazy-install scaffold only.
+// The npm install plumbing is wired but the tunnel/RPC/SSH client code
+// is stubbed. Running `shelly-cs ssh <name>` will install the deps on
+// first invocation and then exit with "protocol not yet implemented".
+// Subsequent runs skip the install (marker file).
+
+const TUNNEL_DEPS = [
+  '@microsoft/dev-tunnels-connections@^1.3',
+  '@grpc/grpc-js@^1.9',
+  // Day 3 adds @grpc/proto-loader for runtime .proto compilation of the
+  // inlined SshServerHost definition. ~80 KB pure JS; no native build.
+  '@grpc/proto-loader@^0.7',
+  'ssh2@^1.15',
+  'ws@^8',
+];
+// Bumped marker suffix with Day 3 deps so existing installs refresh the
+// tree on next `shelly-cs ssh` invocation. Without this, Day 2 users
+// would skip the install (marker set) and hit "proto-loader not found"
+// the first time they try --start-ssh.
+const TUNNEL_DEPS_MARKER = path.join(CONFIG_DIR, '.tunnel-deps-installed-v2');
+
+function tunnelDepsInstalled() {
+  if (!fs.existsSync(TUNNEL_DEPS_MARKER)) return false;
+  // Quick sanity check — if the marker is stale (e.g. CONFIG_DIR was
+  // wiped), the marker might exist but node_modules is empty.
+  const sentinel = path.join(CONFIG_DIR, 'node_modules', '@microsoft', 'dev-tunnels-connections', 'package.json');
+  return fs.existsSync(sentinel);
+}
+
+async function ensureTunnelingDeps() {
+  if (tunnelDepsInstalled()) return;
+  console.log('');
+  console.log(`  ${C.yellow}First-time SSH tunneling setup: installing ~1.5 MB of deps (~30-60s)…${C.reset}`);
+  console.log(`  ${C.gray}This happens once per install. Subsequent \`shelly-cs ssh\` runs skip it.${C.reset}`);
+  console.log('');
+  ensureConfigDir();
+
+  // Resolve the bundled npm-cli.js that our libDir/node already knows
+  // how to run. We match the pattern in HomeInitializer.kt's
+  // __shelly_bg_cli_update — node $libDir/node_modules/npm/bin/npm-cli.js.
+  // process.argv[0] is the node binary path Shelly's bash set up for us,
+  // so the sibling node_modules/npm is reachable as a relative path.
+  const nodeBin = process.argv[0];
+  const libDir = path.dirname(nodeBin);
+  const npmCli = path.join(libDir, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (!fs.existsSync(npmCli)) {
+    throw new Error(`npm-cli.js not found at ${npmCli} — cannot install tunneling deps automatically`);
+  }
+
+  // Override websocket → ws at install time. @microsoft/dev-tunnels-connections
+  // transitively pulls `websocket` which has native addons (bufferutil,
+  // utf-8-validate) that don't build on Android bionic. Using `ws`
+  // (pure JS) avoids the node-gyp drama entirely. We write a minimal
+  // package.json into CONFIG_DIR with an `overrides` block before
+  // running install.
+  const pkgJsonPath = path.join(CONFIG_DIR, 'package.json');
+  const pkgJson = {
+    name: 'shelly-cs-tunneling',
+    version: '0.1.0',
+    private: true,
+    description: 'Lazy-installed SSH tunneling deps for shelly-cs. Safe to delete.',
+    overrides: { websocket: 'npm:ws@^8' },
+  };
+  fs.writeFileSync(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
+
+  const args = [
+    npmCli, 'install',
+    '--prefix', CONFIG_DIR,
+    '--no-audit',
+    '--no-fund',
+    '--no-save',
+    ...TUNNEL_DEPS,
+  ];
+  const result = spawnSync(nodeBin, args, { stdio: 'inherit', env: process.env });
+  if (result.status !== 0) {
+    throw new Error(`npm install failed with exit code ${result.status}. Retry: rm -rf ${CONFIG_DIR}/node_modules && shelly-cs ssh <name>`);
+  }
+
+  fs.writeFileSync(TUNNEL_DEPS_MARKER, new Date().toISOString() + '\n');
+  console.log('');
+  console.log(`  ${C.green}✓${C.reset} Tunneling deps installed to ${CONFIG_DIR}/node_modules`);
+}
+
+async function cmdSSH(args) {
+  const name = args._[0];
+  if (!name) throw new Error('Usage: shelly-cs ssh <codespace-name> [--probe-tunnel | --start-ssh]');
+
+  // Day 1: ensure deps are installed. Actual tunnel/RPC/SSH
+  // orchestration lands in Day 2-5 (see docs/ssh-tunneling-day1.md).
+  await ensureTunnelingDeps();
+
+  // Quick import probe — if the install succeeded, these requires
+  // should resolve. Any failure here means the deps installed but
+  // something is wrong (missing transitive, Android-incompatible
+  // optional binding slipped through, etc.).
+  const depsDir = path.join(CONFIG_DIR, 'node_modules');
+  try {
+    require(path.join(depsDir, '@microsoft', 'dev-tunnels-connections'));
+  } catch (e) {
+    throw new Error(`dev-tunnels-connections require failed: ${e.message}`);
+  }
+  try {
+    require(path.join(depsDir, '@grpc', 'grpc-js'));
+  } catch (e) {
+    throw new Error(`@grpc/grpc-js require failed: ${e.message}`);
+  }
+  try {
+    require(path.join(depsDir, 'ssh2'));
+  } catch (e) {
+    throw new Error(`ssh2 require failed: ${e.message}`);
+  }
+
+  console.log('');
+  console.log(`  ${C.green}✓${C.reset} Tunneling deps ready`);
+
+  // Day 3: --start-ssh runs probe-tunnel + asks the codespace to start
+  // its SSH server over gRPC and returns {serverPort, sshUser} plus the
+  // path of the auto-generated ed25519 public key. No local ssh spawn
+  // yet — that's Day 4. This is the "can we actually trigger sshd on
+  // the codespace" checkpoint.
+  if (args['--start-ssh']) {
+    const token = readToken();
+    if (!token) throw new Error('Not signed in. Run `shelly-cs auth` first.');
+    console.log(`  ${C.yellow}▶ requesting codespace SSH server for ${name}…${C.reset}`);
+    const tunnelLib = require(path.join(__dirname, 'shelly-cs-tunnel.js'));
+    const info = await tunnelLib.probeSshServer(name, token);
+    console.log('');
+    console.log(`  ${C.green}✓ SSH server started on codespace${C.reset}`);
+    console.log(`  ${C.gray}  tunnel id      :${C.reset} ${info.tunnelId}`);
+    console.log(`  ${C.gray}  cluster        :${C.reset} ${info.cluster}`);
+    console.log(`  ${C.gray}  domain         :${C.reset} ${info.domain}`);
+    console.log(`  ${C.gray}  ssh server port:${C.reset} ${info.sshServerPort}`);
+    console.log(`  ${C.gray}  ssh user       :${C.reset} ${info.sshUser}`);
+    console.log(`  ${C.gray}  public key     :${C.reset} ${info.publicKeyPath}`);
+    if (info.sshMessage) console.log(`  ${C.gray}  message        :${C.reset} ${info.sshMessage}`);
+    console.log('');
+    console.log(`  ${C.cyan}Day 3 checkpoint${C.reset} — local ssh(1) bridge lands in Day 4.`);
+    console.log('');
+    return;
+  }
+
+  // Day 2 wire-up: --probe-tunnel exercises the tunnel-client library
+  // end-to-end. It:
+  //   1. Reads the OAuth token
+  //   2. GETs /user/codespaces/{name}?internal=true → tunnelProperties
+  //   3. Opens the websocket tunnel via @microsoft/dev-tunnels-connections
+  //   4. Prints connection info, disposes the client, exits
+  //
+  // No SSH yet (that's Day 3 — StartSSHServer RPC + local forwarder).
+  // This is a "can we even establish the tunnel?" checkpoint so we
+  // can confirm the dev-tunnels-connections bindings work on bionic
+  // node before building the SSH bridge on top.
+  if (args['--probe-tunnel']) {
+    const token = readToken();
+    if (!token) {
+      throw new Error('Not signed in. Run `shelly-cs auth` first.');
+    }
+    console.log(`  ${C.yellow}▶ probing tunnel for ${name}…${C.reset}`);
+    const tunnelLib = require(path.join(__dirname, 'shelly-cs-tunnel.js'));
+    const info = await tunnelLib.probeTunnel(name, token);
+    console.log('');
+    console.log(`  ${C.green}✓ tunnel established${C.reset}`);
+    console.log(`  ${C.gray}  tunnel id   :${C.reset} ${info.tunnelId}`);
+    console.log(`  ${C.gray}  cluster     :${C.reset} ${info.cluster}`);
+    console.log(`  ${C.gray}  domain      :${C.reset} ${info.domain}`);
+    console.log(`  ${C.gray}  service uri :${C.reset} ${info.serviceUri ?? '(none)'}`);
+    console.log('');
+    console.log(`  ${C.cyan}Day 2 checkpoint${C.reset} — SSH server RPC + local forwarder land in Day 3.`);
+    console.log('');
+    return;
+  }
+
+  console.log(`  ${C.yellow}Day 1 checkpoint${C.reset} — tunnel protocol implementation lands next.`);
+  console.log(`  ${C.gray}Pass${C.reset} ${C.cyan}--probe-tunnel${C.reset} ${C.gray}to exercise the Day 2 tunnel dial (WS connect only, no SSH).${C.reset}`);
+  console.log(`  ${C.gray}Or use${C.reset} ${C.cyan}shelly-cs open ${name}${C.reset} ${C.gray}to reach the codespace's web terminal.${C.reset}`);
+  console.log('');
 }
 
 async function cmdDoctor() {
@@ -472,6 +668,9 @@ async function cmdDoctor() {
   console.log(`    Config dir:     ${CONFIG_DIR}`);
   console.log(`    Token:          ${readToken() ? C.green + '✓ present' + C.reset : C.red + '✗ missing' + C.reset + C.gray + ' (run `shelly-cs auth`)' + C.reset}`);
   console.log(`    Default CS:     ${cfg.defaultCodespace ? C.bold + cfg.defaultCodespace + C.reset : C.gray + '(unset — \`shelly-cs use <name>\`)' + C.reset}`);
+  // Phase 1.5 SSH tunneling — show whether the lazy-install has run.
+  const tunnelingReady = tunnelDepsInstalled();
+  console.log(`    SSH tunneling:  ${tunnelingReady ? C.green + '✓ deps installed' + C.reset : C.gray + '(not installed yet — will install on first `shelly-cs ssh`)' + C.reset}`);
   try {
     const user = await ghApi('/user');
     console.log(`    Authenticated:  ${C.green}✓${C.reset} ${user.login}  ${C.gray}(${user.email || 'email hidden'})${C.reset}`);
@@ -533,7 +732,7 @@ function usage() {
   console.error(`                                            ${C.gray}(no arg → default / only running)${C.reset}`);
   console.error(`  ${C.cyan}stop${C.reset} <name>                               Stop codespace (pauses billing)`);
   console.error(`  ${C.cyan}delete${C.reset} <name> --yes                       Delete codespace (requires --yes)`);
-  console.error(`  ${C.cyan}ssh${C.reset} <name>                                SSH to codespace (Phase 1.5)`);
+  console.error(`  ${C.cyan}ssh${C.reset} <name> [--probe-tunnel|--start-ssh]   SSH to codespace (Phase 1.5 — probes, no session yet)`);
   console.error(`  ${C.cyan}doctor${C.reset}                                    Diagnose configuration issues`);
   console.error(`  ${C.cyan}logout${C.reset}                                    Clear saved credentials`);
   console.error('');
