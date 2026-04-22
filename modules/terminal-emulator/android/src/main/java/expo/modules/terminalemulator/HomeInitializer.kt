@@ -435,7 +435,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // v49 (2026-04-23): point $SHELL at the native shell launcher so
     //     Claude Code's Bash tool can spawn a working shell outside
     //     Shelly's interactive bash functions.
-    private const val BASHRC_VERSION = 49
+    // v50 (2026-04-23): expose the same native shell launcher as
+    //     $HOME/bin/bash for Node-based CLIs such as Gemini that call
+    //     spawn("bash", ...) and cannot see exported bash functions.
+    private const val BASHRC_VERSION = 50
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -718,6 +721,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export LANG=en_US.UTF-8")
             sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
             sb.appendLine("export SHELL=\"$nativeLibDir/libshelly_shell.so\"")
+            sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir:/system/bin:/vendor/bin}\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
             // v39: point every bundled TLS client at the Mozilla CA bundle
@@ -826,6 +830,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine()
 
             // Tool functions
+            sb.appendLine("# v50: real PATH-visible shell for CLIs that spawn(\"bash\")")
+            sb.appendLine("if [ ! -e \"\$HOME/bin/bash\" ] || [ \"\$(readlink \"\$HOME/bin/bash\" 2>/dev/null)\" != \"\$SHELL\" ]; then")
+            sb.appendLine("  rm -f \"\$HOME/bin/bash\" 2>/dev/null")
+            sb.appendLine("  ln -s \"\$SHELL\" \"\$HOME/bin/bash\" 2>/dev/null || true")
+            sb.appendLine("fi")
             sb.appendLine("bash() { _run $libDir/libbash.so \"\$@\"; }")
             sb.appendLine("node() { _run $libDir/node \"\$@\"; }")
             sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
