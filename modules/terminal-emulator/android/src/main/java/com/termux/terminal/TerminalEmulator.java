@@ -2108,8 +2108,17 @@ public final class TerminalEmulator {
                                 mSession.write("\033]" + value + ";rgb:" + String.format(Locale.US, "%04x", r) + "/" + String.format(Locale.US, "%04x", g) + "/"
                                     + String.format(Locale.US, "%04x", b) + bellOrStringTerminator);
                             } else {
-                                mColors.tryParseColor(specialIndex, colorSpec);
-                                mSession.onColorsChanged();
+                                if (specialIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
+                                    // Shelly keeps pane backgrounds owned by the app theme.
+                                    // TUI/CLI apps may send OSC 11 to tint their terminal
+                                    // background (Claude Code currently uses a grey value),
+                                    // which makes one pane look disabled or unfocused.
+                                    // Foreground/cursor OSC changes remain supported.
+                                    android.util.Log.d(LOG_TAG, "Ignoring OSC " + value + " default background color change: " + colorSpec);
+                                } else {
+                                    mColors.tryParseColor(specialIndex, colorSpec);
+                                    mSession.onColorsChanged();
+                                }
                             }
                             specialIndex++;
                             if (endOfInput || (specialIndex > TextStyle.COLOR_INDEX_CURSOR) || ++charIndex >= textParameter.length())

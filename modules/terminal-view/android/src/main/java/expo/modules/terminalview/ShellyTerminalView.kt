@@ -547,11 +547,15 @@ class ShellyTerminalView(
         }
 
         // Samsung/One UI can reject showSoftInput immediately after
-        // requestFocus with "view is not served". Wait a few frames so
+        // requestFocus with "view is not served", especially while
+        // multi-pane is resizing and the old/new TerminalView bounds are
+        // being rebound. Keep retrying across the post-layout window so
         // ViewRootImpl has time to bind TerminalView as the served editor.
         attempt(0)
         attempt(50)
         attempt(150)
+        attempt(300)
+        attempt(600)
     }
 
     fun scrollToRowCommand(row: Int) {
