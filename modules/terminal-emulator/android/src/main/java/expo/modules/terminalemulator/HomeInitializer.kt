@@ -171,10 +171,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        either editing mode; once inside the function, bytes are
      *        read directly (no dispatch) until the \e[201~ END marker,
      *        so that ESC is preserved. TerminalEmulator.paste() now
-     *        gates the wrap on DECSET 2004 so full-screen TUIs (vim /
-     *        less / nano) still get the pre-#91 `\r?\n → \r` fallback
-     *        instead of having control bytes injected into their own
-     *        key handling.
+     *        gates the wrap on DECSET 2004; later builds keep this
+     *        readline-only trigger for the normal prompt but send the
+     *        standard bracketed-paste markers to TUI/CLI apps.
      *    28: @anthropic-ai/claude-code ≥ 2026-04 restructured its package
      *        layout: the top-level `cli.js` entry disappeared and the
      *        shipped binary moved to `bin/claude.exe` per package.json's
@@ -433,7 +432,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     known-good fallback.
     // v48 (2026-04-21): shelly-doctor — read-only CLI diagnostics for
     //     runtime updater state, CLI versions, and auth file presence.
-    private const val BASHRC_VERSION = 48
+    // v49 (2026-04-23): point $SHELL at the native shell launcher so
+    //     Claude Code's Bash tool can spawn a working shell outside
+    //     Shelly's interactive bash functions.
+    private const val BASHRC_VERSION = 49
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -441,6 +443,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     fun initialize(context: Context): File {
         val home = getHomeDir(context)
         val libDir = LibExtractor.getLibDir(context).absolutePath
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
         File(home, "projects").mkdirs()
 
@@ -713,7 +716,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export TERM=xterm-256color")
             sb.appendLine("export COLORTERM=truecolor")
             sb.appendLine("export LANG=en_US.UTF-8")
-            sb.appendLine("export SHELL=\"$libDir/libbash.so\"")
+            sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
+            sb.appendLine("export SHELL=\"$nativeLibDir/libshelly_shell.so\"")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir:/system/bin:/vendor/bin}\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
             // v39: point every bundled TLS client at the Mozilla CA bundle

@@ -2666,6 +2666,7 @@ public final class TerminalEmulator {
         // a proxy for "the guest can actually handle bracketed paste".
         try {
             boolean bm = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+            boolean tui = isAlternateBufferActive() || isMouseTrackingActive();
             int nlCount = 0;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
@@ -2676,6 +2677,7 @@ public final class TerminalEmulator {
             android.util.Log.d("ShellyPaste",
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
                 + ", nl=" + nlCount + ", bracketed=" + bm
+                + ", tui=" + tui
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
@@ -2701,13 +2703,12 @@ public final class TerminalEmulator {
         // DECSET 2004 gate: only wrap if the guest has advertised
         // bracketed-paste mode. A readline guest (local bash with our bind,
         // or remote bash over SSH) emits `\e[?2004h` on prompt display.
-        // Full-screen TUIs like vim/less/nano don't — for those, wrapping
-        // with `\C-x\C-b` would feed control bytes into the TUI's own key
-        // handling and cause weird behaviour (e.g. vim interpreting `\e`
-        // from the END marker as exit-insert). Fall back to the pre-#91
-        // `\r?\n → \r` normalization so each line arrives as its own
-        // Enter — this matches vim insert mode's expected newline behaviour
-        // and keeps less/nano usable.
+        // Full-screen TUIs such as Claude Code normally do understand the
+        // standard bracketed-paste markers and expect to receive `\e[200~`.
+        // They often also enable alternate-screen or mouse tracking. In that
+        // mode, sending Shelly's readline-only `\C-x\C-b` trigger means the
+        // TUI never sees the standard BEGIN marker, so paste can be ignored
+        // or interpreted as ordinary control input.
         //
         // Remote SSH caveat: the remote bash ALSO enables DECSET 2004 (bash
         // 4.4+ default) but doesn't have our `\C-x\C-b` bind, so the prefix
@@ -2728,10 +2729,15 @@ public final class TerminalEmulator {
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
         if (bracketedMode) {
-            // BEGIN: 0x18 0x02 (C-x C-b → bracketed-paste-begin via .bashrc)
-            // END  : \e[201~  (consumed inside _rl_bracketed_text, not
-            //                  dispatched, so ESC is preserved)
-            mSession.write("\u0018\u0002" + text + "\u001B[201~");
+            if (isAlternateBufferActive() || isMouseTrackingActive()) {
+                // TUI/CLI app: use the standard bracketed-paste protocol.
+                mSession.write("\u001B[200~" + text + "\u001B[201~");
+            } else {
+                // Readline prompt: BEGIN is 0x18 0x02 (C-x C-b →
+                // bracketed-paste-begin via .bashrc). END is still the
+                // standard marker consumed inside _rl_bracketed_text.
+                mSession.write("\u0018\u0002" + text + "\u001B[201~");
+            }
         } else {
             // Non-readline guest (vim/less/nano/cat/raw PTY app). Send each
             // line as its own \r so the guest's own input handling (if any)
