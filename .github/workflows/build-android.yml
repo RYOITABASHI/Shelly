@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Nightly rebuild to pick up @anthropic-ai/claude-code-linux-arm64-musl@latest
+  # releases (bug #117 Path C-bis auto-follow). If Anthropic ships a new
+  # version between 00:00 UTC runs, the next push or manual dispatch also
+  # picks it up.
+  schedule:
+    - cron: '0 0 * * *'
 
 jobs:
   build:
@@ -27,12 +33,114 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Download codex-termux Android binaries (exec + TUI)
+      - name: Set up QEMU (for Alpine aarch64 musl build)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build patched musl libc for claude-code 2.1.113+ (bug #117 Path C-bis)
+        # Natively compile musl v1.2.4 inside an aarch64 Alpine container
+        # (emulated via qemu-user-static) with the hardcoded
+        # /etc/resolv.conf path rewritten to Shelly's app-writable home.
+        # bionic has no /etc/resolv.conf (it uses net.dns* properties),
+        # and LD_PRELOAD can't intercept musl's inline syscalls — so we
+        # bake the path in at build time. Alpine 3.19 ships musl 1.2.4;
+        # pinning the source tag keeps ABI compatibility with the
+        # claude-code-linux-arm64-musl prebuilt.
+        #
+        # A cross-compile via musl.cc used to live here, but musl.cc was
+        # unreachable from GitHub-hosted runners (connect timeout) in
+        # initial CI trials. Native-in-qemu is ~3× slower (~5 min vs
+        # ~90 s) but removes the third-party hosting dependency.
+        #
+        # Proof-of-concept verified on Termux/Galaxy Z Fold6 (2026-04-21):
+        # `./ld-musl-aarch64.so.1 ./claude --print ...` round-trips
+        # api.anthropic.com successfully. See DEFERRED.md bug #117.
         run: |
-          CODEX_TERMUX_VERSION="v0.121.0-termux"
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          curl -L "https://github.com/DioNanos/codex-termux/releases/download/${CODEX_TERMUX_VERSION}/codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
-            -o /tmp/codex-termux.tar.gz
+          RESOLV_CONF_PATH="/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf"
+
+          mkdir -p /tmp/musl-out
+          docker run --rm --platform linux/arm64 \
+            -v /tmp/musl-out:/out \
+            -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
+            alpine:3.19 sh -euxc '
+              apk add --no-progress build-base git
+              cd /tmp
+              git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl
+              cd musl
+              # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC —
+              # does not survive the shell→make→shell round-trip because
+              # make re-invokes /bin/sh which strips the quoted literal.
+              # Direct sed of the string literal in src/network/resolvconf.c
+              # is foolproof.
+              sed -i "s|\"/etc/resolv.conf\"|\"${RESOLV_CONF_PATH}\"|g" src/network/resolvconf.c
+              grep -q "${RESOLV_CONF_PATH}" src/network/resolvconf.c
+              ./configure --prefix=/tmp/musl-out >/tmp/configure.log 2>&1 || { tail -30 /tmp/configure.log; exit 1; }
+              make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
+              strip --strip-unneeded lib/libc.so
+              cp lib/libc.so /out/libld_musl_shelly.so
+              # Sanity checks inside the container — readelf/strings are
+              # the Alpine aarch64 natives, no cross-tool needed.
+              readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
+              strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
+            '
+          cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+
+      - name: Bundle claude-code musl binary (bug #117 Path C-bis)
+        # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
+        # Application) — a statically linked ~220 MB ET_EXEC binary that
+        # can't be exec'd directly on Android bionic (unexpected e_type: 2
+        # from /system/bin/linker64). We pair it with the Shelly-patched
+        # ld-musl-aarch64.so.1 from the previous step so bionic can exec
+        # the DYN loader, which in turn mmaps and runs the ET_EXEC claude.
+        #
+        # @latest is intentional — CI runs per-commit and nightly
+        # (scheduled below), so Shelly users get the newest claude-code
+        # within 24 h of an Anthropic release without any runtime download.
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          cd /tmp
+          npm pack @anthropic-ai/claude-code-linux-arm64-musl@latest
+          tar xzf anthropic-ai-claude-code-linux-arm64-musl-*.tgz
+          test -f package/claude || { echo "claude binary missing from tarball"; ls -la package; exit 1; }
+          CLAUDE_VERSION=$(node -p "require('/tmp/package/package.json').version")
+          echo "[claude] bundling @anthropic-ai/claude-code-linux-arm64-musl@${CLAUDE_VERSION}"
+          cp package/claude "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
+          file "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so" | head -1
+
+      - name: Download codex-termux Android binaries (exec + TUI)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CODEX_TERMUX_VERSION="$(gh release view --repo DioNanos/codex-termux --json tagName --jq .tagName)"
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION}"
+          gh release download "${CODEX_TERMUX_VERSION}" \
+            --repo DioNanos/codex-termux \
+            --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
+            --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256" \
+            --dir /tmp \
+            --clobber
+          cd /tmp
+          # DioNanos/codex-termux .sha256 files contain a bare hex digest
+          # (no filename suffix), so sha256sum -c rejects them with
+          # "no properly formatted checksum lines found". Read and compare manually.
+          EXPECTED_HASH="$(tr -d '[:space:]' < "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256")"
+          ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
+          if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
+            echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
+            echo "  expected: ${EXPECTED_HASH}" >&2
+            echo "  actual:   ${ACTUAL_HASH}" >&2
+            exit 1
+          fi
+          echo "[codex] sha256 OK: ${ACTUAL_HASH}"
+          mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
           cd /tmp && tar xzf codex-termux.tar.gz
           # Verify the upstream tarball still ships both binaries we depend on.
           # If DioNanos/codex-termux ever renames or drops one of these files,
@@ -101,6 +209,20 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Build shelly-musl trampoline loader (bug #117)
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-musl-exec.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_musl_exec.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
+            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
 
       - name: Build APK
         run: |

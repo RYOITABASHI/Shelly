@@ -247,7 +247,7 @@ export default function BrowserPane({ initialUrl = 'about:blank', visible = true
   // fullscreen button: they still want to see the other pane. Users
   // who want immersive app-wide fullscreen can long-press the pane
   // header → Maximize pane (separate affordance) before entering FS.
-  const fullscreenPolicy: 'pane' | 'app' = 'pane';
+  const fullscreenPolicy = 'pane' as 'pane' | 'app';
 
   const handleMessage = useCallback(
     (e: WebViewMessageEvent) => {

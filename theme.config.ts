@@ -17,64 +17,61 @@
 // palette object is seeded inline here; lib/theme-presets.ts holds the
 // identical shellyPalette for runtime preset swaps via Object.assign.
 export const colors = {
-  // Backgrounds (mock-exact)
-  bgDeep:     '#0A0A0A',
-  bgSurface:  '#111111',
-  bgSidebar:  '#0D0D0D',
-  border:     '#1C1C1C',
+  bgDeep:     '#000000',
+  bgSurface:  '#000000',
+  bgSidebar:  '#000000',
+  border:     '#1F1F2E',
 
-  // Accents (mock-exact)
-  accent:        '#00D4AA',
-  accentGreen:   '#4ADE80',
-  accentBlue:    '#60A5FA',
-  accentSky:     '#38BDF8',
-  accentPurple:  '#A78BFA',
-  accentPink:    '#EC4899',
-  accentAmber:   '#F59E0B',
-  accentCode:    '#60A5FA',
-  warning:       '#F59E0B',
+  accent:        '#00F0C8',
+  accentGreen:   '#39FF14',
+  accentBlue:    '#0AF0FF',
+  accentSky:     '#38E1FF',
+  accentPurple:  '#B14AFF',
+  accentPink:    '#FF2ED3',
+  accentAmber:   '#FFE500',
+  accentCode:    '#0AF0FF',
+  warning:       '#FFE500',
 
-  // Text (mock-exact)
-  text1:      '#E5E7EB',
-  text2:      '#9CA3AF',
-  text3:      '#6B7280',
+  text1:      '#F5F7FF',
+  text2:      '#A9B0CF',
+  text3:      '#5C6385',
 
   // Semantic
-  errorText:  '#F87171',
-  errorBg:    'rgba(248,113,113,0.12)',
-  addText:    '#4ADE80',
-  addBg:      'rgba(74,222,128,0.12)',
+  errorText:  '#FF3366',
+  errorBg:    'rgba(255,51,102,0.14)',
+  addText:    '#39FF14',
+  addBg:      'rgba(57,255,20,0.14)',
 
   // Buttons
-  btnPrimaryBg:     '#00D4AA',
+  btnPrimaryBg:     '#00F0C8',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#1F2937',
-  btnSecondaryText: '#E5E7EB',
+  btnSecondaryBg:   '#1A1A2E',
+  btnSecondaryText: '#F5F7FF',
 
   // Badges
-  badgeRunningBg:   'rgba(245,158,11,0.15)',
-  badgeRunningText: '#F59E0B',
-  badgeLinkedBg:    'rgba(74,222,128,0.15)',
-  badgeLinkedText:  '#4ADE80',
-  badgeConnectBg:   '#111111',
-  badgeConnectText: '#6B7280',
+  badgeRunningBg:   'rgba(255,229,0,0.18)',
+  badgeRunningText: '#FFE500',
+  badgeLinkedBg:    'rgba(57,255,20,0.18)',
+  badgeLinkedText:  '#39FF14',
+  badgeConnectBg:   '#000000',
+  badgeConnectText: '#5C6385',
 
   // Layout buttons
-  layoutActiveBg:     '#00D4AA',
+  layoutActiveBg:     '#00F0C8',
   layoutActiveText:   '#000000',
-  layoutInactiveBg:   '#111111',
-  layoutInactiveText: '#6B7280',
+  layoutInactiveBg:   '#000000',
+  layoutInactiveText: '#5C6385',
 
   // CRT badge
-  crtBadgeBg:   '#0D0D0D',
-  crtBadgeText: '#00D4AA',
+  crtBadgeBg:   '#000000',
+  crtBadgeText: '#00F0C8',
 
   // Auto-save
-  autoSaveBg: '#111827',
+  autoSaveBg: '#000000',
 
   // Diff
-  diffAddBorder:    '#4ADE80',
-  diffRemoveBorder: '#F87171',
+  diffAddBorder:    '#39FF14',
+  diffRemoveBorder: '#FF3366',
 };
 
 // ─── Fonts ──────────────────────────────────────────────────────────────────

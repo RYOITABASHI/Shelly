@@ -439,7 +439,7 @@ export function useAIPaneDispatch(paneId: string) {
         try {
           const sess = useTerminalStore.getState();
           const active = sess.sessions.find((s) => s.id === sess.activeSessionId);
-          const cwd = active?.cwd || '/data/data/dev.shelly.terminal/files/home';
+          const cwd = active?.currentDir || '/data/data/dev.shelly.terminal/files/home';
           stagedFile = await tryAutoStageFromTerminal(cwd, terminalCtx);
           if (stagedFile) {
             logInfo('AIPaneDispatch', 'Auto-staged from terminal: ' + stagedFile.path);

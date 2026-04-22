@@ -464,6 +464,33 @@ public class TerminalView extends View {
              *  The actual coalescing fix lives in a follow-up commit guarded on this data. */
             private long mPrevCommitAt = 0;
             private static final long COMMIT_BURST_WINDOW_MS = 50;
+            /** Whether the previous commitText chunk was routed through pasteViaEmulator(). */
+            private boolean mPrevCommitWasPaste = false;
+
+            private boolean isPrintableAsciiOnly(String text) {
+                for (int i = 0; i < text.length(); i++) {
+                    char c = text.charAt(i);
+                    if (c < 0x20 || c > 0x7E) return false;
+                }
+                return true;
+            }
+
+            private boolean looksLikePasteChunk(String text) {
+                if (text.isEmpty()) return false;
+                if (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) return true;
+                if (text.length() >= 16) return true;
+                if (!isPrintableAsciiOnly(text)) return false;
+                if (text.length() < 4) return false;
+
+                boolean hasWhitespace = false;
+                boolean hasShellPunctuation = false;
+                for (int i = 0; i < text.length(); i++) {
+                    char c = text.charAt(i);
+                    if (Character.isWhitespace(c)) hasWhitespace = true;
+                    if ("./~^-_=:@<>".indexOf(c) >= 0) hasShellPunctuation = true;
+                }
+                return hasWhitespace && (hasShellPunctuation || text.length() >= 8);
+            }
 
             private void resetShadowAfterNewline(String text) {
                 // If the text that just flew to the PTY contained a newline,
@@ -539,6 +566,7 @@ public class TerminalView extends View {
                 // the trailing Enter/quote characters from pasted text.
                 if (!commitStr.isEmpty() && commitStr.equals(mLastFinishFlush)) {
                     Log.d("ShellyIME", "commit SUPPRESSED (already flushed via finishComposing) =\"" + commitStr + "\"");
+                    mPrevCommitWasPaste = false;
                 } else if (!commitStr.isEmpty()) {
                     // bug #91: if the IME just handed us a multi-line block or a
                     // chunk bigger than a realistic typed keystroke, treat it as
@@ -559,8 +587,7 @@ public class TerminalView extends View {
                     // separate issue (IME deleteSurrounding SWALLOW window
                     // vs PTY prompt echo) that needs its own fix.
                     boolean hasNewline = commitStr.indexOf('\n') >= 0 || commitStr.indexOf('\r') >= 0;
-                    boolean isPaste = commitStr.length() > 1
-                        && (hasNewline || commitStr.length() >= 16);
+                    boolean isPaste = commitStr.length() > 1 && looksLikePasteChunk(commitStr);
                     // bug #106 diag: emit a burst marker when this commit lands
                     // within COMMIT_BURST_WINDOW_MS of the previous one. If we
                     // see commit-as-paste followed by commit-as-typed within
@@ -572,12 +599,28 @@ public class TerminalView extends View {
                     if (delta >= 0 && delta < COMMIT_BURST_WINDOW_MS) {
                         Log.d("ShellyIME", "commit BURST delta=" + delta + "ms (likely IME chunk-split — see #106)");
                     }
+                    // bug #106 follow-up: some IMEs split one clipboard paste
+                    // into multiple commitText chunks (often newline-only tails)
+                    // that arrive within a few ms. If chunk-1 matched paste
+                    // heuristics but chunk-2 didn't, routing diverges and the
+                    // payload gets mixed between atomic paste + per-char path.
+                    // Keep chunk-2 on the paste rail when it immediately
+                    // follows a paste chunk in the burst window.
+                    if (!isPaste
+                        && mPrevCommitWasPaste
+                        && delta >= 0
+                        && delta < COMMIT_BURST_WINDOW_MS) {
+                        isPaste = true;
+                        Log.d("ShellyIME", "commit BURST-COALESCE -> paste len=" + commitStr.length());
+                    }
                     if (isPaste && mEmulator != null) {
                         Log.d("ShellyIME", "commit-as-paste len=" + commitStr.length() + " nl=" + hasNewline + " delta=" + delta + "ms");
                         TerminalView.this.pasteViaEmulator(commitStr);
+                        mPrevCommitWasPaste = true;
                     } else {
                         Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " text=\"" + commitStr + "\" delta=" + delta + "ms");
                         sendToPtyAndShadow(commitStr);
+                        mPrevCommitWasPaste = false;
                     }
                 }
 

@@ -56,7 +56,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
     setBusy(true);
     const result = await addWorktree(repoPath, branch.trim(), agent);
     setBusy(false);
-    if (result.ok) {
+    if (result.ok === true) {
       onClose();
     } else {
       Alert.alert('Create worktree failed', result.error);

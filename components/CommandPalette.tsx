@@ -22,6 +22,7 @@ import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { buildTmuxListCommand } from '@/lib/session-restore';
 import { useTranslation } from '@/lib/i18n';
 import { suggestFeatures } from '@/lib/feature-catalog';
+import { applyThemePreset, type ThemePresetId } from '@/lib/theme-presets';
 
 // ---------------------------------------------------------------------------
 // Recent actions — module-level so they persist across palette open/close
@@ -58,6 +59,10 @@ export function CommandPalette() {
   const [query, setQuery] = useState('');
   const { t } = useTranslation();
   const addPane = useAddPane();
+  const applyPalette = useCallback((id: ThemePresetId) => {
+    applyThemePreset(id);
+    useSettingsStore.getState().updateSettings({ uiFont: id });
+  }, []);
 
   const actions = useMemo((): PaletteAction[] => {
     const list: PaletteAction[] = [
@@ -141,28 +146,14 @@ export function CommandPalette() {
       { id: 'pane-add-preview', label: 'Pane: Add Preview', hint: 'split current layout', icon: 'preview', category: 'pane',
         onExecute: () => { addPane('preview'); close(); } },
 
-      // Font preset — flips uiFont in settings, RootLayout's effect
-      // picks the change up and calls applyThemePreset automatically.
-      { id: 'font-shelly', label: 'Font: Shelly', hint: 'mock-faithful palette', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'shelly' }); close(); } },
-      { id: 'font-silkscreen', label: 'Font: Silk', hint: 'previous green palette', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'silkscreen' }); close(); } },
-      { id: 'font-pixel', label: 'Font: 8bit', hint: 'PressStart2P', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'pixel' }); close(); } },
-      { id: 'font-mono', label: 'Font: Mono', hint: 'system monospace', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'mono' }); close(); } },
-
-      // Theme presets — color swaps that keep Silkscreen as the font
-      { id: 'theme-default', label: 'Theme: Default (Shelly)', hint: 'reset to teal-on-black', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'shelly' }); close(); } },
-      { id: 'theme-dracula', label: 'Theme: Dracula', hint: 'purple accent', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'dracula' }); close(); } },
-      { id: 'theme-nord', label: 'Theme: Nord', hint: 'arctic blue', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'nord' }); close(); } },
-      { id: 'theme-gruvbox', label: 'Theme: Gruvbox', hint: 'retro amber', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'gruvbox' }); close(); } },
-      { id: 'theme-tokyo-night', label: 'Theme: Tokyo Night', hint: 'deep blue', icon: 'palette', category: 'action',
-        onExecute: () => { useSettingsStore.getState().updateSettings({ uiFont: 'tokyo-night' }); close(); } },
+      // Theme presets — intentionally narrowed to the three maintained
+      // black-background UI directions.
+      { id: 'theme-studio', label: 'Theme: Studio', hint: 'SUPERSET-style neon black', icon: 'palette', category: 'action',
+        onExecute: () => { applyPalette('shelly'); close(); } },
+      { id: 'theme-blackline', label: 'Theme: Blackline', hint: 'WezTerm-style blue black', icon: 'palette', category: 'action',
+        onExecute: () => { applyPalette('blackline'); close(); } },
+      { id: 'theme-modal', label: 'Theme: Modal', hint: 'NeoVim-style green black', icon: 'palette', category: 'action',
+        onExecute: () => { applyPalette('modal'); close(); } },
 
       // CRT toggle
       { id: 'crt-toggle', label: 'CRT: Toggle', hint: 'scanline + bloom overlay', icon: 'tv', category: 'action',
@@ -227,7 +218,7 @@ export function CommandPalette() {
     });
 
     return list;
-  }, [snippets, isMultiPane, layout.isWide, addPane, close, t, enableMultiPane, disableMultiPane]);
+  }, [snippets, isMultiPane, layout.isWide, addPane, close, t, enableMultiPane, disableMultiPane, applyPalette]);
 
   const searchResults = useMemo(() => {
     if (!query.trim()) return null; // null = show sectioned view

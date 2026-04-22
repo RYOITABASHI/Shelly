@@ -12,16 +12,26 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
+import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
-import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { useSettingsStore } from '@/store/settings-store';
+import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+
+// Calvin S figlet-style 3-line ASCII logo for SHELLY.
+// Uses box-drawing chars — requires JetBrainsMono_400Regular (loaded in _layout.tsx).
+const SHELLY_LOGO =
+  '╔═╗╦ ╦╔═╗╦  ╦  ╦ ╦\n' +
+  '╚═╗╠═╣║╣ ║  ║  ╚╦╝\n' +
+  '╚═╝╩ ╩╚═╝╩═╝╩═╝ ╩ ';
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const barBg = usePanelBackground(C.bgSidebar);
-
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
   // events go nowhere until the user taps the terminal. Route close through
@@ -34,6 +44,10 @@ export function AgentBar() {
 
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
+      <View style={styles.logoMark} pointerEvents="none">
+        <Text style={styles.asciiLogo}>{SHELLY_LOGO}</Text>
+      </View>
+
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
           Replaces the previous split into two adjacent buttons (dashboard
           + plus) which users kept confusing with each other. */}
@@ -68,6 +82,15 @@ export function AgentBar() {
         </Pressable>
         <Pressable
           style={styles.iconBtn}
+          onPress={() => setLogsOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Show recent logs"
+        >
+          <MaterialIcons name="history" size={16} color={C.text2} />
+        </Pressable>
+        <Pressable
+          style={styles.iconBtn}
           onPress={() => setSettingsOpen((v) => !v)}
           hitSlop={8}
         >
@@ -76,6 +99,7 @@ export function AgentBar() {
       </View>
 
       <SettingsDropdown visible={settingsOpen} onClose={closeWithRefocus(setSettingsOpen)} />
+      <RecentLogsModal visible={logsOpen} onClose={closeWithRefocus(setLogsOpen)} />
       <LayoutAddSheet visible={sheetVisible} onClose={closeWithRefocus(setSheetVisible)} />
     </View>
   );
@@ -91,6 +115,21 @@ const styles = StyleSheet.create({
     borderBottomWidth: S.borderWidth,
     borderBottomColor: C.border,
     backgroundColor: C.bgSidebar,
+  },
+  logoMark: {
+    height: 28,
+    marginLeft: 6,
+    marginRight: 2,
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+  },
+  asciiLogo: {
+    color: C.accent,
+    fontFamily: 'JetBrainsMono_400Regular',
+    fontSize: 5.5,
+    lineHeight: 7,
+    includeFontPadding: false,
+    letterSpacing: 0,
   },
   addBtn: {
     width: 32,

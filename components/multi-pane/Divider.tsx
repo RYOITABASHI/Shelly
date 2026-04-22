@@ -138,7 +138,10 @@ export function Divider(props: DividerProps) {
     // neon teal during drag. Thickness also grows 1 → 2px for a
     // subtle "I caught you" feel.
     opacity: 0.18 + 0.7 * active.value,
-    transform: [{ scaleX: isVertical ? 1 + active.value : 1 }, { scaleY: isVertical ? 1 : 1 + active.value }],
+    transform: [
+      { scaleX: isVertical ? 1 + active.value : 1 },
+      { scaleY: isVertical ? 1 : 1 + active.value },
+    ] as any,
   }));
 
   const gripAnimStyle = useAnimatedStyle(() => ({

@@ -385,8 +385,7 @@ function DisplaySection() {
         </View>
       </Row>
 
-      {/* UI font family */}
-      <FontFamilyRow />
+      {/* UI visual preset */}
       <ThemeRow />
     </Section>
   );
@@ -394,6 +393,8 @@ function DisplaySection() {
 
 type UiFontId =
   | 'shelly'
+  | 'blackline'
+  | 'modal'
   | 'silkscreen'
   | 'pixel'
   | 'mono'
@@ -407,68 +408,13 @@ type UiFontId =
   | 'everforest'
   | 'one-dark';
 
-function FontFamilyRow() {
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
-  const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const options: Array<{ value: UiFontId; label: string }> = [
-    { value: 'shelly',     label: 'Shelly' },
-    { value: 'silkscreen', label: 'Silk' },
-    { value: 'pixel',      label: '8bit' },
-    { value: 'mono',       label: 'Mono' },
-  ];
-  return (
-    <Row label="Font">
-      <View style={styles.segGroup}>
-        {options.map((opt) => {
-          const active = uiFont === opt.value;
-          return (
-            <Pressable
-              key={opt.value}
-              style={[styles.segBtn, active && styles.segBtnActive]}
-              onPress={() => {
-                // Apply synchronously so the live `colors` object + Text
-                // monkey-patch flip BEFORE React re-renders from the
-                // settings-store update. Without this explicit call we
-                // relied on RootLayout's useEffect, which can race with
-                // the AsyncStorage write in updateSettings and leaves the
-                // UI stuck on the previous font (bug #28/#54).
-                applyThemePreset(opt.value);
-                updateSettings({ uiFont: opt.value });
-              }}
-              hitSlop={4}
-            >
-              <Text style={[styles.segLabel, active && styles.segLabelActive]}>
-                {opt.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </Row>
-  );
-}
-
 function ThemeRow() {
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  // Include the default (shelly) preset as the leftmost tile so users have
-  // an obvious way to revert after experimenting with Dracula / Nord / etc.
-  // 'shelly' is shared with FontFamilyRow — picking it here resets both the
-  // palette and the font to Shelly defaults in one tap.
   const options: Array<{ value: UiFontId; label: string }> = [
-    { value: 'shelly',           label: 'Default' },
-    { value: 'silkscreen',       label: 'Silk' },
-    { value: 'pixel',            label: '8bit' },
-    { value: 'mono',             label: 'Mono' },
-    { value: 'dracula',          label: 'Dracula' },
-    { value: 'nord',             label: 'Nord' },
-    { value: 'gruvbox',          label: 'Gruvbox' },
-    { value: 'tokyo-night',      label: 'Tokyo' },
-    { value: 'catppuccin-mocha', label: 'Catppuccin' },
-    { value: 'rose-pine',        label: 'Rose Pine' },
-    { value: 'kanagawa',         label: 'Kanagawa' },
-    { value: 'everforest',       label: 'Everforest' },
-    { value: 'one-dark',         label: 'One Dark' },
+    { value: 'shelly',    label: 'Studio' },
+    { value: 'blackline', label: 'Blackline' },
+    { value: 'modal',     label: 'Modal' },
   ];
   return (
     <Row label="Theme">
@@ -480,8 +426,8 @@ function ThemeRow() {
               key={opt.value}
               style={[styles.segBtn, active && styles.segBtnActive]}
               onPress={() => {
-                // See FontFamilyRow — apply synchronously to avoid the
-                // AsyncStorage race that caused bug #28/#54.
+                // Apply synchronously to avoid the AsyncStorage race that
+                // caused bug #28/#54.
                 applyThemePreset(opt.value);
                 updateSettings({ uiFont: opt.value });
               }}

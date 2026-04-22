@@ -919,7 +919,7 @@ coreutils: /proc/self/net/tcp6: Permission denied
 
 ---
 
-### 🟢 bug #117 — claude-code 2.1.113+ (Bun SEA) を Android bionic で動かす (Path C で起動確認 2026-04-21)
+### 🟢 bug #117 — claude-code 2.1.113+ (Bun SEA) を Android bionic で動かす (Path C-bis で end-to-end 成立 2026-04-21)
 
 **背景**: Anthropic が 2.1.113 で `cli.js` 純 JS → Bun SEA (Single Executable Application) バイナリに切り替え。Top-level `bin/claude.exe` は 500-byte の shell stub、実本体は `optionalDependencies` 経由で `@anthropic-ai/claude-code-linux-arm64-musl` (220 MB, ET_EXEC aarch64 musl) or glibc 版が配布される。2.1.112 pin が現状の回避策だが、以下の問題:
 - Shelly ユーザーが `npm i -g @anthropic-ai/claude-code@latest` を踏むたび死ぬ (2026-04-21 実際に発生)
@@ -1061,22 +1061,51 @@ claude() {
 - **Path G: `ldconfig` フック** — musl の `ldconfig` 相当で名前解決ファイルパスを注入できないか? 未調査
 - **Path H: `getaddrinfo` 自体を shim で完全置き換え** — musl の getaddrinfo は libc 内部呼び出しだが、dynamic 版なら dlsym で介入可能? 未検証
 
-**次セッション (PC 環境) でやること**:
-1. Alpine musl source を clone
-2. `src/network/resolvconf.c` の PATH を `MUSL_RESOLV_CONF_PATH` マクロに置換
-3. musl cross-compile (aarch64-linux-musl target) で libc.musl-aarch64.so.1 を build
-4. Shelly の CI workflow に musl build ステップを追加 (or GitHub Actions で事前ビルドして Release artifact 化)
-5. LibExtractor + HomeInitializer に組込み
-6. 実機で対話モード最終確認
+#### 2026-04-21 Path C-bis 実機検証 ✅ end-to-end 成立
+
+**実施 (Windows PC + WSL2 Ubuntu 24.04 + musl.cc cross toolchain)**:
+1. `aarch64-linux-musl-cross.tgz` (104 MB, gcc 11.2.1) を musl.cc から取得
+2. musl v1.2.4 source を clone (Alpine 3.19 の ld-musl とバイナリ互換)
+3. `src/network/resolvconf.c` の `"/etc/resolv.conf"` リテラルを `"/data/data/com.termux/files/home/.shelly-ssl/resolv.conf"` に直接置換 (PoC は Termux HOME に焼き込み。CI build では Shelly path に差し替える)
+4. `CC=aarch64-linux-musl-gcc ./configure --target=aarch64-linux-musl && make` → `lib/libc.so` (915 KB, stripped 619 KB)
+5. ELF 確認: `Type: DYN (Shared object file), Machine: AArch64` ✅
+6. `adb push` で `/sdcard/Download/libc.musl-aarch64.so.1` に配置
+7. Termux (u0_a488, bionic 環境) の `bun-sea-test/alpine/lib/ld-musl-aarch64.so.1` を置換
+8. `~/.shelly-ssl/resolv.conf` に `nameserver 8.8.8.8; nameserver 1.1.1.1` を書き込み
+9. `env -i HOME=$HOME PATH=$PATH TERM=xterm-256color ./alpine/lib/ld-musl-aarch64.so.1 ./musl/package/claude --print "reply with exactly the two letters OK and nothing else"`
+
+**結果**: `OK` が api.anthropic.com から返る (exit code 0, timeout なし) ✅
+
+**補足知見**:
+- CFLAGS 経由の `-DMUSL_RESOLV_CONF_PATH=\"...\"` は shell→make→shell の quote 剥がしで死ぬ (gcc は裸の `/data/...` をマクロ値として受け取る)。**source を直接 sed で置換する方式が確実**。
+- musl.cc の pre-built toolchain (musl 1.2.4 ベース) で生成した libc.so は Alpine 3.19 の ld-musl と完全互換。PoC 段階では Alpine apk 同梱も不要 (ただし Shelly 本番 APK では他の依存回避のため自前ビルドを CI で焼く)。
+- `alpine/lib/ld-musl-aarch64.so.1` と `alpine/lib/libc.musl-aarch64.so.1` は同一ファイル (symlink)。置換は ld-musl 側だけで十分。
+
+**成果物 (PC, uncommitted)**:
+- `C:\Users\ryoxr\shelly-musl-poc\libc.musl-aarch64.so.1` (633320 bytes, md5 `38b3db149db03615733ac47be7688ce2`, sha256 `97ccb63e8d7a96ef197b9dbaf16c674f300695d6fb9525c903364772003a6e9c`)
+- `C:\Users\ryoxr\shelly-musl-poc\resolvconf.patched.c`
+- `C:\Users\ryoxr\shelly-musl-poc\test-path-c.log`
+
+**次のステップ (Shelly 本体への取り込み, v0.1.1 目玉機能化)**:
+1. `.github/workflows/build-android.yml` に musl cross-build step を追加
+   - alpine:3.19 + qemu-user-static OR musl.cc toolchain on ubuntu-latest
+   - path 文字列を **Shelly path (`/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf`)** に切替
+2. `npm pack @anthropic-ai/claude-code-linux-arm64-musl@latest` を CI に追加 → `libclaude.so` 生成
+3. LibExtractor に `libclaude.so`・`libld_musl_shelly.so` を追加
+4. `HomeInitializer.kt` の `claude()` bash 関数を `_run_musl` 相当に書き換え (BASHRC_VERSION 43)
+5. HomeInitializer で `$HOME/.shelly-ssl/resolv.conf` を初期生成 (nameserver 8.8.8.8 / 1.1.1.1)
+6. APK install → Shelly 実機で `claude --print` 完走確認
+7. 毎日 cron で claude-code 最新版を pull → 24 時間以内に Anthropic リリースに追従する自動ビルド
 
 #### 残る未検証項目
 1. ~~musl-gcc で shim ビルド~~ → 完了、**LD_PRELOAD 方式は不可** と判明
-2. **custom musl libc build** (PC 環境で実施予定)
-3. **Shelly 実機 (非 Termux)** で musl binary の dlopen が `libexec_wrapper.so` と干渉しないか (Termux では symbol 不在で弾かれる挙動あり)
+2. ~~custom musl libc build~~ → **完了、end-to-end 成立** ✅
+3. **Shelly 実機 (非 Termux)** で musl binary の dlopen が `libexec_wrapper.so` と干渉しないか (Termux では `env -i` で回避したが、Shelly 経由では `libexec_wrapper` が必ず LD_PRELOAD される)
 4. **JIT / signal handler** で crash しないか — 長時間対話試験
 5. **Play Store 配布時の execmem policy** — app_data からの実行可能 mmap は neverallow policy に触れる可能性、F-Droid/GitHub Releases なら問題なし
+6. **APK サイズ +221 MB (596 MB → 817 MB)** — OTA / 初回 DL UX への影響、optional download UI は v0.1.2 以降
 
-**優先度**: P2 (v0.1.0 後の v0.1.1 目玉機能候補、Path C-bis (custom musl build) で実装可能と見込み)
+**優先度**: P1 (v0.1.1 目玉機能「Android で最新 Claude Code を動かせる唯一のアプリ」)
 
 **関連**:
 - [#50270 claude-code 2.1.113+ broken on Termux](https://github.com/anthropics/claude-code/issues/50270)
@@ -1161,6 +1190,7 @@ claude() {
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
 - **2026-04-16**: v0.1.0 リリース前最終スイープ。Session A/B/C 並列実行で bug #68/#69/#70/#73/#74/#76/#91/#92/#93/#94/#95/#97 を修正。44 orphan files (~300 KB) + chelly/ + components/chat/ + use-ai-dispatch.ts を削除。README を 3 エージェント並列レビュー + 校正 + 校正で磨き上げ。外部 4 LLM (Claude/Perplexity/GPT/Gemini) のレビューを受けて権限説明独立節追加、"only" hedge 全箇所適用、paste エッジケース 3 件 + Play Store SAF を P3 登録、Zustand ストア一覧を CLAUDE.md に図示。
 - **2026-04-16**: v0.1.0 Wave L 実機検証セッション。Codex CLI を動かすために Alpine rootfs + proot wrapper を導入したが実機で複数の根本問題が顕在化。**bug #91** (ペースト改行分割、P0)、**bug #92** (/sdcard noexec/read 拒否、P0)、**bug #93** (`bash` コマンドが PATH 外、P1)、**bug #94** (ペースト経路設計がバラバラで同種バグが繰り返し発生、P0 調査)、**bug #95** (Wave L の codex.js sed patch が post-install 内で走らない、P1) を登録。bug #76 を Wave L 検証結果で更新。本日 v0.1.0 を出すのは **bug #91 を根本修正してから** という方針に変更。codex は v0.1.1 送り (claude + gemini の 2 本で v0.1.0 を出荷予定)。
+- **2026-04-21**: bug #117 Path C-bis **end-to-end 成立** ✅。Windows PC + WSL2 Ubuntu 24.04 + musl.cc `aarch64-linux-musl-gcc` で musl v1.2.4 を `src/network/resolvconf.c` patch 後に cross-build (633 KB stripped)。Termux 実機で `./ld-musl ./claude --print "reply with OK"` が `OK` を api.anthropic.com から取得。世界初「Android ネイティブで最新 Claude Code (2.1.116) 動作」実機確認。次は Shelly CI への取り込み (musl build step + LibExtractor + HomeInitializer BASHRC_VERSION 43) で v0.1.1 目玉機能化。
 
 ---
 
