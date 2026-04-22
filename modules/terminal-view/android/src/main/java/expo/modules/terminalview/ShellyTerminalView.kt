@@ -520,9 +520,16 @@ class ShellyTerminalView(
     }
 
     fun focusCommand() {
-        terminalView.requestFocus()
+        terminalView.isFocusable = true
+        terminalView.isFocusableInTouchMode = true
+        terminalView.requestFocusFromTouch()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.restartInput(terminalView)
         imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+        terminalView.post {
+            imm?.restartInput(terminalView)
+            imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+        }
     }
 
     fun scrollToRowCommand(row: Int) {
@@ -572,9 +579,14 @@ class ShellyTerminalView(
         val width = terminalView.width
         val height = terminalView.height
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.restartInput(terminalView)
         val imeShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
         val sid = currentSessionId ?: ""
         Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} imeShow=$imeShown prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
+        terminalView.post {
+            val retryShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
+            Log.i(TAG, "onSingleTapUp.retry sess=$sid focused=${terminalView.isFocused} imeShow=$retryShown viewHash=${System.identityHashCode(terminalView)}")
+        }
         onFocusRequested(mapOf("sessionId" to sid))
     }
 
