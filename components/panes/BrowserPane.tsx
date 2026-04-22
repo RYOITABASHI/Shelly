@@ -146,7 +146,7 @@ function normalizeUrl(raw: string): string {
 
 export interface BrowserPaneProps {
   initialUrl?: string;
-  /** When false the pane is hidden — pause media to release codec handles. */
+  /** When false the pane is hidden but kept mounted to preserve page state. */
   visible?: boolean;
 }
 
@@ -159,7 +159,7 @@ const DESKTOP_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-export default function BrowserPane({ initialUrl = 'about:blank', visible = true }: BrowserPaneProps) {
+export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneProps) {
   const theme = useTheme();
   const { background, surface, foreground, muted, accent, border } = theme.colors;
   const paneId = useContext(PaneIdContext);
@@ -178,27 +178,6 @@ export default function BrowserPane({ initialUrl = 'about:blank', visible = true
     });
     return () => { showSub.remove(); hideSub.remove(); };
   }, []);
-
-  // Pause/resume media when the pane is hidden/shown. This releases codec
-  // handles so YouTube doesn't get stuck when the user switches panes.
-  useEffect(() => {
-    if (!webviewRef.current) return;
-    if (visible) {
-      // Resume — nudge any paused videos back to life
-      webviewRef.current.injectJavaScript(`
-        document.querySelectorAll('video').forEach(v => {
-          if (v.dataset.shellyPaused === '1') { v.play().catch(()=>{}); delete v.dataset.shellyPaused; }
-        }); true;
-      `);
-    } else {
-      // Pause all playing videos and mark them so we can resume later
-      webviewRef.current.injectJavaScript(`
-        document.querySelectorAll('video').forEach(v => {
-          if (!v.paused) { v.pause(); v.dataset.shellyPaused = '1'; }
-        }); true;
-      `);
-    }
-  }, [visible]);
 
   // Fullscreen bridge: when the WebView posts 'shelly:fs:on' we maximize
   // this pane, force landscape orientation, and hide the system chrome so
