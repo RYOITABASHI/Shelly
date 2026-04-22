@@ -14,7 +14,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
 import { useBrowserStore, PRESET_BOOKMARKS } from '@/store/browser-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
-import { PaneIdContext } from '@/components/multi-pane/PaneSlot';
+import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -163,8 +163,13 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const theme = useTheme();
   const { background, surface, foreground, muted, accent, border } = theme.colors;
   const paneId = useContext(PaneIdContext);
+  const paneMetrics = useContext(MultiPaneContext);
   const webviewRef = useRef<WebView>(null);
   const [desktopMode, setDesktopMode] = useState(false);
+  const paneWidth = paneMetrics?.paneWidth ?? 0;
+  const paneHeight = paneMetrics?.paneHeight ?? 0;
+  const compactChrome = (paneWidth > 0 && paneWidth < 430) || (paneHeight > 0 && paneHeight < 380);
+  const tinyChrome = (paneWidth > 0 && paneWidth < 320) || (paneHeight > 0 && paneHeight < 300);
 
   // Keyboard height tracking — same pattern as TerminalPane
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -335,26 +340,26 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       style={[styles.root, { backgroundColor: C.bgDeep, paddingBottom: keyboardHeight }]}
     >
       {/* URL bar */}
-      <View style={styles.toolbar}>
+      <View style={[styles.toolbar, compactChrome && styles.toolbarCompact]}>
         <TouchableOpacity
           onPress={handleBack}
           disabled={!canGoBack}
-          style={[styles.navBtn, !canGoBack && styles.navBtnDisabled]}
+          style={[styles.navBtn, compactChrome && styles.navBtnCompact, !canGoBack && styles.navBtnDisabled]}
         >
-          <MaterialIcons name="arrow-back" size={16} color={canGoBack ? C.text1 : C.border} />
+          <MaterialIcons name="arrow-back" size={compactChrome ? 13 : 16} color={canGoBack ? C.text1 : C.border} />
         </TouchableOpacity>
         <TouchableOpacity
           onPress={handleForward}
           disabled={!canGoForward}
-          style={[styles.navBtn, !canGoForward && styles.navBtnDisabled]}
+          style={[styles.navBtn, compactChrome && styles.navBtnCompact, !canGoForward && styles.navBtnDisabled]}
         >
-          <MaterialIcons name="arrow-forward" size={16} color={canGoForward ? C.text1 : C.border} />
+          <MaterialIcons name="arrow-forward" size={compactChrome ? 13 : 16} color={canGoForward ? C.text1 : C.border} />
         </TouchableOpacity>
-        <TouchableOpacity onPress={handleRefresh} style={styles.navBtn}>
-          <MaterialIcons name="refresh" size={16} color={C.text1} />
+        <TouchableOpacity onPress={handleRefresh} style={[styles.navBtn, compactChrome && styles.navBtnCompact]}>
+          <MaterialIcons name="refresh" size={compactChrome ? 13 : 16} color={C.text1} />
         </TouchableOpacity>
         <TextInput
-          style={styles.urlInput}
+          style={[styles.urlInput, compactChrome && styles.urlInputCompact]}
           value={inputUrl}
           onChangeText={setInputUrl}
           onSubmitEditing={handleSubmit}
@@ -369,79 +374,85 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
         {inputUrl.length > 0 && (
           <TouchableOpacity
             onPress={() => setInputUrl('')}
-            style={styles.navBtn}
+            style={[styles.navBtn, compactChrome && styles.navBtnCompact]}
           >
-            <MaterialIcons name="close" size={14} color="#6B7280" />
+            <MaterialIcons name="close" size={compactChrome ? 12 : 14} color="#6B7280" />
           </TouchableOpacity>
         )}
         <TouchableOpacity
           onPress={() => setDesktopMode((v) => !v)}
           style={[
             styles.navBtn,
+            compactChrome && styles.navBtnCompact,
             desktopMode && { backgroundColor: withAlpha(C.accent, 0.12) },
           ]}
           accessibilityLabel={desktopMode ? 'Switch to mobile view' : 'Switch to desktop view'}
         >
           <MaterialIcons
             name={desktopMode ? 'desktop-windows' : 'smartphone'}
-            size={14}
+            size={compactChrome ? 12 : 14}
             color={desktopMode ? C.accent : C.text2}
           />
         </TouchableOpacity>
       </View>
 
       {/* Bookmark tabs — tab style matching mock */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.bookmarksBar}
-        contentContainerStyle={styles.bookmarksContent}
-      >
-        {bookmarks.map((bm, idx) => {
-          const isActive = idx === activeBookmarkIdx;
-          const isPreset = idx < PRESET_BOOKMARKS.length;
-          // Preset icons use their brand color; user bookmarks follow theme
-          const iconColor = bm.color ?? (isActive ? C.accent : C.text2);
-          return (
-            <TouchableOpacity
-              key={bm.url}
-              style={[
-                styles.bookmarkTab,
-                isActive && styles.bookmarkTabActive,
-              ]}
-              onPress={() => handleBookmarkTap(bm.url, idx)}
-            >
-              <MaterialIcons
-                name={bm.icon as any}
-                size={12}
-                color={iconColor}
-              />
-              <Text
+      {!tinyChrome && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={[styles.bookmarksBar, compactChrome && styles.bookmarksBarCompact]}
+          contentContainerStyle={[styles.bookmarksContent, compactChrome && styles.bookmarksContentCompact]}
+        >
+          {bookmarks.map((bm, idx) => {
+            const isActive = idx === activeBookmarkIdx;
+            const isPreset = idx < PRESET_BOOKMARKS.length;
+            // Preset icons use their brand color; user bookmarks follow theme
+            const iconColor = bm.color ?? (isActive ? C.accent : C.text2);
+            return (
+              <TouchableOpacity
+                key={bm.url}
                 style={[
-                  styles.bookmarkLabel,
-                  isActive && styles.bookmarkLabelActive,
+                  styles.bookmarkTab,
+                  compactChrome && styles.bookmarkTabCompact,
+                  isActive && styles.bookmarkTabActive,
                 ]}
-                numberOfLines={1}
+                onPress={() => handleBookmarkTap(bm.url, idx)}
               >
-                {bm.label.toUpperCase()}
-              </Text>
-              {isActive && !isPreset && (
-                <TouchableOpacity
-                  hitSlop={8}
-                  style={styles.bookmarkClose}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    removeBookmark(bm.url);
-                    setActiveBookmarkIdx(0);
-                  }}
-                >
-                  <MaterialIcons name="close" size={10} color="#6B7280" />
-                </TouchableOpacity>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+                <MaterialIcons
+                  name={bm.icon as any}
+                  size={compactChrome ? 11 : 12}
+                  color={iconColor}
+                />
+                {!compactChrome && (
+                  <Text
+                    style={[
+                      styles.bookmarkLabel,
+                      isActive && styles.bookmarkLabelActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {bm.label.toUpperCase()}
+                  </Text>
+                )}
+                {isActive && !isPreset && !compactChrome && (
+                  <TouchableOpacity
+                    hitSlop={8}
+                    style={styles.bookmarkClose}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      removeBookmark(bm.url);
+                      setActiveBookmarkIdx(0);
+                    }}
+                  >
+                    <MaterialIcons name="close" size={10} color="#6B7280" />
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      )}
 
       {/* WebView */}
       {currentUrl === 'about:blank' ? (
@@ -457,6 +468,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           ref={webviewRef}
           source={{ uri: currentUrl }}
           style={styles.webview}
+          textZoom={compactChrome ? 85 : 100}
           userAgent={desktopMode ? DESKTOP_UA : MOBILE_UA}
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
@@ -483,10 +495,12 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       )}
 
       {/* Bottom bar */}
-      <PaneInputBar
-        placeholder="Search or enter URL..."
-        onSubmit={handleBottomBarSubmit}
-      />
+      {!compactChrome && (
+        <PaneInputBar
+          placeholder="Search or enter URL..."
+          onSubmit={handleBottomBarSubmit}
+        />
+      )}
     </View>
   );
 }
@@ -509,12 +523,22 @@ const styles = StyleSheet.create({
     backgroundColor: C.bgSurface,
     gap: 4,
   },
+  toolbarCompact: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    gap: 2,
+  },
   navBtn: {
     width: 28,
     height: 28,
     borderRadius: 4,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  navBtnCompact: {
+    width: 22,
+    height: 22,
+    borderRadius: 3,
   },
   navBtnDisabled: {
     opacity: 0.35,
@@ -529,6 +553,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: C.text1,
   },
+  urlInputCompact: {
+    height: 22,
+    borderRadius: 3,
+    paddingHorizontal: 6,
+    fontSize: 9,
+  },
   bookmarksBar: {
     height: 32,
     borderBottomWidth: 1,
@@ -536,12 +566,20 @@ const styles = StyleSheet.create({
     backgroundColor: C.bgSidebar,
     flexGrow: 0,
   },
+  bookmarksBarCompact: {
+    height: 24,
+  },
   bookmarksContent: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 6,
     gap: 2,
     height: 32,
+  },
+  bookmarksContentCompact: {
+    height: 24,
+    paddingHorizontal: 4,
+    gap: 1,
   },
   bookmarkTab: {
     flexDirection: 'row',
@@ -551,6 +589,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 4,
     backgroundColor: 'transparent',
+  },
+  bookmarkTabCompact: {
+    width: 24,
+    height: 20,
+    justifyContent: 'center',
+    paddingHorizontal: 0,
+    gap: 0,
   },
   bookmarkTabActive: {
     backgroundColor: C.border,
