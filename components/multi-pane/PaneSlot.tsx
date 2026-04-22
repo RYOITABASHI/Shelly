@@ -65,6 +65,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const { bindAgent } = usePaneStore();
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const { setFocusedPane } = usePaneStore();
+  const isFocusedPane = focusedPaneId === leafId;
   // Pane's own terminal session id. Read from the MultiPane slot matching
   // `leafId`, NOT from `useTerminalStore.activeSessionId` (which is global
   // and cross-contaminates when another pane is focused).
@@ -147,7 +148,11 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
 
   return (
     <View
-      style={[styles.pane, { backgroundColor: paneBg }]}
+      style={[
+        styles.pane,
+        { backgroundColor: paneBg },
+        isFocusedPane && styles.paneFocused,
+      ]}
       onTouchStart={handleFocusPane}
       onLayout={(e) => {
         setPaneWidth(e.nativeEvent.layout.width);
@@ -155,19 +160,41 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
       }}
     >
       {/* Pane header */}
-      <View style={[styles.header, { borderTopColor: agentColor, backgroundColor: headerBg }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            borderTopColor: isFocusedPane ? C.accent : agentColor,
+            borderBottomColor: isFocusedPane ? withAlpha(C.accent, 0.75) : C.border,
+            backgroundColor: isFocusedPane ? withAlpha(C.accent, 0.12) : headerBg,
+          },
+        ]}
+      >
+        {isFocusedPane && <View style={styles.focusRail} />}
         {/* Pane-type pill — tap to switch this pane between Terminal / AI /
             Browser / Markdown. The dropdown chevron makes it obvious that
             this is interactive. */}
         <Pressable
-          style={styles.paneTypePill}
+          style={[
+            styles.paneTypePill,
+            isFocusedPane && {
+              borderColor: withAlpha(C.accent, 0.8),
+              backgroundColor: withAlpha(C.accent, 0.18),
+            },
+          ]}
           onPress={() => setSelectorVisible(true)}
           hitSlop={6}
           accessibilityLabel="Change pane type"
         >
           <MaterialIcons name={entry.icon as any} size={11} color={C.accent} />
           {!isVeryNarrow && (
-            <Text style={styles.paneTypeLabel} numberOfLines={1}>
+            <Text
+              style={[
+                styles.paneTypeLabel,
+                isFocusedPane && styles.paneTypeLabelFocused,
+              ]}
+              numberOfLines={1}
+            >
               {paneTitle}
             </Text>
           )}
@@ -436,6 +463,12 @@ const styles = StyleSheet.create({
   pane: {
     flex: 1,
     backgroundColor: C.bgDeep,
+    borderWidth: 1,
+    borderColor: C.border,
+    overflow: 'hidden',
+  },
+  paneFocused: {
+    borderColor: withAlpha(C.accent, 0.9),
   },
   header: {
     height: S.paneHeaderHeight,
@@ -448,6 +481,13 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderRadius: R.paneHeader,
     gap: 4,
+  },
+  focusRail: {
+    alignSelf: 'stretch',
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: C.accent,
+    marginRight: 2,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -495,6 +535,9 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: F.paneHeader.weight,
     letterSpacing: 0.5,
+  },
+  paneTypeLabelFocused: {
+    color: C.accent,
   },
   headerTitle: {
     color: C.text1,

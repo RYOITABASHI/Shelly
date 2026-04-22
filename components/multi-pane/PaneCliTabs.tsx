@@ -138,9 +138,13 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
             onPress={() => switchTo(sess.id)}
             style={[
               styles.tab,
+              {
+                backgroundColor: withAlpha(hue, isActive ? 0.16 : 0.06),
+                borderColor: withAlpha(hue, isActive ? 0.75 : 0.32),
+              },
               isActive && {
-                backgroundColor: withAlpha(hue, 0.14),
-                borderColor: withAlpha(hue, 0.6),
+                borderBottomColor: hue,
+                borderBottomWidth: 2,
               },
             ]}
             hitSlop={4}
@@ -154,7 +158,7 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
             <Text
               style={[
                 styles.label,
-                { color: isActive ? C.text1 : C.text2 },
+                { color: isActive ? C.text1 : withAlpha(hue, 0.85) },
               ]}
               numberOfLines={1}
             >
@@ -169,7 +173,7 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
                 hitSlop={6}
                 style={styles.closeBtn}
               >
-                <MaterialIcons name="close" size={9} color={C.text2} />
+                <MaterialIcons name="close" size={9} color={withAlpha(hue, 0.9)} />
               </Pressable>
             )}
           </Pressable>
@@ -208,7 +212,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 3,
     borderWidth: 1,
-    borderColor: 'transparent',
+    minHeight: 20,
   },
   dot: {
     width: 4,
