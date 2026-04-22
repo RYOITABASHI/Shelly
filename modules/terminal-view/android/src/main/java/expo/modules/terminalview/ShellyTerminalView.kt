@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -12,6 +13,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import expo.modules.terminalview.gl.GLTerminalView
@@ -523,13 +525,33 @@ class ShellyTerminalView(
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
         terminalView.requestFocusFromTouch()
+        showKeyboardWhenServed("focusCommand")
+    }
+
+    private fun showKeyboardWhenServed(reason: String) {
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.restartInput(terminalView)
-        imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
-        terminalView.post {
-            imm?.restartInput(terminalView)
-            imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+            ?: return
+
+        fun attempt(delayMs: Long) {
+            terminalView.postDelayed({
+                terminalView.isFocusable = true
+                terminalView.isFocusableInTouchMode = true
+                terminalView.requestFocusFromTouch()
+                imm.restartInput(terminalView)
+                val shown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+                if (!shown && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
+                }
+                Log.i(TAG, "$reason.keyboardRetry delay=$delayMs focused=${terminalView.isFocused} shown=$shown viewHash=${System.identityHashCode(terminalView)}")
+            }, delayMs)
         }
+
+        // Samsung/One UI can reject showSoftInput immediately after
+        // requestFocus with "view is not served". Wait a few frames so
+        // ViewRootImpl has time to bind TerminalView as the served editor.
+        attempt(0)
+        attempt(50)
+        attempt(150)
     }
 
     fun scrollToRowCommand(row: Int) {
@@ -583,10 +605,7 @@ class ShellyTerminalView(
         val imeShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
         val sid = currentSessionId ?: ""
         Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} imeShow=$imeShown prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
-        terminalView.post {
-            val retryShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
-            Log.i(TAG, "onSingleTapUp.retry sess=$sid focused=${terminalView.isFocused} imeShow=$retryShown viewHash=${System.identityHashCode(terminalView)}")
-        }
+        showKeyboardWhenServed("onSingleTapUp")
         onFocusRequested(mapOf("sessionId" to sid))
     }
 

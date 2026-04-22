@@ -154,6 +154,12 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
             _exit(127);
         }
 
+        /* Make the PTY slave this session's controlling terminal.  Some
+         * Android builds will otherwise leave bash without a proper TTY
+         * owner, which can suppress the initial interactive prompt even
+         * though stdin/stdout are attached to the slave fd. */
+        ioctl(pts, TIOCSCTTY, 0);
+
         /* Redirect stdio */
         dup2(pts, STDIN_FILENO);
         dup2(pts, STDOUT_FILENO);
@@ -262,6 +268,7 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
             (char *)bashPath,
             "--rcfile",
             ".bashrc",
+            "-i",
             NULL
         };
         extern char **environ;
