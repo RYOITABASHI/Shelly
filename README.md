@@ -81,6 +81,10 @@ After that, open **Settings → API Keys** (or run `shelly config` from the term
 
 Shelly's headline advantage is simple: it keeps Claude Code and Codex current on-device and launches them inside the same native shell as your files.
 
+If Claude Code stopped working in Termux, proot, or another Android terminal setup, Shelly gives you a maintained on-device environment for running the latest AI coding CLIs.
+
+No fragile terminal stack. No WebView terminal crashes. No copy-paste-driven workflow.
+
 - **Managed updates** — the app downloads the latest CLI release, verifies it, smoke-tests it on-device, and hot-swaps it without an APK rebuild.
 - **Real execution path** — the CLIs run through Shelly's native terminal stack, not a remote bridge.
 - **Visible state** — the app can show recent terminal logs, so version drift and startup failures are easier to debug on the device itself.
@@ -543,7 +547,7 @@ The question isn't whether mobile development will happen. It's who builds the t
 
 I built Shelly because I wanted to use Claude Code on my phone, but Termux was too intimidating. So I made a chat interface that hides the terminal complexity while keeping its full power. Then I realized the real problem wasn't the terminal itself — it was the gap between the terminal and the AI. So I connected them. Then the WebView kept dying, so I directed the AI to replace the entire rendering layer with a native terminal emulator. Then I realized I needed a browser pane, a markdown viewer, a code preview, a sidebar, and a proper layout system to make it a real IDE.
 
-Over 100,000 lines later, I still don't hand-write code. I describe what I need, the AI builds it, and I decide whether it ships.
+I still don't hand-write code. I describe what I need, the AI builds it, and I decide whether it ships.
 
 The keyboard in the screenshots is **Nacre** — a split-layout Android IME I built (also through AI) to solve the input problem on mobile. Shelly handles the interface. Nacre handles the input. Together, they make phone-only development actually possible.
 
@@ -564,7 +568,7 @@ Shelly is v0.1.0. Here's what we know isn't perfect yet.
 - **Silkscreen is not monospaced** — `ls -la` columns may drift slightly; switch to the `Mono` font preset from the Command Palette if you need strict columns.
 - **Codex CLI runs through a rewritten `codex.js`** — `@openai/codex` ships a statically-linked ET_EXEC aarch64 binary that Android's `mmap_min_addr` refuses to load. Shelly replaces it with the `codex-termux` ET_DYN build and patches `codex.js` at post-install to spawn it through `/system/bin/linker64`. If `codex --version` fails, run `shelly doctor` or check `~/.shelly-cli/install.log` for the `[patch] codex.js OK` line. Tracked as bugs #76 and #96.
 - **`/sdcard` access requires MANAGE_EXTERNAL_STORAGE** — Android 11+ Scoped Storage blocks direct `open(2)` on `/sdcard` paths without this permission. Shelly asks for it on first launch; if you deny it, `source /sdcard/Download/foo.sh` will fail with `Permission denied`. Re-grant from system Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files.
-- **Claude Code login cannot complete inside Shelly** — Anthropic's OAuth flow tries a loopback callback that requires a registered browser handler (`xdg-open` / `termux-open`); under Shelly the flow falls back to manual code paste, and the paste step rejects with `OAuth error: status code 400` for reasons we haven't fully traced. Workaround: complete `/login` in another environment (Termux, PC, GitHub Codespaces, anywhere Claude Code already works), then transplant the credentials — details in [Bring your own credentials](#bring-your-own-credentials) below. This is an intentional scope limitation: first-run zero-setup authentication is the job of the sister project **Chelly**, not Shelly. Tracked as bug #102.
+- **Claude Code first-run OAuth requires credential transplant** — Anthropic's OAuth flow tries a loopback callback that requires a registered browser handler (`xdg-open` / `termux-open`); under Shelly the flow falls back to manual code paste, and the paste step rejects with `OAuth error: status code 400` for reasons we haven't fully traced. Workaround: complete `/login` in another environment (Termux, PC, GitHub Codespaces, anywhere Claude Code already works), then transplant the credentials — details in [Bring your own credentials](#bring-your-own-credentials) below. This is an intentional scope limitation: first-run zero-setup authentication is the job of the sister project **Chelly**, not Shelly. Tracked as bug #102.
 - **Gemini CLI `/auth` cannot complete inside Shelly either** — same pattern as Claude: gemini-cli tries to `spawn('xdg-open', [url])` and gets `EACCES`, and copying the OAuth URL into an external browser returns HTTP 400 from Google (the registered loopback port in the gemini-cli OAuth client doesn't match what the CLI picked). Workaround is identical: authenticate on another machine, then transplant `~/.gemini/` — see [Bring your own credentials](#bring-your-own-credentials). Tracked as bug #115.
 
 ### Bring your own credentials
