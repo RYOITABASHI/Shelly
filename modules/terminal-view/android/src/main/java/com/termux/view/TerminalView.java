@@ -467,6 +467,31 @@ public class TerminalView extends View {
             /** Whether the previous commitText chunk was routed through pasteViaEmulator(). */
             private boolean mPrevCommitWasPaste = false;
 
+            private boolean isPrintableAsciiOnly(String text) {
+                for (int i = 0; i < text.length(); i++) {
+                    char c = text.charAt(i);
+                    if (c < 0x20 || c > 0x7E) return false;
+                }
+                return true;
+            }
+
+            private boolean looksLikePasteChunk(String text) {
+                if (text.isEmpty()) return false;
+                if (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) return true;
+                if (text.length() >= 16) return true;
+                if (!isPrintableAsciiOnly(text)) return false;
+                if (text.length() < 4) return false;
+
+                boolean hasWhitespace = false;
+                boolean hasShellPunctuation = false;
+                for (int i = 0; i < text.length(); i++) {
+                    char c = text.charAt(i);
+                    if (Character.isWhitespace(c)) hasWhitespace = true;
+                    if ("./~^-_=:@<>".indexOf(c) >= 0) hasShellPunctuation = true;
+                }
+                return hasWhitespace && (hasShellPunctuation || text.length() >= 8);
+            }
+
             private void resetShadowAfterNewline(String text) {
                 // If the text that just flew to the PTY contained a newline,
                 // the bash line editor now owns the line state and our
@@ -562,8 +587,7 @@ public class TerminalView extends View {
                     // separate issue (IME deleteSurrounding SWALLOW window
                     // vs PTY prompt echo) that needs its own fix.
                     boolean hasNewline = commitStr.indexOf('\n') >= 0 || commitStr.indexOf('\r') >= 0;
-                    boolean isPaste = commitStr.length() > 1
-                        && (hasNewline || commitStr.length() >= 16);
+                    boolean isPaste = commitStr.length() > 1 && looksLikePasteChunk(commitStr);
                     // bug #106 diag: emit a burst marker when this commit lands
                     // within COMMIT_BURST_WINDOW_MS of the previous one. If we
                     // see commit-as-paste followed by commit-as-typed within

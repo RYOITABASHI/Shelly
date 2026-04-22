@@ -77,9 +77,21 @@ After that, open **Settings → API Keys** (or run `shelly config` from the term
 
 ---
 
+## Flagship Runtime
+
+Shelly's headline advantage is simple: it keeps Claude Code and Codex current on-device and launches them inside the same native shell as your files.
+
+- **Managed updates** — the app downloads the latest CLI release, verifies it, smoke-tests it on-device, and hot-swaps it without an APK rebuild.
+- **Real execution path** — the CLIs run through Shelly's native terminal stack, not a remote bridge.
+- **Visible state** — the app can show recent terminal logs, so version drift and startup failures are easier to debug on the device itself.
+
+This is the part that makes Shelly more than a terminal skin. It is the reason the app can ship fast-moving CLI tools on Android without turning the user into the update mechanism.
+
+---
+
 ## How is Shelly different?
 
-Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Replit runs in the cloud. Claude Code on desktop is desktop-only. To our knowledge, Shelly is the only tool that puts a native terminal and multi-agent AI side by side on your phone — with a browser pane, markdown viewer, code preview, sidebar, and agent bar all in one screen — and connects them so the AI reads your terminal output and edits your files with one tap.
+Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Replit runs in the cloud. Claude Code on desktop is desktop-only. To our knowledge, Shelly is the only tool that puts a native terminal and multi-agent AI side by side on your phone — with a browser pane, markdown viewer, code preview, sidebar, and agent bar all in one screen — and keeps Claude Code and Codex current on-device so they run in the same shell as your files.
 
 ---
 
@@ -97,7 +109,7 @@ Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Rep
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **5 pane types** | Terminal, AI, Browser (+ background audio), Markdown, Preview. Split up to 4 live panes freely. |
 | **Multi-agent AI** | Claude Code, Gemini, Cerebras, Groq, Perplexity, Codex, Local LLM. Auto-routed or `@mention`. |
-| **Latest Claude Code on Android** | The only Android app that runs claude-code 2.1.113+ (Bun SEA) natively via a Shelly-patched musl loader. No proot, no root. APK auto-bundles the newest release via nightly CI. |
+| **Latest Claude Code + Codex on Android** | The only Android app that keeps claude-code 2.1.113+ and codex-termux current on-device via a Shelly-managed runtime. No proot, no root. APK auto-bundles the newest release via nightly CI. |
 | **Shelly theme preset** | Mock-faithful teal-on-black palette with Silkscreen pixel font. Runtime swap — your shell survives the switch. |
 | **Voice input** | Speak your commands or AI prompts. VoiceChain ties speech to the same input router the keyboard uses. |
 | **CRT mode** | Scanlines + phosphor green + vignette. Retro 8-bit sounds. Pixel fonts. Just for fun. |
@@ -301,9 +313,7 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Claude / Gemini CLIs auto-installed on first launch (via npm) | ✅ shipping |
-| Claude Code 2.1.113+ (Bun SEA) on Android bionic via musl trampoline loader — only Android app to support latest claude-code natively (bug #117 Path C-bis) | ✅ shipping |
-| Codex CLI bundled (codex-termux ET_DYN binary, `codex.js` patched at first boot) | ✅ shipping (bugs #76, #96) |
-| Managed CLI runtime updater (`shelly runtime-update`) + `shelly doctor` diagnostics | ✅ shipping |
+| Claude Code 2.1.113+ (Bun SEA) + Codex CLI on Android bionic via musl trampoline loader / managed runtime updater — only Android app to keep both latest CLIs current natively (bug #117 Path C-bis, bugs #76/#96) | ✅ shipping |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked as bug #99 (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in v0.1.1 |
