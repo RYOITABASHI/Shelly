@@ -38,6 +38,8 @@
 #define LINKER64 "/system/bin/linker64"
 #define LOG_TAG "ShellyExecWrapper"
 
+extern char **environ;
+
 /* Check if file starts with ELF magic bytes (0x7f 'E' 'L' 'F') */
 static int is_elf(const char *path) {
     int fd = open(path, O_RDONLY);
@@ -52,8 +54,14 @@ static int is_elf(const char *path) {
 static const char *rewrite_path(const char *pathname) {
     if (!pathname) return NULL;
     if (strcmp(pathname, "/bin/sh") == 0) return "/system/bin/sh";
+    if (strcmp(pathname, "sh") == 0) return "/system/bin/sh";
     if (strcmp(pathname, "/usr/bin/env") == 0) return "/system/bin/env";
+    if (strcmp(pathname, "env") == 0) return "/system/bin/env";
     if (strcmp(pathname, "/bin/bash") == 0) {
+        const char *shell = getenv("SHELL");
+        if (shell && shell[0]) return shell;
+    }
+    if (strcmp(pathname, "bash") == 0) {
         const char *shell = getenv("SHELL");
         if (shell && shell[0]) return shell;
     }
@@ -177,4 +185,52 @@ int posix_spawn(pid_t *pid, const char *path,
     }
     free(new_argv);
     return ret;
+}
+
+int posix_spawnp(pid_t *pid, const char *file,
+                 const posix_spawn_file_actions_t *file_actions,
+                 const posix_spawnattr_t *attrp,
+                 char *const argv[], char *const envp[]) {
+    typedef int (*orig_t)(pid_t *, const char *,
+                          const posix_spawn_file_actions_t *,
+                          const posix_spawnattr_t *,
+                          char *const [], char *const []);
+    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    const char *rewritten = rewrite_path(file);
+
+    if (rewritten != file) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                            "rewrite spawnp path=%s -> %s", file, rewritten);
+        return posix_spawn(pid, rewritten, file_actions, attrp, argv, envp);
+    }
+
+    return orig(pid, file, file_actions, attrp, argv, envp);
+}
+
+int execvp(const char *file, char *const argv[]) {
+    typedef int (*orig_t)(const char *, char *const []);
+    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execvp");
+    const char *rewritten = rewrite_path(file);
+
+    if (rewritten != file) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                            "rewrite execvp path=%s -> %s", file, rewritten);
+        return execve(rewritten, argv, environ);
+    }
+
+    return orig(file, argv);
+}
+
+int execvpe(const char *file, char *const argv[], char *const envp[]) {
+    typedef int (*orig_t)(const char *, char *const [], char *const []);
+    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execvpe");
+    const char *rewritten = rewrite_path(file);
+
+    if (rewritten != file) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                            "rewrite execvpe path=%s -> %s", file, rewritten);
+        return execve(rewritten, argv, envp);
+    }
+
+    return orig(file, argv, envp);
 }

@@ -553,6 +553,7 @@ export default function TerminalScreen() {
     if (pw > 0 && pw < 480) return Math.max(10, adjusted - 1);
     return adjusted;
   })();
+  const terminalBottomInset = isConnected ? KEY_BAR_HEIGHT + 10 : 10;
 
   // Send text to terminal via native PTY
   const sendToTerminal = useCallback((text: string) => {
@@ -705,6 +706,7 @@ export default function TerminalScreen() {
               {
                 flex: showSplitPreview ? splitRatio : 1,
                 backgroundColor: terminalColorScheme.background,
+                paddingBottom: terminalBottomInset,
               },
             ]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
@@ -972,7 +974,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, position: 'relative' },
   terminalBody: {
     flex: 1,
-    paddingBottom: KEY_BAR_HEIGHT,
+    paddingBottom: KEY_BAR_HEIGHT + 10,
   },
   keyBarDock: {
     position: 'absolute',

@@ -2737,8 +2737,10 @@ public final class TerminalEmulator {
         // exactly where we intend.
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive();
+        boolean multiLine = text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0;
         if (bracketedMode) {
-            if (isAlternateBufferActive() || isMouseTrackingActive()) {
+            if (tuiMode || multiLine) {
                 // TUI/CLI app: use the standard bracketed-paste protocol.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
