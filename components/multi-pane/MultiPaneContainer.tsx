@@ -15,6 +15,7 @@ import {
   StyleSheet,
   Keyboard,
   Platform,
+  Dimensions,
   type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -166,6 +167,29 @@ export function MultiPaneContainer() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
     if (Platform.OS !== 'android') return;
+    const syncKeyboardMetrics = (reason: string) => {
+      const metrics = (Keyboard as any).metrics?.();
+      const screenHeight = Dimensions.get('screen').height;
+      const inferredFromY =
+        typeof metrics?.screenY === 'number'
+          ? Math.max(0, screenHeight - metrics.screenY)
+          : 0;
+      const raw = Math.max(metrics?.height ?? 0, inferredFromY);
+      const adjusted = Math.max(0, raw - insets.bottom);
+      setKeyboardHeight((prev) => {
+        if (Math.abs(prev - adjusted) <= 2) return prev;
+        logInfo('Keyboard', 'syncMetrics', {
+          reason,
+          raw,
+          inferredFromY,
+          insetsBottom: insets.bottom,
+          adjusted,
+          metrics,
+        });
+        return adjusted;
+      });
+    };
+
     // bug #104 diagnostic: edge-to-edge + adjustResize is not resizing the window
     // on Android 15+. Log raw endCoordinates so we can verify whether
     // keyboardDidShow fires at all and what height is reported.
@@ -180,12 +204,24 @@ export function MultiPaneContainer() {
         endCoordinates: e.endCoordinates,
       });
       setKeyboardHeight(adjusted);
+      requestAnimationFrame(() => syncKeyboardMetrics('didShow-frame'));
     });
     const hide = Keyboard.addListener('keyboardDidHide', () => {
       logInfo('Keyboard', 'didHide');
       setKeyboardHeight(0);
     });
-    return () => { show.remove(); hide.remove(); };
+    // Some Android 15 / OEM keyboard combinations show the IME while
+    // React Native never emits keyboardDidShow for the current served view.
+    // Poll the platform metrics lightly while the pane grid is mounted so
+    // the terminal key bar stays above the keyboard instead of disappearing
+    // behind it.
+    const interval = setInterval(() => syncKeyboardMetrics('interval'), 250);
+    requestAnimationFrame(() => syncKeyboardMetrics('mount-frame'));
+    return () => {
+      show.remove();
+      hide.remove();
+      clearInterval(interval);
+    };
   }, [insets.bottom]);
 
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
