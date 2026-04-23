@@ -573,6 +573,14 @@ export default function TerminalScreen() {
     });
   }, [activeSession?.nativeSessionId]);
 
+  const pasteClipboardToTerminal = useCallback(() => {
+    if (!activeSession) return;
+    return TerminalEmulator.pasteClipboardToSession(activeSession.nativeSessionId).catch((err) => {
+      console.warn('[Terminal] pasteClipboardToSession failed:', err);
+      throw err;
+    });
+  }, [activeSession?.nativeSessionId]);
+
   // bug #44: Voice input routing.
   //
   // Previously the STT transcript was written straight into the PTY, which
@@ -883,6 +891,7 @@ export default function TerminalScreen() {
           sendKey={sendKey}
           sendText={sendToTerminal}
           sendPaste={pasteToTerminal}
+          pasteFromClipboard={pasteClipboardToTerminal}
           isCompact={layout.isCompact || (multiPaneCtx?.paneWidth ?? layout.width) < 420}
           onAttach={() => {
             import('expo-document-picker').then((mod) => {

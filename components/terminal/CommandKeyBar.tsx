@@ -24,6 +24,8 @@ type Props = {
   sendText: (text: string) => void;
   /** bug #81: paste-aware writer that goes through TerminalEmulator.paste(). Falls back to sendText. */
   sendPaste?: (text: string) => void;
+  /** Preferred Android path: native ClipboardManager -> TerminalEmulator.paste(). */
+  pasteFromClipboard?: () => Promise<void> | void;
   isCompact?: boolean;
   /** Suggested key set from PTY output detection */
   suggestedSet?: KeySetId;
@@ -116,7 +118,7 @@ const KEY_SETS: Record<KeySetId, { label: string; icon: string; keys: KeyConfig[
 const SET_ORDER_FULL: KeySetId[] = ['default', 'vim', 'git', 'repl', 'navigate'];
 const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 
-export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong }: Props) {
+export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong }: Props) {
   const { colors: c } = useTheme();
   const { settings } = useTerminalStore();
   const visualPreset = settings.uiFont === 'blackline' ? 'blackline' : settings.uiFont === 'modal' ? 'modal' : 'studio';
@@ -198,11 +200,22 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
       // bug #81: prefer the paste-aware path (routes through the emulator's
       // paste() — CR/LF normalized + bracketed-paste wrapped). Fallback to
       // sendText for legacy callers that haven't passed sendPaste through.
+      if (pasteFromClipboard) {
+        Promise.resolve(pasteFromClipboard()).catch((err) => {
+          console.warn('[CommandKeyBar] native pasteFromClipboard failed:', err);
+          Clipboard.getStringAsync().then((text) => {
+            if (!text) return;
+            if (sendPaste) sendPaste(text);
+            else sendText(text);
+          }).catch((clipErr) => console.warn('[CommandKeyBar] Clipboard.getStringAsync failed:', clipErr));
+        });
+        return;
+      }
       Clipboard.getStringAsync().then((text) => {
         if (!text) return;
         if (sendPaste) sendPaste(text);
         else sendText(text);
-      }).catch(() => {});
+      }).catch((err) => console.warn('[CommandKeyBar] Clipboard.getStringAsync failed:', err));
       return;
     }
     if (key.action === 'alt-toggle') {
@@ -215,7 +228,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, isCompact, suggest
     } else {
       sendKey(key.keyCode);
     }
-  }, [sendKey, sendText, settings.hapticFeedback, altActive]);
+  }, [sendKey, sendText, sendPaste, pasteFromClipboard, settings.hapticFeedback, altActive]);
 
   // Track container width for paging
   const [barWidth, setBarWidth] = useState(Dimensions.get('window').width);

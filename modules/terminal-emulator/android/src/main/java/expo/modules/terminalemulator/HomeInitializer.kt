@@ -438,7 +438,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // v50 (2026-04-23): expose the same native shell launcher as
     //     $HOME/bin/bash for Node-based CLIs such as Gemini that call
     //     spawn("bash", ...) and cannot see exported bash functions.
-    private const val BASHRC_VERSION = 50
+    // v51 (2026-04-23): add PATH-visible env/sh compatibility links and
+    //     always append Android system bins so Codex/Gemini child process
+    //     lookup does not fall into dead /usr/bin or /bin entries.
+    private const val BASHRC_VERSION = 51
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -722,7 +725,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
             sb.appendLine("export SHELL=\"$nativeLibDir/libshelly_shell.so\"")
             sb.appendLine("export BASH=\"\$SHELL\"")
-            sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir:/system/bin:/vendor/bin}\"")
+            sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
             // v39: point every bundled TLS client at the Mozilla CA bundle
             // we extract to ~/.shelly-ssl/. Without these exports curl/node/
@@ -830,10 +833,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine()
 
             // Tool functions
-            sb.appendLine("# v50: real PATH-visible shell for CLIs that spawn(\"bash\")")
+            sb.appendLine("# v51: PATH-visible Android-compatible shell/env for AI CLIs")
             sb.appendLine("if [ ! -e \"\$HOME/bin/bash\" ] || [ \"\$(readlink \"\$HOME/bin/bash\" 2>/dev/null)\" != \"\$SHELL\" ]; then")
             sb.appendLine("  rm -f \"\$HOME/bin/bash\" 2>/dev/null")
             sb.appendLine("  ln -s \"\$SHELL\" \"\$HOME/bin/bash\" 2>/dev/null || true")
+            sb.appendLine("fi")
+            sb.appendLine("if [ ! -e \"\$HOME/bin/sh\" ] || [ \"\$(readlink \"\$HOME/bin/sh\" 2>/dev/null)\" != \"/system/bin/sh\" ]; then")
+            sb.appendLine("  rm -f \"\$HOME/bin/sh\" 2>/dev/null")
+            sb.appendLine("  ln -s \"/system/bin/sh\" \"\$HOME/bin/sh\" 2>/dev/null || true")
+            sb.appendLine("fi")
+            sb.appendLine("if [ ! -e \"\$HOME/bin/env\" ] || [ \"\$(readlink \"\$HOME/bin/env\" 2>/dev/null)\" != \"/system/bin/env\" ]; then")
+            sb.appendLine("  rm -f \"\$HOME/bin/env\" 2>/dev/null")
+            sb.appendLine("  ln -s \"/system/bin/env\" \"\$HOME/bin/env\" 2>/dev/null || true")
             sb.appendLine("fi")
             sb.appendLine("bash() { _run $libDir/libbash.so \"\$@\"; }")
             sb.appendLine("node() { _run $libDir/node \"\$@\"; }")

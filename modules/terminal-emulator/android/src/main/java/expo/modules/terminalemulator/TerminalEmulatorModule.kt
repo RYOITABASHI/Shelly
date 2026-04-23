@@ -1,6 +1,7 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -176,6 +177,20 @@ class TerminalEmulatorModule : Module() {
             val session = sessions[sessionId]
                 ?: throw IllegalArgumentException("Session $sessionId not found")
             session.paste(text)
+        }
+
+        AsyncFunction("pasteClipboardToSession") { sessionId: String ->
+            val session = sessions[sessionId]
+                ?: throw IllegalArgumentException("Session $sessionId not found")
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                ?: throw IllegalStateException("Clipboard service unavailable")
+            val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+            Log.d("ShellyPaste", "pasteClipboardToSession session=$sessionId len=${text.length}")
+            if (text.isNotEmpty()) {
+                session.paste(text)
+            }
         }
 
         AsyncFunction("sendKeyEvent") { sessionId: String, keyCode: Int, modifiers: Int ->

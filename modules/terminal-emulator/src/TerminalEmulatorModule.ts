@@ -36,6 +36,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   queryListenSockets(family: number): Promise<string>;
   getHomeDir(): Promise<string>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
+  pasteClipboardToSession(sessionId: string): Promise<void>;
 }
 
 export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator');

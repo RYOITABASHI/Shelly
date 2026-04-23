@@ -365,7 +365,11 @@ class ShellyTerminalView(
      */
     fun setTransparentBackground(enabled: Boolean) {
         transparentBackground = enabled
-        val color = if (enabled) 0x00000000 else 0xFF000000.toInt()
+        val color = if (enabled) {
+            0x00000000
+        } else {
+            TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
+        }
         setBackgroundColor(color)
         terminalView.setBackgroundColor(color)
         terminalView.setTransparentBackground(enabled)

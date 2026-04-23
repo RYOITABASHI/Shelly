@@ -32,8 +32,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <android/log.h>
+#include <spawn.h>
 
 #define LINKER64 "/system/bin/linker64"
+#define LOG_TAG "ShellyExecWrapper"
 
 /* Check if file starts with ELF magic bytes (0x7f 'E' 'L' 'F') */
 static int is_elf(const char *path) {
@@ -46,6 +49,43 @@ static int is_elf(const char *path) {
                    && magic[2] == 'L'  && magic[3] == 'F');
 }
 
+static const char *rewrite_path(const char *pathname) {
+    if (!pathname) return NULL;
+    if (strcmp(pathname, "/bin/sh") == 0) return "/system/bin/sh";
+    if (strcmp(pathname, "/usr/bin/env") == 0) return "/system/bin/env";
+    if (strcmp(pathname, "/bin/bash") == 0) {
+        const char *shell = getenv("SHELL");
+        if (shell && shell[0]) return shell;
+    }
+    return pathname;
+}
+
+static int should_linker_exec(const char *pathname) {
+    return pathname &&
+        strcmp(pathname, LINKER64) != 0 &&
+        strncmp(pathname, "/system/", 8) != 0 &&
+        strncmp(pathname, "/vendor/", 8) != 0 &&
+        strncmp(pathname, "/apex/",   6) != 0 &&
+        is_elf(pathname);
+}
+
+static char **build_linker_argv(const char *pathname, char *const argv[]) {
+    int argc = 0;
+    if (argv) {
+        while (argv[argc]) argc++;
+    }
+
+    char **new_argv = (char **)malloc((argc + 2) * sizeof(char *));
+    if (!new_argv) return NULL;
+
+    new_argv[0] = LINKER64;
+    new_argv[1] = (char *)pathname;
+    for (int i = 1; i <= argc; i++) {
+        new_argv[i + 1] = argv[i];
+    }
+    return new_argv;
+}
+
 /*
  * Intercept execve(). If the target is an ELF binary outside system paths,
  * redirect through linker64 so SELinux doesn't block it.
@@ -53,44 +93,88 @@ static int is_elf(const char *path) {
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     typedef int (*orig_t)(const char *, char *const [], char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execve");
+    const char *rewritten = rewrite_path(pathname);
 
-    if (pathname && strcmp(pathname, "/bin/sh") == 0) {
-        return orig("/system/bin/sh", argv, envp);
+    if (rewritten != pathname) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                            "rewrite exec path=%s -> %s", pathname, rewritten);
+        int ret = orig(rewritten, argv, envp);
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                            "exec rewritten path=%s failed errno=%d", rewritten, errno);
+        return ret;
     }
 
     /* Pass through for: null path, linker64 itself, system/vendor/apex binaries,
      * and non-ELF files (scripts, etc. -- those use shebang which the
      * interpreter handles) */
-    if (!pathname ||
-        strcmp(pathname, LINKER64) == 0 ||
-        strncmp(pathname, "/system/", 8) == 0 ||
-        strncmp(pathname, "/vendor/", 8) == 0 ||
-        strncmp(pathname, "/apex/",   6) == 0 ||
-        !is_elf(pathname)) {
-        return orig(pathname, argv, envp);
-    }
-
-    /* Count original args */
-    int argc = 0;
-    if (argv) {
-        while (argv[argc]) argc++;
+    if (!should_linker_exec(pathname)) {
+        int ret = orig(pathname, argv, envp);
+        if (ret == -1) {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                                "exec pass-through failed path=%s errno=%d",
+                                pathname ? pathname : "(null)", errno);
+        }
+        return ret;
     }
 
     /* Build new argv: ["linker64", pathname, original_argv[1], ..., NULL] */
-    char **new_argv = (char **)malloc((argc + 2) * sizeof(char *));
+    char **new_argv = build_linker_argv(pathname, argv);
     if (!new_argv) {
         return orig(pathname, argv, envp); /* OOM fallback */
     }
 
-    new_argv[0] = LINKER64;
-    new_argv[1] = (char *)pathname;
-    for (int i = 1; i <= argc; i++) {
-        new_argv[i + 1] = argv[i];
-    }
-
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                        "linker exec path=%s", pathname);
     int ret = orig(LINKER64, new_argv, envp);
     int saved = errno;
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                        "linker exec failed path=%s errno=%d", pathname, saved);
     free(new_argv);
     errno = saved;
+    return ret;
+}
+
+int posix_spawn(pid_t *pid, const char *path,
+                const posix_spawn_file_actions_t *file_actions,
+                const posix_spawnattr_t *attrp,
+                char *const argv[], char *const envp[]) {
+    typedef int (*orig_t)(pid_t *, const char *,
+                          const posix_spawn_file_actions_t *,
+                          const posix_spawnattr_t *,
+                          char *const [], char *const []);
+    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawn");
+    const char *rewritten = rewrite_path(path);
+
+    if (rewritten != path) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                            "rewrite spawn path=%s -> %s", path, rewritten);
+        int ret = orig(pid, rewritten, file_actions, attrp, argv, envp);
+        if (ret != 0) {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                                "spawn rewritten path=%s failed ret=%d", rewritten, ret);
+        }
+        return ret;
+    }
+
+    if (!should_linker_exec(path)) {
+        int ret = orig(pid, path, file_actions, attrp, argv, envp);
+        if (ret != 0) {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                                "spawn pass-through failed path=%s ret=%d",
+                                path ? path : "(null)", ret);
+        }
+        return ret;
+    }
+
+    char **new_argv = build_linker_argv(path, argv);
+    if (!new_argv) return orig(pid, path, file_actions, attrp, argv, envp);
+
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "linker spawn path=%s", path);
+    int ret = orig(pid, LINKER64, file_actions, attrp, new_argv, envp);
+    if (ret != 0) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                            "linker spawn failed path=%s ret=%d", path, ret);
+    }
+    free(new_argv);
     return ret;
 }
