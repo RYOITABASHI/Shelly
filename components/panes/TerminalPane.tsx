@@ -61,6 +61,7 @@ import { getHomePath } from '@/lib/home-path';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import { colors as C } from '@/theme.config';
+import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 
 logInfo('Terminal', 'module loaded');
 
@@ -674,7 +675,7 @@ export default function TerminalScreen() {
 
       {/* Terminal + Preview Split View */}
       {activeSession && isConnected && !isHiddenBehindMultiPane && (
-        <View style={{ flex: 1, flexDirection: showSplitPreview ? 'row' : 'column' }}>
+        <View style={[styles.terminalBody, { flexDirection: showSplitPreview ? 'row' : 'column' }]}>
           {/* Native Terminal View */}
           <NativeTerminalView
             ref={terminalViewRef}
@@ -887,25 +888,27 @@ export default function TerminalScreen() {
 
       {/* Command Key Bar (Ctrl+C, Tab, up, down, Paste) + Attach/Voice */}
       {isConnected && (
-        <CommandKeyBar
-          sendKey={sendKey}
-          sendText={sendToTerminal}
-          sendPaste={pasteToTerminal}
-          pasteFromClipboard={pasteClipboardToTerminal}
-          isCompact={layout.isCompact || (multiPaneCtx?.paneWidth ?? layout.width) < 420}
-          onAttach={() => {
-            import('expo-document-picker').then((mod) => {
-              mod.getDocumentAsync({ copyToCacheDirectory: true }).then((result) => {
-                if (!result.canceled && result.assets?.[0]) {
-                  const asset = result.assets[0];
-                  copyFileToCwd(asset.uri, asset.name || `file-${Date.now()}`);
-                }
+        <View style={styles.keyBarDock} pointerEvents="box-none">
+          <CommandKeyBar
+            sendKey={sendKey}
+            sendText={sendToTerminal}
+            sendPaste={pasteToTerminal}
+            pasteFromClipboard={pasteClipboardToTerminal}
+            isCompact={layout.isCompact || (multiPaneCtx?.paneWidth ?? layout.width) < 420}
+            onAttach={() => {
+              import('expo-document-picker').then((mod) => {
+                mod.getDocumentAsync({ copyToCacheDirectory: true }).then((result) => {
+                  if (!result.canceled && result.assets?.[0]) {
+                    const asset = result.assets[0];
+                    copyFileToCwd(asset.uri, asset.name || `file-${Date.now()}`);
+                  }
+                });
               });
-            });
-          }}
-          onVoice={handleVoiceInput}
-          onVoiceLong={() => setVoiceChatVisible(true)}
-        />
+            }}
+            onVoice={handleVoiceInput}
+            onVoiceLong={() => setVoiceChatVisible(true)}
+          />
+        </View>
       )}
 
       {/* Scroll to bottom FAB */}
@@ -966,7 +969,20 @@ export default function TerminalScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, position: 'relative' },
+  terminalBody: {
+    flex: 1,
+    paddingBottom: KEY_BAR_HEIGHT,
+  },
+  keyBarDock: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    minHeight: KEY_BAR_HEIGHT,
+    zIndex: 30,
+    elevation: 30,
+  },
 
   // Connecting
   connectingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
