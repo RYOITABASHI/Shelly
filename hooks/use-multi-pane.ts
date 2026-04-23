@@ -574,39 +574,25 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         },
 
         // ── New preset actions ──
-        // Picking a smaller preset used to be refused when `used > capacity`,
-        // which meant that once a user reached p4 (2×2) they had no UI path
-        // back to single-pane without tapping [×] on every pane individually.
-        // Worse, the LayoutPicker tiles for smaller presets were disabled, so
-        // the user couldn't even tell that was the reason — the app just
-        // looked broken. Downsize now by trimming surplus slots after
-        // compaction, AND cascading native session destruction for any
-        // terminal slot that gets dropped (otherwise PTY child processes
-        // leak and MAX_SESSIONS ceiling hits faster than necessary).
+        // Presets are view layouts, not destructive pane operations.
+        // p4 -> p1 should temporarily show the first pane only, then restore
+        // the hidden panes if the user returns to p2/p3/p4. Older builds
+        // trimmed surplus slots here, which made MultiPane feel "dead":
+        // one tap on a smaller layout deleted panes and their sessions.
         setPreset: (preset) => {
           const { slots } = get();
           const compacted = compactSlots(slots);
           const cap = PRESET_CAPACITY[preset];
           const used = countSlots(compacted);
           if (used > cap) {
-            const trimmed: [Slot, Slot, Slot, Slot] = [null, null, null, null];
-            for (let i = 0; i < cap; i++) trimmed[i] = compacted[i];
-            const dropped = compacted
-              .slice(cap)
-              .filter((s): s is NonNullable<Slot> => s !== null);
-            const droppedIds = dropped.map((s) => s.id);
             logInfo(
               'MultiPane',
-              `setPreset ${preset} — trimmed ${droppedIds.length} surplus pane(s): ${droppedIds.join(',')}`,
+              `setPreset ${preset} — hiding ${used - cap} surplus pane(s) without deleting`,
             );
-            // Cascade-destroy native sessions for trimmed terminal panes.
-            // Without this, switching p4 → p1 would orphan up to 3 forkpty
-            // children and consume MAX_SESSIONS slots for nothing.
-            for (const slot of dropped) cleanupDroppedSlot(slot);
             const { focusedSlot, maximizedSlot } = get();
             const safeFocus: SlotIndex = (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
             const safeMax = maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
-            set({ preset, slots: trimmed, focusedSlot: safeFocus, maximizedSlot: safeMax });
+            set({ preset, slots: compacted, focusedSlot: safeFocus, maximizedSlot: safeMax });
             return;
           }
           set({ preset, slots: compacted });
