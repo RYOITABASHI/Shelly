@@ -1,9 +1,9 @@
 // components/multi-pane/LayoutPicker.tsx
 //
 // Visual preset selector for the 4-pane layout system. Shows a thumbnail
-// for each of the 7 presets (p1 / p2h / p2v / p3l / p3r / p3t / p4), marks
-// the active one, and disables any preset whose capacity is smaller than
-// the number of currently-open panes.
+// for each of the 7 presets (p1 / p2h / p2v / p3l / p3r / p3t / p4) and marks
+// the active one. Smaller presets temporarily hide surplus panes; they do not
+// delete panes or terminal sessions.
 //
 // Usage:
 //   <LayoutPicker onPicked={close} />
@@ -47,16 +47,15 @@ export function LayoutPicker({ onPicked }: { onPicked?: () => void }) {
     [slots],
   );
 
-  // Every tile is now tappable. Downsizing to a smaller preset trims surplus
-  // panes in setPreset; disabling tiles for `used > capacity` was the old
-  // behavior and it trapped users in p4 with no UI path back to p1.
+  // Every tile is tappable. Downsizing to a smaller preset hides surplus panes
+  // in setPreset; switching back to a larger preset restores them.
   return (
     <View style={styles.root}>
       <Text style={styles.title}>LAYOUT</Text>
       <View style={styles.grid}>
         {PRESETS.map((p) => {
           const capacity = PRESET_CAPACITY[p.id];
-          const willTrim = used > capacity;
+          const willHide = used > capacity;
           const active = preset === p.id;
           return (
             <Pressable
@@ -78,7 +77,7 @@ export function LayoutPicker({ onPicked }: { onPicked?: () => void }) {
                 ]}
               >
                 {p.label}
-                {willTrim ? ` (-${used - capacity})` : ''}
+                {willHide ? ` (${capacity}/${used})` : ''}
               </Text>
             </Pressable>
           );
