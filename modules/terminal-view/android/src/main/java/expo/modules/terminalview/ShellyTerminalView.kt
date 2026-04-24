@@ -693,10 +693,28 @@ class ShellyTerminalView(
         val needsFocusHandoff = prevTerminalView != null && prevTerminalView !== terminalView
 
         if (needsFocusHandoff) {
-            // clearFocus on the stale sibling (triggers IMM.focusOut,
-            // resets mServedView if that view was served). Split the
-            // request across ViewRoot passes so OneUI's focus machine
-            // sees both events.
+            // bug #116 follow-up 12 (2026-04-24 23:40 on-device proof):
+            // clearFocus() on the stale sibling is a no-op because
+            // Termux's internal onSingleTapUp ran requestFocus() on our
+            // view BEFORE this handler, which already cleared the
+            // sibling's PFLAG_FOCUSED. View.clearFocus() only dispatches
+            // onFocusChanged(false) when PFLAG_FOCUSED is set, so IMM
+            // never sees focusOut for the stale sibling and mServedView
+            // stays stuck (proved by `dumpsys input_method` showing
+            // mServedView == old sibling hash after repeated taps on
+            // the new pane).
+            //
+            // Direct fix: call imm.focusOut(prevView) explicitly. It's
+            // public API since API 3 and takes the view argument
+            // regardless of the view's current PFLAG_FOCUSED state.
+            // IMM internally checks `mServedView == view` and clears
+            // its binding when matched — exactly what we need.
+            val prevImm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            try {
+                prevImm?.focusOut(prevTerminalView!!)
+            } catch (_: Throwable) { /* best-effort */ }
+            // Also call clearFocus defensively in case the view HAS
+            // somehow retained PFLAG_FOCUSED on this code path.
             prevTerminalView!!.clearFocus()
             lastFocusedTerminalView = java.lang.ref.WeakReference(terminalView)
             terminalView.post {
