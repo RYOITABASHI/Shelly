@@ -2758,6 +2758,7 @@ public final class TerminalEmulator {
         // Fall back to the DECSET heuristic if we can't read /proc (fail
         // safe: preserve the pre-fix behaviour for SSH / stream sessions
         // without a local shell pid).
+        boolean bashForeground = isBashTtyForeground();
         if (bracketedMode) {
             if (!bashForeground) {
                 // TUI/CLI app (claude, codex, gemini, vim, ...) — the
