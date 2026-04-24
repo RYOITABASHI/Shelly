@@ -28,6 +28,8 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -53,18 +55,45 @@ static int is_elf(const char *path) {
 
 static const char *rewrite_path(const char *pathname) {
     if (!pathname) return NULL;
+
+    /* bash / sh / env: route to the Shelly-controlled $SHELL or toybox.
+     * These are matched first so they take precedence over the generic
+     * /bin/* -> /system/bin/* prefix rewrite below (bash in particular
+     * must reach $libDir/shelly_shell, not a non-existent /system/bin/bash).
+     */
     if (strcmp(pathname, "/bin/sh") == 0) return "/system/bin/sh";
     if (strcmp(pathname, "sh") == 0) return "/system/bin/sh";
     if (strcmp(pathname, "/usr/bin/env") == 0) return "/system/bin/env";
     if (strcmp(pathname, "env") == 0) return "/system/bin/env";
-    if (strcmp(pathname, "/bin/bash") == 0) {
+    if (strcmp(pathname, "/bin/bash") == 0 || strcmp(pathname, "bash") == 0) {
         const char *shell = getenv("SHELL");
         if (shell && shell[0]) return shell;
     }
-    if (strcmp(pathname, "bash") == 0) {
-        const char *shell = getenv("SHELL");
-        if (shell && shell[0]) return shell;
+
+    /* Generic prefix rewrite for /bin/* and /usr/bin/*. Android has no
+     * /bin or /usr/bin, but many CLIs (Codex's sandbox exec, GNU make,
+     * misc POSIX tools) hard-code those paths for whoami/uname/id/
+     * getprop/cat/ls/etc. Android's toybox exposes them at /system/bin/.
+     * Rewriting here is safe because on Android those prefixes never
+     * resolve to anything else, so any caller using /bin/X is either
+     * assuming Linux layout or a typo — both are better served by the
+     * toybox equivalent than an ENOENT.
+     *
+     * Buffer is thread-local so concurrent execve() calls on different
+     * threads don't trample each other. The returned pointer is valid
+     * until the next rewrite_path() call on the same thread, which is
+     * long enough because the caller feeds it straight to execve().
+     */
+    static __thread char rewrite_buf[PATH_MAX];
+    if (strncmp(pathname, "/bin/", 5) == 0) {
+        snprintf(rewrite_buf, sizeof(rewrite_buf), "/system/bin/%s", pathname + 5);
+        return rewrite_buf;
     }
+    if (strncmp(pathname, "/usr/bin/", 9) == 0) {
+        snprintf(rewrite_buf, sizeof(rewrite_buf), "/system/bin/%s", pathname + 9);
+        return rewrite_buf;
+    }
+
     return pathname;
 }
 
