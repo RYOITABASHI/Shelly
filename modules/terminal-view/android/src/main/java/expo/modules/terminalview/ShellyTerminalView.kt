@@ -536,30 +536,33 @@ class ShellyTerminalView(
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             ?: return
 
-        fun attempt(delayMs: Long) {
-            terminalView.postDelayed({
-                terminalView.isFocusable = true
-                terminalView.isFocusableInTouchMode = true
-                terminalView.requestFocusFromTouch()
-                imm.restartInput(terminalView)
-                val shown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
-                if (!shown && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
-                }
-                Log.i(TAG, "$reason.keyboardRetry delay=$delayMs focused=${terminalView.isFocused} shown=$shown viewHash=${System.identityHashCode(terminalView)}")
-            }, delayMs)
+        // bug #104 follow-up: the previous implementation fired five
+        // postDelayed retries at 0/50/150/300/600 ms to work around Samsung
+        // "view is not served" rejections during pane resize. On Android 15+
+        // edge-to-edge this backfired catastrophically: every postDelayed
+        // attempt arrives with fromUser=false, and the IME stack rejects
+        // each one at PHASE_CLIENT_APPLY_ANIMATION. Because both
+        // onSingleTapUp (native) and TerminalPane.focusedPaneId effect
+        // (via TerminalViewModule.focus) call this method for the same tap,
+        // a single user gesture spawned ~10 cancelled show requests that
+        // ping-ponged until the tracker timed out, leaving the keyboard
+        // permanently hidden.
+        //
+        // Single-shot approach: run inside the current dispatch pass so
+        // fromUser=true for onSingleTapUp, and fall back immediately to
+        // WindowInsetsController.show(ime()) — the modern API that
+        // edge-to-edge honours regardless of fromUser. Drop the retry
+        // ladder; if the first attempt misses, the user can tap again and
+        // that second gesture will again carry fromUser=true.
+        terminalView.isFocusable = true
+        terminalView.isFocusableInTouchMode = true
+        terminalView.requestFocusFromTouch()
+        imm.restartInput(terminalView)
+        val shown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+        if (!shown && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
         }
-
-        // Samsung/One UI can reject showSoftInput immediately after
-        // requestFocus with "view is not served", especially while
-        // multi-pane is resizing and the old/new TerminalView bounds are
-        // being rebound. Keep retrying across the post-layout window so
-        // ViewRootImpl has time to bind TerminalView as the served editor.
-        attempt(0)
-        attempt(50)
-        attempt(150)
-        attempt(300)
-        attempt(600)
+        Log.i(TAG, "$reason.showKeyboard focused=${terminalView.isFocused} shown=$shown viewHash=${System.identityHashCode(terminalView)}")
     }
 
     fun scrollToRowCommand(row: Int) {
