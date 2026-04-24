@@ -30,6 +30,7 @@ object HomeInitializer {
 // Usage:
 //   node shelly-patcher.js codex  <libDir> [<node_modules_root>]
 //   node shelly-patcher.js gemini         [<node_modules_root>]
+//   node shelly-patcher.js claude         [<node_modules_root>]
 //
 // node_modules_root defaults to ${'$'}HOME/.shelly-cli/node_modules so the
 // patcher works against the live tree, but the update pipeline (v32+)
@@ -77,9 +78,34 @@ function patchGemini() {
   console.log("[patch] gemini " + n + "/" + files.length + " chunks (at " + d + ")");
 }
 
+function patchClaude() {
+  const p = NM + "/@anthropic-ai/claude-code/cli.js";
+  if (!fs.existsSync(p)) { console.log("[patch] claude cli.js not found at " + p); return; }
+  let s = fs.readFileSync(p, "utf8");
+  if (s.includes("shelly-claude")) { console.log("[patch] claude cli.js already patched"); return; }
+  // claude-code 2.1.112 spawns child processes with options.shell=true, which
+  // Node.js maps to /bin/sh -c on POSIX. Android bionic has no /bin/sh, so
+  // execve returns ENOENT and the Bash tool / MCP headersHelper / editor
+  // spawns all exit 1 with empty stdout. Rewrite the minified literal
+  // `shell:!0` to `shell:"/system/bin/sh"` so Node dispatches to the bionic
+  // shell (mksh). Five call sites in 2.1.112; win32-guarded branches and
+  // the sharp-installer helper are dead code on Android — still patched for
+  // defence in depth.
+  const needle = /shell:!0/g;
+  const matches = s.match(needle);
+  if (!matches) { console.log("[patch] claude cli.js needle not found"); return; }
+  s = s.replace(needle, 'shell:"/system/bin/sh"');
+  // Marker: idempotency check above matches this string. Must land in code,
+  // not a leading comment block, so it survives any upstream header rewrites.
+  s += "\n/* shelly-claude patched */\n";
+  fs.writeFileSync(p, s);
+  console.log("[patch] claude cli.js OK (" + matches.length + " call sites) at " + p);
+}
+
 if (op === "codex") patchCodex(libDir);
 else if (op === "gemini") patchGemini();
-else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemini [<nm>]"); process.exit(1); }
+else if (op === "claude") patchClaude();
+else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemini [<nm>] | claude [<nm>]"); process.exit(1); }
 """.trimIndent()
 
     /** Version counter — increment to force .bashrc regeneration.
@@ -450,7 +476,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     as a dangling symlink that Node/Bun child_process.spawn("bash")
     //     can't resolve (Claude Code, Gemini, Codex all affected). LibExtractor
     //     now unpacks libshelly_shell.so to $libDir alongside node/git/bash.
-    private const val BASHRC_VERSION = 53
+    // v54 (2026-04-24): three-part polish pass on CLI tool integration.
+    //     a) export TMPDIR=$HOME/tmp (+ mkdir) so Gemini CLI's
+    //        os.tmpdir()-based pgrep tracker lands in a writable dir
+    //        instead of the baked-in `/data/data/com.termux/...` fallback.
+    //     b) gate the "[shelly] background CLI update started" notice on
+    //        `[ -t 2 ]` so it doesn't surface as tool output when Codex /
+    //        Gemini / Claude capture stderr.
+    //     c) bug #117 Option B: shelly-patcher.js now has a claude op that
+    //        rewrites cli.js `shell:!0` → `shell:"/system/bin/sh"` on the
+    //        staged tree. The CI workflow applies the same sed to the
+    //        APK-bundled cli.js so the fix is live on first launch.
+    private const val BASHRC_VERSION = 54
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -775,6 +812,20 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // silently retargeting unrelated tools (npm cache, etc.) at
             // ~/.claude-tmp on a fresh install where the dir didn't exist
             // yet. Removed.
+            //
+            // v54 (2026-04-24): TMPDIR re-added, now pointing at a generic
+            // $HOME/tmp. Gemini CLI's shell tool calls os.tmpdir() to place
+            // its `shell_pgrep_*.tmp` tracker, and our bundled libnode.so
+            // (Termux source) hardcodes `/data/data/com.termux/files/usr/tmp`
+            // as the fallback — which doesn't exist in Shelly's sandbox, so
+            // the pgrep redirect surfaces "No such file or directory" on
+            // every Gemini shell execution. Setting TMPDIR to a writable
+            // dir inside HOME overrides the Termux default. The v43 "npm
+            // cache silently retargets" risk does not apply because we
+            // mkdir the dir unconditionally and it's a generic tmp, not
+            // tied to any specific tool's data.
+            sb.appendLine("export TMPDIR=\"\$HOME/tmp\"")
+            sb.appendLine("mkdir -p \"\$TMPDIR\" 2>/dev/null")
             // bug #106 part B: explicit PS2 so a wrapped or unclosed paste
             // never confuses the user with a non-default continuation
             // prompt. The literal `<` line-prefix observed during
@@ -1156,7 +1207,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // unaffected. The env-var guard prevents infinite recursion.
             sb.appendLine("  if [ -z \"\$__SHELLY_CLI_UPDATE_SUBSHELL\" ]; then")
             sb.appendLine("    ( __SHELLY_CLI_UPDATE_SUBSHELL=1 __shelly_bg_cli_update </dev/null >/dev/null 2>&1 & )")
-            sb.appendLine("    echo '[shelly] background CLI update started. tail -f ~/.shelly-cli/install.log for progress' >&2")
+            // Only surface the "update started" notice when stderr is a
+            // terminal (the user's Shelly session). Gemini/Codex/Claude
+            // shell tools capture stderr and would otherwise surface this
+            // line as tool output, making the CLI look noisy. [ -t 2 ]
+            // evaluates true only on attached TTYs.
+            sb.appendLine("    [ -t 2 ] && echo '[shelly] background CLI update started. tail -f ~/.shelly-cli/install.log for progress' >&2")
             sb.appendLine("    return 0")
             sb.appendLine("  fi")
             sb.appendLine("  local __log=\"\$HOME/.shelly-cli/install.log\"")
@@ -1237,6 +1293,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //    Both are idempotent: safe to re-run on already-patched files.
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" codex \"$libDir\" \"\$__staging/node_modules\" || true")
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" gemini \"\$__staging/node_modules\" || true")
+            // Bug #117 Option B: rewrite `shell:!0` → `shell:"/system/bin/sh"`
+            // in claude-code's cli.js so the Bash tool can spawn a shell that
+            // exists on Android bionic. Applied here (staging) so the fix is
+            // in place before the tree gets chmod a-w'd below.
+            sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" claude \"\$__staging/node_modules\" || true")
             // bug #105 (codex vendor shim): codex.js 0.121.0 has an
             //   if (!existsSync(path.join(..., 'vendor', 'aarch64-unknown-
             //   linux-musl', 'codex', 'codex'))) throw new Error('Missing

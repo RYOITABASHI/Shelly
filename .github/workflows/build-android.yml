@@ -192,6 +192,20 @@ jobs:
             sed -i "s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
             echo "Patched TERMUX_VERSION in: $f"
           done
+          # Patch claude-code cli.js: rewrite shell:!0 → shell:"/system/bin/sh"
+          # so child_process.spawn({ shell: true }) dispatches to Android's
+          # bionic shell instead of the nonexistent /bin/sh. Five call sites
+          # in 2.1.112 (two in the generic spawn helpers ij/op7, one each in
+          # Azure auth, MCP headersHelper, and editor spawn; sharp/win32
+          # branches are dead code). See HomeInitializer.kt Option B comment.
+          CLAUDE_CLI="cli-bundle/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+          if [ -f "$CLAUDE_CLI" ]; then
+            HITS="$(grep -o 'shell:!0' "$CLAUDE_CLI" | wc -l)"
+            sed -i 's|shell:!0|shell:"/system/bin/sh"|g' "$CLAUDE_CLI"
+            echo "[claude] patched cli.js (${HITS} call sites rewritten)"
+          else
+            echo "[claude] WARNING cli.js not found at $CLAUDE_CLI — skipping shell patch"
+          fi
           # Tar them up for APK assets (LibExtractor will extract on first launch)
           cd cli-bundle/lib
           tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
