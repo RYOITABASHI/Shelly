@@ -704,15 +704,30 @@ class ShellyTerminalView(
             // mServedView == old sibling hash after repeated taps on
             // the new pane).
             //
-            // Direct fix: call imm.focusOut(prevView) explicitly. It's
-            // public API since API 3 and takes the view argument
-            // regardless of the view's current PFLAG_FOCUSED state.
-            // IMM internally checks `mServedView == view` and clears
-            // its binding when matched — exactly what we need.
+            // Correct fix per post-build-696 agent audit: use
+            // `InputMethodManager.onViewFocusChanged(view, hasFocus)`
+            // which is **public SDK since API 34** (Android 14) and
+            // was added exactly for this IME-rebind scenario. Samsung
+            // Galaxy Z Fold6 runs Android 16 (API 36) so this branch
+            // always fires on our target device. The earlier attempt
+            // (build 696) used `focusOut(View)` via reflection, but
+            // that method is `@hide` / greylisted on API 30+ and
+            // either throws `NoSuchMethodError` or no-ops under
+            // StrictMode — build 696 additionally failed compile
+            // because `focusOut` isn't in android.jar stubs either.
+            //
+            // `onViewFocusChanged(view, false)` internally routes to
+            // IMM's focus-change bookkeeping, dispatches focusOut to
+            // the bound input method, and resets mServedView when
+            // matched — exactly the effect we needed.
             val prevImm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             try {
-                prevImm?.focusOut(prevTerminalView!!)
-            } catch (_: Throwable) { /* best-effort */ }
+                if (prevImm != null && Build.VERSION.SDK_INT >= 34) {
+                    prevImm.onViewFocusChanged(prevTerminalView!!, false)
+                }
+            } catch (t: Throwable) {
+                Log.i(TAG, "onViewFocusChanged skipped: ${t.javaClass.simpleName}")
+            }
             // Also call clearFocus defensively in case the view HAS
             // somehow retained PFLAG_FOCUSED on this code path.
             prevTerminalView!!.clearFocus()

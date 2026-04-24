@@ -2822,38 +2822,64 @@ public final class TerminalEmulator {
         }
         if (shellPid <= 0) return true;
         // Guard 1: the shell itself must be bash. Proc failure → assume
-        // bash (pre-fix fallback). "Something other than bash" → do
-        // NOT send \C-x\C-b; that bind only exists in our .bashrc.
+        // bash (pre-fix fallback). "Something other than bash" (zsh,
+        // fish, dash) → do NOT send \C-x\C-b; that bind only exists in
+        // our .bashrc.
         String shellComm = readProcComm(shellPid);
         if (shellComm == null) return true;
         if (!"bash".equals(shellComm)) return false;
+        // Guard 2: on-device build 694 proved that tpgid-based detection
+        // is unreliable for Shelly's bash function wrappers (claude()
+        // / codex() / gemini()). The functions call `_run /system/bin/
+        // linker64 ...` which forks, but because bash runs the function
+        // in its own process and the forked child's pgid may remain
+        // bash's pgid depending on job-control state, tpgid can still
+        // equal shellPid even when Claude is the user-facing foreground
+        // process. Confirmed in logcat: `bashFg=true` surfaced during
+        // an active Claude Code session.
+        //
+        // Robust detection: read /proc/<shellPid>/task/<shellPid>/children.
+        // The kernel lists direct children of the task. When bash is at
+        // its prompt it has NO running children (readline waits in
+        // read(2)). When a CLI is active, there's at least one child pid.
+        // The file is sized by child count, so any non-whitespace content
+        // means a child exists. This mirrors what `pgrep -P <bashPid>`
+        // reports and is immune to the setpgid race.
         try {
             java.io.BufferedReader r = new java.io.BufferedReader(
-                new java.io.FileReader("/proc/" + shellPid + "/stat"));
-            String line;
+                new java.io.FileReader("/proc/" + shellPid + "/task/" + shellPid + "/children"));
+            String children;
             try {
-                line = r.readLine();
+                children = r.readLine();
             } finally {
                 r.close();
             }
-            if (line == null) return true;
-            // comm (field 2) is enclosed in parens and may contain
-            // spaces or parens itself; split on the LAST ')' to skip it.
-            int closeIdx = line.lastIndexOf(')');
-            if (closeIdx < 0 || closeIdx + 2 >= line.length()) return true;
-            String[] fields = line.substring(closeIdx + 2).split(" ");
-            // After comm: state, ppid, pgrp, session, tty_nr, tpgid, ...
-            // tpgid is field index 5 (0-indexed).
-            if (fields.length < 6) return true;
-            int tpgid = Integer.parseInt(fields[5]);
-            if (tpgid == shellPid) return true;
-            // Guard 2: nested bash. Inner bash has inherited our
-            // .bashrc bind, so \C-x\C-b still triggers bracketed-paste.
-            // Every other foreground process (child TUI, pipeline
-            // stage, backgrounded script) routes through the standard
-            // marker path.
-            String fgComm = readProcComm(tpgid);
-            return "bash".equals(fgComm);
+            if (children == null) return true;
+            String trimmed = children.trim();
+            if (trimmed.isEmpty()) return true; // bash prompt, no active child
+            // One or more children. If ANY non-bash child, we're inside
+            // a CLI/TUI; route through standard brackets. Nested bash
+            // keeps the readline path because inner bash inherits the
+            // \C-x\C-b bind from our .bashrc.
+            String[] childPids = trimmed.split("\\s+");
+            for (String pidStr : childPids) {
+                if (pidStr.isEmpty()) continue;
+                int childPid;
+                try {
+                    childPid = Integer.parseInt(pidStr);
+                } catch (NumberFormatException nfe) {
+                    continue;
+                }
+                String childComm = readProcComm(childPid);
+                // "bash" or null (transient / permission denied) — skip
+                if (childComm == null || "bash".equals(childComm)) continue;
+                // Anything else (node, claude, codex, gemini, vim,
+                // linker64, ...) → not at bash prompt.
+                return false;
+            }
+            // All children are bash (nested bash) or unreadable — safe
+            // default is the readline path.
+            return true;
         } catch (Throwable t) {
             return true;
         }
