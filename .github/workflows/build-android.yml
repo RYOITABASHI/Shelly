@@ -206,6 +206,29 @@ jobs:
           else
             echo "[claude] WARNING cli.js not found at $CLAUDE_CLI — skipping shell patch"
           fi
+          # Patch gemini-cli subprocess spawns mirroring HomeInitializer.kt
+          # patchGemini(). Three breakage classes flagged by the 2026-04-24
+          # subprocess audit:
+          #   1. shell: true in auto-update / GrepTool pre-flight / sandbox
+          #      proxy — Node hardcodes /bin/sh -c on POSIX → ENOENT on Android.
+          #   2. execSync(getCommandExistsCmd(cmd), { stdio: "ignore" }) —
+          #      no shell option, same /bin/sh miss. Breaks editor detection
+          #      silently (vim/nano/cursor/vscode all return false).
+          # Applied here so the APK-bundled tree has the fix on first launch,
+          # before the daily updater would otherwise run patchGemini().
+          GEM_BUNDLE="cli-bundle/lib/node_modules/@google/gemini-cli/bundle"
+          if [ -d "$GEM_BUNDLE" ]; then
+            GEM_COUNT=0
+            for f in "$GEM_BUNDLE"/chunk-*.js "$GEM_BUNDLE"/gemini-*.js; do
+              [ -f "$f" ] || continue
+              sed -i -E 's/shell:[[:space:]]*true([,}])/shell:"\/system\/bin\/sh"\1/g' "$f"
+              sed -i 's|execSync(getCommandExistsCmd(cmd), { stdio: "ignore" })|execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})|g' "$f"
+              GEM_COUNT=$((GEM_COUNT + 1))
+            done
+            echo "[gemini] patched shell:true + commandExists in ${GEM_COUNT} bundle files"
+          else
+            echo "[gemini] WARNING bundle dir not found at $GEM_BUNDLE — skipping shell patches"
+          fi
           # Tar them up for APK assets (LibExtractor will extract on first launch)
           cd cli-bundle/lib
           tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules

@@ -64,18 +64,48 @@ function patchCodex(libDir) {
 function patchGemini() {
   const d = NM + "/@google/gemini-cli/bundle";
   if (!fs.existsSync(d)) { console.log("[patch] gemini bundle not found at " + d); return; }
-  const files = fs.readdirSync(d).filter(f => f.startsWith("chunk-") && f.endsWith(".js"));
-  let n = 0;
+  // Widen the file glob from chunk-*.js to include the gemini-*.js
+  // launchers — the shell:true patterns flagged by the 2026-04-24
+  // subprocess audit live in BOTH chunk bundles and the top-level
+  // gemini-*.js entry points.
+  const files = fs.readdirSync(d).filter(f => (f.startsWith("chunk-") || f.startsWith("gemini-")) && f.endsWith(".js"));
+  let termuxPatched = 0, shellPatched = 0, commandExistsPatched = 0;
   for (const f of files) {
     const p = d + "/" + f;
     let s = fs.readFileSync(p, "utf8");
-    const re = /throw new Error\("You need to install Termux[^"]*"\)/g;
-    if (!re.test(s)) continue;
-    s = s.replace(re, "undefined");
-    fs.writeFileSync(p, s);
-    n++;
+    const before = s;
+    // 1) Remove the Termux guard (original patch).
+    const termuxRe = /throw new Error\("You need to install Termux[^"]*"\)/g;
+    if (termuxRe.test(s)) {
+      s = s.replace(termuxRe, "undefined");
+      termuxPatched++;
+    }
+    // 2) Rewrite `shell: true` to the Android-bionic shell path. Covers
+    //    three broken spawns: auto-update, GrepTool pre-flight, and the
+    //    sandbox proxy. Match `shell:\s*true` only when followed by a
+    //    comma or `}` (inside an options object) to avoid hitting string
+    //    literals.
+    s = s.replace(/shell:\s*true([,}])/g, 'shell:"/system/bin/sh"$1');
+    // 3) Patch commandExists()'s bare execSync call so editor detection
+    //    (vim/nano/cursor/vscode) actually works. Node's execSync(string)
+    //    hardcodes /bin/sh on POSIX unless an options object with a
+    //    shell field is supplied; the current `{ stdio: "ignore" }`
+    //    misses that. Patch the exact literal emitted by the bundle.
+    s = s.replace(
+      /execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/g,
+      'execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})');
+    if (s !== before) {
+      // Reconcile counters after all three passes.
+      if (s.length !== before.length || s.includes('/* shelly-gemini-shelltrue */') === false) {
+        // We don't mark the file with a marker because the patterns
+        // are self-idempotent (replacements no longer match after a run).
+      }
+      if (before.match(/shell:\s*true[,}]/)) shellPatched++;
+      if (before.match(/execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/)) commandExistsPatched++;
+      fs.writeFileSync(p, s);
+    }
   }
-  console.log("[patch] gemini " + n + "/" + files.length + " chunks (at " + d + ")");
+  console.log("[patch] gemini termux=" + termuxPatched + " shellTrue=" + shellPatched + " commandExists=" + commandExistsPatched + " /" + files.length + " files (at " + d + ")");
 }
 
 function patchClaude() {
