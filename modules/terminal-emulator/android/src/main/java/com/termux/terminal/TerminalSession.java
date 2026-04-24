@@ -496,6 +496,11 @@ public final class TerminalSession extends TerminalOutput {
         return mShellPid;
     }
 
+    @Override
+    public int getShellPid() {
+        return mShellPid;
+    }
+
     /** Returns the shell's working directory or null if it was unavailable. */
     public String getCwd() {
         if (mShellPid < 1) {

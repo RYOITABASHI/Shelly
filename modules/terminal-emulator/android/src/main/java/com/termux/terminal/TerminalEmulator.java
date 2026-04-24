@@ -2687,6 +2687,7 @@ public final class TerminalEmulator {
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
                 + ", nl=" + nlCount + ", bracketed=" + bm
                 + ", tui=" + tui
+                + ", bashFg=" + isBashTtyForeground()
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
@@ -2737,35 +2738,41 @@ public final class TerminalEmulator {
         // exactly where we intend.
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
-        // Claude Code (and similar Node/Ink TUIs) advertise DECSET 2004 but
-        // neither enter alt-buffer nor mouse-tracking at the input prompt,
-        // so the old tuiMode heuristic routed their paste through the
-        // readline-only \C-x\C-b trigger, which the TUI doesn't understand:
-        // \x18\x02 is eaten as garbage, \n submits, multi-line paste gets
-        // split across turns. Application cursor keys (DECSET 1) and
-        // application keypad (DECSET 66) are set by effectively every full
-        // TUI that reads arrow keys via terminfo's smkx, but NOT by bash
-        // readline at an ordinary prompt, so including them is a safe
-        // widening: Claude Code / Codex / Gemini get standard brackets,
-        // bash readline keeps the \C-x\C-b trigger.
-        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive()
-                || isDecsetInternalBitSet(DECSET_BIT_APPLICATION_CURSOR_KEYS)
-                || isDecsetInternalBitSet(DECSET_BIT_APPLICATION_KEYPAD);
+        // Decide between the two paste trigger flavours by asking the
+        // kernel who owns the PTY right now. /proc/<bashPid>/stat field 8
+        // (tpgid) is the process-group id of the TTY's foreground process.
+        // When it equals the bash pid, bash's readline is at its prompt
+        // and needs the \C-x\C-b (0x18 0x02) trigger (bionic bash swallows
+        // the ESC in \e[200~ at dispatch — see bug #97). When a child
+        // process holds the TTY (claude/codex/gemini/vim/...), readline
+        // isn't in the picture and we must use the standard
+        // \e[200~...\e[201~ markers that every modern TUI understands.
+        //
+        // The previous heuristic looked at DECSET bits (alt-buffer /
+        // mouse / app cursor / app keypad) but Ink-based TUIs such as
+        // Claude Code only set DECSET 2004 and none of the others, so the
+        // heuristic misrouted their paste through the readline trigger —
+        // \x18\x02 was eaten as stray control bytes and multi-line paste
+        // shattered into one Enter-per-line.
+        //
+        // Fall back to the DECSET heuristic if we can't read /proc (fail
+        // safe: preserve the pre-fix behaviour for SSH / stream sessions
+        // without a local shell pid).
         if (bracketedMode) {
-            if (tuiMode) {
-                // TUI/CLI app (alt-buffer, mouse tracking, or application
-                // cursor/keypad mode active): standard bracketed-paste protocol.
+            if (!bashForeground) {
+                // TUI/CLI app (claude, codex, gemini, vim, ...) — the
+                // kernel says something other than bash holds the TTY.
+                // Standard bracketed-paste protocol, which every modern
+                // guest that advertises DECSET 2004 understands.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
-                // Readline prompt: BEGIN is 0x18 0x02 (C-x C-b →
-                // bracketed-paste-begin via .bashrc). END is still the
-                // standard marker consumed inside _rl_bracketed_text.
-                // The readline bind loops via rl_read_key until \e[201~,
-                // so multi-line payloads are captured as a single edit —
-                // no need to fall back to standard markers for multiLine
-                // (b59d215d did that and broke bionic bash where the
-                // standard \e[200~ ESC is swallowed at dispatch, leaking
-                // "[200~" as literal and executing each pasted line).
+                // Bash readline prompt — BEGIN is 0x18 0x02 (C-x C-b →
+                // bracketed-paste-begin via .bashrc), END is the standard
+                // marker consumed inside _rl_bracketed_text. The bind
+                // loops via rl_read_key until \e[201~, so multi-line
+                // payloads are captured as a single edit. We can't use
+                // the standard \e[200~ prefix here because bionic bash's
+                // readline dispatch swallows the ESC (bug #97).
                 mSession.write("\u0018\u0002" + text + "\u001B[201~");
             }
         } else {
@@ -2775,6 +2782,51 @@ public final class TerminalEmulator {
             // behaviour — acceptable loss for multi-line paste in TUIs that
             // don't support bracketed-paste anyway.
             mSession.write(text.replaceAll("\r?\n", "\r"));
+        }
+    }
+
+    /**
+     * Returns true if bash itself is the foreground process on this
+     * terminal's PTY — i.e. the user is at a bash prompt, not inside a
+     * child TUI. Reads /proc/&lt;bashPid&gt;/stat and compares the tpgid
+     * field (which tracks the kernel's tcgetpgrp on the controlling
+     * TTY) against the bash pid.
+     *
+     * Returns true as a fail-safe when the shell pid is 0 (remote /
+     * stream session) or /proc is unreadable — the readline trigger is
+     * the pre-fix behaviour and doesn't corrupt a remote bash in any
+     * way it wasn't already corrupted (documented limitation for SSH).
+     */
+    private boolean isBashTtyForeground() {
+        int shellPid;
+        try {
+            shellPid = mSession.getShellPid();
+        } catch (Throwable t) {
+            return true;
+        }
+        if (shellPid <= 0) return true;
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.FileReader("/proc/" + shellPid + "/stat"));
+            String line;
+            try {
+                line = r.readLine();
+            } finally {
+                r.close();
+            }
+            if (line == null) return true;
+            // comm (field 2) is enclosed in parens and may contain
+            // spaces or parens itself; split on the LAST ')' to skip it.
+            int closeIdx = line.lastIndexOf(')');
+            if (closeIdx < 0 || closeIdx + 2 >= line.length()) return true;
+            String[] fields = line.substring(closeIdx + 2).split(" ");
+            // After comm: state, ppid, pgrp, session, tty_nr, tpgid, ...
+            // tpgid is field index 5 (0-indexed).
+            if (fields.length < 6) return true;
+            int tpgid = Integer.parseInt(fields[5]);
+            return tpgid == shellPid;
+        } catch (Throwable t) {
+            return true;
         }
     }
 

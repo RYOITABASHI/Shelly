@@ -46,4 +46,16 @@ public abstract class TerminalOutput {
 
     public abstract void onColorsChanged();
 
+    /**
+     * Return the OS pid of the local shell process driving this PTY, or
+     * 0 when no local process is involved (e.g. a stream-based session
+     * for socat/SSH). Used by {@link TerminalEmulator#paste(String)} to
+     * decide between the readline-compatible C-x C-b trigger (bash
+     * prompt) and the standard bracketed-paste markers (any child TUI
+     * currently holding the TTY).
+     */
+    public int getShellPid() {
+        return 0;
+    }
+
 }
