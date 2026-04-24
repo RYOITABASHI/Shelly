@@ -2787,16 +2787,31 @@ public final class TerminalEmulator {
     }
 
     /**
-     * Returns true if bash itself is the foreground process on this
-     * terminal's PTY — i.e. the user is at a bash prompt, not inside a
-     * child TUI. Reads /proc/&lt;bashPid&gt;/stat and compares the tpgid
-     * field (which tracks the kernel's tcgetpgrp on the controlling
-     * TTY) against the bash pid.
+     * Returns true when bash is the foreground process on this
+     * terminal's PTY — i.e. the user is at a bash prompt that can
+     * honour the \C-x\C-b bracketed-paste-begin bind installed by
+     * Shelly's .bashrc. Every other case (zsh/fish/dash shells, child
+     * TUIs like claude/codex/gemini, pipelines ending in less/vim,
+     * nested children of a foreign shell) returns false so the paste
+     * routes through the standard \e[200~..\e[201~ markers.
      *
-     * Returns true as a fail-safe when the shell pid is 0 (remote /
-     * stream session) or /proc is unreadable — the readline trigger is
-     * the pre-fix behaviour and doesn't corrupt a remote bash in any
-     * way it wasn't already corrupted (documented limitation for SSH).
+     * Two kernel-state signals are consulted:
+     *   1. /proc/&lt;shellPid&gt;/comm — the basename of the shell
+     *      process. MUST equal "bash" for either path below. This
+     *      blocks zsh/fish users who would otherwise see literal
+     *      ^X^B[201~ injected at their prompt.
+     *   2. /proc/&lt;shellPid&gt;/stat field 8 — tpgid, the kernel's
+     *      tcgetpgrp on the controlling TTY. Equal to shellPid when
+     *      bash is at its prompt; different when a child process
+     *      (claude, codex, nested bash, sleep in a pipeline, ...)
+     *      owns the TTY.
+     *   3. When tpgid differs, /proc/&lt;tpgid&gt;/comm is checked so
+     *      that nested bash (which inherits our .bashrc bind) still
+     *      routes through the readline path.
+     *
+     * Fail-safe: returns true when shellPid is 0 (remote / stream
+     * session) or /proc access fails entirely. This preserves the
+     * pre-fix SSH behaviour, which is a documented known limitation.
      */
     private boolean isBashTtyForeground() {
         int shellPid;
@@ -2806,6 +2821,12 @@ public final class TerminalEmulator {
             return true;
         }
         if (shellPid <= 0) return true;
+        // Guard 1: the shell itself must be bash. Proc failure → assume
+        // bash (pre-fix fallback). "Something other than bash" → do
+        // NOT send \C-x\C-b; that bind only exists in our .bashrc.
+        String shellComm = readProcComm(shellPid);
+        if (shellComm == null) return true;
+        if (!"bash".equals(shellComm)) return false;
         try {
             java.io.BufferedReader r = new java.io.BufferedReader(
                 new java.io.FileReader("/proc/" + shellPid + "/stat"));
@@ -2825,9 +2846,38 @@ public final class TerminalEmulator {
             // tpgid is field index 5 (0-indexed).
             if (fields.length < 6) return true;
             int tpgid = Integer.parseInt(fields[5]);
-            return tpgid == shellPid;
+            if (tpgid == shellPid) return true;
+            // Guard 2: nested bash. Inner bash has inherited our
+            // .bashrc bind, so \C-x\C-b still triggers bracketed-paste.
+            // Every other foreground process (child TUI, pipeline
+            // stage, backgrounded script) routes through the standard
+            // marker path.
+            String fgComm = readProcComm(tpgid);
+            return "bash".equals(fgComm);
         } catch (Throwable t) {
             return true;
+        }
+    }
+
+    /**
+     * Reads /proc/&lt;pid&gt;/comm and returns the basename of the
+     * process (e.g. "bash", "zsh", "claude", "node"). Returns null on
+     * any read error — caller distinguishes "proc unreadable → fall
+     * back to pre-fix behaviour" from "read succeeded but comm is
+     * not what we wanted".
+     */
+    private String readProcComm(int pid) {
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.FileReader("/proc/" + pid + "/comm"));
+            try {
+                String line = r.readLine();
+                return line == null ? null : line.trim();
+            } finally {
+                r.close();
+            }
+        } catch (Throwable t) {
+            return null;
         }
     }
 
