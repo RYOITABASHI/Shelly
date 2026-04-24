@@ -2738,15 +2738,21 @@ public final class TerminalEmulator {
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
         boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive();
-        boolean multiLine = text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0;
         if (bracketedMode) {
-            if (tuiMode || multiLine) {
-                // TUI/CLI app: use the standard bracketed-paste protocol.
+            if (tuiMode) {
+                // TUI/CLI app (alt-buffer or mouse tracking active):
+                // standard bracketed-paste protocol.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
                 // Readline prompt: BEGIN is 0x18 0x02 (C-x C-b →
                 // bracketed-paste-begin via .bashrc). END is still the
                 // standard marker consumed inside _rl_bracketed_text.
+                // The readline bind loops via rl_read_key until \e[201~,
+                // so multi-line payloads are captured as a single edit —
+                // no need to fall back to standard markers for multiLine
+                // (b59d215d did that and broke bionic bash where the
+                // standard \e[200~ ESC is swallowed at dispatch, leaking
+                // "[200~" as literal and executing each pasted line).
                 mSession.write("\u0018\u0002" + text + "\u001B[201~");
             }
         } else {
