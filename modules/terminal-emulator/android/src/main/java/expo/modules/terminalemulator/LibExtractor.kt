@@ -87,6 +87,14 @@ object LibExtractor {
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so",
+        // shelly-shell-launcher: tiny PIE binary used as $SHELL for tools that
+        // spawn their own shell via Node/Bun child_process (Claude Code, Gemini
+        // CLI, Codex). Must be extracted to a stable app-data path because
+        // nativeLibraryDir is empty on zero-copy-packaged installs, and on
+        // APK reinstall its obfuscated path changes, leaving any symlink
+        // baked into $HOME/bin/bash dangling. libexec_wrapper.so intercepts
+        // the execve() and routes it through /system/bin/linker64 as usual.
+        "lib/arm64-v8a/libshelly_shell.so" to "shelly_shell",
         // bug #117 Path C-bis: claude-code 2.1.113+ Bun SEA binary + matching
         // Shelly-patched musl libc loader. claude is ET_EXEC (~220 MB) and
         // can't be exec'd by bionic's linker64 directly; ld-musl-aarch64.so.1

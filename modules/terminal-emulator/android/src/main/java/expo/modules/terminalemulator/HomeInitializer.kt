@@ -444,7 +444,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // v52 (2026-04-24): re-point $SHELL at $HOME/bin/bash after the symlink
     //     is created so Claude Code CLI's basename($SHELL) shell validation
     //     accepts it. The .so target rejected basename check "bash" passes.
-    private const val BASHRC_VERSION = 52
+    // v53 (2026-04-24): move $SHELL from $nativeLibDir/libshelly_shell.so to
+    //     $libDir/shelly_shell. The nativeLibDir path is empty on zero-copy
+    //     installs and changes on every APK reinstall, leaving $HOME/bin/bash
+    //     as a dangling symlink that Node/Bun child_process.spawn("bash")
+    //     can't resolve (Claude Code, Gemini, Codex all affected). LibExtractor
+    //     now unpacks libshelly_shell.so to $libDir alongside node/git/bash.
+    private const val BASHRC_VERSION = 53
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -726,7 +732,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export COLORTERM=truecolor")
             sb.appendLine("export LANG=en_US.UTF-8")
             sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
-            sb.appendLine("export SHELL=\"$nativeLibDir/libshelly_shell.so\"")
+            // v53: point $SHELL at the LibExtractor-extracted shelly_shell
+            // binary in $libDir. Using nativeLibraryDir (v49) doesn't work on
+            // zero-copy-packaged installs where that directory is empty, and
+            // its obfuscated path changes on every APK reinstall, leaving
+            // $HOME/bin/bash as a dangling symlink. $libDir is stable across
+            // upgrades (filesDir), and libexec_wrapper.so's LD_PRELOAD still
+            // routes the execve through /system/bin/linker64 for SELinux.
+            sb.appendLine("export SHELL=\"$libDir/shelly_shell\"")
             sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
