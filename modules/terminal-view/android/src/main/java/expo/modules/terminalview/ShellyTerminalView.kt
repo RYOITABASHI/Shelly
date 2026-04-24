@@ -547,38 +547,44 @@ class ShellyTerminalView(
         // a single user gesture spawned ~10 cancelled show requests that
         // ping-ponged until the tracker timed out, leaving the keyboard
         // permanently hidden.
-        //
-        // Single-shot approach: run inside the current dispatch pass so
-        // fromUser=true for onSingleTapUp, and fall back immediately to
-        // WindowInsetsController.show(ime()) — the modern API that
-        // edge-to-edge honours regardless of fromUser. Drop the retry
-        // ladder; if the first attempt misses, the user can tap again and
-        // that second gesture will again carry fromUser=true.
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
         terminalView.requestFocusFromTouch()
         imm.restartInput(terminalView)
         val shown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
-        if (!shown && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
-        }
         Log.i(TAG, "$reason.showKeyboard focused=${terminalView.isFocused} shown=$shown viewHash=${System.identityHashCode(terminalView)}")
 
-        // bug #116 regression after c236349f: when another pane's view was
-        // the previously-served one, IMM.focusIn(newView) doesn't fire until
-        // ViewRootImpl processes the focus traversal, which happens on the
-        // next Choreographer pass. Until then showSoftInput is rejected with
-        // "view is not served" and the keyboard stays on the old pane. A
-        // single next-frame retry is enough — if IMM still rejects after
-        // ViewRootImpl has had one pass, the user can tap again. We do NOT
-        // revive the 5-step ladder that triggered the Android 15 cancel storm.
-        if (!shown && terminalView.rootView?.findFocus() === terminalView) {
-            terminalView.post {
-                if (terminalView.rootView?.findFocus() !== terminalView) return@post
-                val retryShown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
-                Log.i(TAG, "$reason.showKeyboard.retry shown=$retryShown viewHash=${System.identityHashCode(terminalView)}")
-            }
+        if (shown) return
+
+        // bug #116 follow-up 3: on Samsung OneUI / Android 16, when a
+        // sibling TerminalView was the previously-served view, IMM's
+        // mServedView stays pointed at that old view even after our view
+        // gains focus — because focusIn(newView) is dispatched via
+        // ViewRootImpl asynchronously and sometimes never reaches IMM with
+        // the new view as argument (we've seen five consecutive
+        // showSoftInput rejections with servedView=<old>,focus=false and
+        // view=<new>,focus=true). Single post{} retry wasn't enough.
+        //
+        // Fix: force IMM to drop its stale servedView binding via
+        // hideSoftInputFromWindow, then re-request focus + showSoftInput
+        // after a short delay long enough for ViewRootImpl to flush focus
+        // events. 80 ms covers 5 frames at 60 Hz and has been sufficient
+        // in on-device verification. ONE retry only — we do NOT revive the
+        // 5-step ladder that triggered the Android 15 cancel storm.
+        val token = terminalView.windowToken
+        if (token != null) {
+            imm.hideSoftInputFromWindow(token, 0)
         }
+        terminalView.postDelayed({
+            if (terminalView.rootView?.findFocus() !== terminalView) return@postDelayed
+            terminalView.requestFocusFromTouch()
+            imm.restartInput(terminalView)
+            val retryShown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+            if (!retryShown && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
+            }
+            Log.i(TAG, "$reason.showKeyboard.retry shown=$retryShown viewHash=${System.identityHashCode(terminalView)}")
+        }, 80)
     }
 
     fun scrollToRowCommand(row: Int) {
@@ -627,11 +633,14 @@ class ShellyTerminalView(
         val visibility = terminalView.visibility
         val width = terminalView.width
         val height = terminalView.height
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.restartInput(terminalView)
-        val imeShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
         val sid = currentSessionId ?: ""
-        Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} imeShow=$imeShown prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
+        // Keyboard binding is handled entirely by showKeyboardWhenServed
+        // below. The previous version ALSO called imm.restartInput +
+        // showSoftInput inline here, which doubled the number of
+        // "Ignoring showSoftInput as view is not served" rejections (IMM
+        // treats each call as a separate pending request) and contributed
+        // to the cancel-storm signature on Samsung OneUI.
+        Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
         showKeyboardWhenServed("onSingleTapUp")
         onFocusRequested(mapOf("sessionId" to sid))
     }
