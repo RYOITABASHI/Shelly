@@ -441,7 +441,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // v51 (2026-04-23): add PATH-visible env/sh compatibility links and
     //     always append Android system bins so Codex/Gemini child process
     //     lookup does not fall into dead /usr/bin or /bin entries.
-    private const val BASHRC_VERSION = 51
+    // v52 (2026-04-24): re-point $SHELL at $HOME/bin/bash after the symlink
+    //     is created so Claude Code CLI's basename($SHELL) shell validation
+    //     accepts it. The .so target rejected basename check "bash" passes.
+    private const val BASHRC_VERSION = 52
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -838,6 +841,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  rm -f \"\$HOME/bin/bash\" 2>/dev/null")
             sb.appendLine("  ln -s \"\$SHELL\" \"\$HOME/bin/bash\" 2>/dev/null || true")
             sb.appendLine("fi")
+            // v52: re-point $SHELL at $HOME/bin/bash so tools that validate
+            // basename($SHELL) against {sh,bash,zsh,...} (e.g. Claude Code
+            // CLI's Bash tool) accept it. The symlink target is the same
+            // libshelly_shell.so, but basename=bash passes shell detection.
+            sb.appendLine("export SHELL=\"\$HOME/bin/bash\"")
             sb.appendLine("if [ ! -e \"\$HOME/bin/sh\" ] || [ \"\$(readlink \"\$HOME/bin/sh\" 2>/dev/null)\" != \"/system/bin/sh\" ]; then")
             sb.appendLine("  rm -f \"\$HOME/bin/sh\" 2>/dev/null")
             sb.appendLine("  ln -s \"/system/bin/sh\" \"\$HOME/bin/sh\" 2>/dev/null || true")
