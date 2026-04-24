@@ -7,8 +7,8 @@
 /** Header bar height (both Chat and Terminal) */
 export const HEADER_HEIGHT = 40;
 
-/** Shortcut key bar / action bar height */
-export const KEY_BAR_HEIGHT = 32;
+/** Shortcut key bar / action bar height (matches CommandKeyBar.container.minHeight) */
+export const KEY_BAR_HEIGHT = 52;
 
 /** Header horizontal padding */
 export const HEADER_PADDING_H = 12;
