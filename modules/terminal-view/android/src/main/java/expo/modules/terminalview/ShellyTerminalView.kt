@@ -48,6 +48,15 @@ class ShellyTerminalView(
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
         private const val RESIZE_DEBOUNCE_MS = 150L
+        // bug #116 follow-up 5: a single tap on a pane body fires
+        // showKeyboardWhenServed three times within the same frame —
+        // onSingleTapUp (native), PaneSlot.handleFocusPane (RN touch
+        // handler) → TerminalViewModule.focus → focusCommand, and the
+        // onFocusRequested event handler in TerminalPane re-issuing
+        // focus. Each invocation competes for IMM.mServedView and
+        // triggers its own 80 ms postDelayed retry, producing cancel-
+        // storm semantics. Collapse calls that land within this window.
+        private const val SHOW_KEYBOARD_DEBOUNCE_MS = 50L
     }
 
     // Yoga layout gives correct full-width sizing from React Native.
@@ -61,6 +70,11 @@ class ShellyTerminalView(
     private var currentShellySession: ShellyTerminalSession? = null
     private var glTerminalView: GLTerminalView? = null
     private var useGPU = false
+    // Monotonic timestamp of the last showKeyboardWhenServed call —
+    // used to debounce the triple-dispatch described in the companion
+    // object. SystemClock.uptimeMillis() is monotonic and not affected
+    // by wall-clock changes.
+    private var lastShowKeyboardAtMs = 0L
 
     // Track last synced size to avoid redundant resize calls
     private var lastSyncedCols = -1
@@ -110,6 +124,13 @@ class ShellyTerminalView(
         terminalView.setPadding(padPx, 0, padPx, 0)
 
         terminalView.setTerminalViewClient(this)
+        // bug #116 follow-up 8 (P2-1): assign a unique View id so IMM
+        // logs distinguish panes. Before this, every TerminalView
+        // reported aid=1073741824 (=0x40000000 = View.NO_ID), making
+        // multi-pane focus-state logs ambiguous.
+        if (terminalView.id == View.NO_ID) {
+            terminalView.id = View.generateViewId()
+        }
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
         terminalView.setScrollStateListener { isScrolledUp ->
@@ -452,6 +473,19 @@ class ShellyTerminalView(
         blockDetector.destroy()
         inputHandler.resetModifiers()
         detachCurrentSession()
+        // bug #116 follow-up 7 (P1-3): proactively drop IMM's reference
+        // to this view so a subsequent pane tab switch (terminal → ai →
+        // terminal) doesn't re-land on the destroyed instance. IMM
+        // caches mServedView by reference; without this hint it holds
+        // the dead view until GC, and the first keystroke after re-mount
+        // is silently lost while IMM resolves the stale binding.
+        try {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            val token = terminalView.windowToken
+            if (imm != null && token != null) {
+                imm.hideSoftInputFromWindow(token, 0)
+            }
+        } catch (_: Throwable) { /* best-effort; do not fail teardown */ }
     }
 
     fun setGpuRendering(enabled: Boolean) {
@@ -536,6 +570,18 @@ class ShellyTerminalView(
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             ?: return
 
+        // Debounce: collapse the triple-dispatch (native tap +
+        // PaneSlot focus handler + onFocusRequested event) into a
+        // single IMM rebind. Pending postDelayed retry from the
+        // first call still runs; subsequent calls within the window
+        // log and return without touching IMM again.
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        if (nowMs - lastShowKeyboardAtMs < SHOW_KEYBOARD_DEBOUNCE_MS) {
+            Log.i(TAG, "$reason.showKeyboard.debounced deltaMs=${nowMs - lastShowKeyboardAtMs}")
+            return
+        }
+        lastShowKeyboardAtMs = nowMs
+
         // bug #104 follow-up: the previous implementation fired five
         // postDelayed retries at 0/50/150/300/600 ms to work around Samsung
         // "view is not served" rejections during pane resize. On Android 15+
@@ -610,36 +656,47 @@ class ShellyTerminalView(
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 2.0f)
 
     override fun onSingleTapUp(e: MotionEvent) {
-        // Speculative fix (bug #116 follow-up 2): in multi-pane layouts,
-        // tapping the right pane's body fired onSingleTapUp but the IME
-        // stayed hidden because:
-        //   (a) a sibling TerminalView (left pane) already owned focus
-        //       so requestFocus() could refuse to hand it over, and
-        //   (b) some ROMs ignore showSoftInput when the target view isn't
-        //       currently the focused one.
-        // Force clear any prior focus, flip the focusable flags on, then
-        // request focus in touch mode. This matches how Termux's own
-        // TerminalView initializes focus in onCreate.
+        // bug #116 follow-up 6 (P0-2 from 2026-04-24 late-night audit):
+        // Samsung OneUI / Android 14-16 drops cross-sibling focus
+        // transitions when clearFocus() and requestFocus() happen in the
+        // same dispatch pass — the focus state machine sees a no-op
+        // because findFocus() briefly returns null between the two calls
+        // and OneUI's ViewRootImpl.handleWindowFocusChanged eagerly
+        // re-stomps mServedView back to the first focusable child. Net
+        // effect: hardware keyboard (real HW or scrcpy via Android key
+        // injection) bypasses IMM entirely and lands on the stale view.
+        //
+        // Fix: when a sibling previously held focus, split clearFocus
+        // and requestFocus across TWO ViewRoot passes via post{}. IMM
+        // rebind and focus-event dispatch then have a proper frame to
+        // settle. Termux's own onSingleTapUp does a plain requestFocus()
+        // (line 215 in TerminalView.java) without manual sibling clear —
+        // the manual clearFocus was a speculative pre-OneUI-era fix that
+        // worked against us after Android 15's focus tightening.
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
         val rootFocused = rootView?.findFocus()
-        if (rootFocused != null && rootFocused !== terminalView) {
-            rootFocused.clearFocus()
-        }
-        val reqOk = terminalView.requestFocusFromTouch()
         val hasWinFocus = terminalView.hasWindowFocus()
-        val isFocused = terminalView.isFocused
         val isFocusable = terminalView.isFocusable
         val visibility = terminalView.visibility
         val width = terminalView.width
         val height = terminalView.height
         val sid = currentSessionId ?: ""
-        // Keyboard binding is handled entirely by showKeyboardWhenServed
-        // below. The previous version ALSO called imm.restartInput +
-        // showSoftInput inline here, which doubled the number of
-        // "Ignoring showSoftInput as view is not served" rejections (IMM
-        // treats each call as a separate pending request) and contributed
-        // to the cancel-storm signature on Samsung OneUI.
+        val needsFocusHandoff = rootFocused != null && rootFocused !== terminalView
+
+        if (needsFocusHandoff) {
+            rootFocused!!.clearFocus()
+            terminalView.post {
+                val reqOkPost = terminalView.requestFocusFromTouch()
+                Log.i(TAG, "onSingleTapUp.post sess=$sid reqFocus=$reqOkPost hasWin=${terminalView.hasWindowFocus()} focused=${terminalView.isFocused} focusable=${terminalView.isFocusable} vis=${terminalView.visibility} size=${terminalView.width}x${terminalView.height} prevFocusWas=${rootFocused.javaClass.simpleName}#${System.identityHashCode(rootFocused)} viewHash=${System.identityHashCode(terminalView)}")
+                showKeyboardWhenServed("onSingleTapUp.post")
+                onFocusRequested(mapOf("sessionId" to sid))
+            }
+            return
+        }
+
+        val reqOk = terminalView.requestFocusFromTouch()
+        val isFocused = terminalView.isFocused
         Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
         showKeyboardWhenServed("onSingleTapUp")
         onFocusRequested(mapOf("sessionId" to sid))

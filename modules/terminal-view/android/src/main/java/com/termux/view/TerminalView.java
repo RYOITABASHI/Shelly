@@ -1249,7 +1249,14 @@ public class TerminalView extends View {
         super.onWindowFocusChanged(hasWindowFocus);
         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
             mClient.logInfo(LOG_TAG, "onWindowFocusChanged(hasWindowFocus=" + hasWindowFocus + ")");
-        if (hasWindowFocus) {
+        // bug #116 follow-up 4: in a multi-pane layout every mounted
+        // TerminalView receives onWindowFocusChanged — if each unconditionally
+        // calls imm.restartInput(this), IMM processes them serially and the
+        // LAST caller wins the mServedView binding, which is arbitrary
+        // (depends on Yoga layout order). On a 4-pane Z Fold6 split, this
+        // pulled IMM away from the pane the user was actually typing in.
+        // Gate on isFocused so only the currently-focused view rebinds IMM.
+        if (hasWindowFocus && isFocused()) {
             try {
                 InputMethodManager imm = (InputMethodManager) getContext()
                     .getSystemService(Context.INPUT_METHOD_SERVICE);

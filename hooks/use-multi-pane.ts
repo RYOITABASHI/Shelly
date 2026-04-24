@@ -478,6 +478,17 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           newSlots[empty] = { id: slotId, tab };
         }
         set({ preset, slots: newSlots, focusedSlot: empty });
+
+        // bug #116 follow-up 10 (P1-2): mirror focusedSlot into
+        // usePaneStore so the newly-added pane becomes the actual focus
+        // target. Without this, the new pane mounts with
+        // isFocusedPane=false, its focusedPaneId effect never fires,
+        // and the IME stays on the pre-split pane — user has to tap
+        // the new pane manually to start typing.
+        try {
+          const { usePaneStore } = require('@/store/pane-store');
+          usePaneStore.getState().setFocusedPane(slotId);
+        } catch { /* pane-store unavailable (tests) */ }
         return null;
       };
 
@@ -549,6 +560,21 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           focusedSlot: newFocus,
           maximizedSlot: newMaximized,
         });
+
+        // bug #116 follow-up 9 (P1-1 from 2026-04-24 late-night audit):
+        // mirror the focus update into usePaneStore so focusedPaneId
+        // doesn't keep pointing at the dead leaf. Without this sync,
+        // surviving panes' "focusedPaneId === paneId" effects never
+        // fire after a close, the IME keeps binding to the destroyed
+        // view, and the next 1-2 keystrokes are silently lost.
+        try {
+          const { usePaneStore } = require('@/store/pane-store');
+          const newFocusId = compacted[newFocus]?.id ?? null;
+          const currentFocusId = usePaneStore.getState().focusedPaneId;
+          if (newFocusId && currentFocusId !== newFocusId) {
+            usePaneStore.getState().setFocusedPane(newFocusId);
+          }
+        } catch { /* pane-store unavailable (tests) */ }
       };
 
       return {
