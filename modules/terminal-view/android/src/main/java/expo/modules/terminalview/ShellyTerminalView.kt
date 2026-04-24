@@ -57,6 +57,19 @@ class ShellyTerminalView(
         // triggers its own 80 ms postDelayed retry, producing cancel-
         // storm semantics. Collapse calls that land within this window.
         private const val SHOW_KEYBOARD_DEBOUNCE_MS = 50L
+
+        // bug #116 follow-up 11: Termux's internal onSingleTapUp
+        // (TerminalView.java:215) calls requestFocus() BEFORE our
+        // client handler runs. By the time ShellyTerminalView's
+        // onSingleTapUp executes, rootView.findFocus() already returns
+        // the newly-tapped view — so the earlier findFocus-based
+        // handoff detection could never fire. We keep a process-wide
+        // WeakReference to the most recently focused TerminalView so
+        // we can identify the sibling that IMM may still be treating
+        // as servedView, and call clearFocus() on IT to trigger
+        // IMM.focusOut and free mServedView. Weak so a destroyed view
+        // doesn't pin its context.
+        private var lastFocusedTerminalView: java.lang.ref.WeakReference<TerminalView>? = null
     }
 
     // Yoga layout gives correct full-width sizing from React Native.
@@ -656,39 +669,39 @@ class ShellyTerminalView(
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 2.0f)
 
     override fun onSingleTapUp(e: MotionEvent) {
-        // bug #116 follow-up 6 (P0-2 from 2026-04-24 late-night audit):
-        // Samsung OneUI / Android 14-16 drops cross-sibling focus
-        // transitions when clearFocus() and requestFocus() happen in the
-        // same dispatch pass — the focus state machine sees a no-op
-        // because findFocus() briefly returns null between the two calls
-        // and OneUI's ViewRootImpl.handleWindowFocusChanged eagerly
-        // re-stomps mServedView back to the first focusable child. Net
-        // effect: hardware keyboard (real HW or scrcpy via Android key
-        // injection) bypasses IMM entirely and lands on the stale view.
-        //
-        // Fix: when a sibling previously held focus, split clearFocus
-        // and requestFocus across TWO ViewRoot passes via post{}. IMM
-        // rebind and focus-event dispatch then have a proper frame to
-        // settle. Termux's own onSingleTapUp does a plain requestFocus()
-        // (line 215 in TerminalView.java) without manual sibling clear —
-        // the manual clearFocus was a speculative pre-OneUI-era fix that
-        // worked against us after Android 15's focus tightening.
+        // bug #116 follow-up 6 + 11: cross-sibling focus handoff on
+        // Samsung OneUI / Android 14-16. Termux's internal tap handler
+        // (TerminalView.java:215) already ran requestFocus() by the
+        // time we get here, so rootView.findFocus() now points at us —
+        // we can NOT use findFocus() to find the previously-focused
+        // sibling. Use the process-wide lastFocusedTerminalView weak
+        // ref to reach it. When a sibling held focus before, IMM's
+        // mServedView is still bound to it; calling clearFocus() on
+        // that sibling synchronously dispatches IMM.focusOut which
+        // actually resets mServedView (whereas our own
+        // hideSoftInputFromWindow does NOT reset it — it only hides
+        // the IME surface).
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
-        val rootFocused = rootView?.findFocus()
+        val prevTerminalView = lastFocusedTerminalView?.get()
         val hasWinFocus = terminalView.hasWindowFocus()
         val isFocusable = terminalView.isFocusable
         val visibility = terminalView.visibility
         val width = terminalView.width
         val height = terminalView.height
         val sid = currentSessionId ?: ""
-        val needsFocusHandoff = rootFocused != null && rootFocused !== terminalView
+        val needsFocusHandoff = prevTerminalView != null && prevTerminalView !== terminalView
 
         if (needsFocusHandoff) {
-            rootFocused!!.clearFocus()
+            // clearFocus on the stale sibling (triggers IMM.focusOut,
+            // resets mServedView if that view was served). Split the
+            // request across ViewRoot passes so OneUI's focus machine
+            // sees both events.
+            prevTerminalView!!.clearFocus()
+            lastFocusedTerminalView = java.lang.ref.WeakReference(terminalView)
             terminalView.post {
                 val reqOkPost = terminalView.requestFocusFromTouch()
-                Log.i(TAG, "onSingleTapUp.post sess=$sid reqFocus=$reqOkPost hasWin=${terminalView.hasWindowFocus()} focused=${terminalView.isFocused} focusable=${terminalView.isFocusable} vis=${terminalView.visibility} size=${terminalView.width}x${terminalView.height} prevFocusWas=${rootFocused.javaClass.simpleName}#${System.identityHashCode(rootFocused)} viewHash=${System.identityHashCode(terminalView)}")
+                Log.i(TAG, "onSingleTapUp.post sess=$sid reqFocus=$reqOkPost hasWin=${terminalView.hasWindowFocus()} focused=${terminalView.isFocused} focusable=${terminalView.isFocusable} vis=${terminalView.visibility} size=${terminalView.width}x${terminalView.height} prevTermView=#${System.identityHashCode(prevTerminalView)} viewHash=${System.identityHashCode(terminalView)}")
                 showKeyboardWhenServed("onSingleTapUp.post")
                 onFocusRequested(mapOf("sessionId" to sid))
             }
@@ -696,8 +709,9 @@ class ShellyTerminalView(
         }
 
         val reqOk = terminalView.requestFocusFromTouch()
+        lastFocusedTerminalView = java.lang.ref.WeakReference(terminalView)
         val isFocused = terminalView.isFocused
-        Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} prevFocusWas=${rootFocused?.javaClass?.simpleName}#${if (rootFocused != null) System.identityHashCode(rootFocused) else 0} viewHash=${System.identityHashCode(terminalView)}")
+        Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} prevTermView=#${if (prevTerminalView != null) System.identityHashCode(prevTerminalView) else 0} viewHash=${System.identityHashCode(terminalView)}")
         showKeyboardWhenServed("onSingleTapUp")
         onFocusRequested(mapOf("sessionId" to sid))
     }
