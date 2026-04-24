@@ -2737,11 +2737,24 @@ public final class TerminalEmulator {
         // exactly where we intend.
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
-        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive();
+        // Claude Code (and similar Node/Ink TUIs) advertise DECSET 2004 but
+        // neither enter alt-buffer nor mouse-tracking at the input prompt,
+        // so the old tuiMode heuristic routed their paste through the
+        // readline-only \C-x\C-b trigger, which the TUI doesn't understand:
+        // \x18\x02 is eaten as garbage, \n submits, multi-line paste gets
+        // split across turns. Application cursor keys (DECSET 1) and
+        // application keypad (DECSET 66) are set by effectively every full
+        // TUI that reads arrow keys via terminfo's smkx, but NOT by bash
+        // readline at an ordinary prompt, so including them is a safe
+        // widening: Claude Code / Codex / Gemini get standard brackets,
+        // bash readline keeps the \C-x\C-b trigger.
+        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive()
+                || isDecsetInternalBitSet(DECSET_BIT_APPLICATION_CURSOR_KEYS)
+                || isDecsetInternalBitSet(DECSET_BIT_APPLICATION_KEYPAD);
         if (bracketedMode) {
             if (tuiMode) {
-                // TUI/CLI app (alt-buffer or mouse tracking active):
-                // standard bracketed-paste protocol.
+                // TUI/CLI app (alt-buffer, mouse tracking, or application
+                // cursor/keypad mode active): standard bracketed-paste protocol.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
                 // Readline prompt: BEGIN is 0x18 0x02 (C-x C-b →
