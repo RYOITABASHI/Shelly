@@ -517,7 +517,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        rewrites cli.js `shell:!0` → `shell:"/system/bin/sh"` on the
     //        staged tree. The CI workflow applies the same sed to the
     //        APK-bundled cli.js so the fix is live on first launch.
-    private const val BASHRC_VERSION = 54
+    // v55 (2026-04-24): claude() priority swap — legacy cli.js 2.1.112
+    //     (Option B patched) is the default, musl Bun SEA is opt-in via
+    //     SHELLY_PREFER_MUSL_CLAUDE=1. On-device verification with build
+    //     693 proved the musl SEA hardcodes `/bin/sh -c` and fails every
+    //     Bash tool call with Exit 1; cli.js tier with Option B returns
+    //     the expected output. Pinned to 2.1.112 is an acceptable price
+    //     for table-stakes Bash tool function.
+    private const val BASHRC_VERSION = 55
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1010,16 +1017,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // guarantees Tier 2 is always known-good: a failing install
             // never reaches the live tree, so Tier 1 either works or falls
             // through to Tier 2/3 on the next invocation.
-            // bug #117 Path C-bis: primary tier is the APK-bundled Bun SEA
-            // binary + Shelly-patched musl loader. Legacy cli.js chain
-            // (auto/prev/bundled) survives as a fallback so an older APK
-            // whose build predates Path C-bis still boots a working claude.
+            // bug #117 priority swap (2026-04-24 late-night): cli.js 2.1.112
+            // (legacy tier) is now PREFERRED because Option B (the cli.js
+            // `shell:!0` → `shell:"/system/bin/sh"` sed, commit 83f61542 +
+            // CI mirror) makes the Bash tool actually work. The musl Bun
+            // SEA (claude-code 2.1.113+) is a single compiled ELF, so we
+            // can't rewrite its hardcoded `/bin/sh -c` dispatch — every
+            // Bash tool invocation exits 1 with empty stdout. Verified
+            // on-device 2026-04-24 with build 693: `SHELLY_FORCE_LEGACY_CLAUDE=1
+            // claude` runs `echo claude-bash-test` via Bash tool and
+            // returns `claude-bash-test`; default (musl SEA) returns
+            // Exit code 1.
+            //
+            // Tradeoff: pinned to claude-code 2.1.112, missing any
+            // 2.1.113+ feature improvements. Acceptable because a
+            // working Bash tool is table stakes. Users who need the
+            // latest can opt in with `SHELLY_PREFER_MUSL_CLAUDE=1`.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_PREFER_MUSL_CLAUDE:-0}\" = \"1\" ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
             // time — bionic has no /etc/resolv.conf so without this seed
