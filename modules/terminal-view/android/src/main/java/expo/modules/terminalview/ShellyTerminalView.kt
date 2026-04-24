@@ -563,6 +563,22 @@ class ShellyTerminalView(
             terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
         }
         Log.i(TAG, "$reason.showKeyboard focused=${terminalView.isFocused} shown=$shown viewHash=${System.identityHashCode(terminalView)}")
+
+        // bug #116 regression after c236349f: when another pane's view was
+        // the previously-served one, IMM.focusIn(newView) doesn't fire until
+        // ViewRootImpl processes the focus traversal, which happens on the
+        // next Choreographer pass. Until then showSoftInput is rejected with
+        // "view is not served" and the keyboard stays on the old pane. A
+        // single next-frame retry is enough — if IMM still rejects after
+        // ViewRootImpl has had one pass, the user can tap again. We do NOT
+        // revive the 5-step ladder that triggered the Android 15 cancel storm.
+        if (!shown && terminalView.rootView?.findFocus() === terminalView) {
+            terminalView.post {
+                if (terminalView.rootView?.findFocus() !== terminalView) return@post
+                val retryShown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+                Log.i(TAG, "$reason.showKeyboard.retry shown=$retryShown viewHash=${System.identityHashCode(terminalView)}")
+            }
+        }
     }
 
     fun scrollToRowCommand(row: Int) {
