@@ -686,7 +686,82 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### bug #122 — Shelly Doctor UI dashboard (Codex AnyClaw review 2026-04-25)
 
+**発見**: 2026-04-25 Codex AnyClaw 比較レビュー
+**動機**: AnyClaw は health/auth/CLI version/proxy 状態を 1 画面 dashboard で出している。Shelly は `shelly doctor` を CLI で持っているが UI 化されていない。HN ローンチ後にユーザーが「動かない」と言ってきたとき、screenshot 1 枚で診断できると support コストが激減する。
+
+**スコープ**:
+- ContextBar に小さな ❤️ アイコン (緑/黄/赤) — クリックで Doctor pane を open
+- Doctor pane の表示項目:
+  - **CLIs**: claude / codex / gemini それぞれの `--version` + 最終 smoke 結果 + 最終 update 時刻
+  - **Auth**: `~/.claude.json` / `~/.codex/auth.json` / `~/.gemini/oauth_creds.json` の存在 + 期限 (token expiry が分かる場合)
+  - **Runtime**: BASHRC_VERSION, `$HOME/.shelly-cli/` channel (stable/latest), proot rootfs OK
+  - **Storage**: `MANAGE_EXTERNAL_STORAGE` 取得状態, `/sdcard` write probe
+  - **Network**: DNS / CA / proxy detection
+  - **Last error**: `~/.shelly/last-error.json` (新規) — 直近の CLI 起動失敗ログ
+
+**実装ノート**:
+- `shelly doctor --json` を追加 (既存 CLI を JSON 出力に拡張)
+- AIPane と並列の DoctorPane を pane-registry に追加
+- 24h 毎に background tick で health 再計測 (バッテリー impact 注意)
+
+**優先度**: P1 (v4.3.1)
+**見積**: 1 日 (CLI extension 2h + pane UI 4h + ContextBar widget 2h)
+
+---
+
+### bug #123 — Bootstrap state machine refactor (HomeInitializer.kt 肥大化)
+
+**発見**: 2026-04-25 Codex AnyClaw レビュー
+**症状**: `HomeInitializer.kt` (1500+ 行) と `.bashrc` 生成ロジックが密結合で、phase boundary が曖昧。BASHRC_VERSION up のたびに想定外箇所が壊れる (build #693 〜 #712 のリグレッション系列)。
+
+**修正方針 (Codex 提案)**:
+1. **Phase 分離**: bootstrap → install → auth → health → server start を独立 Kotlin class に
+2. **State file**: `$HOME/.shelly/bootstrap-state.json` に各 phase の last-success-version + timestamp を記録
+3. **Phase logging**: `[ShellyBootstrap][install] start` / `done` を logcat に明示的に出す
+4. **Idempotent re-entry**: 部分失敗からの再開を確実に
+
+**注意**: 動いている部分には極力触らない。リファクタは v4.4 (HN 後 1-2 週) に隔離ブランチで。build #712 級のリグレッション再発を絶対避ける。
+
+**優先度**: P2 (v4.4.0)
+**見積**: 2-3 日 (設計 1 日 + 実装 + 全 BASHRC フロー回帰テスト)
+
+---
+
+### bug #124 — Node compat preload shim (NODE_OPTIONS=--require)
+
+**発見**: 2026-04-25 Codex AnyClaw レビュー (AnyClaw の bionic-compat.js)
+**動機**: Android bionic 上での Node 互換差分 (TLS / fs / signal 等) を 1 か所で吸収できれば、CLI ごとの個別 patch (`patchClaude` / `patchCodex` / `patchGemini` の sed 群) が減らせる。
+
+**慎重論**:
+- bug #117 Path A (musl libexec_wrapper) で Claude Bun SEA が解決すれば、shim の必要性は下がる
+- `NODE_OPTIONS=--require` は **全 child node プロセスに伝播** する。ユーザーが書いた script にも効くので、副作用が読めない
+- 段階導入: まず Gemini だけに opt-in `SHELLY_USE_NODE_COMPAT_SHIM=1` で試す → 1 週間 telemetry → 全展開判断
+
+**修正方針**:
+- `$HOME/.shelly/node-compat.js` に必要最小限の polyfill (現在の sed patch を JS 化)
+- HomeInitializer.kt で生成
+- 各 CLI runner で `NODE_OPTIONS=--require=$HOME/.shelly/node-compat.js` を `_run` env に注入 (opt-in)
+
+**優先度**: P2 (#117 Path A の結果次第で取りやめも検討)
+**見積**: 1 日 + telemetry 1 週
+
+---
+
+### bug #125 — Foreground service オンボーディング UX
+
+**発見**: 2026-04-25 Codex AnyClaw レビュー
+**症状**: AnyClaw は foreground service / Doze 除外を初回起動時に明示的に説明している。Shelly は既に foreground service は持っているが、ユーザーへの説明 UX がない → Samsung 系のバッテリー最適化で kill されることがある。
+
+**修正方針**:
+- 初回起動時の `first-launch-setup.ts` に Step を追加: 「バッテリー最適化から除外してね、理由は CLI が長時間動くから」+ 設定アプリへの直接 Intent
+- Settings → System → "Battery exemption status" 表示 (Doctor pane 候補)
+
+**優先度**: P3 (HN 後にユーザーフィードバックで kill 報告が来てから対応)
+**見積**: 半日
+
+---
 
 ### bug #76 — Codex CLI が起動しない (optional native dep 欠落 + sed patch 未適用)
 
