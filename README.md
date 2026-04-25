@@ -6,7 +6,9 @@
 
 <h3 align="center">
   <code>Terminal + AI + Browser + Markdown + Preview</code><br>
-  <sub>A mobile IDE where the AI reads your terminal. No copy-paste, no tab-switching, no desktop.</sub>
+  <sub>A full Android terminal IDE with Claude Code, Codex, Gemini CLI, Git, Bash, Python, and editors bundled in the APK.<br>
+  No Termux install, no distro bootstrap, no separate package manager setup.<br>
+  Open the app, authenticate your AI CLI, and start working in local multi-pane terminals on Android.</sub>
 </h3>
 
 <p align="center">
@@ -570,6 +572,8 @@ Shelly is v0.1.0. Here's what we know isn't perfect yet.
 - **`/sdcard` access requires MANAGE_EXTERNAL_STORAGE** — Android 11+ Scoped Storage blocks direct `open(2)` on `/sdcard` paths without this permission. Shelly asks for it on first launch; if you deny it, `source /sdcard/Download/foo.sh` will fail with `Permission denied`. Re-grant from system Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files.
 - **Claude Code first-run OAuth requires credential transplant** — Anthropic's OAuth flow tries a loopback callback that requires a registered browser handler (`xdg-open` / `termux-open`); under Shelly the flow falls back to manual code paste, and the paste step rejects with `OAuth error: status code 400` for reasons we haven't fully traced. Workaround: complete `/login` in another environment (Termux, PC, GitHub Codespaces, anywhere Claude Code already works), then transplant the credentials — details in [Bring your own credentials](#bring-your-own-credentials) below. This is an intentional scope limitation: first-run zero-setup authentication is the job of the sister project **Chelly**, not Shelly. Tracked as bug #102.
 - **Gemini CLI `/auth` cannot complete inside Shelly either** — same pattern as Claude: gemini-cli tries to `spawn('xdg-open', [url])` and gets `EACCES`, and copying the OAuth URL into an external browser returns HTTP 400 from Google (the registered loopback port in the gemini-cli OAuth client doesn't match what the CLI picked). Workaround is identical: authenticate on another machine, then transplant `~/.gemini/` — see [Bring your own credentials](#bring-your-own-credentials). Tracked as bug #115.
+- **Very large or binary pastes** — the paste path is a one-shot write into the PTY. Multi-megabyte clipboard payloads will take noticeable time and may stall the UI briefly; binary content (non-UTF-8 bytes, null characters) is not a supported transport mechanism and may corrupt the shell buffer. Use `curl -O` / `scp` / `/sdcard/Download/` drop-point for binary transfer.
+- **Fold/rotate/split-screen during an active CLI session** — Shelly survives layout changes, but terminal state is not always persisted across an Android Activity recreate. Save or commit work before aggressive multitasking (fold ↔ unfold rapidly, split-screen drag while a foreground job is running). AI CLI streams specifically are best completed or interrupted (Ctrl-C) before rotating.
 
 ### Bring your own credentials
 
