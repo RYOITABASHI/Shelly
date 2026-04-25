@@ -238,11 +238,16 @@ jobs:
             GEM_COUNT=0
             for f in "$GEM_BUNDLE"/chunk-*.js "$GEM_BUNDLE"/gemini-*.js; do
               [ -f "$f" ] || continue
+              # Remove the Termux install guard so Gemini starts outside
+              # Termux. Runtime patcher also does this, but applying at
+              # CI time means first-launch users don't need the daily
+              # updater to have run before /edit works.
+              sed -i -E 's/throw new Error\("You need to install Termux[^"]*"\)/undefined/g' "$f"
               sed -i -E 's/shell:[[:space:]]*true([,}])/shell:"\/system\/bin\/sh"\1/g' "$f"
               sed -i 's|execSync(getCommandExistsCmd(cmd), { stdio: "ignore" })|execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})|g' "$f"
               GEM_COUNT=$((GEM_COUNT + 1))
             done
-            echo "[gemini] patched shell:true + commandExists in ${GEM_COUNT} bundle files"
+            echo "[gemini] patched termux-guard + shell:true + commandExists in ${GEM_COUNT} bundle files"
             # Drift detectors (Codex audit 2026-04-25):
             # 1. Termux guard must be GONE. If upstream renames the
             #    error string, our sed regex misses and Gemini bails
