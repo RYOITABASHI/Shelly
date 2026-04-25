@@ -2776,10 +2776,19 @@ public final class TerminalEmulator {
     }
 
     private boolean isShellyPasteForceTui() {
+        // Primary: read HOME from the bash process's /proc/<pid>/environ.
         String home = shellyShellHome();
-        if (home == null || home.isEmpty()) return false;
-        File marker = new File(home, ".shelly_paste_force_tui");
-        return marker.isFile();
+        if (home != null && !home.isEmpty()) {
+            File marker = new File(home, ".shelly_paste_force_tui");
+            if (marker.isFile()) return true;
+        }
+        // Fallback for sessions where shellPid is 0 (stream-based) or
+        // /proc reads fail: check the conventional Shelly home path
+        // hardcoded for this app. Tradeoff: if the user runs Shelly
+        // under a different uid (e.g. work profile), this will miss —
+        // acceptable because forceTui is a hint, not a security gate.
+        File hardcodedMarker = new File("/data/user/0/dev.shelly.terminal/files/home/.shelly_paste_force_tui");
+        return hardcodedMarker.isFile();
     }
 
     /**
@@ -2825,10 +2834,18 @@ public final class TerminalEmulator {
     }
 
     private int shellyShellPid() {
-        if (mSession instanceof TerminalSession) {
-            return ((TerminalSession) mSession).getPid();
+        // 2026-04-25 follow-up: the instanceof check Codex proposed
+        // returned -1 on-device even though TerminalSession is the
+        // concrete TerminalOutput subclass at runtime. Reason unclear
+        // (Kotlin/Java vtable interaction with the Termux fork? RN
+        // bridge re-wrapping?). Use the abstract method on
+        // TerminalOutput directly — it's overridden in TerminalSession
+        // to return mShellPid, defaults to 0 elsewhere. No cast needed.
+        try {
+            return mSession.getShellPid();
+        } catch (Throwable t) {
+            return -1;
         }
-        return -1;
     }
 
     private String shellyShellHome() {
