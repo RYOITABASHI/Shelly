@@ -351,8 +351,46 @@ public class TerminalView extends View {
         return true;
     }
 
+    // bug #116 final architecture (2026-04-25): when mIsImeEditor is
+    // false the TerminalView is acting as a backend for an external
+    // IME host (TerminalImeHostView). onCheckIsTextEditor returns
+    // false so IMM never binds to this view directly, and
+    // onCreateInputConnection short-circuits. The host view calls
+    // createDelegatingInputConnection(...) below to get the actual
+    // InputConnection regardless of flag state.
+    private boolean mIsImeEditor = true;
+
+    public void setImeEditorEnabled(boolean enabled) {
+        mIsImeEditor = enabled;
+    }
+
+    public boolean isImeEditorEnabled() {
+        return mIsImeEditor;
+    }
+
+    /**
+     * Build an InputConnection for this TerminalView regardless of
+     * {@link #mIsImeEditor}. Used by TerminalImeHostView to delegate
+     * commitText/setComposingText/deleteSurroundingText/sendKeyEvent
+     * calls to the active pane's terminal.
+     */
+    public InputConnection createDelegatingInputConnection(EditorInfo outAttrs) {
+        return buildInputConnection(outAttrs);
+    }
+
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+        if (!mIsImeEditor) {
+            // Host-view-managed mode — IMM must not bind directly to
+            // this TerminalView. Return null; the host view owns the
+            // InputConnection and routes commits here via
+            // createDelegatingInputConnection.
+            return null;
+        }
+        return buildInputConnection(outAttrs);
+    }
+
+    private InputConnection buildInputConnection(EditorInfo outAttrs) {
         // Ensure that inputType is only set if TerminalView is selected view with the keyboard and
         // an alternate view is not selected, like an EditText. This is necessary if an activity is
         // initially started with the alternate view or if activity is returned to from another app
@@ -982,7 +1020,10 @@ public class TerminalView extends View {
 
     @Override
     public boolean onCheckIsTextEditor() {
-        return true;
+        // Defer to the mIsImeEditor flag so TerminalImeHostView can
+        // take ownership of IMM's mServedView when the Shelly
+        // multi-pane integration is active. See notes above.
+        return mIsImeEditor;
     }
 
     @Override

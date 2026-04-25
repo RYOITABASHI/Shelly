@@ -58,18 +58,11 @@ class ShellyTerminalView(
         // storm semantics. Collapse calls that land within this window.
         private const val SHOW_KEYBOARD_DEBOUNCE_MS = 50L
 
-        // bug #116 follow-up 11: Termux's internal onSingleTapUp
-        // (TerminalView.java:215) calls requestFocus() BEFORE our
-        // client handler runs. By the time ShellyTerminalView's
-        // onSingleTapUp executes, rootView.findFocus() already returns
-        // the newly-tapped view — so the earlier findFocus-based
-        // handoff detection could never fire. We keep a process-wide
-        // WeakReference to the most recently focused TerminalView so
-        // we can identify the sibling that IMM may still be treating
-        // as servedView, and call clearFocus() on IT to trigger
-        // IMM.focusOut and free mServedView. Weak so a destroyed view
-        // doesn't pin its context.
-        private var lastFocusedTerminalView: java.lang.ref.WeakReference<TerminalView>? = null
+        // bug #116 follow-up 11 REMOVED 2026-04-25: WeakRef tracker
+        // was part of the "explicitly clear sibling's focus to unstick
+        // mServedView" design, which never worked on OneUI. The final
+        // architecture hands IMM ownership to TerminalImeHostView so
+        // no sibling-reference bookkeeping is needed.
     }
 
     // Yoga layout gives correct full-width sizing from React Native.
@@ -144,8 +137,18 @@ class ShellyTerminalView(
         if (terminalView.id == View.NO_ID) {
             terminalView.id = View.generateViewId()
         }
+        // bug #116 final architecture (2026-04-25): hand IME ownership
+        // off to TerminalImeHostView. Each TerminalView is now an
+        // IME-inert surface; the host view is the only mServedView
+        // candidate in the window. This eliminates the sibling-focus
+        // migration that OneUI couldn't dispatch.
+        terminalView.setImeEditorEnabled(false)
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
+        // Attach the host view to the Activity's content root on first
+        // construction. Idempotent — the host is a process-wide
+        // singleton keyed by Activity.
+        TerminalImeHostView.ensureAttached(context)
         terminalView.setScrollStateListener { isScrolledUp ->
             onScrollStateChanged(mapOf("isScrolledUp" to isScrolledUp))
         }
@@ -486,18 +489,13 @@ class ShellyTerminalView(
         blockDetector.destroy()
         inputHandler.resetModifiers()
         detachCurrentSession()
-        // bug #116 follow-up 7 (P1-3): proactively drop IMM's reference
-        // to this view so a subsequent pane tab switch (terminal → ai →
-        // terminal) doesn't re-land on the destroyed instance. IMM
-        // caches mServedView by reference; without this hint it holds
-        // the dead view until GC, and the first keystroke after re-mount
-        // is silently lost while IMM resolves the stale binding.
+        // bug #116 final architecture: ensure the IME host un-binds
+        // from this terminal so subsequent pane-tab switches don't
+        // land on a destroyed reference. The host is shared across
+        // the Activity; unbindIfActive no-ops if another pane is
+        // already the active terminal.
         try {
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            val token = terminalView.windowToken
-            if (imm != null && token != null) {
-                imm.hideSoftInputFromWindow(token, 0)
-            }
+            TerminalImeHostView.unbindIfActive(terminalView)
         } catch (_: Throwable) { /* best-effort; do not fail teardown */ }
     }
 
@@ -580,14 +578,9 @@ class ShellyTerminalView(
     }
 
     private fun showKeyboardWhenServed(reason: String) {
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            ?: return
-
         // Debounce: collapse the triple-dispatch (native tap +
-        // PaneSlot focus handler + onFocusRequested event) into a
-        // single IMM rebind. Pending postDelayed retry from the
-        // first call still runs; subsequent calls within the window
-        // log and return without touching IMM again.
+        // PaneSlot focus handler + onFocusRequested event) into one
+        // IMM rebind per gesture.
         val nowMs = android.os.SystemClock.uptimeMillis()
         if (nowMs - lastShowKeyboardAtMs < SHOW_KEYBOARD_DEBOUNCE_MS) {
             Log.i(TAG, "$reason.showKeyboard.debounced deltaMs=${nowMs - lastShowKeyboardAtMs}")
@@ -595,55 +588,15 @@ class ShellyTerminalView(
         }
         lastShowKeyboardAtMs = nowMs
 
-        // bug #104 follow-up: the previous implementation fired five
-        // postDelayed retries at 0/50/150/300/600 ms to work around Samsung
-        // "view is not served" rejections during pane resize. On Android 15+
-        // edge-to-edge this backfired catastrophically: every postDelayed
-        // attempt arrives with fromUser=false, and the IME stack rejects
-        // each one at PHASE_CLIENT_APPLY_ANIMATION. Because both
-        // onSingleTapUp (native) and TerminalPane.focusedPaneId effect
-        // (via TerminalViewModule.focus) call this method for the same tap,
-        // a single user gesture spawned ~10 cancelled show requests that
-        // ping-ponged until the tracker timed out, leaving the keyboard
-        // permanently hidden.
-        terminalView.isFocusable = true
-        terminalView.isFocusableInTouchMode = true
-        terminalView.requestFocusFromTouch()
-        imm.restartInput(terminalView)
-        val shown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
-        Log.i(TAG, "$reason.showKeyboard focused=${terminalView.isFocused} shown=$shown viewHash=${System.identityHashCode(terminalView)}")
-
-        if (shown) return
-
-        // bug #116 follow-up 3: on Samsung OneUI / Android 16, when a
-        // sibling TerminalView was the previously-served view, IMM's
-        // mServedView stays pointed at that old view even after our view
-        // gains focus — because focusIn(newView) is dispatched via
-        // ViewRootImpl asynchronously and sometimes never reaches IMM with
-        // the new view as argument (we've seen five consecutive
-        // showSoftInput rejections with servedView=<old>,focus=false and
-        // view=<new>,focus=true). Single post{} retry wasn't enough.
-        //
-        // Fix: force IMM to drop its stale servedView binding via
-        // hideSoftInputFromWindow, then re-request focus + showSoftInput
-        // after a short delay long enough for ViewRootImpl to flush focus
-        // events. 80 ms covers 5 frames at 60 Hz and has been sufficient
-        // in on-device verification. ONE retry only — we do NOT revive the
-        // 5-step ladder that triggered the Android 15 cancel storm.
-        val token = terminalView.windowToken
-        if (token != null) {
-            imm.hideSoftInputFromWindow(token, 0)
-        }
-        terminalView.postDelayed({
-            if (terminalView.rootView?.findFocus() !== terminalView) return@postDelayed
-            terminalView.requestFocusFromTouch()
-            imm.restartInput(terminalView)
-            val retryShown = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
-            if (!retryShown && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                terminalView.windowInsetsController?.show(WindowInsets.Type.ime())
-            }
-            Log.i(TAG, "$reason.showKeyboard.retry shown=$retryShown viewHash=${System.identityHashCode(terminalView)}")
-        }, 80)
+        // bug #116 final architecture: point the single imeHost at
+        // this pane's terminal and ask IMM to rebuild the input
+        // connection. Because the host view is the ONLY IME editor
+        // in the window, mServedView never migrates between siblings
+        // and the OneUI stuck-sibling bug can't trigger. The old
+        // 80 ms hide+show retry ladder is no longer needed.
+        TerminalImeHostView.bindToTerminal(terminalView)
+        val shown = TerminalImeHostView.showKeyboard(reason)
+        Log.i(TAG, "$reason.showKeyboard shown=$shown viewHash=${System.identityHashCode(terminalView)}")
     }
 
     fun scrollToRowCommand(row: Int) {
@@ -669,98 +622,17 @@ class ShellyTerminalView(
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 2.0f)
 
     override fun onSingleTapUp(e: MotionEvent) {
-        // bug #116 follow-up 6 + 11: cross-sibling focus handoff on
-        // Samsung OneUI / Android 14-16. Termux's internal tap handler
-        // (TerminalView.java:215) already ran requestFocus() by the
-        // time we get here, so rootView.findFocus() now points at us —
-        // we can NOT use findFocus() to find the previously-focused
-        // sibling. Use the process-wide lastFocusedTerminalView weak
-        // ref to reach it. When a sibling held focus before, IMM's
-        // mServedView is still bound to it; calling clearFocus() on
-        // that sibling synchronously dispatches IMM.focusOut which
-        // actually resets mServedView (whereas our own
-        // hideSoftInputFromWindow does NOT reset it — it only hides
-        // the IME surface).
-        terminalView.isFocusable = true
-        terminalView.isFocusableInTouchMode = true
-        val prevTerminalView = lastFocusedTerminalView?.get()
-        val hasWinFocus = terminalView.hasWindowFocus()
-        val isFocusable = terminalView.isFocusable
-        val visibility = terminalView.visibility
-        val width = terminalView.width
-        val height = terminalView.height
+        // bug #116 final architecture (2026-04-25): the
+        // TerminalImeHostView owns IMM's mServedView for the whole
+        // Activity. Per-pane focus gymnastics are no longer needed —
+        // we just bind the host to this pane's terminal and ask IMM
+        // to rebuild the IC. Termux's upstream onSingleTapUp already
+        // ran requestFocus() on our TerminalView before this handler
+        // runs; that focus state still matters for gesture routing
+        // within this view (e.g., touch selection) but IMM is
+        // unaffected by cross-pane focus changes in this design.
         val sid = currentSessionId ?: ""
-        val needsFocusHandoff = prevTerminalView != null && prevTerminalView !== terminalView
-
-        if (needsFocusHandoff) {
-            // bug #116 follow-up 12 (2026-04-24 23:40 on-device proof):
-            // clearFocus() on the stale sibling is a no-op because
-            // Termux's internal onSingleTapUp ran requestFocus() on our
-            // view BEFORE this handler, which already cleared the
-            // sibling's PFLAG_FOCUSED. View.clearFocus() only dispatches
-            // onFocusChanged(false) when PFLAG_FOCUSED is set, so IMM
-            // never sees focusOut for the stale sibling and mServedView
-            // stays stuck (proved by `dumpsys input_method` showing
-            // mServedView == old sibling hash after repeated taps on
-            // the new pane).
-            //
-            // Force IMM to reset mServedView off the stale sibling.
-            // Build 696 tried `focusOut(View)` (compile failure: @hide),
-            // build 697 tried `onViewFocusChanged(View, boolean)`
-            // (compile failure: also not in public SDK stubs).
-            // Belt-and-suspenders strategy: try BOTH via reflection.
-            // Whichever one exists on this device (OneUI may ship
-            // either depending on base) dispatches focusOut to IMM,
-            // which clears mServedView when matched. If both throw
-            // NoSuchMethodException we fall back to clearFocus + the
-            // hide+show cycle in showKeyboardWhenServed.
-            val prevImm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            if (prevImm != null) {
-                // Try onViewFocusChanged(view, boolean) first — newer
-                // internal API since API 34 per AOSP source.
-                var dispatched = false
-                try {
-                    val m = InputMethodManager::class.java.getDeclaredMethod(
-                        "onViewFocusChanged",
-                        android.view.View::class.java,
-                        java.lang.Boolean.TYPE
-                    )
-                    m.isAccessible = true
-                    m.invoke(prevImm, prevTerminalView, false)
-                    dispatched = true
-                } catch (_: Throwable) { /* method absent or blocked */ }
-                if (!dispatched) {
-                    // Fallback: legacy focusOut(view). @hide since API 30
-                    // but often still callable via reflection on OEM ROMs.
-                    try {
-                        val m = InputMethodManager::class.java.getDeclaredMethod(
-                            "focusOut",
-                            android.view.View::class.java
-                        )
-                        m.isAccessible = true
-                        m.invoke(prevImm, prevTerminalView)
-                        dispatched = true
-                    } catch (_: Throwable) { /* both absent */ }
-                }
-                Log.i(TAG, "stale-sibling focusOut dispatched=$dispatched viewHash=${System.identityHashCode(prevTerminalView)}")
-            }
-            // Also call clearFocus defensively in case the view HAS
-            // somehow retained PFLAG_FOCUSED on this code path.
-            prevTerminalView!!.clearFocus()
-            lastFocusedTerminalView = java.lang.ref.WeakReference(terminalView)
-            terminalView.post {
-                val reqOkPost = terminalView.requestFocusFromTouch()
-                Log.i(TAG, "onSingleTapUp.post sess=$sid reqFocus=$reqOkPost hasWin=${terminalView.hasWindowFocus()} focused=${terminalView.isFocused} focusable=${terminalView.isFocusable} vis=${terminalView.visibility} size=${terminalView.width}x${terminalView.height} prevTermView=#${System.identityHashCode(prevTerminalView)} viewHash=${System.identityHashCode(terminalView)}")
-                showKeyboardWhenServed("onSingleTapUp.post")
-                onFocusRequested(mapOf("sessionId" to sid))
-            }
-            return
-        }
-
-        val reqOk = terminalView.requestFocusFromTouch()
-        lastFocusedTerminalView = java.lang.ref.WeakReference(terminalView)
-        val isFocused = terminalView.isFocused
-        Log.i(TAG, "onSingleTapUp sess=$sid reqFocus=$reqOk hasWin=$hasWinFocus focused=$isFocused focusable=$isFocusable vis=$visibility size=${width}x${height} prevTermView=#${if (prevTerminalView != null) System.identityHashCode(prevTerminalView) else 0} viewHash=${System.identityHashCode(terminalView)}")
+        Log.i(TAG, "onSingleTapUp sess=$sid viewHash=${System.identityHashCode(terminalView)}")
         showKeyboardWhenServed("onSingleTapUp")
         onFocusRequested(mapOf("sessionId" to sid))
     }
