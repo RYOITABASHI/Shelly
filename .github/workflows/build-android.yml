@@ -82,19 +82,11 @@ jobs:
               make install >/tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
               strip --strip-unneeded lib/libc.so
               cp lib/libc.so /out/libld_musl_shelly.so
-              # musl 1.2.4 ships obj/musl-gcc as a generated 2-line shell wrapper
-              # that pure-make installs to $prefix/bin/musl-gcc. In our qemu-arm64
-              # Alpine builder it sometimes fails to land in $bindir even though
-              # `make install` returns 0 (observed run 24932256130). The specs
-              # file at $libdir/musl-gcc.specs IS reliably installed (it is part
-              # of install-libs, not install-tools), so reconstruct the wrapper
-              # locally — it is just `exec gcc "$@" -specs <specs>`. Fail loudly
-              # if the specs file is also missing.
-              test -f /tmp/musl-out/lib/musl-gcc.specs || { echo "FATAL: musl-gcc.specs missing after make install"; ls -la /tmp/musl-out/lib | head -40; exit 1; }
-              mkdir -p /tmp/musl-out/bin
-              printf "#!/bin/sh\nexec \"\${REALGCC:-gcc}\" \"\$@\" -specs \"/tmp/musl-out/lib/musl-gcc.specs\"\n" > /tmp/musl-out/bin/musl-gcc
-              chmod +x /tmp/musl-out/bin/musl-gcc
-              /tmp/musl-out/bin/musl-gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+              # This container itself is Alpine/aarch64, so system gcc is
+              # already a musl 1.2.4 compiler. The wrapper does not need
+              # Shelly's patched resolver path, only musl ABI compatibility
+              # with the loader used for Claude Code.
+              gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
                 /workspace/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c \
                 -o /out/libexec_wrapper_musl.so -ldl
               strip --strip-unneeded /out/libexec_wrapper_musl.so
@@ -103,7 +95,7 @@ jobs:
               readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
               strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
               readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
-              readelf -d /out/libexec_wrapper_musl.so | grep -q "Shared library: \\[libc.so\\]"
+              readelf -d /out/libexec_wrapper_musl.so | grep -E "Shared library: \\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"
             '
           cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
