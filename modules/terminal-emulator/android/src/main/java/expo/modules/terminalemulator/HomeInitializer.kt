@@ -583,7 +583,22 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     `__shelly_paste_tui_end` (rm) on exit. paste() prefers
     //     standard \e[200~ brackets while marker is present —
     //     surgical, reliable, no kernel-state guessing.
-    private const val BASHRC_VERSION = 58
+    // v59 (2026-04-25): bug #117 Path A — preload musl-built
+    //     libexec_wrapper_musl.so into Claude Code Bun SEA so its
+    //     `child_process.spawn({ shell: true })` calls find
+    //     /system/bin/sh instead of bionic-missing /bin/sh. Compiled
+    //     in CI from the SAME exec-wrapper.c source against the
+    //     Shelly-patched musl 1.2.4 toolchain (Alpine container).
+    //     Bionic libexec_wrapper.so still preloaded for the bash
+    //     PTY; shelly_musl_exec preserves only the musl variant when
+    //     handing off to the SEA. Bash tool now works on latest
+    //     Claude Code (opt-in via SHELLY_PREFER_MUSL_CLAUDE=1, will
+    //     become default in v4.4.0 if on-device verification passes).
+    //     Risk: if Bun statically links syscall paths and bypasses
+    //     dynamic linker dispatch, LD_PRELOAD doesn't intercept and
+    //     Bash tool stays broken. Fallback to legacy cli.js 2.1.112
+    //     remains intact.
+    private const val BASHRC_VERSION = 59
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1108,8 +1123,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
+            sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
-            sb.appendLine("  if [ \"\${SHELLY_PREFER_MUSL_CLAUDE:-0}\" = \"1\" ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_PREFER_MUSL_CLAUDE:-0}\" = \"1\" ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
             // time — bionic has no /etc/resolv.conf so without this seed
@@ -1124,7 +1140,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
             sb.appendLine("      fi")
             sb.appendLine("      __shelly_paste_tui_begin")
-            sb.appendLine("      LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
+            sb.appendLine("      LD_PRELOAD=\"\$__musl_exec_wrapper\" _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
             sb.appendLine("      local __runtime_rc=$?")
             sb.appendLine("      __shelly_paste_tui_end")
             sb.appendLine("      case \"\$__runtime_rc\" in")
@@ -1146,7 +1162,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("    LD_PRELOAD=\"\$__musl_exec_wrapper\" _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__musl_rc\" in")

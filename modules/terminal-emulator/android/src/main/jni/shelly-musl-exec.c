@@ -297,8 +297,13 @@ int main(int argc, char *argv[], char *envp[]) {
   for (size_t i = 0; i < envc; i++) {
     /* The parent PTY preloads a bionic exec wrapper so normal bionic tools
      * can spawn app-data binaries through linker64. musl cannot relocate
-     * that bionic .so, so never propagate it into the musl loader. */
-    if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0) continue;
+     * that bionic .so, so strip it. A musl-built wrapper is allowed for
+     * claude-code Bun SEA so /bin/sh is rewritten to Android's
+     * /system/bin/sh inside child_process.spawn({ shell: true }). */
+    if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0 &&
+        strstr(envp[i], "libexec_wrapper_musl.so") == NULL) {
+      continue;
+    }
     new_env[new_envc++] = stack_strdup(&sp, envp[i]);
   }
 

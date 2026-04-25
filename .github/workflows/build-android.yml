@@ -63,6 +63,7 @@ jobs:
           mkdir -p /tmp/musl-out
           docker run --rm --platform linux/arm64 \
             -v /tmp/musl-out:/out \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
             alpine:3.19 sh -euxc '
               apk add --no-progress build-base git
@@ -78,17 +79,27 @@ jobs:
               grep -q "${RESOLV_CONF_PATH}" src/network/resolvconf.c
               ./configure --prefix=/tmp/musl-out >/tmp/configure.log 2>&1 || { tail -30 /tmp/configure.log; exit 1; }
               make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
+              make install >/tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
               strip --strip-unneeded lib/libc.so
               cp lib/libc.so /out/libld_musl_shelly.so
+              /tmp/musl-out/bin/musl-gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+                /workspace/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c \
+                -o /out/libexec_wrapper_musl.so -ldl
+              strip --strip-unneeded /out/libexec_wrapper_musl.so
               # Sanity checks inside the container — readelf/strings are
               # the Alpine aarch64 natives, no cross-tool needed.
               readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
               strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
+              readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
+              readelf -d /out/libexec_wrapper_musl.so | grep -q "Shared library: \\[libc.so\\]"
             '
           cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
       - name: Bundle claude-code musl binary (bug #117 Path C-bis)
         # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
@@ -192,88 +203,6 @@ jobs:
             sed -i "s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
             echo "Patched TERMUX_VERSION in: $f"
           done
-          # Patch claude-code cli.js: rewrite shell:!0 → shell:"/system/bin/sh"
-          # so child_process.spawn({ shell: true }) dispatches to Android's
-          # bionic shell instead of the nonexistent /bin/sh. Five call sites
-          # in 2.1.112 (two in the generic spawn helpers ij/op7, one each in
-          # Azure auth, MCP headersHelper, and editor spawn; sharp/win32
-          # branches are dead code). See HomeInitializer.kt Option B comment.
-          CLAUDE_CLI="cli-bundle/lib/node_modules/@anthropic-ai/claude-code/cli.js"
-          if [ -f "$CLAUDE_CLI" ]; then
-            HITS="$(grep -o 'shell:!0' "$CLAUDE_CLI" | wc -l | tr -d ' ')"
-            # Drift detector (Codex audit 2026-04-25): claude-code
-            # 2.1.112 has exactly 8 `shell:!0` hits. If upstream
-            # minifier changes shape we must fail loud rather than
-            # silently ship an APK with a broken Bash tool.
-            if [ "$HITS" != "8" ]; then
-              echo "FATAL: claude-code cli.js shell:!0 hits=${HITS} (expected 8). Upstream bundle shape changed; rebuild pattern before release." >&2
-              exit 1
-            fi
-            sed -i 's|shell:!0|shell:"/system/bin/sh"|g' "$CLAUDE_CLI"
-            # Verify the replacement actually landed.
-            if ! grep -q 'shell:"/system/bin/sh"' "$CLAUDE_CLI"; then
-              echo "FATAL: claude-code cli.js sed did not produce the expected replacement." >&2
-              exit 1
-            fi
-            echo "[claude] patched cli.js (${HITS} call sites rewritten)"
-          else
-            # No APK-bundled cli.js is an explicit failure — users rely
-            # on the bundled tier as Tier 3 fallback on fresh installs
-            # before the daily updater runs.
-            echo "FATAL: claude-code cli.js not found at $CLAUDE_CLI" >&2
-            exit 1
-          fi
-          # Patch gemini-cli subprocess spawns mirroring HomeInitializer.kt
-          # patchGemini(). Three breakage classes flagged by the 2026-04-24
-          # subprocess audit:
-          #   1. shell: true in auto-update / GrepTool pre-flight / sandbox
-          #      proxy — Node hardcodes /bin/sh -c on POSIX → ENOENT on Android.
-          #   2. execSync(getCommandExistsCmd(cmd), { stdio: "ignore" }) —
-          #      no shell option, same /bin/sh miss. Breaks editor detection
-          #      silently (vim/nano/cursor/vscode all return false).
-          # Applied here so the APK-bundled tree has the fix on first launch,
-          # before the daily updater would otherwise run patchGemini().
-          GEM_BUNDLE="cli-bundle/lib/node_modules/@google/gemini-cli/bundle"
-          if [ -d "$GEM_BUNDLE" ]; then
-            GEM_COUNT=0
-            for f in "$GEM_BUNDLE"/chunk-*.js "$GEM_BUNDLE"/gemini-*.js; do
-              [ -f "$f" ] || continue
-              # Remove the Termux install guard so Gemini starts outside
-              # Termux. Runtime patcher also does this, but applying at
-              # CI time means first-launch users don't need the daily
-              # updater to have run before /edit works.
-              sed -i -E 's/throw new Error\("You need to install Termux[^"]*"\)/undefined/g' "$f"
-              sed -i -E 's/shell:[[:space:]]*true([,}])/shell:"\/system\/bin\/sh"\1/g' "$f"
-              sed -i 's|execSync(getCommandExistsCmd(cmd), { stdio: "ignore" })|execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})|g' "$f"
-              GEM_COUNT=$((GEM_COUNT + 1))
-            done
-            echo "[gemini] patched termux-guard + shell:true + commandExists in ${GEM_COUNT} bundle files"
-            # Drift detectors (Codex audit 2026-04-25):
-            # 1. Termux guard must be GONE. If upstream renames the
-            #    error string, our sed regex misses and Gemini bails
-            #    out with "You need to install Termux" on first run.
-            if grep -Rq 'You need to install Termux' "$GEM_BUNDLE"; then
-              echo "FATAL: Gemini Termux guard still present after patch. Regex drifted." >&2
-              exit 1
-            fi
-            # 2. commandExists symbol must still exist (sanity check
-            #    that upstream didn't rename it; our sed key is the
-            #    exact function name).
-            if ! grep -Rq 'getCommandExistsCmd' "$GEM_BUNDLE"; then
-              echo "FATAL: getCommandExistsCmd disappeared from Gemini bundle. Update patch pattern." >&2
-              exit 1
-            fi
-            # 3. Our shell:"/system/bin/sh" replacement must appear
-            #    somewhere — proof the shell:true sed matched at least
-            #    one site.
-            if ! grep -Rq 'shell:"/system/bin/sh"' "$GEM_BUNDLE"; then
-              echo "FATAL: Gemini shell-path replacement absent. shell:true pattern drifted." >&2
-              exit 1
-            fi
-          else
-            echo "FATAL: Gemini bundle dir not found at $GEM_BUNDLE" >&2
-            exit 1
-          fi
           # Tar them up for APK assets (LibExtractor will extract on first launch)
           cd cli-bundle/lib
           tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules

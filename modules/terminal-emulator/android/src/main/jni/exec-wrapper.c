@@ -34,11 +34,24 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <android/log.h>
 #include <spawn.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 #define LINKER64 "/system/bin/linker64"
 #define LOG_TAG "ShellyExecWrapper"
+
+#ifdef __ANDROID__
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#else
+/* Bug #117 Path A: same source compiled for musl Bun SEA. Logging
+ * is no-op on musl so wrapper diagnostics don't pollute Claude's
+ * Bash tool stderr. */
+#define LOGI(...) ((void)0)
+#define LOGW(...) ((void)0)
+#endif
 
 extern char **environ;
 
@@ -160,11 +173,9 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     if (!rewritten) return -1; /* errno already set by rewrite_path (ENAMETOOLONG) */
 
     if (rewritten != pathname) {
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                            "rewrite exec path=%s -> %s", pathname, rewritten);
+        LOGI("rewrite exec path=%s -> %s", pathname, rewritten);
         int ret = orig(rewritten, argv, envp);
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                            "exec rewritten path=%s failed errno=%d", rewritten, errno);
+        LOGW("exec rewritten path=%s failed errno=%d", rewritten, errno);
         return ret;
     }
 
@@ -174,8 +185,7 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     if (!should_linker_exec(pathname)) {
         int ret = orig(pathname, argv, envp);
         if (ret == -1) {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                                "exec pass-through failed path=%s errno=%d",
+            LOGW("exec pass-through failed path=%s errno=%d",
                                 pathname ? pathname : "(null)", errno);
         }
         return ret;
@@ -187,12 +197,10 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
         return orig(pathname, argv, envp); /* OOM fallback */
     }
 
-    __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                        "linker exec path=%s", pathname);
+    LOGI("linker exec path=%s", pathname);
     int ret = orig(LINKER64, new_argv, envp);
     int saved = errno;
-    __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                        "linker exec failed path=%s errno=%d", pathname, saved);
+    LOGW("linker exec failed path=%s errno=%d", pathname, saved);
     free(new_argv);
     errno = saved;
     return ret;
@@ -212,12 +220,10 @@ int posix_spawn(pid_t *pid, const char *path,
     if (!rewritten) return errno ? errno : ENAMETOOLONG;
 
     if (rewritten != path) {
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                            "rewrite spawn path=%s -> %s", path, rewritten);
+        LOGI("rewrite spawn path=%s -> %s", path, rewritten);
         int ret = orig(pid, rewritten, file_actions, attrp, argv, envp);
         if (ret != 0) {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                                "spawn rewritten path=%s failed ret=%d", rewritten, ret);
+            LOGW("spawn rewritten path=%s failed ret=%d", rewritten, ret);
         }
         return ret;
     }
@@ -225,8 +231,7 @@ int posix_spawn(pid_t *pid, const char *path,
     if (!should_linker_exec(path)) {
         int ret = orig(pid, path, file_actions, attrp, argv, envp);
         if (ret != 0) {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                                "spawn pass-through failed path=%s ret=%d",
+            LOGW("spawn pass-through failed path=%s ret=%d",
                                 path ? path : "(null)", ret);
         }
         return ret;
@@ -235,11 +240,10 @@ int posix_spawn(pid_t *pid, const char *path,
     char **new_argv = build_linker_argv(path, argv);
     if (!new_argv) return orig(pid, path, file_actions, attrp, argv, envp);
 
-    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "linker spawn path=%s", path);
+    LOGI("linker spawn path=%s", path);
     int ret = orig(pid, LINKER64, file_actions, attrp, new_argv, envp);
     if (ret != 0) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                            "linker spawn failed path=%s ret=%d", path, ret);
+        LOGW("linker spawn failed path=%s ret=%d", path, ret);
     }
     free(new_argv);
     return ret;
@@ -259,8 +263,7 @@ int posix_spawnp(pid_t *pid, const char *file,
     if (!rewritten) return errno ? errno : ENAMETOOLONG;
 
     if (rewritten != file) {
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                            "rewrite spawnp path=%s -> %s", file, rewritten);
+        LOGI("rewrite spawnp path=%s -> %s", file, rewritten);
         return posix_spawn(pid, rewritten, file_actions, attrp, argv, envp);
     }
 
@@ -275,8 +278,7 @@ int execvp(const char *file, char *const argv[]) {
     if (!rewritten) return -1;
 
     if (rewritten != file) {
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                            "rewrite execvp path=%s -> %s", file, rewritten);
+        LOGI("rewrite execvp path=%s -> %s", file, rewritten);
         return execve(rewritten, argv, environ);
     }
 
@@ -291,8 +293,7 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
     if (!rewritten) return -1;
 
     if (rewritten != file) {
-        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
-                            "rewrite execvpe path=%s -> %s", file, rewritten);
+        LOGI("rewrite execvpe path=%s -> %s", file, rewritten);
         return execve(rewritten, argv, envp);
     }
 
