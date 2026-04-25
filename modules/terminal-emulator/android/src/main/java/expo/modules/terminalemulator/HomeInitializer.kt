@@ -573,7 +573,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     - Promote step reworked: remove mkdir-intermediate, single
     //       atomic rename per side, rollback .prev → live if
     //       staging rename fails.
-    private const val BASHRC_VERSION = 57
+    // v58 (2026-04-25): paste-routing marker file override (Codex).
+    //     The /proc/<bash>/task/<bash>/children heuristic in
+    //     TerminalEmulator.paste() can't reliably tell when a wrapped
+    //     CLI is foreground (observed bashFg=true while Claude active,
+    //     sending \C-x\C-b garbage). claude/codex/gemini bash
+    //     functions now `__shelly_paste_tui_begin` (touch
+    //     $HOME/.shelly_paste_force_tui) on entry and
+    //     `__shelly_paste_tui_end` (rm) on exit. paste() prefers
+    //     standard \e[200~ brackets while marker is present —
+    //     surgical, reliable, no kernel-state guessing.
+    private const val BASHRC_VERSION = 58
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -983,6 +993,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // Linker64 helper function
             sb.appendLine("# Run binary via linker64 (SELinux blocks direct execve on app_data_file)")
             sb.appendLine("_run() { /system/bin/linker64 \"\$@\"; }")
+            // bug #116 paste-routing override (Codex 2026-04-25): the
+            // /proc/<bash>/task/<bash>/children heuristic in
+            // TerminalEmulator.paste() can't reliably tell when a
+            // wrapped CLI (claude/codex/gemini) is foreground —
+            // observed bashFg=true even with Claude active, sending
+            // \C-x\C-b garbage to the Ink TUI. Marker file
+            // \$HOME/.shelly_paste_force_tui is a reliable explicit
+            // signal: the CLI wrapper functions create it on entry,
+            // remove it on exit. paste() prefers standard \e[200~
+            // brackets while marker is present.
+            sb.appendLine("__shelly_paste_tui_begin() { printf '%s\\n' \"\$\$\" > \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
+            sb.appendLine("__shelly_paste_tui_end() { rm -f \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine()
 
             // Tool functions
@@ -1101,8 +1123,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
             sb.appendLine("      fi")
+            sb.appendLine("      __shelly_paste_tui_begin")
             sb.appendLine("      LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
             sb.appendLine("      local __runtime_rc=$?")
+            sb.appendLine("      __shelly_paste_tui_end")
             sb.appendLine("      case \"\$__runtime_rc\" in")
             sb.appendLine("        0)")
             sb.appendLine("          return 0")
@@ -1121,8 +1145,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
+            sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
+            sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__musl_rc\" in")
             sb.appendLine("      0)")
             sb.appendLine("        return 0")
@@ -1159,7 +1185,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \"\$__tier\" != 'auto' ] && [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
             sb.appendLine("    echo \"[shelly] claude: using \$__tier tier (\$__cli_js)\" >&2")
             sb.appendLine("  fi")
+            sb.appendLine("  __shelly_paste_tui_begin")
             sb.appendLine("  _run $libDir/node \"\$__cli_js\" \"\$@\"")
+            sb.appendLine("  local __legacy_rc=\$?")
+            sb.appendLine("  __shelly_paste_tui_end")
+            sb.appendLine("  return \"\$__legacy_rc\"")
             sb.appendLine("}")
             // Gemini CLI 0.38+ relaunches itself with a bigger heap
             // (--max-old-space-size=5557) via `spawn2(process.execPath, ...)`.
@@ -1175,7 +1205,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // already has the heap the relaunch would have given it —
             // gemini-cli's heap-size check (target > current) then stays
             // false and the no-op guard holds. Belt + suspenders.
-            sb.appendLine("gemini() { GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; }")
+            sb.appendLine("gemini() { __shelly_paste_tui_begin; GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; local __gemini_rc=\$?; __shelly_paste_tui_end; return \"\$__gemini_rc\"; }")
             // codex: route `codex` (no args / options / bare prompt) to the
             // full ratatui TUI binary, and known `exec/resume/review/help`
             // subcommands to the lighter 1-shot exec binary. Both ship in the
@@ -1201,8 +1231,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      local __chosen_exec=\"\$__exec\"")
             sb.appendLine("      [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
             sb.appendLine("      if [ -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("        __shelly_paste_tui_begin")
             sb.appendLine("        _run \"\$__chosen_exec\" \"\$@\"")
-            sb.appendLine("        return \$?")
+            sb.appendLine("        local __codex_exec_rc=\$?")
+            sb.appendLine("        __shelly_paste_tui_end")
+            sb.appendLine("        return \$__codex_exec_rc")
             sb.appendLine("      else")
             sb.appendLine("        echo \"codex: codex_exec binary missing at \$__exec — rebuild Shelly or run __shelly_bg_cli_update\" >&2")
             sb.appendLine("        return 127")
@@ -1213,8 +1246,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __chosen_tui=\"\$__tui\"")
             sb.appendLine("  [ -x \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  if [ -x \"\$__chosen_tui\" ]; then")
+            sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    _run \"\$__chosen_tui\" \"\$@\"")
-            sb.appendLine("    return \$?")
+            sb.appendLine("    local __codex_tui_rc=\$?")
+            sb.appendLine("    __shelly_paste_tui_end")
+            sb.appendLine("    return \$__codex_tui_rc")
             sb.appendLine("  fi")
             sb.appendLine("  echo \"codex: codex_tui binary missing at \$__tui — upgrade to APK v42+ or reinstall\" >&2")
             sb.appendLine("  return 127")

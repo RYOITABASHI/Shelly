@@ -19,6 +19,9 @@ package com.termux.terminal;
 
 import android.util.Base64;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Locale;
@@ -2676,6 +2679,7 @@ public final class TerminalEmulator {
         try {
             boolean bm = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
             boolean tui = isAlternateBufferActive() || isMouseTrackingActive();
+            boolean forceTui = isShellyPasteForceTui();
             int nlCount = 0;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
@@ -2687,7 +2691,8 @@ public final class TerminalEmulator {
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
                 + ", nl=" + nlCount + ", bracketed=" + bm
                 + ", tui=" + tui
-                + ", bashFg=" + isBashTtyForeground()
+                + ", forceTui=" + forceTui
+                + ", " + shellyPasteProcProbe()
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
@@ -2738,42 +2743,26 @@ public final class TerminalEmulator {
         // exactly where we intend.
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
-        // Decide between the two paste trigger flavours by asking the
-        // kernel who owns the PTY right now. /proc/<bashPid>/stat field 8
-        // (tpgid) is the process-group id of the TTY's foreground process.
-        // When it equals the bash pid, bash's readline is at its prompt
-        // and needs the \C-x\C-b (0x18 0x02) trigger (bionic bash swallows
-        // the ESC in \e[200~ at dispatch — see bug #97). When a child
-        // process holds the TTY (claude/codex/gemini/vim/...), readline
-        // isn't in the picture and we must use the standard
-        // \e[200~...\e[201~ markers that every modern TUI understands.
-        //
-        // The previous heuristic looked at DECSET bits (alt-buffer /
-        // mouse / app cursor / app keypad) but Ink-based TUIs such as
-        // Claude Code only set DECSET 2004 and none of the others, so the
-        // heuristic misrouted their paste through the readline trigger —
-        // \x18\x02 was eaten as stray control bytes and multi-line paste
-        // shattered into one Enter-per-line.
-        //
-        // Fall back to the DECSET heuristic if we can't read /proc (fail
-        // safe: preserve the pre-fix behaviour for SSH / stream sessions
-        // without a local shell pid).
-        boolean bashForeground = isBashTtyForeground();
+        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive();
+        boolean forceTuiPaste = isShellyPasteForceTui();
+        // zsh / fish guard: the \C-x\C-b readline trigger is bash-only
+        // (Shelly's .bashrc binds it to bracketed-paste-begin). If the
+        // user's interactive shell is anything else, sending \x18\x02
+        // would inject literal control bytes at their prompt. Detect
+        // by reading /proc/<shellPid>/comm — unaffected by the bash
+        // job-control / children-tracking limitations that motivated
+        // the marker-file override above. Defaults to "is bash" on any
+        // /proc read failure (preserves current behaviour for SSH /
+        // stream sessions where shellPid is unknown).
+        boolean shellIsBash = isShellyShellBash();
         if (bracketedMode) {
-            if (!bashForeground) {
-                // TUI/CLI app (claude, codex, gemini, vim, ...) — the
-                // kernel says something other than bash holds the TTY.
-                // Standard bracketed-paste protocol, which every modern
-                // guest that advertises DECSET 2004 understands.
+            if (forceTuiPaste || tuiMode || !shellIsBash) {
+                // TUI/CLI app OR non-bash shell: standard bracketed paste.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
-                // Bash readline prompt — BEGIN is 0x18 0x02 (C-x C-b →
-                // bracketed-paste-begin via .bashrc), END is the standard
-                // marker consumed inside _rl_bracketed_text. The bind
-                // loops via rl_read_key until \e[201~, so multi-line
-                // payloads are captured as a single edit. We can't use
-                // the standard \e[200~ prefix here because bionic bash's
-                // readline dispatch swallows the ESC (bug #97).
+                // Bash readline prompt: BEGIN is 0x18 0x02 (C-x C-b →
+                // bracketed-paste-begin via .bashrc). END is still the
+                // standard marker consumed inside _rl_bracketed_text.
                 mSession.write("\u0018\u0002" + text + "\u001B[201~");
             }
         } else {
@@ -2786,125 +2775,107 @@ public final class TerminalEmulator {
         }
     }
 
-    /**
-     * Returns true when bash is the foreground process on this
-     * terminal's PTY — i.e. the user is at a bash prompt that can
-     * honour the \C-x\C-b bracketed-paste-begin bind installed by
-     * Shelly's .bashrc. Every other case (zsh/fish/dash shells, child
-     * TUIs like claude/codex/gemini, pipelines ending in less/vim,
-     * nested children of a foreign shell) returns false so the paste
-     * routes through the standard \e[200~..\e[201~ markers.
-     *
-     * Two kernel-state signals are consulted:
-     *   1. /proc/&lt;shellPid&gt;/comm — the basename of the shell
-     *      process. MUST equal "bash" for either path below. This
-     *      blocks zsh/fish users who would otherwise see literal
-     *      ^X^B[201~ injected at their prompt.
-     *   2. /proc/&lt;shellPid&gt;/stat field 8 — tpgid, the kernel's
-     *      tcgetpgrp on the controlling TTY. Equal to shellPid when
-     *      bash is at its prompt; different when a child process
-     *      (claude, codex, nested bash, sleep in a pipeline, ...)
-     *      owns the TTY.
-     *   3. When tpgid differs, /proc/&lt;tpgid&gt;/comm is checked so
-     *      that nested bash (which inherits our .bashrc bind) still
-     *      routes through the readline path.
-     *
-     * Fail-safe: returns true when shellPid is 0 (remote / stream
-     * session) or /proc access fails entirely. This preserves the
-     * pre-fix SSH behaviour, which is a documented known limitation.
-     */
-    private boolean isBashTtyForeground() {
-        int shellPid;
-        try {
-            shellPid = mSession.getShellPid();
-        } catch (Throwable t) {
-            return true;
-        }
-        if (shellPid <= 0) return true;
-        // Guard 1: the shell itself must be bash. Proc failure → assume
-        // bash (pre-fix fallback). "Something other than bash" (zsh,
-        // fish, dash) → do NOT send \C-x\C-b; that bind only exists in
-        // our .bashrc.
-        String shellComm = readProcComm(shellPid);
-        if (shellComm == null) return true;
-        if (!"bash".equals(shellComm)) return false;
-        // Guard 2: on-device build 694 proved that tpgid-based detection
-        // is unreliable for Shelly's bash function wrappers (claude()
-        // / codex() / gemini()). The functions call `_run /system/bin/
-        // linker64 ...` which forks, but because bash runs the function
-        // in its own process and the forked child's pgid may remain
-        // bash's pgid depending on job-control state, tpgid can still
-        // equal shellPid even when Claude is the user-facing foreground
-        // process. Confirmed in logcat: `bashFg=true` surfaced during
-        // an active Claude Code session.
-        //
-        // Robust detection: read /proc/<shellPid>/task/<shellPid>/children.
-        // The kernel lists direct children of the task. When bash is at
-        // its prompt it has NO running children (readline waits in
-        // read(2)). When a CLI is active, there's at least one child pid.
-        // The file is sized by child count, so any non-whitespace content
-        // means a child exists. This mirrors what `pgrep -P <bashPid>`
-        // reports and is immune to the setpgid race.
-        try {
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                new java.io.FileReader("/proc/" + shellPid + "/task/" + shellPid + "/children"));
-            String children;
-            try {
-                children = r.readLine();
-            } finally {
-                r.close();
-            }
-            if (children == null) return true;
-            String trimmed = children.trim();
-            if (trimmed.isEmpty()) return true; // bash prompt, no active child
-            // One or more children. If ANY non-bash child, we're inside
-            // a CLI/TUI; route through standard brackets. Nested bash
-            // keeps the readline path because inner bash inherits the
-            // \C-x\C-b bind from our .bashrc.
-            String[] childPids = trimmed.split("\\s+");
-            for (String pidStr : childPids) {
-                if (pidStr.isEmpty()) continue;
-                int childPid;
-                try {
-                    childPid = Integer.parseInt(pidStr);
-                } catch (NumberFormatException nfe) {
-                    continue;
-                }
-                String childComm = readProcComm(childPid);
-                // "bash" or null (transient / permission denied) — skip
-                if (childComm == null || "bash".equals(childComm)) continue;
-                // Anything else (node, claude, codex, gemini, vim,
-                // linker64, ...) → not at bash prompt.
-                return false;
-            }
-            // All children are bash (nested bash) or unreadable — safe
-            // default is the readline path.
-            return true;
-        } catch (Throwable t) {
-            return true;
-        }
+    private boolean isShellyPasteForceTui() {
+        String home = shellyShellHome();
+        if (home == null || home.isEmpty()) return false;
+        File marker = new File(home, ".shelly_paste_force_tui");
+        return marker.isFile();
     }
 
     /**
-     * Reads /proc/&lt;pid&gt;/comm and returns the basename of the
-     * process (e.g. "bash", "zsh", "claude", "node"). Returns null on
-     * any read error — caller distinguishes "proc unreadable → fall
-     * back to pre-fix behaviour" from "read succeeded but comm is
-     * not what we wanted".
+     * Returns true if the user's interactive shell process is bash —
+     * the only shell where Shelly's `\C-x\C-b` readline trigger has a
+     * binding installed (via our .bashrc). zsh/fish/dash users get
+     * standard bracketed paste instead so they don't see literal
+     * control bytes at their prompt. Defaults to true on any /proc
+     * read failure to preserve the SSH / stream-session fallback that
+     * the marker-file override and tuiMode flag also assume.
      */
-    private String readProcComm(int pid) {
-        try {
-            java.io.BufferedReader r = new java.io.BufferedReader(
-                new java.io.FileReader("/proc/" + pid + "/comm"));
-            try {
-                String line = r.readLine();
-                return line == null ? null : line.trim();
-            } finally {
-                r.close();
+    private boolean isShellyShellBash() {
+        int pid = shellyShellPid();
+        if (pid <= 0) return true;
+        String comm = readProcText("/proc/" + pid + "/comm");
+        if (comm == null) return true;
+        return "bash".equals(comm);
+    }
+
+    private String shellyPasteProcProbe() {
+        int shellPid = shellyShellPid();
+        if (shellPid <= 0) return "shellPid=unknown";
+        String shellComm = readProcText("/proc/" + shellPid + "/comm");
+        String children = readProcText("/proc/" + shellPid + "/task/" + shellPid + "/children");
+        StringBuilder sb = new StringBuilder();
+        sb.append("shellPid=").append(shellPid)
+            .append(", shellComm=").append(safeLogToken(shellComm))
+            .append(", children=").append(safeLogToken(children));
+        if (children != null) {
+            String trimmed = children.trim();
+            if (!trimmed.isEmpty()) {
+                sb.append(", childComms=");
+                boolean first = true;
+                for (String pid : trimmed.split("\\s+")) {
+                    if (!first) sb.append('|');
+                    first = false;
+                    sb.append(pid).append(':')
+                        .append(safeLogToken(readProcText("/proc/" + pid + "/comm")));
+                }
             }
+        }
+        return sb.toString();
+    }
+
+    private int shellyShellPid() {
+        if (mSession instanceof TerminalSession) {
+            return ((TerminalSession) mSession).getPid();
+        }
+        return -1;
+    }
+
+    private String shellyShellHome() {
+        int shellPid = shellyShellPid();
+        if (shellPid <= 0) return null;
+        byte[] env = readProcBytes("/proc/" + shellPid + "/environ", 65536);
+        if (env == null) return null;
+        int start = 0;
+        for (int i = 0; i <= env.length; i++) {
+            if (i == env.length || env[i] == 0) {
+                if (i > start) {
+                    String entry = new String(env, start, i - start, StandardCharsets.UTF_8);
+                    if (entry.startsWith("HOME=")) return entry.substring(5);
+                }
+                start = i + 1;
+            }
+        }
+        return null;
+    }
+
+    private static String readProcText(String path) {
+        byte[] data = readProcBytes(path, 4096);
+        if (data == null) return null;
+        return new String(data, StandardCharsets.UTF_8).trim();
+    }
+
+    private static byte[] readProcBytes(String path, int maxBytes) {
+        try (FileInputStream in = new FileInputStream(path);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int total = 0;
+            int n;
+            while ((n = in.read(buffer, 0, Math.min(buffer.length, maxBytes - total))) > 0) {
+                out.write(buffer, 0, n);
+                total += n;
+                if (total >= maxBytes) break;
+            }
+            return out.toByteArray();
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    private static String safeLogToken(String value) {
+        if (value == null) return "null";
+        String compact = value.replace('\n', ' ').replace('\r', ' ').trim();
+        return compact.isEmpty() ? "(empty)" : compact;
     }
 
     /** http://www.vt100.net/docs/vt510-rm/DECSC */
