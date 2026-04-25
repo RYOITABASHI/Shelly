@@ -547,7 +547,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     Bash tool call with Exit 1; cli.js tier with Option B returns
     //     the expected output. Pinned to 2.1.112 is an acceptable price
     //     for table-stakes Bash tool function.
-    private const val BASHRC_VERSION = 55
+    // v56 (2026-04-25): __shelly_bg_cli_update health check now smokes
+    //     ALL three CLIs (claude cli.js + gemini bundle + codex.js).
+    //     All-or-nothing promotion: if ANY of the three regresses
+    //     upstream, the whole staging tree is discarded and the .prev
+    //     snapshot is preserved. Mirrors the verified-latest walk-back
+    //     in shelly-runtime-update.js for the npm-installed tier.
+    //     Eliminates "Gemini upstream pushed a regression and Shelly
+    //     promoted it because we only checked claude --version."
+    private const val BASHRC_VERSION = 56
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1383,16 +1391,56 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // to have the @openai/codex directory tree on disk.
             sb.appendLine("  local __codex_vendor=\"\$__staging/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/codex\"")
             sb.appendLine("  mkdir -p \"\$__codex_vendor\" 2>/dev/null && ln -sfn \"$libDir/codex_exec\" \"\$__codex_vendor/codex\" && echo \"[install] codex-vendor shim OK\" || echo \"[install] codex-vendor shim FAILED\"")
-            // 4. Health check: the new claude cli.js must exist AND print a
-            //    recognisable version string within 15s. Anthropic's v2.1.114
-            //    regression (missing cli.js after postinstall bails) fails
-            //    this test and triggers rollback.
-            sb.appendLine("  local __new_cli=\"\$__staging/node_modules/@anthropic-ai/claude-code/cli.js\"")
-            sb.appendLine("  local __healthy=0")
-            sb.appendLine("  if [ -f \"\$__new_cli\" ]; then")
-            sb.appendLine("    if timeout 15 _run $libDir/node \"\$__new_cli\" --version 2>&1 | grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+'; then")
-            sb.appendLine("      __healthy=1")
+            // 4. Health check: ALL three CLI entry points must exist AND
+            //    print a recognisable version string within 15s each.
+            //    All-or-nothing per 2026-04-25 design: if any of claude /
+            //    codex / gemini regresses upstream (Anthropic's v2.1.114
+            //    missing-cli.js, Google's gemini-cli rename, etc.), we
+            //    discard the entire staging tree and keep the .prev
+            //    snapshot. This is the npm-side equivalent of the
+            //    walk-back smoke test in shelly-runtime-update.js — both
+            //    paths refuse to ship a broken latest to users.
+            sb.appendLine("  local __healthy=1")
+            // Claude (cli.js, pinned 2.1.112)
+            sb.appendLine("  local __new_claude=\"\$__staging/node_modules/@anthropic-ai/claude-code/cli.js\"")
+            sb.appendLine("  if [ -f \"\$__new_claude\" ]; then")
+            sb.appendLine("    if ! timeout 15 _run $libDir/node \"\$__new_claude\" --version 2>&1 | grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+'; then")
+            sb.appendLine("      echo '[health] claude --version FAILED' >&2")
+            sb.appendLine("      __healthy=0")
+            sb.appendLine("    else")
+            sb.appendLine("      echo '[health] claude --version OK'")
             sb.appendLine("    fi")
+            sb.appendLine("  else")
+            sb.appendLine("    echo '[health] claude cli.js missing' >&2")
+            sb.appendLine("    __healthy=0")
+            sb.appendLine("  fi")
+            // Gemini (npm @latest, pure JS bundle)
+            sb.appendLine("  local __new_gemini=\"\$__staging/node_modules/@google/gemini-cli/dist/index.js\"")
+            sb.appendLine("  if [ ! -f \"\$__new_gemini\" ]; then")
+            sb.appendLine("    __new_gemini=\"\$__staging/node_modules/@google/gemini-cli/bundle/gemini.js\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ -f \"\$__new_gemini\" ]; then")
+            sb.appendLine("    if ! timeout 15 _run $libDir/node \"\$__new_gemini\" --version 2>&1 | grep -Eq '[0-9]+\\.[0-9]+\\.[0-9]+'; then")
+            sb.appendLine("      echo '[health] gemini --version FAILED' >&2")
+            sb.appendLine("      __healthy=0")
+            sb.appendLine("    else")
+            sb.appendLine("      echo '[health] gemini --version OK'")
+            sb.appendLine("    fi")
+            sb.appendLine("  else")
+            sb.appendLine("    echo '[health] gemini entry missing (skipping check, may be newer Gemini layout)' >&2")
+            sb.appendLine("  fi")
+            // Codex (npm @latest, JS dispatcher; native binary is .shelly-runtime / $libDir)
+            sb.appendLine("  local __new_codex=\"\$__staging/node_modules/@openai/codex/bin/codex.js\"")
+            sb.appendLine("  if [ -f \"\$__new_codex\" ]; then")
+            sb.appendLine("    if ! timeout 15 _run $libDir/node \"\$__new_codex\" --version 2>&1 | grep -Eq '[0-9]+\\.[0-9]+\\.[0-9]+'; then")
+            sb.appendLine("      echo '[health] codex.js --version FAILED' >&2")
+            sb.appendLine("      __healthy=0")
+            sb.appendLine("    else")
+            sb.appendLine("      echo '[health] codex.js --version OK'")
+            sb.appendLine("    fi")
+            sb.appendLine("  else")
+            sb.appendLine("    echo '[health] codex.js missing' >&2")
+            sb.appendLine("    __healthy=0")
             sb.appendLine("  fi")
             // 5. Promote or discard staging. On success we rotate the old
             //    live tree into .shelly-cli.prev (last-known-good snapshot)
