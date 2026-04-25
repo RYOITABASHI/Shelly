@@ -60,10 +60,21 @@ jobs:
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           RESOLV_CONF_PATH="/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf"
 
-          mkdir -p /tmp/musl-out
+          mkdir -p /tmp/musl-out /tmp/musl-src
+          # Copy exec-wrapper.c onto the host scratch dir that we mount
+          # into the container as /src. We previously bind-mounted the
+          # whole GITHUB_WORKSPACE as /workspace:ro, but that mount path
+          # is not readable from inside the QEMU-emulated arm64 Alpine
+          # container in some hosted-runner configurations (cc1 reports
+          # "No such file or directory" on the absolute /workspace
+          # path). The other host directory we already mount (/out) is
+          # writable, so a tiny shared scratch dir is the simplest
+          # sufficient fix and avoids any GITHUB_WORKSPACE assumptions.
+          cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c" \
+             /tmp/musl-src/exec-wrapper.c
           docker run --rm --platform linux/arm64 \
             -v /tmp/musl-out:/out \
-            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            -v /tmp/musl-src:/src:ro \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
             alpine:3.19 sh -euxc '
               apk add --no-progress build-base git
@@ -87,7 +98,7 @@ jobs:
               # Shelly's patched resolver path, only musl ABI compatibility
               # with the loader used for Claude Code.
               gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
-                /workspace/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c \
+                /src/exec-wrapper.c \
                 -o /out/libexec_wrapper_musl.so -ldl
               strip --strip-unneeded /out/libexec_wrapper_musl.so
               # Sanity checks inside the container — readelf/strings are

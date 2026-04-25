@@ -686,6 +686,38 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### bug #118 — exec-wrapper: PATH-resolved ELFs skip linker routing (HIGH, audit 2026-04-22)
+
+**発見**: 2026-04-22 Codex security audit of `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c`
+**症状**: `execvp()` / `execvpe()` の rewrite 経路で、PATH 解決後の絶対パスが ELF だった場合に `should_linker_exec()` の判定をスキップして `orig(file, argv)` (linker64 を経由しない直 exec) に流れる経路がある。targetSdk >= 29 で SELinux W^X が有効な app-data ELF だと EACCES になり得る。
+
+**現状**: 実機では `claude / codex / gemini` の 3 CLI とも shebang script + bash function dispatch なので、PATH 経由の絶対パス ELF を直接 exec する経路は trigger していない。bionic 側 LD_PRELOAD は `should_linker_exec()` 経由で正しく linker64 routing される。
+
+**修正方針**:
+1. `execvp()` / `execvpe()` の **PATH 探索結果に対しても** `should_linker_exec()` を再評価し、ELF なら linker64 経由で再 exec (rewrite が起きていないパスも対象)
+2. PATH 探索を内製化するか、`execve()` の rewrite path 経由に統一する
+
+**優先度**: P1 (現状 trigger していないが、今後 PATH 経由 ELF exec を増やすときに踏む)
+**見積**: 1-2h (修正 + 既存 exec 経路全部で smoke test)
+
+---
+
+### bug #119 — exec-wrapper: is_elf() TOCTOU window (HIGH, audit 2026-04-22)
+
+**発見**: 2026-04-22 Codex security audit
+**症状**: `is_elf(path)` で `open(path, O_RDONLY)` → `read(magic)` → `close()` した後に `execve(LINKER64, [LINKER64, path, ...])` を呼ぶ間に、攻撃者が path を symlink で別ファイルに差し替えると、is_elf 判定済みのつもりが別 binary を linker64 経由で起動できる可能性。
+**条件**: 攻撃者が Shelly の app-data ディレクトリ書き込み権限を持っている必要があるので、現状単独では trigger 不能。ただし他の脆弱性 (e.g. パスインジェクション) と組み合わせると weaponize される。
+
+**修正方針**:
+1. `open(path, O_RDONLY|O_CLOEXEC|O_NOFOLLOW)` で fd を保持し、その fd から ELF magic / `fstat` を検証したうえで、`linker64 /proc/self/fd/N <args...>` で起動する (TOCTOU 不能 + 既存 linker64 routing を維持)
+2. `fexecve()` は linker64 経由を bypass して Android app-data exec 制限に再衝突する可能性があるため、別途検証できるまで修正候補から外す
+3. Android 33+ で `/proc/self/fd/N` 経由 exec に追加権限制約がないか実機確認すること
+
+**優先度**: P1 (defense in depth、現状単独 trigger 不能)
+**見積**: 2-3h (open flag 変更 + linker64 invocation 経路書き換え + Android 33+ で `/proc/self/fd` permission 検証)
+
+---
+
 ### bug #122 — Shelly Doctor UI dashboard (Codex AnyClaw review 2026-04-25)
 
 **発見**: 2026-04-25 Codex AnyClaw 比較レビュー
