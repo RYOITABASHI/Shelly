@@ -44,12 +44,14 @@ const LIB = process.env.SHELLY_LIB_DIR;
 const FORCE = process.argv.includes('--force');
 const TOOL = process.argv.find((arg) => arg === 'claude' || arg === 'codex') || 'all';
 
-// Channel selection — default stable per Codex review. Users wanting
-// bleeding-edge pass --channel latest.
+// Channel selection — default `verified` per 2026-04-25 design
+// discussion. "Verified" = walk the newest-first candidate list,
+// promote the first version that passes smoke. Smoke gates are the
+// safety mechanism, not a time cooldown.
 const CHANNEL_IDX = process.argv.indexOf('--channel');
-const CHANNEL = (CHANNEL_IDX >= 0 && process.argv[CHANNEL_IDX + 1]) || 'stable';
-if (!['stable', 'latest'].includes(CHANNEL)) {
-  console.error(`unknown channel: ${CHANNEL} (expected stable|latest)`);
+const CHANNEL = (CHANNEL_IDX >= 0 && process.argv[CHANNEL_IDX + 1]) || 'verified';
+if (!['verified', 'stable', 'latest'].includes(CHANNEL)) {
+  console.error(`unknown channel: ${CHANNEL} (expected verified|stable|latest)`);
   process.exit(2);
 }
 const STABLE_DELAY_DAYS = Number(process.env.SHELLY_UPDATER_STABLE_DELAY_DAYS || 7);
@@ -207,213 +209,275 @@ function validateClaudeShape(binPath) {
 }
 
 /**
- * Pick the target version for the requested channel. Per Codex review
- * 2026-04-25, "stable" must mean "the newest version that has aged
- * past the cooldown" — NOT "skip if the newest is too young." The
- * original implementation had a correctness bug: if latest was 1 day
- * old but a usable 10-day-old release existed, stable would skip the
- * update entirely and stay on an older, possibly-regressed pin.
+ * Build a ranked candidate list (newest-first) for the requested
+ * channel. The caller walks the list, downloads + smoke-tests each
+ * candidate, and promotes the FIRST one that passes — this is the
+ * "Shelly-verified latest" model: we always run the newest release
+ * we can prove works on Android, no arbitrary cooldown.
  *
- * `latest` channel: resolve to dist-tags.latest unconditionally.
- * `stable` channel: walk `time` + `versions`, pick the newest version
- *                   whose publish time <= now - cooldown.
+ * Channels (per 2026-04-25 design discussion):
+ *   verified (default) — try the absolute newest first. If smoke
+ *                        fails, walk back through prior versions
+ *                        until one promotes or the cap is exhausted.
+ *                        Strictly better than time-based cooldown:
+ *                        we get day-1 access to working releases AND
+ *                        avoid broken ones via active checks.
+ *   latest             — newest only, no walk-back. Fail loud if it
+ *                        doesn't smoke (used by power users / debug).
+ *   stable             — only consider versions aged past
+ *                        SHELLY_UPDATER_STABLE_DELAY_DAYS, then walk
+ *                        back from there. Conservative paranoia path.
  *
- * "Shelly stable channel" is a 7-day-aged heuristic — it is NOT a
- * signal from Anthropic's server-side autoUpdatesChannel=stable
- * (which the npm package doesn't expose). README must use the
- * "Shelly stable channel" branding to avoid confusion.
+ * Returns up to MAX_CANDIDATES versions, newest first.
  */
-function selectClaudeVersion(pkgMeta, channel) {
-  const distTags = pkgMeta['dist-tags'] || {};
-  if (channel === 'latest') return { version: distTags.latest, reason: 'latest dist-tag' };
+const MAX_CANDIDATES = 5;
 
-  const cutoff = Date.now() - STABLE_DELAY_MS;
+function selectClaudeCandidates(pkgMeta, channel) {
   const versions = Object.keys(pkgMeta.versions || {});
-  const aged = versions
+  const sorted = versions
     .filter((v) => {
+      // Drop pre-releases (1.2.3-beta.4 etc.) — Anthropic doesn't
+      // ship pre-release tags via dist-tags.latest, but the metadata
+      // can include them. Skip anything with a hyphen suffix.
+      return /^\d+\.\d+\.\d+$/.test(v);
+    })
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .reverse(); // newest first
+
+  if (channel === 'latest') {
+    const distLatest = pkgMeta['dist-tags']?.latest;
+    return distLatest ? [distLatest] : sorted.slice(0, 1);
+  }
+
+  if (channel === 'stable') {
+    const cutoff = Date.now() - STABLE_DELAY_MS;
+    const aged = sorted.filter((v) => {
       const t = Date.parse(pkgMeta.time?.[v] || '');
       return Number.isFinite(t) && t <= cutoff;
-    })
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  if (aged.length === 0) {
-    return { version: null, reason: `no version older than ${STABLE_DELAY_DAYS}d` };
+    });
+    return aged.slice(0, MAX_CANDIDATES);
   }
-  const pick = aged[aged.length - 1];
-  const ageDays = Math.round((Date.now() - Date.parse(pkgMeta.time[pick])) / 86400000);
-  return { version: pick, reason: `newest version aged >=${STABLE_DELAY_DAYS}d (pick=${pick}, age=${ageDays}d)` };
+
+  // verified (default): all versions, newest first
+  return sorted.slice(0, MAX_CANDIDATES);
 }
 
-function selectCodexTag(releases, channel) {
-  if (channel === 'latest') return { tag: releases[0]?.tag_name, reason: 'latest release' };
+function selectCodexCandidates(releases, channel) {
+  const usable = releases.filter((r) => !r.prerelease && !r.draft);
+  // GitHub /releases is newest-first already.
 
-  const cutoff = Date.now() - STABLE_DELAY_MS;
-  const aged = releases
-    .filter((r) => {
-      const t = Date.parse(r.published_at || '');
-      return Number.isFinite(t) && t <= cutoff && !r.prerelease && !r.draft;
-    });
-  if (aged.length === 0) {
-    return { tag: null, reason: `no codex release older than ${STABLE_DELAY_DAYS}d` };
+  if (channel === 'latest') {
+    return usable.slice(0, 1).map((r) => r.tag_name);
   }
-  // releases[] from GitHub is ordered newest-first, so aged[0] is the
-  // newest qualifying release.
-  const pick = aged[0];
-  const ageDays = Math.round((Date.now() - Date.parse(pick.published_at)) / 86400000);
-  return { tag: pick.tag_name, reason: `newest release aged >=${STABLE_DELAY_DAYS}d (pick=${pick.tag_name}, age=${ageDays}d)` };
+
+  if (channel === 'stable') {
+    const cutoff = Date.now() - STABLE_DELAY_MS;
+    const aged = usable.filter((r) => {
+      const t = Date.parse(r.published_at || '');
+      return Number.isFinite(t) && t <= cutoff;
+    });
+    return aged.slice(0, MAX_CANDIDATES).map((r) => r.tag_name);
+  }
+
+  // verified (default)
+  return usable.slice(0, MAX_CANDIDATES).map((r) => r.tag_name);
+}
+
+/**
+ * Try to download + smoke-test a single Claude version. Returns
+ * { ok: true, staging } on success, { ok: false, reason } otherwise.
+ * NEVER throws — caller decides whether to walk to the next candidate.
+ */
+async function tryClaudeVersion(pkgMeta, version) {
+  try {
+    const meta = pkgMeta.versions?.[version];
+    if (!meta?.dist?.tarball || !meta?.dist?.integrity) {
+      return { ok: false, reason: 'metadata missing dist fields' };
+    }
+    info(`[claude] try ${version} — downloading`);
+    const tgz = await request(meta.dist.tarball);
+    const actualIntegrity = integritySha512(tgz);
+    if (actualIntegrity !== meta.dist.integrity) {
+      return { ok: false, reason: `integrity mismatch ${actualIntegrity} != ${meta.dist.integrity}` };
+    }
+    const entries = parseTar(tgz);
+    const bin = tarEntry(entries, 'package/claude') || tarEntry(entries, 'claude');
+    if (!bin) return { ok: false, reason: 'package/claude missing from tarball' };
+
+    const staging = path.join(TMP, `claude-${version}`);
+    ensureCleanDir(staging);
+    const out = path.join(staging, 'claude');
+    fs.writeFileSync(out, bin, { mode: 0o755 });
+    fs.chmodSync(out, 0o755);
+
+    try {
+      validateClaudeShape(out);
+    } catch (e) {
+      return { ok: false, reason: `shape check: ${e.message}` };
+    }
+
+    // Smoke 1: --version (no network/auth).
+    const smoke = runLinker([
+      path.join(LIB, 'shelly_musl_exec'),
+      path.join(LIB, 'ld-musl-aarch64.so.1'),
+      out,
+      '--version',
+    ]);
+    const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
+    if (smoke.status !== 0 || !combined.includes(version)) {
+      return { ok: false, reason: `--version smoke status=${smoke.status}: ${combined.slice(0, 200)}` };
+    }
+    info(`[claude] try ${version} — --version smoke OK`);
+
+    // Smoke 2 (opt-in): --print "Reply exactly OK".
+    if (FUNCTIONAL_CHECK) {
+      const func = runLinker([
+        path.join(LIB, 'shelly_musl_exec'),
+        path.join(LIB, 'ld-musl-aarch64.so.1'),
+        out,
+        '--print',
+        'Reply exactly OK',
+      ], { SHELLY_UPDATER_FUNCTIONAL_CHECK: '' });
+      const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
+      if (func.status !== 0) {
+        return { ok: false, reason: `--print status=${func.status}: ${funcOut.slice(0, 200)}` };
+      }
+      if (!/\bOK\b/i.test(func.stdout || '')) {
+        return { ok: false, reason: `--print did not return OK: ${funcOut.slice(0, 200)}` };
+      }
+      info(`[claude] try ${version} — functional check OK`);
+    }
+
+    return { ok: true, staging };
+  } catch (err) {
+    return { ok: false, reason: `exception ${err.message}` };
+  }
 }
 
 async function updateClaude() {
   if (!LIB) fail('SHELLY_LIB_DIR is required');
   const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
 
-  const selection = selectClaudeVersion(pkgMeta, CHANNEL);
-  if (!selection.version) {
-    info(`[claude] skip (${selection.reason}; channel=${CHANNEL})`);
+  const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
+  if (candidates.length === 0) {
+    info(`[claude] no candidates (channel=${CHANNEL})`);
     return;
   }
-  const targetVersion = selection.version;
-  info(`[claude] channel=${CHANNEL} target=${targetVersion} (${selection.reason})`);
+  info(`[claude] channel=${CHANNEL} candidates=${candidates.join(',')}`);
 
-  if (!FORCE && currentVersion('claude') === targetVersion) {
-    info(`[claude] already current ${targetVersion}`);
+  // Fast-path: if our current promoted version matches the FIRST
+  // candidate (the absolute newest), we're already on the verified
+  // latest. Don't re-download.
+  if (!FORCE && currentVersion('claude') === candidates[0]) {
+    info(`[claude] already on verified latest ${candidates[0]}`);
     return;
   }
 
-  const meta = pkgMeta.versions?.[targetVersion];
-  if (!meta?.dist?.tarball || !meta?.dist?.integrity) fail('[claude] version metadata missing dist fields');
-
-  info(`[claude] downloading ${targetVersion}`);
-  const tgz = await request(meta.dist.tarball);
-  const actualIntegrity = integritySha512(tgz);
-  if (actualIntegrity !== meta.dist.integrity) {
-    fail(`[claude] integrity mismatch: ${actualIntegrity} != ${meta.dist.integrity}`);
-  }
-
-  const entries = parseTar(tgz);
-  const bin = tarEntry(entries, 'package/claude') || tarEntry(entries, 'claude');
-  if (!bin) fail('[claude] package/claude missing from tarball');
-
-  const staging = path.join(TMP, `claude-${targetVersion}`);
-  ensureCleanDir(staging);
-  const out = path.join(staging, 'claude');
-  fs.writeFileSync(out, bin, { mode: 0o755 });
-  fs.chmodSync(out, 0o755);
-
-  // Shape check before spawning — catches packaging shifts without
-  // the 30-second spawn timeout cost.
-  validateClaudeShape(out);
-
-  // Smoke test 1: --version (no network, no auth required).
-  const smoke = runLinker([
-    path.join(LIB, 'shelly_musl_exec'),
-    path.join(LIB, 'ld-musl-aarch64.so.1'),
-    out,
-    '--version',
-  ]);
-  const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
-  if (smoke.status !== 0 || !combined.includes(targetVersion)) {
-    fail(`[claude] --version smoke failed status=${smoke.status}: ${combined.slice(0, 500)}`);
-  }
-  info(`[claude] --version smoke OK`);
-
-  // Smoke test 2 (optional, opt-in): --print "Reply exactly OK".
-  // Exercises DNS, TLS, auth, musl resolver, actual inference path.
-  // Skipped by default because it requires valid Anthropic credentials
-  // on this device — would fail on a healthy release for a user who
-  // hasn't transplanted .claude/.credentials.json yet. Codex audit
-  // 2026-04-25 pointed out the prompt must verify the model ACTUALLY
-  // returned OK, not just that the API round-trip succeeded — so we
-  // grep stdout for /OK/ and fail otherwise.
-  if (FUNCTIONAL_CHECK) {
-    info(`[claude] functional check: --print "Reply exactly OK"`);
-    const func = runLinker([
-      path.join(LIB, 'shelly_musl_exec'),
-      path.join(LIB, 'ld-musl-aarch64.so.1'),
-      out,
-      '--print',
-      'Reply exactly OK',
-    ], { SHELLY_UPDATER_FUNCTIONAL_CHECK: '' }); // don't recurse into check
-    const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
-    if (func.status !== 0) {
-      fail(`[claude] --print functional check failed status=${func.status}: ${funcOut.slice(0, 500)}`);
+  // Walk candidates newest-first. First one that passes smoke wins.
+  for (const version of candidates) {
+    if (!FORCE && currentVersion('claude') === version) {
+      info(`[claude] already current ${version} (skipping older candidates)`);
+      return;
     }
-    if (!/\bOK\b/i.test(func.stdout || '')) {
-      fail(`[claude] --print functional check: model did not return OK: ${funcOut.slice(0, 500)}`);
+    const result = await tryClaudeVersion(pkgMeta, version);
+    if (result.ok) {
+      promote('claude', version, result.staging);
+      info(`[claude] promoted ${version} (verified, channel=${CHANNEL})`);
+      return;
     }
-    info(`[claude] functional check OK`);
+    info(`[claude] reject ${version}: ${result.reason}`);
   }
 
-  promote('claude', targetVersion, staging);
-  info(`[claude] promoted ${targetVersion} (channel=${CHANNEL})`);
+  // All candidates failed — keep current promotion as-is. The bundled
+  // golden APK version is the ultimate fallback in claude() bash
+  // function, so the user always has a working Claude.
+  info(`[claude] all ${candidates.length} candidates failed smoke; keeping current=${currentVersion('claude') || '(none)'}`);
+}
+
+async function tryCodexTag(releases, tag) {
+  try {
+    const rel = releases.find((r) => r.tag_name === tag);
+    if (!rel) return { ok: false, reason: 'release disappeared' };
+    const assetName = `codex-termux-android-arm64-${tag}.tar.gz`;
+    const sumName = `${assetName}.sha256`;
+    const asset = (rel.assets || []).find((a) => a.name === assetName);
+    const sumAsset = (rel.assets || []).find((a) => a.name === sumName);
+    if (!asset?.browser_download_url || !sumAsset?.browser_download_url) {
+      return { ok: false, reason: 'release assets missing' };
+    }
+    info(`[codex] try ${tag} — downloading`);
+    const [tgz, sumBuf] = await Promise.all([
+      request(asset.browser_download_url),
+      request(sumAsset.browser_download_url),
+    ]);
+    const expected = sumBuf.toString('utf8').trim().split(/\s+/)[0];
+    const actual = crypto.createHash('sha256').update(tgz).digest('hex');
+    if (actual !== expected) return { ok: false, reason: `sha256 mismatch ${actual} != ${expected}` };
+
+    const entries = parseTar(tgz);
+    const execBin = tarEntry(entries, 'codex-exec.bin');
+    const tuiBin = tarEntry(entries, 'codex.bin');
+    if (!execBin || !tuiBin) return { ok: false, reason: 'codex-exec.bin or codex.bin missing' };
+
+    const staging = path.join(TMP, `codex-${tag}`);
+    ensureCleanDir(staging);
+    const execOut = path.join(staging, 'codex_exec');
+    const tuiOut = path.join(staging, 'codex_tui');
+    fs.writeFileSync(execOut, execBin, { mode: 0o755 });
+    fs.writeFileSync(tuiOut, tuiBin, { mode: 0o755 });
+    fs.chmodSync(execOut, 0o755);
+    fs.chmodSync(tuiOut, 0o755);
+
+    const smoke = runLinker([execOut, '--version']);
+    const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
+    const plainVersion = tag.replace(/^v/, '');
+    if (smoke.status !== 0 || !combined.includes(plainVersion)) {
+      return { ok: false, reason: `--version status=${smoke.status}: ${combined.slice(0, 200)}` };
+    }
+    info(`[codex] try ${tag} — --version smoke OK`);
+    // codex has no --print equivalent that's safe without auth, so we
+    // stop here even when FUNCTIONAL_CHECK=1.
+    return { ok: true, staging };
+  } catch (err) {
+    return { ok: false, reason: `exception ${err.message}` };
+  }
 }
 
 async function updateCodex() {
   if (!LIB) fail('SHELLY_LIB_DIR is required');
-  // GitHub /releases returns newest-first. Need the full list for
-  // stable channel so we can walk backwards past any release younger
-  // than the cooldown.
+  // Pull a window of recent releases so verified-channel walk-back
+  // has somewhere to walk to. /releases returns newest-first.
   const releases = await json('https://api.github.com/repos/DioNanos/codex-termux/releases?per_page=20', {
     'Accept': 'application/vnd.github+json',
   });
 
-  const selection = selectCodexTag(releases, CHANNEL);
-  if (!selection.tag) {
-    info(`[codex] skip (${selection.reason}; channel=${CHANNEL})`);
+  const candidates = selectCodexCandidates(releases, CHANNEL);
+  if (candidates.length === 0) {
+    info(`[codex] no candidates (channel=${CHANNEL})`);
     return;
   }
-  const tag = selection.tag;
-  info(`[codex] channel=${CHANNEL} target=${tag} (${selection.reason})`);
+  info(`[codex] channel=${CHANNEL} candidates=${candidates.join(',')}`);
 
-  const rel = releases.find((r) => r.tag_name === tag);
-  if (!rel) fail(`[codex] release ${tag} disappeared between listing and selection`);
-  const assetName = `codex-termux-android-arm64-${tag}.tar.gz`;
-  const sumName = `${assetName}.sha256`;
-  const asset = (rel.assets || []).find((a) => a.name === assetName);
-  const sumAsset = (rel.assets || []).find((a) => a.name === sumName);
-  if (!asset?.browser_download_url || !sumAsset?.browser_download_url) {
-    fail('[codex] release assets missing');
-  }
-  if (!FORCE && currentVersion('codex') === tag) {
-    info(`[codex] already current ${tag}`);
+  if (!FORCE && currentVersion('codex') === candidates[0]) {
+    info(`[codex] already on verified latest ${candidates[0]}`);
     return;
   }
 
-  info(`[codex] downloading ${tag}`);
-  const [tgz, sumBuf] = await Promise.all([
-    request(asset.browser_download_url),
-    request(sumAsset.browser_download_url),
-  ]);
-  const expected = sumBuf.toString('utf8').trim().split(/\s+/)[0];
-  const actual = crypto.createHash('sha256').update(tgz).digest('hex');
-  if (actual !== expected) fail(`[codex] sha256 mismatch: ${actual} != ${expected}`);
-
-  const entries = parseTar(tgz);
-  const execBin = tarEntry(entries, 'codex-exec.bin');
-  const tuiBin = tarEntry(entries, 'codex.bin');
-  if (!execBin || !tuiBin) fail('[codex] codex-exec.bin or codex.bin missing from tarball');
-
-  const staging = path.join(TMP, `codex-${tag}`);
-  ensureCleanDir(staging);
-  const execOut = path.join(staging, 'codex_exec');
-  const tuiOut = path.join(staging, 'codex_tui');
-  fs.writeFileSync(execOut, execBin, { mode: 0o755 });
-  fs.writeFileSync(tuiOut, tuiBin, { mode: 0o755 });
-  fs.chmodSync(execOut, 0o755);
-  fs.chmodSync(tuiOut, 0o755);
-
-  const smoke = runLinker([execOut, '--version']);
-  const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
-  const plainVersion = tag.replace(/^v/, '');
-  if (smoke.status !== 0 || !combined.includes(plainVersion)) {
-    fail(`[codex] --version smoke failed status=${smoke.status}: ${combined.slice(0, 500)}`);
+  for (const tag of candidates) {
+    if (!FORCE && currentVersion('codex') === tag) {
+      info(`[codex] already current ${tag} (skipping older candidates)`);
+      return;
+    }
+    const result = await tryCodexTag(releases, tag);
+    if (result.ok) {
+      promote('codex', tag, result.staging);
+      info(`[codex] promoted ${tag} (verified, channel=${CHANNEL})`);
+      return;
+    }
+    info(`[codex] reject ${tag}: ${result.reason}`);
   }
-  info(`[codex] --version smoke OK`);
 
-  // codex has no --print equivalent that's safe to run without auth.
-  // Skip functional check for codex even when FUNCTIONAL_CHECK=1.
-
-  promote('codex', tag, staging);
-  info(`[codex] promoted ${tag} (channel=${CHANNEL})`);
+  info(`[codex] all ${candidates.length} candidates failed smoke; keeping current=${currentVersion('codex') || '(none)'}`);
 }
 
 function cleanupStaleStaging() {
