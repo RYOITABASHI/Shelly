@@ -66,8 +66,21 @@ static const char *rewrite_path(const char *pathname) {
     if (strcmp(pathname, "/usr/bin/env") == 0) return "/system/bin/env";
     if (strcmp(pathname, "env") == 0) return "/system/bin/env";
     if (strcmp(pathname, "/bin/bash") == 0 || strcmp(pathname, "bash") == 0) {
+        /* MEDIUM per Codex audit 2026-04-25: SHELL env is attacker-
+         * controllable in theory (inherited from parent). Only accept
+         * absolute paths inside trusted prefixes to prevent a rewrite
+         * to an arbitrary binary. /data/user/0/dev.shelly.terminal is
+         * Shelly's own app-data directory, /system/bin holds toybox
+         * shells. Anything else falls through to the generic prefix
+         * rewrite (or the unchanged pathname if no rewrite applies).
+         */
         const char *shell = getenv("SHELL");
-        if (shell && shell[0]) return shell;
+        if (shell && shell[0] == '/' &&
+            (strncmp(shell, "/data/user/0/dev.shelly.terminal/", 33) == 0 ||
+             strncmp(shell, "/data/data/dev.shelly.terminal/", 31) == 0 ||
+             strncmp(shell, "/system/bin/", 12) == 0)) {
+            return shell;
+        }
     }
 
     /* Generic prefix rewrite for /bin/* and /usr/bin/*. Android has no
@@ -84,13 +97,21 @@ static const char *rewrite_path(const char *pathname) {
      * until the next rewrite_path() call on the same thread, which is
      * long enough because the caller feeds it straight to execve().
      */
+    /* LOW per Codex audit 2026-04-25: check snprintf return so a
+     * pathological long path doesn't silently truncate into an
+     * unrelated executable name. If the rewritten form would overflow
+     * PATH_MAX, surface ENAMETOOLONG by returning NULL (callers treat
+     * NULL as a non-rewrite + pass through, which will then fail with
+     * ENOENT and the caller gets a proper error). */
     static __thread char rewrite_buf[PATH_MAX];
     if (strncmp(pathname, "/bin/", 5) == 0) {
-        snprintf(rewrite_buf, sizeof(rewrite_buf), "/system/bin/%s", pathname + 5);
+        int n = snprintf(rewrite_buf, sizeof(rewrite_buf), "/system/bin/%s", pathname + 5);
+        if (n < 0 || (size_t)n >= sizeof(rewrite_buf)) { errno = ENAMETOOLONG; return NULL; }
         return rewrite_buf;
     }
     if (strncmp(pathname, "/usr/bin/", 9) == 0) {
-        snprintf(rewrite_buf, sizeof(rewrite_buf), "/system/bin/%s", pathname + 9);
+        int n = snprintf(rewrite_buf, sizeof(rewrite_buf), "/system/bin/%s", pathname + 9);
+        if (n < 0 || (size_t)n >= sizeof(rewrite_buf)) { errno = ENAMETOOLONG; return NULL; }
         return rewrite_buf;
     }
 
@@ -130,7 +151,13 @@ static char **build_linker_argv(const char *pathname, char *const argv[]) {
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     typedef int (*orig_t)(const char *, char *const [], char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execve");
+    /* MEDIUM per Codex audit: guard against dlsym RTLD_NEXT failure
+     * (dynamic linker hasn't finished wiring libc yet, or the symbol
+     * was stripped). Surface ENOSYS rather than segfaulting on the
+     * null function pointer. */
+    if (!orig) { errno = ENOSYS; return -1; }
     const char *rewritten = rewrite_path(pathname);
+    if (!rewritten) return -1; /* errno already set by rewrite_path (ENAMETOOLONG) */
 
     if (rewritten != pathname) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
@@ -180,7 +207,9 @@ int posix_spawn(pid_t *pid, const char *path,
                           const posix_spawnattr_t *,
                           char *const [], char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawn");
+    if (!orig) return ENOSYS;
     const char *rewritten = rewrite_path(path);
+    if (!rewritten) return errno ? errno : ENAMETOOLONG;
 
     if (rewritten != path) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
@@ -225,7 +254,9 @@ int posix_spawnp(pid_t *pid, const char *file,
                           const posix_spawnattr_t *,
                           char *const [], char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    if (!orig) return ENOSYS;
     const char *rewritten = rewrite_path(file);
+    if (!rewritten) return errno ? errno : ENAMETOOLONG;
 
     if (rewritten != file) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
@@ -239,7 +270,9 @@ int posix_spawnp(pid_t *pid, const char *file,
 int execvp(const char *file, char *const argv[]) {
     typedef int (*orig_t)(const char *, char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execvp");
+    if (!orig) { errno = ENOSYS; return -1; }
     const char *rewritten = rewrite_path(file);
+    if (!rewritten) return -1;
 
     if (rewritten != file) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
@@ -253,7 +286,9 @@ int execvp(const char *file, char *const argv[]) {
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
     typedef int (*orig_t)(const char *, char *const [], char *const []);
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execvpe");
+    if (!orig) { errno = ENOSYS; return -1; }
     const char *rewritten = rewrite_path(file);
+    if (!rewritten) return -1;
 
     if (rewritten != file) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
