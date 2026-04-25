@@ -704,29 +704,45 @@ class ShellyTerminalView(
             // mServedView == old sibling hash after repeated taps on
             // the new pane).
             //
-            // Correct fix per post-build-696 agent audit: use
-            // `InputMethodManager.onViewFocusChanged(view, hasFocus)`
-            // which is **public SDK since API 34** (Android 14) and
-            // was added exactly for this IME-rebind scenario. Samsung
-            // Galaxy Z Fold6 runs Android 16 (API 36) so this branch
-            // always fires on our target device. The earlier attempt
-            // (build 696) used `focusOut(View)` via reflection, but
-            // that method is `@hide` / greylisted on API 30+ and
-            // either throws `NoSuchMethodError` or no-ops under
-            // StrictMode — build 696 additionally failed compile
-            // because `focusOut` isn't in android.jar stubs either.
-            //
-            // `onViewFocusChanged(view, false)` internally routes to
-            // IMM's focus-change bookkeeping, dispatches focusOut to
-            // the bound input method, and resets mServedView when
-            // matched — exactly the effect we needed.
+            // Force IMM to reset mServedView off the stale sibling.
+            // Build 696 tried `focusOut(View)` (compile failure: @hide),
+            // build 697 tried `onViewFocusChanged(View, boolean)`
+            // (compile failure: also not in public SDK stubs).
+            // Belt-and-suspenders strategy: try BOTH via reflection.
+            // Whichever one exists on this device (OneUI may ship
+            // either depending on base) dispatches focusOut to IMM,
+            // which clears mServedView when matched. If both throw
+            // NoSuchMethodException we fall back to clearFocus + the
+            // hide+show cycle in showKeyboardWhenServed.
             val prevImm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            try {
-                if (prevImm != null && Build.VERSION.SDK_INT >= 34) {
-                    prevImm.onViewFocusChanged(prevTerminalView!!, false)
+            if (prevImm != null) {
+                // Try onViewFocusChanged(view, boolean) first — newer
+                // internal API since API 34 per AOSP source.
+                var dispatched = false
+                try {
+                    val m = InputMethodManager::class.java.getDeclaredMethod(
+                        "onViewFocusChanged",
+                        android.view.View::class.java,
+                        java.lang.Boolean.TYPE
+                    )
+                    m.isAccessible = true
+                    m.invoke(prevImm, prevTerminalView, false)
+                    dispatched = true
+                } catch (_: Throwable) { /* method absent or blocked */ }
+                if (!dispatched) {
+                    // Fallback: legacy focusOut(view). @hide since API 30
+                    // but often still callable via reflection on OEM ROMs.
+                    try {
+                        val m = InputMethodManager::class.java.getDeclaredMethod(
+                            "focusOut",
+                            android.view.View::class.java
+                        )
+                        m.isAccessible = true
+                        m.invoke(prevImm, prevTerminalView)
+                        dispatched = true
+                    } catch (_: Throwable) { /* both absent */ }
                 }
-            } catch (t: Throwable) {
-                Log.i(TAG, "onViewFocusChanged skipped: ${t.javaClass.simpleName}")
+                Log.i(TAG, "stale-sibling focusOut dispatched=$dispatched viewHash=${System.identityHashCode(prevTerminalView)}")
             }
             // Also call clearFocus defensively in case the view HAS
             // somehow retained PFLAG_FOCUSED on this code path.
