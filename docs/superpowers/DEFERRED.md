@@ -637,6 +637,26 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ## P1 — v0.1.1 で対応推奨
 
+### bug #121 — paste marker file: app-home injection + forceTuiSource log (post-HN polish)
+
+**発見**: 2026-04-25 Codex review of d9df5312
+**症状**: build #709 の paste marker file 検出が `shellPid=unknown` で fail (instanceof TerminalSession が runtime で false)。build #710 で `mSession.getShellPid()` 直接呼び + hardcoded HOME fallback で対応 → 動作確認済み (#710 install 後)。ただし Codex 指摘の通り、構造的に脆弱:
+
+1. **hardcoded `/data/user/0/dev.shelly.terminal/files/home`** は work profile / multi-user / fork 名変更で壊れる
+2. **forceTuiSource ログ不足**: marker hit が dynamic HOME 経由か hardcoded fallback 経由か区別できない → diagnostics 弱い
+
+**修正方針 (post-HN)**:
+1. **Kotlin から TerminalEmulator construct 時に app home を inject**: `setShellyHome(File)` メソッド追加、`isShellyPasteForceTui()` がそれを優先使用
+2. **forceTuiSource 診断**: ログに "dynamic" / "hardcoded" / "injected" の出所を含める
+3. **shellPid=0 の根本原因調査**: なぜ instanceof が false になったか (Kotlin/Java vtable / R8 obfuscation / RN bridge wrap?) — 当面は dynamic dispatch で回避できてるが、根本解明は望ましい
+
+**現状**: HN day 1 リリースは hardcoded fallback で動作する。post-HN で構造化。
+
+**優先度**: P1 (機能は動いてる、技術的負債の解消)
+**見積**: 30-60 分 (Kotlin から path inject + 診断ログ追加)
+
+---
+
 ### bug #120 — Claude Code 自動追従: shape-detection + stable/latest channel + functional health check
 
 **発見**: 2026-04-25 Codex product review
