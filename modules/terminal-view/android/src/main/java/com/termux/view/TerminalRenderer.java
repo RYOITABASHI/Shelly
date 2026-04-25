@@ -22,6 +22,9 @@ import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.Typeface;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import com.termux.terminal.TerminalBuffer;
 import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalRow;
@@ -51,6 +54,14 @@ public final class TerminalRenderer {
     final int mFontLineSpacingAndAscent;
 
     private final float[] asciiMeasures = new float[127];
+    private static final int MAX_NON_ASCII_MEASURE_CACHE_ENTRIES = 8192;
+    private final LinkedHashMap<Integer, Float> mNonAsciiMeasures =
+        new LinkedHashMap<Integer, Float>(MAX_NON_ASCII_MEASURE_CACHE_ENTRIES, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Integer, Float> eldest) {
+                return size() > MAX_NON_ASCII_MEASURE_CACHE_ENTRIES;
+            }
+        };
 
     public TerminalRenderer(int textSize, Typeface typeface) {
         mTextSize = textSize;
@@ -136,8 +147,7 @@ public final class TerminalRenderer {
                 // This could happen for some fonts which are not truly monospace, or for more exotic characters such as
                 // smileys which android font renders as wide.
                 // If this is detected, we draw this code point scaled to match what wcwidth() expects.
-                final float measuredCodePointWidth = (codePoint < asciiMeasures.length) ? asciiMeasures[codePoint] : mTextPaint.measureText(line,
-                    currentCharIndex, charsForCodePoint);
+                final float measuredCodePointWidth = measureCodePointWidth(line, currentCharIndex, charsForCodePoint, codePoint);
                 final boolean fontWidthMismatch = Math.abs(measuredCodePointWidth / mFontWidth - codePointWcWidth) > 0.01;
 
                 if (style != lastRunStyle || insideCursor != lastRunInsideCursor || insideSelection != lastRunInsideSelection || fontWidthMismatch || lastRunFontWidthMismatch) {
@@ -183,6 +193,15 @@ public final class TerminalRenderer {
             drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
                 measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection);
         }
+    }
+
+    private float measureCodePointWidth(char[] line, int currentCharIndex, int charsForCodePoint, int codePoint) {
+        if (codePoint < asciiMeasures.length) return asciiMeasures[codePoint];
+        Float cached = mNonAsciiMeasures.get(codePoint);
+        if (cached != null) return cached;
+        float measured = mTextPaint.measureText(line, currentCharIndex, charsForCodePoint);
+        mNonAsciiMeasures.put(codePoint, measured);
+        return measured;
     }
 
     private void drawTextRun(Canvas canvas, char[] text, int[] palette, float y, int startColumn, int runWidthColumns,
@@ -264,6 +283,14 @@ public final class TerminalRenderer {
             // The text alignment is the default Paint.Align.LEFT.
             canvas.drawTextRun(text, startCharIndex, runWidthChars, startCharIndex, runWidthChars, left, y - mFontLineSpacingAndAscent, false, mTextPaint);
         }
+
+        // Keep the render-loop measurement pass stable. drawTextRun mutates
+        // style state on the shared Paint; non-ASCII width caching assumes
+        // normal typeface metrics, not the previous run's bold/italic flags.
+        mTextPaint.setFakeBoldText(false);
+        mTextPaint.setUnderlineText(false);
+        mTextPaint.setTextSkewX(0.f);
+        mTextPaint.setStrikeThruText(false);
 
         if (savedMatrix) canvas.restore();
     }
