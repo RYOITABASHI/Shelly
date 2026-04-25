@@ -200,11 +200,28 @@ jobs:
           # branches are dead code). See HomeInitializer.kt Option B comment.
           CLAUDE_CLI="cli-bundle/lib/node_modules/@anthropic-ai/claude-code/cli.js"
           if [ -f "$CLAUDE_CLI" ]; then
-            HITS="$(grep -o 'shell:!0' "$CLAUDE_CLI" | wc -l)"
+            HITS="$(grep -o 'shell:!0' "$CLAUDE_CLI" | wc -l | tr -d ' ')"
+            # Drift detector (Codex audit 2026-04-25): claude-code
+            # 2.1.112 has exactly 8 `shell:!0` hits. If upstream
+            # minifier changes shape we must fail loud rather than
+            # silently ship an APK with a broken Bash tool.
+            if [ "$HITS" != "8" ]; then
+              echo "FATAL: claude-code cli.js shell:!0 hits=${HITS} (expected 8). Upstream bundle shape changed; rebuild pattern before release." >&2
+              exit 1
+            fi
             sed -i 's|shell:!0|shell:"/system/bin/sh"|g' "$CLAUDE_CLI"
+            # Verify the replacement actually landed.
+            if ! grep -q 'shell:"/system/bin/sh"' "$CLAUDE_CLI"; then
+              echo "FATAL: claude-code cli.js sed did not produce the expected replacement." >&2
+              exit 1
+            fi
             echo "[claude] patched cli.js (${HITS} call sites rewritten)"
           else
-            echo "[claude] WARNING cli.js not found at $CLAUDE_CLI — skipping shell patch"
+            # No APK-bundled cli.js is an explicit failure — users rely
+            # on the bundled tier as Tier 3 fallback on fresh installs
+            # before the daily updater runs.
+            echo "FATAL: claude-code cli.js not found at $CLAUDE_CLI" >&2
+            exit 1
           fi
           # Patch gemini-cli subprocess spawns mirroring HomeInitializer.kt
           # patchGemini(). Three breakage classes flagged by the 2026-04-24
@@ -226,8 +243,31 @@ jobs:
               GEM_COUNT=$((GEM_COUNT + 1))
             done
             echo "[gemini] patched shell:true + commandExists in ${GEM_COUNT} bundle files"
+            # Drift detectors (Codex audit 2026-04-25):
+            # 1. Termux guard must be GONE. If upstream renames the
+            #    error string, our sed regex misses and Gemini bails
+            #    out with "You need to install Termux" on first run.
+            if grep -Rq 'You need to install Termux' "$GEM_BUNDLE"; then
+              echo "FATAL: Gemini Termux guard still present after patch. Regex drifted." >&2
+              exit 1
+            fi
+            # 2. commandExists symbol must still exist (sanity check
+            #    that upstream didn't rename it; our sed key is the
+            #    exact function name).
+            if ! grep -Rq 'getCommandExistsCmd' "$GEM_BUNDLE"; then
+              echo "FATAL: getCommandExistsCmd disappeared from Gemini bundle. Update patch pattern." >&2
+              exit 1
+            fi
+            # 3. Our shell:"/system/bin/sh" replacement must appear
+            #    somewhere — proof the shell:true sed matched at least
+            #    one site.
+            if ! grep -Rq 'shell:"/system/bin/sh"' "$GEM_BUNDLE"; then
+              echo "FATAL: Gemini shell-path replacement absent. shell:true pattern drifted." >&2
+              exit 1
+            fi
           else
-            echo "[gemini] WARNING bundle dir not found at $GEM_BUNDLE — skipping shell patches"
+            echo "FATAL: Gemini bundle dir not found at $GEM_BUNDLE" >&2
+            exit 1
           fi
           # Tar them up for APK assets (LibExtractor will extract on first launch)
           cd cli-bundle/lib

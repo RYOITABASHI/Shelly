@@ -49,7 +49,15 @@ function patchCodex(libDir) {
   let s = fs.readFileSync(p, "utf8");
   if (s.includes("shelly-codex")) { console.log("[patch] codex.js already patched"); return; }
   const needle = "spawn(binaryPath, process.argv.slice(2)";
-  if (!s.includes(needle)) { console.log("[patch] codex.js needle not found"); return; }
+  if (!s.includes(needle)) {
+    // Drift detector: codex.js exists but neither the marker nor the
+    // expected needle is present. Upstream @openai/codex refactored
+    // the spawn call — our linker64 redirect no longer fires, which
+    // would silently break every Bash tool / shell call. Throw so
+    // the daily updater surfaces an audit-worthy failure in
+    // install.log instead of shipping a broken tree.
+    throw new Error("[patch] codex.js drift: neither shelly-codex marker nor spawn needle present at " + p);
+  }
   // This patches the legacy 1-shot entry point used by npm `@openai/codex`.
   // Bash wrapper in .bashrc actually routes TUI vs exec itself (see the
   // `codex()` function generation below) — this patch just ensures that IF
@@ -123,7 +131,22 @@ function patchClaude() {
   // defence in depth.
   const needle = /shell:!0/g;
   const matches = s.match(needle);
-  if (!matches) { console.log("[patch] claude cli.js needle not found"); return; }
+  if (!matches) {
+    // Drift detector: zero hits means upstream minifier changed the
+    // literal (e.g. bumped to shell:!1!==!1, shell:true un-minified,
+    // or the spawn calls were routed through a helper). Fail loud so
+    // the daily updater refuses to promote the staged tree and we
+    // notice in install.log instead of shipping a broken Bash tool.
+    throw new Error("[patch] claude cli.js drift: shell:!0 hits=0 at " + p);
+  }
+  // Pinned to @anthropic-ai/claude-code@2.1.112 which has exactly 8
+  // hits across the bundle. Any change means the upstream bundle
+  // changed shape and our pattern may now match too many or too few
+  // sites — both cases should fail loud rather than silently patch
+  // something unexpected.
+  if (matches.length !== 8) {
+    throw new Error("[patch] claude cli.js drift: shell:!0 hits=" + matches.length + " (expected 8) at " + p);
+  }
   s = s.replace(needle, 'shell:"/system/bin/sh"');
   // Marker: idempotency check above matches this string. Must land in code,
   // not a leading comment block, so it survives any upstream header rewrites.
