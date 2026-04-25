@@ -230,7 +230,16 @@ function validateClaudeShape(binPath) {
  *
  * Returns up to MAX_CANDIDATES versions, newest first.
  */
-const MAX_CANDIDATES = 5;
+// Default 3 per Codex review 2026-04-25 — bandwidth cost of failed
+// candidates (~250 MB each for Claude SEA) outweighs the marginal
+// benefit of walking back further. Override via env var if you've
+// hit a regression spanning more than 2 releases.
+const MAX_CANDIDATES = Number(process.env.SHELLY_UPDATER_MAX_CANDIDATES || 3);
+
+// Per-process unique staging suffix avoids the race where two
+// concurrent updater runs collide on TMP/claude-${version}/ via
+// ensureCleanDir(). Codex review 2026-04-25 issue #1.
+const RUN_TAG = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 
 function selectClaudeCandidates(pkgMeta, channel) {
   const versions = Object.keys(pkgMeta.versions || {});
@@ -245,8 +254,16 @@ function selectClaudeCandidates(pkgMeta, channel) {
     .reverse(); // newest first
 
   if (channel === 'latest') {
+    // Codex review 2026-04-25 issue #2: validate dist-tags.latest is a
+    // real semver release that actually exists in pkgMeta.versions
+    // before using it. npm has historically allowed `latest` to point
+    // at prereleases or malformed strings — accepting blindly would
+    // bypass our /^\d+\.\d+\.\d+$/ filter.
     const distLatest = pkgMeta['dist-tags']?.latest;
-    return distLatest ? [distLatest] : sorted.slice(0, 1);
+    if (distLatest && /^\d+\.\d+\.\d+$/.test(distLatest) && pkgMeta.versions?.[distLatest]) {
+      return [distLatest];
+    }
+    return sorted.slice(0, 1);
   }
 
   if (channel === 'stable') {
@@ -304,7 +321,9 @@ async function tryClaudeVersion(pkgMeta, version) {
     const bin = tarEntry(entries, 'package/claude') || tarEntry(entries, 'claude');
     if (!bin) return { ok: false, reason: 'package/claude missing from tarball' };
 
-    const staging = path.join(TMP, `claude-${version}`);
+    // Per-run staging name avoids cross-process clobbering when two
+    // updaters race on the same version (Codex review issue #1).
+    const staging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
     ensureCleanDir(staging);
     const out = path.join(staging, 'claude');
     fs.writeFileSync(out, bin, { mode: 0o755 });
@@ -313,6 +332,9 @@ async function tryClaudeVersion(pkgMeta, version) {
     try {
       validateClaudeShape(out);
     } catch (e) {
+      // Eager cleanup on shape rejection — these dirs accumulate
+      // otherwise and a series of bad upstream releases bloats disk.
+      fs.rmSync(staging, { recursive: true, force: true });
       return { ok: false, reason: `shape check: ${e.message}` };
     }
 
@@ -325,6 +347,7 @@ async function tryClaudeVersion(pkgMeta, version) {
     ]);
     const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
     if (smoke.status !== 0 || !combined.includes(version)) {
+      fs.rmSync(staging, { recursive: true, force: true });
       return { ok: false, reason: `--version smoke status=${smoke.status}: ${combined.slice(0, 200)}` };
     }
     info(`[claude] try ${version} — --version smoke OK`);
@@ -340,9 +363,11 @@ async function tryClaudeVersion(pkgMeta, version) {
       ], { SHELLY_UPDATER_FUNCTIONAL_CHECK: '' });
       const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
       if (func.status !== 0) {
+        fs.rmSync(staging, { recursive: true, force: true });
         return { ok: false, reason: `--print status=${func.status}: ${funcOut.slice(0, 200)}` };
       }
       if (!/\bOK\b/i.test(func.stdout || '')) {
+        fs.rmSync(staging, { recursive: true, force: true });
         return { ok: false, reason: `--print did not return OK: ${funcOut.slice(0, 200)}` };
       }
       info(`[claude] try ${version} — functional check OK`);
@@ -376,7 +401,7 @@ async function updateClaude() {
   // Walk candidates newest-first. First one that passes smoke wins.
   for (const version of candidates) {
     if (!FORCE && currentVersion('claude') === version) {
-      info(`[claude] already current ${version} (skipping older candidates)`);
+      info(`[claude] keeping current ${version} (newer candidates already failed smoke)`);
       return;
     }
     const result = await tryClaudeVersion(pkgMeta, version);
@@ -419,7 +444,7 @@ async function tryCodexTag(releases, tag) {
     const tuiBin = tarEntry(entries, 'codex.bin');
     if (!execBin || !tuiBin) return { ok: false, reason: 'codex-exec.bin or codex.bin missing' };
 
-    const staging = path.join(TMP, `codex-${tag}`);
+    const staging = path.join(TMP, `codex-${tag}-${RUN_TAG}`);
     ensureCleanDir(staging);
     const execOut = path.join(staging, 'codex_exec');
     const tuiOut = path.join(staging, 'codex_tui');
@@ -432,6 +457,7 @@ async function tryCodexTag(releases, tag) {
     const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
     const plainVersion = tag.replace(/^v/, '');
     if (smoke.status !== 0 || !combined.includes(plainVersion)) {
+      fs.rmSync(staging, { recursive: true, force: true });
       return { ok: false, reason: `--version status=${smoke.status}: ${combined.slice(0, 200)}` };
     }
     info(`[codex] try ${tag} — --version smoke OK`);
@@ -465,7 +491,7 @@ async function updateCodex() {
 
   for (const tag of candidates) {
     if (!FORCE && currentVersion('codex') === tag) {
-      info(`[codex] already current ${tag} (skipping older candidates)`);
+      info(`[codex] keeping current ${tag} (newer candidates already failed smoke)`);
       return;
     }
     const result = await tryCodexTag(releases, tag);
