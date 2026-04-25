@@ -60,6 +60,30 @@ No copy. No paste. No tab switching. Zero friction.
 
 ---
 
+## Why this APK is big, and what you're agreeing to
+
+- **APK is ~420 MB** because Shelly bundles real tools, not shims. bash,
+  Node.js, Python 3, git, curl, ripgrep, jq, tmux, vim, less, sqlite3,
+  make, ssh — plus the Anthropic / OpenAI / Google AI CLI bundles — ship
+  inside the APK. No Termux, no repository server, no package manager
+  bootstrap. First launch extracts the binaries into app-private data.
+- **All files access** is requested on first launch so `/sdcard` works
+  the way a desktop terminal expects (`cd /sdcard/Download`, editing
+  files there, etc.). Scoped Storage without this permission silently
+  blocks writes. You can refuse — Shelly still works inside its own
+  sandbox, but `/sdcard` paths will `Permission denied`.
+- **LD_PRELOAD + /system/bin/linker64** is how Shelly runs Linux-layout
+  binaries on Android bionic (SELinux blocks direct execve on
+  app-private ELFs). The wrapper rewrites `/bin/X` and `/usr/bin/X` to
+  `/system/bin/X` and routes app-bundled ELFs through `linker64`. Source
+  is in `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c`.
+- **Not Termux-compatible by design.** Shelly does not use Termux
+  packages, Termux paths, or Termux's prefix assumptions. If you already
+  have Termux installed, Shelly still bundles its own copies of
+  everything. No conflict, but also no sharing.
+
+---
+
 ## Quick Start
 
 Download the latest APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases), or build from source:
@@ -115,7 +139,7 @@ Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Rep
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **5 pane types** | Terminal, AI, Browser (+ background audio), Markdown, Preview. Split up to 4 live panes freely. |
 | **Multi-agent AI** | Claude Code, Gemini, Cerebras, Groq, Perplexity, Codex, Local LLM. Auto-routed or `@mention`. |
-| **Latest Claude Code + Codex on Android** | The only Android app that keeps claude-code 2.1.113+ and codex-termux current on-device via a Shelly-managed runtime. No proot, no root. APK auto-bundles the newest release via nightly CI. |
+| **Claude Code + Codex + Gemini on Android** | Claude Code 2.1.112 (pure-JS tier, Bash tool verified working) is the default. The newer 2.1.113+ Bun SEA is bundled and selectable via `SHELLY_PREFER_MUSL_CLAUDE=1` — Bash tool support on the musl SEA is work-in-progress ([bug #117](#) path A). Codex and Gemini auto-track `@latest` via 24 h background updater. No proot, no root. |
 | **Shelly theme preset** | Mock-faithful teal-on-black palette with Silkscreen pixel font. Runtime swap — your shell survives the switch. |
 | **Voice input** | Speak your commands or AI prompts. VoiceChain ties speech to the same input router the keyboard uses. |
 | **CRT mode** | Scanlines + phosphor green + vignette. Retro 8-bit sounds. Pixel fonts. Just for fun. |
@@ -319,7 +343,7 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Claude / Gemini CLIs auto-installed on first launch (via npm) | ✅ shipping |
-| Claude Code 2.1.113+ (Bun SEA) + Codex CLI on Android bionic via musl trampoline loader / managed runtime updater — only Android app to keep both latest CLIs current natively (bug #117 Path C-bis, bugs #76/#96) | ✅ shipping |
+| Claude Code 2.1.112 pure-JS tier (default, Bash tool verified) + Claude Code 2.1.113+ Bun SEA loaded via Shelly-patched musl trampoline (opt-in via `SHELLY_PREFER_MUSL_CLAUDE=1`, Bash tool WIP) + Codex CLI (bundled native binary) | ✅ default cli.js tier shipping; Bun SEA opt-in |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked as bug #99 (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in v0.1.1 |
