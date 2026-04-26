@@ -121,12 +121,12 @@ function patchClaude() {
   if (!fs.existsSync(p)) { console.log("[patch] claude cli.js not found at " + p); return; }
   let s = fs.readFileSync(p, "utf8");
   if (s.includes("shelly-claude")) { console.log("[patch] claude cli.js already patched"); return; }
-  // claude-code 2.1.112 spawns child processes with options.shell=true, which
+  // Legacy pure-JS claude-code spawns child processes with options.shell=true, which
   // Node.js maps to /bin/sh -c on POSIX. Android bionic has no /bin/sh, so
   // execve returns ENOENT and the Bash tool / MCP headersHelper / editor
   // spawns all exit 1 with empty stdout. Rewrite the minified literal
   // `shell:!0` to `shell:"/system/bin/sh"` so Node dispatches to the bionic
-  // shell (mksh). Five call sites in 2.1.112; win32-guarded branches and
+  // shell (mksh). win32-guarded branches and
   // the sharp-installer helper are dead code on Android — still patched for
   // defence in depth.
   const needle = /shell:!0/g;
@@ -138,14 +138,6 @@ function patchClaude() {
     // the daily updater refuses to promote the staged tree and we
     // notice in install.log instead of shipping a broken Bash tool.
     throw new Error("[patch] claude cli.js drift: shell:!0 hits=0 at " + p);
-  }
-  // Pinned to @anthropic-ai/claude-code@2.1.112 which has exactly 8
-  // hits across the bundle. Any change means the upstream bundle
-  // changed shape and our pattern may now match too many or too few
-  // sites — both cases should fail loud rather than silently patch
-  // something unexpected.
-  if (matches.length !== 8) {
-    throw new Error("[patch] claude cli.js drift: shell:!0 hits=" + matches.length + " (expected 8) at " + p);
   }
   s = s.replace(needle, 'shell:"/system/bin/sh"');
   // Marker: idempotency check above matches this string. Must land in code,
@@ -393,10 +385,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *
      *        Strategic context: claude-code 2.1.113+ dropped cli.js in
      *        favour of a Bun SEA binary that can't run on Android bionic.
-     *        Shelly's local CLI pin (2.1.112 via v33) keeps users on the
+     *        Shelly's local CLI pin keeps users on the
      *        last mobile-native release; Codespaces integration is the
      *        sustainable path to always-latest claude-code on mobile.
-     *    33: claude-code pinned to 2.1.112 (last cli.js-shipping release).
+     *    33: claude-code temporarily pinned to the last cli.js-shipping release.
      *        2.1.113 renamed the bin entry from `cli.js` to `bin/claude.exe`
      *        (Bun-compiled SEA) and dropped the cli.js file from the tarball
      *        entirely. cli-wrapper.cjs is just a platform-detect + spawn
@@ -413,11 +405,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
      *        (#45541 et al.), Ishabdullah/claude-code-termux, Reddit,
      *        Qiita/Zenn, LINUX DO, skeptrune blog confirmed that the
      *        Bun-binary-via-proot path (v28–v30) was over-engineered.
-     *        The npm tarball for @anthropic-ai/claude-code@<=2.1.112
+     *        Older npm tarballs for @anthropic-ai/claude-code
      *        still ships a plain-JS `cli.js` that works end-to-end with
      *        the bundled bionic node — no musl, no proot, no chroot, no
      *        CA bundle, no machine-id. The user's own device was running
-     *        claude 2.1.112 fine via the v26 `_run node cli.js` pattern.
+     *        claude fine via the v26 `_run node cli.js` pattern.
      *        Revert to that approach with three hardening additions:
      *        (a) 3-tier fallback in claude(): auto-updated / snapshot
      *            (.shelly-cli.prev) / APK-bundled golden.
@@ -487,7 +479,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     literal `<` showing up at column 0; if PS2 was ever overridden by
     //     something to that, this hardcodes the bash default). Add
     //     DISABLE_AUTOUPDATER=1 to claude's environment as recommended by
-    //     issue #50270 — the 2.1.112 pin is fragile because the bundled
+    //     issue #50270 — the legacy pin is fragile because the bundled
     //     auto-updater can silently fetch a 2.1.113+ Bun SEA tarball that
     //     bricks Android. The chmod a-w on the cli dir is the second half
     //     of that defense and lives in __shelly_bg_cli_update below.
@@ -503,7 +495,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // v46 (2026-04-21): bug #117 on-device smoke — Path C-bis inherited
     //     the PTY-wide bionic LD_PRELOAD=libexec_wrapper.so. musl tried to
     //     relocate that bionic preload and failed on __register_atfork,
-    //     __open_2, and __errno before falling back to 2.1.112. Clear
+    //     __open_2, and __errno before falling back to the legacy cli.js tier. Clear
     //     LD_PRELOAD for the musl claude launch only.
     // v47 (2026-04-21): Shelly-managed runtime updater — claude/codex prefer
     //     ~/.shelly-runtime/<tool>/current after staged download, integrity
@@ -540,12 +532,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        rewrites cli.js `shell:!0` → `shell:"/system/bin/sh"` on the
     //        staged tree. The CI workflow applies the same sed to the
     //        APK-bundled cli.js so the fix is live on first launch.
-    // v55 (2026-04-24): claude() priority swap — legacy cli.js 2.1.112
+    // v55 (2026-04-24): claude() priority swap — legacy cli.js
     //     (Option B patched) is the default, musl Bun SEA is opt-in via
-    //     SHELLY_PREFER_MUSL_CLAUDE=1. On-device verification with build
+    //     opt-in. On-device verification with build
     //     693 proved the musl SEA hardcodes `/bin/sh -c` and fails every
     //     Bash tool call with Exit 1; cli.js tier with Option B returns
-    //     the expected output. Pinned to 2.1.112 is an acceptable price
+    //     the expected output. A temporary pin was accepted
     //     for table-stakes Bash tool function.
     // v56 (2026-04-25): __shelly_bg_cli_update health check now smokes
     //     ALL three CLIs (claude cli.js + gemini bundle + codex.js).
@@ -592,13 +584,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     Bionic libexec_wrapper.so still preloaded for the bash
     //     PTY; shelly_musl_exec preserves only the musl variant when
     //     handing off to the SEA. Bash tool now works on latest
-    //     Claude Code (opt-in via SHELLY_PREFER_MUSL_CLAUDE=1, will
+    //     Claude Code (now the default verified runtime path, will
     //     become default in v4.4.0 if on-device verification passes).
     //     Risk: if Bun statically links syscall paths and bypasses
     //     dynamic linker dispatch, LD_PRELOAD doesn't intercept and
-    //     Bash tool stays broken. Fallback to legacy cli.js 2.1.112
+    //     Bash tool stays broken. Fallback to legacy cli.js
     //     remains intact.
-    private const val BASHRC_VERSION = 60
+    private const val BASHRC_VERSION = 61
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -918,7 +910,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("mkdir -p \"\$CLAUDE_CODE_TMPDIR\" 2>/dev/null")
             // v43: TMPDIR/TMP/TEMP exports REMOVED. The 2026-04-20 #102
             // investigation grep'd cli.js for `os.tmpdir` / `process.env.TMPDIR`
-            // and found 0 hits — claude-code 2.1.112 does not consult Node's
+            // and found 0 hits — the legacy claude-code cli.js does not consult Node's
             // tmpdir at all. The exports were dead code. Keeping them risked
             // silently retargeting unrelated tools (npm cache, etc.) at
             // ~/.claude-tmp on a fresh install where the dir didn't exist
@@ -1080,52 +1072,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("else")
             sb.appendLine("  __cli_dir=\"$libDir/node_modules\"")
             sb.appendLine("fi")
-            // @anthropic-ai/claude-code dispatch — BASHRC_VERSION v32 rewrite.
-            //
-            // The v28–v30 detour (Bun binary + proot + Alpine chroot + musl
-            // sub-package + CA bundle + /etc/* population) was based on a
-            // misreading of the v2.x packaging layout. The npm tarball for
-            // @anthropic-ai/claude-code actually ships a pure-JS `cli.js`
-            // that runs fine under our bundled bionic node. Issue #45541,
-            // Ishabdullah/claude-code-termux, Qiita/Zenn/LINUX DO community
-            // guides — they all converge on the same one-line dispatch:
-            //   claude() { node node_modules/@anthropic-ai/claude-code/cli.js "$@"; }
-            //
-            // This function adds a three-tier fallback so that a broken
-            // @latest upstream (observed on Termux with v2.1.114 — postinstall
-            // bails with "Unsupported platform: android arm64" and leaves the
-            // tree without a usable cli.js) doesn't kill the CLI:
-            //   Tier 1: \$__shelly_cli_dir/node_modules/... (auto-updated)
-            //   Tier 2: \$HOME/.shelly-cli.prev/node_modules/... (last-known-good snapshot)
-            //   Tier 3: \$libDir/node_modules/... (APK-bundled golden fallback)
-            //
-            // The staging/verify/rollback pipeline in __shelly_bg_cli_update
-            // guarantees Tier 2 is always known-good: a failing install
-            // never reaches the live tree, so Tier 1 either works or falls
-            // through to Tier 2/3 on the next invocation.
-            // bug #117 priority swap (2026-04-24 late-night): cli.js 2.1.112
-            // (legacy tier) is now PREFERRED because Option B (the cli.js
-            // `shell:!0` → `shell:"/system/bin/sh"` sed, commit 83f61542 +
-            // CI mirror) makes the Bash tool actually work. The musl Bun
-            // SEA (claude-code 2.1.113+) is a single compiled ELF, so we
-            // can't rewrite its hardcoded `/bin/sh -c` dispatch — every
-            // Bash tool invocation exits 1 with empty stdout. Verified
-            // on-device 2026-04-24 with build 693: `SHELLY_FORCE_LEGACY_CLAUDE=1
-            // claude` runs `echo claude-bash-test` via Bash tool and
-            // returns `claude-bash-test`; default (musl SEA) returns
-            // Exit code 1.
-            //
-            // Tradeoff: pinned to claude-code 2.1.112, missing any
-            // 2.1.113+ feature improvements. Acceptable because a
-            // working Bash tool is table stakes. Users who need the
-            // latest can opt in with `SHELLY_PREFER_MUSL_CLAUDE=1`.
+            // @anthropic-ai/claude-code dispatch. Default route is the
+            // Shelly-verified runtime tree under ~/.shelly-runtime, which
+            // downloads upstream latest candidates, smoke-tests them on
+            // device, then flips current/ only after PASS. The APK-bundled
+            // musl binary and the legacy cli.js tiers remain fallbacks so an
+            // offline device or broken upstream release never bricks `claude`.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
             sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
-            sb.appendLine("  if [ \"\${SHELLY_PREFER_MUSL_CLAUDE:-0}\" = \"1\" ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
             // time — bionic has no /etc/resolv.conf so without this seed
@@ -1157,10 +1116,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          ;;")
             sb.appendLine("      esac")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("    if [ -x \"\$__musl_claude\" ] && [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
+            sb.appendLine("    if [ -x \"\$__musl_claude\" ]; then")
             sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
@@ -1178,6 +1138,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        return \"\$__musl_rc\"")
             sb.appendLine("        ;;")
             sb.appendLine("    esac")
+            sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  # Legacy fallback: pre-2.1.113 cli.js three-tier chain")
             sb.appendLine("  local __cli_js=\"\"")
@@ -1375,7 +1336,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // binaries without requiring a new APK. The updater stages,
             // verifies, smoke-tests, then flips ~/.shelly-runtime/*/current.
             sb.appendLine("# Shelly-managed native CLI runtime update (background, once per day)")
-            sb.appendLine("shelly-update-clis() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" \"\$@\"; }")
+            sb.appendLine("shelly-update-clis() {")
+            sb.appendLine("  case \"\${1:-all}\" in")
+            sb.appendLine("    gemini)")
+            sb.appendLine("      if [ \"\${2:-}\" = \"--check-only\" ]; then SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" gemini --check-only; else __shelly_bg_cli_update; fi")
+            sb.appendLine("      ;;")
+            sb.appendLine("    *)")
+            sb.appendLine("      SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" \"\$@\"")
+            sb.appendLine("      ;;")
+            sb.appendLine("  esac")
+            sb.appendLine("}")
             sb.appendLine("shelly-doctor() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-doctor.js\" \"\$@\"; }")
             sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
             sb.appendLine("__shelly_runtime_update_interval=86400")
@@ -1487,33 +1457,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    cp -al \"\$__shelly_cli_dir/.\" \"\$__staging/\" 2>/dev/null || \\")
             sb.appendLine("      cp -r \"\$__shelly_cli_dir/.\" \"\$__staging/\"")
             sb.appendLine("  fi")
-            // 2. Install into staging. --os=linux --cpu=arm64 tricks
-            //    Anthropic's install.cjs postinstall out of its "Unsupported
-            //    platform: android arm64" early-return (observed on fresh
-            //    Termux installs since v2.1.114). --include=optional pulls
-            //    the codex native binary so its optional dep resolves.
-            //
-            //    @anthropic-ai/claude-code is pinned to 2.1.112 — the final
-            //    release that shipped cli.js as a pure-JS entry point. From
-            //    2.1.113 the package dropped cli.js entirely in favour of a
-            //    Bun-compiled native binary (bin/claude.exe) that requires a
-            //    glibc/musl runtime our bundled bionic node can't load. We
-            //    investigated cli-wrapper.cjs — it's a thin launcher that
-            //    unconditionally spawns the native binary, so there's no JS
-            //    fallback we could patch into. Until we ship Codespace
-            //    integration (remote Linux executes claude-code) or revive
-            //    the proot-chroot strategy (abandoned after v28–v31 churn)
-            //    we pin to the last version that Shelly's `_run node
-            //    cli.js` dispatch in claude() can execute natively.
-            //
-            //    Gemini and Codex remain @latest: gemini-cli is pure JS and
-            //    Shelly patches the Termux guard via shelly-patcher.js; codex
-            //    is dispatched through the bundled codex-termux native binary
-            //    (libcodex_exec.so) via the codex.js sed patch.
-            //
-            //    We DO NOT pass --libc=musl or force-install the claude-code
-            //    -musl sub-package; we don't use the Bun ET_EXEC anymore.
-            sb.appendLine("  echo '[install] npm install start (claude-code pinned to 2.1.112, last cli.js release)'")
+            // 2. Install latest npm packages into staging. The staged tree is
+            //    promoted only after the probe block below verifies the actual
+            //    runnable Shelly command path for each CLI. Claude latest may
+            //    be a Bun SEA package rather than a pure-JS cli.js; the
+            //    default claude() command therefore prefers the separately
+            //    smoke-tested ~/.shelly-runtime/claude/current binary and
+            //    keeps the npm package as metadata / compatibility surface.
+            sb.appendLine("  echo '[install] npm install start (claude-code latest, gemini latest, codex latest)'")
             // v41 smoke test: --libc=musl alone was not enough. npm's
             // platform detection kept reporting "Actual os: android"
             // regardless of the --os flag, rejecting claude-code's
@@ -1531,19 +1482,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   3. --omit=optional (skip optional platform-specific
             //      binaries; with --force they'd get extracted anyway
             //      but --omit keeps the tree smaller)
-            // Manually verified 2026-04-19: install produces a working
-            // Tier 1 tree with claude-code 2.1.112 cli.js.
-            sb.appendLine("  npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@2.1.112 @google/gemini-cli@latest @openai/codex@latest")
+            sb.appendLine("  npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
             sb.appendLine("  echo \"[install] npm install exit=\$?\"")
             // 3. Apply codex / gemini source patches to the staged tree
             //    (bug #76, #77, #96 — see earlier BASHRC_VERSION entries).
             //    Both are idempotent: safe to re-run on already-patched files.
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" codex \"$libDir\" \"\$__staging/node_modules\" || true")
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" gemini \"\$__staging/node_modules\" || true")
-            // Bug #117 Option B: rewrite `shell:!0` → `shell:"/system/bin/sh"`
-            // in claude-code's cli.js so the Bash tool can spawn a shell that
-            // exists on Android bionic. Applied here (staging) so the fix is
-            // in place before the tree gets chmod a-w'd below.
+            // Legacy cli.js compatibility patch. Latest Claude packages often
+            // do not contain cli.js; the patcher logs and no-ops in that case.
             sb.appendLine("  _run $libDir/node \"\$HOME/.shelly-patcher.js\" claude \"\$__staging/node_modules\" || true")
             // bug #105 (codex vendor shim): codex.js 0.121.0 has an
             //   if (!existsSync(path.join(..., 'vendor', 'aarch64-unknown-
@@ -1588,22 +1535,38 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // Pre-check: node binary itself must work. Three CLI failures
             // with the same root cause ("node won't start") are useless
             // diagnostics; surface this once and bail.
-            sb.appendLine("  if ! timeout 30 _run \"$libDir/node\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
+            sb.appendLine("  if ! timeout 30 /system/bin/linker64 \"$libDir/node\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
             sb.appendLine("    echo '[health] node --version FAILED — bundled node is broken; aborting health check' >&2")
             sb.appendLine("    __healthy=0")
             sb.appendLine("  fi")
-            // Claude (cli.js, pinned 2.1.112)
+            // Claude: probe the actual command route. If the npm package still
+            // ships a JS bin, smoke it directly. If latest is a Bun SEA shape,
+            // require the verified runtime or bundled musl binary to pass
+            // `--version` so the user-facing `claude` command remains healthy.
             sb.appendLine("  if [ \$__healthy -eq 1 ]; then")
-            sb.appendLine("    local __new_claude=\"\$__staging/node_modules/@anthropic-ai/claude-code/cli.js\"")
-            sb.appendLine("    if [ -f \"\$__new_claude\" ]; then")
-            sb.appendLine("      if ! timeout 30 _run \"$libDir/node\" \"\$__new_claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
-            sb.appendLine("        echo '[health] claude --version FAILED' >&2")
-            sb.appendLine("        __healthy=0")
-            sb.appendLine("      else")
-            sb.appendLine("        echo '[health] claude --version OK'")
-            sb.appendLine("      fi")
+            sb.appendLine("    local __claude_pkg=\"\$__staging/node_modules/@anthropic-ai/claude-code/package.json\"")
+            sb.appendLine("    local __new_claude=\"\"")
+            sb.appendLine("    if [ -f \"\$__claude_pkg\" ]; then")
+            sb.appendLine("      __new_claude=\$(timeout 10 /system/bin/linker64 \"$libDir/node\" -e 'try{const p=require(process.argv[1]);const b=p.bin;if(typeof b===\"string\"){process.stdout.write(b)}else if(b&&typeof b===\"object\"){const v=b.claude||b[Object.keys(b)[0]];if(v)process.stdout.write(v)}}catch(e){}' \"\$__claude_pkg\" 2>/dev/null)")
+            sb.appendLine("    fi")
+            sb.appendLine("    local __claude_ok=0")
+            sb.appendLine("    if [ -n \"\$__new_claude\" ] && [ -f \"\$__staging/node_modules/@anthropic-ai/claude-code/\$__new_claude\" ]; then")
+            sb.appendLine("      case \"\$__new_claude\" in")
+            sb.appendLine("        *.js|cli.js)")
+            sb.appendLine("          if timeout 30 /system/bin/linker64 \"$libDir/node\" \"\$__staging/node_modules/@anthropic-ai/claude-code/\$__new_claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
+            sb.appendLine("          ;;")
+            sb.appendLine("      esac")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ \$__claude_ok -ne 1 ] && [ -x \"\$HOME/.shelly-runtime/claude/current/claude\" ] && [ -x \"$libDir/shelly_musl_exec\" ] && [ -x \"$libDir/ld-musl-aarch64.so.1\" ]; then")
+            sb.appendLine("      if SHELLY_MUSL_LD_PRELOAD=\"$libDir/libexec_wrapper_musl.so\" timeout 30 /system/bin/linker64 \"$libDir/shelly_musl_exec\" \"$libDir/ld-musl-aarch64.so.1\" \"\$HOME/.shelly-runtime/claude/current/claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ \$__claude_ok -ne 1 ] && [ -x \"$libDir/claude\" ] && [ -x \"$libDir/shelly_musl_exec\" ] && [ -x \"$libDir/ld-musl-aarch64.so.1\" ]; then")
+            sb.appendLine("      if SHELLY_MUSL_LD_PRELOAD=\"$libDir/libexec_wrapper_musl.so\" timeout 30 /system/bin/linker64 \"$libDir/shelly_musl_exec\" \"$libDir/ld-musl-aarch64.so.1\" \"$libDir/claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ \$__claude_ok -eq 1 ]; then")
+            sb.appendLine("      echo '[health] claude --version OK'")
             sb.appendLine("    else")
-            sb.appendLine("      echo '[health] claude cli.js missing' >&2")
+            sb.appendLine("      echo '[health] claude --version FAILED (no runnable JS bin or verified musl runtime)' >&2")
             sb.appendLine("      __healthy=0")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
@@ -1616,13 +1579,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    if [ -f \"\$__gemini_pkg\" ]; then")
             // Use node to parse package.json bin (which can be a string or object).
             // Fail-safe: empty output if anything goes wrong.
-            sb.appendLine("      __new_gemini=\$(timeout 10 _run \"$libDir/node\" -e 'try{const p=require(process.argv[1]);const b=p.bin;if(typeof b===\"string\"){process.stdout.write(b)}else if(b&&typeof b===\"object\"){const k=Object.keys(b);if(k.length){process.stdout.write(b[k[0]])}}}catch(e){}' \"\$__gemini_pkg\" 2>/dev/null)")
+            sb.appendLine("      __new_gemini=\$(timeout 10 /system/bin/linker64 \"$libDir/node\" -e 'try{const p=require(process.argv[1]);const b=p.bin;if(typeof b===\"string\"){process.stdout.write(b)}else if(b&&typeof b===\"object\"){const k=Object.keys(b);if(k.length){process.stdout.write(b[k[0]])}}}catch(e){}' \"\$__gemini_pkg\" 2>/dev/null)")
             sb.appendLine("    fi")
             sb.appendLine("    if [ -n \"\$__new_gemini\" ]; then")
             // package.json bin is relative to its package dir. Resolve.
             sb.appendLine("      local __gemini_abs=\"\$__staging/node_modules/@google/gemini-cli/\$__new_gemini\"")
             sb.appendLine("      if [ -f \"\$__gemini_abs\" ]; then")
-            sb.appendLine("        if ! timeout 30 _run \"$libDir/node\" \"\$__gemini_abs\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
+            sb.appendLine("        if ! timeout 30 /system/bin/linker64 \"$libDir/node\" \"\$__gemini_abs\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
             sb.appendLine("          echo '[health] gemini --version FAILED' >&2")
             sb.appendLine("          __healthy=0")
             sb.appendLine("        else")
@@ -1641,7 +1604,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \$__healthy -eq 1 ]; then")
             sb.appendLine("    local __new_codex=\"\$__staging/node_modules/@openai/codex/bin/codex.js\"")
             sb.appendLine("    if [ -f \"\$__new_codex\" ]; then")
-            sb.appendLine("      if ! timeout 30 _run \"$libDir/node\" \"\$__new_codex\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
+            sb.appendLine("      if ! timeout 30 /system/bin/linker64 \"$libDir/node\" \"\$__new_codex\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
             sb.appendLine("        echo '[health] codex.js --version FAILED' >&2")
             sb.appendLine("        __healthy=0")
             sb.appendLine("      else")
@@ -1686,14 +1649,6 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      [ \$__rolled_back -eq 1 ] && echo '[install] rolled back to previous live tree' >&2")
             sb.appendLine("      return 1")
             sb.appendLine("    fi")
-            // [#50270](https://github.com/anthropics/claude-code/issues/50270)
-            // belt + suspenders alongside DISABLE_AUTOUPDATER=1: drop write
-            // permission on the claude-code module dir so even if the env
-            // var is dropped the bundled updater can't replace cli.js with
-            // a 2.1.113+ Bun SEA blob. `2>/dev/null` because chmod can fail
-            // on filesystems that don't honour the bits — that's fine, the
-            // env var still does the job.
-            sb.appendLine("    chmod -R a-w \"\$__shelly_cli_dir/node_modules/@anthropic-ai/claude-code\" 2>/dev/null || true")
             sb.appendLine("    echo \"\$__shelly_now\" > \"\$__shelly_update_marker\"")
             sb.appendLine("    echo '[install] committed — live tree updated, .prev snapshot refreshed'")
             sb.appendLine("  else")
@@ -1716,11 +1671,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  echo '[install] done'")
             sb.appendLine("}")
-            // v60: quick CLI version check. Runs on every shell launch in a
+            // v61: quick CLI version check. Runs on every shell launch in a
             // detached subshell (~3-5s, ~30KB total network). Compares
-            // installed @google/gemini-cli + @openai/codex versions against
-            // npm `latest` (Claude is intentionally pinned to 2.1.112 so it
-            // is excluded from the diff). If any package has a newer
+            // installed claude-code, gemini-cli, and codex npm package
+            // versions against npm `latest`. If any package has a newer
             // upstream that is NOT in .failed-versions (or whose failure
             // record is older than the cooldown), kicks off the existing
             // __shelly_bg_cli_update pipeline immediately, bypassing the
@@ -1732,7 +1686,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // gate the quick check itself on a short cooldown
             // (SHELLY_QUICK_CHECK_INTERVAL, default 3600s) to avoid
             // hammering npm on rapid relaunches.
-            sb.appendLine("# v60: per-launch quick version check (bypasses 24h gate when newer found)")
+            sb.appendLine("# v61: per-launch quick version check (bypasses 24h gate when newer found)")
             sb.appendLine("__shelly_quick_check_marker=\"\$HOME/.shelly-cli/.last_quick_check\"")
             sb.appendLine("__shelly_quick_check_interval=\${SHELLY_QUICK_CHECK_INTERVAL:-3600}")
             sb.appendLine("__shelly_failed_cooldown=\${SHELLY_FAILED_VERSION_COOLDOWN:-3600}")
@@ -1749,12 +1703,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __now=\$(date +%s 2>/dev/null || echo 0)")
             sb.appendLine("  local __need_update=0")
             sb.appendLine("  local __notice=\"\"")
-            // Iterate through the two packages we expect to track @latest. Claude is
-            // intentionally excluded from the per-launch diff because we pin it to
-            // 2.1.112 — running the diff against upstream's higher version would
-            // otherwise fire __shelly_bg_cli_update on every single launch.
-            sb.appendLine("  for __pkg in @google/gemini-cli @openai/codex; do")
-            sb.appendLine("    local __upstream=\$(timeout 15 _run \"$libDir/node\" \"$libDir/node_modules/npm/bin/npm-cli.js\" view \"\$__pkg\" version 2>/dev/null | tail -1)")
+            // Iterate through the npm packages we expect to track @latest.
+            sb.appendLine("  for __pkg in @anthropic-ai/claude-code @google/gemini-cli @openai/codex; do")
+            sb.appendLine("    local __upstream=\$(timeout 15 /system/bin/linker64 \"$libDir/node\" \"$libDir/node_modules/npm/bin/npm-cli.js\" view \"\$__pkg\" version 2>/dev/null | tail -1)")
             sb.appendLine("    if [ -z \"\$__upstream\" ]; then")
             sb.appendLine("      echo \"[quick] \$__pkg: npm view failed (offline?), skipping\"")
             sb.appendLine("      continue")

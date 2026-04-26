@@ -657,32 +657,26 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### bug #120 — Claude Code 自動追従: shape-detection + stable/latest channel + functional health check
+### ✅ bug #120 — Claude Code 自動追従: verified runtime + staged npm probe
 
 **発見**: 2026-04-25 Codex product review
-**症状**: 現状 `@anthropic-ai/claude-code@2.1.112` pinned。npm 最新追従は実質止まっている。理由は claude-code 2.1.113+ が Bun SEA になり Option B の `shell:!0` sed が効かなくなるため。
+**症状**: 以前は `@anthropic-ai/claude-code` を最後の pure-JS 形に固定していたため、npm 最新追従が止まっていた。理由は claude-code の Bun SEA 化で legacy `cli.js` patch が効かなくなるため。
 
 **既存インフラ (既に 80% ある)**:
 - `__shelly_bg_cli_update` の staging → health-check → atomic promote pipeline
 - `$HOME/.shelly-cli/` (current) / `$HOME/.shelly-cli.staging/` / `$HOME/.shelly-cli.prev/` / `$libDir/node_modules` (bundled golden)
 - `claude()` bash function の 3-tier dispatch (auto → prev → bundled)
 
-**欠けている (Codex 推奨 2026-04-25)**:
-1. **Shape detection**: staging 展開後に `test -f cli.js` / `test -f cli-wrapper.cjs` / `find -perm -111` で cli.js 版 vs Bun SEA 版 vs 不明形 を判定、runner を自動切り替え
-2. **Stable vs latest channel 切り替え**: Anthropic 公式に `autoUpdatesChannel` = latest / stable がある。stable は ~1 週遅れで regression 避け。Shelly default は stable、opt-in で latest が安全
-3. **Functional health check**: 現状 `claude --version` のみ。`claude --print "reply OK"` / `claude doctor` を staging tree で走らせて実際に動作するか確認してから promote
-4. **Bun SEA runner の成立条件検証**: `shelly_musl_exec` + musl loader で SEA が動くか smoke test → 動けば採用、失敗なら golden fallback
+**対応**:
+- `shelly-runtime-update.js` が Claude Code musl runtime を newest-first に取得し、ELF shape check + `--version` smoke 後に `~/.shelly-runtime/claude/current` を切り替える。
+- `claude()` は verified runtime をデフォルトにし、APK-bundled musl runtime と legacy cli.js tiers を fallback として残す。
+- `__shelly_bg_cli_update` は `@anthropic-ai/claude-code@latest` / Gemini latest / Codex latest を staging に install し、compat hook 適用後に 3 CLI の `--version` probe が通った場合だけ live tree に昇格する。
+- `.failed-versions` cooldown により、probe で壊れていると判定した upstream version を毎 launch 再取得し続けない。network failure は poison しない。
 
-**修正方針**:
-- npm install を `@latest` (or `@stable`) に変える
-- `patchClaude()` を shape-detection で分岐させる (cli.js なら sed、SEA なら skip + runner 分岐)
-- functional health check を staging で実行
-- `$HOME/.shelly-cli/config.json` に user-overridable channel 設定追加
+**現状**: 解決済み。残タスクは実機 smoke (`claude --version` / Bash tool、Codex internal exec、Gemini Shell) の継続検証。
 
-**現状**: APK 出荷は 2.1.112 固定で **Bash tool 動作優先**。v4.4.0 で auto-tracking 復活予定。ユーザーは既に `SHELLY_PREFER_MUSL_CLAUDE=1` で Bun SEA opt-in 可能 (Bash tool はまだ動かない、bug #117 Option A との合わせ技で解決)。
-
-**優先度**: P1 (機能価値高い、ただし reliability 優先でリリースブロッカーではない)
-**見積**: 3-5 時間 (shape detection + stable channel + functional health check + E2E test)
+**優先度**: Done
+**見積**: —
 
 ---
 

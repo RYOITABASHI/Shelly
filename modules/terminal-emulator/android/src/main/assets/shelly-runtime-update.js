@@ -7,18 +7,19 @@
  * last working version.
  *
  * Usage:
- *   shelly-runtime-update.js [claude|codex|all] [--force] [--channel stable|latest]
+ *   shelly-runtime-update.js [claude|codex|gemini|all] [--force] [--channel verified|stable|latest]
  *
  * Channels (per Codex review 2026-04-25):
- *   stable  (default) — only promote a release that's been public ≥ 7 days
- *                       (skips regressions that get pulled within the first
- *                       days of a release).
- *   latest            — promote the npm `latest` tag / GitHub latest release
- *                       immediately after smoke-test PASS.
+ *   verified (default) — try newest first, promote the first candidate that
+ *                        passes on-device smoke.
+ *   stable             — only promote a release that's been public ≥ 7 days,
+ *                        then walk back through smoke-tested candidates.
+ *   latest             — promote the npm `latest` tag / GitHub latest release
+ *                        immediately after smoke-test PASS.
  *
  * Environment variables:
  *   SHELLY_UPDATER_FUNCTIONAL_CHECK=1
- *     Adds a `claude --print "reply OK"` (or codex equivalent) smoke check
+ *     Adds a `claude --print "reply OK"` smoke check
  *     beyond `--version`. Exercises DNS, TLS, auth, musl resolver, actual
  *     inference path. Gated behind an env var because it requires valid
  *     upstream credentials on this device; default install would fail it
@@ -41,6 +42,7 @@ const ROOT = path.join(HOME, '.shelly-runtime');
 const TMP = path.join(ROOT, '.tmp');
 const LOG = path.join(ROOT, 'update.log');
 const FAILED_VERSIONS = path.join(ROOT, '.failed-versions');
+const NPM_ROOT = path.join(HOME, '.shelly-cli');
 const LIB = process.env.SHELLY_LIB_DIR;
 const FORCE = process.argv.includes('--force');
 // v60 (2026-04-26): --check-only returns exit 0 when an upgrade is available
@@ -50,7 +52,7 @@ const FORCE = process.argv.includes('--force');
 // metadata fetch (~10KB per package).
 const CHECK_ONLY = process.argv.includes('--check-only');
 const FAILED_COOLDOWN_S = Number(process.env.SHELLY_FAILED_VERSION_COOLDOWN || 3600);
-const TOOL = process.argv.find((arg) => arg === 'claude' || arg === 'codex') || 'all';
+const TOOL = process.argv.find((arg) => arg === 'claude' || arg === 'codex' || arg === 'gemini') || 'all';
 
 // Channel selection — default `verified` per 2026-04-25 design
 // discussion. "Verified" = walk the newest-first candidate list,
@@ -216,6 +218,15 @@ function promote(tool, version, staging) {
 function currentVersion(tool) {
   try { return fs.readFileSync(path.join(ROOT, tool, 'version'), 'utf8').trim(); }
   catch { return ''; }
+}
+
+function currentNpmVersion(pkgName) {
+  try {
+    const pkgJson = path.join(NPM_ROOT, 'node_modules', ...pkgName.split('/'), 'package.json');
+    return JSON.parse(fs.readFileSync(pkgJson, 'utf8')).version || '';
+  } catch {
+    return '';
+  }
 }
 
 function runLinker(args, extraEnv = {}) {
@@ -414,7 +425,7 @@ async function tryClaudeVersion(pkgMeta, version) {
       path.join(LIB, 'ld-musl-aarch64.so.1'),
       out,
       '--version',
-    ]);
+    ], { SHELLY_MUSL_LD_PRELOAD: path.join(LIB, 'libexec_wrapper_musl.so') });
     const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
     if (smoke.status !== 0 || !combined.includes(version)) {
       fs.rmSync(staging, { recursive: true, force: true });
@@ -431,7 +442,10 @@ async function tryClaudeVersion(pkgMeta, version) {
         out,
         '--print',
         'Reply exactly OK',
-      ], { SHELLY_UPDATER_FUNCTIONAL_CHECK: '' });
+      ], {
+        SHELLY_UPDATER_FUNCTIONAL_CHECK: '',
+        SHELLY_MUSL_LD_PRELOAD: path.join(LIB, 'libexec_wrapper_musl.so'),
+      });
       const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
       if (func.status !== 0) {
         fs.rmSync(staging, { recursive: true, force: true });
@@ -639,6 +653,18 @@ async function checkCodexAvailable() {
   }
 }
 
+async function checkNpmPackageAvailable(tool, pkgName) {
+  try {
+    const meta = await json(`https://registry.npmjs.org/${pkgName.replace('/', '%2f')}`);
+    const latest = meta['dist-tags']?.latest;
+    if (!latest || isVersionInCooldown(tool, latest)) return false;
+    return currentNpmVersion(pkgName) !== latest;
+  } catch (err) {
+    info(`[check] ${tool} npm metadata fetch failed: ${err.message}`);
+    return false;
+  }
+}
+
 async function main() {
   fs.mkdirSync(TMP, { recursive: true, mode: 0o700 });
   log(`start tool=${TOOL} channel=${CHANNEL} force=${FORCE} functional=${FUNCTIONAL_CHECK} checkOnly=${CHECK_ONLY} stableDelay=${STABLE_DELAY_DAYS}d`);
@@ -654,6 +680,11 @@ async function main() {
       const codexAvailable = await checkCodexAvailable();
       log(`[check] codex upgrade available=${codexAvailable}`);
       if (codexAvailable) anyAvailable = true;
+    }
+    if (TOOL === 'gemini') {
+      const geminiAvailable = await checkNpmPackageAvailable('gemini', '@google/gemini-cli');
+      log(`[check] gemini npm upgrade available=${geminiAvailable}`);
+      if (geminiAvailable) anyAvailable = true;
     }
     log(`[check] anyAvailable=${anyAvailable}`);
     process.exit(anyAvailable ? 0 : 1);
