@@ -590,7 +590,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     dynamic linker dispatch, LD_PRELOAD doesn't intercept and
     //     Bash tool stays broken. Fallback to legacy cli.js
     //     remains intact.
-    private const val BASHRC_VERSION = 61
+    // v62 (2026-04-26): bumped to force regeneration on devices that already
+    // had v61 generated. Build #734's claude() rewrite (env -u LD_PRELOAD
+    // path, no _run helper for the trampoline tiers) plus the bg updater
+    // soft-fail need a fresh .bashrc; without this bump, devices that ran
+    // a v61-era APK keep the old generated file and the new fixes never
+    // reach the user-facing claude() / __shelly_bg_cli_update functions.
+    private const val BASHRC_VERSION = 62
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
