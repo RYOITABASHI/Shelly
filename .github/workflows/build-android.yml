@@ -129,9 +129,42 @@ jobs:
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           REPO_BASE="https://packages-cf.termux.dev/apt/termux-main"
 
-          # Fetch + decode Packages.xz (Termux apt index)
-          curl -fsSL "${REPO_BASE}/dists/stable/main/binary-aarch64/Packages.xz" \
-            | xz -d > /tmp/Packages
+          # Fetch the Termux apt index. The mirror at
+          # packages-cf.termux.dev historically served Packages.xz, but as of
+          # 2026-04-27 only the uncompressed Packages and Packages.gz are
+          # reliably present. Try in preference order: .xz → .gz →
+          # uncompressed. The build CI runner has xz-utils + gzip pre-
+          # installed; only the uncompressed fallback would also work
+          # without decoders, so it's the safety net.
+          fetch_packages_index() {
+            local url="$1" decoder="$2"
+            if [ -n "$decoder" ]; then
+              curl -fsSL "$url" | $decoder > /tmp/Packages.tmp 2>/dev/null \
+                && [ -s /tmp/Packages.tmp ] \
+                && mv /tmp/Packages.tmp /tmp/Packages \
+                && return 0
+            else
+              curl -fsSL "$url" -o /tmp/Packages.tmp 2>/dev/null \
+                && [ -s /tmp/Packages.tmp ] \
+                && mv /tmp/Packages.tmp /tmp/Packages \
+                && return 0
+            fi
+            rm -f /tmp/Packages.tmp
+            return 1
+          }
+          IDX_BASE="${REPO_BASE}/dists/stable/main/binary-aarch64"
+          if   fetch_packages_index "${IDX_BASE}/Packages.xz" "xz -d"; then
+            echo "[termux-extras] index source: Packages.xz"
+          elif fetch_packages_index "${IDX_BASE}/Packages.gz" "gzip -d"; then
+            echo "[termux-extras] index source: Packages.gz"
+          elif fetch_packages_index "${IDX_BASE}/Packages" ""; then
+            echo "[termux-extras] index source: Packages (uncompressed)"
+          else
+            echo "FATAL: could not fetch Termux Packages index from ${IDX_BASE}" >&2
+            exit 1
+          fi
+          test -s /tmp/Packages || { echo "FATAL: empty Packages index"; exit 1; }
+          echo "[termux-extras] index size: $(wc -c < /tmp/Packages) bytes"
 
           # Filename helper (paragraph-mode awk lookup)
           find_filename() {
