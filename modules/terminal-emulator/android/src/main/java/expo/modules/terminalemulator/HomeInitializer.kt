@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 62
+    private const val BASHRC_VERSION = 63
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1441,27 +1441,66 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __log=\"\$HOME/.shelly-cli/install.log\"")
             sb.appendLine("  local __staging=\"\$HOME/.shelly-cli.staging\"")
             sb.appendLine("  local __prev=\"\$HOME/.shelly-cli.prev\"")
+            sb.appendLine("  local __lockfile=\"\$HOME/.shelly-cli/.update.lock\"")
             sb.appendLine("  mkdir -p \"\$__shelly_cli_dir\"")
             sb.appendLine("  exec </dev/null >>\"\$__log\" 2>&1")
             sb.appendLine("  echo \"--- \$(date) ---\"")
-            // v32 pipeline: stage → install → health-check → promote (or discard).
+            // bug #126 (v60 / 2026-04-27): mutex via PID lockfile. Quick-check
+            // and the 24h fallback both kick __shelly_bg_cli_update, plus
+            // multi-pane sessions launch multiple shells almost simultaneously.
+            // Without a lock, 2-4 invocations race on the staging dir, cp -al
+            // hardlink collisions cascade, and at least one invocation hangs
+            // on the npm install step. Diagnostic: install.log ends mid-line
+            // at "[stage] cloning live tree → staging" with no completion
+            // marker. Acquire-or-skip semantics: if another instance is
+            // already running, we just exit silently — the in-flight one
+            // will finish the work.
+            sb.appendLine("  if [ -e \"\$__lockfile\" ]; then")
+            sb.appendLine("    local __lockpid=\$(cat \"\$__lockfile\" 2>/dev/null)")
+            sb.appendLine("    if [ -n \"\$__lockpid\" ] && kill -0 \"\$__lockpid\" 2>/dev/null; then")
+            sb.appendLine("      echo \"[install] another update already running (pid=\$__lockpid), skipping\"")
+            sb.appendLine("      echo '[install] done (skipped, locked)'")
+            sb.appendLine("      return 0")
+            sb.appendLine("    fi")
+            sb.appendLine("    echo \"[install] removing stale lockfile (pid=\$__lockpid not running)\"")
+            sb.appendLine("    rm -f \"\$__lockfile\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  echo \"\$\$\" > \"\$__lockfile\"")
+            // Trap ALL exit paths (normal return, signal, error) to release the
+            // lockfile. Without this, a process kill during cp/npm leaves the
+            // lock orphaned and every subsequent invocation hits the stale
+            // path until the user restarts Shelly.
+            sb.appendLine("  trap 'rm -f \"\$__lockfile\"' EXIT")
+            // bug #126 pipeline: stage → install → health-check → promote (or discard).
             //
-            // 1. Prepare staging — start from a copy of the current live tree
-            //    so unchanged packages don't need to be re-downloaded. We use
-            //    cp -al (hardlink) when available, falling back to a plain
-            //    copy if coreutils' cp refuses --archive-links on this
-            //    target filesystem.
-            sb.appendLine("  rm -rf \"\$__staging\"")
+            // 1. Prepare staging. Critical change vs v59: we now chmod -R u+w
+            //    BEFORE rm -rf because the previous v55 promote applied
+            //    `chmod -R a-w` on the live claude-code dir, and cp -al
+            //    hardlinked those a-w bits into staging. rm -rf cannot
+            //    delete read-only files, so the cleanup silently failed,
+            //    and the next cp -al hit existing files with "File exists"
+            //    in a tight loop. Removing the a-w chmod entirely (see
+            //    health-fail and promote paths) plus the defensive u+w
+            //    here closes the corruption mode that froze entire bash
+            //    sessions. Fallback uses cp -af (force overwrite) instead
+            //    of cp -r so that any residual files from a partial prior
+            //    cleanup get overwritten cleanly.
+            sb.appendLine("  if [ -d \"\$__staging\" ]; then")
+            sb.appendLine("    echo '[stage] cleaning stale staging (chmod u+w + rm -rf)'")
+            sb.appendLine("    chmod -R u+w \"\$__staging\" 2>/dev/null")
+            sb.appendLine("    rm -rf \"\$__staging\"")
+            sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__staging\"")
             sb.appendLine("  if [ -d \"\$__shelly_cli_dir/node_modules\" ]; then")
             sb.appendLine("    echo '[stage] cloning live tree → staging (flat copy)'")
             // Use `<src>/. <dest>/` form so the copy lands flat in $__staging
-            // whether or not $__staging already exists as a directory. The
-            // previous `cp -al $src $dest` form nested the tree as
-            // $__staging/.shelly-cli/... when rm -rf left a stub behind
-            // (observed in install.log from v32 builds).
+            // whether or not $__staging already exists as a directory. cp -af
+            // (force) overwrites existing files instead of erroring with
+            // "File exists" — defensive against any race that leaves a
+            // partial residue. cp -al hardlinks first for speed, falls
+            // back to cp -af copy if hardlinking fails.
             sb.appendLine("    cp -al \"\$__shelly_cli_dir/.\" \"\$__staging/\" 2>/dev/null || \\")
-            sb.appendLine("      cp -r \"\$__shelly_cli_dir/.\" \"\$__staging/\"")
+            sb.appendLine("      cp -af \"\$__shelly_cli_dir/.\" \"\$__staging/\"")
             sb.appendLine("  fi")
             // 2. Install latest npm packages into staging. The staged tree is
             //    promoted only after the probe block below verifies the actual
