@@ -61,19 +61,17 @@ jobs:
           RESOLV_CONF_PATH="/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf"
 
           mkdir -p /tmp/musl-out
-          # Copy exec-wrapper.c into /out before the container starts.
-          # Hosted runners have shown that additional bind mounts such as
-          # /workspace and /src can disappear from the QEMU-emulated arm64
-          # Alpine container, while /out is known-good because musl build
-          # artifacts are written there successfully. Use the single /out
-          # mount for both inputs and outputs.
-          cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c" \
-             /tmp/musl-out/exec-wrapper.c
+          # Pass exec-wrapper.c by value. Hosted runners have shown that
+          # bind-mounted input files can disappear from the QEMU-emulated
+          # arm64 Alpine container, while /out remains reliable for outputs.
+          EXEC_WRAPPER_B64="$(base64 -w0 "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c")"
           docker run --rm --platform linux/arm64 \
             -v /tmp/musl-out:/out \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
+            -e EXEC_WRAPPER_B64="${EXEC_WRAPPER_B64}" \
             alpine:3.19 sh -euxc '
               apk add --no-progress build-base git
+              printf "%s" "${EXEC_WRAPPER_B64}" | base64 -d > /tmp/exec-wrapper.c
               cd /tmp
               git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl musl || {
                 rm -rf musl
@@ -97,7 +95,7 @@ jobs:
               # Shelly's patched resolver path, only musl ABI compatibility
               # with the loader used for Claude Code.
               gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
-                /out/exec-wrapper.c \
+                /tmp/exec-wrapper.c \
                 -o /out/libexec_wrapper_musl.so -ldl
               strip --strip-unneeded /out/libexec_wrapper_musl.so
               # Sanity checks inside the container — readelf/strings are
