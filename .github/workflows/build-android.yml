@@ -75,7 +75,10 @@ jobs:
             alpine:3.19 sh -euxc '
               apk add --no-progress build-base git
               cd /tmp
-              git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl
+              git clone --depth 1 -b v1.2.4 https://git.musl-libc.org/git/musl musl || {
+                rm -rf musl
+                git clone --depth 1 -b v1.2.4 https://github.com/bminor/musl.git musl
+              }
               cd musl
               # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC —
               # does not survive the shell→make→shell round-trip because
