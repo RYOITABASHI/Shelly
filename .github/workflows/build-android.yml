@@ -73,11 +73,12 @@ jobs:
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
             -e EXEC_WRAPPER_B64="${EXEC_WRAPPER_B64}" \
             alpine:3.19 sh -euxc '
+              cat > /tmp/musl-v1.2.4.tar.gz
               apk add --no-progress build-base
               printf "%s" "${EXEC_WRAPPER_B64}" | base64 -d > /tmp/exec-wrapper.c
               cd /tmp
               mkdir musl
-              tar xzf - -C musl --strip-components=1
+              tar xzf /tmp/musl-v1.2.4.tar.gz -C musl --strip-components=1
               cd musl
               # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC —
               # does not survive the shell→make→shell round-trip because
