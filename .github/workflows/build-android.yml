@@ -87,7 +87,7 @@ jobs:
               cp lib/libc.so /out/libld_musl_shelly.so
               # This container itself is Alpine/aarch64, so system gcc is
               # already a musl 1.2.4 compiler. The wrapper does not need
-              # Shelly's patched resolver path, only musl ABI compatibility
+              # Shelly patched resolver path, only musl ABI compatibility
               # with the loader used for Claude Code.
               gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
                 /tmp/exec-wrapper.c \
