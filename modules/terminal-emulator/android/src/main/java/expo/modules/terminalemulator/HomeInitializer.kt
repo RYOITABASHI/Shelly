@@ -1558,16 +1558,29 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      esac")
             sb.appendLine("    fi")
             sb.appendLine("    if [ \$__claude_ok -ne 1 ] && [ -x \"\$HOME/.shelly-runtime/claude/current/claude\" ] && [ -x \"$libDir/shelly_musl_exec\" ] && [ -x \"$libDir/ld-musl-aarch64.so.1\" ]; then")
-            sb.appendLine("      if SHELLY_MUSL_LD_PRELOAD=\"$libDir/libexec_wrapper_musl.so\" timeout 30 /system/bin/linker64 \"$libDir/shelly_musl_exec\" \"$libDir/ld-musl-aarch64.so.1\" \"\$HOME/.shelly-runtime/claude/current/claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
+            sb.appendLine("      if SHELLY_MUSL_LD_PRELOAD=\"$libDir/libexec_wrapper_musl.so\" timeout 30 /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"$libDir/shelly_musl_exec\" \"$libDir/ld-musl-aarch64.so.1\" \"\$HOME/.shelly-runtime/claude/current/claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
             sb.appendLine("    fi")
             sb.appendLine("    if [ \$__claude_ok -ne 1 ] && [ -x \"$libDir/claude\" ] && [ -x \"$libDir/shelly_musl_exec\" ] && [ -x \"$libDir/ld-musl-aarch64.so.1\" ]; then")
-            sb.appendLine("      if SHELLY_MUSL_LD_PRELOAD=\"$libDir/libexec_wrapper_musl.so\" timeout 30 /system/bin/linker64 \"$libDir/shelly_musl_exec\" \"$libDir/ld-musl-aarch64.so.1\" \"$libDir/claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
+            sb.appendLine("      if SHELLY_MUSL_LD_PRELOAD=\"$libDir/libexec_wrapper_musl.so\" timeout 30 /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"$libDir/shelly_musl_exec\" \"$libDir/ld-musl-aarch64.so.1\" \"$libDir/claude\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then __claude_ok=1; fi")
             sb.appendLine("    fi")
             sb.appendLine("    if [ \$__claude_ok -eq 1 ]; then")
             sb.appendLine("      echo '[health] claude --version OK'")
             sb.appendLine("    else")
-            sb.appendLine("      echo '[health] claude --version FAILED (no runnable JS bin or verified musl runtime)' >&2")
-            sb.appendLine("      __healthy=0")
+            // 2026-04-26 update: Claude is now SOFT-FAIL in the npm tier.
+            // Anthropic's @anthropic-ai/claude-code@latest no longer ships
+            // cli.js (Bun SEA only from 2.1.113+), and the verified-runtime
+            // updater owns the latest musl SEA. A missing/broken npm Claude
+            // must NOT block Gemini/Codex promotion. If Claude fails the
+            // staging check, we drop the (unrunnable) staged tree and copy
+            // the APK-bundled golden — which IS guaranteed to be the last
+            // cli.js-shipping release and works as a SHELLY_FORCE_LEGACY_CLAUDE
+            // fallback.
+            sb.appendLine("      echo '[health] claude --version FAILED (no runnable JS bin or verified musl runtime); soft-fail — verified-runtime tier owns latest, falling back to APK-bundled legacy for the cli.js fallback path' >&2")
+            sb.appendLine("      rm -rf \"\$__staging/node_modules/@anthropic-ai/claude-code\" 2>/dev/null || true")
+            sb.appendLine("      if [ -d \"$libDir/node_modules/@anthropic-ai/claude-code\" ]; then")
+            sb.appendLine("        mkdir -p \"\$__staging/node_modules/@anthropic-ai\"")
+            sb.appendLine("        cp -r \"$libDir/node_modules/@anthropic-ai/claude-code\" \"\$__staging/node_modules/@anthropic-ai/claude-code\" 2>/dev/null && echo '[health] claude golden fallback copied from APK bundle' || echo '[health] claude golden fallback copy failed' >&2")
+            sb.appendLine("      fi")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             // Gemini: discover entry from package.json bin field instead of
