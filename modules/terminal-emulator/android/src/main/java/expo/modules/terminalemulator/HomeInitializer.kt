@@ -598,7 +598,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     dynamic linker dispatch, LD_PRELOAD doesn't intercept and
     //     Bash tool stays broken. Fallback to legacy cli.js 2.1.112
     //     remains intact.
-    private const val BASHRC_VERSION = 59
+    private const val BASHRC_VERSION = 60
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1379,8 +1379,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("shelly-doctor() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-doctor.js\" \"\$@\"; }")
             sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
             sb.appendLine("__shelly_runtime_update_interval=86400")
+            sb.appendLine("__shelly_runtime_quick_marker=\"\$HOME/.shelly-runtime/.last_quick_check\"")
+            sb.appendLine("__shelly_runtime_quick_interval=\${SHELLY_RUNTIME_QUICK_INTERVAL:-3600}")
             sb.appendLine("__shelly_runtime_now=\$(date +%s 2>/dev/null || printf '%(%s)T' -1 2>/dev/null || echo 0)")
             sb.appendLine("__shelly_runtime_last_update=\$(cat \"\$__shelly_runtime_update_marker\" 2>/dev/null || echo 0)")
+            sb.appendLine("__shelly_runtime_last_quick=\$(cat \"\$__shelly_runtime_quick_marker\" 2>/dev/null || echo 0)")
             sb.appendLine("__shelly_bg_runtime_update() {")
             sb.appendLine("  if [ -z \"\$__SHELLY_RUNTIME_UPDATE_SUBSHELL\" ]; then")
             sb.appendLine("    ( __SHELLY_RUNTIME_UPDATE_SUBSHELL=1 __shelly_bg_runtime_update </dev/null >/dev/null 2>&1 & )")
@@ -1391,6 +1394,34 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    echo \"\$__shelly_runtime_now\" > \"\$__shelly_runtime_update_marker\"")
             sb.appendLine("  fi")
             sb.appendLine("}")
+            // v60: per-launch quick check for native runtime tier (Claude SEA +
+            // Codex termux). Calls shelly-runtime-update.js in --check-only mode
+            // (~5s, ~30KB) which compares each tool's `.shelly-runtime/<tool>/
+            // current` version against npm/GitHub `latest` (with .failed-versions
+            // cooldown honoured). If any upgrade is available, kicks off the full
+            // updater immediately, bypassing the 24h marker.
+            sb.appendLine("__shelly_runtime_quick_check() {")
+            sb.appendLine("  if [ -z \"\$__SHELLY_RUNTIME_QUICK_SUBSHELL\" ]; then")
+            sb.appendLine("    ( __SHELLY_RUNTIME_QUICK_SUBSHELL=1 __shelly_runtime_quick_check </dev/null >/dev/null 2>&1 & )")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
+            sb.appendLine("  mkdir -p \"\$HOME/.shelly-runtime\"")
+            sb.appendLine("  local __qlog=\"\$HOME/.shelly-runtime/quick-check.log\"")
+            sb.appendLine("  exec </dev/null >>\"\$__qlog\" 2>&1")
+            sb.appendLine("  echo \"--- \$(date) ---\"")
+            sb.appendLine("  if shelly-update-clis --check-only; then")
+            sb.appendLine("    echo \"[quick] runtime upgrades available — kicking full update\"")
+            sb.appendLine("    shelly-update-clis && echo \"\$__shelly_runtime_now\" > \"\$__shelly_runtime_update_marker\"")
+            sb.appendLine("  else")
+            sb.appendLine("    echo \"[quick] runtime tier already on verified latest\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  echo \"\$__shelly_runtime_now\" > \"\$__shelly_runtime_quick_marker\"")
+            sb.appendLine("}")
+            sb.appendLine("if [ \$(( __shelly_runtime_now - __shelly_runtime_last_quick )) -ge \$__shelly_runtime_quick_interval ]; then")
+            sb.appendLine("  ( __shelly_runtime_quick_check & )")
+            sb.appendLine("fi")
+            // Original 24h gate kept as belt-and-suspenders fallback for offline
+            // pathology (every quick-check fetch failed all day).
             sb.appendLine("if [ \$(( __shelly_runtime_now - __shelly_runtime_last_update )) -ge \$__shelly_runtime_update_interval ]; then")
             sb.appendLine("  ( __shelly_bg_runtime_update & )")
             sb.appendLine("fi")
@@ -1667,11 +1698,113 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    echo '[install] committed — live tree updated, .prev snapshot refreshed'")
             sb.appendLine("  else")
             sb.appendLine("    echo '[install] HEALTH CHECK FAILED — discarding staging, live tree untouched' >&2")
+            // v60: record the staging versions that just failed smoke into
+            // .failed-versions so the per-launch quick check below skips them
+            // until upstream re-publishes (or 1h cooldown expires). Each line
+            // is "<pkg>=<version> <epoch>". The quick check honours the most
+            // recent record per <pkg>=<version>.
+            sb.appendLine("    local __failed_log=\"\$HOME/.shelly-cli/.failed-versions\"")
+            sb.appendLine("    local __now_epoch=\$(date +%s 2>/dev/null || echo 0)")
+            sb.appendLine("    for __pkg in @anthropic-ai/claude-code @google/gemini-cli @openai/codex; do")
+            sb.appendLine("      local __failed_pkg_json=\"\$__staging/node_modules/\$__pkg/package.json\"")
+            sb.appendLine("      [ -f \"\$__failed_pkg_json\" ] || continue")
+            sb.appendLine("      local __failed_v=\$(grep -oE '\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' \"\$__failed_pkg_json\" | head -1 | grep -oE '[0-9][0-9.]*[0-9]')")
+            sb.appendLine("      [ -n \"\$__failed_v\" ] && echo \"\$__pkg=\$__failed_v \$__now_epoch\" >> \"\$__failed_log\"")
+            sb.appendLine("    done")
             sb.appendLine("    rm -rf \"\$__staging\"")
             sb.appendLine("    echo '[install] will retry next shell launch (marker NOT updated)'")
             sb.appendLine("  fi")
             sb.appendLine("  echo '[install] done'")
             sb.appendLine("}")
+            // v60: quick CLI version check. Runs on every shell launch in a
+            // detached subshell (~3-5s, ~30KB total network). Compares
+            // installed @google/gemini-cli + @openai/codex versions against
+            // npm `latest` (Claude is intentionally pinned to 2.1.112 so it
+            // is excluded from the diff). If any package has a newer
+            // upstream that is NOT in .failed-versions (or whose failure
+            // record is older than the cooldown), kicks off the existing
+            // __shelly_bg_cli_update pipeline immediately, bypassing the
+            // 24h marker. The full pipeline still does staging + smoke +
+            // atomic promote + rollback, so a broken upstream cannot ship.
+            //
+            // Bandwidth: 1× `npm view <pkg> version` per package per launch
+            // when the cheap-check cooldown has expired. We additionally
+            // gate the quick check itself on a short cooldown
+            // (SHELLY_QUICK_CHECK_INTERVAL, default 3600s) to avoid
+            // hammering npm on rapid relaunches.
+            sb.appendLine("# v60: per-launch quick version check (bypasses 24h gate when newer found)")
+            sb.appendLine("__shelly_quick_check_marker=\"\$HOME/.shelly-cli/.last_quick_check\"")
+            sb.appendLine("__shelly_quick_check_interval=\${SHELLY_QUICK_CHECK_INTERVAL:-3600}")
+            sb.appendLine("__shelly_failed_cooldown=\${SHELLY_FAILED_VERSION_COOLDOWN:-3600}")
+            sb.appendLine("__shelly_quick_check_clis() {")
+            sb.appendLine("  if [ -z \"\$__SHELLY_QUICK_CHECK_SUBSHELL\" ]; then")
+            sb.appendLine("    ( __SHELLY_QUICK_CHECK_SUBSHELL=1 __shelly_quick_check_clis </dev/null >/dev/null 2>&1 & )")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
+            sb.appendLine("  local __qlog=\"\$HOME/.shelly-cli/quick-check.log\"")
+            sb.appendLine("  mkdir -p \"\$HOME/.shelly-cli\"")
+            sb.appendLine("  exec </dev/null >>\"\$__qlog\" 2>&1")
+            sb.appendLine("  echo \"--- \$(date) ---\"")
+            sb.appendLine("  local __failed_log=\"\$HOME/.shelly-cli/.failed-versions\"")
+            sb.appendLine("  local __now=\$(date +%s 2>/dev/null || echo 0)")
+            sb.appendLine("  local __need_update=0")
+            sb.appendLine("  local __notice=\"\"")
+            // Iterate through the two packages we expect to track @latest. Claude is
+            // intentionally excluded from the per-launch diff because we pin it to
+            // 2.1.112 — running the diff against upstream's higher version would
+            // otherwise fire __shelly_bg_cli_update on every single launch.
+            sb.appendLine("  for __pkg in @google/gemini-cli @openai/codex; do")
+            sb.appendLine("    local __upstream=\$(timeout 15 _run \"$libDir/node\" \"$libDir/node_modules/npm/bin/npm-cli.js\" view \"\$__pkg\" version 2>/dev/null | tail -1)")
+            sb.appendLine("    if [ -z \"\$__upstream\" ]; then")
+            sb.appendLine("      echo \"[quick] \$__pkg: npm view failed (offline?), skipping\"")
+            sb.appendLine("      continue")
+            sb.appendLine("    fi")
+            sb.appendLine("    local __pkg_json=\"\$HOME/.shelly-cli/node_modules/\$__pkg/package.json\"")
+            sb.appendLine("    local __installed=\"\"")
+            sb.appendLine("    if [ -f \"\$__pkg_json\" ]; then")
+            sb.appendLine("      __installed=\$(grep -oE '\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' \"\$__pkg_json\" | head -1 | grep -oE '[0-9][0-9.]*[0-9]')")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ \"\$__upstream\" = \"\$__installed\" ]; then")
+            sb.appendLine("      echo \"[quick] \$__pkg: installed \$__installed = upstream\"")
+            sb.appendLine("      continue")
+            sb.appendLine("    fi")
+            // Honour failed-versions cooldown. Each line is "<pkg>=<ver> <epoch>";
+            // a fresh failure within __shelly_failed_cooldown blocks attempts at
+            // that exact upstream version.
+            sb.appendLine("    local __failed_epoch=0")
+            sb.appendLine("    if [ -f \"\$__failed_log\" ]; then")
+            sb.appendLine("      __failed_epoch=\$(grep -E \"^\$__pkg=\$__upstream \" \"\$__failed_log\" 2>/dev/null | tail -1 | awk '{print \$2}')")
+            sb.appendLine("      __failed_epoch=\${__failed_epoch:-0}")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ \"\$__failed_epoch\" -gt 0 ] && [ \$(( __now - __failed_epoch )) -lt \$__shelly_failed_cooldown ]; then")
+            sb.appendLine("      echo \"[quick] \$__pkg: upstream \$__upstream failed smoke recently (\$(( __now - __failed_epoch ))s ago < \${__shelly_failed_cooldown}s cooldown), skipping\"")
+            sb.appendLine("      continue")
+            sb.appendLine("    fi")
+            sb.appendLine("    echo \"[quick] \$__pkg: installed=\$__installed upstream=\$__upstream UPGRADE AVAILABLE\"")
+            sb.appendLine("    __notice=\"\$__notice \$__pkg \$__installed→\$__upstream\"")
+            sb.appendLine("    __need_update=1")
+            sb.appendLine("  done")
+            sb.appendLine("  if [ \"\$__need_update\" = \"1\" ]; then")
+            sb.appendLine("    echo \"[quick] kicking off __shelly_bg_cli_update for:\$__notice\"")
+            sb.appendLine("    __shelly_bg_cli_update")
+            sb.appendLine("  else")
+            sb.appendLine("    echo \"[quick] all up-to-date, no update fired\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  echo \"\$__now\" > \"\$__shelly_quick_check_marker\"")
+            sb.appendLine("}")
+            // Quick check fires when its own cooldown has elapsed. The 24h gate
+            // below remains as a fallback for the "offline at every launch"
+            // pathology — even if quick check never gets to run a successful
+            // npm view, the daily marker eventually triggers a full attempt.
+            sb.appendLine("__shelly_last_quick_check=\$(cat \"\$__shelly_quick_check_marker\" 2>/dev/null || echo 0)")
+            sb.appendLine("if [ \$(( __shelly_now - __shelly_last_quick_check )) -ge \$__shelly_quick_check_interval ]; then")
+            sb.appendLine("  ( __shelly_quick_check_clis & )")
+            sb.appendLine("fi")
+            // Original 24h gate kept as fallback (e.g. when quick check is
+            // disabled via SHELLY_QUICK_CHECK_INTERVAL=99999999 or every quick
+            // check fails network). Quick check fires __shelly_bg_cli_update
+            // directly when an upgrade is available, so this branch only
+            // matters when the user has been offline for 24h.
             sb.appendLine("if [ \$(( __shelly_now - __shelly_last_update )) -ge \$__shelly_update_interval ]; then")
             sb.appendLine("  ( __shelly_bg_cli_update & )")
             sb.appendLine("fi")

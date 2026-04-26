@@ -40,8 +40,16 @@ const HOME = os.homedir();
 const ROOT = path.join(HOME, '.shelly-runtime');
 const TMP = path.join(ROOT, '.tmp');
 const LOG = path.join(ROOT, 'update.log');
+const FAILED_VERSIONS = path.join(ROOT, '.failed-versions');
 const LIB = process.env.SHELLY_LIB_DIR;
 const FORCE = process.argv.includes('--force');
+// v60 (2026-04-26): --check-only returns exit 0 when an upgrade is available
+// without smoke-fail cooldown blocking it, exit 1 when nothing to do.
+// Used by the per-launch quick check in .bashrc to decide whether to fire
+// the full updater. No network downloads happen in this mode beyond the
+// metadata fetch (~10KB per package).
+const CHECK_ONLY = process.argv.includes('--check-only');
+const FAILED_COOLDOWN_S = Number(process.env.SHELLY_FAILED_VERSION_COOLDOWN || 3600);
 const TOOL = process.argv.find((arg) => arg === 'claude' || arg === 'codex') || 'all';
 
 // Channel selection — default `verified` per 2026-04-25 design
@@ -110,6 +118,52 @@ async function json(url, headers) {
 
 function integritySha512(buf) {
   return `sha512-${crypto.createHash('sha512').update(buf).digest('base64')}`;
+}
+
+// v60: failed-versions tracking. Each line is `<tool>=<version> <epoch>`.
+// A failed entry blocks attempts at that exact version until the cooldown
+// expires; if upstream re-publishes the version after a regression, the
+// cooldown lapse lets the smoke gate retry.
+function readFailedVersions() {
+  try {
+    return fs.readFileSync(FAILED_VERSIONS, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [keyVer, epochStr] = line.split(' ');
+        if (!keyVer) return null;
+        const eq = keyVer.indexOf('=');
+        if (eq < 0) return null;
+        const tool = keyVer.slice(0, eq);
+        const version = keyVer.slice(eq + 1);
+        const epoch = Number(epochStr);
+        if (!tool || !version || !Number.isFinite(epoch)) return null;
+        return { tool, version, epoch };
+      })
+      .filter(Boolean);
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    log(`failed-versions read error: ${e.message}`);
+    return [];
+  }
+}
+
+function recordFailedVersion(tool, version) {
+  try {
+    fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
+    const line = `${tool}=${version} ${Math.floor(Date.now() / 1000)}\n`;
+    fs.appendFileSync(FAILED_VERSIONS, line);
+  } catch (e) {
+    log(`failed-versions write error: ${e.message}`);
+  }
+}
+
+function isVersionInCooldown(tool, version, nowEpoch = Math.floor(Date.now() / 1000)) {
+  const records = readFailedVersions().filter((r) => r.tool === tool && r.version === version);
+  if (records.length === 0) return false;
+  const latest = records.reduce((acc, r) => (r.epoch > acc.epoch ? r : acc));
+  return (nowEpoch - latest.epoch) < FAILED_COOLDOWN_S;
 }
 
 function ensureCleanDir(dir) {
@@ -253,6 +307,13 @@ function selectClaudeCandidates(pkgMeta, channel) {
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     .reverse(); // newest first
 
+  // v60: drop versions still inside their failure cooldown so the
+  // walk-back doesn't waste a slot re-trying a known-bad version.
+  // FORCE skips this filter for `shelly-update-clis --force`.
+  const noCooldown = FORCE
+    ? sorted
+    : sorted.filter((v) => !isVersionInCooldown('claude', v));
+
   if (channel === 'latest') {
     // Codex review 2026-04-25 issue #2: validate dist-tags.latest is a
     // real semver release that actually exists in pkgMeta.versions
@@ -260,36 +321,44 @@ function selectClaudeCandidates(pkgMeta, channel) {
     // at prereleases or malformed strings — accepting blindly would
     // bypass our /^\d+\.\d+\.\d+$/ filter.
     const distLatest = pkgMeta['dist-tags']?.latest;
-    if (distLatest && /^\d+\.\d+\.\d+$/.test(distLatest) && pkgMeta.versions?.[distLatest]) {
+    if (distLatest
+      && /^\d+\.\d+\.\d+$/.test(distLatest)
+      && pkgMeta.versions?.[distLatest]
+      && (FORCE || !isVersionInCooldown('claude', distLatest))) {
       return [distLatest];
     }
-    return sorted.slice(0, 1);
+    return noCooldown.slice(0, 1);
   }
 
   if (channel === 'stable') {
     const cutoff = Date.now() - STABLE_DELAY_MS;
-    const aged = sorted.filter((v) => {
+    const aged = noCooldown.filter((v) => {
       const t = Date.parse(pkgMeta.time?.[v] || '');
       return Number.isFinite(t) && t <= cutoff;
     });
     return aged.slice(0, MAX_CANDIDATES);
   }
 
-  // verified (default): all versions, newest first
-  return sorted.slice(0, MAX_CANDIDATES);
+  // verified (default): all non-cooldown versions, newest first
+  return noCooldown.slice(0, MAX_CANDIDATES);
 }
 
 function selectCodexCandidates(releases, channel) {
   const usable = releases.filter((r) => !r.prerelease && !r.draft);
   // GitHub /releases is newest-first already.
 
+  // v60: same cooldown filter for codex.
+  const noCooldown = FORCE
+    ? usable
+    : usable.filter((r) => !isVersionInCooldown('codex', r.tag_name));
+
   if (channel === 'latest') {
-    return usable.slice(0, 1).map((r) => r.tag_name);
+    return noCooldown.slice(0, 1).map((r) => r.tag_name);
   }
 
   if (channel === 'stable') {
     const cutoff = Date.now() - STABLE_DELAY_MS;
-    const aged = usable.filter((r) => {
+    const aged = noCooldown.filter((r) => {
       const t = Date.parse(r.published_at || '');
       return Number.isFinite(t) && t <= cutoff;
     });
@@ -297,7 +366,7 @@ function selectCodexCandidates(releases, channel) {
   }
 
   // verified (default)
-  return usable.slice(0, MAX_CANDIDATES).map((r) => r.tag_name);
+  return noCooldown.slice(0, MAX_CANDIDATES).map((r) => r.tag_name);
 }
 
 /**
@@ -335,6 +404,7 @@ async function tryClaudeVersion(pkgMeta, version) {
       // Eager cleanup on shape rejection — these dirs accumulate
       // otherwise and a series of bad upstream releases bloats disk.
       fs.rmSync(staging, { recursive: true, force: true });
+      recordFailedVersion('claude', version);
       return { ok: false, reason: `shape check: ${e.message}` };
     }
 
@@ -348,6 +418,7 @@ async function tryClaudeVersion(pkgMeta, version) {
     const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
     if (smoke.status !== 0 || !combined.includes(version)) {
       fs.rmSync(staging, { recursive: true, force: true });
+      recordFailedVersion('claude', version);
       return { ok: false, reason: `--version smoke status=${smoke.status}: ${combined.slice(0, 200)}` };
     }
     info(`[claude] try ${version} — --version smoke OK`);
@@ -364,10 +435,12 @@ async function tryClaudeVersion(pkgMeta, version) {
       const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
       if (func.status !== 0) {
         fs.rmSync(staging, { recursive: true, force: true });
+        recordFailedVersion('claude', version);
         return { ok: false, reason: `--print status=${func.status}: ${funcOut.slice(0, 200)}` };
       }
       if (!/\bOK\b/i.test(func.stdout || '')) {
         fs.rmSync(staging, { recursive: true, force: true });
+        recordFailedVersion('claude', version);
         return { ok: false, reason: `--print did not return OK: ${funcOut.slice(0, 200)}` };
       }
       info(`[claude] try ${version} — functional check OK`);
@@ -375,6 +448,9 @@ async function tryClaudeVersion(pkgMeta, version) {
 
     return { ok: true, staging };
   } catch (err) {
+    // Network / I/O exception — don't poison the failed-versions list. The
+    // version itself wasn't proven bad. The cooldown is for "we proved this
+    // version doesn't run on the device", not "we lost the connection".
     return { ok: false, reason: `exception ${err.message}` };
   }
 }
@@ -458,6 +534,7 @@ async function tryCodexTag(releases, tag) {
     const plainVersion = tag.replace(/^v/, '');
     if (smoke.status !== 0 || !combined.includes(plainVersion)) {
       fs.rmSync(staging, { recursive: true, force: true });
+      recordFailedVersion('codex', tag);
       return { ok: false, reason: `--version status=${smoke.status}: ${combined.slice(0, 200)}` };
     }
     info(`[codex] try ${tag} — --version smoke OK`);
@@ -465,6 +542,7 @@ async function tryCodexTag(releases, tag) {
     // stop here even when FUNCTIONAL_CHECK=1.
     return { ok: true, staging };
   } catch (err) {
+    // Network / I/O — do not poison failed-versions; see tryClaudeVersion.
     return { ok: false, reason: `exception ${err.message}` };
   }
 }
@@ -523,10 +601,65 @@ function cleanupStaleStaging() {
   }
 }
 
+/**
+ * v60 (2026-04-26): --check-only mode. Cheap version check that fetches
+ * upstream metadata (~10KB per package) and compares with the currently
+ * promoted version, honouring the failed-versions cooldown. Does NOT
+ * download any binary or run any smoke test. Returns:
+ *   exit 0 — at least one upgrade is available (full updater should run)
+ *   exit 1 — everything up-to-date or all upgrades blocked by cooldown
+ *   exit >1 — fetch / parsing error (caller should treat as "no info")
+ *
+ * Used by the per-launch quick check in .bashrc to decide whether to
+ * fire __shelly_bg_runtime_update.
+ */
+async function checkClaudeAvailable() {
+  try {
+    const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
+    const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
+    if (candidates.length === 0) return false;
+    return currentVersion('claude') !== candidates[0];
+  } catch (err) {
+    info(`[check] claude metadata fetch failed: ${err.message}`);
+    return false;
+  }
+}
+
+async function checkCodexAvailable() {
+  try {
+    const releases = await json('https://api.github.com/repos/DioNanos/codex-termux/releases?per_page=20', {
+      'Accept': 'application/vnd.github+json',
+    });
+    const candidates = selectCodexCandidates(releases, CHANNEL);
+    if (candidates.length === 0) return false;
+    return currentVersion('codex') !== candidates[0];
+  } catch (err) {
+    info(`[check] codex release fetch failed: ${err.message}`);
+    return false;
+  }
+}
+
 async function main() {
   fs.mkdirSync(TMP, { recursive: true, mode: 0o700 });
+  log(`start tool=${TOOL} channel=${CHANNEL} force=${FORCE} functional=${FUNCTIONAL_CHECK} checkOnly=${CHECK_ONLY} stableDelay=${STABLE_DELAY_DAYS}d`);
+
+  if (CHECK_ONLY) {
+    let anyAvailable = false;
+    if (TOOL === 'claude' || TOOL === 'all') {
+      const claudeAvailable = await checkClaudeAvailable();
+      log(`[check] claude upgrade available=${claudeAvailable}`);
+      if (claudeAvailable) anyAvailable = true;
+    }
+    if (TOOL === 'codex' || TOOL === 'all') {
+      const codexAvailable = await checkCodexAvailable();
+      log(`[check] codex upgrade available=${codexAvailable}`);
+      if (codexAvailable) anyAvailable = true;
+    }
+    log(`[check] anyAvailable=${anyAvailable}`);
+    process.exit(anyAvailable ? 0 : 1);
+  }
+
   cleanupStaleStaging();
-  log(`start tool=${TOOL} channel=${CHANNEL} force=${FORCE} functional=${FUNCTIONAL_CHECK} stableDelay=${STABLE_DELAY_DAYS}d`);
   if (TOOL === 'claude' || TOOL === 'all') await updateClaude();
   if (TOOL === 'codex' || TOOL === 'all') await updateCodex();
   log('done');
@@ -534,5 +667,5 @@ async function main() {
 
 main().catch((err) => {
   log(err.stack || String(err));
-  process.exit(1);
+  process.exit(2);
 });
