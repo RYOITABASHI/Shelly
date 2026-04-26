@@ -282,6 +282,12 @@ class TerminalEmulatorModule : Module() {
             chmodWritableThenDelete(java.io.File(home, ".shelly-cli.staging"))
             chmodWritableThenDelete(java.io.File(home, ".shelly-cli/.update.lock"))
             chmodWritableThenDelete(java.io.File(home, ".shelly-runtime/.tmp"))
+            // Clear .failed-versions so the post-recovery quick-check
+            // can immediately retry the latest upstream versions instead
+            // of waiting out the 1h cooldown that the failed install
+            // run that froze us already poisoned.
+            chmodWritableThenDelete(java.io.File(home, ".shelly-cli/.failed-versions"))
+            chmodWritableThenDelete(java.io.File(home, ".shelly-runtime/.failed-versions"))
 
             // Reset update markers so the next launch tries fresh
             // instead of waiting for the cooldown to expire.

@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 63
+    private const val BASHRC_VERSION = 64
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1026,9 +1026,26 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("bind -m vi-command '\"\\C-x\\C-b\": bracketed-paste-begin' 2>/dev/null")
             sb.appendLine()
 
-            // Linker64 helper function
+            // Linker64 helper function.
+            //
+            // bug #127 hardening (2026-04-27): refuse to invoke linker64 when
+            // the first arg isn't an absolute path. Without this guard,
+            // upstream callers that pass a flag (`-G`, `--something`) as the
+            // first arg get bionic linker64's cryptic
+            // `error: expected absolute path: "-G"` and the user has no idea
+            // what's wrong. This guard turns it into a self-diagnosing
+            // "_run: first arg must be absolute path" that names the
+            // offending value. Exit 64 = EX_USAGE convention.
             sb.appendLine("# Run binary via linker64 (SELinux blocks direct execve on app_data_file)")
-            sb.appendLine("_run() { /system/bin/linker64 \"\$@\"; }")
+            sb.appendLine("_run() {")
+            sb.appendLine("  case \"\${1:-}\" in")
+            sb.appendLine("    /*) /system/bin/linker64 \"\$@\" ;;")
+            sb.appendLine("    *)")
+            sb.appendLine("      printf '_run: first arg must be an absolute path, got: %s\\n' \"\${1:-(empty)}\" >&2")
+            sb.appendLine("      return 64")
+            sb.appendLine("      ;;")
+            sb.appendLine("  esac")
+            sb.appendLine("}")
             // bug #116 paste-routing override (Codex 2026-04-25): the
             // /proc/<bash>/task/<bash>/children heuristic in
             // TerminalEmulator.paste() can't reliably tell when a
@@ -1478,17 +1495,33 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // marker. Acquire-or-skip semantics: if another instance is
             // already running, we just exit silently — the in-flight one
             // will finish the work.
-            sb.appendLine("  if [ -e \"\$__lockfile\" ]; then")
+            // bug #126 round 2 (agent review 2026-04-27): make the lockfile
+            // acquire ATOMIC via `set -C` (noclobber) redirect. The previous
+            // implementation had a TOCTOU window between the `[ -e ]` check
+            // and the `echo > lockfile` write where two concurrent
+            // invocations could both pass the check, both write, and both
+            // proceed — exactly the race the lockfile was meant to prevent.
+            // `set -C` makes the redirect fail if the file already exists,
+            // and the subshell isolates the noclobber setting.
+            sb.appendLine("  __shelly_acquire_lock() {")
+            sb.appendLine("    if ( set -C; echo \"\$\$\" > \"\$__lockfile\" ) 2>/dev/null; then return 0; fi")
             sb.appendLine("    local __lockpid=\$(cat \"\$__lockfile\" 2>/dev/null)")
             sb.appendLine("    if [ -n \"\$__lockpid\" ] && kill -0 \"\$__lockpid\" 2>/dev/null; then")
             sb.appendLine("      echo \"[install] another update already running (pid=\$__lockpid), skipping\"")
-            sb.appendLine("      echo '[install] done (skipped, locked)'")
-            sb.appendLine("      return 0")
+            sb.appendLine("      return 1")
             sb.appendLine("    fi")
-            sb.appendLine("    echo \"[install] removing stale lockfile (pid=\$__lockpid not running)\"")
+            sb.appendLine("    echo \"[install] removing stale lockfile (pid=\${__lockpid:-(none)} not running)\"")
             sb.appendLine("    rm -f \"\$__lockfile\"")
+            // Retry once after stale removal. If we still lose the race, just
+            // skip — another run that won the second race will do the work.
+            sb.appendLine("    if ( set -C; echo \"\$\$\" > \"\$__lockfile\" ) 2>/dev/null; then return 0; fi")
+            sb.appendLine("    echo \"[install] lost lockfile race after stale cleanup, skipping\"")
+            sb.appendLine("    return 1")
+            sb.appendLine("  }")
+            sb.appendLine("  if ! __shelly_acquire_lock; then")
+            sb.appendLine("    echo '[install] done (skipped, locked)'")
+            sb.appendLine("    return 0")
             sb.appendLine("  fi")
-            sb.appendLine("  echo \"\$\$\" > \"\$__lockfile\"")
             // Trap ALL exit paths (normal return, signal, error) to release the
             // lockfile. Without this, a process kill during cp/npm leaves the
             // lock orphaned and every subsequent invocation hits the stale
