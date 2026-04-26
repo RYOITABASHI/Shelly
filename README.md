@@ -346,7 +346,7 @@ Currently registered:
 | Claude Code verified native runtime (default) + legacy cli.js fallback + Codex CLI verified native runtime + Gemini npm CLI staged/probed before promotion | ✅ managed latest with rollback |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
-| Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked as bug #99 (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in v0.1.1 |
+| Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |
@@ -362,7 +362,7 @@ Parts of the app are written but not yet verified. These are on the short-term r
 
 - **Play Store / F-Droid distribution** — the APK is published via GitHub Releases only; store submission flow not yet done
 - **End-to-end device validation** for voice dialogue, immortal sessions, and background agent AlarmManager scheduling — all wired but not yet smoke-tested on the target device
-- **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in the v0.1.0 cleanup. Snippets can still be added by editing `~/.shelly/snippets.json` directly or via `shelly config`.
+- **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in an earlier cleanup pass. Snippets can still be added by editing `~/.shelly/snippets.json` directly or via `shelly config`.
 
 ---
 
@@ -583,7 +583,7 @@ The keyboard in the screenshots is **Nacre** — a split-layout Android IME I bu
 
 ## Known Limitations
 
-Shelly is v0.1.0. Here's what we know isn't perfect yet.
+Shelly is v5.1.0. Here's what we know isn't perfect yet.
 
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline, but you must start the llama.cpp server yourself today.
 - **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
