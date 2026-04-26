@@ -104,6 +104,17 @@ object LibExtractor {
         "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1"
     )
 
+    // Files that must be re-extracted on every launch even when the version
+    // marker matches. The bug #731 incident showed that an APK update can
+    // ship a new libexec_wrapper_musl.so / shelly_musl_exec without bumping
+    // versionCode (e.g. CI-only refactors); the previous gate would have
+    // kept the stale bionic-flavoured trampoline on disk and silently
+    // continued to fail the musl claude launch path.
+    private val ALWAYS_REFRESH = setOf(
+        "libexec_wrapper_musl.so",
+        "shelly_musl_exec"
+    )
+
     fun getLibDir(context: Context): File =
         File(context.filesDir, "termux-libs").also { it.mkdirs() }
 
@@ -125,7 +136,7 @@ object LibExtractor {
         try {
             for ((apkEntry, fileName) in LIBS) {
                 val outFile = File(libDir, fileName)
-                if (!forceRefresh && outFile.exists() && outFile.length() > 0) continue
+                if (!forceRefresh && fileName !in ALWAYS_REFRESH && outFile.exists() && outFile.length() > 0) continue
                 if (forceRefresh && outFile.exists()) outFile.delete()
                 val entry = zipFile.getEntry(apkEntry) ?: continue
                 zipFile.getInputStream(entry).use { input ->

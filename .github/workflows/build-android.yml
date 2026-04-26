@@ -248,6 +248,31 @@ jobs:
           ls -lh "${OUT}"
           file "${OUT}"
 
+      - name: Build musl exec wrapper for Claude SEA (bug #117/#731)
+        # Compile the musl-native exec wrapper (exec-wrapper-musl.c) inside
+        # an Alpine arm64 container so the resulting .so depends ONLY on
+        # libc.musl-aarch64.so.1. The previous Path C-bis step compiled
+        # exec-wrapper.c (bionic source) under Alpine which produced a
+        # binary referencing __register_atfork / __open_2 / __errno —
+        # symbols musl ld-musl cannot resolve, surfaced on-device as
+        # "Error relocating libexec_wrapper.so" when claude() routed the
+        # bionic preload into the musl loader. This step overwrites the
+        # earlier output with the correct musl-native build.
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="/work/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c"
+          OUT="/work/${JNILIBS}/libexec_wrapper_musl.so"
+          docker run --rm --platform linux/arm64 \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            alpine:3.19 sh -euxc "
+              apk add --no-progress build-base file
+              cc -shared -fPIC -O2 -Wall -Wextra -Werror '${SRC}' -o '${OUT}' -ldl
+              strip --strip-unneeded '${OUT}'
+              chmod 755 '${OUT}'
+              ls -lh '${OUT}'
+              file '${OUT}'
+            "
+
       - name: Build Shelly shell launcher
         run: |
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"

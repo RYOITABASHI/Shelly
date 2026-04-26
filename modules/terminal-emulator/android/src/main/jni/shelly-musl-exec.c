@@ -297,6 +297,9 @@ int main(int argc, char *argv[], char *envp[]) {
   char **new_env = calloc(envc + 1, sizeof(char *));
   if (!new_env) die_errno("calloc new_env failed");
   size_t new_envc = 0;
+  /* Defensive belt: clear LD_PRELOAD from our own process env in case the
+   * envp walk misses an entry that some downstream getenv() consults. */
+  unsetenv("LD_PRELOAD");
   for (size_t i = 0; i < envc; i++) {
     /* The parent PTY preloads a bionic exec wrapper so normal bionic tools
      * can spawn app-data binaries through linker64. musl cannot relocate
