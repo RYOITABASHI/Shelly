@@ -5,14 +5,13 @@ import { View, Platform, StyleSheet, StatusBar } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme-engine';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
-import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useThemeVersionStore } from '@/store/theme-version-store';
 import { Sidebar } from './Sidebar';
 import { AgentBar } from './AgentBar';
 import { ContextBar } from './ContextBar';
 import { MultiPaneContainer } from '@/components/multi-pane/MultiPaneContainer';
-import { applyLayoutPreset } from '@/components/multi-pane/LayoutPresetSheet';
 import { CommandPalette } from '@/components/CommandPalette';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { matchKeybinding, type KeyAction } from '@/lib/keybindings';
@@ -67,25 +66,88 @@ export function ShellLayout() {
     setMaxPanes(layout.isLandscape && layout.isWide ? 4 : layout.isWide ? 2 : 1);
   }, [layout.isWide, layout.isLandscape]);
 
-  // Z Fold6 auto-switch: unfold (isFoldInner becomes true) → 1+2 Split,
-  // fold (isFoldInner becomes false) → Single. Only fires on transitions
-  // so a user's manual preset choice is preserved between fold events.
+  // Z Fold6 auto-switch.
+  //
+  // bug #99 (2026-04-26): the previous implementation hard-coded 1+2
+  // (= 3 panes) on every fold→unfold transition, regardless of what the
+  // user had configured before folding. Repro: open Shelly on the main
+  // display in single-pane → fold → unfold → 3-pane layout appears.
+  //
+  // Fix: capture the user's actual preset *before* folding to single,
+  // restore that exact preset on unfold, and persist the captured
+  // value to AsyncStorage so a process kill while folded does NOT
+  // lose the user's intent (code-review HIGH+MEDIUM 2026-04-26).
+  // The 'p1' guard from the first iteration was dropped — a user who
+  // explicitly chose single-pane on the inner display deserves to get
+  // single back after a fold cycle.
   const prevFoldInnerRef = useRef<boolean | null>(null);
+  // Persisted via AsyncStorage so that an Android process kill between
+  // fold→unfold (e.g., user takes the foldable away for a few hours)
+  // still restores the user's intent. Default seed 'p3l' (= '1+2') is
+  // used only on first run before any fold cycle has occurred.
+  const lastUnfoldedPresetRef = useRef<PresetId>('p3l');
+  // Set once the AsyncStorage hydrate completes so the first effect
+  // run that follows hydration has the persisted preset available.
+  const hydrationCompleteRef = useRef<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    AsyncStorage.getItem('shelly:lastUnfoldedPreset').then((stored) => {
+      if (cancelled) return;
+      const validIds: PresetId[] = ['p1', 'p2h', 'p2v', 'p3l', 'p3r', 'p3t', 'p3b', 'p4'];
+      if (stored && (validIds as string[]).includes(stored)) {
+        lastUnfoldedPresetRef.current = stored as PresetId;
+        logInfo('ShellLayout', `Hydrated lastUnfoldedPreset=${stored}`);
+      }
+      hydrationCompleteRef.current = true;
+    }).catch((e) => {
+      logInfo('ShellLayout', `lastUnfoldedPreset hydrate failed: ${String(e)}`);
+      hydrationCompleteRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     const prev = prevFoldInnerRef.current;
     const curr = layout.isFoldInner;
     if (prev === null) {
-      // First observation — skip auto-switch to respect existing layout
+      // First observation — skip the auto-switch but still capture the
+      // current preset if we boot unfolded, so a fold→unfold cycle later
+      // in this session restores it correctly.
       prevFoldInnerRef.current = curr;
+      if (curr) {
+        const captured = useMultiPaneStore.getState().preset;
+        lastUnfoldedPresetRef.current = captured;
+        AsyncStorage.setItem('shelly:lastUnfoldedPreset', captured).catch(() => {});
+        logInfo(
+          'ShellLayout',
+          `Fold first observation: unfolded, captured preset=${captured}`,
+        );
+      }
       return;
     }
     if (prev !== curr) {
       if (curr) {
-        logInfo('ShellLayout', 'Fold transition: unfolded → 1+2 Split');
-        applyLayoutPreset('1+2');
+        // Unfold: restore whatever the user had before folding.
+        const target = lastUnfoldedPresetRef.current;
+        logInfo('ShellLayout', `Fold transition: unfolded → restoring preset=${target}`);
+        useMultiPaneStore.getState().setPreset(target);
       } else {
-        logInfo('ShellLayout', 'Fold transition: folded → Single');
-        applyLayoutPreset('single');
+        // Fold: snapshot the current preset before collapsing to single
+        // so the next unfold can restore it. Persist immediately so a
+        // process kill while folded does not lose the user's intent.
+        // Captures 'p1' too — if the user explicitly chose single-pane
+        // on the inner display, that is their preference.
+        const captured = useMultiPaneStore.getState().preset;
+        if (captured) {
+          lastUnfoldedPresetRef.current = captured;
+          AsyncStorage.setItem('shelly:lastUnfoldedPreset', captured).catch(() => {});
+        }
+        logInfo(
+          'ShellLayout',
+          `Fold transition: folded → Single (saved unfolded preset=${lastUnfoldedPresetRef.current})`,
+        );
+        useMultiPaneStore.getState().setPreset('p1');
       }
       prevFoldInnerRef.current = curr;
     }
