@@ -167,6 +167,26 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'deleteHistory',     label: 'Delete All History', type: 'action', source: 'custom', actionLabel: 'Delete', dangerAction: true },
     ],
   },
+  // bug recovery (2026-04-27): user-facing escape hatch for the
+  // freeze-on-launch failure mode where a corrupted ~/.shelly-cli.staging
+  // tree (chmod a-w residue / partial cp clones / stale lockfile)
+  // survives Android's task-kill from the recents list. Force-recover
+  // wipes the persistent broken state so the next launch starts clean.
+  {
+    title: 'Recovery',
+    icon: 'healing',
+    items: [
+      {
+        key: 'forceRecoverFromFrozenState',
+        label: 'Force-recover from frozen state',
+        type: 'action',
+        source: 'custom',
+        actionLabel: 'Recover',
+        dangerAction: true,
+        description: 'Clears ~/.shelly-cli.staging and stale update lockfile. Use if Shelly freezes on launch and task-kill alone does not help. Restart Shelly after.',
+      },
+    ],
+  },
   {
     title: 'Sync',
     icon: 'cloud',
@@ -558,6 +578,49 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
       case 'syncFromGist':
         dotfiles.syncFromGist();
         ToastAndroid.show('Syncing from Gist...', ToastAndroid.SHORT);
+        break;
+      case 'forceRecoverFromFrozenState':
+        Alert.alert(
+          'Force-recover Shelly?',
+          'Wipes ~/.shelly-cli.staging and the stale update lockfile. ' +
+          'Live install (~/.shelly-cli) is preserved — your CLIs keep working. ' +
+          'Use this only if Shelly freezes on launch and task-kill from the ' +
+          'recents list does not recover.\n\n' +
+          'After recovery, fully close Shelly (recents → swipe up) and ' +
+          'relaunch. The next launch will refresh from upstream automatically.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Recover',
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+                  const result = await TerminalEmulator.forceRecoverFromFrozenState();
+                  const cleanedCount = Array.isArray(result?.cleaned) ? result.cleaned.length : 0;
+                  const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
+                  if (errorCount > 0) {
+                    Alert.alert(
+                      'Recovery completed with warnings',
+                      `Cleaned ${cleanedCount} item(s). ${errorCount} could not be removed:\n\n` +
+                      (result.errors as string[]).slice(0, 5).join('\n') +
+                      (errorCount > 5 ? `\n…+${errorCount - 5} more` : ''),
+                    );
+                  } else {
+                    Alert.alert(
+                      'Recovery complete',
+                      `Cleaned ${cleanedCount} item(s). Force-stop Shelly and relaunch.`,
+                    );
+                  }
+                  logInfo('ConfigTUI', 'forceRecoverFromFrozenState ok=' + result?.ok + ' cleaned=' + cleanedCount + ' errors=' + errorCount);
+                } catch (e: any) {
+                  logError('ConfigTUI', 'forceRecoverFromFrozenState failed', e);
+                  Alert.alert('Recovery failed', String(e?.message || e));
+                }
+              },
+            },
+          ],
+        );
         break;
     }
   }, [dotfiles]);

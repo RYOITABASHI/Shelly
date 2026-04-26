@@ -233,6 +233,83 @@ class TerminalEmulatorModule : Module() {
             session.getTitle()
         }
 
+        // bug recovery (2026-04-27): user-triggered force recovery from
+        // frozen state. The corrupted on-disk staging tree (chmod a-w
+        // residue, partial cp clones, stale lockfile) survives Android
+        // task-kill, so even closing+reopening Shelly doesn't help —
+        // bashrc kicks the bg updater on every launch and immediately
+        // re-hangs. This entry point cleans the persistent state so the
+        // next launch can start fresh.
+        //
+        // Returns a map describing what was cleaned, suitable for
+        // surfacing in the ConfigTUI "Recover" button's success Alert.
+        AsyncFunction("forceRecoverFromFrozenState") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("react context unavailable")
+            val home = java.io.File(context.filesDir, "home")
+            val cleaned = mutableListOf<String>()
+            val errors = mutableListOf<String>()
+
+            // Recursively chmod u+w then delete. The original chmod a-w
+            // (now removed in v62+) left some files unwritable; even
+            // after that fix, a partial cp -al from an older build
+            // could have left hardlinks to the read-only originals.
+            fun chmodWritableThenDelete(path: java.io.File) {
+                if (!path.exists()) return
+                try {
+                    if (path.isDirectory) {
+                        path.walkBottomUp().forEach { f ->
+                            try { f.setWritable(true, false) } catch (_: Throwable) {}
+                        }
+                    } else {
+                        try { path.setWritable(true, false) } catch (_: Throwable) {}
+                    }
+                    if (path.deleteRecursively()) {
+                        cleaned.add(path.absolutePath)
+                    } else {
+                        errors.add("could not fully delete ${path.absolutePath}")
+                    }
+                } catch (e: Throwable) {
+                    errors.add("${path.absolutePath}: ${e.message}")
+                }
+            }
+
+            // Targets: corrupted staging trees, stale lockfile, partially
+            // applied promote markers. The live tree (~/.shelly-cli) is
+            // intentionally NOT touched — that's the user's working
+            // install. The next launch's quick-check will refresh it
+            // against upstream automatically.
+            chmodWritableThenDelete(java.io.File(home, ".shelly-cli.staging"))
+            chmodWritableThenDelete(java.io.File(home, ".shelly-cli/.update.lock"))
+            chmodWritableThenDelete(java.io.File(home, ".shelly-runtime/.tmp"))
+
+            // Reset update markers so the next launch tries fresh
+            // instead of waiting for the cooldown to expire.
+            for (marker in listOf(
+                ".shelly_last_update",
+                ".shelly-cli/.last_quick_check",
+                ".shelly-runtime/.last_update",
+                ".shelly-runtime/.last_quick_check",
+            )) {
+                val f = java.io.File(home, marker)
+                if (f.exists()) {
+                    try {
+                        f.delete()
+                        cleaned.add(f.absolutePath)
+                    } catch (e: Throwable) {
+                        errors.add("${f.absolutePath}: ${e.message}")
+                    }
+                }
+            }
+
+            Log.i("TerminalEmulator", "forceRecoverFromFrozenState: cleaned=${cleaned.size} errors=${errors.size}")
+            mapOf(
+                "ok" to errors.isEmpty(),
+                "cleaned" to cleaned,
+                "errors" to errors,
+            )
+        }
+
         AsyncFunction("startSessionService") {
             val context = appContext.reactContext ?: return@AsyncFunction null
             val intent = Intent(context, TerminalSessionService::class.java)
