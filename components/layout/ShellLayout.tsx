@@ -90,12 +90,19 @@ export function ShellLayout() {
   // run that follows hydration has the persisted preset available.
   const hydrationCompleteRef = useRef<boolean>(false);
   // useState (not useRef) so that hydrate completion re-runs the fold
-  // effect — bug #99 round 2 review BLOCKER. Without re-run, a user who
-  // boots Shelly on the cover screen (folded) and unfolds within ~100ms
-  // hits the fold effect BEFORE AsyncStorage hydrate has resolved, and
-  // restores the constructor default 'p3l' instead of the persisted
-  // value — the exact symptom we are trying to fix.
+  // effect — bug #99 round 2 review BLOCKER, round 3 corrective restore.
+  // Round 2 added the re-run trigger, but round 3 caught that the re-run
+  // alone does nothing useful: by the time hydrate resolves, the unfold
+  // transition has already fired with `prev !== curr`, the effect's next
+  // run sees `prev === curr` and takes no branch. The persisted value is
+  // therefore never applied. The fix below adds an explicit corrective-
+  // restore branch that fires once after hydrate when an unfold
+  // transition was observed pre-hydrate.
   const [hydrated, setHydrated] = useState(false);
+  // Tracks whether an unfold transition fired BEFORE hydrate completed.
+  // Set in the unfold branch when hydrationCompleteRef is still false.
+  // Consumed (and cleared) by the post-hydrate corrective restore.
+  const unfoldFiredPreHydrateRef = useRef<boolean>(false);
   useEffect(() => {
     let cancelled = false;
     AsyncStorage.getItem('shelly:lastUnfoldedPreset').then((stored) => {
@@ -124,6 +131,32 @@ export function ShellLayout() {
   useEffect(() => {
     const prev = prevFoldInnerRef.current;
     const curr = layout.isFoldInner;
+
+    // Post-hydrate corrective restore. Round 3 review fix: if an unfold
+    // transition was observed BEFORE hydrate completed, the unfold
+    // branch took the no-op path (see below) instead of writing a
+    // wrong value. Now that hydrate is done and we have the persisted
+    // preset in lastUnfoldedPresetRef.current, apply it. Runs at most
+    // once per pre-hydrate unfold; the ref is cleared so subsequent
+    // re-runs of the effect (further fold transitions, layout width
+    // changes) do not re-apply.
+    //
+    // Round 4 review fix: also update prevFoldInnerRef before the
+    // early return. The deferred-unfold path left prev=false at T=50,
+    // and without this update the next effect re-fire (e.g. width
+    // change while unfolded) still sees `prev !== curr` and fires the
+    // unfold branch AGAIN — double restore. Updating here makes the
+    // bookkeeping consistent with the corrective being treated as the
+    // unfold transition's actual completion.
+    if (hydrated && unfoldFiredPreHydrateRef.current && curr) {
+      unfoldFiredPreHydrateRef.current = false;
+      const target = lastUnfoldedPresetRef.current;
+      logInfo('ShellLayout', `Post-hydrate corrective restore: ${target}`);
+      useMultiPaneStore.getState().setPreset(target);
+      prevFoldInnerRef.current = curr;
+      return;
+    }
+
     if (prev === null) {
       // First observation — skip the auto-switch but still capture the
       // current preset if we boot unfolded, so a fold→unfold cycle later
@@ -147,36 +180,55 @@ export function ShellLayout() {
     }
     if (prev !== curr) {
       if (curr) {
-        // Unfold: restore whatever the user had before folding. If
-        // hydration has not yet completed (boot-folded → fast unfold
-        // race), fall back to the live multi-pane store preset rather
-        // than forcing the constructor default 'p3l'. The store has
-        // its own zustand-persist hydration; either it has resolved
-        // (in which case its preset reflects the user's last session)
-        // or it hasn't (in which case its preset is also the default,
-        // but at least we don't actively overwrite it).
-        const target = hydrationCompleteRef.current
-          ? lastUnfoldedPresetRef.current
-          : useMultiPaneStore.getState().preset;
-        logInfo(
-          'ShellLayout',
-          `Fold transition: unfolded → restoring preset=${target} (hydrated=${hydrationCompleteRef.current})`,
-        );
-        useMultiPaneStore.getState().setPreset(target);
+        // Unfold transition.
+        //
+        // Two cases:
+        // (1) hydrate completed → restore the persisted preset.
+        // (2) hydrate not yet completed → DO NOTHING ON SETPRESET.
+        //     Round 3 review: previously we fell back to
+        //     useMultiPaneStore.getState().preset, but at this point
+        //     zustand-persist itself may not have finished hydrating
+        //     either, so the store still holds the constructor default
+        //     'p1' — calling setPreset('p1') is just as destructive as
+        //     setPreset('p3l'). The corrective branch above will fire
+        //     once hydrate resolves and restore the right value.
+        if (hydrationCompleteRef.current) {
+          const target = lastUnfoldedPresetRef.current;
+          logInfo('ShellLayout', `Fold transition: unfolded → restoring preset=${target}`);
+          useMultiPaneStore.getState().setPreset(target);
+        } else {
+          unfoldFiredPreHydrateRef.current = true;
+          logInfo(
+            'ShellLayout',
+            `Fold transition: unfolded → deferring restore until hydrate completes`,
+          );
+        }
       } else {
         // Fold: snapshot the current preset before collapsing to single
         // so the next unfold can restore it. Persist immediately so a
         // process kill while folded does not lose the user's intent.
         // Captures 'p1' too — if the user explicitly chose single-pane
         // on the inner display, that is their preference.
+        //
+        // Round 4 review fix: gate the AsyncStorage write on
+        // hydrationCompleteRef. If the user folds back BEFORE hydrate
+        // completes, the captured value comes from a not-yet-hydrated
+        // zustand store (constructor default 'p1'), and an unconditional
+        // setItem here would clobber the actual persisted preset that
+        // hydrate is about to read. Skipping the write in this case
+        // means the persisted preset survives, the corrective restore
+        // applies it on the next unfold, and the user's intent is
+        // preserved.
         const captured = useMultiPaneStore.getState().preset;
         if (captured) {
           lastUnfoldedPresetRef.current = captured;
-          AsyncStorage.setItem('shelly:lastUnfoldedPreset', captured).catch(() => {});
+          if (hydrationCompleteRef.current) {
+            AsyncStorage.setItem('shelly:lastUnfoldedPreset', captured).catch(() => {});
+          }
         }
         logInfo(
           'ShellLayout',
-          `Fold transition: folded → Single (saved unfolded preset=${lastUnfoldedPresetRef.current})`,
+          `Fold transition: folded → Single (saved unfolded preset=${lastUnfoldedPresetRef.current}, persist=${hydrationCompleteRef.current})`,
         );
         useMultiPaneStore.getState().setPreset('p1');
       }
