@@ -302,8 +302,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          CODEX_TERMUX_VERSION="$(gh release view --repo DioNanos/codex-termux --json tagName --jq .tagName)"
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          # bug: 2026-04-27 — DioNanos/codex-termux v0.125.0-termux dropped
+          # the legacy `codex-termux-android-arm64-<tag>.tar.gz` asset and
+          # only ships `mmmbuto-codex-cli-termux-<ver>-termux.tgz` (npm-pack
+          # format) now. We don't yet handle the new format, so walk back
+          # newest-first through recent releases and use the first that
+          # still has the legacy assets we know how to extract. Fallback
+          # cap = 5 most recent releases.
+          CODEX_TERMUX_VERSION=""
+          for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
+            echo "[codex] probing $candidate for legacy asset pattern"
+            if gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name' \
+                 | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$"; then
+              CODEX_TERMUX_VERSION="$candidate"
+              echo "[codex] selected $candidate (has legacy assets)"
+              break
+            fi
+            echo "[codex] $candidate skipped (no legacy assets)"
+          done
+          if [ -z "$CODEX_TERMUX_VERSION" ]; then
+            echo "FATAL: none of the 5 most recent codex-termux releases have the legacy asset pattern" >&2
+            echo "  Update this workflow to handle the new mmmbuto-codex-cli-termux-<ver>-termux.tgz format" >&2
+            exit 1
+          fi
           echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION}"
           gh release download "${CODEX_TERMUX_VERSION}" \
             --repo DioNanos/codex-termux \
