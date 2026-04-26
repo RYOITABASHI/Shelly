@@ -1604,7 +1604,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // package.json bin is relative to its package dir. Resolve.
             sb.appendLine("      local __gemini_abs=\"\$__staging/node_modules/@google/gemini-cli/\$__new_gemini\"")
             sb.appendLine("      if [ -f \"\$__gemini_abs\" ]; then")
-            sb.appendLine("        if ! timeout 30 /system/bin/linker64 \"$libDir/node\" \"\$__gemini_abs\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
+            // BASHRC_VERSION 38 fix applies here too: gemini-cli 0.38+
+            // relaunches itself via spawn2(process.execPath,
+            // ['--max-old-space-size=5557', gemini.js]). On Shelly,
+            // process.execPath = $libDir/node (linker64-loaded library), so
+            // the child execve passes gemini.js to linker64 as its binary
+            // and dies with `error: expected absolute path:
+            // "--max-old-space-size=5557"`. The interactive gemini()
+            // function already sets GEMINI_CLI_NO_RELAUNCH=true and
+            // --max-old-space-size=5557; the bg updater smoke probe must
+            // do the same or every Gemini upgrade smoke test fails.
+            sb.appendLine("        if ! GEMINI_CLI_NO_RELAUNCH=true timeout 30 /system/bin/linker64 \"$libDir/node\" --max-old-space-size=5557 \"\$__gemini_abs\" --version 2>&1 | grep -Eq \"\$__ver_re\"; then")
             sb.appendLine("          echo '[health] gemini --version FAILED' >&2")
             sb.appendLine("          __healthy=0")
             sb.appendLine("        else")
