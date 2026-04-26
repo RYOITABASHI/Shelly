@@ -62,7 +62,7 @@ jobs:
 
           mkdir -p /tmp/musl-out
           curl -fsSL --retry 3 --retry-delay 5 \
-            https://github.com/bminor/musl/archive/refs/tags/v1.2.4.tar.gz \
+            https://github.com/ifduyue/musl/archive/refs/tags/v1.2.4.tar.gz \
             -o /tmp/musl-v1.2.4.tar.gz
           # Pass exec-wrapper.c by value. Hosted runners have shown that
           # bind-mounted input files can disappear from the QEMU-emulated
