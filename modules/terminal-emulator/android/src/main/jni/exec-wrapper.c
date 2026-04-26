@@ -71,7 +71,7 @@ static const char *rewrite_path(const char *pathname) {
 
     /* bash / sh / env: route to the Shelly-controlled $SHELL or toybox.
      * These are matched first so they take precedence over the generic
-     * /bin/* -> /system/bin/* prefix rewrite below (bash in particular
+     * /bin/... -> /system/bin/... prefix rewrite below (bash in particular
      * must reach $libDir/shelly_shell, not a non-existent /system/bin/bash).
      */
     if (strcmp(pathname, "/bin/sh") == 0) return "/system/bin/sh";
@@ -96,7 +96,7 @@ static const char *rewrite_path(const char *pathname) {
         }
     }
 
-    /* Generic prefix rewrite for /bin/* and /usr/bin/*. Android has no
+    /* Generic prefix rewrite for /bin/... and /usr/bin/.... Android has no
      * /bin or /usr/bin, but many CLIs (Codex's sandbox exec, GNU make,
      * misc POSIX tools) hard-code those paths for whoami/uname/id/
      * getprop/cat/ls/etc. Android's toybox exposes them at /system/bin/.
