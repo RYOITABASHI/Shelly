@@ -64,18 +64,11 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 5 \
             https://github.com/ifduyue/musl/archive/refs/tags/v1.2.4.tar.gz \
             -o /tmp/musl-v1.2.4.tar.gz
-          # Pass exec-wrapper.c by value. Hosted runners have shown that
-          # bind-mounted input files can disappear from the QEMU-emulated
-          # arm64 Alpine container, while /out remains reliable for outputs.
-          EXEC_WRAPPER_B64="$(base64 -w0 "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c")"
-          docker run --rm -i --platform linux/arm64 \
+          CID="$(docker create --platform linux/arm64 \
             -v /tmp/musl-out:/out \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
-            -e EXEC_WRAPPER_B64="${EXEC_WRAPPER_B64}" \
             alpine:3.19 sh -euxc '
-              cat > /tmp/musl-v1.2.4.tar.gz
               apk add --no-progress build-base
-              printf "%s" "${EXEC_WRAPPER_B64}" | base64 -d > /tmp/exec-wrapper.c
               cd /tmp
               mkdir musl
               tar xzf /tmp/musl-v1.2.4.tar.gz -C musl --strip-components=1
@@ -106,7 +99,13 @@ jobs:
               strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
               readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
               readelf -d /out/libexec_wrapper_musl.so | grep -E "Shared library: \\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"
-            ' < /tmp/musl-v1.2.4.tar.gz
+            ')"
+          trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
+          docker cp /tmp/musl-v1.2.4.tar.gz "${CID}:/tmp/musl-v1.2.4.tar.gz"
+          docker cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c" "${CID}:/tmp/exec-wrapper.c"
+          docker start -a "${CID}"
+          docker rm "${CID}" >/dev/null
+          trap - EXIT
           cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
