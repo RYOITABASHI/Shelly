@@ -111,6 +111,12 @@ export function ShellLayout() {
 
   useEffect(() => {
     if (!layout.isFoldInner || !multiPaneHydrated || !presetHydrated) return;
+    // Save only while we were already on the inner display before this render.
+    // On cover -> inner transition, currentPreset is still the temporary cover
+    // preset (`p1`) until the transition effect below restores the saved
+    // unfolded preset. Saving during that transition would overwrite the last
+    // real unfolded preset with Single.
+    if (prevFoldInnerRef.current !== true) return;
     if (!isPresetId(currentPreset)) return;
     lastUnfoldedPresetRef.current = currentPreset;
     AsyncStorage.setItem(LAST_UNFOLDED_PRESET_KEY, currentPreset).catch(() => {});
