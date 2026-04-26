@@ -40,6 +40,23 @@ object LibExtractor {
         // bug #128: ssh-keygen for SSH-key-based git workflows. The base
         // ssh client was already bundled, but key generation was not.
         "lib/arm64-v8a/libssh_keygen.so" to "ssh-keygen",
+        // bug #128 git-credential helpers: persist HTTPS credentials
+        // (PAT) so user doesn't have to embed token in URL on every
+        // clone/push. _store keeps plaintext in ~/.git-credentials,
+        // _cache keeps in-memory only.
+        "lib/arm64-v8a/libgit_credential_store.so" to "git-credential-store",
+        "lib/arm64-v8a/libgit_credential_cache.so" to "git-credential-cache",
+        // bug #130 (2026-04-27): Tier-1 dev essentials. Claude Code /
+        // Codex frequently asked for these during Shelly-on-Shelly dev
+        // attempts ("gh: command not found", "gpg: not found", etc.).
+        // CI extracts them from Termux's stable apt mirror; missing
+        // from build = WARN (not fatal) so per-entry shape drift in
+        // Termux upstream doesn't block the whole APK.
+        "lib/arm64-v8a/libgh.so" to "gh",
+        "lib/arm64-v8a/libgpg.so" to "gpg",
+        "lib/arm64-v8a/libgpg_agent.so" to "gpg-agent",
+        "lib/arm64-v8a/libnano.so" to "nano",
+        "lib/arm64-v8a/libunzip.so" to "unzip",
         // coreutils
         "lib/arm64-v8a/libcoreutils.so" to "coreutils",
         // python

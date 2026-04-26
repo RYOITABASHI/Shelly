@@ -207,10 +207,71 @@ jobs:
           chmod 755 "$dst"
           echo "[termux-extras] bundled ssh-keygen → $(basename "$dst")"
 
-          # Verify all three landed
-          for f in libgit_remote_https.so libgit_remote_http.so libssh_keygen.so; do
-            ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/$f"
-            file "${GITHUB_WORKSPACE}/${JNILIBS}/$f" | head -1
+          # bug #130 (2026-04-27): Tier-1 dev essentials. Same Termux apt
+          # mirror, same extract pattern. These are the binaries Claude
+          # Code / Codex routinely complain about ("gh: command not
+          # found", "gpg: not found", "unzip: not found") during
+          # Shelly-on-Shelly dev. git-credential-* come from the git
+          # package we already extracted in step 1.
+          #
+          # Each entry: <pkg>:<bin-name>:<src-path-after-/usr>:<dst-name>
+          # When pkg is "_git_extracted" we reuse the already-extracted
+          # /tmp/git-pkg payload to avoid re-downloading. When pkg is
+          # "_openssh_extracted" we reuse /tmp/openssh-pkg.
+          while IFS=: read -r pkg src_subpath dst_name; do
+            [ -z "$pkg" ] && continue
+            case "$pkg" in
+              \#*) continue ;;
+            esac
+            case "$pkg" in
+              _git_extracted)
+                pkg_dir="/tmp/git-pkg"
+                ;;
+              _openssh_extracted)
+                pkg_dir="/tmp/openssh-pkg"
+                ;;
+              *)
+                pkg_filename=$(find_filename "$pkg")
+                if [ -z "$pkg_filename" ]; then
+                  echo "[termux-extras] WARN: ${pkg} package not in index, skipping"
+                  continue
+                fi
+                echo "[termux-extras] ${pkg}: ${pkg_filename}"
+                pkg_dir="/tmp/${pkg}-pkg"
+                rm -rf "$pkg_dir"
+                curl -fsSL "${REPO_BASE}/${pkg_filename}" -o "/tmp/${pkg}.deb"
+                extract_deb "/tmp/${pkg}.deb" "$pkg_dir"
+                ;;
+            esac
+            src="${pkg_dir}/data/data/com.termux/files/usr/${src_subpath}"
+            dst="${GITHUB_WORKSPACE}/${JNILIBS}/${dst_name}"
+            if [ ! -f "$src" ]; then
+              echo "[termux-extras] WARN: ${dst_name} source missing at ${src}, skipping"
+              continue
+            fi
+            cp "$src" "$dst"
+            chmod 755 "$dst"
+            echo "[termux-extras] bundled ${dst_name} (from ${pkg}/${src_subpath})"
+          done <<'EOF'
+          gh:bin/gh:libgh.so
+          gnupg:bin/gpg:libgpg.so
+          gnupg:bin/gpg-agent:libgpg_agent.so
+          nano:bin/nano:libnano.so
+          unzip:bin/unzip:libunzip.so
+          _git_extracted:libexec/git-core/git-credential-store:libgit_credential_store.so
+          _git_extracted:libexec/git-core/git-credential-cache:libgit_credential_cache.so
+          EOF
+
+          # Verify the critical landings (T1 graceful — WARN not FATAL)
+          echo "[termux-extras] === landed files ==="
+          for f in libgit_remote_https.so libgit_remote_http.so libssh_keygen.so \
+                   libgh.so libgpg.so libgpg_agent.so libnano.so libunzip.so \
+                   libgit_credential_store.so libgit_credential_cache.so; do
+            if [ -f "${GITHUB_WORKSPACE}/${JNILIBS}/$f" ]; then
+              ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/$f"
+            else
+              echo "  MISSING: $f"
+            fi
           done
 
       - name: Bundle claude-code musl binary (bug #117 Path C-bis)
