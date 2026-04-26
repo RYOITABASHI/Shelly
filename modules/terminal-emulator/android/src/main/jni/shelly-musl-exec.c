@@ -291,7 +291,10 @@ int main(int argc, char *argv[], char *envp[]) {
   }
 
   size_t envc = count_env(envp);
-  char **new_env = calloc(envc, sizeof(char *));
+  const char *musl_ld_preload = NULL;
+  const char musl_ld_preload_prefix[] = "SHELLY_MUSL_LD_PRELOAD=";
+  const size_t musl_ld_preload_prefix_len = sizeof(musl_ld_preload_prefix) - 1;
+  char **new_env = calloc(envc + 1, sizeof(char *));
   if (!new_env) die_errno("calloc new_env failed");
   size_t new_envc = 0;
   for (size_t i = 0; i < envc; i++) {
@@ -300,11 +303,22 @@ int main(int argc, char *argv[], char *envp[]) {
      * that bionic .so, so strip it. A musl-built wrapper is allowed for
      * claude-code Bun SEA so /bin/sh is rewritten to Android's
      * /system/bin/sh inside child_process.spawn({ shell: true }). */
-    if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0 &&
-        strstr(envp[i], "libexec_wrapper_musl.so") == NULL) {
+    if (strncmp(envp[i], musl_ld_preload_prefix, musl_ld_preload_prefix_len) == 0) {
+      musl_ld_preload = envp[i] + musl_ld_preload_prefix_len;
+      continue;
+    }
+    if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0) {
       continue;
     }
     new_env[new_envc++] = stack_strdup(&sp, envp[i]);
+  }
+  if (musl_ld_preload && musl_ld_preload[0]) {
+    size_t preload_len = strlen("LD_PRELOAD=") + strlen(musl_ld_preload) + 1;
+    char *preload_env = malloc(preload_len);
+    if (!preload_env) die_errno("malloc musl LD_PRELOAD failed");
+    snprintf(preload_env, preload_len, "LD_PRELOAD=%s", musl_ld_preload);
+    new_env[new_envc++] = stack_strdup(&sp, preload_env);
+    free(preload_env);
   }
 
   Elf64_auxv_t *old_auxv = find_auxv(envp);
