@@ -63,6 +63,7 @@ jobs:
           mkdir -p /tmp/musl-out
           docker run --rm --platform linux/arm64 \
             -v /tmp/musl-out:/out \
+            -v "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c:/tmp/exec-wrapper.c:ro" \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
             alpine:3.19 sh -euxc '
               apk add --no-progress build-base git
@@ -80,15 +81,21 @@ jobs:
               make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
               strip --strip-unneeded lib/libc.so
               cp lib/libc.so /out/libld_musl_shelly.so
+              gcc -shared -fPIC -O2 /tmp/exec-wrapper.c -o /out/libexec_wrapper_musl.so -ldl
+              strip --strip-unneeded /out/libexec_wrapper_musl.so
               # Sanity checks inside the container — readelf/strings are
               # the Alpine aarch64 natives, no cross-tool needed.
               readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
+              readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
               strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
             '
           cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
+          file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
       - name: Bundle claude-code musl binary (bug #117 Path C-bis)
         # claude-code 2.1.113+ ships as a Bun SEA (Single Executable

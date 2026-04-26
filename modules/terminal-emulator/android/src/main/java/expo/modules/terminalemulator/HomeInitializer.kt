@@ -441,7 +441,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // v51 (2026-04-23): add PATH-visible env/sh compatibility links and
     //     always append Android system bins so Codex/Gemini child process
     //     lookup does not fall into dead /usr/bin or /bin entries.
-    private const val BASHRC_VERSION = 51
+    private const val BASHRC_VERSION = 63
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -916,8 +916,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
+            sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
+            sb.appendLine("  local __bionic_exec_wrapper=\"$libDir/libexec_wrapper.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_claude\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
             // time — bionic has no /etc/resolv.conf so without this seed
@@ -931,7 +933,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
             sb.appendLine("      fi")
-            sb.appendLine("      LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
+            sb.appendLine("      SHELLY_MUSL_EXEC=\"\$__trampoline\" SHELLY_MUSL_LD=\"\$__musl_ld\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" SHELLY_BIONIC_LD_PRELOAD=\"\$__bionic_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
             sb.appendLine("      local __runtime_rc=$?")
             sb.appendLine("      case \"\$__runtime_rc\" in")
             sb.appendLine("        0)")
@@ -951,7 +953,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
-            sb.appendLine("    LD_PRELOAD= _run \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("    SHELLY_MUSL_EXEC=\"\$__trampoline\" SHELLY_MUSL_LD=\"\$__musl_ld\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" SHELLY_BIONIC_LD_PRELOAD=\"\$__bionic_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
             sb.appendLine("    case \"\$__musl_rc\" in")
             sb.appendLine("      0)")

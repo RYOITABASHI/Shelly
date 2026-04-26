@@ -87,6 +87,7 @@ object LibExtractor {
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so",
+        "lib/arm64-v8a/libexec_wrapper_musl.so" to "libexec_wrapper_musl.so",
         // bug #117 Path C-bis: claude-code 2.1.113+ Bun SEA binary + matching
         // Shelly-patched musl libc loader. claude is ET_EXEC (~220 MB) and
         // can't be exec'd by bionic's linker64 directly; ld-musl-aarch64.so.1
