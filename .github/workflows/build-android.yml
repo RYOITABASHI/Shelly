@@ -114,6 +114,105 @@ jobs:
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
+      - name: Bundle Termux extras (git-remote-https, ssh-keygen) — bug #128
+        # Shelly bundles `git` itself but not the git-remote-https helper that
+        # makes `git clone https://...` work, nor `ssh-keygen` for SSH key
+        # generation. Without these, Shelly-on-Shelly development is
+        # structurally blocked — every `git clone https://...` returns
+        # "fatal: remote helper 'https' aborted session". User report
+        # 2026-04-27.
+        #
+        # We pull the binaries from Termux's stable apt repo. Latest .deb
+        # is resolved dynamically from the Packages.xz index so we follow
+        # upstream automatically.
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          REPO_BASE="https://packages-cf.termux.dev/apt/termux-main"
+
+          # Fetch + decode Packages.xz (Termux apt index)
+          curl -fsSL "${REPO_BASE}/dists/stable/main/binary-aarch64/Packages.xz" \
+            | xz -d > /tmp/Packages
+
+          # Filename helper (paragraph-mode awk lookup)
+          find_filename() {
+            awk -v pkg="$1" -v RS= '
+              /^Package:/ {
+                for (i = 1; i <= NF; i++) {
+                  if ($i == "Package:" && $(i+1) == pkg) {
+                    matched = 1
+                  }
+                }
+              }
+              matched && /Filename:/ {
+                for (i = 1; i <= NF; i++) {
+                  if ($i == "Filename:") {
+                    print $(i+1)
+                    exit
+                  }
+                }
+              }
+            ' /tmp/Packages
+          }
+
+          # Extract a Termux .deb's payload to a directory.
+          extract_deb() {
+            local deb="$1" outdir="$2"
+            mkdir -p "$outdir"
+            (cd "$outdir" && ar x "$deb")
+            if [ -f "$outdir/data.tar.xz" ]; then
+              tar -xf "$outdir/data.tar.xz" -C "$outdir"
+            elif [ -f "$outdir/data.tar.zst" ]; then
+              zstd -d "$outdir/data.tar.zst" -o "$outdir/data.tar"
+              tar -xf "$outdir/data.tar" -C "$outdir"
+            elif [ -f "$outdir/data.tar.gz" ]; then
+              tar -xzf "$outdir/data.tar.gz" -C "$outdir"
+            else
+              echo "FATAL: unknown payload format in $deb"; ls -la "$outdir"; exit 1
+            fi
+          }
+
+          # 1. git-remote-https (and -http for non-TLS) from `git` package
+          GIT_FILENAME=$(find_filename git)
+          [ -n "$GIT_FILENAME" ] || { echo "FATAL: git package not found in Packages index"; exit 1; }
+          echo "[termux-extras] git: ${GIT_FILENAME}"
+          curl -fsSL "${REPO_BASE}/${GIT_FILENAME}" -o /tmp/git.deb
+          extract_deb /tmp/git.deb /tmp/git-pkg
+          for helper in git-remote-https git-remote-http; do
+            src="/tmp/git-pkg/data/data/com.termux/files/usr/libexec/git-core/${helper}"
+            dst="${GITHUB_WORKSPACE}/${JNILIBS}/lib${helper//-/_}.so"
+            if [ ! -f "$src" ]; then
+              echo "FATAL: ${helper} not found in git package at $src"
+              find /tmp/git-pkg/data/data/com.termux/files/usr/libexec -name 'git-remote-*' || true
+              exit 1
+            fi
+            cp "$src" "$dst"
+            chmod 755 "$dst"
+            echo "[termux-extras] bundled ${helper} → $(basename "$dst")"
+          done
+
+          # 2. ssh-keygen from `openssh` package
+          SSH_FILENAME=$(find_filename openssh)
+          [ -n "$SSH_FILENAME" ] || { echo "FATAL: openssh package not found in Packages index"; exit 1; }
+          echo "[termux-extras] openssh: ${SSH_FILENAME}"
+          curl -fsSL "${REPO_BASE}/${SSH_FILENAME}" -o /tmp/openssh.deb
+          extract_deb /tmp/openssh.deb /tmp/openssh-pkg
+          src="/tmp/openssh-pkg/data/data/com.termux/files/usr/bin/ssh-keygen"
+          dst="${GITHUB_WORKSPACE}/${JNILIBS}/libssh_keygen.so"
+          if [ ! -f "$src" ]; then
+            echo "FATAL: ssh-keygen not found in openssh package at $src"
+            find /tmp/openssh-pkg/data/data/com.termux/files/usr/bin -name 'ssh*' || true
+            exit 1
+          fi
+          cp "$src" "$dst"
+          chmod 755 "$dst"
+          echo "[termux-extras] bundled ssh-keygen → $(basename "$dst")"
+
+          # Verify all three landed
+          for f in libgit_remote_https.so libgit_remote_http.so libssh_keygen.so; do
+            ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/$f"
+            file "${GITHUB_WORKSPACE}/${JNILIBS}/$f" | head -1
+          done
+
       - name: Bundle claude-code musl binary (bug #117 Path C-bis)
         # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
         # Application) — a statically linked ~220 MB ET_EXEC binary that

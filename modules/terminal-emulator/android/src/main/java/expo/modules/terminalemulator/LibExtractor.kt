@@ -30,6 +30,16 @@ object LibExtractor {
         // git + deps
         "lib/arm64-v8a/libgit.so" to "git",
         "lib/arm64-v8a/libpcre2_8.so" to "libpcre2-8.so",
+        // bug #128 (2026-04-27): git's HTTPS / HTTP transport helpers.
+        // Without these, `git clone https://...` returns "fatal: remote
+        // helper 'https' aborted session". HomeInitializer.kt sets
+        // GIT_EXEC_PATH=$libDir so git locates these by their basenames
+        // (LibExtractor strips the lib prefix and .so suffix on disk).
+        "lib/arm64-v8a/libgit_remote_https.so" to "git-remote-https",
+        "lib/arm64-v8a/libgit_remote_http.so" to "git-remote-http",
+        // bug #128: ssh-keygen for SSH-key-based git workflows. The base
+        // ssh client was already bundled, but key generation was not.
+        "lib/arm64-v8a/libssh_keygen.so" to "ssh-keygen",
         // coreutils
         "lib/arm64-v8a/libcoreutils.so" to "coreutils",
         // python

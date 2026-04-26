@@ -889,6 +889,29 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
+            // bug #128 (2026-04-27): tell git where to find its
+            // transport helpers (git-remote-https / git-remote-http).
+            // LibExtractor places them at $libDir alongside the git
+            // binary itself; without GIT_EXEC_PATH, git looks under
+            // /usr/lib/git-core/ which doesn't exist on Android.
+            sb.appendLine("export GIT_EXEC_PATH=\"$libDir\"")
+            // bug #129 (2026-04-27): npm postinstall scripts spawn `npm`
+            // bare (not via $libDir/node_modules/npm/bin/npm-cli.js), and
+            // without a `npm` on PATH every postinstall logs
+            // "npm: command not found" and partial-fails the install. Drop
+            // a 1-line shim into ~/bin/npm that re-routes through our
+            // bundled node + npm-cli.js. ~/bin is already first on PATH.
+            // Idempotent — overwrite is fine because the shim contents
+            // are deterministic.
+            sb.appendLine("mkdir -p \"\$HOME/bin\" 2>/dev/null")
+            sb.appendLine("if [ ! -f \"\$HOME/bin/npm\" ] || ! grep -q SHELLY_NPM_SHIM \"\$HOME/bin/npm\" 2>/dev/null; then")
+            sb.appendLine("  cat > \"\$HOME/bin/npm\" <<'NPM_SHIM_EOF'")
+            sb.appendLine("#!/system/bin/sh")
+            sb.appendLine("# SHELLY_NPM_SHIM v1 — see HomeInitializer.kt bug #129")
+            sb.appendLine("exec \"\${SHELLY_LIB_DIR}/shelly_shell\" -c '_run \"\$SHELLY_LIB_DIR/node\" \"\$SHELLY_LIB_DIR/node_modules/npm/bin/npm-cli.js\" \"\$@\"' npm \"\$@\"")
+            sb.appendLine("NPM_SHIM_EOF")
+            sb.appendLine("  chmod +x \"\$HOME/bin/npm\" 2>/dev/null")
+            sb.appendLine("fi")
             // v39: point every bundled TLS client at the Mozilla CA bundle
             // we extract to ~/.shelly-ssl/. Without these exports curl/node/
             // codex_exec all fail HTTPS because Android's system trust
