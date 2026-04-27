@@ -636,7 +636,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
         // blocks #!/system/bin/sh from app_data_file context. bash is now a shell
         // function in .bashrc instead (same pattern as node/git/claude). Clean up
         // the old wrapper if it exists so PATH doesn't find it first.
-        val oldBashWrapper = File(binDir, "bash")
+        // bug #139 (2026-04-27): binDir was previously declared inside the
+        // since-removed Alpine rootfs block. Re-declare locally for this
+        // cleanup. mkdirs() is idempotent and ~/bin is also where the npm
+        // shim lives (bug #129), so the dir should already exist.
+        val binDirCleanup = File(home, "bin")
+        val oldBashWrapper = File(binDirCleanup, "bash")
         if (oldBashWrapper.exists()) oldBashWrapper.delete()
 
         // bug #96: write the node-based patcher that replaces the broken
