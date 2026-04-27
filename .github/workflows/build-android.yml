@@ -455,38 +455,31 @@ jobs:
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
 
-      - name: Bundle AI CLIs (Gemini CLI + Codex JS dispatcher)
-        run: |
-          mkdir -p cli-bundle
-          # bug #139 (2026-04-27): dropped @anthropic-ai/claude-code@2.1.112
-          # from the bundle. The musl SEA at libclaude.so is the primary
-          # Claude path now (claude() bash function in HomeInitializer.kt
-          # prefers it over cli.js — line 1184). The bundled cli.js was
-          # only reached when both runtime SEA and APK SEA failed, an
-          # extremely rare path on a working device. Saves ~250-300 MB
-          # APK. If a user truly hits the rare offline+SEA-broken path,
-          # __shelly_bg_cli_update can pull cli.js fresh from npm on
-          # next network event into ~/.shelly-cli.
-          #
-          # Gemini stays — pure JS, ~30 MB compressed, genuinely needed
-          # for offline first-launch.
-          # Codex JS dispatcher stays — small (~5 MB) and required to
-          # patch into the codex-termux native binary at install time.
-          npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
-            @google/gemini-cli@latest \
-            @openai/codex@latest
-          # Patch clipboardy: remove Termux guard so Gemini CLI starts without Termux
-          # The check may be in clipboardy hoisted to various locations or bundled in chunks
-          find cli-bundle/lib -name "*.js" -exec grep -l "TERMUX_VERSION" {} \; | while read f; do
-            sed -i "s|process.env.TERMUX_VERSION===void 0|false|g" "$f"
-            sed -i "s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
-            echo "Patched TERMUX_VERSION in: $f"
-          done
-          # Tar them up for APK assets (LibExtractor will extract on first launch)
-          cd cli-bundle/lib
-          tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
-          cd ../..
-          ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
+      # bug #141 (2026-04-27): Tier-3 lazy-fetch — the cli-tools.tar.gz
+      # bundle (gemini-cli + codex JS dispatcher npm-installed at build
+      # time, ~250-400 MB compressed) is no longer baked into the APK.
+      # Instead, HomeInitializer.kt's existing 24h-gate kicks
+      # __shelly_bg_cli_update on first launch when last-update marker
+      # is 0, which fetches both packages from npm into the staging tier
+      # and promotes them to ~/.shelly-cli/ after the all-three smoke
+      # gate (claude/gemini/codex --version) passes.
+      #
+      # Trade-off: first launch requires network. Without network on
+      # very first launch, gemini and codex JS dispatcher won't work
+      # for ~2-3 minutes (until next launch with network triggers the
+      # bg install). claude works regardless (libclaude.so SEA is
+      # in-APK), and codex's native binary path
+      # (libcodex_exec.so / libcodex_tui.so) is unaffected — only the
+      # codex JS wrapper / MCP plumbing degrades.
+      #
+      # LibExtractor.kt's extractTarGzAsset already gracefully handles
+      # missing asset (FileNotFoundException → caught, logged, returns
+      # without erroring). No code change required there.
+      #
+      # If we ever need to re-add the bundle (e.g. for offline-first
+      # builds), restore the `npm install -g --prefix ./cli-bundle`
+      # block plus the TERMUX_VERSION sed and the tar+ship lines.
+      # Git history at e62df519^: feat(size): bug #140 Tier-2.
 
       - name: Prebuild Android
         run: npx expo prebuild --platform android --clean
