@@ -62,6 +62,17 @@ object LibExtractor {
         // apkPackager only accepts lib*.so without version suffix in
         // jniLibs, so CI ships it as libbz2_1.so and we rename here.
         "lib/arm64-v8a/libbz2_1.so" to "libbz2.so.1.0",
+        // bug #135 (2026-04-27, agent-reviewed): gpg's runtime dep
+        // cascade. Termux ships these UNVERSIONED (single file
+        // `usr/lib/libNAME.so` with no symlinks) and gpg's DT_NEEDED
+        // references match. Apk lib/ uses underscored basenames
+        // (gradle apkPackager allows lib*.so only) → LibExtractor
+        // renames to the hyphen form for libgpg-error.
+        "lib/arm64-v8a/libgcrypt.so" to "libgcrypt.so",
+        "lib/arm64-v8a/libgpg_error.so" to "libgpg-error.so",
+        "lib/arm64-v8a/libassuan.so" to "libassuan.so",
+        "lib/arm64-v8a/libksba.so" to "libksba.so",
+        "lib/arm64-v8a/libnpth.so" to "libnpth.so",
         // coreutils
         "lib/arm64-v8a/libcoreutils.so" to "coreutils",
         // python

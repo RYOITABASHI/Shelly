@@ -301,13 +301,39 @@ jobs:
           # suffix), LibExtractor renames to libbz2.so.1.0 on disk
           # which is what gpg/unzip's DT_NEEDED references.
           libbz2:lib/libbz2.so.1.0:libbz2_1.so
+          # bug #135 (2026-04-27, agent-reviewed): gpg's runtime dep
+          # cascade. UNLIKE libbz2 (#132) which ships versioned
+          # libbz2.so.1.0, Termux ships these libs UNVERSIONED — the
+          # .deb has a single `usr/lib/libNAME.so` file with no
+          # symlinks, and gpg's DT_NEEDED references match (e.g.
+          # `libgcrypt.so` not `libgcrypt.so.20`). Verified against
+          # current debs:
+          #   libgcrypt_1.11.2-1, libgpg-error_1.58, libassuan_3.0.2-1,
+          #   libksba_1.6.8, libnpth_1.6-3
+          # Verified gpg's DT_NEEDED:
+          #   libz.so.1, libbz2.so.1.0, libsqlite3.so, libgcrypt.so,
+          #   libreadline.so.8, libassuan.so, libnpth.so, libgpg-error.so
+          # Apk lib/ filenames use underscores instead of hyphens
+          # (gradle compatibility); LibExtractor renames to the
+          # hyphenated SONAMEs on disk where DT_NEEDED resolves.
+          libgcrypt:lib/libgcrypt.so:libgcrypt.so
+          libgpg-error:lib/libgpg-error.so:libgpg_error.so
+          libassuan:lib/libassuan.so:libassuan.so
+          libksba:lib/libksba.so:libksba.so
+          libnpth:lib/libnpth.so:libnpth.so
           EOF
 
-          # Verify the critical landings (T1 graceful — WARN not FATAL)
+          # Verify the critical landings (T1 graceful — WARN not FATAL).
+          # bug #135 review (2026-04-27): expanded to include libbz2 +
+          # gpg cascade so future Termux upstream renames trigger an
+          # immediate "MISSING:" line in CI logs instead of an apparently
+          # green build that ships a broken APK.
           echo "[termux-extras] === landed files ==="
           for f in libgit_remote_https.so libgit_remote_http.so libssh_keygen.so \
                    libgh.so libgpg.so libgpg_agent.so libnano.so libunzip.so \
-                   libgit_credential_store.so libgit_credential_cache.so; do
+                   libgit_credential_store.so libgit_credential_cache.so \
+                   libbz2_1.so \
+                   libgcrypt.so libgpg_error.so libassuan.so libksba.so libnpth.so; do
             if [ -f "${GITHUB_WORKSPACE}/${JNILIBS}/$f" ]; then
               ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/$f"
             else

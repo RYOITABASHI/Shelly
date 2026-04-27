@@ -28,6 +28,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
 import { applyThemePreset } from '@/lib/theme-presets';
+import { logInfo, logError } from '@/lib/debug-logger';
 
 type Props = {
   visible: boolean;
@@ -178,7 +179,9 @@ function RecoverySection() {
                   `Cleaned ${cleanedCount} item(s). Force-stop Shelly (recents → swipe up) and relaunch.`,
                 );
               }
+              logInfo('SettingsDropdown', 'forceRecoverFromFrozenState ok=' + result?.ok + ' cleaned=' + cleanedCount + ' errors=' + errorCount);
             } catch (e: any) {
+              logError('SettingsDropdown', 'forceRecoverFromFrozenState failed', e);
               Alert.alert('Recovery failed', String(e?.message || e));
             }
           },
