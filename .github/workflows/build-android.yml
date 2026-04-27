@@ -553,6 +553,87 @@ jobs:
           ls -lh "${OUT}"
           file "${OUT}"
 
+      - name: Strip native libraries (Tier-2 size reduction)
+        # bug #140 (2026-04-27): Tier-2 strip sweep over the entire
+        # jniLibs tree right before APK packaging. Catches anything that
+        # the per-step strips missed:
+        #
+        #  • libclaude.so (Bun SEA, ~220 MB) — Anthropic ships full
+        #    symtab+debug. --strip-unneeded preserves the SEA blob
+        #    section but drops local symbols (~30-60 MB savings).
+        #  • libcodex_exec.so + libcodex_tui.so (~260 MB combined) —
+        #    Rust binaries with full debuginfo from the codex-termux
+        #    upstream tarball.
+        #  • Checked-in legacy libs (libnode 43 MB, libpython313 5.2 MB,
+        #    libgit, librg, libvim, libtmux, libcrypto3, libssl3) —
+        #    re-strip is idempotent, savings come from upstream-stripped
+        #    artifacts that still carry .note.gnu.build-id / .comment.
+        #
+        # Why --strip-unneeded NOT --strip-all: --strip-all removes the
+        # symtab the dynamic loader uses for symbol resolution, which
+        # breaks shared libraries. Bun SEA is ELF + custom section, and
+        # over-aggressive stripping has been reported to break the SEA
+        # marker. Stay conservative.
+        #
+        # --remove-section=.note.gnu.build-id strips the 20-byte build
+        # identifier (we don't symbolicate native crashes server-side
+        # so this is safe); --remove-section=.comment removes toolchain
+        # version strings.
+        #
+        # The musl loader (libld_musl_shelly.so) and exec wrapper
+        # (libexec_wrapper_musl.so) MUST stay --strip-unneeded — they're
+        # already stripped that way upstream in the build step, and
+        # re-running --strip-unneeded is a no-op.
+        run: |
+          JNILIBS="${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          echo "=== pre-strip sizes ==="
+          du -sh "${JNILIBS}"
+          ls -lhS "${JNILIBS}" | head -15
+
+          STRIPPED=0
+          SAVED_BYTES=0
+          for so in "${JNILIBS}"/*.so; do
+            [ -f "$so" ] || continue
+            before=$(stat -c %s "$so")
+            aarch64-linux-gnu-strip \
+              --strip-unneeded \
+              --remove-section=.note.gnu.build-id \
+              --remove-section=.comment \
+              "$so" 2>/dev/null || {
+                echo "[tier-2] WARN: strip failed for $(basename "$so") — leaving as-is"
+                continue
+              }
+            after=$(stat -c %s "$so")
+            delta=$((before - after))
+            if [ "$delta" -gt 0 ]; then
+              STRIPPED=$((STRIPPED + 1))
+              SAVED_BYTES=$((SAVED_BYTES + delta))
+              echo "[tier-2] $(basename "$so"): ${before} → ${after} bytes (saved ${delta})"
+            fi
+          done
+
+          echo "=== post-strip ==="
+          echo "[tier-2] stripped ${STRIPPED} libraries, saved ${SAVED_BYTES} bytes total"
+          du -sh "${JNILIBS}"
+          ls -lhS "${JNILIBS}" | head -15
+
+          # Sanity: claude SEA must still parse as ELF after strip.
+          # `file` reports "ELF 64-bit LSB pie executable" for valid SEA;
+          # if strip corrupted the header `file` returns "data" or errors.
+          if ! file "${JNILIBS}/libclaude.so" | grep -qE "ELF.*64-bit"; then
+            echo "FATAL: libclaude.so is no longer a valid ELF after strip" >&2
+            file "${JNILIBS}/libclaude.so"
+            exit 1
+          fi
+          for c in libcodex_exec libcodex_tui; do
+            if ! file "${JNILIBS}/${c}.so" | grep -qE "ELF.*64-bit"; then
+              echo "FATAL: ${c}.so is no longer a valid ELF after strip" >&2
+              file "${JNILIBS}/${c}.so"
+              exit 1
+            fi
+          done
+          echo "[tier-2] ELF sanity check passed for libclaude/libcodex"
+
       - name: Build APK
         run: |
           cd android
