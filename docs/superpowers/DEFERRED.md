@@ -991,6 +991,18 @@ coreutils: /proc/self/net/tcp6: Permission denied
 
 ### まだ Issue 化していない P2 項目 (必要になったら登録)
 
+#### bug #142 — Tier-2/3 APK 軽量化リトライ (Codex セッションで)
+- 2026-04-27 v5.1.1 candidate (#755, sha `a9172e91`) で実機検証 → **キーボードが立ち上がらない regression** を Z Fold6 で観測。Nacre IME がデフォルト IME 設定下で IME framework は `mInputShown=true mImeWindowVis=3` を返すが描画されず。Tier-1 (#753 / v5.1.0) ではこの問題は出ていない。
+- 容疑筆頭: Tier-2 strip sweep (`dec73b30`) の `--strip-unneeded --remove-section=.note.gnu.build-id --remove-section=.comment` が `libcxx_shared.so` / `libterminal-view` 系の何かを壊した可能性、もしくは `libproot.so` / `libtalloc.so` 削除の副作用 (LibExtractor が呼んでないことは確認済み)。Tier-3 (`a9172e91`) は workflow のみ変更で runtime コード未変更なので容疑からは外れるが、両者の組合せで初めて出る可能性も残る。
+- **Why not now**: keyboard が出ないと UI が成立しない。Codex に渡してじっくり原因切り分け。サイズ削減の現実的な天井 (8.5G→7.3G で-1.2G、HOME の半分以上は user state) も判明したので、Tier-2/3 を完全には積まずに Tier-2 のみ無害化したリビルド方針も検討対象。
+- **次セッションでの調査ポイント**:
+  1. Tier-2 だけ #754 (`dec73b30`) を install してキーボード現象を再現するか? → Tier-2 単独の責任切り分け
+  2. dlopen エラーは logcat に出てないが、`libcxx_shared.so` / `libreact*.so` が `--remove-section=.note.gnu.build-id` で破損していないか `readelf -S` で section list 比較
+  3. TerminalView の `onCreateInputConnection` がランタイムで何を返してるか (RN bridge 側のデバッグログ)
+  4. `libproot.so` / `libtalloc.so` 削除が `terminal-emulator` モジュールの何かを暗黙参照していないか (`grep -r "proot\|talloc"` で確認、最初の audit では LibExtractor.kt のコメント以外 hit 無し)
+- **状態**: v5.1.0 (#753) にロールバック済み。ブランチ `claude/stoic-hugle-569bef` に Tier-2 (`dec73b30`) と Tier-3 (`a9172e91`) コミット保留中。リバート不要 (main にマージしてないので release には影響しない)。
+- **関連 commit**: `dec73b30` (Tier-2), `a9172e91` (Tier-3), `e62df519` (docs)
+
 #### llama.cpp UI: 初回起動時の自動 Recommended セットアップ
 - Recommended モデルが未インストールなら起動時にサジェストポップアップ → 確認 → ダウンロード
 - **Why not now**: ディスク容量 / バッテリー / 帯域を勝手に消費するリスク、明示同意の設計を固めてから
