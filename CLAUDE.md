@@ -199,7 +199,7 @@ Shelly/
 | Paste は単一チョークポイント | `TerminalEmulator.paste()` に全経路を funnel。bug #97 で bionic bash の readline dispatch が `\e[200~` の ESC を swallow する問題が発覚 → 入口を ESC-free な `\C-x\C-b` に変更し、.bashrc で emacs/vi-insert/vi-command に `bracketed-paste-begin` を bind。END の `\e[201~` は関数内で直接 read されるため ESC が保持される。DECSET 2004 未設定の TUI (vim/less/nano) には `\r?\n → \r` fallback を適用。line 2649 で ESC と C1 制御文字を strip 済みなので paste 内に literal `\e[201~` が含まれても早期終了の command injection は不可 | TerminalView.java, TerminalEmulator.java, HomeInitializer.kt |
 | shelly-exec は EAGAIN を retry | select + non-blocking read の spurious wake を EOF と誤認識しない。bug #70 の根治 | shelly-exec.c |
 | bash は linker64 経由で libbash.so を起動 | Plan B は `bash` という exec が PATH 外なので `$HOME/bin/bash` の wrapper が必要 | HomeInitializer.kt |
-| Codex CLI は Alpine rootfs + proot 経由 | 静的リンク ET_EXEC を Android の mmap_min_addr 制限下で動かすために rootfs をバンドル、proot で chroot | HomeInitializer.kt, assets/alpine-rootfs.tar.gz |
+| Codex CLI は termux fork (`codex-cli-termux`) を直接実行 | 旧方針の Alpine rootfs + proot は v5.1.0 (#139) で撤去。termux fork は bionic で動く ELF なので mmap_min_addr 制限を踏まない。Tier-1 軽量化 (arm64-only ABI + strip) と引き換えにアップストリーム static-linked codex 経由は捨てた | HomeInitializer.kt, LibExtractor.kt |
 | /sdcard は MANAGE_EXTERNAL_STORAGE | Scoped Storage 回避、初回起動で Intent 経由ユーザー許可 | app.config.ts, TerminalEmulatorModule.kt, first-launch-setup.ts |
 
 ---
@@ -214,7 +214,7 @@ Shelly/
 | `ShellyIME` | `TerminalView` IME 経路 | commitText / setComposingText / deleteSurroundingText / finishComposing の全ログ |
 | `ShellyExec` | `shelly-exec.c execSubprocess` | 子 PID、exit code、stdout/stderr byte 数、EAGAIN 回数 |
 | `ShellyPTY` | `shelly-pty.c createSubprocess` | fork / ptsname / termios 設定結果 |
-| `HomeInitializer` | `HomeInitializer.kt` | .bashrc バージョンチェック、rootfs 展開、proot wrapper 作成 |
+| `HomeInitializer` | `HomeInitializer.kt` | .bashrc バージョンチェック、CLI staging promote、stale rootfs/proot のクリーンアップ |
 | `TerminalEmulator` | `TerminalEmulatorModule.kt` | hasAllFilesAccess / requestAllFilesAccess の権限状態遷移 |
 | `Sidebar` | `Sidebar.tsx` | tryAddRepo の probe 結果、ghost entry 診断 |
 | `Shelly` | `lib/debug-logger.ts` | `logInfo(module, ...)` 経由の汎用 JS ログ |
