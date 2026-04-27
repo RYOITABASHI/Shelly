@@ -19,7 +19,16 @@ const config: ExpoConfig & { android?: any } = {
   name: env.appName,
   slug: env.appSlug,
   version: "4.2.0",
-  runtimeVersion: "1.0.0",
+  // bug #137 (2026-04-27): bumping runtimeVersion 1.0.0 → 5.1.0 to
+  // invalidate the polluted OTA pool on the EAS preview branch. We
+  // discovered that user-installed APKs were silently downloading a
+  // stale OTA bundle from before the bug #131/#136 Recovery section
+  // changes — the bundled JS had the new code but ON_LOAD's OTA fetch
+  // overrode it with an older publish. Bumping runtimeVersion plus
+  // setting enabled: false (below) means future installs always run
+  // the JS bundled inside the APK. v5.1.1 will re-enable updates with
+  // a proper runtimeVersion strategy + branch hygiene.
+  runtimeVersion: "5.1.0",
   orientation: "default",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -113,9 +122,16 @@ const config: ExpoConfig & { android?: any } = {
       },
     ],
   ],
+  // bug #137 (2026-04-27): expo-updates disabled for v5.1.0 ship.
+  // The OTA override bug (older preview-branch bundle silently
+  // replacing the APK-bundled JS at ON_LOAD) wasted a build cycle and
+  // confused the Recovery-section verification. Re-enable in v5.1.1
+  // with a proper runtimeVersion + branch strategy. Until then, every
+  // JS update goes via APK release; users always run exactly the JS
+  // they installed.
   updates: {
     url: "https://u.expo.dev/e0d124cb-e18f-46c4-aca2-e19e48ba04fc",
-    enabled: true,
+    enabled: false,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 3000,
   },
