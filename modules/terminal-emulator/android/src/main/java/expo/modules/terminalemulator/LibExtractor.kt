@@ -118,8 +118,9 @@ object LibExtractor {
         // less
         "lib/arm64-v8a/libless.so" to "less",
         // proot + deps (kept for future use with other ET_EXEC binaries)
-        "lib/arm64-v8a/libproot.so" to "libproot.so",
-        "lib/arm64-v8a/libtalloc.so" to "libtalloc.so.2",
+        // bug #139 (2026-04-27): libproot/libtalloc removed — the proot
+        // routing path was replaced by direct linker64 invocation of
+        // codex-termux native binaries, see HomeInitializer.kt comment.
         // codex native binary (ET_DYN, built from codex-termux for Android/bionic)
         // exec variant: 1-shot runner for `codex exec/resume/review` subcommands
         "lib/arm64-v8a/libcodex_exec.so" to "codex_exec",
@@ -236,7 +237,12 @@ object LibExtractor {
 
         // Extract bundled AI CLIs (Claude Code, Gemini CLI, Codex)
         Log.i(TAG, "Attempting CLI tools extraction...")
-        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code", forceRefresh)
+        // bug #139 (2026-04-27): marker switched to gemini-cli because
+        // claude-code was removed from the bundle (the musl SEA at
+        // libclaude.so is the primary Claude path; runtime updater
+        // refreshes it). gemini-cli is the heaviest remaining bundled
+        // package and a reliable "did we extract?" sentinel.
+        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@google/gemini-cli", forceRefresh)
         Log.i(TAG, "CLI tools extraction done, checking launchers...")
 
         // Note: CLI launchers (claude, gemini, codex) are defined as bash functions

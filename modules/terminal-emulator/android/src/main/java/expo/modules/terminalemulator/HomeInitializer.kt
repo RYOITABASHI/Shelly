@@ -608,110 +608,29 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
 
         File(home, "projects").mkdirs()
 
-        // bug #76 final fix: extract Alpine minirootfs so proot has a real
-        // rootfs to mount. Without one, `proot /path/to/static-binary` fails
-        // with "unexpected e_type: 2" because ET_EXEC needs a libc that
-        // proot can mmap through its own loader, and the only way to give
-        // proot a libc is to hand it a rootfs via -r. The rootfs is ~8 MiB
-        // unpacked, shipped as a 3.7 MiB .tar.gz asset.
-        val rootfsDir = File(home, ".shelly-rootfs")
-        val rootfsMarker = File(rootfsDir, "etc/alpine-release")
-        if (!rootfsMarker.exists()) {
-            try {
-                rootfsDir.mkdirs()
-                val assetName = try {
-                    context.assets.open("alpine-rootfs.tar").close(); "alpine-rootfs.tar"
-                } catch (_: Exception) {
-                    "alpine-rootfs.tar.gz"
-                }
-                val isGz = assetName.endsWith(".gz")
-                val tempTar = File(context.cacheDir, assetName)
-                context.assets.open(assetName).use { input ->
-                    tempTar.outputStream().use { output -> input.copyTo(output) }
-                }
-                val pb = ProcessBuilder(
-                    "/system/bin/tar",
-                    if (isGz) "xzf" else "xf",
-                    tempTar.absolutePath,
-                    "-C", rootfsDir.absolutePath,
-                )
-                pb.redirectErrorStream(true)
-                val proc = pb.start()
-                val out = proc.inputStream.bufferedReader().readText()
-                val code = proc.waitFor()
-                tempTar.delete()
-                if (code != 0) {
-                    android.util.Log.e("HomeInitializer", "rootfs tar failed (exit $code): $out")
-                }
-                // Make sure the proot-writable subdirs the wrapper binds into
-                // actually exist; Alpine minirootfs leaves /root and /tmp in
-                // place but we explicitly mkdir them so the bind mount can
-                // land even on stripped rootfs builds.
-                File(rootfsDir, "root").mkdirs()
-                File(rootfsDir, "tmp").mkdirs()
-                File(rootfsDir, "usr/local/bin").mkdirs()
-            } catch (e: Exception) {
-                android.util.Log.e("HomeInitializer", "rootfs extraction failed: ${e.message}")
-            }
+        // bug #76 / #139 (2026-04-27): the Alpine rootfs + proot wrapper
+        // path was fully replaced by the DioNanos codex-termux native
+        // binaries (libcodex_exec.so / libcodex_tui.so) and the patched
+        // musl loader for Claude Code SEA. Nothing in the bashrc
+        // generation invokes `$HOME/bin/proot` anymore (verified by
+        // grep across HomeInitializer.kt). Removed the rootfs extract
+        // and proot wrapper to drop ~4 MB from the APK and ~8 MB from
+        // on-disk footprint. libproot.so / libtalloc.so removed from
+        // LibExtractor.kt LIBS map. assets/alpine-rootfs.tar.gz
+        // deleted. If a future ET_EXEC binary needs proot routing, the
+        // path can be reconstructed from git history (this v139
+        // commit's parent contains the full implementation).
+        //
+        // Cleanup: remove any stale rootfs / proot wrapper from prior
+        // installs so users upgrading don't carry the dead state.
+        try {
+            val staleRootfs = File(home, ".shelly-rootfs")
+            if (staleRootfs.exists()) staleRootfs.deleteRecursively()
+            val staleProotWrapper = File(File(home, "bin"), "proot")
+            if (staleProotWrapper.exists()) staleProotWrapper.delete()
+        } catch (e: Exception) {
+            android.util.Log.w("HomeInitializer", "stale rootfs/proot cleanup failed: ${e.message}")
         }
-
-        // bug #76: proot wrapper. The earlier version passed the binary
-        // through as the only argument, which made proot try to load the
-        // ET_EXEC static binary straight into the host address space. That
-        // fails on Android because the binary's LOAD segment at 0x400000
-        // collides with mmap_min_addr, and proot reports it as
-        // "unexpected e_type: 2". The fix is to give proot a rootfs with -r
-        // plus the usual bind mounts so it re-maps the load segments
-        // through its own ptrace-based loader.
-        //
-        // BASHRC_VERSION v30: additional binds for claude interactive mode.
-        // Claude Code v2.x's Bun-compiled musl binary internally spawns
-        // `node /path/to/cli.js` for its interactive REPL, and that node is
-        // our bundled bionic node at $libDir/node. Without the following
-        // bind mounts, the chroot would lack:
-        //   - /system/bin/linker64 (bionic node's PT_INTERP)
-        //   - /apex/com.android.runtime/lib64/bionic/* (Android 10+ bionic
-        //     libs moved out of /system into /apex)
-        //   - /linkerconfig/ld.config.txt (Android 10+ linker config)
-        //   - $libDir itself (where node and its node_modules live)
-        // so the spawned node fails to launch and interactive mode crashes
-        // with MODULE_NOT_FOUND for cli.js (or even before). We also bind
-        // $libDir onto a fixed path /shelly-bin so cli.js shims can refer
-        // to it by an absolute in-chroot path without guessing $libDir.
-        //
-        //   -0               fake uid 0 (required because musl's geteuid
-        //                    check refuses to run otherwise)
-        //   --kill-on-exit   send SIGKILL to the tracee on proot exit
-        //   -r rootfs        use the bundled Alpine minirootfs
-        //   -b /dev          pass through real /dev (ttys, null, urandom)
-        //   -b /proc         pass through real /proc
-        //   -b /sys          pass through real /sys
-        //   -b /system       expose bionic linker64 + libs for spawned node
-        //   -b /apex         expose Android 10+ bionic libc / libm / libdl
-        //   -b /linkerconfig expose Android 10+ dynamic linker config
-        //   -b $libDir:/shelly-bin bind Shelly's jniLibs so node/git/etc
-        //                    are reachable via /shelly-bin inside chroot
-        //   -b $HOME:/root   bind Shelly HOME into /root so the user's
-        //                    files and .shelly-cli tree are visible
-        //   -w /root         start in /root
-        val binDir = File(home, "bin")
-        binDir.mkdirs()
-        val prootWrapper = File(binDir, "proot")
-        prootWrapper.writeText(
-            "#!/system/bin/sh\n" +
-            "exec /system/bin/linker64 $libDir/libproot.so " +
-            "-0 --kill-on-exit " +
-            "-r ${rootfsDir.absolutePath} " +
-            "-b /dev -b /proc -b /sys " +
-            "-b /system " +
-            "-b /apex " +
-            "-b /linkerconfig " +
-            "-b $libDir:/shelly-bin " +
-            "-b ${home.absolutePath}:/root " +
-            "-w /root " +
-            "\"\$@\"\n"
-        )
-        prootWrapper.setExecutable(true, false)
 
         // bug #93 v2: removed the shebang-based $HOME/bin/bash wrapper — SELinux
         // blocks #!/system/bin/sh from app_data_file context. bash is now a shell

@@ -114,6 +114,16 @@ jobs:
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
+      - name: Install aarch64 cross-binutils (for strip --strip-unneeded)
+        # bug #139 (2026-04-27): the next step strips Termux .deb extracts
+        # to remove debug+local symbols (~25-35 MB total APK savings).
+        # Ubuntu-latest's system `strip` is x86_64-only and rejects
+        # aarch64 ELFs. binutils-aarch64-linux-gnu provides
+        # `aarch64-linux-gnu-strip` which handles aarch64 ELFs cross-arch.
+        # We can't use NDK's llvm-strip here because Setup Android SDK
+        # runs much later in this workflow.
+        run: sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
+
       - name: Bundle Termux extras (git-remote-https, ssh-keygen) — bug #128
         # Shelly bundles `git` itself but not the git-remote-https helper that
         # makes `git clone https://...` work, nor `ssh-keygen` for SSH key
@@ -220,7 +230,16 @@ jobs:
             fi
             cp "$src" "$dst"
             chmod 755 "$dst"
-            echo "[termux-extras] bundled ${helper} → $(basename "$dst")"
+            # bug #139 (2026-04-27): strip Termux .deb extracts. Termux's
+            # apt mirror sometimes ships unstripped binaries (esp. the
+            # gpg cascade — gh as a Go binary saves 15+ MB stripped).
+            # --strip-unneeded preserves DT_NEEDED + dynamic symbols
+            # required for runtime resolution; only debug + local symbols
+            # are removed. NDK clang's llvm-strip is ABI-aware for
+            # aarch64. Failure is non-fatal (already-stripped binaries
+            # warn but the file remains usable).
+            aarch64-linux-gnu-strip --strip-unneeded "$dst" 2>/dev/null || true
+            echo "[termux-extras] bundled ${helper} → $(basename "$dst") ($(stat -c %s "$dst") bytes)"
           done
 
           # 2. ssh-keygen from `openssh` package
@@ -238,7 +257,8 @@ jobs:
           fi
           cp "$src" "$dst"
           chmod 755 "$dst"
-          echo "[termux-extras] bundled ssh-keygen → $(basename "$dst")"
+          aarch64-linux-gnu-strip --strip-unneeded "$dst" 2>/dev/null || true
+          echo "[termux-extras] bundled ssh-keygen → $(basename "$dst") ($(stat -c %s "$dst") bytes)"
 
           # bug #130 (2026-04-27): Tier-1 dev essentials. Same Termux apt
           # mirror, same extract pattern. These are the binaries Claude
@@ -284,7 +304,8 @@ jobs:
             fi
             cp "$src" "$dst"
             chmod 755 "$dst"
-            echo "[termux-extras] bundled ${dst_name} (from ${pkg}/${src_subpath})"
+            aarch64-linux-gnu-strip --strip-unneeded "$dst" 2>/dev/null || true
+            echo "[termux-extras] bundled ${dst_name} (from ${pkg}/${src_subpath}, $(stat -c %s "$dst") bytes)"
           done <<'EOF'
           gh:bin/gh:libgh.so
           gnupg:bin/gpg:libgpg.so
@@ -434,28 +455,24 @@ jobs:
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
 
-      - name: Bundle AI CLIs (Claude Code, Gemini CLI, Codex)
+      - name: Bundle AI CLIs (Gemini CLI + Codex JS dispatcher)
         run: |
           mkdir -p cli-bundle
-          # Install CLIs with arm64 target (device is aarch64, CI is x86_64).
+          # bug #139 (2026-04-27): dropped @anthropic-ai/claude-code@2.1.112
+          # from the bundle. The musl SEA at libclaude.so is the primary
+          # Claude path now (claude() bash function in HomeInitializer.kt
+          # prefers it over cli.js — line 1184). The bundled cli.js was
+          # only reached when both runtime SEA and APK SEA failed, an
+          # extremely rare path on a working device. Saves ~250-300 MB
+          # APK. If a user truly hits the rare offline+SEA-broken path,
+          # __shelly_bg_cli_update can pull cli.js fresh from npm on
+          # next network event into ~/.shelly-cli.
           #
-          # @anthropic-ai/claude-code is pinned to 2.1.112 — the final
-          # release that still shipped cli.js as a pure-JS entry point.
-          # 2.1.113+ switched to a Bun-compiled SEA binary (bin/claude.exe)
-          # that requires a glibc/musl runtime we can't give it on Android
-          # bionic without a proot chroot. With cli.js gone, `_run node
-          # cli.js` (the dispatch strategy in HomeInitializer.kt v32+) has
-          # no entry point, so the three-tier fallback in claude() would
-          # always fall through to this bundled tier anyway. Pinning the
-          # bundle to 2.1.112 guarantees a working claude command even if
-          # a future auto-update fails its health check.
-          #
-          # Gemini + Codex remain @latest because gemini-cli is pure JS
-          # (Termux-guard patch is applied below) and @openai/codex's
-          # native binary is handled by the separate codex-termux fork
-          # step earlier in this workflow.
+          # Gemini stays — pure JS, ~30 MB compressed, genuinely needed
+          # for offline first-launch.
+          # Codex JS dispatcher stays — small (~5 MB) and required to
+          # patch into the codex-termux native binary at install time.
           npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
-            @anthropic-ai/claude-code@2.1.112 \
             @google/gemini-cli@latest \
             @openai/codex@latest
           # Patch clipboardy: remove Termux guard so Gemini CLI starts without Termux

@@ -115,7 +115,15 @@ const config: ExpoConfig & { android?: any } = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["armeabi-v7a", "arm64-v8a"],
+          // bug #139 (2026-04-27): arm64-v8a only. All of Shelly's
+          // bundled native binaries (claude SEA, codex termux fork,
+          // bash/node/git/python/etc.) are arm64-only. Shipping
+          // armeabi-v7a was packaging RN/Hermes/Reanimated 32-bit
+          // .so files for an architecture nothing else in the APK
+          // supports — pure dead weight (~80-150 MB). Modern Android
+          // devices that target Shelly are 64-bit; the 32-bit slice
+          // wouldn't have worked anyway.
+          buildArchs: ["arm64-v8a"],
           minSdkVersion: 24,
           // cleartext traffic now controlled by plugins/with-android-security.js
         },

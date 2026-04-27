@@ -16,7 +16,8 @@ android {
     externalNativeBuild {
       cmake {
         cppFlags ""
-        abiFilters "armeabi-v7a", "arm64-v8a"
+        // bug #139 (2026-04-27): arm64-only, see app.config.ts comment
+        abiFilters "arm64-v8a"
       }
     }
   }
