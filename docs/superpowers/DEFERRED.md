@@ -637,6 +637,69 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ## P1 — v0.1.1 で対応推奨
 
+### bug #135 — gpg cascade runtime deps (libgcrypt + chain) — v5.1.1
+
+**発見**: 2026-04-27 build #746 実機検証
+**症状**: bug #132 で libbz2 を bundle して unzip は動くようになったが、gpg は次の missing dep:
+```
+CANNOT LINK EXECUTABLE ".../gpg": library "libgcrypt.so" not found
+```
+unzip / nano / その他は動作確認済み。gpg だけ cascade。
+
+**未解決の dep chain (推定)**:
+```
+gpg → libbz2          ✅ bundle 済 (#132)
+gpg → libgcrypt       ❌ 次にこける (確認済)
+libgcrypt → libgpg-error  ❌ 次の次の可能性
+gpg → libassuan       ❌ gpg-agent との IPC 用、必須
+gpg → libksba         ❌ X.509 / S/MIME (CMS)
+gpg → libnpth         ❌ threading
+gpg → libz            ✅ libz1.so で既に bundle 済
+```
+
+**修正方針 (v5.1.1)**:
+1. Termux apt から `libgcrypt` / `libgpg-error` / `libassuan` / `libksba` / `libnpth` の各 .deb を順次 extract
+2. CI workflow の bug #128/#130 と同じ table-driven loop に追加
+3. LibExtractor.kt に対応 mapping
+4. 各 lib も DT_NEEDED の cascade 持つので、build → fail → 不足 lib 追加 を 2-3 cycle 想定
+5. APK サイズ +5-10 MB
+
+**v5.1.0 影響**: gpg 動かないが core dev workflow には影響なし (signed commit が出来ないだけ)。release notes に "gpg available in v5.1.1" と記載済。
+
+**優先度**: P1 (v5.1.1 の主要項目)
+**見積**: 1-2 build cycle、~1-2 時間
+
+---
+
+### bug #134 — process.execPath = linker64 path (Node CLI launcher pattern 全般)
+
+**発見**: 2026-04-27 gemini health check 調査中
+**症状**: Shelly の node は `linker64 /node ...` 経由で起動するため、`/proc/self/exe` が `/system/bin/linker64` を返す。Node が `process.execPath` を `/proc/self/exe` から決定するので、**`process.execPath = "/system/bin/linker64"`** になる。
+
+任意の Node CLI が launcher pattern (`spawn(process.execPath, [flags, bundle, ...args])`) で self-relaunch すると、`spawn("/system/bin/linker64", ["--max-old-space-size=...", bundle, ...])` になり、linker64 が `--max-old-space-size=` を unknown flag として `error: expected absolute path: "..."` で reject。
+
+**現状の bypass**:
+- gemini: bash function `gemini()` と health check 両方で `GEMINI_CLI_NO_RELAUNCH=true` set + 直接 node に `--max-old-space-size=5557` を渡す (commit 527efd5b で済)
+- claude: 該当しない (cli.js 直 invoke、relaunch しない)
+- codex: 該当しない (native binary)
+- npm: 大半 OK、一部 hook で起動失敗の可能性 (確証なし)
+
+**潜在的影響**: 未知の node CLI / npm package の postinstall script で再発の可能性。今回 user 報告の freeze cascade (Claude Code が isomorphic-git 経由で workaround) も間接的にこの bug が引き金。
+
+**構造的修正方針 (v5.1.1+)**:
+1. **Option A**: node binary を patch して `process.execPath` を env var (例: `SHELLY_NODE_REAL_PATH`) から override
+2. **Option B**: thin wrapper binary (Kotlin or C) を `~/bin/node` に置き、execve で `/proc/self/exe` を正しい path に偽装してから linker64 経由で本体起動
+3. **Option C**: shelly-musl-exec のように direct mmap でロード、linker64 を介さない (大幅 rework)
+
+A が最小コスト、B が cleanest、C が radical。Codex review で意見聞きたい。
+
+**v5.1.0 影響**: gemini bypass 済みなので default user に影響なし。Recovery button が safety net。
+
+**優先度**: P1 (構造的 root cause、v5.1.1 で対処望ましい)
+**見積**: A=4h, B=1-2 day, C=3-5 day
+
+---
+
 ### bug #121 — paste marker file: app-home injection + forceTuiSource log (post-HN polish)
 
 **発見**: 2026-04-25 Codex review of d9df5312

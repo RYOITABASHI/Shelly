@@ -80,6 +80,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
             />
+            <RecoverySection />
           </ScrollView>
         </Pressable>
       </Pressable>
@@ -131,6 +132,70 @@ function IntegrationsSection({
       >
         <MaterialIcons name="memory" size={13} color={C.text2} />
         <Text style={styles.integrationLabel}>Local LLM · llama.cpp</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+// bug #131 + #136 (2026-04-27): user-facing escape hatch surfaced in
+// the gear-button SettingsDropdown so it's reachable without opening
+// the comprehensive ConfigTUI (which is gated behind the Command
+// Palette and harder to find). Original Recovery entry stays in
+// ConfigTUI; this is the discoverable mirror.
+function RecoverySection() {
+  const handleRecover = React.useCallback(() => {
+    Alert.alert(
+      'Force-recover Shelly?',
+      'Wipes ~/.shelly-cli.staging and the stale update lockfile. ' +
+      'Live install (~/.shelly-cli) is preserved — your CLIs keep working. ' +
+      'Use this only if Shelly freezes on launch and task-kill from the ' +
+      'recents list does not recover.\n\n' +
+      'After recovery, fully close Shelly (recents → swipe up) and ' +
+      'relaunch. The next launch will refresh from upstream automatically.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Recover',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+              const result = await TerminalEmulator.forceRecoverFromFrozenState();
+              const cleanedCount = Array.isArray(result?.cleaned) ? result.cleaned.length : 0;
+              const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
+              if (errorCount > 0) {
+                Alert.alert(
+                  'Recovery completed with warnings',
+                  `Cleaned ${cleanedCount} item(s). ${errorCount} could not be removed:\n\n` +
+                  (result.errors as string[]).slice(0, 5).join('\n') +
+                  (errorCount > 5 ? `\n…+${errorCount - 5} more` : ''),
+                );
+              } else {
+                Alert.alert(
+                  'Recovery complete',
+                  `Cleaned ${cleanedCount} item(s). Force-stop Shelly (recents → swipe up) and relaunch.`,
+                );
+              }
+            } catch (e: any) {
+              Alert.alert('Recovery failed', String(e?.message || e));
+            }
+          },
+        },
+      ],
+    );
+  }, []);
+  return (
+    <Section title="RECOVERY">
+      <Pressable
+        style={styles.integrationRow}
+        onPress={handleRecover}
+        accessibilityRole="button"
+        accessibilityLabel="Force-recover from frozen state"
+      >
+        <MaterialIcons name="healing" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Force-recover from frozen state</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
