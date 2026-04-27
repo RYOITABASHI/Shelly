@@ -839,7 +839,20 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   scroll: {
-    flexGrow: 0,
+    // bug #138 (2026-04-27): was `flexGrow: 0`. With RN's default
+    // flexShrink: 0, the ScrollView measured to its natural content
+    // height and ignored the panel's maxHeight: '85%' constraint —
+    // the panel's overflow: 'hidden' then silently clipped any
+    // section past the screen edge. Recovery (last in the list)
+    // got clipped on Z Fold6 cover-screen, looking like it didn't
+    // render. ConfigTUI has used `flex: 1` since the start which is
+    // why its identical Recovery entry has always been reachable.
+    // Diagnosed by independent agent review of build #749 — agent
+    // verified bundled JS contained the section AND verified
+    // expo-updates `enabled: false` was actually bypassing OTA cache
+    // (DisabledUpdatesController → NoDatabaseLauncher,
+    // isUsingEmbeddedAssets = true) before pinning the layout bug.
+    flexShrink: 1,
   },
   // Section
   section: {
