@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 64
+    private const val BASHRC_VERSION = 65
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -923,6 +923,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export CURL_CA_BUNDLE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
             sb.appendLine("export NODE_EXTRA_CA_CERTS=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
             sb.appendLine("export REQUESTS_CA_BUNDLE=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
+            // bug #133 (2026-04-27): git's curl-based HTTPS transport hard-
+            // codes the CA bundle at /data/data/com.termux/files/usr/etc/tls/
+            // cert.pem (Termux baked-in path, doesn't exist on Shelly).
+            // git-remote-https errors with "error adding trust anchors from
+            // file: ...cert.pem". GIT_SSL_CAINFO overrides without needing
+            // any per-clone config. Single-file form to match how curl
+            // distributes a Mozilla CA bundle in one .crt.
+            sb.appendLine("export GIT_SSL_CAINFO=\"\$HOME/.shelly-ssl/ca-certificates.crt\"")
+            // GIT_TEMPLATE_DIR override silences the "templates not found at
+            // .../usr/share/git-core/templates" warning. We don't ship the
+            // template dir (cosmetic — git init still works without it),
+            // so point at an empty existing dir to suppress the warning
+            // cleanly. The .shelly-ssl dir is guaranteed to exist (created
+            // earlier in this bashrc) so reuse it as the empty target.
+            sb.appendLine("export GIT_TEMPLATE_DIR=\"\$HOME/.shelly-ssl\"")
             // v41 Claude Code OAuth 400 fix. Claude Code writes OAuth PKCE
             // state (code_verifier, state nonce) into a tmp dir it
             // hardcodes to /tmp/claude. On Android /tmp is not writable

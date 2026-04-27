@@ -293,6 +293,14 @@ jobs:
           unzip:bin/unzip:libunzip.so
           _git_extracted:libexec/git-core/git-credential-store:libgit_credential_store.so
           _git_extracted:libexec/git-core/git-credential-cache:libgit_credential_cache.so
+          # bug #132 (2026-04-27): gpg + unzip both DT_NEEDED libbz2.so.1.0
+          # but Shelly never bundled it. On-device repro: "CANNOT LINK
+          # EXECUTABLE: library libbz2.so.1.0 not found". Pull from
+          # Termux's libbz2 package, name as libbz2_1.so in apk lib/
+          # (gradle apkPackager only accepts lib*.so without version
+          # suffix), LibExtractor renames to libbz2.so.1.0 on disk
+          # which is what gpg/unzip's DT_NEEDED references.
+          libbz2:lib/libbz2.so.1.0:libbz2_1.so
           EOF
 
           # Verify the critical landings (T1 graceful — WARN not FATAL)

@@ -57,6 +57,11 @@ object LibExtractor {
         "lib/arm64-v8a/libgpg_agent.so" to "gpg-agent",
         "lib/arm64-v8a/libnano.so" to "nano",
         "lib/arm64-v8a/libunzip.so" to "unzip",
+        // bug #132 (2026-04-27): libbz2 runtime dep for gpg + unzip.
+        // DT_NEEDED references "libbz2.so.1.0" exactly, gradle's
+        // apkPackager only accepts lib*.so without version suffix in
+        // jniLibs, so CI ships it as libbz2_1.so and we rename here.
+        "lib/arm64-v8a/libbz2_1.so" to "libbz2.so.1.0",
         // coreutils
         "lib/arm64-v8a/libcoreutils.so" to "coreutils",
         // python
