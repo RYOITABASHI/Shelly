@@ -43,11 +43,11 @@
 
 **Claude Code (Opus 4.7) and Codex (GPT-5.5) running side-by-side on Galaxy Z Fold6**
 
-https://github.com/RYOITABASHI/Shelly/raw/main/docs/videos/demo-claude-codex-2pane.mp4
+<video src="https://github.com/RYOITABASHI/Shelly/raw/main/docs/videos/demo-claude-codex-2pane.mp4" controls width="800"></video>
 
 **AI reading a runtime error and suggesting the fix in real time**
 
-https://github.com/RYOITABASHI/Shelly/raw/main/docs/videos/demo-ai-error-review.mp4
+<video src="https://github.com/RYOITABASHI/Shelly/raw/main/docs/videos/demo-ai-error-review.mp4" controls width="800"></video>
 
 No Termux. No root. No remote dev server. Real Anthropic Claude Code and OpenAI Codex CLIs invoking on Android, plus the in-app AI chat reading the terminal output and producing a one-tap fix.
 
