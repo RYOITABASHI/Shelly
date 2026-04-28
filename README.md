@@ -25,6 +25,7 @@
 </p>
 
 <p align="center">
+  <a href="#see-it-run"><b>Demo</b></a> &nbsp;&middot;&nbsp;
   <a href="#quick-start"><b>Quick Start</b></a> &nbsp;&middot;&nbsp;
   <a href="#the-copy-paste-problem"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
@@ -33,6 +34,22 @@
   <a href="#contributing"><b>Contributing</b></a>
 </p>
 
+
+<br>
+
+---
+
+## See it run
+
+**Claude Code (Opus 4.7) and Codex (GPT-5.5) running side-by-side on Galaxy Z Fold6**
+
+https://github.com/user-attachments/assets/19911cfa-e2f0-45de-9a4c-c156eaf6ef8b
+
+**AI reading a runtime error and suggesting the fix in real time**
+
+https://github.com/user-attachments/assets/56d72b18-a226-4e6c-8767-a384d20d6a3c
+
+No Termux. No root. No remote dev server. Real Anthropic Claude Code and OpenAI Codex CLIs invoking on Android, plus the in-app AI chat reading the terminal output and producing a one-tap fix.
 
 <br>
 
