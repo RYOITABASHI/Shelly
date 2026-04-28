@@ -553,6 +553,53 @@ jobs:
           ls -lh "${OUT}"
           file "${OUT}"
 
+      - name: Strip large AI runtime binaries (allowlist size reduction)
+        # bug #142 follow-up (2026-04-28): the previous Tier-2 attempt
+        # stripped every native library and caused an IME regression on
+        # Z Fold6. Keep this pass narrow: only the three largest AI runtime
+        # executables that do not participate in RN/IME/native-view loading.
+        #
+        # Avoid stripping libc++/Hermes/Reanimated/terminal-view/native
+        # module libraries. The goal is a safe first reduction step, not a
+        # maximal strip sweep.
+        run: |
+          JNILIBS="${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          TARGETS="libclaude.so libcodex_exec.so libcodex_tui.so"
+
+          echo "=== allowlist strip: pre sizes ==="
+          for f in ${TARGETS}; do
+            p="${JNILIBS}/${f}"
+            if [ ! -f "${p}" ]; then
+              echo "FATAL: expected ${p}" >&2
+              exit 1
+            fi
+            ls -lh "${p}"
+            file "${p}"
+          done
+
+          total_saved=0
+          for f in ${TARGETS}; do
+            p="${JNILIBS}/${f}"
+            before=$(stat -c %s "${p}")
+            aarch64-linux-gnu-strip --strip-unneeded "${p}" 2>/tmp/strip-${f}.log || {
+              echo "FATAL: strip failed for ${f}" >&2
+              cat "/tmp/strip-${f}.log" >&2 || true
+              exit 1
+            }
+            chmod 755 "${p}"
+            after=$(stat -c %s "${p}")
+            saved=$((before - after))
+            total_saved=$((total_saved + saved))
+            echo "[allowlist-strip] ${f}: ${before} -> ${after} bytes (saved ${saved})"
+            if ! file "${p}" | grep -qE 'ELF.*64-bit'; then
+              echo "FATAL: ${f} is not a valid 64-bit ELF after strip" >&2
+              file "${p}" >&2 || true
+              exit 1
+            fi
+            readelf -h "${p}" | grep -E 'Type|Machine'
+          done
+          echo "[allowlist-strip] total saved ${total_saved} bytes"
+
       - name: Build APK
         run: |
           cd android
@@ -560,6 +607,22 @@ jobs:
           ./gradlew clean assembleRelease -x lintVitalAnalyzeRelease
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
+
+      - name: Report APK size
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/release/*.apk)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "FATAL: release APK not found" >&2
+            exit 1
+          fi
+          for apk in "${apks[@]}"; do
+            bytes=$(stat -c %s "${apk}")
+            mib=$(awk -v b="${bytes}" 'BEGIN { printf "%.1f", b / 1024 / 1024 }')
+            echo "[apk-size] ${apk}: ${bytes} bytes (${mib} MiB)"
+            ls -lh "${apk}"
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
