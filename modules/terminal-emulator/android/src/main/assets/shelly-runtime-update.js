@@ -40,6 +40,7 @@ const HOME = os.homedir();
 const ROOT = path.join(HOME, '.shelly-runtime');
 const TMP = path.join(ROOT, '.tmp');
 const LOG = path.join(ROOT, 'update.log');
+const LOCK = path.join(ROOT, '.update.lock');
 const FAILED_VERSIONS = path.join(ROOT, '.failed-versions');
 const NPM_ROOT = path.join(HOME, '.shelly-cli');
 const LIB = process.env.SHELLY_LIB_DIR;
@@ -80,6 +81,76 @@ function info(line) {
 function fail(line) {
   log(`ERROR ${line}`);
   throw new Error(line);
+}
+
+function pidIsAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM';
+  }
+}
+
+function tryAcquireUpdateLock() {
+  fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
+  const payload = JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    tool: TOOL,
+    channel: CHANNEL,
+  });
+
+  try {
+    const fd = fs.openSync(LOCK, 'wx', 0o600);
+    fs.writeFileSync(fd, `${payload}\n`);
+    fs.closeSync(fd);
+    return true;
+  } catch (err) {
+    if (!err || err.code !== 'EEXIST') throw err;
+  }
+
+  let lockPid = 0;
+  try {
+    const raw = fs.readFileSync(LOCK, 'utf8').trim();
+    const parsed = raw ? JSON.parse(raw) : {};
+    lockPid = Number(parsed.pid || 0);
+  } catch {
+    // Corrupt/partial lockfile. Treat it as stale and race through wx below.
+  }
+
+  if (pidIsAlive(lockPid)) {
+    log(`[lock] runtime updater already running pid=${lockPid}; skipping`);
+    return false;
+  }
+
+  try {
+    fs.rmSync(LOCK, { force: true });
+    const fd = fs.openSync(LOCK, 'wx', 0o600);
+    fs.writeFileSync(fd, `${payload}\n`);
+    fs.closeSync(fd);
+    log(`[lock] removed stale runtime updater lock pid=${lockPid || '(unknown)'}`);
+    return true;
+  } catch (err) {
+    if (err && err.code === 'EEXIST') {
+      log('[lock] lost runtime updater lock race after stale cleanup; skipping');
+      return false;
+    }
+    throw err;
+  }
+}
+
+function releaseUpdateLock() {
+  try {
+    const raw = fs.readFileSync(LOCK, 'utf8').trim();
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (Number(parsed.pid || 0) === process.pid) {
+      fs.rmSync(LOCK, { force: true });
+    }
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') log(`[lock] release failed: ${err.message}`);
+  }
 }
 
 function request(url, headers = {}) {
@@ -864,10 +935,19 @@ async function main() {
     process.exit(anyAvailable ? 0 : 1);
   }
 
-  cleanupStaleStaging();
-  if (TOOL === 'claude' || TOOL === 'all') await updateClaude();
-  if (TOOL === 'codex' || TOOL === 'all') await updateCodex();
-  log('done');
+  if (!tryAcquireUpdateLock()) {
+    log('done (skipped, locked)');
+    return;
+  }
+
+  try {
+    cleanupStaleStaging();
+    if (TOOL === 'claude' || TOOL === 'all') await updateClaude();
+    if (TOOL === 'codex' || TOOL === 'all') await updateCodex();
+    log('done');
+  } finally {
+    releaseUpdateLock();
+  }
 }
 
 main().catch((err) => {
