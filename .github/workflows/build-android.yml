@@ -386,6 +386,118 @@ jobs:
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so" | head -1
 
+          # Experimental Path D (2026-04-29): extract Claude Code's bundled
+          # cli.js from the Bun SEA and run it with Shelly's bionic Node.
+          # This avoids the musl SEA loader path entirely, which is where
+          # Shelly currently hits __errno_location / Bash-tool breakage.
+          # Keep libclaude.so above as the default route until this path
+          # passes on-device smoke tests.
+          EXTRACT_ROOT="/tmp/claude-extracted-root"
+          EXTRACT_PKG="${EXTRACT_ROOT}/node_modules/@anthropic-ai/claude-code-extracted"
+          rm -rf "${EXTRACT_ROOT}"
+          mkdir -p "${EXTRACT_PKG}"
+          aarch64-linux-gnu-objcopy -O binary --only-section=.bun package/claude /tmp/claude.bun.section
+          python3 - /tmp/claude.bun.section "${EXTRACT_PKG}/cli.js" <<'PY'
+          import re
+          import struct
+          import sys
+
+          section_path, out_path = sys.argv[1], sys.argv[2]
+          with open(section_path, "rb") as f:
+              data = f.read()
+
+          marker = b"file:///$bunfs/root/src/entrypoints/cli.js"
+          i = data.find(marker)
+          if i < 0:
+              sys.exit("FATAL: cli.js marker not found in Claude .bun section")
+          start = data.find(b"// @bun", i)
+          if start < 0:
+              sys.exit("FATAL: cli.js bundle start not found after marker")
+
+          size = struct.unpack("<I", data[start - 4:start])[0]
+          src = data[start:start + size].decode("utf-8")
+          head = "// @bun @bytecode @bun-cjs\n(function(exports, require, module, __filename, __dirname) {"
+          tail = "})\n"
+          if not src.startswith(head) or not src.endswith(tail):
+              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper shape")
+
+          body = src[len(head):-len(tail)]
+
+          # Termux/Shelly have no writable /tmp. Keep the patches narrow and
+          # fail loud if upstream minification changes the matched shapes.
+          tmp_literal = '"/tmp/claude","/private/tmp/claude"'
+          tmp_replacement = (
+              '(process.env.CLAUDE_TMPDIR||"/tmp/claude"),'
+              '(process.env.CLAUDE_TMPDIR||"/private/tmp/claude")'
+          )
+          n = body.count(tmp_literal)
+          if n == 0:
+              if 'process.env.CLAUDE_TMPDIR||"/tmp/claude"' in body:
+                  print("[claude-extract] sandbox tmp allowlist already patched")
+              else:
+                  sys.exit("FATAL: Claude tmp allowlist patch target not found")
+          elif n == 1:
+              body = body.replace(tmp_literal, tmp_replacement)
+              print("[claude-extract] patched sandbox tmp allowlist")
+          else:
+              sys.exit(f"FATAL: Claude tmp allowlist target matched {n} times")
+
+          bridge_pat = re.compile(r'`/tmp/claude-mcp-browser-bridge-\$\{([A-Za-z_$][\w$]*)\(\)\}`')
+          matches = bridge_pat.findall(body)
+          bridge_done_marker = 'process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"'
+          if not matches:
+              if "claude-mcp-browser-bridge-" in body and bridge_done_marker in body:
+                  print("[claude-extract] browser bridge tmpdir already patched")
+              else:
+                  sys.exit("FATAL: Claude browser bridge tmpdir patch target not found")
+          elif len(set(matches)) == 1 and len(matches) == 1:
+              fn = matches[0]
+              body = bridge_pat.sub(
+                  '`${process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"}'
+                  '/claude-mcp-browser-bridge-${' + fn + '()}`',
+                  body,
+              )
+              print(f"[claude-extract] patched browser bridge tmpdir (fn={fn})")
+          else:
+              sys.exit(f"FATAL: ambiguous Claude browser bridge matches: {matches}")
+
+          # Claude's Bun bundle can use TC39 explicit resource management
+          # syntax (`using` / `await using`) before Shelly's bundled Node can
+          # parse it. The declarations are used for short-lived telemetry /
+          # file-handle helpers; lowering the declaration keyword to `const`
+          # preserves runtime behavior well enough for the CLI route and is
+          # verified below by `node cli.js --version` in CI.
+          body, using_await_count = re.subn(r"(?<![\w$])await\s+using\s+", "const ", body)
+          body, using_count = re.subn(r"(?<![\w$])using\s+", "const ", body)
+          print(f"[claude-extract] lowered using declarations: await={using_await_count} sync={using_count}")
+
+          out = "#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n" + body
+          with open(out_path, "w", encoding="utf-8") as f:
+              f.write(out)
+          print(f"[claude-extract] wrote {out_path} ({len(out)} bytes)")
+          PY
+          chmod +x "${EXTRACT_PKG}/cli.js"
+          cat > "${EXTRACT_PKG}/package.json" <<'PKG'
+          {
+            "name": "claude-code-extracted",
+            "version": "0.0.0",
+            "private": true,
+            "dependencies": {
+              "ajv": "^8",
+              "ajv-formats": "^3",
+              "node-fetch": "^2",
+              "undici": "^6",
+              "ws": "^8",
+              "yaml": "^2"
+            }
+          }
+          PKG
+          (cd "${EXTRACT_PKG}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
+          node "${EXTRACT_PKG}/cli.js" --version
+          (cd "${EXTRACT_ROOT}" && tar czf "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz" node_modules)
+          ls -lh "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz"
+          sha256sum "${EXTRACT_PKG}/cli.js" | awk '{print "[claude-extract] cli.js sha256: "$1}'
+
       - name: Download codex-termux Android binaries (exec + TUI)
         env:
           GH_TOKEN: ${{ github.token }}

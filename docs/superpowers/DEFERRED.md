@@ -153,6 +153,19 @@ function main() {
   `@anthropic-ai/claude-code@2.1.112` を明示 pin
 - `HomeInitializer.kt` の `__shelly_bg_cli_update` で同 pin
 - `--libc=musl` と `@anthropic-ai/claude-code-linux-arm64-musl` の強制 install を削除
+
+**2026-04-29 Path D experiment**: `feature/claude-bun-extract-node`
+で `@anthropic-ai/claude-code-linux-arm64-musl@latest` の Bun SEA
+`.bun` section から `cli.js` を `objcopy` + Python で抽出し、
+Shelly の bionic `node` で走らせる opt-in ルートを追加。実機では
+`SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --version` から検証する。
+最新版 bundle の `using` / `await using` 構文は Shelly の Node で
+parse できないため、CI で `const` へ最小変換して `node cli.js
+--version` まで検証する。
+musl SEA 直実行の `__errno_location` / Bash tool 障壁を回避できる
+可能性があるが、Anthropic の bundle layout drift に弱いため CI で
+fail-loud する。詳細:
+`docs/superpowers/specs/2026-04-29-claude-bun-extract-node-handoff.md`。
 - 併せて `cp -al` の staging ディレクトリネスト bug を修正
 
 **戦略的影響**:

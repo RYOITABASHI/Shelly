@@ -237,6 +237,11 @@ object LibExtractor {
 
         // Extract bundled AI CLIs (Claude Code, Gemini CLI, Codex)
         Log.i(TAG, "Attempting CLI tools extraction...")
+        // Experimental Claude Path D (2026-04-29): CI extracts cli.js from
+        // Claude Code's Bun SEA into a separate package. This lets the
+        // shell wrapper run latest Claude through Shelly's bionic Node when
+        // explicitly requested, without touching the default musl SEA route.
+        extractTarGzAsset(context, "claude-extracted.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code-extracted/cli.js", forceRefresh)
         // bug #139 (2026-04-27): marker switched to gemini-cli because
         // claude-code was removed from the bundle (the musl SEA at
         // libclaude.so is the primary Claude path; runtime updater

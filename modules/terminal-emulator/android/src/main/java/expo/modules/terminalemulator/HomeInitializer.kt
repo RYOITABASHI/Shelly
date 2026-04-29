@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 65
+    private const val BASHRC_VERSION = 66
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1069,6 +1069,29 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
             sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
+            sb.appendLine("  local __extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
+            sb.appendLine("  if [ \"\${SHELLY_PREFER_EXTRACTED_CLAUDE:-0}\" = \"1\" ] && [ -f \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
+            sb.appendLine("      echo '[shelly] claude: extracted Bun cli.js via Node (experimental)' >&2")
+            sb.appendLine("    fi")
+            sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
+            sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
+            sb.appendLine("    __shelly_paste_tui_begin")
+            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
+            sb.appendLine("    local __extracted_rc=\$?")
+            sb.appendLine("    __shelly_paste_tui_end")
+            sb.appendLine("    case \"\$__extracted_rc\" in")
+            sb.appendLine("      126|127|132|133|134|135|136|137|138|139|159)")
+            sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
+            sb.appendLine("          echo \"[shelly] claude: extracted Node route failed (exit \$__extracted_rc), falling back to musl/legacy tiers\" >&2")
+            sb.appendLine("        fi")
+            sb.appendLine("        ;;")
+            sb.appendLine("      *)")
+            sb.appendLine("        return \"\$__extracted_rc\"")
+            sb.appendLine("        ;;")
+            sb.appendLine("    esac")
+            sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
             // has /etc/resolv.conf rewritten to this exact path at build
