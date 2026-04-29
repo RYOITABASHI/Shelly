@@ -513,26 +513,49 @@ async function tryCodexTag(releases, tag) {
   try {
     const rel = releases.find((r) => r.tag_name === tag);
     if (!rel) return { ok: false, reason: 'release disappeared' };
+    const packageVersion = tag.replace(/^v/, '');
     const assetName = `codex-termux-android-arm64-${tag}.tar.gz`;
     const sumName = `${assetName}.sha256`;
     const asset = (rel.assets || []).find((a) => a.name === assetName);
     const sumAsset = (rel.assets || []).find((a) => a.name === sumName);
-    if (!asset?.browser_download_url || !sumAsset?.browser_download_url) {
+    const npmAssetName = `mmmbuto-codex-cli-termux-${packageVersion}.tgz`;
+    const npmAsset = (rel.assets || []).find((a) => a.name === npmAssetName);
+
+    let tgz;
+    if (asset?.browser_download_url && sumAsset?.browser_download_url) {
+      info(`[codex] try ${tag} — downloading legacy tarball`);
+      const [legacyTgz, sumBuf] = await Promise.all([
+        request(asset.browser_download_url),
+        request(sumAsset.browser_download_url),
+      ]);
+      const expected = sumBuf.toString('utf8').trim().split(/\s+/)[0];
+      const actual = crypto.createHash('sha256').update(legacyTgz).digest('hex');
+      if (actual !== expected) return { ok: false, reason: `sha256 mismatch ${actual} != ${expected}` };
+      tgz = legacyTgz;
+    } else if (npmAsset?.browser_download_url) {
+      // v0.125.0-termux switched to npm-pack format:
+      // mmmbuto-codex-cli-termux-<version>.tgz. Verify against the npm
+      // registry integrity field instead of trusting the GitHub asset alone.
+      info(`[codex] try ${tag} — downloading npm-pack tarball`);
+      const pkgMeta = await json('https://registry.npmjs.org/@mmmbuto%2fcodex-cli-termux');
+      const dist = pkgMeta.versions?.[packageVersion]?.dist;
+      if (!dist?.tarball || !dist?.integrity) {
+        return { ok: false, reason: `npm metadata missing for @mmmbuto/codex-cli-termux@${packageVersion}` };
+      }
+      tgz = await request(dist.tarball);
+      const actualIntegrity = integritySha512(tgz);
+      if (actualIntegrity !== dist.integrity) {
+        return { ok: false, reason: `integrity mismatch ${actualIntegrity} != ${dist.integrity}` };
+      }
+    } else {
       return { ok: false, reason: 'release assets missing' };
     }
-    info(`[codex] try ${tag} — downloading`);
-    const [tgz, sumBuf] = await Promise.all([
-      request(asset.browser_download_url),
-      request(sumAsset.browser_download_url),
-    ]);
-    const expected = sumBuf.toString('utf8').trim().split(/\s+/)[0];
-    const actual = crypto.createHash('sha256').update(tgz).digest('hex');
-    if (actual !== expected) return { ok: false, reason: `sha256 mismatch ${actual} != ${expected}` };
 
     const entries = parseTar(tgz);
     const execBin = tarEntry(entries, 'codex-exec.bin');
     const tuiBin = tarEntry(entries, 'codex.bin');
     if (!execBin || !tuiBin) return { ok: false, reason: 'codex-exec.bin or codex.bin missing' };
+    const libcxx = tarEntry(entries, 'libc++_shared.so');
 
     const staging = path.join(TMP, `codex-${tag}-${RUN_TAG}`);
     ensureCleanDir(staging);
@@ -542,10 +565,15 @@ async function tryCodexTag(releases, tag) {
     fs.writeFileSync(tuiOut, tuiBin, { mode: 0o755 });
     fs.chmodSync(execOut, 0o755);
     fs.chmodSync(tuiOut, 0o755);
+    if (libcxx) {
+      const libcxxOut = path.join(staging, 'libc++_shared.so');
+      fs.writeFileSync(libcxxOut, libcxx, { mode: 0o755 });
+      fs.chmodSync(libcxxOut, 0o755);
+    }
 
     const smoke = runLinker([execOut, '--version']);
     const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
-    const plainVersion = tag.replace(/^v/, '');
+    const plainVersion = packageVersion.replace(/-termux$/, '');
     if (smoke.status !== 0 || !combined.includes(plainVersion)) {
       fs.rmSync(staging, { recursive: true, force: true });
       recordFailedVersion('codex', tag);

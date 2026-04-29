@@ -503,69 +503,104 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          # bug: 2026-04-27 — DioNanos/codex-termux v0.125.0-termux dropped
-          # the legacy `codex-termux-android-arm64-<tag>.tar.gz` asset and
-          # only ships `mmmbuto-codex-cli-termux-<ver>-termux.tgz` (npm-pack
-          # format) now. We don't yet handle the new format, so walk back
-          # newest-first through recent releases and use the first that
-          # still has the legacy assets we know how to extract. Fallback
-          # cap = 5 most recent releases.
+          # DioNanos/codex-termux has used two release asset layouts:
+          #   1. legacy: codex-termux-android-arm64-<tag>.tar.gz + .sha256
+          #   2. npm-pack: mmmbuto-codex-cli-termux-<version>.tgz
+          # Prefer the newest release that has either known layout. The npm-pack
+          # layout is verified against npm dist.integrity before extraction.
           CODEX_TERMUX_VERSION=""
+          CODEX_TERMUX_FORMAT=""
           for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
-            echo "[codex] probing $candidate for legacy asset pattern"
-            if gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name' \
-                 | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$"; then
+            echo "[codex] probing $candidate for supported asset pattern"
+            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
+            npm_version="${candidate#v}"
+            if printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$"; then
               CODEX_TERMUX_VERSION="$candidate"
-              echo "[codex] selected $candidate (has legacy assets)"
+              CODEX_TERMUX_FORMAT="legacy"
+              echo "[codex] selected $candidate (legacy assets)"
               break
             fi
-            echo "[codex] $candidate skipped (no legacy assets)"
+            if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
+              CODEX_TERMUX_VERSION="$candidate"
+              CODEX_TERMUX_FORMAT="npm-pack"
+              echo "[codex] selected $candidate (npm-pack asset)"
+              break
+            fi
+            echo "[codex] $candidate skipped (no supported assets)"
           done
           if [ -z "$CODEX_TERMUX_VERSION" ]; then
-            echo "FATAL: none of the 5 most recent codex-termux releases have the legacy asset pattern" >&2
-            echo "  Update this workflow to handle the new mmmbuto-codex-cli-termux-<ver>-termux.tgz format" >&2
+            echo "FATAL: none of the 5 most recent codex-termux releases have a supported asset pattern" >&2
             exit 1
           fi
-          echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION}"
-          gh release download "${CODEX_TERMUX_VERSION}" \
-            --repo DioNanos/codex-termux \
-            --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
-            --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256" \
-            --dir /tmp \
-            --clobber
+          echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION} (${CODEX_TERMUX_FORMAT})"
           cd /tmp
-          # DioNanos/codex-termux .sha256 files contain a bare hex digest
-          # (no filename suffix), so sha256sum -c rejects them with
-          # "no properly formatted checksum lines found". Read and compare manually.
-          EXPECTED_HASH="$(tr -d '[:space:]' < "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256")"
-          ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
-          if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
-            echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
-            echo "  expected: ${EXPECTED_HASH}" >&2
-            echo "  actual:   ${ACTUAL_HASH}" >&2
-            exit 1
+          if [ "${CODEX_TERMUX_FORMAT}" = "legacy" ]; then
+            gh release download "${CODEX_TERMUX_VERSION}" \
+              --repo DioNanos/codex-termux \
+              --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
+              --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256" \
+              --dir /tmp \
+              --clobber
+            # DioNanos/codex-termux .sha256 files contain a bare hex digest
+            # (no filename suffix), so sha256sum -c rejects them with
+            # "no properly formatted checksum lines found". Read and compare manually.
+            EXPECTED_HASH="$(tr -d '[:space:]' < "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256")"
+            ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
+            if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
+              echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
+              echo "  expected: ${EXPECTED_HASH}" >&2
+              echo "  actual:   ${ACTUAL_HASH}" >&2
+              exit 1
+            fi
+            echo "[codex] sha256 OK: ${ACTUAL_HASH}"
+            mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
+          else
+            CODEX_NPM_VERSION="${CODEX_TERMUX_VERSION#v}"
+            gh release download "${CODEX_TERMUX_VERSION}" \
+              --repo DioNanos/codex-termux \
+              --pattern "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" \
+              --dir /tmp \
+              --clobber
+            mv "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" /tmp/codex-termux.tar.gz
+            EXPECTED_INTEGRITY="$(npm view "@mmmbuto/codex-cli-termux@${CODEX_NPM_VERSION}" dist.integrity)"
+            ACTUAL_INTEGRITY="$(node -e 'const fs=require("fs"),crypto=require("crypto"); process.stdout.write("sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' /tmp/codex-termux.tar.gz)"
+            if [ "${EXPECTED_INTEGRITY}" != "${ACTUAL_INTEGRITY}" ]; then
+              echo "FATAL: npm integrity mismatch for codex-termux tarball" >&2
+              echo "  expected: ${EXPECTED_INTEGRITY}" >&2
+              echo "  actual:   ${ACTUAL_INTEGRITY}" >&2
+              exit 1
+            fi
+            echo "[codex] npm integrity OK: ${ACTUAL_INTEGRITY}"
           fi
-          echo "[codex] sha256 OK: ${ACTUAL_HASH}"
-          mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
-          cd /tmp && tar xzf codex-termux.tar.gz
+          rm -rf /tmp/codex-termux-extract
+          mkdir -p /tmp/codex-termux-extract
+          tar xzf /tmp/codex-termux.tar.gz -C /tmp/codex-termux-extract
+          CODEX_EXEC_BIN="$(find /tmp/codex-termux-extract -type f -name codex-exec.bin | head -1)"
+          CODEX_TUI_BIN="$(find /tmp/codex-termux-extract -type f -name codex.bin | head -1)"
+          CODEX_LIBCXX="$(find /tmp/codex-termux-extract -type f -name 'libc++_shared.so' | head -1)"
           # Verify the upstream tarball still ships both binaries we depend on.
           # If DioNanos/codex-termux ever renames or drops one of these files,
           # the next green build would silently produce an APK with codex
           # broken on-device. Fail loud here instead.
-          for f in /tmp/codex-exec.bin /tmp/codex.bin; do
+          for f in "$CODEX_EXEC_BIN" "$CODEX_TUI_BIN"; do
             if [ ! -f "$f" ]; then
-              echo "FATAL: expected $f in codex-termux tarball; tarball contents:" >&2
-              ls -la /tmp >&2
+              echo "FATAL: expected codex-exec.bin and codex.bin in codex-termux tarball; tarball contents:" >&2
+              find /tmp/codex-termux-extract -maxdepth 4 -type f | sort >&2
               exit 1
             fi
           done
           # 1-shot exec binary (used by `codex exec/resume/review` subcommands)
-          cp /tmp/codex-exec.bin "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
+          cp "$CODEX_EXEC_BIN" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
           # Full TUI binary (used by `codex` with no subcommand — interactive mode)
-          cp /tmp/codex.bin "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
+          cp "$CODEX_TUI_BIN" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
+          if [ -n "$CODEX_LIBCXX" ] && [ -f "$CODEX_LIBCXX" ]; then
+            cp "$CODEX_LIBCXX" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
+            chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
+          fi
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
+          [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
 
       - name: Bundle AI CLIs (Gemini CLI + Codex JS dispatcher)
         run: |

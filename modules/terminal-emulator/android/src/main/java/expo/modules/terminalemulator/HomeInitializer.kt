@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 67
+    private const val BASHRC_VERSION = 68
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1191,7 +1191,24 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // already has the heap the relaunch would have given it —
             // gemini-cli's heap-size check (target > current) then stays
             // false and the no-op guard holds. Belt + suspenders.
-            sb.appendLine("gemini() { __shelly_paste_tui_begin; GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__cli_dir/@google/gemini-cli/bundle/gemini.js\" \"\$@\"; local __gemini_rc=\$?; __shelly_paste_tui_end; return \"\$__gemini_rc\"; }")
+            sb.appendLine("gemini() {")
+            sb.appendLine("  local __gemini_pkg=\"\$__cli_dir/@google/gemini-cli/package.json\"")
+            sb.appendLine("  local __gemini_bin=\"bundle/gemini.js\"")
+            sb.appendLine("  if [ -f \"\$__gemini_pkg\" ]; then")
+            sb.appendLine("    local __pkg_bin=\$(timeout 10 /system/bin/linker64 \"$libDir/node\" -e 'try{const p=require(process.argv[1]);const b=p.bin;if(typeof b===\"string\"){process.stdout.write(b)}else if(b&&typeof b===\"object\"){const v=b.gemini||b[Object.keys(b)[0]];if(v)process.stdout.write(v)}}catch(e){}' \"\$__gemini_pkg\" 2>/dev/null)")
+            sb.appendLine("    [ -n \"\$__pkg_bin\" ] && __gemini_bin=\"\$__pkg_bin\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  local __gemini_entry=\"\$__cli_dir/@google/gemini-cli/\$__gemini_bin\"")
+            sb.appendLine("  if [ ! -f \"\$__gemini_entry\" ]; then")
+            sb.appendLine("    echo \"gemini: package bin not found: \$__gemini_entry\" >&2")
+            sb.appendLine("    return 127")
+            sb.appendLine("  fi")
+            sb.appendLine("  __shelly_paste_tui_begin")
+            sb.appendLine("  GEMINI_CLI_NO_RELAUNCH=true _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\$@\"")
+            sb.appendLine("  local __gemini_rc=\$?")
+            sb.appendLine("  __shelly_paste_tui_end")
+            sb.appendLine("  return \"\$__gemini_rc\"")
+            sb.appendLine("}")
             // codex: route `codex` (no args / options / bare prompt) to the
             // full ratatui TUI binary, and known `exec/resume/review/help`
             // subcommands to the lighter 1-shot exec binary. Both ship in the

@@ -125,9 +125,11 @@ object LibExtractor {
         // exec variant: 1-shot runner for `codex exec/resume/review` subcommands
         "lib/arm64-v8a/libcodex_exec.so" to "codex_exec",
         // tui variant: full interactive REPL (used when `codex` is invoked with
-        // no subcommand, or with a bare prompt). Same RUNPATH=$ORIGIN, no extra
-        // shared libs needed — all deps are standard bionic (libc/libm/libdl/libz).
+        // no subcommand, or with a bare prompt). Newer codex-termux npm-pack
+        // releases may also include libc++_shared.so; keep it next to the
+        // binaries so RUNPATH=$ORIGIN can resolve it if upstream starts needing it.
         "lib/arm64-v8a/libcodex_tui.so" to "codex_tui",
+        "lib/arm64-v8a/libcodex_cxx_shared.so" to "libc++_shared.so",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so",
