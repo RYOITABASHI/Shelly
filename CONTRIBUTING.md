@@ -46,6 +46,16 @@ pnpm install
 pnpm start
 ```
 
+### Running tests
+
+This repository now includes a minimal Jest setup for pure TypeScript utilities.
+
+```bash
+pnpm test
+```
+
+React Native component testing is intentionally out of scope for this first setup and will come in a follow-up PR.
+
 ### Project structure
 
 ```

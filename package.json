@@ -33,6 +33,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "check": "tsc --noEmit",
+    "test": "jest --config jest.config.cjs",
     "lint": "expo lint",
     "bridge": "node server.js"
   },
@@ -103,6 +104,7 @@
   },
   "devDependencies": {
     "@expo/ngrok": "^4.1.3",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.19.3",
     "@types/react": "~19.1.17",
     "@types/ws": "^8.5.13",
@@ -110,7 +112,9 @@
     "cross-env": "^7.0.3",
     "eslint": "^9.39.2",
     "eslint-config-expo": "~10.0.0",
+    "jest": "^30.3.0",
     "tailwindcss": "^3.4.17",
+    "ts-jest": "^29.4.9",
     "typescript": "~5.9.3"
   },
   "packageManager": "pnpm@9.12.0"
