@@ -1,7 +1,9 @@
 # Claude Extracted Runtime Updater
 
 Date: 2026-04-29
-Branch: `feature/claude-extracted-runtime-updater`
+Branch: `main`
+Commit: `615dbed9`
+CI: `25092606578` PASS
 
 ## Goal
 
@@ -39,6 +41,11 @@ After this branch:
 ~/.shelly-runtime/claude-extracted/current
 ```
 
+- Non-`--check-only` updater runs are serialized by
+  `~/.shelly-runtime/.update.lock`, so multi-pane launches or repeated manual
+  invocations cannot download/extract/promote the same Claude/Codex runtime in
+  parallel.
+
 ## Shell Routing
 
 `claude()` now prefers:
@@ -75,7 +82,7 @@ The validation checked:
 
 ## Device Harness
 
-After installing the branch build:
+Installed build 769 on Galaxy Z Fold6 / Android 16:
 
 ```sh
 shelly-update-clis claude --force
@@ -90,6 +97,38 @@ Expected:
 - update log shows `promoted <latest>`.
 - `claude --version` prints the verified-latest extracted banner.
 - Bash tool prints `shelly-ok`.
+
+Observed:
+
+```text
+[claude] promoted 2.1.123 (verified, channel=verified)
+[shelly] claude: verified latest via extracted Bun cli.js (Node)
+2.1.123 (Claude Code)
+OK
+shelly-ok
+```
+
+Updater lock harness:
+
+```sh
+shelly-update-clis --force &
+shelly-update-clis --force &
+shelly-update-clis --force &
+wait
+tail -n 80 ~/.shelly-runtime/update.log
+```
+
+Observed:
+
+```text
+[lock] runtime updater already running pid=3367; skipping
+done (skipped, locked)
+[lock] runtime updater already running pid=3367; skipping
+done (skipped, locked)
+[claude] promoted 2.1.123 (verified, channel=verified)
+[codex] promoted v0.125.0-termux (verified, channel=verified)
+done
+```
 
 ## Size Impact
 

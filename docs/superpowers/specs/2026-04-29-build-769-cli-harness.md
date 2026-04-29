@@ -1,22 +1,22 @@
-# Build 764 CLI Runtime Harness
+# Build 769 CLI Runtime Harness
 
 Date: 2026-04-29
-Commit: `49bbaff4`
+Commit: `615dbed9`
 Branch: `main`
 CI:
 - Feature run: `25087584820` PASS
-- Main push run: `25088538827` started after fast-forward
+- Claude updater run: `25092606578` PASS
 
 Device:
 - Galaxy Z Fold6
 - Android 16
-- Shelly build 764
+- Shelly build 769
 
 ## Purpose
 
 This is the current release-gate harness for Shelly's three AI CLIs.
-It supersedes the older v34 harness rows that expected Claude 2.1.112 and
-Codex 0.121.0-termux.
+It supersedes the older build 764 / v34 harness rows that expected
+Claude 2.1.122 / 2.1.112 and Codex 0.121.0-termux.
 
 ## Required Smoke Commands
 
@@ -36,8 +36,8 @@ gemini --version
 Expected output:
 
 ```text
-[shelly] claude: APK extracted Bun cli.js (Node)
-2.1.122 (Claude Code)
+[shelly] claude: verified latest via extracted Bun cli.js (Node)
+2.1.123 (Claude Code)
 OK
 Output: `shelly-ok`
 codex-cli 0.125.0-termux
@@ -57,9 +57,14 @@ already promoted a newer extracted bundle:
 The following must remain true:
 
 - Claude uses the extracted Node route by default, not the musl SEA route.
+- Claude can advance on-device through `shelly-update-clis claude --force`
+  without waiting for an APK rebuild.
 - Claude Bash tool can execute `echo shelly-ok`.
 - Codex does not reject `gpt-5.5` with "requires a newer version of Codex".
 - Gemini starts from the package `bin` entry and prints a valid semver.
+- Three concurrent `shelly-update-clis --force` commands must produce one
+  real updater and two `done (skipped, locked)` exits in
+  `~/.shelly-runtime/update.log`.
 
 ## Fallback Checks
 
@@ -81,19 +86,23 @@ Expected behavior:
 
 ## Implementation Notes
 
-- Claude: CI extracts `cli.js` from the official linux-arm64 musl Bun SEA,
-  patches Shelly tmpdir assumptions, lowers `using` declarations for bundled
-  Node, then packages `claude-extracted.tar.gz`.
+- Claude: CI and the on-device runtime updater extract `cli.js` from the
+  official linux-arm64 musl Bun SEA, patch Shelly tmpdir assumptions, lower
+  `using` declarations for bundled Node, smoke `--version`, then promote the
+  extracted runtime under `~/.shelly-runtime/claude-extracted/current`.
 - Codex: CI and runtime updater support both legacy
   `codex-termux-android-arm64-<tag>.tar.gz` and new
   `mmmbuto-codex-cli-termux-<version>.tgz` assets. The npm-pack path is
   verified against npm `dist.integrity`.
 - Gemini: `gemini()` resolves `@google/gemini-cli/package.json` `bin.gemini`
   at runtime instead of hardcoding `bundle/gemini.js`.
+- Runtime updater locking: non-`--check-only` updates use
+  `~/.shelly-runtime/.update.lock`; stale locks are removed only when the PID
+  is no longer alive.
 
 ## Size Note
 
-Build 764 is a correctness build, not a size-reduction build. It still ships
+Build 769 is a correctness build, not a size-reduction build. It still ships
 the musl Claude SEA fallback (`libclaude.so`) and large Codex native binaries.
 The next size pass should remove or lazy-fetch `libclaude.so` first, because
 the extracted Claude Node route is now the verified default.

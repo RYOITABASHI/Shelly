@@ -175,6 +175,14 @@ gemini --version
 # 0.40.0
 ```
 
+Build 769 / commit `615dbed9` follow-up:
+
+- Claude advanced on-device to `2.1.123` through the extracted-runtime
+  updater.
+- Runtime updater locking was verified with three concurrent
+  `shelly-update-clis --force` invocations: one real update, two
+  `done (skipped, locked)` exits.
+
 Codex/Gemini follow-up in the same release line:
 
 - CI and `shelly-runtime-update.js` support both the legacy

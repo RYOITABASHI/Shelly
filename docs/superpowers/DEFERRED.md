@@ -14,21 +14,22 @@
 
 ---
 
-## 🟢 現状サマリ (2026-04-29、build 764、BASHRC_VERSION 68)
+## 🟢 現状サマリ (2026-04-29、build 769、BASHRC_VERSION 69)
 
 **CLI 3/3 最新追従の実機確認完了** (Galaxy Z Fold6 / Android 16)。
-`main` は `49bbaff4` まで fast-forward 済み。
+`main` は `615dbed9` まで fast-forward 済み。
 
 | CLI | 実機確認 | ルート |
 |---|---|---|
-| **claude** | ✅ `2.1.122` / `--print` / Bash tool PASS | extracted Bun `cli.js` を Shelly 同梱 Node で実行。musl SEA / legacy cli.js は fallback |
+| **claude** | ✅ `2.1.123` / `--print` / Bash tool PASS | updater-managed extracted Bun `cli.js` を Shelly 同梱 Node で実行。APK extracted / musl SEA / legacy cli.js は fallback |
 | **codex** | ✅ `codex-cli 0.125.0-termux`; `codex -m gpt-5.5 "Say OK"` PASS | codex-termux native runtime。legacy tarball と新 `mmmbuto` npm-pack asset の両方に対応 |
 | **gemini** | ✅ `0.40.0` | `package.json` `bin.gemini` 解決 + `GEMINI_CLI_NO_RELAUNCH=true` |
 
 **今回完了した主な fix**:
-- Claude Path D: Bun SEA から抽出した `cli.js` を Node で起動する経路を default 化。
+- Claude Path D: Bun SEA から抽出した `cli.js` を Node で起動する経路を default 化し、オンデバイス updater でも同じ抽出/patch/smoke/promote を実行。
 - Codex: `v0.125.0-termux` の `mmmbuto-codex-cli-termux-*.tgz` asset を npm `dist.integrity` で検証して取り込む。
 - Gemini: hardcoded `bundle/gemini.js` ではなく package `bin` を実行時解決。
+- runtime updater: `~/.shelly-runtime/.update.lock` で多重起動を抑止。3本同時 `shelly-update-clis --force` で1本だけ実更新、2本は `done (skipped, locked)` を実機確認。
 
 **軽量化は未完**:
 - `libclaude.so` は fallback としてまだAPKに残っているため、今回の修正単体ではAPK軽量化にはならない。

@@ -1,7 +1,7 @@
-# v34 Device Verification Checklist
+# Device Verification Checklist
 
-**APK**: `shelly-apk` artifact from commit `15ee5843`
-[Run page](https://github.com/RYOITABASHI/Shelly/actions/runs/24616285836)
+**Current release gate**: build 769 from commit `615dbed9`
+[Run page](https://github.com/RYOITABASHI/Shelly/actions/runs/25092606578)
 
 Run through these in Shelly's Terminal Pane on device. Each block is
 independent — skip any that don't apply to your current state.
@@ -12,13 +12,13 @@ independent — skip any that don't apply to your current state.
 
 ```bash
 cat ~/.bashrc_version
-# expect: 34
+# expect: 69
 ```
 
-If still `32` or older:
+If still older:
 ```bash
 logcat -d -t 20 | grep HomeInitializer
-# should show: bashrc version check: current=... target=34 regenerate=true
+# should show: bashrc version check: current=... target=69 regenerate=true
 ```
 
 ## 2. Paste fix regression check (bug #97)
@@ -51,7 +51,7 @@ bug #97.
 claude --version
 # expect: [shelly] claude: verified latest via extracted Bun cli.js (Node)
 #      or [shelly] claude: APK extracted Bun cli.js (Node)
-#         2.1.122 (Claude Code) or newer
+#         2.1.123 (Claude Code) or newer
 
 claude --print "Say OK"
 # expect: OK
@@ -61,7 +61,8 @@ claude --print "Use bash to run: echo shelly-ok"
 ```
 
 The tier banner tells you which fallback tier the command is resolving
-to. Current builds should use the extracted Node route. Fallback probes:
+to. Current builds should use the updater-managed extracted Node route.
+Fallback probes:
 
 ```bash
 SHELLY_DISABLE_EXTRACTED_CLAUDE=1 claude --version
@@ -87,6 +88,19 @@ codex --version
 
 codex -m gpt-5.5 "Say OK"
 # expect: OK; must NOT print "requires a newer version of Codex"
+```
+
+## 4b. Runtime updater lock regression check
+
+```bash
+shelly-update-clis --force &
+shelly-update-clis --force &
+shelly-update-clis --force &
+wait
+tail -n 80 ~/.shelly-runtime/update.log
+# expect: exactly one updater performs download/smoke/promote;
+#         the other two print "[lock] runtime updater already running"
+#         and "done (skipped, locked)"
 ```
 
 ## 5. shelly-cs — help + doctor
