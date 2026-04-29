@@ -154,11 +154,13 @@ function main() {
 - `HomeInitializer.kt` の `__shelly_bg_cli_update` で同 pin
 - `--libc=musl` と `@anthropic-ai/claude-code-linux-arm64-musl` の強制 install を削除
 
-**2026-04-29 Path D experiment**: `feature/claude-bun-extract-node`
+**2026-04-29 Path D promoted**: `feature/claude-bun-extract-node`
 で `@anthropic-ai/claude-code-linux-arm64-musl@latest` の Bun SEA
 `.bun` section から `cli.js` を `objcopy` + Python で抽出し、
-Shelly の bionic `node` で走らせる opt-in ルートを追加。実機では
-`SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --version` から検証する。
+Shelly の bionic `node` で走らせるルートを追加。Galaxy Z Fold6
+実機で `--version` / `--print` / Bash tool / interactive paste が通った
+ため、BASHRC_VERSION 67 でデフォルト優先へ昇格。musl SEA は
+`SHELLY_DISABLE_EXTRACTED_CLAUDE=1` 時のfallbackとして残す。
 最新版 bundle の `using` / `await using` 構文は Shelly の Node で
 parse できないため、CI で `const` へ最小変換して `node cli.js
 --version` まで検証する。

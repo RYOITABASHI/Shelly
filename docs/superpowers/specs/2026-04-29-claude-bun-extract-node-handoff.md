@@ -27,8 +27,9 @@ That path has hit Android/Shelly-specific failures around musl preload,
    bundled Node parser.
 6. Run the extracted `cli.js` with Node.
 
-This branch adapts that idea for Shelly without changing the default
-Claude route yet.
+This branch adapts that idea for Shelly. The first commit shipped it as
+an opt-in route; after Galaxy Z Fold6 smoke tests passed, it became the
+default Claude route in BASHRC_VERSION 67.
 
 ## Implementation
 
@@ -75,11 +76,11 @@ node_modules/@anthropic-ai/claude-code-extracted/cli.js
 
 ### Shell Dispatch
 
-`HomeInitializer.kt` bumps `BASHRC_VERSION` to 66 and adds an opt-in
-route at the top of `claude()`:
+`HomeInitializer.kt` bumps `BASHRC_VERSION` to 67 and runs the extracted
+Node route at the top of `claude()` by default:
 
 ```sh
-SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --version
+claude --version
 ```
 
 When enabled, Shelly runs:
@@ -98,17 +99,34 @@ CLAUDE_TMPDIR=$HOME/.claude-tmp
 CLAUDE_CODE_TMPDIR=$HOME/.claude-tmp
 ```
 
-The default musl SEA route is unchanged unless the opt-in env var is set.
+Fallback controls:
+
+```sh
+SHELLY_DISABLE_EXTRACTED_CLAUDE=1 claude --version
+SHELLY_FORCE_LEGACY_CLAUDE=1 claude --version
+```
+
+`SHELLY_DISABLE_EXTRACTED_CLAUDE=1` skips only the extracted route and
+falls through to the musl runtime/APK paths. `SHELLY_FORCE_LEGACY_CLAUDE=1`
+skips both extracted and musl routes and uses the legacy cli.js chain.
 
 ## Device Smoke Plan
 
-Run on a fresh APK from this branch:
+Passed on Galaxy Z Fold6 / Shelly APK from this branch:
 
 ```sh
 claude --version
 SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --version
 SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --print "Say OK"
 SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --print "Use bash to run: echo shelly-ok"
+```
+
+After BASHRC_VERSION 67, re-run without the opt-in:
+
+```sh
+claude --version
+claude --print "Say OK"
+claude --print "Use bash to run: echo shelly-ok"
 ```
 
 Then test the known PTY/paste case:
@@ -120,10 +138,10 @@ line two
 line three
 ```
 
-## Promotion Criteria
+## Promotion Evidence
 
-Promote the extracted Node route to default only if all of these pass on
-device:
+The extracted Node route was promoted to default after all of these passed
+on device:
 
 - `--version`
 - non-tool `--print`
@@ -132,8 +150,8 @@ device:
 - paste into Claude Code TUI
 - no regression in Codex/Gemini wrappers
 
-If the route only passes `--version` but fails Bash tool, keep it opt-in
-and document the failure.
+The musl SEA route remains as fallback for one release cycle before any
+APK size reduction removes or lazy-fetches `libclaude.so`.
 
 ## Risk
 

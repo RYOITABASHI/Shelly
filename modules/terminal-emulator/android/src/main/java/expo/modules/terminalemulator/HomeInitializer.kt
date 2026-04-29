@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 66
+    private const val BASHRC_VERSION = 67
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1058,11 +1058,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  __cli_dir=\"$libDir/node_modules\"")
             sb.appendLine("fi")
             // @anthropic-ai/claude-code dispatch. Default route is the
-            // Shelly-verified runtime tree under ~/.shelly-runtime, which
-            // downloads upstream latest candidates, smoke-tests them on
-            // device, then flips current/ only after PASS. The APK-bundled
-            // musl binary and the legacy cli.js tiers remain fallbacks so an
-            // offline device or broken upstream release never bricks `claude`.
+            // extracted Bun cli.js from the latest linux-arm64 musl SEA,
+            // executed with Shelly's bionic Node. This keeps Claude current
+            // while avoiding the musl loader / __errno_location / Bash-tool
+            // failure class. The runtime/APK musl binaries and legacy cli.js
+            // tiers remain fallbacks so an offline device or broken upstream
+            // release never bricks `claude`.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
@@ -1070,10 +1071,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
             sb.appendLine("  local __extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
-            sb.appendLine("  if [ \"\${SHELLY_PREFER_EXTRACTED_CLAUDE:-0}\" = \"1\" ] && [ -f \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -f \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
-            sb.appendLine("      echo '[shelly] claude: extracted Bun cli.js via Node (experimental)' >&2")
+            sb.appendLine("      echo '[shelly] claude: latest via extracted Bun cli.js (Node)' >&2")
             sb.appendLine("    fi")
             sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
             sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
