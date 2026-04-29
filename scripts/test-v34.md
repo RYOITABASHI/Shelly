@@ -49,7 +49,8 @@ bug #97.
 
 ```bash
 claude --version
-# expect: [shelly] claude: latest via extracted Bun cli.js (Node)
+# expect: [shelly] claude: verified latest via extracted Bun cli.js (Node)
+#      or [shelly] claude: APK extracted Bun cli.js (Node)
 #         2.1.122 (Claude Code) or newer
 
 claude --print "Say OK"

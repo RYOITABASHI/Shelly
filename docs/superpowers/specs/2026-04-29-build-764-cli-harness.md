@@ -36,7 +36,7 @@ gemini --version
 Expected output:
 
 ```text
-[shelly] claude: latest via extracted Bun cli.js (Node)
+[shelly] claude: APK extracted Bun cli.js (Node)
 2.1.122 (Claude Code)
 OK
 Output: `shelly-ok`
@@ -45,8 +45,16 @@ Codex replies OK with model gpt-5.5
 0.40.0
 ```
 
-Version numbers may move forward after a later verified update, but the
-following must remain true:
+Version numbers may move forward after a later verified update. Claude may
+print either of these banners depending on whether the runtime updater has
+already promoted a newer extracted bundle:
+
+```text
+[shelly] claude: verified latest via extracted Bun cli.js (Node)
+[shelly] claude: APK extracted Bun cli.js (Node)
+```
+
+The following must remain true:
 
 - Claude uses the extracted Node route by default, not the musl SEA route.
 - Claude Bash tool can execute `echo shelly-ok`.

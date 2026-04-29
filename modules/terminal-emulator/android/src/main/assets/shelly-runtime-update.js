@@ -19,11 +19,10 @@
  *
  * Environment variables:
  *   SHELLY_UPDATER_FUNCTIONAL_CHECK=1
- *     Adds a `claude --print "reply OK"` smoke check
- *     beyond `--version`. Exercises DNS, TLS, auth, musl resolver, actual
- *     inference path. Gated behind an env var because it requires valid
- *     upstream credentials on this device; default install would fail it
- *     even on a healthy release.
+ *     Adds a `node cli.js --print "reply OK"` smoke check for Claude
+ *     beyond `--version`. Exercises DNS, TLS, auth, and actual inference.
+ *     Gated behind an env var because it requires valid upstream credentials
+ *     on this device; default install would fail it even on a healthy release.
  *   SHELLY_UPDATER_STABLE_DELAY_DAYS=7
  *     Override stable-channel cooldown in days.
  */
@@ -173,6 +172,17 @@ function ensureCleanDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
+function copyDir(src, dest) {
+  if (!fs.existsSync(src)) return false;
+  fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
+  fs.cpSync(src, dest, {
+    recursive: true,
+    force: true,
+    dereference: false,
+  });
+  return true;
+}
+
 function parseTar(gzBuffer) {
   const tar = zlib.gunzipSync(gzBuffer);
   const entries = new Map();
@@ -220,6 +230,10 @@ function currentVersion(tool) {
   catch { return ''; }
 }
 
+function currentClaudeVersion() {
+  return currentVersion('claude-extracted');
+}
+
 function currentNpmVersion(pkgName) {
   try {
     const pkgJson = path.join(NPM_ROOT, 'node_modules', ...pkgName.split('/'), 'package.json');
@@ -237,6 +251,114 @@ function runLinker(args, extraEnv = {}) {
     encoding: 'utf8',
     timeout: 30000,
   });
+}
+
+function runNodeScript(script, args = [], extraEnv = {}) {
+  return runLinker([
+    path.join(LIB, 'node'),
+    script,
+    ...args,
+  ], extraEnv);
+}
+
+function findElfSection(buf, name) {
+  if (buf.length < 64
+    || buf[0] !== 0x7f || buf[1] !== 0x45 || buf[2] !== 0x4c || buf[3] !== 0x46) {
+    throw new Error('not an ELF');
+  }
+  if (buf[4] !== 2) throw new Error('not ELF64');
+  if (buf[5] !== 1) throw new Error('not little-endian ELF');
+
+  const shoff = Number(buf.readBigUInt64LE(0x28));
+  const shentsize = buf.readUInt16LE(0x3a);
+  const shnum = buf.readUInt16LE(0x3c);
+  const shstrndx = buf.readUInt16LE(0x3e);
+  if (!shoff || !shentsize || !shnum || shstrndx >= shnum) {
+    throw new Error('invalid ELF section table');
+  }
+
+  function sectionHeader(idx) {
+    const off = shoff + idx * shentsize;
+    if (off + 64 > buf.length) throw new Error('ELF section header out of range');
+    return {
+      nameOff: buf.readUInt32LE(off),
+      offset: Number(buf.readBigUInt64LE(off + 0x18)),
+      size: Number(buf.readBigUInt64LE(off + 0x20)),
+    };
+  }
+
+  const shstr = sectionHeader(shstrndx);
+  const names = buf.subarray(shstr.offset, shstr.offset + shstr.size);
+  function cstr(start) {
+    let end = start;
+    while (end < names.length && names[end] !== 0) end++;
+    return names.subarray(start, end).toString('utf8');
+  }
+
+  for (let i = 0; i < shnum; i += 1) {
+    const sh = sectionHeader(i);
+    if (cstr(sh.nameOff) === name) {
+      return buf.subarray(sh.offset, sh.offset + sh.size);
+    }
+  }
+  throw new Error(`ELF section ${name} not found`);
+}
+
+function extractClaudeCliFromSea(seaBuf) {
+  const bunSection = findElfSection(seaBuf, '.bun');
+  const marker = Buffer.from('file:///$bunfs/root/src/entrypoints/cli.js');
+  const markerAt = bunSection.indexOf(marker);
+  if (markerAt < 0) throw new Error('cli.js marker not found in Claude .bun section');
+
+  const startMarker = Buffer.from('// @bun');
+  const startRel = bunSection.indexOf(startMarker, markerAt);
+  if (startRel < 0) throw new Error('cli.js bundle start not found after marker');
+  if (startRel < 4) throw new Error('cli.js size prefix missing');
+
+  const size = bunSection.readUInt32LE(startRel - 4);
+  const src = bunSection.subarray(startRel, startRel + size).toString('utf8');
+  const head = '// @bun @bytecode @bun-cjs\n(function(exports, require, module, __filename, __dirname) {';
+  const tail = '})\n';
+  if (!src.startsWith(head) || !src.endsWith(tail)) {
+    throw new Error('unexpected Claude cli.js CJS wrapper shape');
+  }
+
+  let body = src.slice(head.length, -tail.length);
+
+  const tmpLiteral = '"/tmp/claude","/private/tmp/claude"';
+  const tmpReplacement = '(process.env.CLAUDE_TMPDIR||"/tmp/claude"),(process.env.CLAUDE_TMPDIR||"/private/tmp/claude")';
+  const tmpMatches = body.split(tmpLiteral).length - 1;
+  if (tmpMatches === 1) {
+    body = body.replace(tmpLiteral, tmpReplacement);
+  } else if (tmpMatches === 0) {
+    if (!body.includes('process.env.CLAUDE_TMPDIR||"/tmp/claude"')) {
+      throw new Error('Claude tmp allowlist patch target not found');
+    }
+  } else {
+    throw new Error(`Claude tmp allowlist target matched ${tmpMatches} times`);
+  }
+
+  const bridgeRe = /`\/tmp\/claude-mcp-browser-bridge-\$\{([A-Za-z_$][\w$]*)\(\)\}`/g;
+  const matches = [...body.matchAll(bridgeRe)].map((m) => m[1]);
+  const bridgeDoneMarker = 'process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"';
+  if (matches.length === 1 && new Set(matches).size === 1) {
+    const fn = matches[0];
+    body = body.replace(
+      bridgeRe,
+      '`${process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"}/claude-mcp-browser-bridge-${' + fn + '()}`',
+    );
+  } else if (matches.length === 0) {
+    if (!body.includes('claude-mcp-browser-bridge-') || !body.includes(bridgeDoneMarker)) {
+      throw new Error('Claude browser bridge tmpdir patch target not found');
+    }
+  } else {
+    throw new Error(`ambiguous Claude browser bridge matches: ${matches.join(',')}`);
+  }
+
+  body = body.replace(/(?<![\w$])await\s+using\s+/g, 'const ');
+  body = body.replace(/(?<![\w$])using\s+/g, 'const ');
+
+  return '#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n' + body;
 }
 
 /**
@@ -403,29 +525,54 @@ async function tryClaudeVersion(pkgMeta, version) {
 
     // Per-run staging name avoids cross-process clobbering when two
     // updaters race on the same version (Codex review issue #1).
-    const staging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
+    const staging = path.join(TMP, `claude-extracted-${version}-${RUN_TAG}`);
     ensureCleanDir(staging);
-    const out = path.join(staging, 'claude');
-    fs.writeFileSync(out, bin, { mode: 0o755 });
-    fs.chmodSync(out, 0o755);
-
+    const pkgDir = path.join(staging, 'node_modules', '@anthropic-ai', 'claude-code-extracted');
+    fs.mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
+    const out = path.join(pkgDir, 'cli.js');
+    const pkgJson = path.join(pkgDir, 'package.json');
+    let extracted;
     try {
-      validateClaudeShape(out);
+      extracted = extractClaudeCliFromSea(bin);
     } catch (e) {
-      // Eager cleanup on shape rejection — these dirs accumulate
-      // otherwise and a series of bad upstream releases bloats disk.
       fs.rmSync(staging, { recursive: true, force: true });
       recordFailedVersion('claude', version);
-      return { ok: false, reason: `shape check: ${e.message}` };
+      return { ok: false, reason: `extract cli.js: ${e.message}` };
+    }
+    fs.writeFileSync(out, extracted, { mode: 0o755 });
+    fs.chmodSync(out, 0o755);
+    fs.writeFileSync(pkgJson, JSON.stringify({
+      name: '@anthropic-ai/claude-code-extracted',
+      version,
+      private: true,
+      shelly: {
+        source: '@anthropic-ai/claude-code-linux-arm64-musl',
+        extractedAt: new Date().toISOString(),
+      },
+    }, null, 2));
+    const depsDest = path.join(pkgDir, 'node_modules');
+    const runtimeDeps = path.join(ROOT, 'claude-extracted', 'current', 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
+    const apkDeps = path.join(LIB, 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
+    if (copyDir(runtimeDeps, depsDest)) {
+      info(`[claude] try ${version} — copied dependencies from runtime current`);
+    } else if (copyDir(apkDeps, depsDest)) {
+      info(`[claude] try ${version} — copied dependencies from APK extracted package`);
+    } else {
+      fs.rmSync(staging, { recursive: true, force: true });
+      recordFailedVersion('claude', version);
+      return { ok: false, reason: 'extracted package dependencies missing' };
     }
 
-    // Smoke 1: --version (no network/auth).
-    const smoke = runLinker([
-      path.join(LIB, 'shelly_musl_exec'),
-      path.join(LIB, 'ld-musl-aarch64.so.1'),
-      out,
-      '--version',
-    ], { SHELLY_MUSL_LD_PRELOAD: path.join(LIB, 'libexec_wrapper_musl.so') });
+    // Smoke 1: --version (no network/auth), using the same Node route
+    // that HomeInitializer's claude() wrapper prefers.
+    const smoke = runNodeScript(out, ['--version'], {
+      USE_BUILTIN_RIPGREP: '0',
+      DISABLE_AUTOUPDATER: '1',
+      DISABLE_INSTALLATION_CHECKS: '1',
+      TMPDIR: path.join(HOME, '.tmp'),
+      CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
+      CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
+    });
     const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
     if (smoke.status !== 0 || !combined.includes(version)) {
       fs.rmSync(staging, { recursive: true, force: true });
@@ -436,15 +583,14 @@ async function tryClaudeVersion(pkgMeta, version) {
 
     // Smoke 2 (opt-in): --print "Reply exactly OK".
     if (FUNCTIONAL_CHECK) {
-      const func = runLinker([
-        path.join(LIB, 'shelly_musl_exec'),
-        path.join(LIB, 'ld-musl-aarch64.so.1'),
-        out,
-        '--print',
-        'Reply exactly OK',
-      ], {
+      const func = runNodeScript(out, ['--print', 'Reply exactly OK'], {
         SHELLY_UPDATER_FUNCTIONAL_CHECK: '',
-        SHELLY_MUSL_LD_PRELOAD: path.join(LIB, 'libexec_wrapper_musl.so'),
+        USE_BUILTIN_RIPGREP: '0',
+        DISABLE_AUTOUPDATER: '1',
+        DISABLE_INSTALLATION_CHECKS: '1',
+        TMPDIR: path.join(HOME, '.tmp'),
+        CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
+        CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
       });
       const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
       if (func.status !== 0) {
@@ -483,20 +629,20 @@ async function updateClaude() {
   // Fast-path: if our current promoted version matches the FIRST
   // candidate (the absolute newest), we're already on the verified
   // latest. Don't re-download.
-  if (!FORCE && currentVersion('claude') === candidates[0]) {
+  if (!FORCE && currentClaudeVersion() === candidates[0]) {
     info(`[claude] already on verified latest ${candidates[0]}`);
     return;
   }
 
   // Walk candidates newest-first. First one that passes smoke wins.
   for (const version of candidates) {
-    if (!FORCE && currentVersion('claude') === version) {
+    if (!FORCE && currentClaudeVersion() === version) {
       info(`[claude] keeping current ${version} (newer candidates already failed smoke)`);
       return;
     }
     const result = await tryClaudeVersion(pkgMeta, version);
     if (result.ok) {
-      promote('claude', version, result.staging);
+      promote('claude-extracted', version, result.staging);
       info(`[claude] promoted ${version} (verified, channel=${CHANNEL})`);
       return;
     }
@@ -506,7 +652,7 @@ async function updateClaude() {
   // All candidates failed — keep current promotion as-is. The bundled
   // golden APK version is the ultimate fallback in claude() bash
   // function, so the user always has a working Claude.
-  info(`[claude] all ${candidates.length} candidates failed smoke; keeping current=${currentVersion('claude') || '(none)'}`);
+  info(`[claude] all ${candidates.length} candidates failed smoke; keeping current=${currentClaudeVersion() || '(none)'}`);
 }
 
 async function tryCodexTag(releases, tag) {
@@ -634,7 +780,7 @@ function cleanupStaleStaging() {
   try {
     if (!fs.existsSync(TMP)) return;
     for (const entry of fs.readdirSync(TMP)) {
-      if (entry.startsWith('claude-') || entry.startsWith('codex-')) {
+      if (entry.startsWith('claude-') || entry.startsWith('claude-extracted-') || entry.startsWith('codex-')) {
         fs.rmSync(path.join(TMP, entry), { recursive: true, force: true });
       }
     }
@@ -660,7 +806,7 @@ async function checkClaudeAvailable() {
     const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
     const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
     if (candidates.length === 0) return false;
-    return currentVersion('claude') !== candidates[0];
+    return currentClaudeVersion() !== candidates[0];
   } catch (err) {
     info(`[check] claude metadata fetch failed: ${err.message}`);
     return false;

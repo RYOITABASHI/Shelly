@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 68
+    private const val BASHRC_VERSION = 69
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1070,11 +1070,22 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
             sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
-            sb.appendLine("  local __extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -f \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("  local __runtime_extracted_cli_js=\"\$HOME/.shelly-runtime/claude-extracted/current/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
+            sb.appendLine("  local __apk_extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
+            sb.appendLine("  local __extracted_cli_js=\"\"")
+            sb.appendLine("  if [ -f \"\$__runtime_extracted_cli_js\" ]; then")
+            sb.appendLine("    __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
+            sb.appendLine("  elif [ -f \"\$__apk_extracted_cli_js\" ]; then")
+            sb.appendLine("    __extracted_cli_js=\"\$__apk_extracted_cli_js\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
-            sb.appendLine("      echo '[shelly] claude: latest via extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
+            sb.appendLine("        echo '[shelly] claude: verified latest via extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("      else")
+            sb.appendLine("        echo '[shelly] claude: APK extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("      fi")
             sb.appendLine("    fi")
             sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
             sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
