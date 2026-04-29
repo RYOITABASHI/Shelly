@@ -14,6 +14,28 @@
 
 ---
 
+## 🟢 現状サマリ (2026-04-29、build 764、BASHRC_VERSION 68)
+
+**CLI 3/3 最新追従の実機確認完了** (Galaxy Z Fold6 / Android 16)。
+`main` は `49bbaff4` まで fast-forward 済み。
+
+| CLI | 実機確認 | ルート |
+|---|---|---|
+| **claude** | ✅ `2.1.122` / `--print` / Bash tool PASS | extracted Bun `cli.js` を Shelly 同梱 Node で実行。musl SEA / legacy cli.js は fallback |
+| **codex** | ✅ `codex-cli 0.125.0-termux`; `codex -m gpt-5.5 "Say OK"` PASS | codex-termux native runtime。legacy tarball と新 `mmmbuto` npm-pack asset の両方に対応 |
+| **gemini** | ✅ `0.40.0` | `package.json` `bin.gemini` 解決 + `GEMINI_CLI_NO_RELAUNCH=true` |
+
+**今回完了した主な fix**:
+- Claude Path D: Bun SEA から抽出した `cli.js` を Node で起動する経路を default 化。
+- Codex: `v0.125.0-termux` の `mmmbuto-codex-cli-termux-*.tgz` asset を npm `dist.integrity` で検証して取り込む。
+- Gemini: hardcoded `bundle/gemini.js` ではなく package `bin` を実行時解決。
+
+**軽量化は未完**:
+- `libclaude.so` は fallback としてまだAPKに残っているため、今回の修正単体ではAPK軽量化にはならない。
+- 次に軽量化するなら、まず `libclaude.so` の削除またはlazy-fetch化が最も効果的。
+
+---
+
 ## 🟢 現状サマリ (2026-04-20 evening、BASHRC_VERSION 43)
 
 **CLI 3/3 実機動作確定** (Termux 午後セッション)。Shelly で claude / codex / gemini すべて対話モード起動 & 1 往復チャット成功:

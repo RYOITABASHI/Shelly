@@ -45,18 +45,27 @@ Enter (you see `one` immediately and then a fresh prompt with `echo
 two` queued), the paste pipeline has regressed and we need to reopen
 bug #97.
 
-## 3. claude CLI dispatch (2.1.112 pin)
+## 3. claude CLI dispatch (extracted Bun cli.js default)
 
 ```bash
 claude --version
-# expect: [shelly] claude: using bundled tier (/data/.../termux-libs/node_modules/@anthropic-ai/claude-code/cli.js)
-#         2.1.112 (Claude Code)
+# expect: [shelly] claude: latest via extracted Bun cli.js (Node)
+#         2.1.122 (Claude Code) or newer
+
+claude --print "Say OK"
+# expect: OK
+
+claude --print "Use bash to run: echo shelly-ok"
+# expect: shelly-ok
 ```
 
 The tier banner tells you which fallback tier the command is resolving
-to. For a fresh v34 install, it's bundled (Tier 3) because Tier 1 is
-either empty or was populated by a previous @latest install that has
-no `cli.js`.
+to. Current builds should use the extracted Node route. Fallback probes:
+
+```bash
+SHELLY_DISABLE_EXTRACTED_CLAUDE=1 claude --version
+SHELLY_FORCE_LEGACY_CLAUDE=1 claude --version
+```
 
 Silence the banner: `SHELLY_SILENT_CLI_TIER=1 claude --version`.
 
@@ -70,10 +79,13 @@ cat ~/.shelly-cli/install.log 2>&1 | tail -30
 
 ```bash
 gemini --version
-# expect: 0.38.x or later
+# expect: 0.40.0 or later
 
 codex --version
-# expect: codex-exec 0.121.0-termux
+# expect: codex-cli 0.125.0-termux or later
+
+codex -m gpt-5.5 "Say OK"
+# expect: OK; must NOT print "requires a newer version of Codex"
 ```
 
 ## 5. shelly-cs — help + doctor

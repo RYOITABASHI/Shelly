@@ -1,7 +1,8 @@
 # Claude Bun SEA Extracted Node Route Handoff
 
 Date: 2026-04-29
-Branch: `feature/claude-bun-extract-node`
+Branch: `feature/claude-bun-extract-node` → merged through
+`feature/codex-gemini-runtime-updater` → `main` at `49bbaff4`
 
 ## Problem
 
@@ -29,7 +30,8 @@ That path has hit Android/Shelly-specific failures around musl preload,
 
 This branch adapts that idea for Shelly. The first commit shipped it as
 an opt-in route; after Galaxy Z Fold6 smoke tests passed, it became the
-default Claude route in BASHRC_VERSION 67.
+default Claude route. BASHRC_VERSION 67 promoted Claude extracted route;
+BASHRC_VERSION 68 added the Codex/Gemini follow-up fixes.
 
 ## Implementation
 
@@ -76,7 +78,7 @@ node_modules/@anthropic-ai/claude-code-extracted/cli.js
 
 ### Shell Dispatch
 
-`HomeInitializer.kt` bumps `BASHRC_VERSION` to 67 and runs the extracted
+`HomeInitializer.kt` bumps `BASHRC_VERSION` to 68 and runs the extracted
 Node route at the top of `claude()` by default:
 
 ```sh
@@ -121,7 +123,7 @@ SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --print "Say OK"
 SHELLY_PREFER_EXTRACTED_CLAUDE=1 claude --print "Use bash to run: echo shelly-ok"
 ```
 
-After BASHRC_VERSION 67, re-run without the opt-in:
+After BASHRC_VERSION 67+, re-run without the opt-in:
 
 ```sh
 claude --version
@@ -149,6 +151,39 @@ on device:
 - interactive launch
 - paste into Claude Code TUI
 - no regression in Codex/Gemini wrappers
+
+Build 764 / commit `49bbaff4` follow-up evidence:
+
+```sh
+claude --version
+# [shelly] claude: latest via extracted Bun cli.js (Node)
+# 2.1.122 (Claude Code)
+
+claude --print "Say OK"
+# OK
+
+claude --print "Use bash to run: echo shelly-ok"
+# Output: `shelly-ok`
+
+codex --version
+# codex-cli 0.125.0-termux
+
+codex -m gpt-5.5 "Say OK"
+# OK
+
+gemini --version
+# 0.40.0
+```
+
+Codex/Gemini follow-up in the same release line:
+
+- CI and `shelly-runtime-update.js` support both the legacy
+  `codex-termux-android-arm64-<tag>.tar.gz` layout and the newer
+  `mmmbuto-codex-cli-termux-<version>.tgz` npm-pack layout.
+- The npm-pack path verifies tarball content against npm `dist.integrity`
+  before extraction/promotion.
+- `gemini()` resolves the launcher from `package.json` `bin.gemini` rather
+  than hardcoding `bundle/gemini.js`.
 
 The musl SEA route remains as fallback for one release cycle before any
 APK size reduction removes or lazy-fetches `libclaude.so`.
