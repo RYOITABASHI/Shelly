@@ -29,6 +29,7 @@ import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
 import { applyThemePreset } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
+import { execCommand } from '@/hooks/use-native-exec';
 
 type Props = {
   visible: boolean;
@@ -77,6 +78,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <LanguageSection />
             <AgentsSection />
             <ApiKeysSection />
+            <CredentialImportSection />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -775,6 +777,155 @@ function ApiKeysSection() {
   );
 }
 
+// ─── CLI Credential Import ──────────────────────────────────────────────────
+
+const README_CREDENTIALS_URL =
+  'https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials';
+
+const CLAUDE_IMPORT_CMD = String.raw`set -eu
+ROOT_JSON="/sdcard/Download/shelly-claude-root.json"
+CLAUDE_TAR="/sdcard/Download/termux-claude-dir.tar"
+if [ ! -f "$ROOT_JSON" ]; then
+  echo "Missing $ROOT_JSON"
+  echo "Prepare the files first using the README Bring your own credentials steps:"
+  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
+  exit 2
+fi
+if [ ! -f "$CLAUDE_TAR" ]; then
+  echo "Missing $CLAUDE_TAR"
+  echo "Prepare the files first using the README Bring your own credentials steps:"
+  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
+  exit 2
+fi
+mkdir -p "$HOME/.claude"
+cp "$ROOT_JSON" "$HOME/.claude.json"
+chmod 600 "$HOME/.claude.json"
+tar xf "$CLAUDE_TAR" -C "$HOME/.claude"
+if [ ! -f "$HOME/.claude/.credentials.json" ]; then
+  echo "Import finished, but ~/.claude/.credentials.json is still missing."
+  echo "The tar file must contain the donor ~/.claude directory contents."
+  exit 3
+fi
+chmod 700 "$HOME/.claude" 2>/dev/null || true
+chmod 600 "$HOME/.claude/.credentials.json"
+echo "== claude --version =="
+claude --version
+echo
+echo "== shelly doctor =="
+shelly doctor`;
+
+const GEMINI_IMPORT_CMD = String.raw`set -eu
+GEMINI_TAR="/sdcard/Download/termux-gemini-dir.tar"
+if [ ! -f "$GEMINI_TAR" ]; then
+  echo "Missing $GEMINI_TAR"
+  echo "Prepare the file first using the README Bring your own credentials steps:"
+  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
+  exit 2
+fi
+mkdir -p "$HOME/.gemini"
+tar xf "$GEMINI_TAR" -C "$HOME/.gemini"
+if [ ! -f "$HOME/.gemini/oauth_creds.json" ]; then
+  echo "Import finished, but ~/.gemini/oauth_creds.json is still missing."
+  echo "The tar file must contain the donor ~/.gemini directory contents."
+  exit 3
+fi
+chmod 700 "$HOME/.gemini" 2>/dev/null || true
+chmod 600 "$HOME/.gemini/oauth_creds.json"
+echo "== gemini --version =="
+gemini --version
+echo
+echo "== shelly doctor =="
+shelly doctor`;
+
+function CredentialImportSection() {
+  const [busy, setBusy] = useState<'claude' | 'gemini' | null>(null);
+
+  const runImport = React.useCallback(async (kind: 'claude' | 'gemini') => {
+    const label = kind === 'claude' ? 'Claude' : 'Gemini';
+    const command = kind === 'claude' ? CLAUDE_IMPORT_CMD : GEMINI_IMPORT_CMD;
+    setBusy(kind);
+    try {
+      const result = await execCommand(command, 120_000);
+      const output = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
+      if (result.exitCode !== 0) {
+        Alert.alert(
+          `${label} import failed`,
+          `${output || `exit code ${result.exitCode}`}\n\nPrepare the files first using the README steps:\n${README_CREDENTIALS_URL}`,
+        );
+        logError('SettingsDropdown', `${label} credential import failed`, output || result.exitCode);
+        return;
+      }
+      Alert.alert(
+        `${label} credentials imported`,
+        `${output}\n\nSecurity reminder: delete the copied credential file(s) from /sdcard/Download after you confirm ${label} works.`,
+      );
+      logInfo('SettingsDropdown', `${label} credential import ok`);
+    } catch (e: any) {
+      Alert.alert(
+        `${label} import failed`,
+        `${String(e?.message || e)}\n\nPrepare the files first using the README steps:\n${README_CREDENTIALS_URL}`,
+      );
+      logError('SettingsDropdown', `${label} credential import threw`, e);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const confirmImport = React.useCallback((kind: 'claude' | 'gemini') => {
+    const label = kind === 'claude' ? 'Claude' : 'Gemini';
+    const expected =
+      kind === 'claude'
+        ? '/sdcard/Download/shelly-claude-root.json\n/sdcard/Download/termux-claude-dir.tar'
+        : '/sdcard/Download/termux-gemini-dir.tar';
+    Alert.alert(
+      `Import ${label} credentials?`,
+      `Shelly will copy sensitive OAuth credential files from:\n\n${expected}\n\nThis does not delete the /sdcard/Download copies. Delete them manually after import.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Import', onPress: () => void runImport(kind) },
+      ],
+    );
+  }, [runImport]);
+
+  return (
+    <Section title="IMPORT CLI CREDENTIALS">
+      <Text style={styles.credentialHint}>
+        OAuth does not complete inside Shelly for Claude/Gemini yet. Import
+        credentials created in Termux, desktop, or Codespaces.
+      </Text>
+      <Pressable
+        style={[styles.integrationRow, busy === 'claude' && styles.integrationRowDisabled]}
+        onPress={() => confirmImport('claude')}
+        disabled={busy !== null}
+        accessibilityRole="button"
+        accessibilityLabel="Import Claude credentials"
+      >
+        <MaterialIcons name="vpn-key" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>
+          {busy === 'claude' ? 'Importing Claude...' : 'Import Claude credentials'}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+      <View style={styles.credentialGap} />
+      <Pressable
+        style={[styles.integrationRow, busy === 'gemini' && styles.integrationRowDisabled]}
+        onPress={() => confirmImport('gemini')}
+        disabled={busy !== null}
+        accessibilityRole="button"
+        accessibilityLabel="Import Gemini credentials"
+      >
+        <MaterialIcons name="vpn-key" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>
+          {busy === 'gemini' ? 'Importing Gemini...' : 'Import Gemini credentials'}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
 // ─── Shared atoms ────────────────────────────────────────────────────────────
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -1075,12 +1226,26 @@ const styles = StyleSheet.create({
     borderRadius: R.badge,
     backgroundColor: C.bgSurface,
   },
+  integrationRowDisabled: {
+    opacity: 0.55,
+  },
   integrationLabel: {
     fontFamily: F.family,
     fontSize: F.sidebarItem.size,
     fontWeight: '700',
     color: C.text1,
     letterSpacing: 0.4,
+  },
+  credentialHint: {
+    color: C.text2,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    lineHeight: 15,
+    paddingHorizontal: 4,
+    paddingBottom: 8,
+  },
+  credentialGap: {
+    height: 6,
   },
   // Language
   langRow: {
