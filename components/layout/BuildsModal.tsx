@@ -78,17 +78,22 @@ export async function fetchBuildRuns(): Promise<BuildRun[]> {
     return JSON.parse(r.stdout || '[]') as BuildRun[];
   }
 
-  // Public workflow status should not require `gh auth login`. Fall back to
-  // GitHub's unauthenticated REST endpoint so the status panel still works on
-  // fresh installs. Artifact downloads still require GitHub authentication.
-  const api = await execCommand(
-    `curl -fsSL ${sq(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?per_page=5`)}`,
-    30_000,
-  );
-  if (api.exitCode !== 0) {
-    throw new Error((api.stderr || api.stdout || r.stderr || r.stdout || `gh exited ${r.exitCode}`).trim());
+  // Public workflow status should not require `gh auth login`. Use React
+  // Native's network stack instead of shelling out to curl: user shells can
+  // carry Termux-specific CURL_CA_BUNDLE / SSL_CERT_FILE paths that do not
+  // exist inside Shelly and produce false TLS errors.
+  const apiUrl = `https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?per_page=5`;
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'Shelly',
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(body || r.stderr || r.stdout || `GitHub API HTTP ${response.status}`);
   }
-  return mapApiRuns(JSON.parse(api.stdout || '{}'));
+  return mapApiRuns(await response.json());
 }
 
 async function downloadBuildApk(runId: number): Promise<string> {
