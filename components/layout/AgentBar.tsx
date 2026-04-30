@@ -11,7 +11,7 @@ import { View, Pressable, StyleSheet, Text } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
-import { BuildsModal, buildStatusColor, statusFromRun, type BuildRun, type BuildStatus } from './BuildsModal';
+import { BuildsModal, buildStatusColor, fetchBuildRuns, statusFromRun, type BuildStatus } from './BuildsModal';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
@@ -50,13 +50,8 @@ export function AgentBar() {
     let timer: ReturnType<typeof setInterval> | null = null;
     const refresh = async () => {
       try {
-        const { execCommand } = await import('@/hooks/use-native-exec');
-        const r = await execCommand(
-          "gh run list -R 'RYOITABASHI/Shelly' --workflow 'build-android.yml' --limit 1 --json databaseId,status,conclusion,displayTitle,headSha,createdAt,url",
-          30_000,
-        );
-        if (cancelled || r.exitCode !== 0) return;
-        const runs = JSON.parse(r.stdout || '[]') as BuildRun[];
+        const runs = await fetchBuildRuns();
+        if (cancelled) return;
         setBuildStatus(statusFromRun(runs[0]));
       } catch {
         if (!cancelled) setBuildStatus('unknown');

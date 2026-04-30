@@ -56,20 +56,45 @@ export function buildStatusColor(status: BuildStatus): string {
   }
 }
 
-async function fetchBuildRuns(): Promise<BuildRun[]> {
+function mapApiRuns(payload: any): BuildRun[] {
+  const runs = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
+  return runs.map((run: any) => ({
+    databaseId: Number(run.id),
+    status: String(run.status || 'unknown'),
+    conclusion: run.conclusion ? String(run.conclusion) : null,
+    displayTitle: String(run.display_title || run.name || `Run #${run.id}`),
+    headSha: String(run.head_sha || ''),
+    createdAt: String(run.created_at || run.createdAt || ''),
+    url: String(run.html_url || run.url || ''),
+  }));
+}
+
+export async function fetchBuildRuns(): Promise<BuildRun[]> {
   const command =
     `gh run list -R ${sq(REPO)} --workflow ${sq(WORKFLOW)} --limit 5 ` +
     `--json databaseId,status,conclusion,displayTitle,headSha,createdAt,url`;
   const r = await execCommand(command, 30_000);
-  if (r.exitCode !== 0) {
-    throw new Error((r.stderr || r.stdout || `gh exited ${r.exitCode}`).trim());
+  if (r.exitCode === 0) {
+    return JSON.parse(r.stdout || '[]') as BuildRun[];
   }
-  return JSON.parse(r.stdout || '[]') as BuildRun[];
+
+  // Public workflow status should not require `gh auth login`. Fall back to
+  // GitHub's unauthenticated REST endpoint so the status panel still works on
+  // fresh installs. Artifact downloads still require GitHub authentication.
+  const api = await execCommand(
+    `curl -fsSL ${sq(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?per_page=5`)}`,
+    30_000,
+  );
+  if (api.exitCode !== 0) {
+    throw new Error((api.stderr || api.stdout || r.stderr || r.stdout || `gh exited ${r.exitCode}`).trim());
+  }
+  return mapApiRuns(JSON.parse(api.stdout || '{}'));
 }
 
 async function downloadBuildApk(runId: number): Promise<string> {
   const outDir = `/sdcard/Download/shelly-build-${runId}`;
   const command = [
+    `gh auth status >/dev/null 2>&1 || { echo 'GitHub artifact downloads require GitHub CLI auth. Run: gh auth login' >&2; exit 64; }`,
     `rm -rf ${sq(outDir)}`,
     `mkdir -p ${sq(outDir)}`,
     `gh run download ${runId} -R ${sq(REPO)} --name shelly-apk -D ${sq(outDir)}`,
