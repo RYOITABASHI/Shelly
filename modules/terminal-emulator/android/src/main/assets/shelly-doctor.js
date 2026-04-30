@@ -12,6 +12,18 @@ const { spawnSync } = require('node:child_process');
 const HOME = os.homedir();
 const LIB = process.env.SHELLY_LIB_DIR || '';
 const JSON_MODE = process.argv.includes('--json');
+const SDCARD_DOWNLOAD = '/sdcard/Download';
+const SECRET_ENV_NAMES = [
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENAI_API_KEY',
+  'CODEX_AUTH_TOKEN',
+  'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
+  'GROQ_API_KEY',
+  'CEREBRAS_API_KEY',
+  'PERPLEXITY_API_KEY',
+];
 
 function exists(p) {
   try { return fs.existsSync(p); } catch { return false; }
@@ -29,6 +41,23 @@ function statInfo(p) {
   } catch {
     return { exists: false };
   }
+}
+
+function modeIsPrivate(info) {
+  if (!info?.exists || !info.mode) return null;
+  const mode = Number.parseInt(info.mode, 8);
+  if (!Number.isFinite(mode)) return false;
+  return (mode & 0o077) === 0;
+}
+
+function securityFile(p, { shouldBePrivate = false } = {}) {
+  const info = statInfo(p);
+  return {
+    path: p,
+    ...info,
+    should_be_private: shouldBePrivate,
+    private_mode: shouldBePrivate ? modeIsPrivate(info) : null,
+  };
 }
 
 function readText(p) {
@@ -154,6 +183,21 @@ function collect() {
   const apkCodexExec = path.join(LIB, 'codex_exec');
   const apkCodexTui = path.join(LIB, 'codex_tui');
 
+  const security = {
+    download_credentials: [
+      securityFile(path.join(SDCARD_DOWNLOAD, 'shelly-claude-root.json')),
+      securityFile(path.join(SDCARD_DOWNLOAD, 'termux-claude-dir.tar')),
+      securityFile(path.join(SDCARD_DOWNLOAD, 'termux-gemini-dir.tar')),
+    ],
+    private_files: [
+      securityFile(path.join(HOME, '.claude.json'), { shouldBePrivate: true }),
+      securityFile(path.join(HOME, '.claude/.credentials.json'), { shouldBePrivate: true }),
+      securityFile(path.join(HOME, '.codex/auth.json'), { shouldBePrivate: true }),
+      securityFile(path.join(HOME, '.shelly/agents/.env'), { shouldBePrivate: true }),
+    ],
+    env_keys_present: SECRET_ENV_NAMES.filter((name) => Boolean(process.env[name])),
+  };
+
   return {
     bashrc_version: readText(path.join(HOME, '.bashrc_version')).trim() || null,
     lib_dir: LIB || null,
@@ -193,6 +237,7 @@ function collect() {
         ? geminiVersion(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
         : geminiVersion(path.join(LIB, 'node_modules/@google/gemini-cli/bundle/gemini.js')),
     },
+    security,
   };
 }
 
@@ -223,6 +268,20 @@ function printHuman(d) {
   process.stdout.write('\n');
 
   line('gemini', `${mark(d.gemini.version.ok)} ${d.gemini.version.stdout || d.gemini.version.stderr}`);
+  process.stdout.write('\n');
+
+  const leftover = d.security.download_credentials.filter((f) => f.exists);
+  line('download credentials', leftover.length > 0
+    ? `WARN ${leftover.map((f) => path.basename(f.path)).join(', ')} still in /sdcard/Download`
+    : 'OK none');
+  for (const f of d.security.private_files) {
+    if (!f.exists) continue;
+    const labelName = path.basename(f.path) === '.env' ? 'agent env' : path.basename(f.path);
+    line(labelName, `${f.private_mode ? 'OK' : 'WARN'} ${f.mode}${f.private_mode ? '' : ' should be 0600/0700-private'}`);
+  }
+  line('api env vars', d.security.env_keys_present.length > 0
+    ? `WARN ${d.security.env_keys_present.join(', ')} present in process env`
+    : 'OK none');
   process.stdout.write('\n');
   process.stdout.write('Use --json for machine-readable output.\n');
 }
