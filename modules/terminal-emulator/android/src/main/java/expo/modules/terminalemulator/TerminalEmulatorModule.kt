@@ -9,6 +9,7 @@ import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -417,6 +418,38 @@ class TerminalEmulatorModule : Module() {
                     Log.w("TerminalEmulator", "Cannot open all-files-access settings", fallbackErr)
                 }
             }
+            null
+        }
+
+        AsyncFunction("installApk") { apkPath: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val apk = java.io.File(apkPath)
+            if (!apk.exists() || !apk.isFile) {
+                throw IllegalArgumentException("APK not found: $apkPath")
+            }
+            if (!apk.name.endsWith(".apk", ignoreCase = true)) {
+                throw IllegalArgumentException("Not an APK file: $apkPath")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+                val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(settingsIntent)
+                throw IllegalStateException("Allow Shelly to install unknown apps, then tap Install APK again.")
+            }
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.shelly.fileprovider",
+                apk,
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(intent)
             null
         }
 

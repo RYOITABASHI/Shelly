@@ -62,6 +62,7 @@ const config: ExpoConfig & { android?: any } = {
       "FOREGROUND_SERVICE",
       "FOREGROUND_SERVICE_SPECIAL_USE",
       "MANAGE_EXTERNAL_STORAGE",
+      "REQUEST_INSTALL_PACKAGES",
     ],
     intentFilters: [
       {
@@ -88,6 +89,7 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-multi-window",
     "./plugins/with-android-security",
     "./plugins/with-terminal-service",
+    "./plugins/with-apk-installer",
     "./plugins/with-saved-instance-state",
     [
       "expo-audio",

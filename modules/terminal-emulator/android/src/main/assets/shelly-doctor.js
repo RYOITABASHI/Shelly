@@ -65,6 +65,23 @@ function claudeVersion(binary) {
   ]);
 }
 
+function claudeExtractedVersion(script) {
+  if (!LIB || !exists(script)) return { ok: false, status: null, stdout: '', stderr: 'missing script' };
+  return run('/system/bin/linker64', [
+    path.join(LIB, 'node'),
+    script,
+    '--version',
+  ], {
+    USE_BUILTIN_RIPGREP: '0',
+    DISABLE_AUTOUPDATER: '1',
+    DISABLE_INSTALLATION_CHECKS: '1',
+    TMPDIR: path.join(HOME, '.tmp'),
+    CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
+    CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
+    SHELLY_SILENT_CLI_TIER: '1',
+  });
+}
+
 function codexVersion(binary) {
   if (!exists(binary)) return { ok: false, status: null, stdout: '', stderr: 'missing binary' };
   return linker([binary, '--version']);
@@ -73,6 +90,18 @@ function codexVersion(binary) {
 function nodeScriptVersion(script, args = ['--version']) {
   if (!LIB || !exists(script)) return { ok: false, status: null, stdout: '', stderr: 'missing script' };
   return linker([path.join(LIB, 'node'), script, ...args]);
+}
+
+function geminiVersion(script) {
+  if (!LIB || !exists(script)) return { ok: false, status: null, stdout: '', stderr: 'missing script' };
+  return run('/system/bin/linker64', [
+    path.join(LIB, 'node'),
+    '--max-old-space-size=5557',
+    script,
+    '--version',
+  ], {
+    GEMINI_CLI_NO_RELAUNCH: 'true',
+  });
 }
 
 function authJsonSummary(p) {
@@ -95,6 +124,8 @@ function authJsonSummary(p) {
 
 function collect() {
   const runtimeClaude = path.join(HOME, '.shelly-runtime/claude/current/claude');
+  const runtimeClaudeExtracted = path.join(HOME, '.shelly-runtime/claude-extracted/current/node_modules/@anthropic-ai/claude-code-extracted/cli.js');
+  const apkClaudeExtracted = path.join(LIB, 'node_modules/@anthropic-ai/claude-code-extracted/cli.js');
   const runtimeCodexExec = path.join(HOME, '.shelly-runtime/codex/current/codex_exec');
   const runtimeCodexTui = path.join(HOME, '.shelly-runtime/codex/current/codex_tui');
   const apkClaude = path.join(LIB, 'claude');
@@ -110,6 +141,11 @@ function collect() {
     },
     claude: {
       runtime_current: readlink(path.join(HOME, '.shelly-runtime/claude/current')) || null,
+      extracted_current: readlink(path.join(HOME, '.shelly-runtime/claude-extracted/current')) || null,
+      extracted_binary: statInfo(runtimeClaudeExtracted),
+      extracted_version: exists(runtimeClaudeExtracted)
+        ? claudeExtractedVersion(runtimeClaudeExtracted)
+        : claudeExtractedVersion(apkClaudeExtracted),
       runtime_binary: statInfo(runtimeClaude),
       runtime_version: claudeVersion(runtimeClaude),
       apk_binary: statInfo(apkClaude),
@@ -132,8 +168,8 @@ function collect() {
       bundle: statInfo(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js')),
       apk_bundle: statInfo(path.join(LIB, 'node_modules/@google/gemini-cli/bundle/gemini.js')),
       version: exists(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
-        ? nodeScriptVersion(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
-        : nodeScriptVersion(path.join(LIB, 'node_modules/@google/gemini-cli/bundle/gemini.js')),
+        ? geminiVersion(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
+        : geminiVersion(path.join(LIB, 'node_modules/@google/gemini-cli/bundle/gemini.js')),
     },
   };
 }
@@ -151,7 +187,8 @@ function printHuman(d) {
   line('runtime log', d.runtime.update_log.exists ? d.runtime.update_log.mtime : 'missing');
   process.stdout.write('\n');
 
-  line('claude runtime', `${mark(d.claude.runtime_version.ok)} ${d.claude.runtime_version.stdout || d.claude.runtime_version.stderr}`);
+  line('claude extracted', `${mark(d.claude.extracted_version.ok)} ${d.claude.extracted_version.stdout || d.claude.extracted_version.stderr}`);
+  line('claude musl runtime', `${mark(d.claude.runtime_version.ok)} ${d.claude.runtime_version.stdout || d.claude.runtime_version.stderr}`);
   line('claude apk', `${mark(d.claude.apk_version.ok)} ${d.claude.apk_version.stdout || d.claude.apk_version.stderr}`);
   line('claude legacy', `${mark(d.claude.legacy_version.ok)} ${d.claude.legacy_version.stdout || d.claude.legacy_version.stderr}`);
   line('claude auth root', d.claude.auth_root.exists ? `${d.claude.auth_root.mtime} ${d.claude.auth_root.mode}` : 'missing');

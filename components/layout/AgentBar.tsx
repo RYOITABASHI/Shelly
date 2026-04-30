@@ -6,11 +6,12 @@
 // The old CLI tab strip (CLAUDE/GEMINI/CODEX/OPENCODE/COPILOT) moved into
 // each TerminalPane header as a per-pane tab bar (Superset-style), so this
 // bar no longer carries CLI tabs at all.
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Pressable, StyleSheet, Text } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
+import { BuildsModal, buildStatusColor, statusFromRun, type BuildRun, type BuildStatus } from './BuildsModal';
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
@@ -30,6 +31,8 @@ export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [buildsOpen, setBuildsOpen] = useState(false);
+  const [buildStatus, setBuildStatus] = useState<BuildStatus>('unknown');
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const barBg = usePanelBackground(C.bgSidebar);
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
@@ -41,6 +44,31 @@ export function AgentBar() {
     setter(false);
     useFocusStore.getState().requestTerminalRefocus();
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const refresh = async () => {
+      try {
+        const { execCommand } = await import('@/hooks/use-native-exec');
+        const r = await execCommand(
+          "gh run list -R 'RYOITABASHI/Shelly' --workflow 'build-android.yml' --limit 1 --json databaseId,status,conclusion,displayTitle,headSha,createdAt,url",
+          30_000,
+        );
+        if (cancelled || r.exitCode !== 0) return;
+        const runs = JSON.parse(r.stdout || '[]') as BuildRun[];
+        setBuildStatus(statusFromRun(runs[0]));
+      } catch {
+        if (!cancelled) setBuildStatus('unknown');
+      }
+    };
+    void refresh();
+    timer = setInterval(refresh, 60_000);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, []);
 
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
@@ -75,6 +103,18 @@ export function AgentBar() {
       <View style={styles.rightBtns}>
         <Pressable
           style={styles.iconBtn}
+          onPress={() => setBuildsOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Show build status and updates"
+        >
+          <View>
+            <MaterialIcons name="cloud-download" size={16} color={C.text2} />
+            <View style={[styles.ciDot, { backgroundColor: buildStatusColor(buildStatus) }]} />
+          </View>
+        </Pressable>
+        <Pressable
+          style={styles.iconBtn}
           onPress={() => useCommandPaletteStore.getState().toggle()}
           hitSlop={8}
         >
@@ -99,6 +139,11 @@ export function AgentBar() {
       </View>
 
       <SettingsDropdown visible={settingsOpen} onClose={closeWithRefocus(setSettingsOpen)} />
+      <BuildsModal
+        visible={buildsOpen}
+        onClose={closeWithRefocus(setBuildsOpen)}
+        onStatusChange={(status) => setBuildStatus(status)}
+      />
       <RecentLogsModal visible={logsOpen} onClose={closeWithRefocus(setLogsOpen)} />
       <LayoutAddSheet visible={sheetVisible} onClose={closeWithRefocus(setSheetVisible)} />
     </View>
@@ -158,5 +203,15 @@ const styles = StyleSheet.create({
   iconBtn: {
     padding: 4,
     borderRadius: R.agentTab,
+  },
+  ciDot: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: C.bgSidebar,
   },
 });

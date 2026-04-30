@@ -27,6 +27,7 @@ import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
+import { BuildsModal } from '@/components/layout/BuildsModal';
 import { applyThemePreset } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
@@ -46,6 +47,7 @@ const FONT_SIZE_PRESETS: FontSizePreset[] = [
 export function SettingsDropdown({ visible, onClose }: Props) {
   const [mcpOpen, setMcpOpen] = useState(false);
   const [llamaOpen, setLlamaOpen] = useState(false);
+  const [buildsOpen, setBuildsOpen] = useState(false);
 
   return (
     <Modal
@@ -78,6 +80,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <LanguageSection />
             <AgentsSection />
             <ApiKeysSection />
+            <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
             <CredentialImportSection />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
@@ -103,7 +106,30 @@ export function SettingsDropdown({ visible, onClose }: Props) {
       >
         <LlamaCppSectionWrapper onClose={() => setLlamaOpen(false)} />
       </Modal>
+
+      <BuildsModal
+        visible={buildsOpen}
+        onClose={() => setBuildsOpen(false)}
+      />
     </Modal>
+  );
+}
+
+function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
+  return (
+    <Section title="UPDATES / BUILDS">
+      <Pressable
+        style={styles.integrationRow}
+        onPress={onOpenBuilds}
+        accessibilityRole="button"
+        accessibilityLabel="Open build status and self-update panel"
+      >
+        <MaterialIcons name="cloud-download" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Check builds / install APK</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
   );
 }
 
