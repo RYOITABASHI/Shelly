@@ -39,6 +39,10 @@ function readlink(p) {
   try { return fs.readlinkSync(p); } catch { return ''; }
 }
 
+function readJson(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+
 function run(cmd, args, env = {}) {
   const merged = { ...process.env, ...env };
   delete merged.LD_PRELOAD;
@@ -94,7 +98,7 @@ function nodeScriptVersion(script, args = ['--version']) {
 
 function geminiVersion(script) {
   if (!LIB || !exists(script)) return { ok: false, status: null, stdout: '', stderr: 'missing script' };
-  return run('/system/bin/linker64', [
+  const probe = run('/system/bin/linker64', [
     path.join(LIB, 'node'),
     '--max-old-space-size=5557',
     script,
@@ -102,6 +106,24 @@ function geminiVersion(script) {
   ], {
     GEMINI_CLI_NO_RELAUNCH: 'true',
   });
+  if (probe.ok) return probe;
+
+  // The interactive `gemini()` bash function is the source of truth for
+  // execution. On some Android/linker combinations, a direct doctor-side Node
+  // probe can still trip over gemini-cli's heap relaunch path and report
+  // `expected absolute path: "--max-old-space-size=5557"` even though
+  // `gemini --version` works from the user's shell. Avoid a false WARN by
+  // falling back to package metadata for diagnostics.
+  const pkg = readJson(path.join(path.dirname(path.dirname(script)), 'package.json'));
+  if (pkg?.version) {
+    return {
+      ok: true,
+      status: 0,
+      stdout: `${pkg.version} (package metadata; direct probe failed: ${probe.stderr || probe.stdout})`,
+      stderr: '',
+    };
+  }
+  return probe;
 }
 
 function authJsonSummary(p) {
