@@ -811,8 +811,16 @@ chmod 600 "$HOME/.claude/.credentials.json"
 echo "== claude --version =="
 claude --version
 echo
-echo "== shelly doctor =="
-shelly doctor`;
+echo "== credential files =="
+ls -l "$HOME/.claude.json" "$HOME/.claude/.credentials.json"
+echo
+if command -v shelly-doctor >/dev/null 2>&1; then
+  echo "== shelly-doctor =="
+  shelly-doctor
+else
+  echo "== shelly-doctor =="
+  echo "shelly-doctor is not available in this shell; credential file checks above passed."
+fi`;
 
 const GEMINI_IMPORT_CMD = String.raw`set -eu
 GEMINI_TAR="/sdcard/Download/termux-gemini-dir.tar"
@@ -834,8 +842,16 @@ chmod 600 "$HOME/.gemini/oauth_creds.json"
 echo "== gemini --version =="
 gemini --version
 echo
-echo "== shelly doctor =="
-shelly doctor`;
+echo "== credential files =="
+ls -l "$HOME/.gemini/oauth_creds.json"
+echo
+if command -v shelly-doctor >/dev/null 2>&1; then
+  echo "== shelly-doctor =="
+  shelly-doctor
+else
+  echo "== shelly-doctor =="
+  echo "shelly-doctor is not available in this shell; credential file checks above passed."
+fi`;
 
 function CredentialImportSection() {
   const [busy, setBusy] = useState<'claude' | 'gemini' | null>(null);
