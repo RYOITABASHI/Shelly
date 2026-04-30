@@ -196,6 +196,10 @@ export default function TerminalScreen() {
   const splitRatio = usePreviewStore((s) => s.splitRatio);
   const { openPreview, closePreview, dismissBanner } = usePreviewStore.getState();
   const showSplitPreview = previewIsOpen && layout.isWide;
+  const sessionsEnsureKey = useMemo(
+    () => sessions.map((s) => `${s.id}:${s.nativeSessionId}:${s.sessionStatus}`).join('|'),
+    [sessions],
+  );
 
   // Click-to-Edit: placeholder — AI edit dispatch will be routed through
   // the AI pane in a future version. For now, log and ignore.
@@ -355,10 +359,13 @@ export default function TerminalScreen() {
     }
   }, [sessions, createNativeSession, recoverSession]);
 
-  // Run on initial mount
+  // Run when terminal sessions are mounted or rehydrated. APK installs /
+  // process restarts can restore persisted sessions after the first render;
+  // running this only once left those restored sessions in "starting" with no
+  // native PTY, which rendered as a blank terminal with no prompt.
   useEffect(() => {
-    ensureNativeSessions();
-  }, []);
+    void ensureNativeSessions();
+  }, [ensureNativeSessions, sessionsEnsureKey]);
 
   // Run on foreground resume — handles app switch, home button, split view toggle
   useEffect(() => {
@@ -852,6 +859,15 @@ export default function TerminalScreen() {
           <ActivityIndicator size="small" color={C.accent} />
           <Text style={{ color: C.text3, fontFamily: 'Silkscreen', fontSize: 11, marginTop: 8 }}>
             Restoring session...
+          </Text>
+        </View>
+      )}
+
+      {connectionState === 'connecting' && !isRecovering && activeSession && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
+          <ActivityIndicator size="small" color={C.accent} />
+          <Text style={{ color: C.text3, fontFamily: 'Silkscreen', fontSize: 11, marginTop: 8 }}>
+            Starting terminal...
           </Text>
         </View>
       )}
