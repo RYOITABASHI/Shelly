@@ -8,6 +8,18 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Added
 
+- **Build 782 security harness** — documented the release-gate checks for
+  `shelly-doctor` credential hygiene, CLI runtime smoke tests, and GitHub
+  secret-scanning false-positive handling in
+  `docs/superpowers/specs/2026-05-01-build-782-security-harness.md`.
+- **Log secret redaction** — app debug logging now redacts common API key and
+  token patterns before writing to logcat. Unit tests cover OpenAI, Google,
+  Groq, Cerebras, and environment-style secret strings without keeping literal
+  secret-shaped fixtures in the repository.
+- **`shelly-doctor` security checks** — doctor now reports leftover credential
+  handoff files in `/sdcard/Download`, private-mode status for credential files,
+  and whether known API-key environment variables are present.
+
 - **Ask Pane** — Shelly's self-documenting assistant (Stage 1). New
   pane type `ask` opens via the "+" menu or pane switcher. Users ask
   natural-language questions ("can Shelly do X?" / "how do I use Y?")
