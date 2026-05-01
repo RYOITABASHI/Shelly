@@ -715,6 +715,11 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
 
       - name: Publish EAS Update (OTA)
+        # Expo Updates are disabled in app.config.ts for the v5.1.x release
+        # train. JS changes ship through APK releases only, so scheduled APK
+        # builds must not fail after a successful artifact upload just because
+        # EAS Update rejects the inactive runtime/sdk combination.
+        if: ${{ vars.ENABLE_EAS_UPDATE == 'true' }}
         run: eas update --platform android --branch preview --message "${MSG:-manual build}" --non-interactive
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
