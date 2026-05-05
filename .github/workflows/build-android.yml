@@ -17,12 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Install pnpm
-        run: npm install -g pnpm@9.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -33,12 +36,53 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Compute daily bundle cache key
+        id: bundle-cache-key
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore generated Android payload cache
+        id: android-payload-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libld_musl_shelly.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libexec_wrapper_musl.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_https.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_http.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libssh_keygen.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgh.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgpg.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgpg_agent.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnano.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libunzip.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_credential_store.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_credential_cache.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libbz2_1.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgcrypt.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgpg_error.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libassuan.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libksba.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libclaude.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_exec.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_musl_exec.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
+            modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
+            modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
+
       - name: Set up QEMU (for Alpine aarch64 musl build)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
       - name: Build patched musl libc for claude-code 2.1.113+ (bug #117 Path C-bis)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         # Natively compile musl v1.2.4 inside an aarch64 Alpine container
         # (emulated via qemu-user-static) with the hardcoded
         # /etc/resolv.conf path rewritten to Shelly's app-writable home.
@@ -115,6 +159,7 @@ jobs:
           file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
       - name: Install aarch64 cross-binutils (for strip --strip-unneeded)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         # bug #139 (2026-04-27): the next step strips Termux .deb extracts
         # to remove debug+local symbols (~25-35 MB total APK savings).
         # Ubuntu-latest's system `strip` is x86_64-only and rejects
@@ -125,6 +170,7 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
 
       - name: Bundle Termux extras (git-remote-https, ssh-keygen) — bug #128
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         # Shelly bundles `git` itself but not the git-remote-https helper that
         # makes `git clone https://...` work, nor `ssh-keygen` for SSH key
         # generation. Without these, Shelly-on-Shelly development is
@@ -363,6 +409,7 @@ jobs:
           done
 
       - name: Bundle claude-code musl binary (bug #117 Path C-bis)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
         # Application) — a statically linked ~220 MB ET_EXEC binary that
         # can't be exec'd directly on Android bionic (unexpected e_type: 2
@@ -499,6 +546,7 @@ jobs:
           sha256sum "${EXTRACT_PKG}/cli.js" | awk '{print "[claude-extract] cli.js sha256: "$1}'
 
       - name: Download codex-termux Android binaries (exec + TUI)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -603,6 +651,7 @@ jobs:
           [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
 
       - name: Bundle AI CLIs (Gemini CLI + Codex JS dispatcher)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p cli-bundle
           # bug #139 (2026-04-27): dropped @anthropic-ai/claude-code@2.1.112
@@ -636,7 +685,7 @@ jobs:
           ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
 
       - name: Prebuild Android
-        run: npx expo prebuild --platform android --clean
+        run: npx expo prebuild --platform android
 
       - name: Setup JDK
         uses: actions/setup-java@v4
@@ -644,10 +693,14 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Build shelly-musl trampoline loader (bug #117)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           SRC="modules/terminal-emulator/android/src/main/jni/shelly-musl-exec.c"
@@ -662,6 +715,7 @@ jobs:
           file "${OUT}"
 
       - name: Build musl exec wrapper for Claude SEA (bug #117/#731)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         # Compile the musl-native exec wrapper (exec-wrapper-musl.c) inside
         # an Alpine arm64 container so the resulting .so depends ONLY on
         # libc.musl-aarch64.so.1. The previous Path C-bis step compiled
@@ -687,6 +741,7 @@ jobs:
             "
 
       - name: Build Shelly shell launcher
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           SRC="modules/terminal-emulator/android/src/main/jni/shelly-shell-launcher.c"
@@ -704,7 +759,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew clean assembleRelease -x lintVitalAnalyzeRelease
+          ./gradlew assembleRelease -x lintVitalAnalyzeRelease --build-cache
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
 
