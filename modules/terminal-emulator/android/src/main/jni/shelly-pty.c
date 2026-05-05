@@ -26,6 +26,90 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 
+static int read_proc_ppid(pid_t pid, pid_t *ppid_out)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/status", (int)pid);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char line[256];
+    int found = -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "PPid:", 5) == 0) {
+            long value = strtol(line + 5, NULL, 10);
+            if (value > 0) {
+                *ppid_out = (pid_t)value;
+                found = 0;
+            }
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+static int pid_in_list(pid_t pid, const pid_t *list, int count)
+{
+    for (int i = 0; i < count; i++) {
+        if (list[i] == pid) return 1;
+    }
+    return 0;
+}
+
+static int signal_descendants(pid_t root_pid, int sig)
+{
+    pid_t targets[512];
+    int target_count = 0;
+    int signalled = 0;
+
+    if (root_pid <= 1) return 0;
+    targets[target_count++] = root_pid;
+
+    /* Walk /proc a few times so grandchildren discovered in pass N become
+     * parents in pass N+1. All PTY children run under Shelly's app UID, so
+     * Android allows reading their /proc/<pid>/status entries. */
+    for (int pass = 0; pass < 6; pass++) {
+        DIR *d = opendir("/proc");
+        if (!d) break;
+
+        struct dirent *ent;
+        int added = 0;
+        while ((ent = readdir(d)) != NULL) {
+            char *end = NULL;
+            long value = strtol(ent->d_name, &end, 10);
+            if (!end || *end != '\0' || value <= 1) continue;
+            pid_t pid = (pid_t)value;
+            if (pid_in_list(pid, targets, target_count)) continue;
+
+            pid_t ppid = -1;
+            if (read_proc_ppid(pid, &ppid) == 0 && pid_in_list(ppid, targets, target_count)) {
+                if (target_count < (int)(sizeof(targets) / sizeof(targets[0]))) {
+                    targets[target_count++] = pid;
+                    added = 1;
+                }
+            }
+        }
+        closedir(d);
+        if (!added) break;
+    }
+
+    for (int i = target_count - 1; i >= 0; i--) {
+        pid_t pid = targets[i];
+        if (pid <= 1) continue;
+
+        if (kill(-pid, sig) == 0) {
+            signalled++;
+        }
+        if (kill(pid, sig) == 0) {
+            signalled++;
+        }
+    }
+
+    return signalled;
+}
+
 /* ------------------------------------------------------------------ */
 /*  createSubprocess                                                   */
 /* ------------------------------------------------------------------ */
@@ -351,6 +435,31 @@ Java_expo_modules_terminalemulator_ShellyJNI_interruptPty(
     }
 #endif
 
+    if (foreground_pgrp <= 1) {
+        char slave_name[128];
+        if (ptsname_r(fd, slave_name, sizeof(slave_name)) == 0) {
+            int slave_fd = open(slave_name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+            if (slave_fd >= 0) {
+#ifdef TIOCGPGRP
+                if (ioctl(slave_fd, TIOCGPGRP, &foreground_pgrp) < 0) {
+                    LOGE("TIOCGPGRP slave=%s: %s", slave_name, strerror(errno));
+                    foreground_pgrp = -1;
+                }
+#else
+                foreground_pgrp = tcgetpgrp(slave_fd);
+                if (foreground_pgrp < 0) {
+                    LOGE("tcgetpgrp slave=%s: %s", slave_name, strerror(errno));
+                }
+#endif
+                close(slave_fd);
+            } else {
+                LOGE("open PTY slave for interrupt: %s: %s", slave_name, strerror(errno));
+            }
+        } else {
+            LOGE("ptsname_r interrupt fd=%d: %s", fd, strerror(errno));
+        }
+    }
+
     if (foreground_pgrp > 1) {
         if (kill(-foreground_pgrp, SIGINT) == 0) {
             return 1;
@@ -366,6 +475,11 @@ Java_expo_modules_terminalemulator_ShellyJNI_interruptPty(
             return 2;
         }
         LOGE("kill child pgrp=%d SIGINT: %s", (int)childPid, strerror(errno));
+    }
+
+    int descendant_signals = signal_descendants((pid_t)childPid, SIGINT);
+    if (descendant_signals > 0) {
+        return 3;
     }
 
     /* Final fallback: inject VINTR into the PTY input stream. */

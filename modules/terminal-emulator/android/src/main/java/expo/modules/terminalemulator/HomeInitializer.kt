@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 70
+    private const val BASHRC_VERSION = 71
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1110,7 +1110,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __extracted_cli_js=\"\$__apk_extracted_cli_js\"")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
-            sb.appendLine("    if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
             sb.appendLine("        echo '[shelly] claude: verified latest via extracted Bun cli.js (Node)' >&2")
@@ -1145,7 +1145,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
             sb.appendLine("    fi")
             sb.appendLine("    if [ -x \"\$__runtime_claude\" ]; then")
-            sb.appendLine("      if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("      if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
             sb.appendLine("      fi")
@@ -1167,7 +1167,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          ;;")
             sb.appendLine("      esac")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__musl_claude\" ] && [ -z \"\$SHELLY_SILENT_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("    if [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
@@ -1549,37 +1549,23 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // lock orphaned and every subsequent invocation hits the stale
             // path until the user restarts Shelly.
             sb.appendLine("  trap 'rm -f \"\$__lockfile\"' EXIT")
-            // bug #126 pipeline: stage → install → health-check → promote (or discard).
+            // bug #126/#143 pipeline: stage → install → health-check →
+            // promote (or discard).
             //
-            // 1. Prepare staging. Critical change vs v59: we now chmod -R u+w
-            //    BEFORE rm -rf because the previous v55 promote applied
-            //    `chmod -R a-w` on the live claude-code dir, and cp -al
-            //    hardlinked those a-w bits into staging. rm -rf cannot
-            //    delete read-only files, so the cleanup silently failed,
-            //    and the next cp -al hit existing files with "File exists"
-            //    in a tight loop. Removing the a-w chmod entirely (see
-            //    health-fail and promote paths) plus the defensive u+w
-            //    here closes the corruption mode that froze entire bash
-            //    sessions. Fallback uses cp -af (force overwrite) instead
-            //    of cp -r so that any residual files from a partial prior
-            //    cleanup get overwritten cleanly.
+            // v71: build staging from an empty directory. The older
+            // live-tree clone (`cp -al "$live/." "$staging/"`) was fast
+            // but brittle on Android: after an interrupted updater left
+            // partial residue, GNU coreutils emitted hundreds of
+            // "File exists" lines and could wedge the shell. Empty staging
+            // costs more network/disk work but is deterministic and keeps
+            // foreground terminals responsive.
             sb.appendLine("  if [ -d \"\$__staging\" ]; then")
             sb.appendLine("    echo '[stage] cleaning stale staging (chmod u+w + rm -rf)'")
             sb.appendLine("    chmod -R u+w \"\$__staging\" 2>/dev/null")
             sb.appendLine("    rm -rf \"\$__staging\"")
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__staging\"")
-            sb.appendLine("  if [ -d \"\$__shelly_cli_dir/node_modules\" ]; then")
-            sb.appendLine("    echo '[stage] cloning live tree → staging (flat copy)'")
-            // Use `<src>/. <dest>/` form so the copy lands flat in $__staging
-            // whether or not $__staging already exists as a directory. cp -af
-            // (force) overwrites existing files instead of erroring with
-            // "File exists" — defensive against any race that leaves a
-            // partial residue. cp -al hardlinks first for speed, falls
-            // back to cp -af copy if hardlinking fails.
-            sb.appendLine("    cp -al \"\$__shelly_cli_dir/.\" \"\$__staging/\" 2>/dev/null || \\")
-            sb.appendLine("      cp -af \"\$__shelly_cli_dir/.\" \"\$__staging/\"")
-            sb.appendLine("  fi")
+            sb.appendLine("  echo '[stage] using clean empty staging tree'")
             // 2. Install latest npm packages into staging. The staged tree is
             //    promoted only after the probe block below verifies the actual
             //    runnable Shelly command path for each CLI. Claude latest may
@@ -1605,8 +1591,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   3. --omit=optional (skip optional platform-specific
             //      binaries; with --force they'd get extracted anyway
             //      but --omit keeps the tree smaller)
-            sb.appendLine("  npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest")
-            sb.appendLine("  echo \"[install] npm install exit=\$?\"")
+            sb.appendLine("  if npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest; then")
+            sb.appendLine("    echo '[install] npm install OK'")
+            sb.appendLine("  else")
+            sb.appendLine("    local __npm_rc=\$?")
+            sb.appendLine("    echo \"[install] npm install FAILED exit=\$__npm_rc\" >&2")
+            sb.appendLine("    chmod -R u+w \"\$__staging\" 2>/dev/null || true")
+            sb.appendLine("    rm -rf \"\$__staging\"")
+            sb.appendLine("    return \"\$__npm_rc\"")
+            sb.appendLine("  fi")
             // 3. Apply codex / gemini source patches to the staged tree
             //    (bug #76, #77, #96 — see earlier BASHRC_VERSION entries).
             //    Both are idempotent: safe to re-run on already-patched files.
