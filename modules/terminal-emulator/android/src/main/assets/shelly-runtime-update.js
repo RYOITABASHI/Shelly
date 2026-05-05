@@ -518,11 +518,38 @@ function validateClaudeShape(binPath) {
  *
  * Returns up to MAX_CANDIDATES versions, newest first.
  */
-// Default 3 per Codex review 2026-04-25 — bandwidth cost of failed
-// candidates (~250 MB each for Claude SEA) outweighs the marginal
-// benefit of walking back further. Override via env var if you've
-// hit a regression spanning more than 2 releases.
-const MAX_CANDIDATES = Number(process.env.SHELLY_UPDATER_MAX_CANDIDATES || 3);
+// Default 6: authenticated Claude installs now run a functional `--print`
+// smoke, so we need enough rollback depth to walk past a bad upstream
+// release cluster while still bounding bandwidth. Override via env var if
+// needed.
+const MAX_CANDIDATES = Number(process.env.SHELLY_UPDATER_MAX_CANDIDATES || 6);
+
+function hasClaudeCredentials() {
+  return fs.existsSync(path.join(HOME, '.claude.json'))
+    && fs.existsSync(path.join(HOME, '.claude', '.credentials.json'));
+}
+
+function shouldFunctionalCheckClaude() {
+  return FUNCTIONAL_CHECK || hasClaudeCredentials();
+}
+
+function claudeFunctionalMarker(version = currentClaudeVersion()) {
+  if (!version) return '';
+  return path.join(
+    ROOT,
+    'claude-extracted',
+    version,
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code-extracted',
+    '.shelly-functional-smoke-ok',
+  );
+}
+
+function currentClaudeFunctionalSmokeOk() {
+  const marker = claudeFunctionalMarker();
+  return !!marker && fs.existsSync(marker);
+}
 
 // Per-process unique staging suffix avoids the race where two
 // concurrent updater runs collide on TMP/claude-${version}/ via
@@ -682,8 +709,15 @@ async function tryClaudeVersion(pkgMeta, version) {
     }
     info(`[claude] try ${version} — --version smoke OK`);
 
-    // Smoke 2 (opt-in): --print "Reply exactly OK".
-    if (FUNCTIONAL_CHECK) {
+    // Smoke 2: --print "Reply exactly OK" when credentials are present.
+    //
+    // `--version` alone is not enough. Claude Code 2.1.129 passed the
+    // version smoke on-device but hung forever on `--print`, leaving the
+    // user without a prompt. Authenticated Shelly installs can safely run a
+    // tiny functional check, so only promote a release that can complete a
+    // real non-interactive round-trip. Fresh unauthenticated installs still
+    // fall back to the no-network `--version` smoke.
+    if (shouldFunctionalCheckClaude()) {
       const func = runNodeScript(out, ['--print', 'Reply exactly OK'], {
         SHELLY_UPDATER_FUNCTIONAL_CHECK: '',
         USE_BUILTIN_RIPGREP: '0',
@@ -705,6 +739,7 @@ async function tryClaudeVersion(pkgMeta, version) {
         return { ok: false, reason: `--print did not return OK: ${funcOut.slice(0, 200)}` };
       }
       info(`[claude] try ${version} — functional check OK`);
+      fs.writeFileSync(path.join(pkgDir, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
     }
 
     return { ok: true, staging };
@@ -727,19 +762,30 @@ async function updateClaude() {
   }
   info(`[claude] channel=${CHANNEL} candidates=${candidates.join(',')}`);
 
+  const needsFunctionalSmoke = shouldFunctionalCheckClaude();
+
   // Fast-path: if our current promoted version matches the FIRST
   // candidate (the absolute newest), we're already on the verified
-  // latest. Don't re-download.
+  // latest. Don't re-download unless this authenticated device has never
+  // proven that current release can complete `--print`.
   if (!FORCE && currentClaudeVersion() === candidates[0]) {
-    info(`[claude] already on verified latest ${candidates[0]}`);
-    return;
+    if (needsFunctionalSmoke && !currentClaudeFunctionalSmokeOk()) {
+      info(`[claude] current ${candidates[0]} lacks functional smoke marker; re-testing`);
+    } else {
+      info(`[claude] already on verified latest ${candidates[0]}`);
+      return;
+    }
   }
 
   // Walk candidates newest-first. First one that passes smoke wins.
   for (const version of candidates) {
     if (!FORCE && currentClaudeVersion() === version) {
-      info(`[claude] keeping current ${version} (newer candidates already failed smoke)`);
-      return;
+      if (needsFunctionalSmoke && !currentClaudeFunctionalSmokeOk()) {
+        info(`[claude] current ${version} lacks functional smoke marker; re-testing before keeping`);
+      } else {
+        info(`[claude] keeping current ${version} (newer candidates already failed smoke)`);
+        return;
+      }
     }
     const result = await tryClaudeVersion(pkgMeta, version);
     if (result.ok) {
