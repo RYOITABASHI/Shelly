@@ -68,6 +68,36 @@ const STABLE_DELAY_DAYS = Number(process.env.SHELLY_UPDATER_STABLE_DELAY_DAYS ||
 const STABLE_DELAY_MS = STABLE_DELAY_DAYS * 24 * 60 * 60 * 1000;
 const FUNCTIONAL_CHECK = process.env.SHELLY_UPDATER_FUNCTIONAL_CHECK === '1';
 
+const CLAUDE_BUN_NODE_POLYFILL = `
+if (!globalThis.Bun) globalThis.Bun = {};
+if (typeof globalThis.Bun.stringWidth !== 'function') {
+  globalThis.Bun.stringWidth = function shellyStringWidth(value) {
+    let width = 0;
+    for (const ch of String(value ?? '')) {
+      const code = ch.codePointAt(0);
+      if (code === undefined || code === 0) continue;
+      if (code < 32 || (code >= 0x7f && code < 0xa0)) continue;
+      if ((code >= 0x0300 && code <= 0x036f) || (code >= 0xfe00 && code <= 0xfe0f)) continue;
+      width += (
+        code >= 0x1100 &&
+        (code <= 0x115f ||
+          code === 0x2329 ||
+          code === 0x232a ||
+          (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+          (code >= 0xac00 && code <= 0xd7a3) ||
+          (code >= 0xf900 && code <= 0xfaff) ||
+          (code >= 0xfe10 && code <= 0xfe19) ||
+          (code >= 0xfe30 && code <= 0xfe6f) ||
+          (code >= 0xff00 && code <= 0xff60) ||
+          (code >= 0xffe0 && code <= 0xffe6) ||
+          (code >= 0x1f300 && code <= 0x1faff))
+      ) ? 2 : 1;
+    }
+    return width;
+  };
+}
+`;
+
 function log(line) {
   fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
   fs.appendFileSync(LOG, `${new Date().toISOString()} ${line}\n`);
@@ -429,7 +459,7 @@ function extractClaudeCliFromSea(seaBuf) {
   body = body.replace(/(?<![\w$])await\s+using\s+/g, 'const ');
   body = body.replace(/(?<![\w$])using\s+/g, 'const ');
 
-  return '#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n' + body;
+  return '#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n' + CLAUDE_BUN_NODE_POLYFILL + '\n' + body;
 }
 
 /**
