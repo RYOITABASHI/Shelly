@@ -11,6 +11,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   createSession(config: SessionConfig): Promise<{ sessionId: string; resumed: boolean }>;
   destroySession(sessionId: string): Promise<void>;
   writeToSession(sessionId: string, data: string): Promise<void>;
+  interruptSession(sessionId: string): Promise<number>;
   sendKeyEvent(sessionId: string, keyCode: number, modifiers: number): Promise<void>;
   resizeSession(sessionId: string, rows: number, cols: number): Promise<void>;
   isSessionAlive(sessionId: string): Promise<boolean>;

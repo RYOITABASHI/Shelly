@@ -107,6 +107,16 @@ class ShellyTerminalSession(
         terminalSession.write(bytes, 0, bytes.size)
     }
 
+    fun interrupt(): Int {
+        return try {
+            ShellyJNI.interruptPty(masterFd, childPid)
+        } catch (e: Exception) {
+            Log.w(TAG, "Native interrupt failed for $sessionId, falling back to PTY Ctrl-C", e)
+            write("\u0003")
+            0
+        }
+    }
+
     fun resize(rows: Int, cols: Int) {
         ShellyJNI.setPtyWindowSize(masterFd, rows, cols)
         terminalSession.updateSize(cols, rows, 1, 1)

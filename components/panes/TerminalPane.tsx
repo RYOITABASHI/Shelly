@@ -630,6 +630,15 @@ export default function TerminalScreen() {
   // Send raw key code to terminal
   const sendKey = useCallback((keyCode: string) => {
     if (!activeSession) return;
+    if (keyCode === '\x03') {
+      TerminalEmulator.interruptSession(activeSession.nativeSessionId).catch((err) => {
+        console.warn('[Terminal] interruptSession failed, falling back to writeToSession:', err);
+        TerminalEmulator.writeToSession(activeSession.nativeSessionId, keyCode).catch((writeErr) => {
+          console.warn('[Terminal] Ctrl+C fallback writeToSession failed:', writeErr);
+        });
+      });
+      return;
+    }
     TerminalEmulator.writeToSession(activeSession.nativeSessionId, keyCode).catch((err) => {
       console.warn('[Terminal] sendKey failed:', err);
     });

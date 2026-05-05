@@ -23,6 +23,9 @@ object ShellyJNI {
     external fun setPtyWindowSize(fd: Int, rows: Int, cols: Int)
 
     @JvmStatic
+    external fun interruptPty(fd: Int, childPid: Int): Int
+
+    @JvmStatic
     external fun waitFor(pid: Int): Int
 
     @JvmStatic

@@ -327,6 +327,57 @@ Java_expo_modules_terminalemulator_ShellyJNI_setPtyWindowSize(
 }
 
 /* ------------------------------------------------------------------ */
+/*  interruptPty                                                       */
+/* ------------------------------------------------------------------ */
+
+JNIEXPORT jint JNICALL
+Java_expo_modules_terminalemulator_ShellyJNI_interruptPty(
+        JNIEnv *env  __attribute__((unused)),
+        jclass  clazz __attribute__((unused)),
+        jint    fd,
+        jint    childPid)
+{
+    pid_t foreground_pgrp = -1;
+
+#ifdef TIOCGPGRP
+    if (ioctl(fd, TIOCGPGRP, &foreground_pgrp) < 0) {
+        LOGE("TIOCGPGRP fd=%d: %s", fd, strerror(errno));
+        foreground_pgrp = -1;
+    }
+#else
+    foreground_pgrp = tcgetpgrp(fd);
+    if (foreground_pgrp < 0) {
+        LOGE("tcgetpgrp fd=%d: %s", fd, strerror(errno));
+    }
+#endif
+
+    if (foreground_pgrp > 1) {
+        if (kill(-foreground_pgrp, SIGINT) == 0) {
+            return 1;
+        }
+        LOGE("kill foreground pgrp=%d SIGINT: %s", (int)foreground_pgrp, strerror(errno));
+    }
+
+    /* The interactive bash is a session leader after setsid(), so its pid
+     * is also a useful fallback process group when foreground-pgrp lookup
+     * fails on Android vendor kernels. */
+    if (childPid > 1) {
+        if (kill(-(pid_t)childPid, SIGINT) == 0) {
+            return 2;
+        }
+        LOGE("kill child pgrp=%d SIGINT: %s", (int)childPid, strerror(errno));
+    }
+
+    /* Final fallback: inject VINTR into the PTY input stream. */
+    const char ctrl_c = 0x03;
+    if (write(fd, &ctrl_c, 1) == 1) {
+        return 0;
+    }
+    LOGE("write Ctrl-C fd=%d: %s", fd, strerror(errno));
+    return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /*  waitFor                                                            */
 /* ------------------------------------------------------------------ */
 

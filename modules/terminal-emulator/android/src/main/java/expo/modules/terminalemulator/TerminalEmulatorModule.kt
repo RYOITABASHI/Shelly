@@ -170,6 +170,12 @@ class TerminalEmulatorModule : Module() {
             session.write(data)
         }
 
+        AsyncFunction("interruptSession") { sessionId: String ->
+            val session = sessions[sessionId]
+                ?: throw IllegalArgumentException("Session $sessionId not found")
+            session.interrupt()
+        }
+
         // bug #81: Paste path. Routes through TerminalEmulator.paste() so
         // the text is normalized and bracketed-paste wrapped, avoiding the
         // first-byte clip observed when CommandKeyBar was calling write()
