@@ -332,6 +332,14 @@ function currentVersion(tool) {
 }
 
 function currentClaudeVersion() {
+  return currentVersion('claude') || currentVersion('claude-extracted');
+}
+
+function currentClaudeNativeVersion() {
+  return currentVersion('claude');
+}
+
+function currentClaudeExtractedVersion() {
   return currentVersion('claude-extracted');
 }
 
@@ -360,6 +368,24 @@ function runNodeScript(script, args = [], extraEnv = {}) {
     script,
     ...args,
   ], extraEnv);
+}
+
+function runClaudeNative(binary, args = [], extraEnv = {}) {
+  return runLinker([
+    path.join(LIB, 'shelly_musl_exec'),
+    path.join(LIB, 'ld-musl-aarch64.so.1'),
+    binary,
+    ...args,
+  ], {
+    SHELLY_MUSL_LD_PRELOAD: path.join(LIB, 'libexec_wrapper_musl.so'),
+    USE_BUILTIN_RIPGREP: '0',
+    DISABLE_AUTOUPDATER: '1',
+    DISABLE_INSTALLATION_CHECKS: '1',
+    TMPDIR: path.join(HOME, '.tmp'),
+    CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
+    CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
+    ...extraEnv,
+  });
 }
 
 function findElfSection(buf, name) {
@@ -533,7 +559,7 @@ function shouldFunctionalCheckClaude() {
   return FUNCTIONAL_CHECK || hasClaudeCredentials();
 }
 
-function claudeFunctionalMarker(version = currentClaudeVersion()) {
+function claudeFunctionalMarker(version = currentClaudeExtractedVersion()) {
   if (!version) return '';
   return path.join(
     ROOT,
@@ -546,9 +572,16 @@ function claudeFunctionalMarker(version = currentClaudeVersion()) {
   );
 }
 
+function claudeNativeFunctionalMarker(version = currentClaudeNativeVersion()) {
+  if (!version) return '';
+  return path.join(ROOT, 'claude', version, '.shelly-functional-smoke-ok');
+}
+
 function currentClaudeFunctionalSmokeOk() {
-  const marker = claudeFunctionalMarker();
-  return !!marker && fs.existsSync(marker);
+  const nativeMarker = claudeNativeFunctionalMarker();
+  const extractedMarker = claudeFunctionalMarker();
+  return (!!nativeMarker && fs.existsSync(nativeMarker))
+    || (!!extractedMarker && fs.existsSync(extractedMarker));
 }
 
 // Per-process unique staging suffix avoids the race where two
@@ -651,75 +684,79 @@ async function tryClaudeVersion(pkgMeta, version) {
     const bin = tarEntry(entries, 'package/claude') || tarEntry(entries, 'claude');
     if (!bin) return { ok: false, reason: 'package/claude missing from tarball' };
 
-    // Per-run staging name avoids cross-process clobbering when two
-    // updaters race on the same version (Codex review issue #1).
-    const staging = path.join(TMP, `claude-extracted-${version}-${RUN_TAG}`);
-    ensureCleanDir(staging);
-    const pkgDir = path.join(staging, 'node_modules', '@anthropic-ai', 'claude-code-extracted');
-    fs.mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
-    const out = path.join(pkgDir, 'cli.js');
-    const pkgJson = path.join(pkgDir, 'package.json');
-    let extracted;
-    try {
-      extracted = extractClaudeCliFromSea(bin);
-    } catch (e) {
-      fs.rmSync(staging, { recursive: true, force: true });
-      recordFailedVersion('claude', version);
-      return { ok: false, reason: `extract cli.js: ${e.message}` };
-    }
-    fs.writeFileSync(out, extracted, { mode: 0o755 });
-    fs.chmodSync(out, 0o755);
-    fs.writeFileSync(pkgJson, JSON.stringify({
-      name: '@anthropic-ai/claude-code-extracted',
-      version,
-      private: true,
-      shelly: {
-        source: '@anthropic-ai/claude-code-linux-arm64-musl',
-        extractedAt: new Date().toISOString(),
-      },
-    }, null, 2));
-    const depsDest = path.join(pkgDir, 'node_modules');
-    const runtimeDeps = path.join(ROOT, 'claude-extracted', 'current', 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
-    const apkDeps = path.join(LIB, 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
-    if (copyDir(runtimeDeps, depsDest)) {
-      info(`[claude] try ${version} — copied dependencies from runtime current`);
-    } else if (copyDir(apkDeps, depsDest)) {
-      info(`[claude] try ${version} — copied dependencies from APK extracted package`);
-    } else {
-      fs.rmSync(staging, { recursive: true, force: true });
-      recordFailedVersion('claude', version);
-      return { ok: false, reason: 'extracted package dependencies missing' };
-    }
+    // Native Bun SEA route. This keeps the real upstream Claude binary intact.
+    // The extracted-Node route is still prepared as a fallback, but it cannot
+    // be the primary validation path anymore: Claude 2.1.129 passed
+    // `--version` after extraction but hung on `--print` because newer bundles
+    // exercise more Bun APIs than our small Node polyfill covers.
+    const nativeStaging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
+    ensureCleanDir(nativeStaging);
+    const nativeOut = path.join(nativeStaging, 'claude');
+    fs.writeFileSync(nativeOut, bin, { mode: 0o755 });
+    fs.chmodSync(nativeOut, 0o755);
 
-    // Smoke 1: --version (no network/auth), using the same Node route
-    // that HomeInitializer's claude() wrapper prefers.
-    const smoke = runNodeScript(out, ['--version'], {
-      USE_BUILTIN_RIPGREP: '0',
-      DISABLE_AUTOUPDATER: '1',
-      DISABLE_INSTALLATION_CHECKS: '1',
-      TMPDIR: path.join(HOME, '.tmp'),
-      CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
-      CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
-    });
-    const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
-    if (smoke.status !== 0 || !combined.includes(version)) {
-      fs.rmSync(staging, { recursive: true, force: true });
+    const nativeSmoke = runClaudeNative(nativeOut, ['--version']);
+    const nativeCombined = `${nativeSmoke.stdout || ''}${nativeSmoke.stderr || ''}`;
+    if (nativeSmoke.status !== 0 || !nativeCombined.includes(version)) {
+      fs.rmSync(nativeStaging, { recursive: true, force: true });
       recordFailedVersion('claude', version);
-      return { ok: false, reason: `--version smoke status=${smoke.status}: ${combined.slice(0, 200)}` };
+      return { ok: false, reason: `native --version status=${nativeSmoke.status}: ${nativeCombined.slice(0, 200)}` };
     }
-    info(`[claude] try ${version} — --version smoke OK`);
+    info(`[claude] try ${version} — native --version smoke OK`);
 
-    // Smoke 2: --print "Reply exactly OK" when credentials are present.
-    //
-    // `--version` alone is not enough. Claude Code 2.1.129 passed the
-    // version smoke on-device but hung forever on `--print`, leaving the
-    // user without a prompt. Authenticated Shelly installs can safely run a
-    // tiny functional check, so only promote a release that can complete a
-    // real non-interactive round-trip. Fresh unauthenticated installs still
-    // fall back to the no-network `--version` smoke.
     if (shouldFunctionalCheckClaude()) {
-      const func = runNodeScript(out, ['--print', 'Reply exactly OK'], {
+      const nativeFunc = runClaudeNative(nativeOut, ['--print', 'Reply exactly OK'], {
         SHELLY_UPDATER_FUNCTIONAL_CHECK: '',
+      });
+      const nativeFuncOut = `${nativeFunc.stdout || ''}${nativeFunc.stderr || ''}`;
+      if (nativeFunc.status !== 0) {
+        fs.rmSync(nativeStaging, { recursive: true, force: true });
+        recordFailedVersion('claude', version);
+        return { ok: false, reason: `native --print status=${nativeFunc.status}: ${nativeFuncOut.slice(0, 200)}` };
+      }
+      if (!/\bOK\b/i.test(nativeFunc.stdout || '')) {
+        fs.rmSync(nativeStaging, { recursive: true, force: true });
+        recordFailedVersion('claude', version);
+        return { ok: false, reason: `native --print did not return OK: ${nativeFuncOut.slice(0, 200)}` };
+      }
+      info(`[claude] try ${version} — native functional check OK`);
+      fs.writeFileSync(path.join(nativeStaging, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
+    }
+
+    let staging = null;
+    try {
+      // Per-run staging name avoids cross-process clobbering when two
+      // updaters race on the same version (Codex review issue #1).
+      staging = path.join(TMP, `claude-extracted-${version}-${RUN_TAG}`);
+      ensureCleanDir(staging);
+      const pkgDir = path.join(staging, 'node_modules', '@anthropic-ai', 'claude-code-extracted');
+      fs.mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
+      const out = path.join(pkgDir, 'cli.js');
+      const pkgJson = path.join(pkgDir, 'package.json');
+      const extracted = extractClaudeCliFromSea(bin);
+      fs.writeFileSync(out, extracted, { mode: 0o755 });
+      fs.chmodSync(out, 0o755);
+      fs.writeFileSync(pkgJson, JSON.stringify({
+        name: '@anthropic-ai/claude-code-extracted',
+        version,
+        private: true,
+        shelly: {
+          source: '@anthropic-ai/claude-code-linux-arm64-musl',
+          extractedAt: new Date().toISOString(),
+        },
+      }, null, 2));
+      const depsDest = path.join(pkgDir, 'node_modules');
+      const runtimeDeps = path.join(ROOT, 'claude-extracted', 'current', 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
+      const apkDeps = path.join(LIB, 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
+      if (copyDir(runtimeDeps, depsDest)) {
+        info(`[claude] try ${version} — copied dependencies from runtime current`);
+      } else if (copyDir(apkDeps, depsDest)) {
+        info(`[claude] try ${version} — copied dependencies from APK extracted package`);
+      } else {
+        throw new Error('extracted package dependencies missing');
+      }
+
+      const smoke = runNodeScript(out, ['--version'], {
         USE_BUILTIN_RIPGREP: '0',
         DISABLE_AUTOUPDATER: '1',
         DISABLE_INSTALLATION_CHECKS: '1',
@@ -727,22 +764,18 @@ async function tryClaudeVersion(pkgMeta, version) {
         CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
         CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
       });
-      const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
-      if (func.status !== 0) {
-        fs.rmSync(staging, { recursive: true, force: true });
-        recordFailedVersion('claude', version);
-        return { ok: false, reason: `--print status=${func.status}: ${funcOut.slice(0, 200)}` };
+      const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
+      if (smoke.status !== 0 || !combined.includes(version)) {
+        throw new Error(`extracted --version status=${smoke.status}: ${combined.slice(0, 200)}`);
       }
-      if (!/\bOK\b/i.test(func.stdout || '')) {
-        fs.rmSync(staging, { recursive: true, force: true });
-        recordFailedVersion('claude', version);
-        return { ok: false, reason: `--print did not return OK: ${funcOut.slice(0, 200)}` };
-      }
-      info(`[claude] try ${version} — functional check OK`);
-      fs.writeFileSync(path.join(pkgDir, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
+      info(`[claude] try ${version} — extracted --version smoke OK`);
+    } catch (e) {
+      if (staging) fs.rmSync(staging, { recursive: true, force: true });
+      staging = null;
+      info(`[claude] try ${version} — extracted fallback unavailable: ${e.message}`);
     }
 
-    return { ok: true, staging };
+    return { ok: true, nativeStaging, staging };
   } catch (err) {
     // Network / I/O exception — don't poison the failed-versions list. The
     // version itself wasn't proven bad. The cooldown is for "we proved this
@@ -789,8 +822,9 @@ async function updateClaude() {
     }
     const result = await tryClaudeVersion(pkgMeta, version);
     if (result.ok) {
-      promote('claude-extracted', version, result.staging);
-      info(`[claude] promoted ${version} (verified, channel=${CHANNEL})`);
+      if (result.nativeStaging) promote('claude', version, result.nativeStaging);
+      if (result.staging) promote('claude-extracted', version, result.staging);
+      info(`[claude] promoted ${version} (verified, channel=${CHANNEL}, native=${!!result.nativeStaging}, extracted=${!!result.staging})`);
       return;
     }
     info(`[claude] reject ${version}: ${result.reason}`);

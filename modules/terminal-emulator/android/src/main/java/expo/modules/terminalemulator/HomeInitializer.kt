@@ -596,7 +596,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 71
+    private const val BASHRC_VERSION = 72
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1089,12 +1089,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
             // @anthropic-ai/claude-code dispatch. Default route is the
-            // extracted Bun cli.js from the latest linux-arm64 musl SEA,
-            // executed with Shelly's bionic Node. This keeps Claude current
-            // while avoiding the musl loader / __errno_location / Bash-tool
-            // failure class. The runtime/APK musl binaries and legacy cli.js
-            // tiers remain fallbacks so an offline device or broken upstream
-            // release never bricks `claude`.
+            // verified latest linux-arm64 musl Bun SEA binary. The extracted
+            // Node route remains a fallback only: upstream Claude can add Bun
+            // APIs that pass --version after extraction but hang during real
+            // --print sessions.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
@@ -1108,32 +1106,6 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
             sb.appendLine("  elif [ -f \"\$__apk_extracted_cli_js\" ]; then")
             sb.appendLine("    __extracted_cli_js=\"\$__apk_extracted_cli_js\"")
-            sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
-            sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
-            sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
-            sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
-            sb.appendLine("        echo '[shelly] claude: verified latest via extracted Bun cli.js (Node)' >&2")
-            sb.appendLine("      else")
-            sb.appendLine("        echo '[shelly] claude: APK extracted Bun cli.js (Node)' >&2")
-            sb.appendLine("      fi")
-            sb.appendLine("    fi")
-            sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
-            sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
-            sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
-            sb.appendLine("    local __extracted_rc=\$?")
-            sb.appendLine("    __shelly_paste_tui_end")
-            sb.appendLine("    case \"\$__extracted_rc\" in")
-            sb.appendLine("      126|127|132|133|134|135|136|137|138|139|159)")
-            sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
-            sb.appendLine("          echo \"[shelly] claude: extracted Node route failed (exit \$__extracted_rc), falling back to musl/legacy tiers\" >&2")
-            sb.appendLine("        fi")
-            sb.appendLine("        ;;")
-            sb.appendLine("      *)")
-            sb.appendLine("        return \"\$__extracted_rc\"")
-            sb.appendLine("        ;;")
-            sb.appendLine("    esac")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
             // Seed resolv.conf on first use. The musl libc shipped here
@@ -1190,6 +1162,32 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        ;;")
             sb.appendLine("    esac")
             sb.appendLine("    fi")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
+            sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
+            sb.appendLine("        echo '[shelly] claude: verified latest via extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("      else")
+            sb.appendLine("        echo '[shelly] claude: APK extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("      fi")
+            sb.appendLine("    fi")
+            sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
+            sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
+            sb.appendLine("    __shelly_paste_tui_begin")
+            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
+            sb.appendLine("    local __extracted_rc=\$?")
+            sb.appendLine("    __shelly_paste_tui_end")
+            sb.appendLine("    case \"\$__extracted_rc\" in")
+            sb.appendLine("      126|127|132|133|134|135|136|137|138|139|159)")
+            sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
+            sb.appendLine("          echo \"[shelly] claude: extracted Node route failed (exit \$__extracted_rc), falling back to legacy tier\" >&2")
+            sb.appendLine("        fi")
+            sb.appendLine("        ;;")
+            sb.appendLine("      *)")
+            sb.appendLine("        return \"\$__extracted_rc\"")
+            sb.appendLine("        ;;")
+            sb.appendLine("    esac")
             sb.appendLine("  fi")
             sb.appendLine("  # Legacy fallback: pre-2.1.113 cli.js three-tier chain")
             sb.appendLine("  local __cli_js=\"\"")
