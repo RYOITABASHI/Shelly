@@ -18,7 +18,7 @@ const env = {
 const config: ExpoConfig & { android?: any } = {
   name: env.appName,
   slug: env.appSlug,
-  version: "4.2.0",
+  version: "5.2.0",
   // bug #137 (2026-04-27): bumping runtimeVersion 1.0.0 → 5.1.0 to
   // invalidate the polluted OTA pool on the EAS preview branch. We
   // discovered that user-installed APKs were silently downloading a

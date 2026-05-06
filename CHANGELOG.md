@@ -6,6 +6,94 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-05-06
+
+### Added
+
+- **Latest Claude Code 2.1.131 runs as the default tier** — the runtime
+  updater promotes the latest `@anthropic-ai/claude-code-linux-arm64-musl`
+  release and the LD_PRELOAD wrappers carry the trampoline. Bash tool
+  works end to end inside Claude Code at 2.1.131.
+- **Sidebar Quick Launch section** between TASKS and REPOSITORIES.
+  Three compact chips (Claude orange / Codex green / Gemini blue) open
+  a fresh Terminal pane and run the matching CLI in one tap.
+- **Bun.hash polyfill** with full named-variant coverage (wyhash,
+  cityHash32/64, xxHash3/32/64, murmur32v2/v3, murmur64v1/v2, rapidhash,
+  adler32, crc32). SHA-256-backed; honours the `seed` argument so
+  `Bun.hash(K, Bun.hash(q))` retains its seed-distinct invariant.
+- **Runtime-failure feedback loop** — native-tier crash signals append
+  to `~/.shelly-runtime/.runtime-failures`; the next
+  `__shelly_bg_cli_update` consumes the file and adds those versions
+  to `recordFailedVersion`'s cooldown so the updater walks past them.
+- **`SHELLY_LEGACY_NPM_PIN`** environment variable — defaults to
+  `2.1.112` (last npm release with `cli.js`); override to test a
+  different tag.
+- **`SHELLY_PREFER_NATIVE_CLAUDE`** environment variable — historically
+  required to opt in to the native Bun SEA tier. No longer needed for
+  default usage now that the SEA path is stable; kept for explicit
+  control.
+- **`BUN_TMPDIR=$HOME/.bun-tmp`** is set in the bashrc so Bun's lazy
+  `.node` extraction has a known writable directory and a single-shot
+  retry can clean it on crash.
+
+### Changed
+
+- **`exec-wrapper.c` and `exec-wrapper-musl.c` rewritten to use raw
+  arm64 `svc #0` syscalls** — `dlsym(RTLD_NEXT, ...)`, libdl, liblog,
+  malloc, and TLS were all removed from the LD_PRELOAD shim's
+  interception path. The bug class "wrapper crashes during fresh CI
+  rebuild" is gone.
+- **Two embedded Bun SEA `.node` add-ons are byte-patched out** —
+  `audio-capture.node` and `image-processor.node` loader call sites
+  return `null` instead of invoking `process.dlopen()`. Same-length
+  patch keeps offsets stable. Voice native input and the image
+  processor native helper are disabled; JS fallbacks handle the
+  "feature missing" case. Patch is applied both at runtime promotion
+  time (`shelly-runtime-update.js`) and at CI build time (the bundled
+  `libclaude.so`).
+- **`__shelly_bg_cli_update` pinned to
+  `@anthropic-ai/claude-code@2.1.112`** by default. 2.1.113+ removed
+  `cli.js` from the npm tarball, so chasing `@latest` on a Node-only
+  path is structurally impossible.
+- **`LibExtractor.kt::ALWAYS_REFRESH` extended** to include
+  `libexec_wrapper.so` and `claude` (the bundled byte-patched
+  `libclaude.so`). Wrapper rewrites and SEA byte patches now reach
+  existing devices on app upgrade without a `versionCode` bump.
+- **`BASHRC_VERSION` 73 → 76**.
+- **Quick Launch chip styling** — compact one-row layout, Anthropic
+  copper/orange (`#CC785C`) for Claude.
+
+### Fixed
+
+- **Wrapper SIGSEGV on fresh CI rebuild** (`pc=0x1ff0` PLT
+  trampoline). Root cause was the bionic linker not resolving the
+  wrapper's `dlsym` PLT entry; raw-syscall rewrite eliminates the
+  dependency entirely.
+- **Bun SEA segfault while loading `audio-capture.node` /
+  `image-processor.node`** (Anthropic Claude Code issue
+  [#54530](https://github.com/anthropics/claude-code/issues/54530)).
+  Bypassed at the SEA level via byte patch.
+- **`grep` SEGV in any pipeline** — `static __thread char rewrite_buf[]`
+  in the LD_PRELOAD wrapper pulled in Clang's emulated-TLS helper,
+  whose own PLT entries were unresolved. Buffer is now stack-allocated
+  and threaded through `rewrite_path()` as a parameter; `errno = ...`
+  writes (also TLS-backed) were also removed.
+- **`Bun.hash is not a function`** at Claude Code 2.1.112 startup
+  through the legacy npm tier — covered by the new polyfill.
+
+### Known limitations
+
+- Claude Code's voice native input and image processor native paths
+  are disabled. Re-enable automatically once Bun upstream fixes the
+  Android arm64 musl `.node` segfault.
+- `~/.shelly-cli` legacy install uses `--omit=optional`, so versions
+  past 2.1.112 won't populate `cli.js` from Anthropic's restructured
+  npm package. Pin defaults make this a no-op for users today.
+- `ALWAYS_REFRESH += "claude"` copies ~220 MB out of the APK on every
+  app launch. Future work: sha / build-marker diff refresh.
+
+## [5.1.1] - 2026-05-01
+
 ### Added
 
 - **Build 782 security harness** — documented the release-gate checks for
