@@ -157,6 +157,12 @@ object LibExtractor {
     // kept the stale bionic-flavoured trampoline on disk and silently
     // continued to fail the musl claude launch path.
     private val ALWAYS_REFRESH = setOf(
+        // v75 (2026-05-06): bionic libexec_wrapper.so was missing from
+        // the always-refresh set. CI-only fixes that don't bump
+        // versionCode (e.g. wrapper rewrite-then-relinker fix below)
+        // never reached the user without a fresh install — same
+        // hazard the musl entry was added to dodge.
+        "libexec_wrapper.so",
         "libexec_wrapper_musl.so",
         "shelly_musl_exec"
     )

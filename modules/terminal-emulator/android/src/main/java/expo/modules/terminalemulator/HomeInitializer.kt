@@ -614,7 +614,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // don't match Bun's actual output, but cli.js doesn't compare
     // against externally-stored Bun hashes so determinism within one
     // run is enough.
-    private const val BASHRC_VERSION = 74
+    // v75 (2026-05-06): pin @anthropic-ai/claude-code to 2.1.112 in
+    // __shelly_bg_cli_update (override via SHELLY_LEGACY_NPM_PIN), since
+    // 2.1.113+ stripped cli.js from the npm tarball and the legacy tier
+    // can't reach @latest by construction. The Bash-tool exit-1 the
+    // user hit on opt-in native traces to the exec-wrapper short-
+    // circuiting linker64 prefixing whenever rewrite_path produced a
+    // different pointer (so `bash` -> $libDir/libbash.so was exec'd
+    // directly and Android refused to run a shared object). Wrapper
+    // rewrite-then-relinker fix in exec-wrapper{,-musl}.c. Crash log
+    // record extended with a tier column (claude=<ver> <epoch> <rc>
+    // <tier>); consumeRuntimeFailures() parses 3-or-4-column lines so
+    // pre-v75 records keep flowing through.
+    private const val BASHRC_VERSION = 75
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1215,7 +1227,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          local __native_ver=\$(cat \"\$HOME/.shelly-runtime/claude/version\" 2>/dev/null | tr -d '\\n')")
             sb.appendLine("          if [ -n \"\$__native_ver\" ]; then")
             sb.appendLine("            mkdir -p \"\$HOME/.shelly-runtime\" 2>/dev/null")
-            sb.appendLine("            printf 'claude=%s %s %s\\n' \"\$__native_ver\" \"\$(date -u +%s)\" \"\$__native_rc\" >> \"\$__runtime_failures\" 2>/dev/null")
+            // v75: trailing tier column so the updater can later route
+            // failure feedback to the right cooldown bucket per tier.
+            sb.appendLine("            printf 'claude=%s %s %s native\\n' \"\$__native_ver\" \"\$(date -u +%s)\" \"\$__native_rc\" >> \"\$__runtime_failures\" 2>/dev/null")
             sb.appendLine("          fi")
             sb.appendLine("        fi")
             sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
@@ -1633,7 +1647,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   3. --omit=optional (skip optional platform-specific
             //      binaries; with --force they'd get extracted anyway
             //      but --omit keeps the tree smaller)
-            sb.appendLine("  if npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest; then")
+            // v75 (2026-05-06): pin @anthropic-ai/claude-code to 2.1.112.
+            // Claude Code 2.1.113+ removed cli.js from the npm tarball
+            // (bin became a Bun-SEA-spawning cli-wrapper.cjs without a
+            // Node-runnable cli.js). Tracking @latest from npm therefore
+            // structurally cannot reach the real Claude Code; stale APK
+            // libDir bundled cli.js@2.1.112 was the only thing keeping
+            // legacy alive, and only if older APK installs left it
+            // behind. Pinning makes the floor explicit so a clean
+            // install also gets a working legacy tier. Override:
+            // SHELLY_LEGACY_NPM_PIN env var (e.g. set to "latest" to
+            // restore the old behaviour, or to a different known-good
+            // tag for testing).
+            sb.appendLine("  local __claude_pin=\"\${SHELLY_LEGACY_NPM_PIN:-2.1.112}\"")
+            sb.appendLine("  echo \"[install] pinning @anthropic-ai/claude-code to \$__claude_pin\"")
+            sb.appendLine("  if npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save \"@anthropic-ai/claude-code@\$__claude_pin\" @google/gemini-cli@latest @openai/codex@latest; then")
             sb.appendLine("    echo '[install] npm install OK'")
             sb.appendLine("  else")
             sb.appendLine("    local __npm_rc=\$?")

@@ -445,9 +445,13 @@ function currentClaudeFunctionalSmokeOk() {
 // v73 (2026-05-06): consume runtime-failure records left by the bash
 // claude() function when its opt-in native musl Bun SEA tier exits with a
 // crash signal (134/139/etc.). Each line is `claude=<version> <epoch>
-// <exit_code>`. Every record translates into a recordFailedVersion call
-// so a release that passes staging smoke but segfaults during actual
-// interactive use stops being re-promoted on the next walk-back.
+// <exit_code> [tier]` — the tier column was added in v75 so the updater
+// can later route failure feedback per tier (native vs. legacy); records
+// without it are still consumed for backward compat with on-device files
+// written by an earlier APK. Every record translates into a
+// recordFailedVersion call so a release that passes staging smoke but
+// segfaults during actual interactive use stops being re-promoted on the
+// next walk-back.
 function consumeRuntimeFailures() {
   const failuresPath = path.join(ROOT, '.runtime-failures');
   let raw;
@@ -461,7 +465,9 @@ function consumeRuntimeFailures() {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
   let recorded = 0;
   for (const line of lines) {
-    const m = line.match(/^claude=(\S+)\s+\d+\s+\d+$/);
+    // 3-col legacy: `claude=<ver> <epoch> <rc>`
+    // 4-col v75:    `claude=<ver> <epoch> <rc> <tier>`
+    const m = line.match(/^claude=(\S+)\s+\d+\s+\d+(?:\s+\S+)?$/);
     if (!m) continue;
     const version = m[1];
     if (!/^\d+\.\d+\.\d+$/.test(version)) continue;

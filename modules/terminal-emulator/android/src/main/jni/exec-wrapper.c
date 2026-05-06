@@ -172,35 +172,38 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     const char *rewritten = rewrite_path(pathname);
     if (!rewritten) return -1; /* errno already set by rewrite_path (ENAMETOOLONG) */
 
+    /* v74 (2026-05-06): always re-evaluate should_linker_exec on the
+     * (possibly rewritten) target. Previous flow short-circuited the
+     * linker prefix whenever rewrite_path returned a different pointer,
+     * which broke `bash`/`sh` rewrites that point at app-data shared
+     * objects (libbash.so) — a direct execve of a .so file is rejected
+     * by Android's loader, surfacing as Claude Code Bash tool exit 1. */
     if (rewritten != pathname) {
         LOGI("rewrite exec path=%s -> %s", pathname, rewritten);
-        int ret = orig(rewritten, argv, envp);
-        LOGW("exec rewritten path=%s failed errno=%d", rewritten, errno);
-        return ret;
     }
 
-    /* Pass through for: null path, linker64 itself, system/vendor/apex binaries,
-     * and non-ELF files (scripts, etc. -- those use shebang which the
-     * interpreter handles) */
-    if (!should_linker_exec(pathname)) {
-        int ret = orig(pathname, argv, envp);
+    /* Pass through for: null path, linker64 itself, system/vendor/apex
+     * binaries, and non-ELF files (scripts, etc. -- those use shebang
+     * which the interpreter handles). */
+    if (!should_linker_exec(rewritten)) {
+        int ret = orig(rewritten, argv, envp);
         if (ret == -1) {
             LOGW("exec pass-through failed path=%s errno=%d",
-                                pathname ? pathname : "(null)", errno);
+                                rewritten ? rewritten : "(null)", errno);
         }
         return ret;
     }
 
-    /* Build new argv: ["linker64", pathname, original_argv[1], ..., NULL] */
-    char **new_argv = build_linker_argv(pathname, argv);
+    /* Build new argv: ["linker64", rewritten, original_argv[1], ..., NULL] */
+    char **new_argv = build_linker_argv(rewritten, argv);
     if (!new_argv) {
-        return orig(pathname, argv, envp); /* OOM fallback */
+        return orig(rewritten, argv, envp); /* OOM fallback */
     }
 
-    LOGI("linker exec path=%s", pathname);
+    LOGI("linker exec path=%s", rewritten);
     int ret = orig(LINKER64, new_argv, envp);
     int saved = errno;
-    LOGW("linker exec failed path=%s errno=%d", pathname, saved);
+    LOGW("linker exec failed path=%s errno=%d", rewritten, saved);
     free(new_argv);
     errno = saved;
     return ret;
@@ -221,29 +224,24 @@ int posix_spawn(pid_t *pid, const char *path,
 
     if (rewritten != path) {
         LOGI("rewrite spawn path=%s -> %s", path, rewritten);
+    }
+
+    if (!should_linker_exec(rewritten)) {
         int ret = orig(pid, rewritten, file_actions, attrp, argv, envp);
         if (ret != 0) {
-            LOGW("spawn rewritten path=%s failed ret=%d", rewritten, ret);
-        }
-        return ret;
-    }
-
-    if (!should_linker_exec(path)) {
-        int ret = orig(pid, path, file_actions, attrp, argv, envp);
-        if (ret != 0) {
             LOGW("spawn pass-through failed path=%s ret=%d",
-                                path ? path : "(null)", ret);
+                                rewritten ? rewritten : "(null)", ret);
         }
         return ret;
     }
 
-    char **new_argv = build_linker_argv(path, argv);
-    if (!new_argv) return orig(pid, path, file_actions, attrp, argv, envp);
+    char **new_argv = build_linker_argv(rewritten, argv);
+    if (!new_argv) return orig(pid, rewritten, file_actions, attrp, argv, envp);
 
-    LOGI("linker spawn path=%s", path);
+    LOGI("linker spawn path=%s", rewritten);
     int ret = orig(pid, LINKER64, file_actions, attrp, new_argv, envp);
     if (ret != 0) {
-        LOGW("linker spawn failed path=%s ret=%d", path, ret);
+        LOGW("linker spawn failed path=%s ret=%d", rewritten, ret);
     }
     free(new_argv);
     return ret;
