@@ -33,6 +33,7 @@ import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
+import { QuickLaunchSection } from './QuickLaunchSection';
 import {
   neonTextGlow,
   neonDotGlow,
@@ -369,6 +370,16 @@ export function Sidebar() {
             </Text>
           )}
         </SidebarSection>
+
+        {/* QUICK LAUNCH — one-tap CLI launchers (claude/codex/gemini) into a
+            new Terminal pane. Sits between TASKS and REPOSITORIES so the
+            most-used "I just want a REPL right now" affordance is at the
+            top of the sidebar, above repo/worktree management. */}
+        <QuickLaunchSection
+          isOpen={openSections.quickLaunch ?? true}
+          onToggle={() => toggleSection('quickLaunch')}
+          iconsOnly={iconsOnly}
+        />
 
         {/* REPOSITORIES */}
         <SidebarSection

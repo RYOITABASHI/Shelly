@@ -7,7 +7,7 @@ import { logInfo, logError } from '@/lib/debug-logger';
 import { normalizePath } from '@/lib/normalize-path';
 
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
-export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles' | 'worktrees';
+export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles' | 'worktrees' | 'quickLaunch';
 
 interface SidebarState {
   mode: SidebarMode;
@@ -31,7 +31,7 @@ export const useSidebarStore = create<SidebarState>()(
   persist(
     (set, get) => ({
   mode: 'expanded',
-  openSections: { tasks: true, repos: true, files: true, device: false, ports: false, profiles: false, worktrees: true },
+  openSections: { tasks: true, repos: true, files: true, device: false, ports: false, profiles: false, worktrees: true, quickLaunch: true },
   activeRepoPath: null,
   repoPaths: [],
 
