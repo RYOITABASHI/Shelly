@@ -3,273 +3,309 @@
  *
  * The normal Shelly PTY preloads libexec_wrapper.so, which is built for
  * Android/bionic. The musl loader cannot relocate that library. This shim is
- * built against musl and is injected only by shelly_musl_exec after it strips
- * the PTY-wide bionic LD_PRELOAD.
+ * built against musl and injected by shelly_musl_exec after it strips the
+ * PTY-wide bionic LD_PRELOAD.
  */
 #define _GNU_SOURCE
-#include <dlfcn.h>
 #include <errno.h>
-#include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <stddef.h>
 #include <unistd.h>
 
 #define LINKER64 "/system/bin/linker64"
+#define MAX_ARGC 4096
+#define MAX_ENVP 8192
+#define PATH_BUF_SIZE 4096
+
+#ifndef AT_FDCWD
+#define AT_FDCWD (-100)
+#endif
+#ifndef O_RDONLY
+#define O_RDONLY 0
+#endif
+
+#ifndef __NR_openat
+#define __NR_openat 56
+#endif
+#ifndef __NR_close
+#define __NR_close 57
+#endif
+#ifndef __NR_read
+#define __NR_read 63
+#endif
+#ifndef __NR_exit_group
+#define __NR_exit_group 94
+#endif
+#ifndef __NR_clone
+#define __NR_clone 220
+#endif
+#ifndef __NR_execve
+#define __NR_execve 221
+#endif
 
 extern char **environ;
 
-static int debug_enabled(void) {
-    const char *v = getenv("SHELLY_DEBUG_MUSL");
-    return v && strcmp(v, "1") == 0;
+static long raw_syscall1(long nr, long a0) {
+    register long x8 asm("x8") = nr;
+    register long x0 asm("x0") = a0;
+    asm volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return x0;
 }
 
-static const char *safe_str(const char *s) {
-    return s ? s : "(null)";
+static long raw_syscall3(long nr, long a0, long a1, long a2) {
+    register long x8 asm("x8") = nr;
+    register long x0 asm("x0") = a0;
+    register long x1 asm("x1") = a1;
+    register long x2 asm("x2") = a2;
+    asm volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
+    return x0;
 }
 
-static void debug_log_argv(const char *fn, const char *path, const char *rewritten,
-                           char *const argv[]) {
-    if (!debug_enabled()) return;
-    dprintf(2, "ShellyMuslExec: %s(%s)", fn, safe_str(path));
-    if (rewritten && path && strcmp(rewritten, path) != 0) {
-        dprintf(2, " -> %s", rewritten);
+static long raw_syscall4(long nr, long a0, long a1, long a2, long a3) {
+    register long x8 asm("x8") = nr;
+    register long x0 asm("x0") = a0;
+    register long x1 asm("x1") = a1;
+    register long x2 asm("x2") = a2;
+    register long x3 asm("x3") = a3;
+    asm volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x8) : "memory");
+    return x0;
+}
+
+static long raw_syscall5(long nr, long a0, long a1, long a2, long a3, long a4) {
+    register long x8 asm("x8") = nr;
+    register long x0 asm("x0") = a0;
+    register long x1 asm("x1") = a1;
+    register long x2 asm("x2") = a2;
+    register long x3 asm("x3") = a3;
+    register long x4 asm("x4") = a4;
+    asm volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8) : "memory");
+    return x0;
+}
+
+static int finish_syscall(long ret) {
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
     }
-    if (argv) {
-        int i = 0;
-        for (; argv[i] && i < 8; i++) {
-            dprintf(2, " argv[%d]=%s", i, safe_str(argv[i]));
+    return (int)ret;
+}
+
+static int raw_execve_call(const char *path, char *const argv[], char *const envp[]) {
+    return finish_syscall(raw_syscall3(__NR_execve, (long)path, (long)argv, (long)envp));
+}
+
+static int raw_open_readonly(const char *path) {
+    return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)path, O_RDONLY, 0));
+}
+
+static long raw_read_call(int fd, void *buf, size_t count) {
+    return raw_syscall3(__NR_read, fd, (long)buf, (long)count);
+}
+
+static void raw_close_call(int fd) {
+    raw_syscall1(__NR_close, fd);
+}
+
+static void raw_exit_group(int status) {
+    raw_syscall1(__NR_exit_group, status);
+    for (;;) {}
+}
+
+static int streq(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static int starts_with(const char *s, const char *prefix) {
+    if (!s || !prefix) return 0;
+    while (*prefix) {
+        if (*s++ != *prefix++) return 0;
+    }
+    return 1;
+}
+
+static const char *env_value(char *const envp[], const char *name_eq) {
+    char *const *env = envp ? envp : environ;
+    if (!env) return NULL;
+    for (int i = 0; env[i]; i++) {
+        const char *s = env[i];
+        const char *p = name_eq;
+        while (*p && *s == *p) {
+            s++;
+            p++;
         }
-        if (i == 8 && argv[i]) dprintf(2, " argv[8+]=...");
+        if (!*p) return s;
     }
-    dprintf(2, "\n");
+    return NULL;
 }
 
-static void debug_log_result(const char *fn, const char *path, const char *action,
-                             int rc, int err) {
-    if (!debug_enabled()) return;
-    dprintf(2, "ShellyMuslExec: %s(%s) %s rc=%d errno=%d\n",
-            fn, safe_str(path), action, rc, err);
+static int is_ld_preload(const char *s) {
+    return starts_with(s, "LD_PRELOAD=");
 }
 
-static char **strip_ld_preload(char *const envp[]) {
+static char *const *strip_ld_preload(char *const envp[], char **out) {
     char *const *src = envp ? envp : environ;
-    int n = 0;
-    while (src && src[n]) n++;
-
-    char **out = (char **)malloc((size_t)(n + 1) * sizeof(char *));
-    if (!out) return NULL;
-
     int j = 0;
-    for (int i = 0; i < n; i++) {
-        if (strncmp(src[i], "LD_PRELOAD=", 11) == 0) continue;
+    if (!src) {
+        out[0] = NULL;
+        return out;
+    }
+
+    for (int i = 0; src[i]; i++) {
+        if (is_ld_preload(src[i])) continue;
+        if (j >= MAX_ENVP) {
+            errno = E2BIG;
+            return NULL;
+        }
         out[j++] = src[i];
     }
     out[j] = NULL;
-
-    if (debug_enabled() && j != n) {
-        dprintf(2, "ShellyMuslExec: stripped LD_PRELOAD for child env\n");
-    }
     return out;
 }
 
-static char *const *child_env(char **clean_envp, char *const envp[]) {
-    if (clean_envp) return clean_envp;
-    return envp ? envp : environ;
+static int copy_rewrite(char *out, size_t out_size, const char *prefix, const char *suffix) {
+    size_t n = 0;
+    while (*prefix) {
+        if (n + 1 >= out_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        out[n++] = *prefix++;
+    }
+    while (*suffix) {
+        if (n + 1 >= out_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        out[n++] = *suffix++;
+    }
+    out[n] = '\0';
+    return 0;
+}
+
+static int trusted_shell_path(const char *path) {
+    return path && path[0] == '/' &&
+           (starts_with(path, "/data/user/0/dev.shelly.terminal/") ||
+            starts_with(path, "/data/data/dev.shelly.terminal/") ||
+            starts_with(path, "/system/bin/"));
 }
 
 static int is_elf(const char *path) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;
     unsigned char magic[4];
-    ssize_t n = read(fd, magic, 4);
-    close(fd);
-    return (n == 4 && magic[0] == 0x7f && magic[1] == 'E'
-                   && magic[2] == 'L'  && magic[3] == 'F');
+    int fd = raw_open_readonly(path);
+    if (fd < 0) return 0;
+    long n = raw_read_call(fd, magic, sizeof(magic));
+    raw_close_call(fd);
+    return n == 4 && magic[0] == 0x7f && magic[1] == 'E' &&
+           magic[2] == 'L' && magic[3] == 'F';
 }
 
-static const char *rewrite_path(const char *pathname) {
+static const char *rewrite_path(const char *pathname, char *const envp[]) {
+    static __thread char rewrite_buf[PATH_BUF_SIZE];
+
     if (!pathname) return NULL;
-    if (strcmp(pathname, "/bin/sh") == 0) return "/system/bin/sh";
-    if (strcmp(pathname, "sh") == 0) return "/system/bin/sh";
-    if (strcmp(pathname, "/usr/bin/env") == 0) return "/system/bin/env";
-    if (strcmp(pathname, "env") == 0) return "/system/bin/env";
-    if (strcmp(pathname, "/bin/bash") == 0 || strcmp(pathname, "bash") == 0) {
-        const char *shell = getenv("SHELL");
-        if (shell && shell[0]) return shell;
+    if (streq(pathname, "/bin/sh") || streq(pathname, "sh")) return "/system/bin/sh";
+    if (streq(pathname, "/usr/bin/env") || streq(pathname, "env")) return "/system/bin/env";
+    if (streq(pathname, "/bin/bash") || streq(pathname, "bash")) {
+        const char *shell = env_value(envp, "SHELL=");
+        if (trusted_shell_path(shell)) return shell;
+    }
+    if (starts_with(pathname, "/bin/")) {
+        return copy_rewrite(rewrite_buf, sizeof(rewrite_buf), "/system/bin/", pathname + 5) == 0
+            ? rewrite_buf
+            : NULL;
+    }
+    if (starts_with(pathname, "/usr/bin/")) {
+        return copy_rewrite(rewrite_buf, sizeof(rewrite_buf), "/system/bin/", pathname + 9) == 0
+            ? rewrite_buf
+            : NULL;
     }
     return pathname;
 }
 
 static int should_linker_exec(const char *pathname) {
     return pathname &&
-        strcmp(pathname, LINKER64) != 0 &&
-        strncmp(pathname, "/system/", 8) != 0 &&
-        strncmp(pathname, "/vendor/", 8) != 0 &&
-        strncmp(pathname, "/apex/",   6) != 0 &&
-        is_elf(pathname);
+           !streq(pathname, LINKER64) &&
+           !starts_with(pathname, "/system/") &&
+           !starts_with(pathname, "/vendor/") &&
+           !starts_with(pathname, "/apex/") &&
+           is_elf(pathname);
 }
 
-static char **build_linker_argv(const char *pathname, char *const argv[]) {
+static int build_linker_argv(const char *pathname, char *const argv[], char **out) {
     int argc = 0;
     if (argv) {
-        while (argv[argc]) argc++;
+        while (argv[argc]) {
+            if (argc >= MAX_ARGC) {
+                errno = E2BIG;
+                return -1;
+            }
+            argc++;
+        }
     }
 
-    char **new_argv = (char **)malloc((argc + 2) * sizeof(char *));
-    if (!new_argv) return NULL;
-
-    new_argv[0] = LINKER64;
-    new_argv[1] = (char *)pathname;
+    out[0] = (char *)LINKER64;
+    out[1] = (char *)pathname;
     for (int i = 1; i <= argc; i++) {
-        new_argv[i + 1] = argv[i];
+        out[i + 1] = argv[i];
     }
-    return new_argv;
+    return 0;
 }
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
-    typedef int (*orig_t)(const char *, char *const [], char *const []);
-    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execve");
-    const char *rewritten = rewrite_path(pathname);
+    char *clean_env[MAX_ENVP + 1];
+    char *const *child_env = strip_ld_preload(envp, clean_env);
+    if (!child_env) return -1;
 
+    const char *rewritten = rewrite_path(pathname, (char *const *)child_env);
+    if (!rewritten) return -1;
     if (rewritten != pathname) {
-        debug_log_argv("execve", pathname, rewritten, argv);
-        char **clean_envp = strip_ld_preload(envp);
-        int ret = orig(rewritten, argv, child_env(clean_envp, envp));
-        int saved = errno;
-        free(clean_envp);
-        errno = saved;
-        debug_log_result("execve", rewritten, "rewrite-failed", ret, errno);
-        return ret;
+        return raw_execve_call(rewritten, argv, (char *const *)child_env);
     }
-
-    debug_log_argv("execve", pathname, rewritten, argv);
-    char **clean_envp = strip_ld_preload(envp);
     if (!should_linker_exec(pathname)) {
-        int ret = orig(pathname, argv, child_env(clean_envp, envp));
-        int saved = errno;
-        free(clean_envp);
-        errno = saved;
-        if (ret == -1) debug_log_result("execve", pathname, "pass-through-failed", ret, saved);
-        return ret;
+        return raw_execve_call(pathname, argv, (char *const *)child_env);
     }
 
-    char **new_argv = build_linker_argv(pathname, argv);
-    if (!new_argv) {
-        int ret = orig(pathname, argv, child_env(clean_envp, envp));
-        int saved = errno;
-        free(clean_envp);
-        errno = saved;
-        return ret;
+    char *new_argv[MAX_ARGC + 2];
+    if (build_linker_argv(pathname, argv, new_argv) != 0) {
+        return raw_execve_call(pathname, argv, (char *const *)child_env);
     }
-
-    debug_log_result("execve", pathname, "linker64", 0, 0);
-    int ret = orig(LINKER64, new_argv, child_env(clean_envp, envp));
-    int saved = errno;
-    debug_log_result("execve", pathname, "linker64-failed", ret, saved);
-    free(new_argv);
-    free(clean_envp);
-    errno = saved;
-    return ret;
+    return raw_execve_call(LINKER64, new_argv, (char *const *)child_env);
 }
 
 int posix_spawn(pid_t *pid, const char *path,
                 const posix_spawn_file_actions_t *file_actions,
                 const posix_spawnattr_t *attrp,
                 char *const argv[], char *const envp[]) {
-    typedef int (*orig_t)(pid_t *, const char *,
-                          const posix_spawn_file_actions_t *,
-                          const posix_spawnattr_t *,
-                          char *const [], char *const []);
-    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawn");
-    const char *rewritten = rewrite_path(path);
+    if (file_actions || attrp) return ENOSYS;
 
-    if (rewritten != path) {
-        debug_log_argv("posix_spawn", path, rewritten, argv);
-        char **clean_envp = strip_ld_preload(envp);
-        int ret = orig(pid, rewritten, file_actions, attrp, argv, child_env(clean_envp, envp));
-        free(clean_envp);
-        if (ret != 0) debug_log_result("posix_spawn", rewritten, "rewrite-failed", ret, ret);
-        return ret;
+    long child = raw_syscall5(__NR_clone, SIGCHLD, 0, 0, 0, 0);
+    if (child < 0) return (int)-child;
+    if (child == 0) {
+        execve(path, argv, envp);
+        raw_exit_group(127);
     }
 
-    debug_log_argv("posix_spawn", path, rewritten, argv);
-    char **clean_envp = strip_ld_preload(envp);
-    if (!should_linker_exec(path)) {
-        int ret = orig(pid, path, file_actions, attrp, argv, child_env(clean_envp, envp));
-        free(clean_envp);
-        if (ret != 0) debug_log_result("posix_spawn", path, "pass-through-failed", ret, ret);
-        return ret;
-    }
-
-    char **new_argv = build_linker_argv(path, argv);
-    if (!new_argv) {
-        int ret = orig(pid, path, file_actions, attrp, argv, child_env(clean_envp, envp));
-        free(clean_envp);
-        return ret;
-    }
-
-    debug_log_result("posix_spawn", path, "linker64", 0, 0);
-    int ret = orig(pid, LINKER64, file_actions, attrp, new_argv, child_env(clean_envp, envp));
-    if (ret != 0) debug_log_result("posix_spawn", path, "linker64-failed", ret, ret);
-    free(new_argv);
-    free(clean_envp);
-    return ret;
+    if (pid) *pid = (pid_t)child;
+    return 0;
 }
 
 int posix_spawnp(pid_t *pid, const char *file,
                  const posix_spawn_file_actions_t *file_actions,
                  const posix_spawnattr_t *attrp,
                  char *const argv[], char *const envp[]) {
-    typedef int (*orig_t)(pid_t *, const char *,
-                          const posix_spawn_file_actions_t *,
-                          const posix_spawnattr_t *,
-                          char *const [], char *const []);
-    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawnp");
-    const char *rewritten = rewrite_path(file);
-
-    if (rewritten != file) {
-        debug_log_argv("posix_spawnp", file, rewritten, argv);
-        return posix_spawn(pid, rewritten, file_actions, attrp, argv, envp);
-    }
-
-    debug_log_argv("posix_spawnp", file, rewritten, argv);
-    char **clean_envp = strip_ld_preload(envp);
-    int ret = orig(pid, file, file_actions, attrp, argv, child_env(clean_envp, envp));
-    free(clean_envp);
-    if (ret != 0) debug_log_result("posix_spawnp", file, "pass-through-failed", ret, ret);
-    return ret;
+    return posix_spawn(pid, file, file_actions, attrp, argv, envp);
 }
 
 int execvp(const char *file, char *const argv[]) {
-    const char *rewritten = rewrite_path(file);
-
-    if (rewritten != file) {
-        debug_log_argv("execvp", file, rewritten, argv);
-        return execve(rewritten, argv, environ);
-    }
-
-    debug_log_argv("execvp", file, rewritten, argv);
-    return execvpe(file, argv, environ);
+    return execve(file, argv, environ);
 }
 
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
-    typedef int (*orig_t)(const char *, char *const [], char *const []);
-    orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execvpe");
-    const char *rewritten = rewrite_path(file);
-
-    if (rewritten != file) {
-        debug_log_argv("execvpe", file, rewritten, argv);
-        return execve(rewritten, argv, envp);
-    }
-
-    debug_log_argv("execvpe", file, rewritten, argv);
-    char **clean_envp = strip_ld_preload(envp);
-    int ret = orig(file, argv, child_env(clean_envp, envp));
-    int saved = errno;
-    free(clean_envp);
-    errno = saved;
-    if (ret == -1) debug_log_result("execvpe", file, "pass-through-failed", ret, saved);
-    return ret;
+    return execve(file, argv, envp);
 }

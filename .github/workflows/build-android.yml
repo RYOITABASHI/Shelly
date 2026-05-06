@@ -133,9 +133,9 @@ jobs:
               # already a musl 1.2.4 compiler. The wrapper does not need
               # Shelly patched resolver path, only musl ABI compatibility
               # with the loader used for Claude Code.
-              gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
-                /tmp/exec-wrapper.c \
-                -o /out/libexec_wrapper_musl.so -ldl
+              gcc -shared -fPIC -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror \
+                /tmp/exec-wrapper-musl.c \
+                -o /out/libexec_wrapper_musl.so
               strip --strip-unneeded /out/libexec_wrapper_musl.so
               # Sanity checks inside the container — readelf/strings are
               # the Alpine aarch64 natives, no cross-tool needed.
@@ -146,7 +146,7 @@ jobs:
             ')"
           trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
           docker cp /tmp/musl-v1.2.4.tar.gz "${CID}:/tmp/musl-v1.2.4.tar.gz"
-          docker cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper.c" "${CID}:/tmp/exec-wrapper.c"
+          docker cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c" "${CID}:/tmp/exec-wrapper-musl.c"
           docker start -a "${CID}"
           docker rm "${CID}" >/dev/null
           trap - EXIT
@@ -729,11 +729,12 @@ jobs:
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           SRC="/work/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c"
           OUT="/work/${JNILIBS}/libexec_wrapper_musl.so"
+
           docker run --rm --platform linux/arm64 \
             -v "${GITHUB_WORKSPACE}:/work" \
             alpine:3.19 sh -euxc "
               apk add --no-progress build-base file
-              cc -shared -fPIC -O2 -Wall -Wextra -Werror '${SRC}' -o '${OUT}' -ldl
+              cc -shared -fPIC -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror '${SRC}' -o '${OUT}'
               strip --strip-unneeded '${OUT}'
               chmod 755 '${OUT}'
               ls -lh '${OUT}'
