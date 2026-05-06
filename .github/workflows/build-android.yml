@@ -428,6 +428,29 @@ jobs:
           test -f package/claude || { echo "claude binary missing from tarball"; ls -la package; exit 1; }
           CLAUDE_VERSION=$(node -p "require('/tmp/package/package.json').version")
           echo "[claude] bundling @anthropic-ai/claude-code-linux-arm64-musl@${CLAUDE_VERSION}"
+          python3 - package/claude <<'PY'
+          import sys
+
+          path = sys.argv[1]
+          data = bytearray(open(path, "rb").read())
+          patches = [
+              (
+                  b"try{return A28=GFK(),A28}catch{}",
+                  b"try{return A28=null,A28 }catch{}",
+              ),
+              (
+                  b"try{pc8=DFK()}catch{pc8=null}",
+                  b"try{pc8=null }catch{pc8=null}",
+              ),
+          ]
+          for label, (src, dst) in zip(("audio", "image"), patches):
+              if len(src) != len(dst):
+                  raise SystemExit(f"FATAL: {label} patch length mismatch")
+              count = data.count(src)
+              data = data.replace(src, dst)
+              print(f"[claude] native addon loader patch {label}: {count}")
+          open(path, "wb").write(data)
+          PY
           cp package/claude "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"

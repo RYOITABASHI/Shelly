@@ -596,7 +596,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 72
+    // v73 (2026-05-06): Claude native Bun SEA extracts embedded .node add-ons
+    // through Bun's own BUN_TMPDIR resolver, not Claude's CLAUDE_* tmp vars.
+    // Pin it to a dedicated writable directory and retry native SIGSEGV-style
+    // exits once after removing stale extracted add-ons.
+    private const val BASHRC_VERSION = 73
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -897,6 +901,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // tied to any specific tool's data.
             sb.appendLine("export TMPDIR=\"\$HOME/tmp\"")
             sb.appendLine("mkdir -p \"\$TMPDIR\" 2>/dev/null")
+            sb.appendLine("export BUN_TMPDIR=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
+            sb.appendLine("mkdir -p \"\$BUN_TMPDIR\" 2>/dev/null")
             // bug #106 part B: explicit PS2 so a wrapped or unclosed paste
             // never confuses the user with a non-default continuation
             // prompt. The literal `<` line-prefix observed during
@@ -1102,6 +1108,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __runtime_extracted_cli_js=\"\$HOME/.shelly-runtime/claude-extracted/current/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
             sb.appendLine("  local __apk_extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
             sb.appendLine("  local __extracted_cli_js=\"\"")
+            sb.appendLine("  local __bun_tmp=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
+            sb.appendLine("  mkdir -p \"\$__bun_tmp\" 2>/dev/null")
             sb.appendLine("  if [ -f \"\$__runtime_extracted_cli_js\" ]; then")
             sb.appendLine("    __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
             sb.appendLine("  elif [ -f \"\$__apk_extracted_cli_js\" ]; then")
@@ -1122,8 +1130,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
             sb.appendLine("      fi")
             sb.appendLine("      __shelly_paste_tui_begin")
-            sb.appendLine("      SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
+            sb.appendLine("      BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
             sb.appendLine("      local __runtime_rc=$?")
+            sb.appendLine("      if [ \"\$__runtime_rc\" = 134 ] || [ \"\$__runtime_rc\" = 139 ] || [ \"\$__runtime_rc\" = 159 ]; then")
+            sb.appendLine("        rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
+            sb.appendLine("        BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
+            sb.appendLine("        __runtime_rc=$?")
+            sb.appendLine("      fi")
             sb.appendLine("      __shelly_paste_tui_end")
             sb.appendLine("      case \"\$__runtime_rc\" in")
             sb.appendLine("        0)")
@@ -1145,8 +1158,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("    if [ -x \"\$__musl_claude\" ]; then")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("    BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
+            sb.appendLine("    if [ \"\$__musl_rc\" = 134 ] || [ \"\$__musl_rc\" = 139 ] || [ \"\$__musl_rc\" = 159 ]; then")
+            sb.appendLine("      rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
+            sb.appendLine("      BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("      __musl_rc=$?")
+            sb.appendLine("    fi")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__musl_rc\" in")
             sb.appendLine("      0)")
@@ -1173,9 +1191,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      fi")
             sb.appendLine("    fi")
             sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
-            sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
+            sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" \"\$__bun_tmp\"")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
+            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
             sb.appendLine("    local __extracted_rc=\$?")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__extracted_rc\" in")

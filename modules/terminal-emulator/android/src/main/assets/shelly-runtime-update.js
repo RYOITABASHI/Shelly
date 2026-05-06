@@ -43,6 +43,9 @@ const LOG = path.join(ROOT, 'update.log');
 const LOCK = path.join(ROOT, '.update.lock');
 const FAILED_VERSIONS = path.join(ROOT, '.failed-versions');
 const NPM_ROOT = path.join(HOME, '.shelly-cli');
+const CLAUDE_BUN_TMP = path.join(HOME, '.bun-tmp');
+const CLAUDE_TMP = path.join(HOME, '.claude-tmp');
+const GENERIC_TMP = path.join(HOME, '.tmp');
 const LIB = process.env.SHELLY_LIB_DIR;
 const FORCE = process.argv.includes('--force');
 // v60 (2026-04-26): --check-only returns exit 0 when an upgrade is available
@@ -371,6 +374,9 @@ function runNodeScript(script, args = [], extraEnv = {}) {
 }
 
 function runClaudeNative(binary, args = [], extraEnv = {}) {
+  fs.mkdirSync(CLAUDE_BUN_TMP, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(CLAUDE_TMP, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(GENERIC_TMP, { recursive: true, mode: 0o700 });
   return runLinker([
     path.join(LIB, 'shelly_musl_exec'),
     path.join(LIB, 'ld-musl-aarch64.so.1'),
@@ -381,11 +387,45 @@ function runClaudeNative(binary, args = [], extraEnv = {}) {
     USE_BUILTIN_RIPGREP: '0',
     DISABLE_AUTOUPDATER: '1',
     DISABLE_INSTALLATION_CHECKS: '1',
-    TMPDIR: path.join(HOME, '.tmp'),
-    CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
-    CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
+    TMPDIR: GENERIC_TMP,
+    BUN_TMPDIR: CLAUDE_BUN_TMP,
+    CLAUDE_TMPDIR: CLAUDE_TMP,
+    CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
     ...extraEnv,
   });
+}
+
+function replaceAllBytes(buf, from, to) {
+  if (from.length !== to.length) {
+    throw new Error(`internal patch length mismatch: ${from.length} != ${to.length}`);
+  }
+  let count = 0;
+  let offset = 0;
+  while ((offset = buf.indexOf(from, offset)) !== -1) {
+    to.copy(buf, offset);
+    offset += to.length;
+    count++;
+  }
+  return count;
+}
+
+function patchClaudeNativeAddons(buf) {
+  if (process.env.SHELLY_PATCH_CLAUDE_NATIVE_ADDONS === '0') return buf;
+  const out = Buffer.from(buf);
+  const counts = [
+    replaceAllBytes(
+      out,
+      Buffer.from('try{return A28=GFK(),A28}catch{}'),
+      Buffer.from('try{return A28=null,A28 }catch{}'),
+    ),
+    replaceAllBytes(
+      out,
+      Buffer.from('try{pc8=DFK()}catch{pc8=null}'),
+      Buffer.from('try{pc8=null }catch{pc8=null}'),
+    ),
+  ];
+  info(`[claude] native addon loader patch counts: audio=${counts[0]} image=${counts[1]}`);
+  return out;
 }
 
 function findElfSection(buf, name) {
@@ -683,8 +723,10 @@ async function tryClaudeVersion(pkgMeta, version) {
     const entries = parseTar(tgz);
     const bin = tarEntry(entries, 'package/claude') || tarEntry(entries, 'claude');
     if (!bin) return { ok: false, reason: 'package/claude missing from tarball' };
+    const patchedBin = patchClaudeNativeAddons(bin);
 
-    // Native Bun SEA route. This keeps the real upstream Claude binary intact.
+    // Native Bun SEA route. We preserve upstream behavior except for Shelly's
+    // Android-incompatible embedded native add-ons, patched above.
     // The extracted-Node route is still prepared as a fallback, but it cannot
     // be the primary validation path anymore: Claude 2.1.129 passed
     // `--version` after extraction but hung on `--print` because newer bundles
@@ -692,7 +734,7 @@ async function tryClaudeVersion(pkgMeta, version) {
     const nativeStaging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
     ensureCleanDir(nativeStaging);
     const nativeOut = path.join(nativeStaging, 'claude');
-    fs.writeFileSync(nativeOut, bin, { mode: 0o755 });
+    fs.writeFileSync(nativeOut, patchedBin, { mode: 0o755 });
     fs.chmodSync(nativeOut, 0o755);
 
     const nativeSmoke = runClaudeNative(nativeOut, ['--version']);
@@ -733,7 +775,7 @@ async function tryClaudeVersion(pkgMeta, version) {
       fs.mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
       const out = path.join(pkgDir, 'cli.js');
       const pkgJson = path.join(pkgDir, 'package.json');
-      const extracted = extractClaudeCliFromSea(bin);
+      const extracted = extractClaudeCliFromSea(patchedBin);
       fs.writeFileSync(out, extracted, { mode: 0o755 });
       fs.chmodSync(out, 0o755);
       fs.writeFileSync(pkgJson, JSON.stringify({
@@ -760,9 +802,10 @@ async function tryClaudeVersion(pkgMeta, version) {
         USE_BUILTIN_RIPGREP: '0',
         DISABLE_AUTOUPDATER: '1',
         DISABLE_INSTALLATION_CHECKS: '1',
-        TMPDIR: path.join(HOME, '.tmp'),
-        CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
-        CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
+        TMPDIR: GENERIC_TMP,
+        BUN_TMPDIR: CLAUDE_BUN_TMP,
+        CLAUDE_TMPDIR: CLAUDE_TMP,
+        CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
       });
       const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
       if (smoke.status !== 0 || !combined.includes(version)) {
