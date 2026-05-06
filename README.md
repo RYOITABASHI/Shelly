@@ -360,11 +360,12 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Claude / Gemini CLIs auto-installed on first launch (via npm) | ✅ shipping |
-| Claude Code updater-managed extracted Bun `cli.js` Node route (default) + APK/musl/legacy fallbacks + Codex CLI verified native runtime + Gemini npm CLI staged/probed before promotion | ✅ managed latest with rollback; 769 device verification: Claude 2.1.123, Codex 0.125.0-termux GPT-5.5, Gemini 0.40.0 |
+| Claude Code updater-managed musl Bun SEA (default) with `audio-capture.node` / `image-processor.node` byte-patched out for Android arm64 stability + raw-syscall LD_PRELOAD wrappers + legacy npm tier pinned to 2.1.112 (`SHELLY_LEGACY_NPM_PIN` override) + Bun.hash polyfill + Codex CLI verified native runtime + Gemini npm CLI staged/probed before promotion | ✅ managed latest with rollback; 807 device verification: **Claude 2.1.131 with Bash tool**, Codex 0.125.0-termux GPT-5.5, Gemini 0.40.0 |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
+| Sidebar Quick Launch (one-tap CLI shortcuts: Claude / Codex / Gemini) | ✅ shipping (v5.2.0) |
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |
 | Distribution channels (Play Store / F-Droid) | 🟡 GitHub Releases only for now |
