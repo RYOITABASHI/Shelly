@@ -157,8 +157,20 @@ object LibExtractor {
     // kept the stale bionic-flavoured trampoline on disk and silently
     // continued to fail the musl claude launch path.
     private val ALWAYS_REFRESH = setOf(
+        // v76 (2026-05-06): bionic libexec_wrapper.so was missing from
+        // ALWAYS_REFRESH. CI-only fixes that don't bump versionCode never
+        // reached devices for the wrapper — same hazard the musl entry
+        // dodges. Codex's raw-syscall rewrite + future bionic-side wrapper
+        // fixes both rely on this being force-extracted.
+        "libexec_wrapper.so",
         "libexec_wrapper_musl.so",
-        "shelly_musl_exec"
+        "shelly_musl_exec",
+        // v76: byte-patched bundled libclaude.so (audio-capture / image-
+        // processor .node loaders neutered) needs to reach existing
+        // devices on app upgrade. Without ALWAYS_REFRESH the stale
+        // pre-patch binary on disk would mask the fix until forceRefresh
+        // hits via versionCode bump.
+        "claude"
     )
 
     fun getLibDir(context: Context): File =

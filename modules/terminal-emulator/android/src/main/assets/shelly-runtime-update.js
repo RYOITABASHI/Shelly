@@ -99,6 +99,41 @@ if (typeof globalThis.Bun.stringWidth !== 'function') {
     return width;
   };
 }
+// v76 (2026-05-06): Bun.hash shim for the extracted-Node tier. Mirror of
+// the bashrc heredoc so the same polyfill applies whether cli.js is run
+// from ~/.shelly-cli (legacy npm) or ~/.shelly-runtime/claude-extracted.
+if (typeof globalThis.Bun.hash !== 'function') {
+  const __shellyCryptoMod = require('crypto');
+  const __shellyHashBuf = function(input) {
+    if (Buffer.isBuffer(input)) return input;
+    if (input instanceof Uint8Array) return Buffer.from(input);
+    if (input instanceof ArrayBuffer) return Buffer.from(new Uint8Array(input));
+    return Buffer.from(typeof input === 'string' ? input : String(input ?? ''));
+  };
+  const __shellyHash64 = function(input) {
+    const hex = __shellyCryptoMod.createHash('sha256').update(__shellyHashBuf(input)).digest('hex');
+    return BigInt('0x' + hex.slice(0, 16));
+  };
+  const __shellyHash32 = function(input) {
+    const hex = __shellyCryptoMod.createHash('sha256').update(__shellyHashBuf(input)).digest('hex');
+    return parseInt(hex.slice(0, 8), 16) >>> 0;
+  };
+  const __shellyHashBase = function(input) { return __shellyHash64(input); };
+  __shellyHashBase.wyhash = __shellyHash64;
+  __shellyHashBase.cityHash64 = __shellyHash64;
+  __shellyHashBase.xxHash3 = __shellyHash64;
+  __shellyHashBase.xxHash64 = __shellyHash64;
+  __shellyHashBase.murmur64v1 = __shellyHash64;
+  __shellyHashBase.murmur64v2 = __shellyHash64;
+  __shellyHashBase.rapidhash = __shellyHash64;
+  __shellyHashBase.cityHash32 = __shellyHash32;
+  __shellyHashBase.xxHash32 = __shellyHash32;
+  __shellyHashBase.murmur32v2 = __shellyHash32;
+  __shellyHashBase.murmur32v3 = __shellyHash32;
+  __shellyHashBase.adler32 = __shellyHash32;
+  __shellyHashBase.crc32 = __shellyHash32;
+  globalThis.Bun.hash = __shellyHashBase;
+}
 `;
 
 function log(line) {
@@ -269,6 +304,45 @@ function isVersionInCooldown(tool, version, nowEpoch = Math.floor(Date.now() / 1
   if (records.length === 0) return false;
   const latest = records.reduce((acc, r) => (r.epoch > acc.epoch ? r : acc));
   return (nowEpoch - latest.epoch) < FAILED_COOLDOWN_S;
+}
+
+// v76 (2026-05-06): consume runtime-failure records left by the bash
+// claude() function when its native musl Bun SEA tier exits with a
+// crash signal (134/139/etc.). Each line is `claude=<version> <epoch>
+// <exit_code> [tier]` — the optional tier column was added so the
+// updater can later route failure feedback per tier. Backward
+// compatible with 3-column records written by an earlier APK. Every
+// record translates into a recordFailedVersion call so a release that
+// passes staging smoke but segfaults during actual interactive use
+// stops being re-promoted on the next walk-back.
+function consumeRuntimeFailures() {
+  const failuresPath = path.join(ROOT, '.runtime-failures');
+  let raw;
+  try {
+    raw = fs.readFileSync(failuresPath, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return;
+    log(`runtime-failures read error: ${e.message}`);
+    return;
+  }
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+  let recorded = 0;
+  for (const line of lines) {
+    const m = line.match(/^claude=(\S+)\s+\d+\s+\d+(?:\s+\S+)?$/);
+    if (!m) continue;
+    const version = m[1];
+    if (!/^\d+\.\d+\.\d+$/.test(version)) continue;
+    recordFailedVersion('claude', version);
+    recorded += 1;
+  }
+  try {
+    fs.rmSync(failuresPath, { force: true });
+  } catch (e) {
+    log(`runtime-failures cleanup error: ${e.message}`);
+  }
+  if (recorded > 0) {
+    info(`[claude] consumed ${recorded} runtime failure record(s); versions added to cooldown`);
+  }
 }
 
 function ensureCleanDir(dir) {
@@ -829,6 +903,12 @@ async function tryClaudeVersion(pkgMeta, version) {
 
 async function updateClaude() {
   if (!LIB) fail('SHELLY_LIB_DIR is required');
+
+  // v76: pull runtime failures into the cooldown list before deciding
+  // which candidate to try, so a release that segfaulted during real
+  // interactive use stops being re-promoted on this walk-back.
+  consumeRuntimeFailures();
+
   const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
 
   const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
