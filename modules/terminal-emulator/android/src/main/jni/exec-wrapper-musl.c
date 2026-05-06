@@ -133,35 +133,41 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "execve");
     const char *rewritten = rewrite_path(pathname);
 
-    /* v74 (2026-05-06): unified flow — re-evaluate should_linker_exec
-     * on the (possibly rewritten) target so a `bash`/`sh` rewrite to
-     * an app-data shared object (libbash.so) still picks up the
-     * linker64 prefix. The previous short-circuit broke Claude Code's
-     * Bash tool with exit 1. */
+    if (rewritten != pathname) {
+        debug_log_argv("execve", pathname, rewritten, argv);
+        char **clean_envp = strip_ld_preload(envp);
+        int ret = orig(rewritten, argv, child_env(clean_envp, envp));
+        int saved = errno;
+        free(clean_envp);
+        errno = saved;
+        debug_log_result("execve", rewritten, "rewrite-failed", ret, errno);
+        return ret;
+    }
+
     debug_log_argv("execve", pathname, rewritten, argv);
     char **clean_envp = strip_ld_preload(envp);
-    if (!should_linker_exec(rewritten)) {
-        int ret = orig(rewritten, argv, child_env(clean_envp, envp));
+    if (!should_linker_exec(pathname)) {
+        int ret = orig(pathname, argv, child_env(clean_envp, envp));
         int saved = errno;
         free(clean_envp);
         errno = saved;
-        if (ret == -1) debug_log_result("execve", rewritten, "pass-through-failed", ret, saved);
+        if (ret == -1) debug_log_result("execve", pathname, "pass-through-failed", ret, saved);
         return ret;
     }
 
-    char **new_argv = build_linker_argv(rewritten, argv);
+    char **new_argv = build_linker_argv(pathname, argv);
     if (!new_argv) {
-        int ret = orig(rewritten, argv, child_env(clean_envp, envp));
+        int ret = orig(pathname, argv, child_env(clean_envp, envp));
         int saved = errno;
         free(clean_envp);
         errno = saved;
         return ret;
     }
 
-    debug_log_result("execve", rewritten, "linker64", 0, 0);
+    debug_log_result("execve", pathname, "linker64", 0, 0);
     int ret = orig(LINKER64, new_argv, child_env(clean_envp, envp));
     int saved = errno;
-    debug_log_result("execve", rewritten, "linker64-failed", ret, saved);
+    debug_log_result("execve", pathname, "linker64-failed", ret, saved);
     free(new_argv);
     free(clean_envp);
     errno = saved;
@@ -179,25 +185,34 @@ int posix_spawn(pid_t *pid, const char *path,
     orig_t orig = (orig_t)dlsym(RTLD_NEXT, "posix_spawn");
     const char *rewritten = rewrite_path(path);
 
+    if (rewritten != path) {
+        debug_log_argv("posix_spawn", path, rewritten, argv);
+        char **clean_envp = strip_ld_preload(envp);
+        int ret = orig(pid, rewritten, file_actions, attrp, argv, child_env(clean_envp, envp));
+        free(clean_envp);
+        if (ret != 0) debug_log_result("posix_spawn", rewritten, "rewrite-failed", ret, ret);
+        return ret;
+    }
+
     debug_log_argv("posix_spawn", path, rewritten, argv);
     char **clean_envp = strip_ld_preload(envp);
-    if (!should_linker_exec(rewritten)) {
-        int ret = orig(pid, rewritten, file_actions, attrp, argv, child_env(clean_envp, envp));
+    if (!should_linker_exec(path)) {
+        int ret = orig(pid, path, file_actions, attrp, argv, child_env(clean_envp, envp));
         free(clean_envp);
-        if (ret != 0) debug_log_result("posix_spawn", rewritten, "pass-through-failed", ret, ret);
+        if (ret != 0) debug_log_result("posix_spawn", path, "pass-through-failed", ret, ret);
         return ret;
     }
 
-    char **new_argv = build_linker_argv(rewritten, argv);
+    char **new_argv = build_linker_argv(path, argv);
     if (!new_argv) {
-        int ret = orig(pid, rewritten, file_actions, attrp, argv, child_env(clean_envp, envp));
+        int ret = orig(pid, path, file_actions, attrp, argv, child_env(clean_envp, envp));
         free(clean_envp);
         return ret;
     }
 
-    debug_log_result("posix_spawn", rewritten, "linker64", 0, 0);
+    debug_log_result("posix_spawn", path, "linker64", 0, 0);
     int ret = orig(pid, LINKER64, file_actions, attrp, new_argv, child_env(clean_envp, envp));
-    if (ret != 0) debug_log_result("posix_spawn", rewritten, "linker64-failed", ret, ret);
+    if (ret != 0) debug_log_result("posix_spawn", path, "linker64-failed", ret, ret);
     free(new_argv);
     free(clean_envp);
     return ret;
