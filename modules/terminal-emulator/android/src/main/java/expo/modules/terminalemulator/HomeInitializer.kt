@@ -600,7 +600,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // through Bun's own BUN_TMPDIR resolver, not Claude's CLAUDE_* tmp vars.
     // Pin it to a dedicated writable directory and retry native SIGSEGV-style
     // exits once after removing stale extracted add-ons.
-    private const val BASHRC_VERSION = 73
+    // v76 (2026-05-06): consolidated bundle — pin __shelly_bg_cli_update to
+    // @anthropic-ai/claude-code@2.1.112 (last npm release with cli.js
+    // shipped, 2.1.113+ is a Bun-SEA-spawning wrapper); extend the Bun.*
+    // polyfill heredoc with a SHA-256-backed Bun.hash shim so legacy/
+    // extracted cli.js paths past 2.1.112 don't ReferenceError on
+    // Bun.hash(input); record native-tier crashes to
+    // ~/.shelly-runtime/.runtime-failures with a `<tier>` column so the
+    // updater can route per-tier cooldowns. Bumps 73 -> 76 (skipping 74/75
+    // which lived only on a feature branch) so devices that ran v75 from
+    // that branch regenerate fresh.
+    private const val BASHRC_VERSION = 76
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1092,6 +1102,57 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    return width;")
             sb.appendLine("  };")
             sb.appendLine("}")
+            // v76 Bun.hash shim. Claude Code 2.1.112 cli.js calls
+            // Bun.hash(input) for cache-key dedup at startup; without
+            // this shim cli.js throws "Bun.hash is not a function"
+            // before printing the splash. SHA-256-based stub returns a
+            // deterministic BigInt for the default + 64-bit named
+            // variants and a 32-bit Number for the *32 variants
+            // (crc32, xxHash32, ...). Hash values do NOT match Bun's
+            // native output, but cli.js never compares against
+            // externally-stored Bun hashes so determinism within one
+            // run is enough.
+            sb.appendLine("if (typeof globalThis.Bun.hash !== 'function') {")
+            sb.appendLine("  const __shellyCryptoMod = require('crypto');")
+            sb.appendLine("  const __shellyHashBuf = function(input) {")
+            sb.appendLine("    if (Buffer.isBuffer(input)) return input;")
+            sb.appendLine("    if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);")
+            sb.appendLine("    if (input instanceof ArrayBuffer) return Buffer.from(new Uint8Array(input));")
+            sb.appendLine("    if (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer) return Buffer.from(new Uint8Array(input));")
+            sb.appendLine("    return Buffer.from(typeof input === 'string' ? input : String(input ?? ''));")
+            sb.appendLine("  };")
+            // v76 review fix (Codex): Bun.hash(input, seed) per public API.
+            // Without mixing seed into the digest, `Bun.hash(K, Bun.hash(q))`
+            // collapses to one value across q's, killing cli.js's cache key
+            // / dedup paths. SHA-256 digest of seed || 0x00 || input keeps
+            // the seed-distinct invariant.
+            sb.appendLine("  const __shellySeedBuf = function(seed) {")
+            sb.appendLine("    return seed === undefined ? Buffer.alloc(0) : Buffer.from(String(seed));")
+            sb.appendLine("  };")
+            sb.appendLine("  const __shellyHash64 = function(input, seed) {")
+            sb.appendLine("    const hex = __shellyCryptoMod.createHash('sha256').update(__shellySeedBuf(seed)).update(Buffer.from([0])).update(__shellyHashBuf(input)).digest('hex');")
+            sb.appendLine("    return BigInt('0x' + hex.slice(0, 16));")
+            sb.appendLine("  };")
+            sb.appendLine("  const __shellyHash32 = function(input, seed) {")
+            sb.appendLine("    const hex = __shellyCryptoMod.createHash('sha256').update(__shellySeedBuf(seed)).update(Buffer.from([0])).update(__shellyHashBuf(input)).digest('hex');")
+            sb.appendLine("    return parseInt(hex.slice(0, 8), 16) >>> 0;")
+            sb.appendLine("  };")
+            sb.appendLine("  const __shellyHashBase = function(input, seed) { return __shellyHash64(input, seed); };")
+            sb.appendLine("  __shellyHashBase.wyhash = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.cityHash64 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.xxHash3 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.xxHash64 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.murmur64v1 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.murmur64v2 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.rapidhash = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.cityHash32 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.xxHash32 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.murmur32v2 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.murmur32v3 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.adler32 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.crc32 = __shellyHash32;")
+            sb.appendLine("  globalThis.Bun.hash = __shellyHashBase;")
+            sb.appendLine("}")
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
             // @anthropic-ai/claude-code dispatch. Default route is the
@@ -1143,6 +1204,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          return 0")
             sb.appendLine("          ;;")
             sb.appendLine("        126|127|132|133|134|135|136|137|138|139|159)")
+            // v76: record this crash so the next shelly-runtime-update.js
+            // run consumes it and adds the version to recordFailedVersion's
+            // cooldown — broken upstream releases stop being re-promoted on
+            // the next walk-back. 4-column format: claude=<ver> <epoch>
+            // <rc> <tier>; legacy 3-col records still parse (backward
+            // compat in consumeRuntimeFailures).
+            sb.appendLine("          if [ -f \"\$HOME/.shelly-runtime/claude/version\" ]; then")
+            sb.appendLine("            local __native_ver=\$(cat \"\$HOME/.shelly-runtime/claude/version\" 2>/dev/null | tr -d '\\n')")
+            sb.appendLine("            if [ -n \"\$__native_ver\" ]; then")
+            sb.appendLine("              mkdir -p \"\$HOME/.shelly-runtime\" 2>/dev/null")
+            sb.appendLine("              printf 'claude=%s %s %s native\\n' \"\$__native_ver\" \"\$(date -u +%s)\" \"\$__runtime_rc\" >> \"\$HOME/.shelly-runtime/.runtime-failures\" 2>/dev/null")
+            sb.appendLine("            fi")
+            sb.appendLine("          fi")
             sb.appendLine("          if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
             sb.appendLine("            echo \"[shelly] claude: runtime latest failed (exit \$__runtime_rc), falling back to APK musl\" >&2")
             sb.appendLine("          fi")
@@ -1607,7 +1681,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   3. --omit=optional (skip optional platform-specific
             //      binaries; with --force they'd get extracted anyway
             //      but --omit keeps the tree smaller)
-            sb.appendLine("  if npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save @anthropic-ai/claude-code@latest @google/gemini-cli@latest @openai/codex@latest; then")
+            // v76 (2026-05-06): pin @anthropic-ai/claude-code to 2.1.112.
+            // Claude Code 2.1.113+ removed cli.js from the npm tarball
+            // (bin became a Bun-SEA-spawning cli-wrapper.cjs without a
+            // Node-runnable cli.js). Tracking @latest from npm therefore
+            // structurally cannot reach the real Claude Code; pinning
+            // makes the floor explicit so a clean install also gets a
+            // working legacy tier. Override:
+            // SHELLY_LEGACY_NPM_PIN=latest (or any tag) for testing.
+            sb.appendLine("  local __claude_pin=\"\${SHELLY_LEGACY_NPM_PIN:-2.1.112}\"")
+            sb.appendLine("  echo \"[install] pinning @anthropic-ai/claude-code to \$__claude_pin\"")
+            sb.appendLine("  if npm_config_os=linux npm_config_cpu=arm64 npm_config_libc=musl _run $libDir/node $libDir/node_modules/npm/bin/npm-cli.js install --prefix \"\$__staging\" --force --omit=optional --no-save \"@anthropic-ai/claude-code@\$__claude_pin\" @google/gemini-cli@latest @openai/codex@latest; then")
             sb.appendLine("    echo '[install] npm install OK'")
             sb.appendLine("  else")
             sb.appendLine("    local __npm_rc=\$?")
