@@ -68,36 +68,6 @@ const STABLE_DELAY_DAYS = Number(process.env.SHELLY_UPDATER_STABLE_DELAY_DAYS ||
 const STABLE_DELAY_MS = STABLE_DELAY_DAYS * 24 * 60 * 60 * 1000;
 const FUNCTIONAL_CHECK = process.env.SHELLY_UPDATER_FUNCTIONAL_CHECK === '1';
 
-const CLAUDE_BUN_NODE_POLYFILL = `
-if (!globalThis.Bun) globalThis.Bun = {};
-if (typeof globalThis.Bun.stringWidth !== 'function') {
-  globalThis.Bun.stringWidth = function shellyStringWidth(value) {
-    let width = 0;
-    for (const ch of String(value ?? '')) {
-      const code = ch.codePointAt(0);
-      if (code === undefined || code === 0) continue;
-      if (code < 32 || (code >= 0x7f && code < 0xa0)) continue;
-      if ((code >= 0x0300 && code <= 0x036f) || (code >= 0xfe00 && code <= 0xfe0f)) continue;
-      width += (
-        code >= 0x1100 &&
-        (code <= 0x115f ||
-          code === 0x2329 ||
-          code === 0x232a ||
-          (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
-          (code >= 0xac00 && code <= 0xd7a3) ||
-          (code >= 0xf900 && code <= 0xfaff) ||
-          (code >= 0xfe10 && code <= 0xfe19) ||
-          (code >= 0xfe30 && code <= 0xfe6f) ||
-          (code >= 0xff00 && code <= 0xff60) ||
-          (code >= 0xffe0 && code <= 0xffe6) ||
-          (code >= 0x1f300 && code <= 0x1faff))
-      ) ? 2 : 1;
-    }
-    return width;
-  };
-}
-`;
-
 function log(line) {
   fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
   fs.appendFileSync(LOG, `${new Date().toISOString()} ${line}\n`);
@@ -332,15 +302,11 @@ function currentVersion(tool) {
 }
 
 function currentClaudeVersion() {
-  return currentVersion('claude') || currentVersion('claude-extracted');
+  return currentVersion('claude');
 }
 
 function currentClaudeNativeVersion() {
   return currentVersion('claude');
-}
-
-function currentClaudeExtractedVersion() {
-  return currentVersion('claude-extracted');
 }
 
 function currentNpmVersion(pkgName) {
@@ -388,105 +354,12 @@ function runClaudeNative(binary, args = [], extraEnv = {}) {
   });
 }
 
-function findElfSection(buf, name) {
-  if (buf.length < 64
-    || buf[0] !== 0x7f || buf[1] !== 0x45 || buf[2] !== 0x4c || buf[3] !== 0x46) {
-    throw new Error('not an ELF');
-  }
-  if (buf[4] !== 2) throw new Error('not ELF64');
-  if (buf[5] !== 1) throw new Error('not little-endian ELF');
-
-  const shoff = Number(buf.readBigUInt64LE(0x28));
-  const shentsize = buf.readUInt16LE(0x3a);
-  const shnum = buf.readUInt16LE(0x3c);
-  const shstrndx = buf.readUInt16LE(0x3e);
-  if (!shoff || !shentsize || !shnum || shstrndx >= shnum) {
-    throw new Error('invalid ELF section table');
-  }
-
-  function sectionHeader(idx) {
-    const off = shoff + idx * shentsize;
-    if (off + 64 > buf.length) throw new Error('ELF section header out of range');
-    return {
-      nameOff: buf.readUInt32LE(off),
-      offset: Number(buf.readBigUInt64LE(off + 0x18)),
-      size: Number(buf.readBigUInt64LE(off + 0x20)),
-    };
-  }
-
-  const shstr = sectionHeader(shstrndx);
-  const names = buf.subarray(shstr.offset, shstr.offset + shstr.size);
-  function cstr(start) {
-    let end = start;
-    while (end < names.length && names[end] !== 0) end++;
-    return names.subarray(start, end).toString('utf8');
-  }
-
-  for (let i = 0; i < shnum; i += 1) {
-    const sh = sectionHeader(i);
-    if (cstr(sh.nameOff) === name) {
-      return buf.subarray(sh.offset, sh.offset + sh.size);
-    }
-  }
-  throw new Error(`ELF section ${name} not found`);
-}
-
-function extractClaudeCliFromSea(seaBuf) {
-  const bunSection = findElfSection(seaBuf, '.bun');
-  const marker = Buffer.from('file:///$bunfs/root/src/entrypoints/cli.js');
-  const markerAt = bunSection.indexOf(marker);
-  if (markerAt < 0) throw new Error('cli.js marker not found in Claude .bun section');
-
-  const startMarker = Buffer.from('// @bun');
-  const startRel = bunSection.indexOf(startMarker, markerAt);
-  if (startRel < 0) throw new Error('cli.js bundle start not found after marker');
-  if (startRel < 4) throw new Error('cli.js size prefix missing');
-
-  const size = bunSection.readUInt32LE(startRel - 4);
-  const src = bunSection.subarray(startRel, startRel + size).toString('utf8');
-  const head = '// @bun @bytecode @bun-cjs\n(function(exports, require, module, __filename, __dirname) {';
-  const tail = '})\n';
-  if (!src.startsWith(head) || !src.endsWith(tail)) {
-    throw new Error('unexpected Claude cli.js CJS wrapper shape');
-  }
-
-  let body = src.slice(head.length, -tail.length);
-
-  const tmpLiteral = '"/tmp/claude","/private/tmp/claude"';
-  const tmpReplacement = '(process.env.CLAUDE_TMPDIR||"/tmp/claude"),(process.env.CLAUDE_TMPDIR||"/private/tmp/claude")';
-  const tmpMatches = body.split(tmpLiteral).length - 1;
-  if (tmpMatches === 1) {
-    body = body.replace(tmpLiteral, tmpReplacement);
-  } else if (tmpMatches === 0) {
-    if (!body.includes('process.env.CLAUDE_TMPDIR||"/tmp/claude"')) {
-      throw new Error('Claude tmp allowlist patch target not found');
-    }
-  } else {
-    throw new Error(`Claude tmp allowlist target matched ${tmpMatches} times`);
-  }
-
-  const bridgeRe = /`\/tmp\/claude-mcp-browser-bridge-\$\{([A-Za-z_$][\w$]*)\(\)\}`/g;
-  const matches = [...body.matchAll(bridgeRe)].map((m) => m[1]);
-  const bridgeDoneMarker = 'process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"';
-  if (matches.length === 1 && new Set(matches).size === 1) {
-    const fn = matches[0];
-    body = body.replace(
-      bridgeRe,
-      '`${process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"}/claude-mcp-browser-bridge-${' + fn + '()}`',
-    );
-  } else if (matches.length === 0) {
-    if (!body.includes('claude-mcp-browser-bridge-') || !body.includes(bridgeDoneMarker)) {
-      throw new Error('Claude browser bridge tmpdir patch target not found');
-    }
-  } else {
-    throw new Error(`ambiguous Claude browser bridge matches: ${matches.join(',')}`);
-  }
-
-  body = body.replace(/(?<![\w$])await\s+using\s+/g, 'const ');
-  body = body.replace(/(?<![\w$])using\s+/g, 'const ');
-
-  return '#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n' + CLAUDE_BUN_NODE_POLYFILL + '\n' + body;
-}
+// v73 (2026-05-06): findElfSection / extractClaudeCliFromSea were used to
+// rebuild a Node-runnable cli.js out of the Claude Bun SEA's .bun section
+// for the (now removed) extracted-Node tier. Both functions and their
+// CLAUDE_BUN_NODE_POLYFILL helper were dropped together with that tier.
+// The bashrc still ships the same Bun.stringWidth shim via NODE_OPTIONS
+// --require, applied to the legacy npm cli.js path.
 
 /**
  * Shape detection for a candidate claude binary. We reject anything
@@ -559,19 +432,6 @@ function shouldFunctionalCheckClaude() {
   return FUNCTIONAL_CHECK || hasClaudeCredentials();
 }
 
-function claudeFunctionalMarker(version = currentClaudeExtractedVersion()) {
-  if (!version) return '';
-  return path.join(
-    ROOT,
-    'claude-extracted',
-    version,
-    'node_modules',
-    '@anthropic-ai',
-    'claude-code-extracted',
-    '.shelly-functional-smoke-ok',
-  );
-}
-
 function claudeNativeFunctionalMarker(version = currentClaudeNativeVersion()) {
   if (!version) return '';
   return path.join(ROOT, 'claude', version, '.shelly-functional-smoke-ok');
@@ -579,9 +439,57 @@ function claudeNativeFunctionalMarker(version = currentClaudeNativeVersion()) {
 
 function currentClaudeFunctionalSmokeOk() {
   const nativeMarker = claudeNativeFunctionalMarker();
-  const extractedMarker = claudeFunctionalMarker();
-  return (!!nativeMarker && fs.existsSync(nativeMarker))
-    || (!!extractedMarker && fs.existsSync(extractedMarker));
+  return !!nativeMarker && fs.existsSync(nativeMarker);
+}
+
+// v73 (2026-05-06): consume runtime-failure records left by the bash
+// claude() function when its opt-in native musl Bun SEA tier exits with a
+// crash signal (134/139/etc.). Each line is `claude=<version> <epoch>
+// <exit_code>`. Every record translates into a recordFailedVersion call
+// so a release that passes staging smoke but segfaults during actual
+// interactive use stops being re-promoted on the next walk-back.
+function consumeRuntimeFailures() {
+  const failuresPath = path.join(ROOT, '.runtime-failures');
+  let raw;
+  try {
+    raw = fs.readFileSync(failuresPath, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return;
+    log(`runtime-failures read error: ${e.message}`);
+    return;
+  }
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+  let recorded = 0;
+  for (const line of lines) {
+    const m = line.match(/^claude=(\S+)\s+\d+\s+\d+$/);
+    if (!m) continue;
+    const version = m[1];
+    if (!/^\d+\.\d+\.\d+$/.test(version)) continue;
+    recordFailedVersion('claude', version);
+    recorded += 1;
+  }
+  try {
+    fs.rmSync(failuresPath, { force: true });
+  } catch (e) {
+    log(`runtime-failures cleanup error: ${e.message}`);
+  }
+  if (recorded > 0) {
+    info(`[claude] consumed ${recorded} runtime failure record(s); versions added to cooldown`);
+  }
+}
+
+// v73: one-shot cleanup of the legacy `claude-extracted` runtime tree from
+// devices that ran an earlier APK. The tier is removed; leaving the tree
+// behind only wastes disk and confuses shelly-doctor.
+function cleanupLegacyExtractedTree() {
+  const extractedRoot = path.join(ROOT, 'claude-extracted');
+  if (!fs.existsSync(extractedRoot)) return;
+  try {
+    fs.rmSync(extractedRoot, { recursive: true, force: true });
+    info('[claude] removed legacy claude-extracted runtime tree');
+  } catch (e) {
+    log(`legacy extracted cleanup error: ${e.message}`);
+  }
 }
 
 // Per-process unique staging suffix avoids the race where two
@@ -684,11 +592,13 @@ async function tryClaudeVersion(pkgMeta, version) {
     const bin = tarEntry(entries, 'package/claude') || tarEntry(entries, 'claude');
     if (!bin) return { ok: false, reason: 'package/claude missing from tarball' };
 
-    // Native Bun SEA route. This keeps the real upstream Claude binary intact.
-    // The extracted-Node route is still prepared as a fallback, but it cannot
-    // be the primary validation path anymore: Claude 2.1.129 passed
-    // `--version` after extraction but hung on `--print` because newer bundles
-    // exercise more Bun APIs than our small Node polyfill covers.
+    // Native Bun SEA route. Smoke-tested at staging time (--version, plus
+    // --print "Reply OK" when credentials exist) and promoted to
+    // ~/.shelly-runtime/claude/current. This is opt-in at runtime via the
+    // bash function's SHELLY_PREFER_NATIVE_CLAUDE=1 toggle. v73 (2026-05-06)
+    // dropped the extracted-Node companion tier; that route had Bun-API
+    // gaps (Bun.spawn, etc.) that broke the Bash tool on newer Claude
+    // releases without a way to detect the regression at staging time.
     const nativeStaging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
     ensureCleanDir(nativeStaging);
     const nativeOut = path.join(nativeStaging, 'claude');
@@ -723,59 +633,7 @@ async function tryClaudeVersion(pkgMeta, version) {
       fs.writeFileSync(path.join(nativeStaging, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
     }
 
-    let staging = null;
-    try {
-      // Per-run staging name avoids cross-process clobbering when two
-      // updaters race on the same version (Codex review issue #1).
-      staging = path.join(TMP, `claude-extracted-${version}-${RUN_TAG}`);
-      ensureCleanDir(staging);
-      const pkgDir = path.join(staging, 'node_modules', '@anthropic-ai', 'claude-code-extracted');
-      fs.mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
-      const out = path.join(pkgDir, 'cli.js');
-      const pkgJson = path.join(pkgDir, 'package.json');
-      const extracted = extractClaudeCliFromSea(bin);
-      fs.writeFileSync(out, extracted, { mode: 0o755 });
-      fs.chmodSync(out, 0o755);
-      fs.writeFileSync(pkgJson, JSON.stringify({
-        name: '@anthropic-ai/claude-code-extracted',
-        version,
-        private: true,
-        shelly: {
-          source: '@anthropic-ai/claude-code-linux-arm64-musl',
-          extractedAt: new Date().toISOString(),
-        },
-      }, null, 2));
-      const depsDest = path.join(pkgDir, 'node_modules');
-      const runtimeDeps = path.join(ROOT, 'claude-extracted', 'current', 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
-      const apkDeps = path.join(LIB, 'node_modules', '@anthropic-ai', 'claude-code-extracted', 'node_modules');
-      if (copyDir(runtimeDeps, depsDest)) {
-        info(`[claude] try ${version} — copied dependencies from runtime current`);
-      } else if (copyDir(apkDeps, depsDest)) {
-        info(`[claude] try ${version} — copied dependencies from APK extracted package`);
-      } else {
-        throw new Error('extracted package dependencies missing');
-      }
-
-      const smoke = runNodeScript(out, ['--version'], {
-        USE_BUILTIN_RIPGREP: '0',
-        DISABLE_AUTOUPDATER: '1',
-        DISABLE_INSTALLATION_CHECKS: '1',
-        TMPDIR: path.join(HOME, '.tmp'),
-        CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
-        CLAUDE_CODE_TMPDIR: path.join(HOME, '.claude-tmp'),
-      });
-      const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
-      if (smoke.status !== 0 || !combined.includes(version)) {
-        throw new Error(`extracted --version status=${smoke.status}: ${combined.slice(0, 200)}`);
-      }
-      info(`[claude] try ${version} — extracted --version smoke OK`);
-    } catch (e) {
-      if (staging) fs.rmSync(staging, { recursive: true, force: true });
-      staging = null;
-      info(`[claude] try ${version} — extracted fallback unavailable: ${e.message}`);
-    }
-
-    return { ok: true, nativeStaging, staging };
+    return { ok: true, nativeStaging };
   } catch (err) {
     // Network / I/O exception — don't poison the failed-versions list. The
     // version itself wasn't proven bad. The cooldown is for "we proved this
@@ -786,6 +644,12 @@ async function tryClaudeVersion(pkgMeta, version) {
 
 async function updateClaude() {
   if (!LIB) fail('SHELLY_LIB_DIR is required');
+
+  // v73: pull runtime failures into the cooldown list and sweep the
+  // legacy extracted-Node tree before deciding which candidate to try.
+  consumeRuntimeFailures();
+  cleanupLegacyExtractedTree();
+
   const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
 
   const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
@@ -822,9 +686,8 @@ async function updateClaude() {
     }
     const result = await tryClaudeVersion(pkgMeta, version);
     if (result.ok) {
-      if (result.nativeStaging) promote('claude', version, result.nativeStaging);
-      if (result.staging) promote('claude-extracted', version, result.staging);
-      info(`[claude] promoted ${version} (verified, channel=${CHANNEL}, native=${!!result.nativeStaging}, extracted=${!!result.staging})`);
+      promote('claude', version, result.nativeStaging);
+      info(`[claude] promoted ${version} (verified, channel=${CHANNEL})`);
       return;
     }
     info(`[claude] reject ${version}: ${result.reason}`);

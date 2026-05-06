@@ -237,13 +237,13 @@ object LibExtractor {
         val sitePackages = File(libDir, "python3.13/site-packages")
         extractTarGzAsset(context, "pip.tar.gz", sitePackages, "pip", forceRefresh)
 
-        // Extract bundled AI CLIs (Claude Code, Gemini CLI, Codex)
+        // Extract bundled AI CLIs (Gemini CLI, Codex)
         Log.i(TAG, "Attempting CLI tools extraction...")
-        // Experimental Claude Path D (2026-04-29): CI extracts cli.js from
-        // Claude Code's Bun SEA into a separate package. This lets the
-        // shell wrapper run latest Claude through Shelly's bionic Node when
-        // explicitly requested, without touching the default musl SEA route.
-        extractTarGzAsset(context, "claude-extracted.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code-extracted/cli.js", forceRefresh)
+        // v73 (2026-05-06): the experimental "extracted Bun cli.js" tier
+        // (claude-extracted.tar.gz) was removed in favour of legacy npm
+        // cli.js as the default Claude route. See the claude() function in
+        // HomeInitializer.kt for the active two-tier strategy (legacy npm
+        // primary, native musl Bun SEA opt-in via SHELLY_PREFER_NATIVE_CLAUDE).
         // bug #139 (2026-04-27): marker switched to gemini-cli because
         // claude-code was removed from the bundle (the musl SEA at
         // libclaude.so is the primary Claude path; runtime updater

@@ -596,7 +596,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // soft-fail need a fresh .bashrc; without this bump, devices that ran
     // a v61-era APK keep the old generated file and the new fixes never
     // reach the user-facing claude() / __shelly_bg_cli_update functions.
-    private const val BASHRC_VERSION = 72
+    // v73 (2026-05-06): claude() tier reorder. Legacy npm cli.js (bionic
+    // Node + Bun.stringWidth polyfill) is the default; the musl Bun SEA
+    // route is opt-in via SHELLY_PREFER_NATIVE_CLAUDE=1. Updater smoke
+    // gates (--version + --print) couldn't catch interactive .node-load
+    // segfaults, and the extracted-Node middle tier had Bun-API gaps that
+    // broke the Bash tool on newer Claude Code releases. Two-tier model
+    // (legacy default, native opt-in) plus a runtime-failure feedback
+    // file consumed by shelly-runtime-update.js so a release that crashes
+    // post-promote stops being re-promoted. Extracted-Node tier removed.
+    private const val BASHRC_VERSION = 73
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1088,108 +1097,87 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
-            // @anthropic-ai/claude-code dispatch. Default route is the
-            // verified latest linux-arm64 musl Bun SEA binary. The extracted
-            // Node route remains a fallback only: upstream Claude can add Bun
-            // APIs that pass --version after extraction but hang during real
-            // --print sessions.
+            // @anthropic-ai/claude-code dispatch. Default = legacy npm cli.js
+            // (bionic Node + Bun.stringWidth polyfill via NODE_OPTIONS
+            // --require). The musl Bun SEA route is opt-in via
+            // SHELLY_PREFER_NATIVE_CLAUDE=1: prior history showed that
+            // smoke-gating native at staging time (--version, --print) cannot
+            // catch interactive .node-load segfaults that only surface during
+            // real sessions, so we keep native as a power-user toggle. When
+            // the opt-in tier exits with a crash signal (134/139/etc.) the
+            // shell appends a record to ~/.shelly-runtime/.runtime-failures;
+            // shelly-runtime-update.js consumes that file on next run and
+            // feeds it to recordFailedVersion so the broken upstream version
+            // stops being re-promoted.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
-            sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
             sb.appendLine("  local __musl_ld=\"$libDir/ld-musl-aarch64.so.1\"")
             sb.appendLine("  local __musl_exec_wrapper=\"$libDir/libexec_wrapper_musl.so\"")
             sb.appendLine("  local __runtime_claude=\"\$HOME/.shelly-runtime/claude/current/claude\"")
-            sb.appendLine("  local __runtime_extracted_cli_js=\"\$HOME/.shelly-runtime/claude-extracted/current/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
-            sb.appendLine("  local __apk_extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
-            sb.appendLine("  local __extracted_cli_js=\"\"")
-            sb.appendLine("  if [ -f \"\$__runtime_extracted_cli_js\" ]; then")
-            sb.appendLine("    __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
-            sb.appendLine("  elif [ -f \"\$__apk_extracted_cli_js\" ]; then")
-            sb.appendLine("    __extracted_cli_js=\"\$__apk_extracted_cli_js\"")
+            sb.appendLine("  local __apk_musl_claude=\"$libDir/claude\"")
+            sb.appendLine("  local __runtime_failures=\"\$HOME/.shelly-runtime/.runtime-failures\"")
+            sb.appendLine("  local __native_binary=\"\"")
+            sb.appendLine("  if [ -x \"\$__runtime_claude\" ]; then")
+            sb.appendLine("    __native_binary=\"\$__runtime_claude\"")
+            sb.appendLine("  elif [ -x \"\$__apk_musl_claude\" ]; then")
+            sb.appendLine("    __native_binary=\"\$__apk_musl_claude\"")
             sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
-            // Seed resolv.conf on first use. The musl libc shipped here
-            // has /etc/resolv.conf rewritten to this exact path at build
-            // time — bionic has no /etc/resolv.conf so without this seed
-            // musl falls back to 127.0.0.1:53 and the API call hangs.
+            // Native musl Bun SEA tier (opt-in). Skipped unless
+            // SHELLY_PREFER_NATIVE_CLAUDE=1 and the trampoline + musl loader
+            // + libexec_wrapper_musl.so are all present. SHELLY_FORCE_LEGACY_CLAUDE=1
+            // overrides PREFER_NATIVE so a regression toggle is always available.
+            sb.appendLine("  if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] \\")
+            sb.appendLine("       && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] \\")
+            sb.appendLine("       && [ -n \"\$__native_binary\" ] \\")
+            sb.appendLine("       && [ -x \"\$__trampoline\" ] \\")
+            sb.appendLine("       && [ -x \"\$__musl_ld\" ] \\")
+            sb.appendLine("       && [ -f \"\$__musl_exec_wrapper\" ]; then")
+            // Seed resolv.conf on first use. The musl libc shipped here has
+            // /etc/resolv.conf rewritten to this path at build time; bionic
+            // has no /etc/resolv.conf so without the seed musl falls back
+            // to 127.0.0.1:53 and the API call hangs.
             sb.appendLine("    if [ ! -s \"\$HOME/.shelly-ssl/resolv.conf\" ]; then")
             sb.appendLine("      mkdir -p \"\$HOME/.shelly-ssl\"")
             sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__runtime_claude\" ]; then")
-            sb.appendLine("      if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
-            sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
-            sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
-            sb.appendLine("      fi")
-            sb.appendLine("      __shelly_paste_tui_begin")
-            sb.appendLine("      SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
-            sb.appendLine("      local __runtime_rc=$?")
-            sb.appendLine("      __shelly_paste_tui_end")
-            sb.appendLine("      case \"\$__runtime_rc\" in")
-            sb.appendLine("        0)")
-            sb.appendLine("          return 0")
-            sb.appendLine("          ;;")
-            sb.appendLine("        126|127|132|133|134|135|136|137|138|139|159)")
-            sb.appendLine("          if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
-            sb.appendLine("            echo \"[shelly] claude: runtime latest failed (exit \$__runtime_rc), falling back to APK musl\" >&2")
-            sb.appendLine("          fi")
-            sb.appendLine("          ;;")
-            sb.appendLine("        *)")
-            sb.appendLine("          return \"\$__runtime_rc\"")
-            sb.appendLine("          ;;")
-            sb.appendLine("      esac")
-            sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
-            sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
-            sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
-            sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__musl_claude\" ]; then")
-            sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
-            sb.appendLine("    local __musl_rc=$?")
-            sb.appendLine("    __shelly_paste_tui_end")
-            sb.appendLine("    case \"\$__musl_rc\" in")
-            sb.appendLine("      0)")
-            sb.appendLine("        return 0")
-            sb.appendLine("        ;;")
-            sb.appendLine("      126|127|132|133|134|135|136|137|138|139|159)")
-            sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
-            sb.appendLine("          echo \"[shelly] claude: Path C-bis failed (exit \$__musl_rc), falling back to cli.js tiers\" >&2")
-            sb.appendLine("        fi")
-            sb.appendLine("        ;;")
-            sb.appendLine("      *)")
-            sb.appendLine("        return \"\$__musl_rc\"")
-            sb.appendLine("        ;;")
-            sb.appendLine("    esac")
-            sb.appendLine("    fi")
-            sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
-            sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
-            sb.appendLine("        echo '[shelly] claude: verified latest via extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("      if [ \"\$__native_binary\" = \"\$__runtime_claude\" ]; then")
+            sb.appendLine("        echo '[shelly] claude: native musl Bun SEA (runtime latest, opt-in)' >&2")
             sb.appendLine("      else")
-            sb.appendLine("        echo '[shelly] claude: APK extracted Bun cli.js (Node)' >&2")
+            sb.appendLine("        echo '[shelly] claude: native musl Bun SEA (APK bundled, opt-in)' >&2")
             sb.appendLine("      fi")
             sb.appendLine("    fi")
-            sb.appendLine("    local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
-            sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
-            sb.appendLine("    local __extracted_rc=\$?")
+            sb.appendLine("    SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__native_binary\" \"\$@\"")
+            sb.appendLine("    local __native_rc=\$?")
             sb.appendLine("    __shelly_paste_tui_end")
-            sb.appendLine("    case \"\$__extracted_rc\" in")
+            sb.appendLine("    case \"\$__native_rc\" in")
             sb.appendLine("      126|127|132|133|134|135|136|137|138|139|159)")
+            // Crash-class exit. Record runtime failure so the next updater
+            // run consumes it and adds the version to the failed-version
+            // cooldown, then fall through to legacy npm.
+            sb.appendLine("        if [ \"\$__native_binary\" = \"\$__runtime_claude\" ] && [ -f \"\$HOME/.shelly-runtime/claude/version\" ]; then")
+            sb.appendLine("          local __native_ver=\$(cat \"\$HOME/.shelly-runtime/claude/version\" 2>/dev/null | tr -d '\\n')")
+            sb.appendLine("          if [ -n \"\$__native_ver\" ]; then")
+            sb.appendLine("            mkdir -p \"\$HOME/.shelly-runtime\" 2>/dev/null")
+            sb.appendLine("            printf 'claude=%s %s %s\\n' \"\$__native_ver\" \"\$(date -u +%s)\" \"\$__native_rc\" >> \"\$__runtime_failures\" 2>/dev/null")
+            sb.appendLine("          fi")
+            sb.appendLine("        fi")
             sb.appendLine("        if [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
-            sb.appendLine("          echo \"[shelly] claude: extracted Node route failed (exit \$__extracted_rc), falling back to legacy tier\" >&2")
+            sb.appendLine("          echo \"[shelly] claude: native musl Bun SEA failed (exit \$__native_rc), falling back to legacy npm tier\" >&2")
             sb.appendLine("        fi")
             sb.appendLine("        ;;")
             sb.appendLine("      *)")
-            sb.appendLine("        return \"\$__extracted_rc\"")
+            sb.appendLine("        return \"\$__native_rc\"")
             sb.appendLine("        ;;")
             sb.appendLine("    esac")
             sb.appendLine("  fi")
-            sb.appendLine("  # Legacy fallback: pre-2.1.113 cli.js three-tier chain")
+            // Legacy npm tier (default). Walks ~/.shelly-cli (auto-updated by
+            // __shelly_bg_cli_update via npm install @anthropic-ai/claude-code@latest)
+            // → ~/.shelly-cli.prev → APK-bundled fallback. Bun.stringWidth
+            // polyfill is injected via --require so cli.js code paths that
+            // call Bun.stringWidth on Node don't ReferenceError.
             sb.appendLine("  local __cli_js=\"\"")
             sb.appendLine("  local __tier=\"\"")
             sb.appendLine("  for __pair in \\")
@@ -1211,8 +1199,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \"\$__tier\" != 'auto' ] && [ -z \"\$SHELLY_SILENT_CLI_TIER\" ]; then")
             sb.appendLine("    echo \"[shelly] claude: using \$__tier tier (\$__cli_js)\" >&2")
             sb.appendLine("  fi")
+            sb.appendLine("  local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
+            sb.appendLine("  mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\"")
             sb.appendLine("  __shelly_paste_tui_begin")
-            sb.appendLine("  _run $libDir/node \"\$__cli_js\" \"\$@\"")
+            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__cli_js\" \"\$@\"")
             sb.appendLine("  local __legacy_rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  return \"\$__legacy_rc\"")
