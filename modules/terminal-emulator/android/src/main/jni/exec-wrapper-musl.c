@@ -84,10 +84,7 @@ static long raw_syscall5(long nr, long a0, long a1, long a2, long a3, long a4) {
 }
 
 static int finish_syscall(long ret) {
-    if (ret < 0) {
-        errno = (int)-ret;
-        return -1;
-    }
+    if (ret < 0) return -1;
     return (int)ret;
 }
 
@@ -159,7 +156,6 @@ static char *const *strip_ld_preload(char *const envp[], char **out) {
     for (int i = 0; src[i]; i++) {
         if (is_ld_preload(src[i])) continue;
         if (j >= MAX_ENVP) {
-            errno = E2BIG;
             return NULL;
         }
         out[j++] = src[i];
@@ -172,14 +168,12 @@ static int copy_rewrite(char *out, size_t out_size, const char *prefix, const ch
     size_t n = 0;
     while (*prefix) {
         if (n + 1 >= out_size) {
-            errno = ENAMETOOLONG;
             return -1;
         }
         out[n++] = *prefix++;
     }
     while (*suffix) {
         if (n + 1 >= out_size) {
-            errno = ENAMETOOLONG;
             return -1;
         }
         out[n++] = *suffix++;
@@ -205,9 +199,7 @@ static int is_elf(const char *path) {
            magic[2] == 'L' && magic[3] == 'F';
 }
 
-static const char *rewrite_path(const char *pathname, char *const envp[]) {
-    static __thread char rewrite_buf[PATH_BUF_SIZE];
-
+static const char *rewrite_path(const char *pathname, char *const envp[], char *rewrite_buf, size_t rewrite_buf_size) {
     if (!pathname) return NULL;
     if (streq(pathname, "/bin/sh") || streq(pathname, "sh")) return "/system/bin/sh";
     if (streq(pathname, "/usr/bin/env") || streq(pathname, "env")) return "/system/bin/env";
@@ -216,12 +208,12 @@ static const char *rewrite_path(const char *pathname, char *const envp[]) {
         if (trusted_shell_path(shell)) return shell;
     }
     if (starts_with(pathname, "/bin/")) {
-        return copy_rewrite(rewrite_buf, sizeof(rewrite_buf), "/system/bin/", pathname + 5) == 0
+        return copy_rewrite(rewrite_buf, rewrite_buf_size, "/system/bin/", pathname + 5) == 0
             ? rewrite_buf
             : NULL;
     }
     if (starts_with(pathname, "/usr/bin/")) {
-        return copy_rewrite(rewrite_buf, sizeof(rewrite_buf), "/system/bin/", pathname + 9) == 0
+        return copy_rewrite(rewrite_buf, rewrite_buf_size, "/system/bin/", pathname + 9) == 0
             ? rewrite_buf
             : NULL;
     }
@@ -242,7 +234,6 @@ static int build_linker_argv(const char *pathname, char *const argv[], char **ou
     if (argv) {
         while (argv[argc]) {
             if (argc >= MAX_ARGC) {
-                errno = E2BIG;
                 return -1;
             }
             argc++;
@@ -262,7 +253,8 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     char *const *child_env = strip_ld_preload(envp, clean_env);
     if (!child_env) return -1;
 
-    const char *rewritten = rewrite_path(pathname, (char *const *)child_env);
+    char rewrite_buf[PATH_BUF_SIZE];
+    const char *rewritten = rewrite_path(pathname, (char *const *)child_env, rewrite_buf, sizeof(rewrite_buf));
     if (!rewritten) return -1;
     if (rewritten != pathname) {
         return raw_execve_call(rewritten, argv, (char *const *)child_env);
