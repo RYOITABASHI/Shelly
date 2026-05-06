@@ -605,7 +605,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // (legacy default, native opt-in) plus a runtime-failure feedback
     // file consumed by shelly-runtime-update.js so a release that crashes
     // post-promote stops being re-promoted. Extracted-Node tier removed.
-    private const val BASHRC_VERSION = 73
+    // v74 (2026-05-06): on-device verification on the bundled 2.1.112
+    // legacy path raised "Bun.hash is not a function" before the splash
+    // could finish — Claude Code's cli.js calls Bun.hash(input) for
+    // cache-key dedup. Extended the Bun.* polyfill heredoc with a
+    // SHA-256-backed hash shim plus its 32/64-bit named variants
+    // (wyhash, cityHash, xxHash, murmur, crc32, etc.). Hash values
+    // don't match Bun's actual output, but cli.js doesn't compare
+    // against externally-stored Bun hashes so determinism within one
+    // run is enough.
+    private const val BASHRC_VERSION = 74
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1095,6 +1104,51 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    return width;")
             sb.appendLine("  };")
             sb.appendLine("}")
+            // Bun.hash shim. Claude Code 2.1.112 cli.js calls Bun.hash(input)
+            // for cache-key-style dedup; without it cli.js throws "Bun.hash
+            // is not a function" before printing a prompt. SHA-256-based stub
+            // returns a deterministic BigInt that's collision-resistant
+            // enough for cache-key purposes; the 32-bit variants
+            // (crc32, xxHash32, ...) return a Number so cli.js paths that
+            // bitwise-or the result keep working. Hash values do NOT match
+            // Bun's native output, but cli.js never compares against
+            // externally-stored Bun hashes so that's fine.
+            sb.appendLine("if (typeof globalThis.Bun.hash !== 'function') {")
+            sb.appendLine("  const __shellyCryptoMod = require('crypto');")
+            sb.appendLine("  const __shellyHashBuf = function(input) {")
+            sb.appendLine("    if (Buffer.isBuffer(input)) return input;")
+            sb.appendLine("    if (input instanceof Uint8Array) return Buffer.from(input);")
+            sb.appendLine("    if (input instanceof ArrayBuffer) return Buffer.from(new Uint8Array(input));")
+            sb.appendLine("    return Buffer.from(typeof input === 'string' ? input : String(input ?? ''));")
+            sb.appendLine("  };")
+            sb.appendLine("  const __shellyHash64 = function(input) {")
+            sb.appendLine("    const hex = __shellyCryptoMod.createHash('sha256').update(__shellyHashBuf(input)).digest('hex');")
+            sb.appendLine("    return BigInt('0x' + hex.slice(0, 16));")
+            sb.appendLine("  };")
+            sb.appendLine("  const __shellyHash32 = function(input) {")
+            sb.appendLine("    const hex = __shellyCryptoMod.createHash('sha256').update(__shellyHashBuf(input)).digest('hex');")
+            sb.appendLine("    return parseInt(hex.slice(0, 8), 16) >>> 0;")
+            sb.appendLine("  };")
+            sb.appendLine("  const __shellyHashBase = function(input) { return __shellyHash64(input); };")
+            sb.appendLine("  __shellyHashBase.wyhash = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.cityHash64 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.xxHash3 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.xxHash64 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.murmur64v1 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.murmur64v2 = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.rapidhash = __shellyHash64;")
+            sb.appendLine("  __shellyHashBase.cityHash32 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.xxHash32 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.murmur32v2 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.murmur32v3 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.adler32 = __shellyHash32;")
+            sb.appendLine("  __shellyHashBase.crc32 = __shellyHash32;")
+            sb.appendLine("  globalThis.Bun.hash = __shellyHashBase;")
+            sb.appendLine("}")
+            // Bun.write / Bun.file / Bun.spawn are deeper integration points
+            // that cli.js may use; if a future Claude release tickles them we
+            // add minimal shims here. Today's 2.1.112 path only needs hash +
+            // stringWidth based on observed `is not a function` errors.
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
             // @anthropic-ai/claude-code dispatch. Default = legacy npm cli.js
