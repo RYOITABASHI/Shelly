@@ -20,20 +20,22 @@ import { neonGlowSky } from '@/lib/neon-glow';
 
 type Cli = 'claude' | 'codex' | 'gemini';
 
+// Anthropic Claude brand: warm copper/orange (#CC785C). Codex green and
+// Gemini blue match each project's primary brand identity.
 const CLI_COLORS: Record<Cli, string> = {
-  claude: '#A78BFA',
+  claude: '#CC785C',
   codex: '#22C55E',
   gemini: '#60A5FA',
 };
 
 const CLI_EMOJI: Record<Cli, string> = {
-  claude: '🟣',
+  claude: '🟠',
   codex: '🟢',
   gemini: '🔵',
 };
 
 const CLI_LABEL: Record<Cli, string> = {
-  claude: 'Claude Code',
+  claude: 'Claude',
   codex: 'Codex',
   gemini: 'Gemini',
 };
@@ -94,28 +96,30 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
 const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: P.xs,
-    paddingHorizontal: P.sm,
-    paddingVertical: P.xs,
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+    flexWrap: 'nowrap',
+    gap: 6,
     paddingHorizontal: P.sm,
     paddingVertical: 4,
+  },
+  chip: {
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: S.radius,
     borderWidth: 1,
-    backgroundColor: 'rgba(0,0,0,0.25)',
+    backgroundColor: 'rgba(0,0,0,0.3)',
   },
   emoji: {
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: 9,
+    lineHeight: 11,
   },
   chipLabel: {
     fontFamily: F.mono,
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '600',
   },
 });
