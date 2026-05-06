@@ -106,19 +106,25 @@ if (typeof globalThis.Bun.hash !== 'function') {
   const __shellyCryptoMod = require('crypto');
   const __shellyHashBuf = function(input) {
     if (Buffer.isBuffer(input)) return input;
-    if (input instanceof Uint8Array) return Buffer.from(input);
+    if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
     if (input instanceof ArrayBuffer) return Buffer.from(new Uint8Array(input));
+    if (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer) return Buffer.from(new Uint8Array(input));
     return Buffer.from(typeof input === 'string' ? input : String(input ?? ''));
   };
-  const __shellyHash64 = function(input) {
-    const hex = __shellyCryptoMod.createHash('sha256').update(__shellyHashBuf(input)).digest('hex');
+  // v76 review fix (Codex): honour the seed argument of Bun.hash(input, seed)
+  // so Bun.hash(K, Bun.hash(q)) varies with q.
+  const __shellySeedBuf = function(seed) {
+    return seed === undefined ? Buffer.alloc(0) : Buffer.from(String(seed));
+  };
+  const __shellyHash64 = function(input, seed) {
+    const hex = __shellyCryptoMod.createHash('sha256').update(__shellySeedBuf(seed)).update(Buffer.from([0])).update(__shellyHashBuf(input)).digest('hex');
     return BigInt('0x' + hex.slice(0, 16));
   };
-  const __shellyHash32 = function(input) {
-    const hex = __shellyCryptoMod.createHash('sha256').update(__shellyHashBuf(input)).digest('hex');
+  const __shellyHash32 = function(input, seed) {
+    const hex = __shellyCryptoMod.createHash('sha256').update(__shellySeedBuf(seed)).update(Buffer.from([0])).update(__shellyHashBuf(input)).digest('hex');
     return parseInt(hex.slice(0, 8), 16) >>> 0;
   };
-  const __shellyHashBase = function(input) { return __shellyHash64(input); };
+  const __shellyHashBase = function(input, seed) { return __shellyHash64(input, seed); };
   __shellyHashBase.wyhash = __shellyHash64;
   __shellyHashBase.cityHash64 = __shellyHash64;
   __shellyHashBase.xxHash3 = __shellyHash64;
