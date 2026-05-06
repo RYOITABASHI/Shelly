@@ -132,9 +132,13 @@ jobs:
               # already a musl 1.2.4 compiler. The wrapper does not need
               # Shelly patched resolver path, only musl ABI compatibility
               # with the loader used for Claude Code.
+              # v75-followup (2026-05-06): -Wl,-z,now forces eager PLT
+              # resolution so this LD_PRELOAD shim cannot branch into an
+              # unresolved trampoline at runtime (matched fix in CMakeLists
+              # for the bionic libexec_wrapper.so).
               gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
                 /tmp/exec-wrapper.c \
-                -o /out/libexec_wrapper_musl.so -ldl
+                -o /out/libexec_wrapper_musl.so -ldl -Wl,-z,now -Wl,-z,relro
               strip --strip-unneeded /out/libexec_wrapper_musl.so
               # Sanity checks inside the container — readelf/strings are
               # the Alpine aarch64 natives, no cross-tool needed.
@@ -624,11 +628,14 @@ jobs:
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           SRC="/work/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c"
           OUT="/work/${JNILIBS}/libexec_wrapper_musl.so"
+          # v75-followup (2026-05-06): -Wl,-z,now (eager PLT resolution)
+          # so the LD_PRELOAD shim cannot branch into an unresolved
+          # trampoline. Matches the bionic CMake fix for libexec_wrapper.so.
           docker run --rm --platform linux/arm64 \
             -v "${GITHUB_WORKSPACE}:/work" \
             alpine:3.19 sh -euxc "
               apk add --no-progress build-base file
-              cc -shared -fPIC -O2 -Wall -Wextra -Werror '${SRC}' -o '${OUT}' -ldl
+              cc -shared -fPIC -O2 -Wall -Wextra -Werror '${SRC}' -o '${OUT}' -ldl -Wl,-z,now -Wl,-z,relro
               strip --strip-unneeded '${OUT}'
               chmod 755 '${OUT}'
               ls -lh '${OUT}'
