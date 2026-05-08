@@ -54,7 +54,21 @@ const FORCE = process.argv.includes('--force');
 // the full updater. No network downloads happen in this mode beyond the
 // metadata fetch (~10KB per package).
 const CHECK_ONLY = process.argv.includes('--check-only');
-const FAILED_COOLDOWN_S = Number(process.env.SHELLY_FAILED_VERSION_COOLDOWN || 3600);
+// 2026-05-08 Codex review (PR #48): 1h was too short. Foreground native
+// crashes corrupt the user's TUI; making them re-pay every hour is
+// painful. 24h gives the bg updater time to fetch a newer version.
+// Debug: set SHELLY_FAILED_VERSION_COOLDOWN=60 to force fast retries.
+//
+// Codex 3rd-pass review (push-prep): validate the env override so a
+// non-numeric value doesn't yield NaN and break (now - epoch) < NaN
+// comparisons (which always evaluates false → cooldown becomes a no-op,
+// silently bad). Bash side already validates via `*[!0-9]*`; this keeps
+// the two halves of the cooldown check in sync.
+const __PARSED_FAILED_COOLDOWN = Number(process.env.SHELLY_FAILED_VERSION_COOLDOWN || 86400);
+const FAILED_COOLDOWN_S =
+  Number.isFinite(__PARSED_FAILED_COOLDOWN) && __PARSED_FAILED_COOLDOWN > 0
+    ? __PARSED_FAILED_COOLDOWN
+    : 86400;
 const TOOL = process.argv.find((arg) => arg === 'claude' || arg === 'codex' || arg === 'gemini') || 'all';
 
 // Channel selection — default `verified` per 2026-04-25 design
@@ -358,13 +372,72 @@ function readFailedVersions() {
   }
 }
 
-function recordFailedVersion(tool, version) {
+// Codex review 2026-05-08 (PR #48 spec item 8): failure classification.
+// Previously every smoke failure went into .failed-versions cooldown
+// uniformly. Codex pushed back: auth_failed != binary_failed,
+// network_failed != binary_failed, panic/signal != binary_failed.
+//
+// Classification:
+//   signal     — exit >= 128 (binary genuinely crashed via signal)
+//   exit       — non-zero non-signal status (binary returned an error)
+//   auth       — --print failure with auth-error patterns in output
+//   network    — caller caught a network/IO exception
+//   shape      — tarball or SEA shape unexpected (validateClaudeShape)
+//   extraction — extractClaudeCliFromSea threw
+//
+// Cooldown semantics: only `signal` and `exit` and `shape` are recorded
+// to .failed-versions (the binary itself is bad). `auth` / `network` /
+// `extraction` go to .failure-log (diagnostic only) so the user / next
+// updater run sees the history but the version isn't blocked from
+// promotion when the user fixes their auth or net comes back.
+const FAILURE_LOG = path.join(ROOT, '.failure-log');
+const COOLDOWN_CATEGORIES = new Set(['signal', 'exit', 'shape']);
+
+function classifyFailure({ status, signal, stdout = '', stderr = '' } = {}) {
+  // Native runs return status >= 128 for signal-killed processes
+  // (128 + signal_number). Node child_process also exposes `signal`
+  // directly, which we prefer when present.
+  if (signal) return 'signal';
+  if (typeof status === 'number' && status >= 128) return 'signal';
+  // Auth-failure patterns observed in Claude Code stderr/stdout when
+  // credentials are missing/expired. Conservative — anything that
+  // mentions auth/credentials/401/unauthorized in the output is
+  // classified as auth so we don't mistakenly cooldown a healthy binary
+  // that just lost its login.
+  // Codex push-prep review: `\bunauthor\b` doesn't match `unauthorized`
+  // because the closing \b sits between `r` and `i`, both word chars.
+  // Matched substrings are explicit now; word boundaries only where
+  // they're meaningful (numeric status codes).
+  const combined = `${stdout}${stderr}`.toLowerCase();
+  if (/(unauthori[sz]ed|unauthenticated|authentication|invalid api key|expired token|\b401\b|\b403\b)/.test(combined)) {
+    return 'auth';
+  }
+  // Default: non-zero non-signal exit means the binary returned an error
+  // we can't categorise more specifically. Treat as cooldown-worthy
+  // (the binary itself misbehaved on input it should handle).
+  return 'exit';
+}
+
+function recordFailedVersion(tool, version, category = 'exit', reason = '') {
   try {
     fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
-    const line = `${tool}=${version} ${Math.floor(Date.now() / 1000)}\n`;
-    fs.appendFileSync(FAILED_VERSIONS, line);
+    const epoch = Math.floor(Date.now() / 1000);
+    if (COOLDOWN_CATEGORIES.has(category)) {
+      // Backwards-compatible 2-column line for isVersionInCooldown,
+      // plus a 3rd column for the category so future tooling can
+      // surface why a version was cooldown'd. readFailedVersions only
+      // reads the first two columns so adding the 3rd is non-breaking.
+      const line = `${tool}=${version} ${epoch} ${category}\n`;
+      fs.appendFileSync(FAILED_VERSIONS, line);
+    }
+    // Always log to .failure-log for diagnostics regardless of category
+    // — even auth/network failures are useful for the user to see why
+    // the updater couldn't validate a particular version.
+    const reasonOneLine = String(reason).replace(/\s+/g, ' ').slice(0, 240);
+    const logLine = `${tool}=${version} ${epoch} ${category} ${reasonOneLine}\n`;
+    fs.appendFileSync(FAILURE_LOG, logLine);
   } catch (e) {
-    log(`failed-versions write error: ${e.message}`);
+    log(`failed-versions/log write error: ${e.message}`);
   }
 }
 
@@ -880,14 +953,41 @@ async function tryClaudeVersion(pkgMeta, version) {
     fs.writeFileSync(nativeOut, patchedBin, { mode: 0o755 });
     fs.chmodSync(nativeOut, 0o755);
 
-    const nativeSmoke = runClaudeNative(nativeOut, ['--version']);
-    const nativeCombined = `${nativeSmoke.stdout || ''}${nativeSmoke.stderr || ''}`;
-    if (nativeSmoke.status !== 0 || !nativeCombined.includes(version)) {
-      fs.rmSync(nativeStaging, { recursive: true, force: true });
-      recordFailedVersion('claude', version);
-      return { ok: false, reason: `native --version status=${nativeSmoke.status}: ${nativeCombined.slice(0, 200)}` };
+    // PR #48 (Codex 2026-05-08): run --version 3 times. Some upstream Bun
+    // SEA crash modes only fire on the 2nd or 3rd invocation (cache /
+    // .node extraction race). A single PASS isn't enough proof that the
+    // binary is stable for foreground REPL use. Cheap: each --version
+    // takes <500 ms and is fully offline.
+    //
+    // NOTE: this catches *startup-version-smoke* failures, not REPL/TUI
+    // stability. The Z Fold6 2.1.133 crash that motivated PR #47 was
+    // foreground TUI corruption AFTER the welcome banner started
+    // drawing — three --version runs do not exercise the Ink/TUI
+    // rendering path. PR #48 is about not promoting binaries that
+    // outright fail to boot; it does NOT make native safe enough to be
+    // the default again. Native stays opt-in via PR #47's gate.
+    //
+    // Codex push-prep review (item D): validate env override so NaN /
+    // 0 / negative don't break the loop. Floor at 1, default 3.
+    const __PARSED_SMOKE_RUNS = Number(process.env.SHELLY_NATIVE_VERSION_SMOKE_RUNS || 3);
+    const NATIVE_VERSION_SMOKE_RUNS =
+      Number.isInteger(__PARSED_SMOKE_RUNS) && __PARSED_SMOKE_RUNS > 0
+        ? __PARSED_SMOKE_RUNS
+        : 3;
+    let nativeSmoke;
+    let nativeCombined = '';
+    for (let i = 1; i <= NATIVE_VERSION_SMOKE_RUNS; i += 1) {
+      nativeSmoke = runClaudeNative(nativeOut, ['--version']);
+      nativeCombined = `${nativeSmoke.stdout || ''}${nativeSmoke.stderr || ''}`;
+      if (nativeSmoke.status !== 0 || !nativeCombined.includes(version)) {
+        const category = classifyFailure(nativeSmoke);
+        const reason = `native --version run ${i}/${NATIVE_VERSION_SMOKE_RUNS} status=${nativeSmoke.status} signal=${nativeSmoke.signal || ''} cat=${category}: ${nativeCombined.slice(0, 200)}`;
+        fs.rmSync(nativeStaging, { recursive: true, force: true });
+        recordFailedVersion('claude', version, category, reason);
+        return { ok: false, reason };
+      }
     }
-    info(`[claude] try ${version} — native --version smoke OK`);
+    info(`[claude] try ${version} — native --version smoke OK (${NATIVE_VERSION_SMOKE_RUNS}x)`);
 
     if (shouldFunctionalCheckClaude()) {
       const nativeFunc = runClaudeNative(nativeOut, ['--print', 'Reply exactly OK'], {
@@ -895,14 +995,28 @@ async function tryClaudeVersion(pkgMeta, version) {
       });
       const nativeFuncOut = `${nativeFunc.stdout || ''}${nativeFunc.stderr || ''}`;
       if (nativeFunc.status !== 0) {
+        // Codex review (PR #48 spec item 8): classify before recording.
+        // auth/network failures must NOT cooldown the binary — the user
+        // can fix their auth and the same binary version becomes valid
+        // again. Only signal-killed and unexplained-exit failures
+        // genuinely indicate the binary is broken.
+        const category = classifyFailure(nativeFunc);
+        const reason = `native --print status=${nativeFunc.status} signal=${nativeFunc.signal || ''} cat=${category}: ${nativeFuncOut.slice(0, 200)}`;
         fs.rmSync(nativeStaging, { recursive: true, force: true });
-        recordFailedVersion('claude', version);
-        return { ok: false, reason: `native --print status=${nativeFunc.status}: ${nativeFuncOut.slice(0, 200)}` };
+        recordFailedVersion('claude', version, category, reason);
+        return { ok: false, reason };
       }
       if (!/\bOK\b/i.test(nativeFunc.stdout || '')) {
+        // Process exited 0 but didn't say OK — could be rate limit, model
+        // output drift, stderr warning, prompt mismatch, etc. Codex push-
+        // prep review pushed back on the earlier 'auth' label here as too
+        // coarse for diagnostics. Use a dedicated 'unexpected-output'
+        // category so the failure log makes the cause readable; cooldown
+        // exclusion is the same as 'auth' (not in COOLDOWN_CATEGORIES).
+        const reason = `native --print did not return OK: ${nativeFuncOut.slice(0, 200)}`;
         fs.rmSync(nativeStaging, { recursive: true, force: true });
-        recordFailedVersion('claude', version);
-        return { ok: false, reason: `native --print did not return OK: ${nativeFuncOut.slice(0, 200)}` };
+        recordFailedVersion('claude', version, 'unexpected-output', reason);
+        return { ok: false, reason };
       }
       info(`[claude] try ${version} — native functional check OK`);
       fs.writeFileSync(path.join(nativeStaging, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
@@ -1145,17 +1259,63 @@ async function updateCodex() {
   info(`[codex] all ${candidates.length} candidates failed smoke; keeping current=${currentVersion('codex') || '(none)'}`);
 }
 
+// Codex review 2026-05-08 (PR #48): age-aware GC for staging directories.
+// Earlier impl was unconditional — every updater run nuked every claude-*
+// / codex-* entry in TMP, including in-flight stages from a concurrent
+// updater process. RUN_TAG (per-process pid+rand suffix) gives unique
+// paths but doesn't help if a sibling process arrives at startup and
+// finds another's WIP stage. The mtime check below preserves anything
+// touched in the last 24h, so two updater instances don't trample each
+// other while still recovering disk from genuinely abandoned crashes.
+//
+// Codex push-prep review (item F): validate the env override so a
+// malformed SHELLY_STAGING_GC_AGE_S doesn't either disable GC (NaN/0)
+// or set an absurdly small cutoff that nukes in-flight stages. Floor
+// at 3600s (1h) — anything shorter risks racing concurrent updaters.
+const __PARSED_GC_AGE = Number(process.env.SHELLY_STAGING_GC_AGE_S || 86400);
+const STAGING_GC_AGE_S =
+  Number.isFinite(__PARSED_GC_AGE) && __PARSED_GC_AGE >= 3600
+    ? __PARSED_GC_AGE
+    : 86400;
+
 function cleanupStaleStaging() {
-  // Purge any leftover staging directories from crashed previous runs.
-  // Codex audit 2026-04-25: race window between writeFileSync and
-  // promote leaks ~/.shelly-runtime/.tmp/claude-X or codex-Y if the
-  // process dies mid-run. Clean at startup so disk doesn't accrue.
   try {
     if (!fs.existsSync(TMP)) return;
+    const cutoffMs = Date.now() - (STAGING_GC_AGE_S * 1000);
+    let removed = 0;
+    let preserved = 0;
     for (const entry of fs.readdirSync(TMP)) {
-      if (entry.startsWith('claude-') || entry.startsWith('claude-extracted-') || entry.startsWith('codex-')) {
-        fs.rmSync(path.join(TMP, entry), { recursive: true, force: true });
+      if (!(entry.startsWith('claude-') || entry.startsWith('claude-extracted-') || entry.startsWith('codex-'))) {
+        continue;
       }
+      const full = path.join(TMP, entry);
+      let mtimeMs;
+      try {
+        mtimeMs = fs.statSync(full).mtimeMs;
+      } catch (e) {
+        // Stat failed (race with another rm? broken symlink?). Try to
+        // remove it; if rm also fails, log and move on.
+        try {
+          fs.rmSync(full, { recursive: true, force: true });
+          removed += 1;
+        } catch (re) {
+          log(`cleanupStaleStaging: stat+rm both failed for ${entry}: ${re.message}`);
+        }
+        continue;
+      }
+      if (mtimeMs < cutoffMs) {
+        try {
+          fs.rmSync(full, { recursive: true, force: true });
+          removed += 1;
+        } catch (re) {
+          log(`cleanupStaleStaging: rm failed for ${entry}: ${re.message}`);
+        }
+      } else {
+        preserved += 1;
+      }
+    }
+    if (removed > 0 || preserved > 0) {
+      info(`[gc] staging cleanup: removed=${removed} preserved=${preserved} (age cutoff ${STAGING_GC_AGE_S}s)`);
     }
   } catch (err) {
     log(`cleanupStaleStaging: ${err.message}`);
