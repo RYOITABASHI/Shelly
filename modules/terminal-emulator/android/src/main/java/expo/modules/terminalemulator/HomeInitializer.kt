@@ -669,7 +669,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        threw `globalThis.Bun.which is not a function` even after
     //        the v82 APK install. Bumping the version forces bashrc
     //        regeneration on next shell start and the new preload lands.
-    private const val BASHRC_VERSION = 82
+    //    83: 2026-05-08 build #835 real-device test — Bun 1.3.14 + Claude
+    //        Code 2.1.133 panic-crashes the native musl Bun SEA tier (both
+    //        latest tier and Path C-bis tier) on Galaxy Z Fold6 with exit
+    //        133 (SIGTRAP) / 135 (SIGBUS) at startup, AFTER drawing a
+    //        partial TUI welcome banner. Falling back to extracted Node
+    //        works fine but the half-rendered banner has already polluted
+    //        the foreground REPL. Codex review recommended demoting native
+    //        tiers to opt-in via SHELLY_PREFER_NATIVE_CLAUDE=1 so the
+    //        default foreground path goes straight to extracted Node
+    //        (which actually works on this device) without ever touching
+    //        the broken native binary. Also added 133/135 to the retry
+    //        list for users who opt back in (Codex pushed back on 137 =
+    //        SIGKILL/OOM since cache-clear retry doesn't address memory
+    //        pressure; final list is 133/134/135/139/159).
+    private const val BASHRC_VERSION = 83
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1308,11 +1322,26 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
-            // @anthropic-ai/claude-code dispatch. Default route is the
-            // verified latest linux-arm64 musl Bun SEA binary. The extracted
-            // Node route remains a fallback only: upstream Claude can add Bun
-            // APIs that pass --version after extraction but hang during real
-            // --print sessions.
+            // @anthropic-ai/claude-code dispatch. As of 2026-05-08 (BASHRC
+            // v83), the **default route is the extracted Node tier**
+            // (cli.js + Bun.* polyfill via $libDir/node) — Bun 1.3.14 +
+            // Claude Code 2.1.133 panic-crashes the native musl Bun SEA on
+            // Galaxy Z Fold6 with exit 133 (SIGTRAP) / 135 (SIGBUS) AFTER
+            // drawing a partial TUI banner, polluting the foreground REPL
+            // even though the tier-fallback eventually succeeds.
+            //
+            // The native Bun SEA tiers (latest under
+            // ~/.shelly-runtime/claude/current/, and the APK-bundled
+            // Path C-bis under $libDir/claude) remain available but are
+            // gated behind SHELLY_PREFER_NATIVE_CLAUDE=1. Set the env var
+            // to opt back in for testing / smoke-validation. The runtime
+            // updater's background smoke is the right end-state for
+            // promoting "known good" native binaries (deferred, see PR
+            // description follow-up).
+            //
+            // Earlier comment said the opposite (native default, Node
+            // fallback). It was correct until 2.1.133; do not revert
+            // without re-validating both tiers on a real device.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
@@ -1338,7 +1367,21 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      mkdir -p \"\$HOME/.shelly-ssl\"")
             sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__runtime_claude\" ]; then")
+            // 2026-05-08 Codex review: Bun 1.3.14 + Claude Code 2.1.133 on
+            // Galaxy Z Fold6 panic-crashes the native musl Bun SEA tier
+            // (exit 133 SIGTRAP / 135 SIGBUS at startup) AFTER drawing a
+            // partial TUI welcome banner. Falling back to extracted Node tier
+            // works fine, but the corrupted half-banner has already polluted
+            // the foreground REPL and the user sees a frankenstein display.
+            //
+            // Native tier is now opt-in via SHELLY_PREFER_NATIVE_CLAUDE=1.
+            // Default path skips both native blocks (latest + Path C-bis) and
+            // goes straight to the extracted Node tier (cli.js + Bun.* polyfill)
+            // which is the path actually verified working on real devices.
+            // Power users / CI smoke tests can re-enable the native foreground
+            // path; the runtime updater's background smoke is the right place
+            // to validate native binaries before promoting them.
+            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__runtime_claude\" ]; then")
             sb.appendLine("      if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
@@ -1346,11 +1389,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      __shelly_paste_tui_begin")
             sb.appendLine("      BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
             sb.appendLine("      local __runtime_rc=$?")
-            sb.appendLine("      if [ \"\$__runtime_rc\" = 134 ] || [ \"\$__runtime_rc\" = 139 ] || [ \"\$__runtime_rc\" = 159 ]; then")
-            sb.appendLine("        rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
-            sb.appendLine("        BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
-            sb.appendLine("        __runtime_rc=$?")
-            sb.appendLine("      fi")
+            // Retry list updated 2026-05-08 per Codex review: 133 (SIGTRAP)
+            // and 135 (SIGBUS) added — both observed on Z Fold6 with Bun
+            // 1.3.14. 137 (SIGKILL/OOM) NOT included because cache clear +
+            // retry doesn't address memory-pressure root cause and would just
+            // double the OOM hit. List remains: SIGTRAP 133 / SIGABRT 134 /
+            // SIGBUS 135 / SIGSEGV 139 / SIGSYS 159.
+            sb.appendLine("      case \"\$__runtime_rc\" in")
+            sb.appendLine("        133|134|135|139|159)")
+            sb.appendLine("          rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
+            sb.appendLine("          BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__runtime_claude\" \"\$@\"")
+            sb.appendLine("          __runtime_rc=$?")
+            sb.appendLine("          ;;")
+            sb.appendLine("      esac")
             sb.appendLine("      __shelly_paste_tui_end")
             sb.appendLine("      case \"\$__runtime_rc\" in")
             sb.appendLine("        0)")
@@ -1379,19 +1430,32 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          ;;")
             sb.appendLine("      esac")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            // Codex review fix-up: announce condition must also gate on
+            // SHELLY_PREFER_NATIVE_CLAUDE=1 — without it, the "Path C-bis"
+            // banner prints (and SHELLY_CLAUDE_TIER_ANNOUNCED=1 is set,
+            // suppressing the *real* banner from the extracted Node tier
+            // below) even though the native execution block is skipped.
+            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__musl_claude\" ]; then")
+            // Same opt-in flag as the runtime-tier block above — Path C-bis
+            // is the APK-bundled musl Bun SEA, and exhibits the same 133/135
+            // crash modes as the runtime-tier latest. Default skips it; opt-in
+            // via SHELLY_PREFER_NATIVE_CLAUDE=1 keeps the foreground path.
+            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__musl_claude\" ]; then")
             sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
-            sb.appendLine("    if [ \"\$__musl_rc\" = 134 ] || [ \"\$__musl_rc\" = 139 ] || [ \"\$__musl_rc\" = 159 ]; then")
-            sb.appendLine("      rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
-            sb.appendLine("      BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
-            sb.appendLine("      __musl_rc=$?")
-            sb.appendLine("    fi")
+            // 137 dropped per Codex review (SIGKILL/OOM is not a cache-clear-
+            // recoverable signal); list matches the runtime-tier block above.
+            sb.appendLine("    case \"\$__musl_rc\" in")
+            sb.appendLine("      133|134|135|139|159)")
+            sb.appendLine("        rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
+            sb.appendLine("        BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("        __musl_rc=$?")
+            sb.appendLine("        ;;")
+            sb.appendLine("    esac")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__musl_rc\" in")
             sb.appendLine("      0)")
