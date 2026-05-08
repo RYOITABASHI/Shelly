@@ -170,7 +170,7 @@ Termux gives you a terminal but no AI. ChatGPT gives you AI but no terminal. Rep
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **5 pane types** | Terminal, AI, Browser (+ background audio), Markdown, Preview. Split up to 4 live panes freely. |
 | **Multi-agent AI** | Claude Code, Gemini, Cerebras, Groq, Perplexity, Codex, Local LLM. Auto-routed or `@mention`. |
-| **Claude Code + Codex + Gemini on Android** | Shelly keeps all three AI CLIs on managed latest paths without trusting upstream blindly. The current verified device build runs Claude Code 2.1.123 via the updater-managed extracted Bun `cli.js` Node route, Codex 0.125.0-termux with GPT-5.5, and Gemini CLI 0.40.0. Claude falls back to the APK-extracted `cli.js`, musl SEA, and legacy `cli.js` tiers if needed; Claude and Codex native candidates are staged in `.shelly-runtime`, smoke-tested on-device, serialized by an updater lock, then promoted by `current/` symlink only after PASS. The npm tier stages `@google/gemini-cli@latest` and `@openai/codex@latest`, applies Shelly compatibility hooks, runs `--version` probes, then promotes the tree only if probes pass. Broken versions are logged and cooled down; offline checks keep the previous stable runtime. No proot, no root. |
+| **Claude Code + Codex + Gemini on Android** | Shelly keeps all three AI CLIs on managed latest paths without trusting upstream blindly. The current verified device build runs Claude Code 2.1.133 through the stable extracted Bun `cli.js` Node route by default. Native musl Bun SEA tiers are experimental and opt-in via `SHELLY_PREFER_NATIVE_CLAUDE=1`; crashing native versions are learned from foreground failures and cooled down before they can be retried. Codex native candidates and Gemini npm candidates are staged in `.shelly-runtime` / `.shelly-cli`, smoke-tested on-device, serialized by an updater lock, then promoted by `current/` symlink only after PASS. Offline checks keep the previous stable runtime. No proot, no root. |
 | **Shelly theme preset** | Mock-faithful teal-on-black palette with Silkscreen pixel font. Runtime swap — your shell survives the switch. |
 | **Voice input** | Speak your commands or AI prompts. VoiceChain ties speech to the same input router the keyboard uses. |
 | **CRT mode** | Scanlines + phosphor green + vignette. Retro 8-bit sounds. Pixel fonts. Just for fun. |
@@ -349,6 +349,14 @@ Currently registered:
 
 </details>
 
+### Claude Runtime Tiers
+
+- **Default:** extracted Node tier — Shelly extracts Claude Code's `cli.js`, runs it through the APK-bundled Node runtime, and applies the small Bun compatibility shims Claude currently expects.
+- **Experimental:** native musl Bun SEA tier — set `SHELLY_PREFER_NATIVE_CLAUDE=1` to try the staged linux-arm64 musl Bun binary. If that version has recently crashed on the device, Shelly skips it and keeps the extracted Node route.
+- **Debug escape hatch:** `SHELLY_FORCE_NATIVE_CLAUDE=1` bypasses the cooldown and forces the native tier for investigation only.
+- **Runtime learning:** foreground native crashes are recorded, converted into a 24-hour cooldown, and combined with updater-side `--version` smoke checks before any new native candidate is promoted.
+- **Overrides:** `SHELLY_FAILED_VERSION_COOLDOWN` controls cooldown seconds (default `86400`), `SHELLY_NATIVE_VERSION_SMOKE_RUNS` controls native `--version` smoke count (default `3`), and `SHELLY_STAGING_GC_AGE_S` controls stale staging GC age (default `86400`).
+
 ---
 
 ## Status
@@ -374,7 +382,7 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Claude / Gemini CLIs auto-installed on first launch (via npm) | ✅ shipping |
-| Claude Code updater-managed musl Bun SEA (default) with `audio-capture.node` / `image-processor.node` byte-patched out for Android arm64 stability + raw-syscall LD_PRELOAD wrappers + legacy npm tier pinned to 2.1.112 (`SHELLY_LEGACY_NPM_PIN` override) + Bun.hash polyfill + Codex CLI verified native runtime + Gemini npm CLI staged/probed before promotion | ✅ managed latest with rollback; 807 device verification: **Claude 2.1.131 with Bash tool**, Codex 0.125.0-termux GPT-5.5, Gemini 0.40.0 |
+| Claude Code extracted Node tier (default) with Bun compatibility shims + experimental updater-managed musl Bun SEA tiers behind `SHELLY_PREFER_NATIVE_CLAUDE=1` / `SHELLY_FORCE_NATIVE_CLAUDE=1` + native crash cooldown + raw-syscall LD_PRELOAD wrappers + legacy npm tier pinned to 2.1.112 (`SHELLY_LEGACY_NPM_PIN` override) + Codex CLI verified native runtime + Gemini npm CLI staged/probed before promotion | ✅ managed latest with rollback; build 839+ device verification: **Claude 2.1.133 via extracted Node default**, native musl Bun SEA opt-in only |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
