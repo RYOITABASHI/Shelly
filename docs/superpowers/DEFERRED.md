@@ -1096,6 +1096,44 @@ coreutils: /proc/self/net/tcp6: Permission denied
 
 ---
 
+### bug #139 — Bun.* polyfill 強化 + 専用 preload ファイル化 (Codex review 2026-05-08)
+
+**発見**: 2026-05-08 PR #40 (Bun.* polyfill 拡張) を Codex に independent review してもらった結果
+
+**現状**: PR #40 で `Bun.which / semver / YAML / gc / generateHeapSnapshot` を `~/.bashrc` heredoc 経由で polyfill。Claude Code 2.1.133 の `Bun.which is not a function` 即死は止まる。
+
+**Codex の指摘 (改善余地、すぐ着手可)**:
+1. `Bun.which(cmd, { PATH, cwd })` の **第 2 引数未対応** — Bun が API 仕様で受ける形式と不整合。`/` 含むパスは PATH 探索ではなく cwd-relative resolve すべき
+2. `Bun.semver.satisfies` が **invalid version/range で `false` を返さない** — Bun docs では明確に false 期待
+3. `Bun.YAML.parse` が `js-yaml.load` のみで **multi-document YAML を取りこぼす** — `loadAll` で 1 件なら単体 / 複数なら配列 にすべき。invalid YAML 時に **`SyntaxError` で wrap** して Bun 互換性向上
+4. **低リスクで足すべき API**: `Bun.env`, `Bun.argv`, `Bun.main`, `Bun.inspect`, `Bun.sleep`, `Bun.sleepSync`, `Bun.version` (但し fake と分かる値: `'0.0.0-shelly-node-shim'`)
+5. **危険 API は明示 throw stub** にする (silent no-op より安全): `Bun.spawn`, `Bun.spawnSync`, `Bun.serve`, `Bun.$` を呼ばれた瞬間 `Error('[shelly] Bun.${name} is not supported in the Node fallback runtime')` を throw
+
+**絶対やってはいけない**:
+- **`process.versions.bun` を生やす** → Claude が「Bun 上で動いている」と判断して Bun 専用最適化パスに入り、Node では破綻する
+- **Bun.spawn の half-impl** — Bun は ReadableStream / FileSink / exited Promise / PTY など Node `child_process` と意味論が大きく違う。半端実装は逆に壊す
+
+**中期アーキ変更 (P1〜P2 境界)**:
+- ~~heredoc-in-bashrc~~ → 専用 `~/.shelly-claude-node-preload.js` ファイルへ寄せる
+- `NODE_OPTIONS=--require=...` を **Claude wrapper 内のみ** で注入 (全 Node プロセスに撒かない)
+- runtime updater の smoke test を `claude --version` から `claude --print "Say OK"` に強化 (実際に Bun.* path を踏むので polyfill 不足の早期発見)
+
+**修正方針** (PR #44 想定):
+1. `HomeInitializer.kt` と `shelly-runtime-update.js` 双方の polyfill heredoc を同期更新
+2. Bun.which 第 2 引数 + path-with-slash の cwd-resolve
+3. Bun.semver.satisfies の try/catch → false
+4. Bun.YAML を loadAll + SyntaxError wrap
+5. 低リスク API 6 個追加
+6. 危険 API 4 個に explicit throw stub
+7. BASHRC_VERSION bump (82 → 83)
+8. `__shelly_bg_cli_update` の smoke test を `--print "Say OK"` 化
+
+**優先度**: P1 (v5.2.x の reliability 改善、現状動いてはいる)
+**見積**: 1-2 時間 (実装 30 分、polyfill 実装の test、build cycle)
+**ブロッカー**: なし — PR #41 (BASHRC 81→82) merge 後すぐ着手可
+
+---
+
 ## P2 — 2 リリース先 (v0.2.0 milestone)
 
 ### GitHub Issues 登録済み
