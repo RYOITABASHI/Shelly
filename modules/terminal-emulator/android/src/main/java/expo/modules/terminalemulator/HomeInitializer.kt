@@ -633,7 +633,20 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        symlink, exec-able from app context) and uses
     //        /system/bin/linker64 directly in the body. Marker changed
     //        to SHELLY_XDG_OPEN_SHIM_V2 so v78 devices regenerate.
-    private const val BASHRC_VERSION = 79
+    //    80: v79 shebang `#!$HOME/bin/bash` ALSO failed on-device with
+    //        `bad interpreter: Success`, even though direct
+    //        `$HOME/bin/bash --version` works after unset-ing the bash
+    //        shell function. Android kernel's shebang dispatch path
+    //        through the symlink → libbash.so trips a SELinux denial
+    //        that direct execve from app context doesn't see. Bypass
+    //        the whole symlink/.so-execve issue by putting linker64
+    //        directly in the shebang: `#!/system/bin/linker64 <path>/
+    //        libbash.so`. Kernel exec's linker64 (allowed from app
+    //        context — every _run call uses it), linker64 mmaps
+    //        libbash.so without an execve audit, bash starts with argv
+    //        = [.so-path, script-path, user-args]; bash treats argv[1]
+    //        as the script. Marker SHELLY_XDG_OPEN_SHIM_V3.
+    private const val BASHRC_VERSION = 80
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -925,10 +938,24 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //      _run uses anyway.
             // SHELLY_LIB_DIR is preserved across exec via env inheritance
             // from the parent bashrc-loaded shell.
-            sb.appendLine("if [ ! -f \"\$HOME/bin/xdg-open\" ] || ! grep -q SHELLY_XDG_OPEN_SHIM_V2 \"\$HOME/bin/xdg-open\" 2>/dev/null; then")
-            sb.appendLine("  printf '#!%s/bin/bash\\n' \"\$HOME\" > \"\$HOME/bin/xdg-open\"")
+            sb.appendLine("if [ ! -f \"\$HOME/bin/xdg-open\" ] || ! grep -q SHELLY_XDG_OPEN_SHIM_V3 \"\$HOME/bin/xdg-open\" 2>/dev/null; then")
+            // v80 (2026-05-08): v79 shebang `#!$HOME/bin/bash` also failed
+            // with `bad interpreter: Success` even though direct `$HOME/bin/bash
+            // --version` works after `unset -f bash`. Android kernel's shebang
+            // dispatch path resolves the symlink to libbash.so but then the
+            // execve of the .so trips a SELinux denial that direct execve from
+            // app context doesn't see (different audit path). Workaround: skip
+            // the symlink chain entirely by putting linker64 directly in the
+            // shebang and pointing it at libbash.so. The kernel exec's
+            // /system/bin/linker64 (which IS allowed from app context, used by
+            // every `_run` invocation), linker64 mmaps libbash.so without an
+            // execve audit, bash starts. argv ends up as
+            // [".../libbash.so", "$script", "$user_args"] — bash treats
+            // argv[1] as script path, runs xdg-open, $@ is user_args. The
+            // body itself is unchanged from v79: linker64 + node + helper.
+            sb.appendLine("  printf '#!/system/bin/linker64 %s/libbash.so\\n' \"\$SHELLY_LIB_DIR\" > \"\$HOME/bin/xdg-open\"")
             sb.appendLine("  cat >> \"\$HOME/bin/xdg-open\" <<'XDG_OPEN_SHIM_EOF'")
-            sb.appendLine("# SHELLY_XDG_OPEN_SHIM_V2 — see HomeInitializer.kt bug #102/#115")
+            sb.appendLine("# SHELLY_XDG_OPEN_SHIM_V3 — see HomeInitializer.kt bug #102/#115")
             sb.appendLine("exec /system/bin/linker64 \"\${SHELLY_LIB_DIR}/node\" \"\$HOME/.shelly-xdg-open.js\" \"\$@\"")
             sb.appendLine("XDG_OPEN_SHIM_EOF")
             sb.appendLine("  chmod +x \"\$HOME/bin/xdg-open\" 2>/dev/null")
