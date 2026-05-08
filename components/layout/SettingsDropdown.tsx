@@ -31,6 +31,8 @@ import { BuildsModal } from '@/components/layout/BuildsModal';
 import { applyThemePreset } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
+import { useAddPane } from '@/hooks/use-add-pane';
+import { useTerminalStore } from '@/store/terminal-store';
 
 type Props = {
   visible: boolean;
@@ -82,6 +84,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
             <CredentialImportSection />
+            <CodexLoginSection onClose={onClose} />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -961,6 +964,63 @@ function CredentialImportSection() {
         <Text style={styles.integrationLabel}>
           {busy === 'gemini' ? 'Importing Gemini...' : 'Import Gemini credentials'}
         </Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+// ─── Codex login (ChatGPT subscription device-auth) ─────────────────────────
+// Minimal trigger for the existing `codex-login --open` flow defined in
+// HomeInitializer.kt:1493 and implemented in assets/shelly-codex-auth.js.
+// Tapping the button closes this Modal, spawns a fresh terminal pane, and
+// queues `codex-login --open` so the user sees the device code, browser
+// pane opens via the shelly://browser deep link, and ~/.codex/auth.json
+// (mode 0600) is written on success. Verification is delegated to
+// shelly-doctor (which already reports `codex auth: <exists|missing>`).
+// Kept distinct from CredentialImportSection per project policy: Codex
+// authenticates in-app via OAuth, while Claude/Gemini still need
+// credential transplant.
+
+function CodexLoginSection({ onClose }: { onClose: () => void }) {
+  const addPane = useAddPane();
+
+  const start = React.useCallback(() => {
+    Alert.alert(
+      'Sign in with ChatGPT?',
+      'Opens the Browser Pane to auth.openai.com for the device-code flow. After you approve in the browser, Shelly writes ~/.codex/auth.json (mode 0600). Run `shelly doctor` afterwards to confirm.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign in',
+          onPress: () => {
+            const result = addPane('terminal');
+            if (result !== null) return; // useAddPane already alerted
+            useTerminalStore.getState().insertCommand('codex-login --open\n');
+            logInfo('SettingsDropdown', 'codex-login launched');
+            onClose();
+          },
+        },
+      ],
+    );
+  }, [addPane, onClose]);
+
+  return (
+    <Section title="CODEX LOGIN">
+      <Text style={styles.credentialHint}>
+        Sign in with your ChatGPT subscription via device-code OAuth. Runs in a
+        new terminal pane and opens the verification page in Shelly's Browser
+        Pane.
+      </Text>
+      <Pressable
+        style={styles.integrationRow}
+        onPress={start}
+        accessibilityRole="button"
+        accessibilityLabel="Sign in with ChatGPT for Codex"
+      >
+        <MaterialIcons name="login" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Sign in with ChatGPT</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
