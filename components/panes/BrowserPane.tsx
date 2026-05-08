@@ -128,6 +128,65 @@ const FULLSCREEN_BRIDGE_JS = `
 true;
 `;
 
+// JS injected BEFORE the page document loads — handles WebView
+// fingerprint masking and responsiveness setup before the page first
+// queries them.
+//
+//   1. navigator.userAgentData (Client Hints) is populated by Chromium
+//      independently of the `userAgent` prop and on Android WebView
+//      still reports the embedded build, which sites doing modern
+//      UA-CH detection (increasingly common) use to detect WebView
+//      regardless of the UA string. Define `userAgentData` as
+//      undefined so detection falls back to the (cleaned) UA string.
+//
+//   2. Inject a default `<meta name=viewport>` for pages that don't
+//      set one. Done in *before-content* so the WebView's first layout
+//      pass sees it. Post-load injection on Android is a no-op — the
+//      viewport is read once at initial layout and Chromium doesn't
+//      re-read it from a mutated tag.
+//
+//      Heuristic: skip injection if a viewport meta tag exists at all
+//      (regardless of its content). Pages that ship a viewport meta —
+//      including OAuth providers and most mainstream sites — already
+//      have intentional values, e.g. `user-scalable=no`. Overwriting
+//      drops those.
+//
+//   3. Define `window.__shellyResize` so the RN side can hand-fire a
+//      `resize` event on pane dimension changes (the WebView's bounds
+//      change but Chromium doesn't always dispatch the event on a
+//      same-document layout shift, leaving frameworks with
+//      ResizeObserver / window.onresize listeners stale).
+//
+// `true;` at the end is the react-native-webview convention so the
+// injection result is JSON-serialisable; we don't use the value.
+const RESPONSIVE_BRIDGE_JS = `
+(function() {
+  if (window.__shellyResponsiveInstalled) return;
+  window.__shellyResponsiveInstalled = true;
+  try {
+    Object.defineProperty(navigator, 'userAgentData', {
+      value: undefined, configurable: true,
+    });
+  } catch (e) {}
+  try {
+    var existing = document.querySelector('meta[name="viewport"]');
+    if (!existing) {
+      var meta = document.createElement('meta');
+      meta.setAttribute('name', 'viewport');
+      meta.setAttribute('content', 'width=device-width, initial-scale=1');
+      if (document.head) document.head.appendChild(meta);
+      else document.addEventListener('DOMContentLoaded', function() {
+        if (document.head) document.head.appendChild(meta);
+      });
+    }
+  } catch (e) {}
+  window.__shellyResize = function() {
+    try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+  };
+})();
+true;
+`;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -150,11 +209,41 @@ export interface BrowserPaneProps {
   visible?: boolean;
 }
 
-// User-Agent strings. Mobile is the react-native-webview default, so when
-// the user picks "Desktop" we send a current Chrome UA instead. Desktop UA
-// is useful on sites like YouTube where the mobile layout has giant tiles
-// and is painful to scroll through looking for a video.
-const MOBILE_UA = undefined; // let the WebView pick its default
+// Module-scoped guard against stale `openSignal.url` poisoning fresh
+// Browser Panes. The store never clears openSignal.url, so once any
+// xdg-open / deep link has dispatched a URL, the value sticks
+// forever. Without this guard, opening a fresh Browser Pane manually
+// (Sidebar "+ browser" / split) hours later would silently reload
+// the last URL — confusing, since the user expected about:blank.
+//
+// We track the last seq the BrowserPane mount-initializer has
+// consumed. A new mount only honours `openSignal.url` if its seq is
+// strictly greater than the last consumed one. The existing pane-
+// instance navigation `useEffect` (which has its own per-instance
+// `lastOpenSeqRef`) is unchanged — it still fires on every seq bump
+// to navigate the already-mounted Browser Pane.
+let lastConsumedOpenSignalSeq = 0;
+
+// User-Agent strings. The Android system WebView default UA includes a
+// `wv` token (Build/...; wv) AppleWebKit) which providers like Google,
+// Anthropic, and many other OAuth flows treat as an "embedded WebView"
+// signal and refuse to show their sign-in UI for. Google's
+// "disable_webview_sign_in" policy is the canonical example: it returns
+// a "this browser or app may not be secure" error page in Chrome WebView.
+//
+// Phase 1 OAuth on Shelly fundamentally needs WebView to look like a
+// real Chrome instance to providers, otherwise Browser Pane navigation
+// reaches the auth URL but the consent / sign-in UI is gated. Strip
+// the `wv` token by setting a custom mobile UA matching real Chrome on
+// Android. Same UA Chrome on Android sends today (Chrome 131 stable).
+//
+// When the user picks "Desktop" we send a Mac Chrome UA instead — same
+// rationale as before (YouTube etc. show a more usable layout on
+// desktop).
+const MOBILE_UA =
+  'Mozilla/5.0 (Linux; Android 14) ' +
+  'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 ' +
+  'Mobile Safari/537.36';
 const DESKTOP_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -269,8 +358,40 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     [userBookmarks],
   );
 
-  const [inputUrl, setInputUrl] = useState(initialUrl === 'about:blank' ? '' : initialUrl);
-  const [currentUrl, setCurrentUrl] = useState(initialUrl);
+  // Resolve the URL to show on first mount. The drainQueue path in
+  // app/_layout.tsx and the deep-link handler both call
+  // `addPane('browser')` THEN `openUrl(url)` — addPane creates a fresh
+  // Browser Pane in a new slot and openUrl bumps the openSignal seq.
+  // If we naively initialised currentUrl to `initialUrl` ('about:blank'),
+  // the new Browser Pane would mount with about:blank, then its
+  // useEffect would compare openSignal.seq to lastOpenSeqRef (set to
+  // CURRENT seq on mount, which is post-openUrl), see they're equal,
+  // and skip the navigation — the user gets an empty Browser Pane
+  // even though a URL was queued. Instead, peek at the latest
+  // openSignal.url at mount time and use it as the initial URL when
+  // present. This is the fix for "xdg-open https://example.com opens
+  // a Browser Pane but the URL doesn't load" reported on Z Fold6.
+  //
+  // The `lastConsumedOpenSignalSeq > seq` guard prevents stale URLs
+  // from poisoning fresh manual Browser Pane opens long after the
+  // last queued URL. Without it, a Sidebar "+ browser" hours later
+  // would silently reload the last xdg-open'd URL.
+  const initialResolvedUrl = (() => {
+    const s = useBrowserStore.getState();
+    if (
+      s.openSignal.url &&
+      s.openSignal.seq > lastConsumedOpenSignalSeq &&
+      /^https?:\/\//i.test(s.openSignal.url)
+    ) {
+      lastConsumedOpenSignalSeq = s.openSignal.seq;
+      return s.openSignal.url;
+    }
+    return initialUrl;
+  })();
+  const [inputUrl, setInputUrl] = useState(
+    initialResolvedUrl === 'about:blank' ? '' : initialResolvedUrl,
+  );
+  const [currentUrl, setCurrentUrl] = useState(initialResolvedUrl);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [activeBookmarkIdx, setActiveBookmarkIdx] = useState(0);
@@ -322,6 +443,20 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const handleBack = useCallback(() => { webviewRef.current?.goBack(); }, []);
   const handleForward = useCallback(() => { webviewRef.current?.goForward(); }, []);
   const handleRefresh = useCallback(() => { webviewRef.current?.reload(); }, []);
+
+  // Force a JS-level resize event whenever the pane changes size. The
+  // Android WebView container resizes its viewport, but pages that use
+  // ResizeObserver / window.onresize listeners often miss the change
+  // because no `resize` is dispatched on a same-document layout shift.
+  // Result: page stays laid out for the previous pane width — content
+  // gets cut off / scaled wrong. Hand-firing keeps the page in sync.
+  useEffect(() => {
+    if (paneWidth <= 0 || paneHeight <= 0) return;
+    webviewRef.current?.injectJavaScript(`
+      try { window.__shellyResize && window.__shellyResize(); } catch (e) {}
+      true;
+    `);
+  }, [paneWidth, paneHeight]);
 
   const handleBookmarkTap = useCallback((url: string, index: number) => {
     setActiveBookmarkIdx(index);
@@ -468,11 +603,29 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           ref={webviewRef}
           source={{ uri: currentUrl }}
           style={styles.webview}
-          textZoom={compactChrome ? 85 : 100}
+          // textZoom kept at 90% in compact panes as a legibility safety
+          // net. The viewport-meta injection handles pages that lack a
+          // viewport tag, but mainstream pages already ship their own
+          // viewport — for those, only a textZoom nudge actually
+          // affects perceived text size in a narrow pane. 90% is
+          // gentler than the previous 85% which produced inconsistent
+          // UX between text and surrounding chrome.
+          textZoom={compactChrome ? 90 : 100}
           userAgent={desktopMode ? DESKTOP_UA : MOBILE_UA}
+          // GPU-accelerated rendering. Default Android WebView uses
+          // software layers in some configurations; hardware speeds up
+          // scrolling, video, and CSS-transform-driven OAuth UIs.
+          androidLayerType="hardware"
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
-          injectedJavaScriptBeforeContentLoaded={FULLSCREEN_BRIDGE_JS}
+          // RESPONSIVE_BRIDGE_JS must run BEFORE first paint so the
+          // injected viewport meta and userAgentData mask are in
+          // place before Chromium's initial layout / fingerprinting.
+          // FULLSCREEN_BRIDGE_JS is appended to the same string so we
+          // only invoke one before-content-loaded payload.
+          injectedJavaScriptBeforeContentLoaded={
+            RESPONSIVE_BRIDGE_JS + FULLSCREEN_BRIDGE_JS
+          }
           javaScriptEnabled
           domStorageEnabled
           mediaPlaybackRequiresUserAction={false}
@@ -480,6 +633,14 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           thirdPartyCookiesEnabled
           sharedCookiesEnabled
           allowsInlineMediaPlayback
+          // Allow https pages to load http subresources where modern
+          // browsers would. `compatibility` matches Chrome stable's
+          // mixed-content policy — opt out of `never` (the WebView
+          // default) which silently breaks legacy intranet/SAML setups.
+          // Note: this is not what fixes Google / Anthropic OAuth (those
+          // are HTTPS end-to-end); it's just bringing WebView in line
+          // with system browser behaviour.
+          mixedContentMode="compatibility"
           onError={() => {
             // Reload on render-process crash so YouTube recovers instead
             // of showing a blank white screen until manual refresh.
