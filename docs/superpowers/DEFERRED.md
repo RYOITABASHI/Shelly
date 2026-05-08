@@ -1046,7 +1046,7 @@ coreutils: /proc/self/net/tcp6: Permission denied
 
 ---
 
-### bug #102/#115 phase 1.2 — Google OAuth Custom Tabs trampoline
+### bug #102/#115 phase 1.2 — Google OAuth Custom Tabs trampoline (Codex 設計レビュー反映 2026-05-08)
 
 **発見**: 2026-05-08 PR #37 review (Phase 1.1 WebView responsiveness)
 **症状**: Phase 1 file-queue + Phase 1.1 UA spoofing で Anthropic / GitHub OAuth は WebView 内完結するが、**Google は突破できない**:
@@ -1054,16 +1054,74 @@ coreutils: /proc/self/net/tcp6: Permission denied
 - Google `accounts.google.com` はこの header を見て "embedded WebView" 検出、`disable_webview_sign_in` policy で「このブラウザは安全ではないかも」エラーページを返す
 - これは UA / `navigator.userAgentData` の spoofing では消せない、Chromium 内部の固定挙動
 
-**修正方針 (P1.2)**:
-1. **Option A: Custom Tabs trampoline** — Google OAuth URL を検出したら `Linking.openURL(url)` で外部 Custom Tabs / Chrome に飛ばす。サインイン完了後、redirect_uri が `http://localhost:<port>/callback` なので、Chrome がそれを open しようとして失敗 → ユーザは手動で Shelly に戻る → Claude/Gemini の listener は反応しない (orphan flow)
-2. **Option B: `onShouldStartLoadWithRequest` で request rewrite** — react-native-webview の prop で navigation を intercept → custom HTTP fetch (without `X-Requested-With`) → response を WebView に inject (heavy)
-3. **Option C: Patch react-native-webview Android side** — `WebViewClient` を override して `X-Requested-With` を strip。fork or PR upstream
+**Codex independent review (2026-05-08) で設計方向が転換**:
+
+元の P1.2 提案は "Shelly が `shelly://oauth/callback` を介して code を受け取り、Shelly が token exchange して `~/.gemini/credentials.json` を書く" 方向だったが、これは **根本的に間違い**。理由:
+- OAuth flow の所有者は **CLI 側**: client_id / redirect_uri / state / **PKCE code_verifier** / loopback callback server / token format / credential file schema 全部 CLI が握っている
+- Shelly が `shelly://` callback で code を横取りしても、**PKCE verifier を知らない**ので Google への token exchange request が通らない (RFC 7636)
+- Gemini CLI の credential schema 変更に Shelly が追従し続けるのは壊れやすい
+
+**正しい P1.2 設計 (Codex 推奨)**:
+
+Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs で Google OAuth URL を開く」だけ**。callback / token exchange / credential write は **CLI に任せる**。
+
+```
+[Gemini CLI が OAuth URL 生成]
+  ↓ (URL 内に redirect_uri=http://127.0.0.1:<port>/... が含まれる)
+[CLI wrapper が file-queue に { provider: "google", authMode: "external-browser", url } を投入]
+  ↓
+[RN main thread が openBrowserAsync(url) / openAuthSessionAsync(url) で Custom Tabs 起動]
+  ↓ (実 Chrome process なので wv token / X-Requested-With なし)
+[ユーザが Custom Tabs 内で Google サインイン完了]
+  ↓
+[Google が http://127.0.0.1:<port>/... に redirect]
+  ↓ (Custom Tabs はそのまま外部ブラウザの挙動で localhost に GET)
+[CLI 自身の loopback server が code を受信 → PKCE verifier 持ってるので token exchange ✅]
+  ↓
+[CLI が ~/.gemini/credentials.json に書き込む]
+  ↓
+[Shelly は ~/.gemini/credentials.json の mtime 更新 + `gemini --version` smoke で完了検出]
+```
+
+**A-G 各項目の Codex 判定**:
+
+| 項目 | Codex 判定 | 備考 |
+|---|---|---|
+| A. `openAuthSessionAsync` が Knox 下で動くか | ✅ 動くはず (要実機 probe) | RN main thread からの Activity API 起動なので AMS 経由しない。`bindCustomTabsService` warmup 失敗の可能性はあるが致命傷ではなく external browser fallback になる |
+| B. redirect URI scheme | ✅ **`http://127.0.0.1:<port>/...` 一択** | RFC 8252 準拠、CLI が既に loopback server を立てる前提なので最自然。`shelly://` は PKCE 必須 + scheme hijack リスク + Google client 登録要 |
+| C. Custom Tabs 利用不可 fallback | ⚠️ **WebView fallback は NG** | Google が WebView を明示的に block する (Help: WebView OAuth remediation)。fallback chain: Custom Tabs → external browser → device-code → credential transplant |
+| D. UX 経路 | ✅ session id で pending OAuth 管理、完了後はターミナルへ | OAuth ブラウザは BrowserPane と分離 (事故防止) |
+| E. 複数同時 OAuth | ✅ **直列化必須** | Custom Tabs は activity stack 頂点専有、同時複数は混乱 |
+| F. キャンセル検出 | ⚠️ browser result だけに依存しない | `~/.gemini/credentials.json` mtime + `gemini --version` smoke で完了判定 |
+| G. Phase 1 経路との共存 | ✅ file-queue message に `provider` / `authMode` 明示 field を持たせる | URL pattern matching は誤爆リスク |
+
+**実装ステップ (Phase 1.2)**:
+
+1. CLI wrapper (`shelly-gemini-auth.js` 新規 or 既存 wrapper を拡張) が Gemini CLI の OAuth URL 出力を検知 — Google domain (`accounts.google.com`) を判定
+2. file-queue に `{ type: "open-url", provider: "google", authMode: "external-browser", url }` を append
+3. `app/_layout.tsx` の drainQueue が provider/authMode を見て分岐:
+   - `authMode: "external-browser"` → `WebBrowser.openBrowserAsync(url)` (Custom Tabs)
+   - 既存の `authMode: "in-app"` (Anthropic / GitHub) → 従来通り BrowserPane
+4. CLI が loopback で callback 受けて token exchange + credential write
+5. Shelly 側 polling で `~/.gemini/credentials.json` mtime 更新 + `gemini --version` smoke で完了通知
+
+**絶対やってはいけない (Codex 警告)**:
+- ❌ Shelly が token exchange する設計 (PKCE verifier を知らない)
+- ❌ `shelly://oauth/callback` を Gemini CLI 既存 flow に混ぜる
+- ❌ Google OAuth が来たら WebView fallback (Google が明示 block)
+- ❌ SecureStore に Gemini credential を保存 (CLI が読めない)
+
+**代替案 (Codex 言及、要 probe)**:
+- **device-code flow**: Gemini CLI / Google OAuth client が device-code grant を許すなら最強 (callback 問題が消える)。要 probe
+- **Google Sign-In SDK**: Shelly app として Google 認証する正攻法。だが Gemini CLI credential への変換が別問題
+- **Trusted Web Activity**: 過剰
 
 **現状の影響**: Gemini OAuth は Google 経由なので Phase 1 で完結しない (credential transplant 必須のまま)。Claude OAuth は Anthropic 自前 → Phase 1 で完結 ✅
 
 **優先度**: P1 (Gemini ユーザーの体験向上、Phase 1.2 の主要項目)
-**見積**: Option A は 1 時間 (簡単だが UX 微妙)、Option C は数日 (fork or upstream PR)
-**関連**: PR #37 description の "Out of scope (Phase 1.2 candidates)"
+**見積**: 4-6 時間 (file-queue message schema 拡張 + RN drainQueue 分岐 + CLI wrapper + 完了検出 polling + 実機 probe)
+**前提タスク**: なし — PR #41/42/43 merge 後すぐ着手可能
+**関連**: PR #37 description "Out of scope (Phase 1.2 candidates)"、Codex 2026-05-08 review
 
 ### bug #136 — Multiple Browser Panes both navigate on every openUrl
 
