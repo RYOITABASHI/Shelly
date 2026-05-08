@@ -118,6 +118,20 @@ On first launch Shelly asks for **All files access** so the terminal can read sc
 
 After that, open **Settings → API Keys** (or run `shelly config` from the terminal pane) to paste your Claude / Gemini / Cerebras / Groq / Perplexity keys. Keys are stored in `expo-secure-store` and never written to logs. The terminal is ready in under 5 minutes.
 
+### Sign in to the AI CLIs
+
+Each CLI has a different login path on Shelly today. The TL;DR:
+
+| CLI | How to sign in | Notes |
+|---|---|---|
+| **Codex** (ChatGPT subscription) | `codex-login --open` from any terminal pane | Fully in-app — opens auth.openai.com in Shelly's Browser Pane, writes `~/.codex/auth.json` (mode `0600`) on success. No OpenAI API key needed; uses your ChatGPT Plus/Pro/Team/Enterprise subscription. Verify with `shelly doctor`. |
+| **Claude Code** | Credential transplant | First-run OAuth from Anthropic does not yet complete inside Shelly — finish `/login` in another environment (Termux, PC, Codespaces) and copy the credentials. See [Bring your own credentials](#bring-your-own-credentials). |
+| **Gemini CLI** | Credential transplant | Same pattern as Claude — authenticate elsewhere, then transplant `~/.gemini/`. See [Bring your own credentials](#bring-your-own-credentials). |
+
+> **Codex login was easy to miss.** If you ran `codex` and tried `/login` inside the REPL, it returned "Unknown command" — the bundled `codex-termux` rebuild has the login subcommand compiled out. The flow above (`codex-login --open` from bash, *not* `codex /login` inside the REPL) is the supported path.
+
+In-app OAuth for Claude / Gemini is being worked on (browser-launch via `xdg-open` shim → in-app Browser Pane). Until that lands, the credential-transplant path is the recommended one.
+
 ---
 
 ## Flagship Runtime
