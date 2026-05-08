@@ -622,7 +622,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        and the user pastes `code#state` back into the CLI to
     //        complete sign-in entirely on-device. Pure UX unblock —
     //        no token exchange logic added in this version.
-    private const val BASHRC_VERSION = 78
+    //    79: bug #102 / #115 phase 1 hotfix — v78 xdg-open shim shipped
+    //        with `#!/system/bin/sh` shebang and a `_run`-based body,
+    //        but on-device test (Galaxy Z Fold6, 2026-05-08) showed
+    //        both broken: (a) /system/bin/sh can't read app-private
+    //        files under default SELinux ("bad interpreter: Success"),
+    //        and (b) non-interactive bash from a shebang doesn't source
+    //        bashrc, so `_run` is undefined. v79 rewrites the shim with
+    //        shebang `#!$HOME/bin/bash` (libbash.so via the existing
+    //        symlink, exec-able from app context) and uses
+    //        /system/bin/linker64 directly in the body. Marker changed
+    //        to SHELLY_XDG_OPEN_SHIM_V2 so v78 devices regenerate.
+    private const val BASHRC_VERSION = 79
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -881,7 +892,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("NPM_SHIM_EOF")
             sb.appendLine("  chmod +x \"\$HOME/bin/npm\" 2>/dev/null")
             sb.appendLine("fi")
-            // v78: xdg-open shim. Claude Code's i3() and Gemini CLI's
+            // v78/v79: xdg-open shim. Claude Code's i3() and Gemini CLI's
             // authWithWeb() both default to spawning xdg-open (or whatever
             // $BROWSER points to). Bionic has no native xdg-open so they
             // ENOENT silently — the user gets stuck on the "Browser
@@ -890,15 +901,35 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // (extracted from assets), which fires
             // `shelly://browser?url=<encoded>` via `am start`. The deep
             // link handler in app/_layout.tsx loads the URL in the in-app
-            // Browser Pane, keeping the OAuth flow on-device. Same shim
-            // contract / heredoc-grep idempotency as SHELLY_NPM_SHIM
-            // above. We additionally export BROWSER for tools that
-            // bypass PATH and only honour the env var.
-            sb.appendLine("if [ ! -f \"\$HOME/bin/xdg-open\" ] || ! grep -q SHELLY_XDG_OPEN_SHIM \"\$HOME/bin/xdg-open\" 2>/dev/null; then")
-            sb.appendLine("  cat > \"\$HOME/bin/xdg-open\" <<'XDG_OPEN_SHIM_EOF'")
-            sb.appendLine("#!/system/bin/sh")
-            sb.appendLine("# SHELLY_XDG_OPEN_SHIM v1 — see HomeInitializer.kt bug #102/#115")
-            sb.appendLine("exec \"\${SHELLY_LIB_DIR}/shelly_shell\" -c '_run \"\$SHELLY_LIB_DIR/node\" \"\$HOME/.shelly-xdg-open.js\" \"\$@\"' xdg-open \"\$@\"")
+            // Browser Pane, keeping the OAuth flow on-device. We
+            // additionally export BROWSER for tools that bypass PATH and
+            // only honour the env var.
+            //
+            // v79 (2026-05-08): v78 shipped with `#!/system/bin/sh` shebang
+            // (mirroring SHELLY_NPM_SHIM), but on-device verification on
+            // Galaxy Z Fold6 showed that path failing with
+            // `bad interpreter: Success` — Android's default SELinux
+            // policy denies `/system/bin/sh` (system_sh context) reading
+            // app-private files. The npm shim hides this because bashrc
+            // also defines `npm()` as a shell function which intercepts
+            // PATH lookup; xdg-open has no such cover so it has to work
+            // as a real exec target. v79 swaps to two changes:
+            //   1. Shebang `#!$HOME/bin/bash` (resolved at write time,
+            //      not heredoc time). $HOME/bin/bash is the existing
+            //      symlink → libbash.so wrapper (libDir context, exec-
+            //      able from app context, can read app-private files).
+            //   2. Body uses `/system/bin/linker64` directly instead of
+            //      the `_run` shell function — non-interactive bash from
+            //      shebang doesn't source bashrc, so `_run` is undefined.
+            //      linker64 is at a fixed path and is the same backend
+            //      _run uses anyway.
+            // SHELLY_LIB_DIR is preserved across exec via env inheritance
+            // from the parent bashrc-loaded shell.
+            sb.appendLine("if [ ! -f \"\$HOME/bin/xdg-open\" ] || ! grep -q SHELLY_XDG_OPEN_SHIM_V2 \"\$HOME/bin/xdg-open\" 2>/dev/null; then")
+            sb.appendLine("  printf '#!%s/bin/bash\\n' \"\$HOME\" > \"\$HOME/bin/xdg-open\"")
+            sb.appendLine("  cat >> \"\$HOME/bin/xdg-open\" <<'XDG_OPEN_SHIM_EOF'")
+            sb.appendLine("# SHELLY_XDG_OPEN_SHIM_V2 — see HomeInitializer.kt bug #102/#115")
+            sb.appendLine("exec /system/bin/linker64 \"\${SHELLY_LIB_DIR}/node\" \"\$HOME/.shelly-xdg-open.js\" \"\$@\"")
             sb.appendLine("XDG_OPEN_SHIM_EOF")
             sb.appendLine("  chmod +x \"\$HOME/bin/xdg-open\" 2>/dev/null")
             sb.appendLine("fi")
