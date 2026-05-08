@@ -660,7 +660,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        Direct execve target, libDir SELinux label allows it,
     //        no script-read audit involved. Also drops the
     //        ~/.shelly-xdg-open.js extraction (not needed anymore).
-    private const val BASHRC_VERSION = 81
+    //    82: PR #40 added Bun.which / Bun.semver / Bun.YAML / Bun.gc /
+    //        Bun.generateHeapSnapshot polyfills to the
+    //        ~/.shelly-claude-node-preload.js heredoc, but I forgot to
+    //        bump BASHRC_VERSION — devices with an existing $HOME (i.e.
+    //        every device that already had Shelly installed) kept the
+    //        v81 bashrc on disk and the v81 preload, so cli.js still
+    //        threw `globalThis.Bun.which is not a function` even after
+    //        the v82 APK install. Bumping the version forces bashrc
+    //        regeneration on next shell start and the new preload lands.
+    private const val BASHRC_VERSION = 82
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
