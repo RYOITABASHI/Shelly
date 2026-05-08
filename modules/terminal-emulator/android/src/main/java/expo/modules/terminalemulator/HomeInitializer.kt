@@ -683,7 +683,30 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        list for users who opt back in (Codex pushed back on 137 =
     //        SIGKILL/OOM since cache-clear retry doesn't address memory
     //        pressure; final list is 133/134/135/139/159).
-    private const val BASHRC_VERSION = 83
+    //    84: PR #48 reliability hardening (Codex 2026-05-08 design + push-
+    //        prep review). v83 made native opt-in but didn't close the loop
+    //        on "I opted in once and it crashed; please don't keep retrying
+    //        it". Added __shelly_consume_runtime_failures (drains
+    //        ~/.shelly-runtime/.runtime-failures into .failed-versions on
+    //        every claude() invocation — fast feedback without waiting for
+    //        the next bg-updater run) and __shelly_claude_native_in_cooldown
+    //        (checks the current native version against the cooldown DB).
+    //        Native tier gate now reads "SHELLY_FORCE_NATIVE_CLAUDE=1 OR
+    //        (SHELLY_PREFER_NATIVE_CLAUDE=1 AND not in cooldown)" so opt-in
+    //        users get experimental-fast-path semantics without re-paying
+    //        for known-crashing binaries every shell startup.
+    //        Codex push-prep review fix-ups (5):
+    //          - consume uses mv-spool, not read-then-rm (race-safe; sibling
+    //            shell appends after mv don't get lost)
+    //          - epoch / TTL validate via [!0-9] reverse pattern (no more
+    //            '123abc' slipping through case [0-9]*)
+    //          - default cooldown TTL 3600 (1h) -> 86400 (24h) — 1h made
+    //            users re-pay for crash binaries hourly
+    //          - cooldown skip emits verbose log when SHELLY_VERBOSE_CLI_TIER
+    //            is set (so on-device testers can tell skip reason)
+    //          - version-file fallback: readlink basename of current symlink
+    //            if the version file isn't written
+    private const val BASHRC_VERSION = 84
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1115,6 +1138,103 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("__shelly_paste_tui_end() { rm -f \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine()
 
+            // ── PR #48: foreground crash → cooldown fast feedback ─────────
+            // Codex review (2026-05-08) recommended pulling the runtime-
+            // failures consume out of the background updater path so the
+            // foreground claude() function reads the latest crash log
+            // BEFORE deciding whether to run native. Otherwise a freshly-
+            // crashed native binary keeps getting re-tried until the next
+            // background updater run, defeating the cooldown.
+            //
+            // Format mirrors shelly-runtime-update.js:
+            //   .runtime-failures: `claude=<ver> <epoch> <exit_code> [tier]`
+            //                      written by the claude() function on signal-
+            //                      exit (134/139/etc.); consumed here
+            //   .failed-versions:  `<tool>=<version> <epoch>` (cooldown DB)
+            //                      append-only; isVersionInCooldown reads it
+            //   SHELLY_FAILED_VERSION_COOLDOWN: cooldown TTL in seconds
+            //                                   (default 3600 = 1h, mirrors JS)
+            // Codex review fix-up (PR #48 Stage 1, push-prep):
+            // The earlier read-then-rm flow lost any failure record that a
+            // sibling shell appended between our last read line and the
+            // rm -f. Move the file to a per-process spool name FIRST (mv
+            // is atomic on the same filesystem on POSIX), then consume the
+            // spool. Failures appended after the mv land in a freshly-
+            // created .runtime-failures and survive to the next consume.
+            sb.appendLine("__shelly_consume_runtime_failures() {")
+            sb.appendLine("  local __rf=\"\$HOME/.shelly-runtime/.runtime-failures\"")
+            sb.appendLine("  local __fv=\"\$HOME/.shelly-runtime/.failed-versions\"")
+            sb.appendLine("  local __spool=\"\$HOME/.shelly-runtime/.runtime-failures.\$\$.spool\"")
+            sb.appendLine("  mkdir -p \"\$HOME/.shelly-runtime\" 2>/dev/null")
+            sb.appendLine("  mv \"\$__rf\" \"\$__spool\" 2>/dev/null || return 0")
+            sb.appendLine("  local __now")
+            sb.appendLine("  __now=\$(date -u +%s 2>/dev/null) || { rm -f \"\$__spool\" 2>/dev/null; return 0; }")
+            sb.appendLine("  local __line __keyver __ver __consumed=0")
+            sb.appendLine("  while IFS= read -r __line || [ -n \"\$__line\" ]; do")
+            sb.appendLine("    __keyver=\${__line%% *}")
+            sb.appendLine("    case \"\$__keyver\" in")
+            sb.appendLine("      claude=*)")
+            sb.appendLine("        __ver=\${__keyver#claude=}")
+            sb.appendLine("        case \"\$__ver\" in")
+            sb.appendLine("          [0-9]*.[0-9]*.[0-9]*)")
+            sb.appendLine("            printf 'claude=%s %s\\n' \"\$__ver\" \"\$__now\" >> \"\$__fv\" 2>/dev/null || true")
+            sb.appendLine("            __consumed=\$((__consumed + 1))")
+            sb.appendLine("            ;;")
+            sb.appendLine("        esac")
+            sb.appendLine("        ;;")
+            sb.appendLine("    esac")
+            sb.appendLine("  done < \"\$__spool\"")
+            sb.appendLine("  rm -f \"\$__spool\" 2>/dev/null")
+            sb.appendLine("  if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ \"\$__consumed\" -gt 0 ]; then")
+            sb.appendLine("    echo \"[shelly] claude: consumed \$__consumed runtime failure(s) into cooldown\" >&2")
+            sb.appendLine("  fi")
+            sb.appendLine("}")
+            sb.appendLine()
+
+            // Returns 0 if Claude's currently-promoted native version is in
+            // the failed-versions cooldown window (default 3600 s). Used by
+            // claude() to skip the native tier even when
+            // SHELLY_PREFER_NATIVE_CLAUDE=1 is set, unless the user set
+            // SHELLY_FORCE_NATIVE_CLAUDE=1 to override (e.g. for debugging).
+            // Codex review fix-ups (PR #48 Stage 1, push-prep):
+            //   - epoch/TTL: use [!0-9] reverse pattern so '123abc' doesn't
+            //     slip through (the previous [0-9]* case would accept any
+            //     line starting with a digit, even malformed ones)
+            //   - default TTL bumped 3600 (1h) -> 86400 (24h). 1h was too
+            //     short — native crashes corrupt the foreground TUI, so
+            //     having the user re-pay for the same broken binary every
+            //     hour is bad UX. 24h gives the bg updater time to fetch
+            //     a new version. Debug: SHELLY_FAILED_VERSION_COOLDOWN=60.
+            //   - version-file fallback: if ~/.shelly-runtime/claude/version
+            //     is missing, fall back to readlink basename of the current
+            //     symlink so cooldown still works on devices where the
+            //     updater forgot to emit the version file
+            sb.appendLine("__shelly_claude_native_in_cooldown() {")
+            sb.appendLine("  local __vf=\"\$HOME/.shelly-runtime/claude/version\"")
+            sb.appendLine("  local __fv=\"\$HOME/.shelly-runtime/.failed-versions\"")
+            sb.appendLine("  [ -f \"\$__fv\" ] || return 1")
+            sb.appendLine("  local __cur __now __ttl __latest __keyver __epoch")
+            sb.appendLine("  __cur=\$(cat \"\$__vf\" 2>/dev/null | tr -d '\\n')")
+            sb.appendLine("  if [ -z \"\$__cur\" ]; then")
+            sb.appendLine("    __cur=\$(basename \"\$(readlink \"\$HOME/.shelly-runtime/claude/current\" 2>/dev/null)\" 2>/dev/null)")
+            sb.appendLine("  fi")
+            sb.appendLine("  [ -n \"\$__cur\" ] || return 1")
+            sb.appendLine("  case \"\$__cur\" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac")
+            sb.appendLine("  __now=\$(date -u +%s 2>/dev/null) || return 1")
+            sb.appendLine("  __ttl=\${SHELLY_FAILED_VERSION_COOLDOWN:-86400}")
+            sb.appendLine("  case \"\$__ttl\" in ''|*[!0-9]*) __ttl=86400 ;; esac")
+            sb.appendLine("  __latest=0")
+            sb.appendLine("  while IFS=' ' read -r __keyver __epoch || [ -n \"\$__keyver\" ]; do")
+            sb.appendLine("    [ \"\$__keyver\" = \"claude=\$__cur\" ] || continue")
+            sb.appendLine("    case \"\$__epoch\" in ''|*[!0-9]*) continue ;; esac")
+            sb.appendLine("    [ \"\$__epoch\" -gt \"\$__latest\" ] && __latest=\$__epoch")
+            sb.appendLine("  done < \"\$__fv\"")
+            sb.appendLine("  [ \"\$__latest\" -eq 0 ] && return 1")
+            sb.appendLine("  [ \$((__now - __latest)) -lt \$__ttl ] && return 0")
+            sb.appendLine("  return 1")
+            sb.appendLine("}")
+            sb.appendLine()
+
             // Tool functions
             sb.appendLine("# v51: PATH-visible Android-compatible shell/env for AI CLIs")
             sb.appendLine("if [ ! -e \"\$HOME/bin/bash\" ] || [ \"\$(readlink \"\$HOME/bin/bash\" 2>/dev/null)\" != \"\$SHELL\" ]; then")
@@ -1353,6 +1473,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __extracted_cli_js=\"\"")
             sb.appendLine("  local __bun_tmp=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
             sb.appendLine("  mkdir -p \"\$__bun_tmp\" 2>/dev/null")
+            // PR #48: Drain runtime-failures into failed-versions BEFORE
+            // deciding the tier. Without this, a freshly-crashed native
+            // version keeps getting re-tried until the next background
+            // updater run wakes up and consumes the queue.
+            sb.appendLine("  __shelly_consume_runtime_failures")
             sb.appendLine("  if [ -f \"\$__runtime_extracted_cli_js\" ]; then")
             sb.appendLine("    __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
             sb.appendLine("  elif [ -f \"\$__apk_extracted_cli_js\" ]; then")
@@ -1381,7 +1506,22 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // Power users / CI smoke tests can re-enable the native foreground
             // path; the runtime updater's background smoke is the right place
             // to validate native binaries before promoting them.
-            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__runtime_claude\" ]; then")
+            // PR #48: even when SHELLY_PREFER_NATIVE_CLAUDE=1, skip native if
+            // the current version is in the failed-versions cooldown window.
+            // Reason: Codex review pushed back on auto-retrying known-crashing
+            // native binaries — the user opted in expecting "use native if it
+            // works", not "use native even if I just saw it segfault". A
+            // separate SHELLY_FORCE_NATIVE_CLAUDE=1 ignores the cooldown for
+            // debugging.
+            //
+            // Diagnostic visibility: when PREFER is set but cooldown is
+            // active and FORCE is not, surface a verbose-tier message so
+            // real-device testers can tell apart "native skipped because
+            // not opted in" vs "native skipped because crash record".
+            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && __shelly_claude_native_in_cooldown; then")
+            sb.appendLine("      echo '[shelly] claude: native cooldown active, skipping native tier (set SHELLY_FORCE_NATIVE_CLAUDE=1 to override)' >&2")
+            sb.appendLine("    fi")
+            sb.appendLine("    if { [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ] || { [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && ! __shelly_claude_native_in_cooldown; }; } && [ -x \"\$__runtime_claude\" ]; then")
             sb.appendLine("      if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("        export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("        echo '[shelly] claude: runtime latest (musl Bun SEA)' >&2")
@@ -1430,20 +1570,22 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          ;;")
             sb.appendLine("      esac")
             sb.appendLine("    fi")
-            // Codex review fix-up: announce condition must also gate on
-            // SHELLY_PREFER_NATIVE_CLAUDE=1 — without it, the "Path C-bis"
-            // banner prints (and SHELLY_CLAUDE_TIER_ANNOUNCED=1 is set,
-            // suppressing the *real* banner from the extracted Node tier
-            // below) even though the native execution block is skipped.
-            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            // PR #48: announce + execution gates must agree, and both must
+            // honor FORCE_NATIVE bypass and the cooldown skip when
+            // PREFER_NATIVE is the only active flag. Path C-bis is the APK-
+            // bundled binary; it has no version file under
+            // ~/.shelly-runtime/claude/, so __shelly_claude_native_in_cooldown
+            // returns 1 (not in cooldown) — that's intentional: APK upgrades
+            // ship a new binary so cooldown semantics don't apply, and the
+            // PREFER flag still gates it correctly. We keep the helper call
+            // for consistency with the latest tier above so the gate
+            // expression reads identically; if a future build adds version
+            // tracking for Path C-bis, the cooldown will start firing.
+            sb.appendLine("    if { [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ] || { [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && ! __shelly_claude_native_in_cooldown; }; } && [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
-            // Same opt-in flag as the runtime-tier block above — Path C-bis
-            // is the APK-bundled musl Bun SEA, and exhibits the same 133/135
-            // crash modes as the runtime-tier latest. Default skips it; opt-in
-            // via SHELLY_PREFER_NATIVE_CLAUDE=1 keeps the foreground path.
-            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__musl_claude\" ]; then")
+            sb.appendLine("    if { [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ] || { [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && ! __shelly_claude_native_in_cooldown; }; } && [ -x \"\$__musl_claude\" ]; then")
             sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    BUN_TMPDIR=\"\$__bun_tmp\" SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" /system/bin/env -u LD_PRELOAD /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_claude\" \"\$@\"")
             sb.appendLine("    local __musl_rc=$?")
@@ -2171,7 +2313,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("# v61: per-launch quick version check (bypasses 24h gate when newer found)")
             sb.appendLine("__shelly_quick_check_marker=\"\$HOME/.shelly-cli/.last_quick_check\"")
             sb.appendLine("__shelly_quick_check_interval=\${SHELLY_QUICK_CHECK_INTERVAL:-3600}")
-            sb.appendLine("__shelly_failed_cooldown=\${SHELLY_FAILED_VERSION_COOLDOWN:-3600}")
+            sb.appendLine("__shelly_failed_cooldown=\${SHELLY_FAILED_VERSION_COOLDOWN:-86400}")
+            sb.appendLine("case \"\$__shelly_failed_cooldown\" in ''|*[!0-9]*) __shelly_failed_cooldown=86400 ;; esac")
             sb.appendLine("__shelly_quick_check_clis() {")
             sb.appendLine("  if [ -z \"\$__SHELLY_QUICK_CHECK_SUBSHELL\" ]; then")
             sb.appendLine("    ( __SHELLY_QUICK_CHECK_SUBSHELL=1 __shelly_quick_check_clis </dev/null >/dev/null 2>&1 & )")
