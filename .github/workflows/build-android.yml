@@ -69,6 +69,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_musl_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
           key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
@@ -797,6 +798,25 @@ jobs:
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           SRC="modules/terminal-emulator/android/src/main/jni/shelly-shell-launcher.c"
           OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_shell.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
+            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
+      - name: Build Shelly xdg-open native helper (bug #102/#115)
+        # Native xdg-open replacement. Direct execve target so Android's
+        # binfmt_script dispatch (and Samsung Knox's app_data_file
+        # `file{read}` denial) is bypassed entirely. Same `-fPIE -pie`
+        # toolchain as shelly-shell-launcher above.
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-xdg-open.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_xdg_open.so"
           NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
 
           test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
