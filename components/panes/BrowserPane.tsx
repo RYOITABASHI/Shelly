@@ -351,7 +351,17 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     [paneId, enterFullscreen, exitFullscreen],
   );
 
-  const { bookmarks: userBookmarks, addBookmark, removeBookmark, loadBookmarks } = useBrowserStore();
+  // Selector-based reads. Whole-store destructure (`useBrowserStore()`)
+  // re-renders on every store update including `openSignal` / `navSignal`
+  // bumps. Combined with the new pane-resize injectJavaScript effect and
+  // YouTube's heavy SPA traffic (onMessage / onNavigationStateChange
+  // burst), this contributed to the 40 fps render storm observed on
+  // Z Fold6 hardware. Per-key selectors only re-fire on the slice
+  // actually changing.
+  const userBookmarks = useBrowserStore((s) => s.bookmarks);
+  const addBookmark = useBrowserStore((s) => s.addBookmark);
+  const removeBookmark = useBrowserStore((s) => s.removeBookmark);
+  const loadBookmarks = useBrowserStore((s) => s.loadBookmarks);
   // Presets are always shown first, followed by user-added bookmarks
   const bookmarks = React.useMemo(
     () => [...PRESET_BOOKMARKS, ...userBookmarks],
@@ -500,6 +510,15 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           onSubmitEditing={handleSubmit}
           placeholder="Enter a URL"
           placeholderTextColor="#6B7280"
+          // Explicit selectionColor / cursorColor so the caret + text-
+          // selection highlight remain visible against the dark URL bar
+          // background regardless of the active theme preset. Some Android
+          // themes default to a near-invisible cursor on dark inputs,
+          // which user-facing logged as "address bar text isn't visible"
+          // (the text was there, the caret wasn't, and the user couldn't
+          // see where they were typing).
+          selectionColor={C.accent}
+          cursorColor={C.accent}
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="url"
@@ -612,10 +631,16 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           // UX between text and surrounding chrome.
           textZoom={compactChrome ? 90 : 100}
           userAgent={desktopMode ? DESKTOP_UA : MOBILE_UA}
-          // GPU-accelerated rendering. Default Android WebView uses
-          // software layers in some configurations; hardware speeds up
-          // scrolling, video, and CSS-transform-driven OAuth UIs.
-          androidLayerType="hardware"
+          // androidLayerType intentionally left at default ('none').
+          // Phase 1.1 (PR #37) tried 'hardware' for GPU-accelerated
+          // scroll / video / CSS transforms, but on-device test on
+          // Galaxy Z Fold6 (Android 14) revealed partial-paint
+          // regressions on YouTube: the WebView allocated tile
+          // textures that were either too small or never composited,
+          // leaving the player area mostly blank. The default lets
+          // the system pick, and on Android 14 that's already
+          // accelerated for video. Revisit only if profiling shows
+          // the default path is genuinely too slow.
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
           // RESPONSIVE_BRIDGE_JS must run BEFORE first paint so the

@@ -96,7 +96,20 @@ export default function TerminalScreen() {
     return null;
   });
   const globalActiveSession = useActiveSession();
-  const { removeSession, sessions, settings } = useTerminalStore();
+  // Selector-based reads. The previous `const { removeSession, sessions,
+  // settings } = useTerminalStore()` whole-store destructure caused a
+  // re-render on EVERY store update (transcript byte append, cwd change,
+  // any session field mutation). Combined with `ensureNativeSessions`'s
+  // `[sessions, …]` useCallback deps, that re-built the callback every
+  // render, re-fired the dependent useEffect, and produced the 40 fps
+  // logcat storm observed on Z Fold6 the moment a heavy WebView SPA
+  // (YouTube) started posting onMessage / onNavigationStateChange.
+  // Splitting into per-key selectors keeps each subscription scoped to
+  // its own slice — `sessions` array reference only flips on
+  // add/remove/edit, not on every byte append.
+  const sessions = useTerminalStore((s) => s.sessions);
+  const removeSession = useTerminalStore((s) => s.removeSession);
+  const settings = useTerminalStore((s) => s.settings);
   // Phase B: when a wallpaper is set, ask the native TerminalView to drop
   // its opaque background + padding fill so the wallpaper shows through.
   // Cells with non-default backgrounds still paint, so prompt colours /
@@ -324,7 +337,17 @@ export default function TerminalScreen() {
   }, [createNativeSession]);
 
   // Ensure native sessions exist. Called on mount and foreground resume.
+  // Reads `sessions` via getState() rather than via the closure to keep
+  // this useCallback's identity stable across re-renders. Previously the
+  // dep `[sessions, ...]` made the callback re-create on every store
+  // update, which re-fired the dependent useEffect (line ~370) and
+  // produced a 40 fps render storm visible in logcat as
+  // `ensureNativeSessions called` once per render. Mutex on line 329
+  // already prevented runaway PTY creation; the loop was just log /
+  // scheduling churn, but enough to starve the WebView render thread
+  // when YouTube SPA was busy posting messages.
   const ensureNativeSessions = useCallback(async () => {
+    const sessions = useTerminalStore.getState().sessions;
     logInfo('Terminal', 'ensureNativeSessions called, sessions=' + sessions.length + ', mutex=' + sessionMutexRef.current);
     if (sessionMutexRef.current) return;
     sessionMutexRef.current = true;
@@ -357,7 +380,7 @@ export default function TerminalScreen() {
     } finally {
       sessionMutexRef.current = false;
     }
-  }, [sessions, createNativeSession, recoverSession]);
+  }, [createNativeSession, recoverSession]);
 
   // Run when terminal sessions are mounted or rehydrated. APK installs /
   // process restarts can restore persisted sessions after the first render;
