@@ -610,7 +610,57 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // updater can route per-tier cooldowns. Bumps 73 -> 77 (skipping 74/75
     // which lived only on a feature branch) so devices that ran v75 from
     // that branch regenerate fresh.
-    private const val BASHRC_VERSION = 77
+    //    78: bug #102 / #115 phase 1 — install $HOME/bin/xdg-open shim
+    //        that fires the shelly://browser deep link, plus
+    //        export BROWSER="$HOME/bin/xdg-open". Bionic has no native
+    //        xdg-open; without this Claude Code's i3() and Gemini CLI's
+    //        authWithWeb() silently ENOENT and the user is forced into
+    //        the manual-paste flow with an external browser — which
+    //        triggers the README-#102 redirect_uri mismatch (HTTP 400)
+    //        because the auto URL was minted against localhost. With
+    //        the shim, the manual URL opens in the in-app Browser Pane
+    //        and the user pastes `code#state` back into the CLI to
+    //        complete sign-in entirely on-device. Pure UX unblock —
+    //        no token exchange logic added in this version.
+    //    79: bug #102 / #115 phase 1 hotfix — v78 xdg-open shim shipped
+    //        with `#!/system/bin/sh` shebang and a `_run`-based body,
+    //        but on-device test (Galaxy Z Fold6, 2026-05-08) showed
+    //        both broken: (a) /system/bin/sh can't read app-private
+    //        files under default SELinux ("bad interpreter: Success"),
+    //        and (b) non-interactive bash from a shebang doesn't source
+    //        bashrc, so `_run` is undefined. v79 rewrites the shim with
+    //        shebang `#!$HOME/bin/bash` (libbash.so via the existing
+    //        symlink, exec-able from app context) and uses
+    //        /system/bin/linker64 directly in the body. Marker changed
+    //        to SHELLY_XDG_OPEN_SHIM_V2 so v78 devices regenerate.
+    //    80: v79 shebang `#!$HOME/bin/bash` ALSO failed on-device with
+    //        `bad interpreter: Success`, even though direct
+    //        `$HOME/bin/bash --version` works after unset-ing the bash
+    //        shell function. Android kernel's shebang dispatch path
+    //        through the symlink → libbash.so trips a SELinux denial
+    //        that direct execve from app context doesn't see. Bypass
+    //        the whole symlink/.so-execve issue by putting linker64
+    //        directly in the shebang: `#!/system/bin/linker64 <path>/
+    //        libbash.so`. Kernel exec's linker64 (allowed from app
+    //        context — every _run call uses it), linker64 mmaps
+    //        libbash.so without an execve audit, bash starts with argv
+    //        = [.so-path, script-path, user-args]; bash treats argv[1]
+    //        as the script. Marker SHELLY_XDG_OPEN_SHIM_V3. (Build
+    //        cancelled before deploy — agent review pointed out the
+    //        kernel still has to read the script itself to find the
+    //        shebang, so the same SELinux denial would have hit v80.)
+    //    81: SCRIPT-BASED SHIM ABANDONED ENTIRELY. v78/v79/v80 all
+    //        depended on the kernel reading the shim script to find
+    //        the shebang line, and that read is what Samsung Knox
+    //        sepolicy denies. Pivot to a native binary at
+    //        $libDir/shelly_xdg_open (built from jni/shelly-xdg-open.c,
+    //        shipped via jniLibs, extracted by LibExtractor). bashrc
+    //        replaces the heredoc-script generation with a single
+    //        `ln -sf $SHELLY_LIB_DIR/shelly_xdg_open $HOME/bin/xdg-open`.
+    //        Direct execve target, libDir SELinux label allows it,
+    //        no script-read audit involved. Also drops the
+    //        ~/.shelly-xdg-open.js extraction (not needed anymore).
+    private const val BASHRC_VERSION = 81
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -726,6 +776,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
         }
+
+        // v78–v80: extracted a node-based shelly-xdg-open.js helper that
+        // a bash shim shell-script invoked. v81 abandoned that approach
+        // (kernel binfmt_script `file{read}` is denied on app_data_file
+        // scripts under Samsung Knox) and replaced the shim with a
+        // native binary at $libDir/shelly_xdg_open (built from
+        // jni/shelly-xdg-open.c, see CI workflow). The .js helper is no
+        // longer needed; clean up any stale copy from a v78–v80 install.
+        File(home, ".shelly-xdg-open.js").delete()
 
         // v47: Shelly-managed runtime updater for Claude Code and Codex.
         // Extract every launch so updater fixes ship without relying on an
@@ -850,6 +909,24 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("NPM_SHIM_EOF")
             sb.appendLine("  chmod +x \"\$HOME/bin/npm\" 2>/dev/null")
             sb.appendLine("fi")
+            // bug #102 / #115 phase 1: xdg-open replacement. Claude Code's
+            // i3() and Gemini CLI's authWithWeb() both default to
+            // spawning xdg-open (or whatever $BROWSER points to). Bionic
+            // has no native xdg-open and v78–v80 attempts to ship a
+            // shebang script all failed on Galaxy Z Fold6 with
+            // `bad interpreter: Success` — kernel's binfmt_script
+            // recursion needs `file { read }` on the script itself
+            // under the caller's domain, and Samsung Knox sepolicy denies
+            // that for `untrusted_app_*` reading `app_data_file` scripts
+            // (independent of the interpreter chosen). v81 ships a tiny
+            // native binary instead: jni/shelly-xdg-open.c, built into
+            // libshelly_xdg_open.so, extracted by LibExtractor to
+            // $libDir/shelly_xdg_open. Direct execve target (libDir
+            // SELinux label allows it), no script-read audit involved.
+            // We additionally export BROWSER so tools that ignore PATH
+            // and only honour the env var also hit the binary.
+            sb.appendLine("ln -sf \"\$SHELLY_LIB_DIR/shelly_xdg_open\" \"\$HOME/bin/xdg-open\" 2>/dev/null || true")
+            sb.appendLine("export BROWSER=\"\$HOME/bin/xdg-open\"")
             // v39: point every bundled TLS client at the Mozilla CA bundle
             // we extract to ~/.shelly-ssl/. Without these exports curl/node/
             // codex_exec all fail HTTPS because Android's system trust

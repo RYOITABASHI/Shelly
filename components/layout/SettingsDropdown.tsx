@@ -85,6 +85,8 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
             <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
+            <ClaudeLoginSection onClose={onClose} />
+            <GeminiLoginSection onClose={onClose} />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -1021,6 +1023,120 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
       >
         <MaterialIcons name="login" size={13} color={C.text2} />
         <Text style={styles.integrationLabel}>Sign in with ChatGPT</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+// ─── Claude / Gemini login (loopback OAuth via xdg-open shim) ───────────────
+// Phase 1 of bug #102 / #115: Bionic Android has no native xdg-open, so
+// Claude Code's `/login` (i3 opener) and Gemini CLI's `/auth` both fail
+// silently with ENOENT and fall through to manual paste — except the
+// user has nowhere to actually open the URL without leaving Shelly.
+// HomeInitializer.kt now installs a `$HOME/bin/xdg-open` shim that
+// fires the `shelly://browser?url=…` deep link, so the auth URL opens
+// in Shelly's Browser Pane. The user signs in there, copies the
+// `code#state` token from the success page, and pastes it back into
+// the CLI's manual-paste UI.
+//
+// These buttons are pure UX shortcuts — they spawn a fresh terminal
+// pane and queue the slash command (`claude /login` / `gemini /auth`).
+// No new auth logic, no token exchange. Loopback automation (the
+// callback intercept inside Browser Pane) is intentionally deferred
+// to Phase 2 once we've verified Phase 1 on hardware.
+
+// We deliberately spawn the bare REPL (`claude\n` / `gemini\n`) instead
+// of `claude /login` / `gemini /auth` as args. Both CLIs treat their
+// argv as initial prompts, not slash commands — `claude /login` would
+// be sent to the model as a chat message, not invoke the auth flow.
+// The user types the slash command in the REPL after the prompt
+// appears. The Alert spells this out so the user knows the next move.
+
+function ClaudeLoginSection({ onClose }: { onClose: () => void }) {
+  const addPane = useAddPane();
+
+  const start = React.useCallback(() => {
+    Alert.alert(
+      'Start Claude sign-in?',
+      'Spawns a fresh terminal pane with the Claude REPL. After the prompt appears, type /login to begin sign-in. The auth URL will open in Shelly\'s Browser Pane via the xdg-open shim.\n\nPhase 1 (beta): browser-launch assist only. OAuth completion on-device is still under hardware verification — if it fails, fall back to credential transplant (see README).',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start',
+          onPress: () => {
+            const result = addPane('terminal');
+            if (result !== null) return; // useAddPane already alerted
+            useTerminalStore.getState().insertCommand('claude\n');
+            logInfo('SettingsDropdown', 'claude REPL launched for /login');
+            onClose();
+          },
+        },
+      ],
+    );
+  }, [addPane, onClose]);
+
+  return (
+    <Section title="CLAUDE LOGIN (BETA)">
+      <Text style={styles.credentialHint}>
+        Browser-launch assist for Claude Code's `/login`. Beta — full OAuth
+        completion is under hardware verification. Falls back to credential
+        transplant if the in-app flow can't finish (see README).
+      </Text>
+      <Pressable
+        style={styles.integrationRow}
+        onPress={start}
+        accessibilityRole="button"
+        accessibilityLabel="Start Claude sign-in"
+      >
+        <MaterialIcons name="login" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Start Claude sign-in</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+function GeminiLoginSection({ onClose }: { onClose: () => void }) {
+  const addPane = useAddPane();
+
+  const start = React.useCallback(() => {
+    Alert.alert(
+      'Start Gemini sign-in?',
+      'Spawns a fresh terminal pane with the Gemini REPL. After the prompt appears, type /auth to begin sign-in. The auth URL will open in Shelly\'s Browser Pane via the xdg-open shim.\n\nPhase 1 (beta): browser-launch assist only. OAuth completion on-device is still under hardware verification — if it fails, fall back to credential transplant (see README).',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start',
+          onPress: () => {
+            const result = addPane('terminal');
+            if (result !== null) return; // useAddPane already alerted
+            useTerminalStore.getState().insertCommand('gemini\n');
+            logInfo('SettingsDropdown', 'gemini REPL launched for /auth');
+            onClose();
+          },
+        },
+      ],
+    );
+  }, [addPane, onClose]);
+
+  return (
+    <Section title="GEMINI LOGIN (BETA)">
+      <Text style={styles.credentialHint}>
+        Browser-launch assist for Gemini CLI's `/auth`. Beta — full OAuth
+        completion is under hardware verification. Falls back to credential
+        transplant if the in-app flow can't finish (see README).
+      </Text>
+      <Pressable
+        style={styles.integrationRow}
+        onPress={start}
+        accessibilityRole="button"
+        accessibilityLabel="Start Gemini sign-in"
+      >
+        <MaterialIcons name="login" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Start Gemini sign-in</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>

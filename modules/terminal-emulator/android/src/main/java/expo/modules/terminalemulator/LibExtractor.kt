@@ -147,7 +147,15 @@ object LibExtractor {
         // launch — see HomeInitializer.kt's claude() wrapper).
         "lib/arm64-v8a/libshelly_musl_exec.so" to "shelly_musl_exec",
         "lib/arm64-v8a/libclaude.so" to "claude",
-        "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1"
+        "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1",
+        // bug #102 / #115 phase 1: native xdg-open replacement that fires
+        // the shelly://browser deep link via `am start`. Direct execve
+        // target (no #! shim) so it sidesteps Android binfmt_script's
+        // `file{read}` audit on app_data_file scripts (which Samsung Knox
+        // sepolicy denies — that's why every shebang shim attempt
+        // v78/v79/v80 returned "bad interpreter: Success"). HomeInitializer
+        // symlinks $HOME/bin/xdg-open → $libDir/shelly_xdg_open.
+        "lib/arm64-v8a/libshelly_xdg_open.so" to "shelly_xdg_open"
     )
 
     // Files that must be re-extracted on every launch even when the version
@@ -170,7 +178,10 @@ object LibExtractor {
         // devices on app upgrade. Without ALWAYS_REFRESH the stale
         // pre-patch binary on disk would mask the fix until forceRefresh
         // hits via versionCode bump.
-        "claude"
+        "claude",
+        // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
+        // scheme-validation tweaks ship without a versionCode bump.
+        "shelly_xdg_open"
     )
 
     fun getLibDir(context: Context): File =
