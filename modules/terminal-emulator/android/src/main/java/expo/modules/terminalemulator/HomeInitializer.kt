@@ -610,7 +610,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // updater can route per-tier cooldowns. Bumps 73 -> 77 (skipping 74/75
     // which lived only on a feature branch) so devices that ran v75 from
     // that branch regenerate fresh.
-    private const val BASHRC_VERSION = 77
+    //    78: bug #102 / #115 phase 1 — install $HOME/bin/xdg-open shim
+    //        that fires the shelly://browser deep link, plus
+    //        export BROWSER="$HOME/bin/xdg-open". Bionic has no native
+    //        xdg-open; without this Claude Code's i3() and Gemini CLI's
+    //        authWithWeb() silently ENOENT and the user is forced into
+    //        the manual-paste flow with an external browser — which
+    //        triggers the README-#102 redirect_uri mismatch (HTTP 400)
+    //        because the auto URL was minted against localhost. With
+    //        the shim, the manual URL opens in the in-app Browser Pane
+    //        and the user pastes `code#state` back into the CLI to
+    //        complete sign-in entirely on-device. Pure UX unblock —
+    //        no token exchange logic added in this version.
+    private const val BASHRC_VERSION = 78
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -725,6 +737,25 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
+        }
+
+        // v78: shelly-xdg-open — sh-spawned helper that turns
+        // `xdg-open <url>` into `am start ... -d "shelly://browser?url=…"`
+        // so Claude Code's `/login` (i3 opener) and Gemini CLI's
+        // authWithWeb() route through Shelly's in-app Browser Pane
+        // instead of dying with ENOENT (no native xdg-open on bionic).
+        // The shim shell wrapper at $HOME/bin/xdg-open is created in
+        // the bashrc generator below; this script is the body it
+        // exec's via the bundled bionic node. Refresh on every launch
+        // so URL-encoding / scheme-validation fixes ship without the
+        // user deleting ~/.shelly-xdg-open.js.
+        val xdgOpenScript = File(home, ".shelly-xdg-open.js")
+        try {
+            context.assets.open("shelly-xdg-open.js").use { input ->
+                xdgOpenScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-xdg-open.js extract failed: ${e.message}")
         }
 
         // v47: Shelly-managed runtime updater for Claude Code and Codex.
@@ -850,6 +881,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("NPM_SHIM_EOF")
             sb.appendLine("  chmod +x \"\$HOME/bin/npm\" 2>/dev/null")
             sb.appendLine("fi")
+            // v78: xdg-open shim. Claude Code's i3() and Gemini CLI's
+            // authWithWeb() both default to spawning xdg-open (or whatever
+            // $BROWSER points to). Bionic has no native xdg-open so they
+            // ENOENT silently — the user gets stuck on the "Browser
+            // didn't open?" manual-paste fallback. This shim exec's the
+            // bundled bionic node against the .shelly-xdg-open.js helper
+            // (extracted from assets), which fires
+            // `shelly://browser?url=<encoded>` via `am start`. The deep
+            // link handler in app/_layout.tsx loads the URL in the in-app
+            // Browser Pane, keeping the OAuth flow on-device. Same shim
+            // contract / heredoc-grep idempotency as SHELLY_NPM_SHIM
+            // above. We additionally export BROWSER for tools that
+            // bypass PATH and only honour the env var.
+            sb.appendLine("if [ ! -f \"\$HOME/bin/xdg-open\" ] || ! grep -q SHELLY_XDG_OPEN_SHIM \"\$HOME/bin/xdg-open\" 2>/dev/null; then")
+            sb.appendLine("  cat > \"\$HOME/bin/xdg-open\" <<'XDG_OPEN_SHIM_EOF'")
+            sb.appendLine("#!/system/bin/sh")
+            sb.appendLine("# SHELLY_XDG_OPEN_SHIM v1 — see HomeInitializer.kt bug #102/#115")
+            sb.appendLine("exec \"\${SHELLY_LIB_DIR}/shelly_shell\" -c '_run \"\$SHELLY_LIB_DIR/node\" \"\$HOME/.shelly-xdg-open.js\" \"\$@\"' xdg-open \"\$@\"")
+            sb.appendLine("XDG_OPEN_SHIM_EOF")
+            sb.appendLine("  chmod +x \"\$HOME/bin/xdg-open\" 2>/dev/null")
+            sb.appendLine("fi")
+            sb.appendLine("export BROWSER=\"\$HOME/bin/xdg-open\"")
             // v39: point every bundled TLS client at the Mozilla CA bundle
             // we extract to ~/.shelly-ssl/. Without these exports curl/node/
             // codex_exec all fail HTTPS because Android's system trust

@@ -85,6 +85,8 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
             <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
+            <ClaudeLoginSection onClose={onClose} />
+            <GeminiLoginSection onClose={onClose} />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -1021,6 +1023,113 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
       >
         <MaterialIcons name="login" size={13} color={C.text2} />
         <Text style={styles.integrationLabel}>Sign in with ChatGPT</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+// ─── Claude / Gemini login (loopback OAuth via xdg-open shim) ───────────────
+// Phase 1 of bug #102 / #115: Bionic Android has no native xdg-open, so
+// Claude Code's `/login` (i3 opener) and Gemini CLI's `/auth` both fail
+// silently with ENOENT and fall through to manual paste — except the
+// user has nowhere to actually open the URL without leaving Shelly.
+// HomeInitializer.kt now installs a `$HOME/bin/xdg-open` shim that
+// fires the `shelly://browser?url=…` deep link, so the auth URL opens
+// in Shelly's Browser Pane. The user signs in there, copies the
+// `code#state` token from the success page, and pastes it back into
+// the CLI's manual-paste UI.
+//
+// These buttons are pure UX shortcuts — they spawn a fresh terminal
+// pane and queue the slash command (`claude /login` / `gemini /auth`).
+// No new auth logic, no token exchange. Loopback automation (the
+// callback intercept inside Browser Pane) is intentionally deferred
+// to Phase 2 once we've verified Phase 1 on hardware.
+
+function ClaudeLoginSection({ onClose }: { onClose: () => void }) {
+  const addPane = useAddPane();
+
+  const start = React.useCallback(() => {
+    Alert.alert(
+      'Sign in with Claude?',
+      'Opens auth.anthropic.com in Shelly\'s Browser Pane via the xdg-open shim. After you approve, copy the code#state token shown on the success page and paste it back into the CLI\'s manual-paste prompt.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign in',
+          onPress: () => {
+            const result = addPane('terminal');
+            if (result !== null) return; // useAddPane already alerted
+            useTerminalStore.getState().insertCommand('claude /login\n');
+            logInfo('SettingsDropdown', 'claude /login launched');
+            onClose();
+          },
+        },
+      ],
+    );
+  }, [addPane, onClose]);
+
+  return (
+    <Section title="CLAUDE LOGIN (BETA)">
+      <Text style={styles.credentialHint}>
+        Loopback OAuth via the xdg-open → Browser Pane shim. Beta — paste
+        the code#state token from Anthropic's success page back into the
+        terminal pane to complete sign-in.
+      </Text>
+      <Pressable
+        style={styles.integrationRow}
+        onPress={start}
+        accessibilityRole="button"
+        accessibilityLabel="Sign in with Claude"
+      >
+        <MaterialIcons name="login" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Sign in with Claude</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+function GeminiLoginSection({ onClose }: { onClose: () => void }) {
+  const addPane = useAddPane();
+
+  const start = React.useCallback(() => {
+    Alert.alert(
+      'Sign in with Gemini?',
+      'Opens accounts.google.com in Shelly\'s Browser Pane via the xdg-open shim. After you approve, copy the auth code shown by Google and paste it back into the CLI\'s manual-paste prompt.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign in',
+          onPress: () => {
+            const result = addPane('terminal');
+            if (result !== null) return; // useAddPane already alerted
+            useTerminalStore.getState().insertCommand('gemini /auth\n');
+            logInfo('SettingsDropdown', 'gemini /auth launched');
+            onClose();
+          },
+        },
+      ],
+    );
+  }, [addPane, onClose]);
+
+  return (
+    <Section title="GEMINI LOGIN (BETA)">
+      <Text style={styles.credentialHint}>
+        Loopback OAuth via the xdg-open → Browser Pane shim. Beta — paste
+        the auth code from Google's success page back into the terminal
+        pane to complete sign-in.
+      </Text>
+      <Pressable
+        style={styles.integrationRow}
+        onPress={start}
+        accessibilityRole="button"
+        accessibilityLabel="Sign in with Gemini"
+      >
+        <MaterialIcons name="login" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Sign in with Gemini</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
