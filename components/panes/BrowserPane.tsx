@@ -451,6 +451,23 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const urlFocusedRef = useRef(false);
   useEffect(() => { urlFocusedRef.current = urlFocused; }, [urlFocused]);
 
+  // Android: TextInput.onBlur does NOT fire when the soft keyboard is
+  // dismissed via the system back button (RN issue facebook/react-native#29571,
+  // open since 2020). If the user focuses the URL bar, types nothing, then
+  // back-presses to close the keyboard, `urlFocused` stays true forever and
+  // `handleNavigationStateChange` permanently stops syncing the URL bar with
+  // the live WebView URL — every subsequent page navigation looks broken.
+  // Wire keyboardDidHide as a forced-blur fallback. Safe because if the bar
+  // really is focused with keyboard up via a different IME path, hide-then-
+  // show cycles will re-focus and re-set urlFocused via onFocus.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = Keyboard.addListener('keyboardDidHide', () => {
+      setUrlFocused(false);
+    });
+    return () => sub.remove();
+  }, []);
+
   const handleNavigationStateChange = useCallback((state: WebViewNavigation) => {
     setCanGoBack(state.canGoBack);
     setCanGoForward(state.canGoForward);
@@ -549,7 +566,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
             onPress={() => setInputUrl('')}
             style={[styles.navBtn, compactChrome && styles.navBtnCompact]}
           >
-            <MaterialIcons name="close" size={compactChrome ? 12 : 14} color="#6B7280" />
+            <MaterialIcons name="close" size={compactChrome ? 12 : 14} color={C.text2} />
           </TouchableOpacity>
         )}
         <TouchableOpacity
