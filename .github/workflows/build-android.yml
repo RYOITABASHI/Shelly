@@ -469,7 +469,6 @@ jobs:
           aarch64-linux-gnu-objcopy -O binary --only-section=.bun package/claude /tmp/claude.bun.section
           python3 - /tmp/claude.bun.section "${EXTRACT_PKG}/cli.js" <<'PY'
           import re
-          import struct
           import sys
 
           section_path, out_path = sys.argv[1], sys.argv[2]
@@ -484,12 +483,40 @@ jobs:
           if start < 0:
               sys.exit("FATAL: cli.js bundle start not found after marker")
 
-          size = struct.unpack("<I", data[start - 4:start])[0]
-          src = data[start:start + size].decode("utf-8")
+          # Claude Code 2.1.133 dropped the 4-byte LE size prefix that used to
+          # sit at data[start-4:start] (those bytes are now just the trailing
+          # ".js\0" of the marker string above). The wrapper itself is still
+          # the same Bun CJS shape ending in "})\n", just no longer length-
+          # prefixed. Scan forward through the ASCII JS body until we hit a
+          # non-text byte (the bunfs payload that follows is binary), then
+          # trim back to the last "})\n" close — that's the wrapper's true
+          # end. This works for both pre-2.1.133 (where the size-bound read
+          # landed on the same close) and post-2.1.133 (where there's no
+          # size to read in the first place). Validates head + tail markers
+          # afterwards so a more aggressive shape change still fails loud.
+          def _is_text(b):
+              return 9 <= b <= 13 or 32 <= b <= 126
+
+          end = start
+          n = len(data)
+          while end < n and _is_text(data[end]):
+              end += 1
+          src = data[start:end].decode("utf-8")
           head = "// @bun @bytecode @bun-cjs\n(function(exports, require, module, __filename, __dirname) {"
           tail = "})\n"
-          if not src.startswith(head) or not src.endswith(tail):
-              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper shape")
+          if not src.startswith(head):
+              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper head: "
+                       + repr(src[:120]))
+          last_close = src.rfind(tail)
+          if last_close < 0:
+              sys.exit("FATAL: Claude cli.js wrapper close `})` not found "
+                       "in text region (length=" + str(len(src)) + ")")
+          src = src[:last_close + len(tail)]
+          if not src.endswith(tail):
+              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper tail: "
+                       + repr(src[-60:]))
+          print("[claude-extract] cli.js wrapper bytes: head=ok tail=ok "
+                "length=" + str(len(src)))
 
           body = src[len(head):-len(tail)]
 
