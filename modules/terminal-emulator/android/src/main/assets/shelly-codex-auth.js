@@ -241,20 +241,44 @@ function saveAuth(tok) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Optional deep-link open — mirrors the shelly-cs.js pattern.
-// Shelly's app/_layout.tsx handles `shelly://browser?url=...` by
-// opening the Browser Pane with that URL loaded. If the deep link
-// handler isn't present (e.g. script run from vanilla Termux for
-// testing), falls through and shows the URL on stdout anyway.
+// Optional in-app browser open via the file-queue bridge.
+//
+// History: this used to fire `am start -a android.intent.action.VIEW
+// -d "shelly://browser?url=..."` and rely on app/_layout.tsx's deep-
+// link handler. On 2026-05-08 we discovered that `am start` from the
+// app uid is structurally rejected by ActivityManagerService on
+// Galaxy Z Fold6 (and almost certainly any Knox-augmented Samsung
+// device) — every variant returned `Failure calling service activity:
+// Failed transaction (2147483646)` regardless of flags or scheme.
+// The "→ opened Shelly Browser Pane" message that ships above was
+// thus misleading: the deep link never actually fired and Browser
+// Pane was never created. Codex auth has worked in spite of this
+// because users manually copied the verification URL into a
+// separately-opened browser.
+//
+// Bridge fix: write the URL to `$HOME/.shelly-deep-link-queue`. The
+// React Native side polls that file every ~250 ms (app/_layout.tsx),
+// reads + truncates, and dispatches each URL to the Browser Pane
+// store from main thread — which IS in activity context and CAN
+// open Browser Pane navigation. Same bridge `shelly-xdg-open.c`
+// (the native xdg-open replacement) uses, so a single drain loop
+// covers both Codex login and Claude/Gemini OAuth.
 // ─────────────────────────────────────────────────────────────
 
 function openViaDeepLink(url) {
-  // am start -a android.intent.action.VIEW -d "shelly://browser?url=<encoded>"
-  // We use exec so this works whether or not `am` is shelly-wrapped;
-  // any failure is non-fatal because the URL is also printed.
-  const deepLink = `shelly://browser?url=${encodeURIComponent(url)}`;
-  const cmd = `am start -a android.intent.action.VIEW -d "${deepLink}"`;
-  exec(cmd, { timeout: 3000 }, () => { /* best-effort */ });
+  const home = process.env.HOME;
+  if (!home) {
+    process.stderr.write(paint(C.yellow,
+      '⚠ $HOME unset — cannot queue Browser Pane open\n'));
+    return;
+  }
+  const queuePath = path.join(home, '.shelly-deep-link-queue');
+  try {
+    fs.appendFileSync(queuePath, url + '\n', { mode: 0o600 });
+  } catch (e) {
+    process.stderr.write(paint(C.yellow,
+      `⚠ could not queue Browser Pane open (${e.message}) — copy the URL above manually\n`));
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -284,7 +308,7 @@ async function main() {
 
   if (openBrowser) {
     openViaDeepLink(VERIFY_URL_BASE);
-    info(paint(C.dim, '  → opened Shelly Browser Pane'));
+    info(paint(C.dim, '  → queued for Shelly Browser Pane'));
     info('');
   }
 

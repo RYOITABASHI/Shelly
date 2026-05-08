@@ -22,6 +22,7 @@ import { usePluginStore } from '@/lib/plugin-api';
 import { useSettingsStore } from '@/store/settings-store';
 import * as Linking from 'expo-linking';
 import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useBrowserStore } from '@/store/browser-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 
@@ -272,6 +273,54 @@ export default function RootLayout() {
       if (url) handleDeepLink(url);
     }).catch(() => {});
 
+    // bug #102 / #115 phase 1 (2026-05-08): file-queue poller for the
+    // native xdg-open binary. `am start` from `untrusted_app` uid is
+    // structurally rejected by ActivityManagerService on Galaxy Z Fold6
+    // (and almost certainly any Knox-augmented Samsung device) — every
+    // variant returned `Failure calling service activity: Failed
+    // transaction (2147483646)` regardless of flags or scheme. So
+    // shelly-xdg-open.c writes URLs to `$HOME/.shelly-deep-link-queue`
+    // (one URL per line, append-mode atomic) and we poll-drain the
+    // queue here. RN main thread runs in the activity context so calling
+    // useBrowserStore.openUrl directly works fine; the binder restriction
+    // only applies when starting an Intent via `am`, not when
+    // dispatching to an already-running React component.
+    //
+    // 250 ms cadence balances responsiveness (OAuth flows feel
+    // instantaneous) against battery / wakeups when idle. We could move
+    // to a Kotlin-side FileObserver later if the poll cost becomes
+    // measurable, but right now the file is checked-empty in <1 ms.
+    //
+    // FileSystem.documentDirectory points at `/data/data/<pkg>/files/`
+    // with a `file://` prefix, and HomeInitializer.kt creates $HOME as
+    // `${context.filesDir}/home`, so the queue path resolves correctly.
+    const queuePath = `${FileSystem.documentDirectory}home/.shelly-deep-link-queue`;
+    const drainQueue = async () => {
+      try {
+        const info = await FileSystem.getInfoAsync(queuePath);
+        if (!info.exists) return;
+        const content = await FileSystem.readAsStringAsync(queuePath);
+        // Delete BEFORE dispatch so URLs that arrive between read and
+        // delete go into a fresh queue rather than being processed
+        // twice. The append-mode writer in shelly-xdg-open.c will
+        // recreate the file lazily.
+        await FileSystem.deleteAsync(queuePath, { idempotent: true });
+        const urls = content.split('\n').map((s) => s.trim()).filter(Boolean);
+        for (const url of urls) {
+          if (!/^https?:\/\//i.test(url)) {
+            logError('DeepLinkQueue', `rejected non-http(s) url: ${url.slice(0, 64)}`);
+            continue;
+          }
+          try { useMultiPaneStore.getState().addPane('browser'); } catch {}
+          useBrowserStore.getState().openUrl(url);
+          logInfo('DeepLinkQueue', `openUrl dispatched (queue): ${url}`);
+        }
+      } catch (e) {
+        logError('DeepLinkQueue', 'poll iteration failed', e);
+      }
+    };
+    const queueInterval = setInterval(drainQueue, 250);
+
     // Unload sounds when app goes to background
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'background') {
@@ -281,6 +330,7 @@ export default function RootLayout() {
     return () => {
       sub.remove();
       linkSub.remove();
+      clearInterval(queueInterval);
     };
   }, []);
 
