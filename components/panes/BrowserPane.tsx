@@ -209,6 +209,21 @@ export interface BrowserPaneProps {
   visible?: boolean;
 }
 
+// Module-scoped guard against stale `openSignal.url` poisoning fresh
+// Browser Panes. The store never clears openSignal.url, so once any
+// xdg-open / deep link has dispatched a URL, the value sticks
+// forever. Without this guard, opening a fresh Browser Pane manually
+// (Sidebar "+ browser" / split) hours later would silently reload
+// the last URL — confusing, since the user expected about:blank.
+//
+// We track the last seq the BrowserPane mount-initializer has
+// consumed. A new mount only honours `openSignal.url` if its seq is
+// strictly greater than the last consumed one. The existing pane-
+// instance navigation `useEffect` (which has its own per-instance
+// `lastOpenSeqRef`) is unchanged — it still fires on every seq bump
+// to navigate the already-mounted Browser Pane.
+let lastConsumedOpenSignalSeq = 0;
+
 // User-Agent strings. The Android system WebView default UA includes a
 // `wv` token (Build/...; wv) AppleWebKit) which providers like Google,
 // Anthropic, and many other OAuth flows treat as an "embedded WebView"
@@ -356,9 +371,21 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   // openSignal.url at mount time and use it as the initial URL when
   // present. This is the fix for "xdg-open https://example.com opens
   // a Browser Pane but the URL doesn't load" reported on Z Fold6.
+  //
+  // The `lastConsumedOpenSignalSeq > seq` guard prevents stale URLs
+  // from poisoning fresh manual Browser Pane opens long after the
+  // last queued URL. Without it, a Sidebar "+ browser" hours later
+  // would silently reload the last xdg-open'd URL.
   const initialResolvedUrl = (() => {
-    const pending = useBrowserStore.getState().openSignal.url;
-    if (pending && /^https?:\/\//i.test(pending)) return pending;
+    const s = useBrowserStore.getState();
+    if (
+      s.openSignal.url &&
+      s.openSignal.seq > lastConsumedOpenSignalSeq &&
+      /^https?:\/\//i.test(s.openSignal.url)
+    ) {
+      lastConsumedOpenSignalSeq = s.openSignal.seq;
+      return s.openSignal.url;
+    }
     return initialUrl;
   })();
   const [inputUrl, setInputUrl] = useState(
