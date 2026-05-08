@@ -14,6 +14,42 @@
 
 ---
 
+## 🟢 現状サマリ (2026-05-08、BASHRC_VERSION 81、PR #34 + #37 着地)
+
+**Phase 1 OAuth bridge 実機完了** (Galaxy Z Fold6 / Android 14):
+
+| CLI | 実機状態 | ルート |
+|---|---|---|
+| **codex** | ✅ **完全 in-app login** (`codex-login --open` で auth.openai.com → ChatGPT サインイン → `~/.codex/auth.json` 自動生成) | shelly-codex-auth.js + file-queue + RN dispatch |
+| **claude** | ✅ Browser Pane に OAuth URL 自動 navigate (`claude` REPL → `/login` → 選択 1) | xdg-open shim → file-queue → RN openUrl |
+| **gemini** | 設計上同じ (実機未検証、credential transplant 済みアカウントの所有者なため) | 同上 |
+
+**今日の主な発見** (重要、次セッションで覚えておくこと):
+
+1. **`am start` from app uid is structurally blocked**:
+   - Knox sepolicy で AMS が untrusted_app uid からの activity start を全部拒否
+   - `cmd: Failure calling service activity: Failed transaction (2147483646)`
+   - http:// scheme でも shelly:// scheme でも、`-W` でも `-f 0x10000000` でも同じ
+   - **過去の `shelly-codex-auth.js` の `→ opened Shelly Browser Pane` は嘘だった** — `exec(am start...)` 失敗を callback で握りつぶしていた
+   - 解決: file-queue + RN poller (RN main thread は activity context 内、AMS 経由しない)
+
+2. **Shebang scripts in `app_data_file` are not exec-able**:
+   - kernel binfmt_script が `file{read}` を caller domain に要求
+   - Knox sepolicy で untrusted_app は app_data_file 読みを拒否
+   - **解決**: native binary を jniLibs/ に同梱、$libDir 経由で symlink (libDir SELinux label は exec 許可)
+   - v78 (`#!/system/bin/sh`)、v79 (`#!$HOME/bin/bash`)、v80 (`#!/system/bin/linker64 ...libbash.so`) 全て失敗、v81 で native binary に pivot して解決
+
+3. **Android WebView の `wv` UA + `X-Requested-With` で OAuth が gate される**:
+   - UA から `wv` 抜くと Anthropic / GitHub OAuth は通る
+   - Google は `X-Requested-With` header (パッケージ名自動付与) でも検出 → UA spoofing だけでは不十分
+   - 解決には Custom Tabs trampoline が必要 (Phase 1.2 deferred)
+
+**今日の commit 列**: `c43ba7ba` (PR #33 Codex login UI) → `ac311fee` (CI hotfix #35) → `04d67482` (docs #36) → `1c367c47` (PR #34 squash, file-queue + xdg-open binary) → PR #37 (WebView responsiveness、build 25543799099 検証中)
+
+**install 推奨**: PR #37 build 完了後の APK
+
+---
+
 ## 🟢 現状サマリ (2026-04-29、build 769、BASHRC_VERSION 69)
 
 **CLI 3/3 最新追従の実機確認完了** (Galaxy Z Fold6 / Android 16)。
@@ -1007,6 +1043,56 @@ coreutils: /proc/self/net/tcp6: Permission denied
 - `store/ports-store.ts` (パース)
 - `components/layout/Sidebar.tsx:133-151` (ポーリング)
 - `modules/terminal-emulator/android/src/main/jni/shelly-exec.c:372` (`readProcNetFile` JNI)
+
+---
+
+### bug #102/#115 phase 1.2 — Google OAuth Custom Tabs trampoline
+
+**発見**: 2026-05-08 PR #37 review (Phase 1.1 WebView responsiveness)
+**症状**: Phase 1 file-queue + Phase 1.1 UA spoofing で Anthropic / GitHub OAuth は WebView 内完結するが、**Google は突破できない**:
+- Android WebView の `wv` token 抜きの UA を設定しても、Chromium は `X-Requested-With: dev.shelly.terminal` header をリクエストに自動付与する
+- Google `accounts.google.com` はこの header を見て "embedded WebView" 検出、`disable_webview_sign_in` policy で「このブラウザは安全ではないかも」エラーページを返す
+- これは UA / `navigator.userAgentData` の spoofing では消せない、Chromium 内部の固定挙動
+
+**修正方針 (P1.2)**:
+1. **Option A: Custom Tabs trampoline** — Google OAuth URL を検出したら `Linking.openURL(url)` で外部 Custom Tabs / Chrome に飛ばす。サインイン完了後、redirect_uri が `http://localhost:<port>/callback` なので、Chrome がそれを open しようとして失敗 → ユーザは手動で Shelly に戻る → Claude/Gemini の listener は反応しない (orphan flow)
+2. **Option B: `onShouldStartLoadWithRequest` で request rewrite** — react-native-webview の prop で navigation を intercept → custom HTTP fetch (without `X-Requested-With`) → response を WebView に inject (heavy)
+3. **Option C: Patch react-native-webview Android side** — `WebViewClient` を override して `X-Requested-With` を strip。fork or PR upstream
+
+**現状の影響**: Gemini OAuth は Google 経由なので Phase 1 で完結しない (credential transplant 必須のまま)。Claude OAuth は Anthropic 自前 → Phase 1 で完結 ✅
+
+**優先度**: P1 (Gemini ユーザーの体験向上、Phase 1.2 の主要項目)
+**見積**: Option A は 1 時間 (簡単だが UX 微妙)、Option C は数日 (fork or upstream PR)
+**関連**: PR #37 description の "Out of scope (Phase 1.2 candidates)"
+
+### bug #136 — Multiple Browser Panes both navigate on every openUrl
+
+**発見**: 2026-05-08 Phase 1.1 PR #37 agent review
+**症状**: ユーザが split layout で Browser Pane 2 つ開いた状態で `openUrl(url)` が発火すると、両方の pane が同じ URL に navigate する。`openSignal` が global なため、両 instance の useEffect が反応する。
+**現状の影響**: 単一 Browser Pane が一般的なため immediate な UX 障害ではないが、split-browser 使用が増えると surprising
+**修正方針**:
+- `openSignal` に `targetPaneId?` field を追加して focused pane だけが consume する
+- もしくは focused-pane-only 反応を BrowserPane の useEffect 側で gate
+**優先度**: P1 (split layout 使用が主流になる前に)
+**見積**: 1-2 時間
+**関連コード**: `store/browser-store.ts:67`、`components/panes/BrowserPane.tsx` openSignal handler
+
+### bug #137 — DRY ensureBrowserPane helper
+
+**発見**: 2026-05-08 PR #37 agent review
+**症状**: `app/_layout.tsx` の `drainQueue` と `handleDeepLink` で同じ pattern (slots.some → addPane なら) が duplicated
+**修正**: `lib/browser-pane-helpers.ts` (or similar) に `ensureBrowserPane()` を抽出
+**優先度**: P2 (cosmetic、duplicated は 5 行 × 2)
+**見積**: 15 分
+
+### bug #138 — `androidLayerType="hardware"` × YouTube fullscreen smoke test
+
+**発見**: 2026-05-08 PR #37 agent non-blocker
+**症状**: Phase 1.1 で `androidLayerType="hardware"` を有効化したが、既存の CSS-fake fullscreen path (`FULLSCREEN_BRIDGE_JS` の z-index: 2147483647) と組み合わせたときの挙動が未検証。Hardware layer が absolute-positioned で extreme z-index の要素を clip する known issue があるため、YouTube pane-contained fullscreen で video がはみ出る or 黒帯になる可能性
+**検証方法**: Phase 1.1 install 後に YouTube → 任意の video → fullscreen tap → video が pane 矩形内に正しく fill されるか確認
+**未確認なら revert**: `androidLayerType="hardware"` を外して software fallback に戻す (CSS reflow speed は若干落ちるが OAuth flow には影響なし)
+**優先度**: P1 (regression 可能性)
+**見積**: 5 分の実機確認 + 必要なら revert で 5 分
 
 ---
 

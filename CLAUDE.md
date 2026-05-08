@@ -201,6 +201,9 @@ Shelly/
 | bash は linker64 経由で libbash.so を起動 | Plan B は `bash` という exec が PATH 外なので `$HOME/bin/bash` の wrapper が必要 | HomeInitializer.kt |
 | Codex CLI は termux fork (`codex-cli-termux`) を直接実行 | 旧方針の Alpine rootfs + proot は v5.1.0 (#139) で撤去。termux fork は bionic で動く ELF なので mmap_min_addr 制限を踏まない。Tier-1 軽量化 (arm64-only ABI + strip) と引き換えにアップストリーム static-linked codex 経由は捨てた | HomeInitializer.kt, LibExtractor.kt |
 | /sdcard は MANAGE_EXTERNAL_STORAGE | Scoped Storage 回避、初回起動で Intent 経由ユーザー許可 | app.config.ts, TerminalEmulatorModule.kt, first-launch-setup.ts |
+| **shell→RN bridge は file-queue (am start 不可)** | Android Knox sepolicy で `untrusted_app` uid からの `am start` が AMS で拒否 (`Failed transaction (2147483646)`)。代替として `$HOME/.shelly-deep-link-queue` に append、RN 側 250ms poll で drain → `useBrowserStore.openUrl()` 直接呼び出し (RN main thread は activity context、AMS 経由しない) | shelly-xdg-open.c, shelly-codex-auth.js, app/_layout.tsx |
+| **PATH-visible shim は native binary 必須 (#! script 不可)** | kernel binfmt_script が `app_data_file` の `file{read}` を caller domain に要求するが Knox sepolicy で deny。`#!/system/bin/sh`、`#!$HOME/bin/bash`、`#!/system/bin/linker64 ...libbash.so` 全て同じエラー (`bad interpreter: Success`)。jniLibs に native binary を同梱、LibExtractor で $libDir に展開、$HOME/bin から symlink するパターンが唯一動く (libDir SELinux label が exec 許可) | shelly-xdg-open.c, shelly-shell-launcher.c, LibExtractor.kt |
+| WebView UA は `wv` token 抜き必須 (OAuth 突破) | Android デフォルト UA の `wv` token を OAuth provider が embedded WebView 検出に使う。Anthropic / GitHub は UA 修正で通るが、Google は `X-Requested-With: <package>` header (Chromium 自動付与) でも検出するので Custom Tabs trampoline が別途必要 (Phase 1.2 deferred) | components/panes/BrowserPane.tsx |
 
 ---
 
