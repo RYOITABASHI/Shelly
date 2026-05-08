@@ -140,6 +140,69 @@ if (typeof globalThis.Bun.hash !== 'function') {
   __shellyHashBase.crc32 = __shellyHash32;
   globalThis.Bun.hash = __shellyHashBase;
 }
+// v82 (2026-05-08): Bun.* polyfill expansion. Sync mirror of the
+// HomeInitializer.kt heredoc — Claude Code 2.1.133's cli.js wraps every
+// Bun.* call in \`typeof Bun !== "u"\` guards then unconditionally
+// invokes the member, so when our polyfill installs \`Bun = {}\` every
+// guard takes the Bun branch and unfilled members crash. Repro 2026-05-08
+// on Z Fold6: \`globalThis.Bun.which is not a function\`. Audit found 4
+// surfaces called every startup (which / semver / YAML / gc) plus 1 rare
+// (generateHeapSnapshot) that we shim for safety. The remaining Bun.*
+// (wrapAnsi / JSONL / embeddedFiles / listen / spawn / version) are
+// tolerantly handled by cli.js when undefined and stay absent.
+if (typeof globalThis.Bun.which !== 'function') {
+  const __shellyChild = require('child_process');
+  globalThis.Bun.which = function shellyBunWhich(name) {
+    if (!name) return null;
+    try {
+      const r = __shellyChild.spawnSync('which', [String(name)], { encoding: 'utf8', stdio: ['ignore','pipe','ignore'], timeout: 1000 });
+      if (r.status === 0 && r.stdout) return r.stdout.trim() || null;
+    } catch (_) {}
+    return null;
+  };
+}
+if (!globalThis.Bun.semver || typeof globalThis.Bun.semver.order !== 'function') {
+  const __shellySemverCmp = function(a, b) {
+    const pa = String(a).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+$/.test(x) ? Number(x) : x; });
+    const pb = String(b).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+$/.test(x) ? Number(x) : x; });
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] === undefined ? 0 : pa[i];
+      const y = pb[i] === undefined ? 0 : pb[i];
+      if (typeof x === 'number' && typeof y === 'number') { if (x !== y) return x < y ? -1 : 1; }
+      else { const sx = String(x), sy = String(y); if (sx !== sy) return sx < sy ? -1 : 1; }
+    }
+    return 0;
+  };
+  globalThis.Bun.semver = {
+    order: __shellySemverCmp,
+    satisfies: function(version, range) {
+      const v = String(version).replace(/^v/, '');
+      const r = String(range).trim();
+      const m = r.match(/^([<>]=?|=)?\\s*v?([\\w.+-]+)$/);
+      if (!m) return false;
+      const op = m[1] || '=', target = m[2];
+      const c = __shellySemverCmp(v, target);
+      return op === '=' ? c === 0 : op === '>=' ? c >= 0 : op === '<=' ? c <= 0 : op === '>' ? c > 0 : c < 0;
+    }
+  };
+}
+if (!globalThis.Bun.YAML || typeof globalThis.Bun.YAML.parse !== 'function') {
+  globalThis.Bun.YAML = {
+    parse: function(s) {
+      try { return require('yaml').parse(String(s)); }
+      catch (e) { throw new Error('Shelly Bun.YAML.parse: yaml package unavailable: ' + e.message); }
+    }
+  };
+}
+if (typeof globalThis.Bun.gc !== 'function') {
+  globalThis.Bun.gc = function shellyBunGc() {
+    try { if (typeof global !== 'undefined' && typeof global.gc === 'function') global.gc(); }
+    catch (_) {}
+  };
+}
+if (typeof globalThis.Bun.generateHeapSnapshot !== 'function') {
+  globalThis.Bun.generateHeapSnapshot = function() { throw new Error('Bun.generateHeapSnapshot unavailable on Shelly Node tier'); };
+}
 `;
 
 function log(line) {

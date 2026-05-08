@@ -1230,6 +1230,73 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  __shellyHashBase.crc32 = __shellyHash32;")
             sb.appendLine("  globalThis.Bun.hash = __shellyHashBase;")
             sb.appendLine("}")
+            // v82 Bun.* polyfill expansion. Claude Code 2.1.133's bundled
+            // cli.js (extracted-Node tier) checks `typeof globalThis.Bun
+            // !== "u"` before every Bun.* call, then unconditionally calls
+            // the member. Our previous polyfill installed `globalThis.Bun
+            // = {}` which makes ALL 33 typeof guards take the Bun branch
+            // — any unfilled member crashes. On-device repro 2026-05-08
+            // (Z Fold6): `globalThis.Bun.which is not a function` thrown
+            // from cli.js exec-discovery path. Independent agent audit
+            // (`grep "Bun\." cli.js`) found 13 distinct Bun.* surfaces;
+            // 4 of them (which / semver / YAML / gc) are called on every
+            // startup and need shims. The rest (wrapAnsi / JSONL /
+            // embeddedFiles / listen / spawn / generateHeapSnapshot /
+            // version) are tolerantly handled by cli.js when undefined,
+            // so we leave them absent.
+            sb.appendLine("if (typeof globalThis.Bun.which !== 'function') {")
+            sb.appendLine("  const __shellyChild = require('child_process');")
+            sb.appendLine("  globalThis.Bun.which = function shellyBunWhich(name) {")
+            sb.appendLine("    if (!name) return null;")
+            sb.appendLine("    try {")
+            sb.appendLine("      const r = __shellyChild.spawnSync('which', [String(name)], { encoding: 'utf8', stdio: ['ignore','pipe','ignore'], timeout: 1000 });")
+            sb.appendLine("      if (r.status === 0 && r.stdout) return r.stdout.trim() || null;")
+            sb.appendLine("    } catch (_) {}")
+            sb.appendLine("    return null;")
+            sb.appendLine("  };")
+            sb.appendLine("}")
+            sb.appendLine("if (!globalThis.Bun.semver || typeof globalThis.Bun.semver.order !== 'function') {")
+            sb.appendLine("  const __shellySemverCmp = function(a, b) {")
+            sb.appendLine("    const pa = String(a).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+\$/.test(x) ? Number(x) : x; });")
+            sb.appendLine("    const pb = String(b).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+\$/.test(x) ? Number(x) : x; });")
+            sb.appendLine("    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {")
+            sb.appendLine("      const x = pa[i] === undefined ? 0 : pa[i];")
+            sb.appendLine("      const y = pb[i] === undefined ? 0 : pb[i];")
+            sb.appendLine("      if (typeof x === 'number' && typeof y === 'number') { if (x !== y) return x < y ? -1 : 1; }")
+            sb.appendLine("      else { const sx = String(x), sy = String(y); if (sx !== sy) return sx < sy ? -1 : 1; }")
+            sb.appendLine("    }")
+            sb.appendLine("    return 0;")
+            sb.appendLine("  };")
+            sb.appendLine("  globalThis.Bun.semver = {")
+            sb.appendLine("    order: __shellySemverCmp,")
+            sb.appendLine("    satisfies: function(version, range) {")
+            sb.appendLine("      const v = String(version).replace(/^v/, '');")
+            sb.appendLine("      const r = String(range).trim();")
+            sb.appendLine("      const m = r.match(/^([<>]=?|=)?\\s*v?([\\w.+-]+)\$/);")
+            sb.appendLine("      if (!m) return false;")
+            sb.appendLine("      const op = m[1] || '=', target = m[2];")
+            sb.appendLine("      const c = __shellySemverCmp(v, target);")
+            sb.appendLine("      return op === '=' ? c === 0 : op === '>=' ? c >= 0 : op === '<=' ? c <= 0 : op === '>' ? c > 0 : c < 0;")
+            sb.appendLine("    }")
+            sb.appendLine("  };")
+            sb.appendLine("}")
+            sb.appendLine("if (!globalThis.Bun.YAML || typeof globalThis.Bun.YAML.parse !== 'function') {")
+            sb.appendLine("  globalThis.Bun.YAML = {")
+            sb.appendLine("    parse: function(s) {")
+            sb.appendLine("      try { return require('yaml').parse(String(s)); }")
+            sb.appendLine("      catch (e) { throw new Error('Shelly Bun.YAML.parse: yaml package unavailable: ' + e.message); }")
+            sb.appendLine("    }")
+            sb.appendLine("  };")
+            sb.appendLine("}")
+            sb.appendLine("if (typeof globalThis.Bun.gc !== 'function') {")
+            sb.appendLine("  globalThis.Bun.gc = function shellyBunGc() {")
+            sb.appendLine("    try { if (typeof global !== 'undefined' && typeof global.gc === 'function') global.gc(); }")
+            sb.appendLine("    catch (_) {}")
+            sb.appendLine("  };")
+            sb.appendLine("}")
+            sb.appendLine("if (typeof globalThis.Bun.generateHeapSnapshot !== 'function') {")
+            sb.appendLine("  globalThis.Bun.generateHeapSnapshot = function() { throw new Error('Bun.generateHeapSnapshot unavailable on Shelly Node tier'); };")
+            sb.appendLine("}")
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
             // @anthropic-ai/claude-code dispatch. Default route is the
