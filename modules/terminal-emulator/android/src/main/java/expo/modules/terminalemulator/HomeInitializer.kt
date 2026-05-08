@@ -706,7 +706,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //            is set (so on-device testers can tell skip reason)
     //          - version-file fallback: readlink basename of current symlink
     //            if the version file isn't written
-    private const val BASHRC_VERSION = 84
+    //    85: 2026-05-09 real-device triage: extracted Node route is healthy
+    //        for non-interactive Claude Code paths (`--version`, `-p`) but
+    //        bare TUI startup can stall after Claude's interactive bootstrap
+    //        checkpoints on Z Fold6. Kernel-side PTY state is valid
+    //        (stdin/stdout are TTYs, foreground pgrp is Claude), so keep the
+    //        latest extracted route for non-TUI and route only bare
+    //        `claude` to the APK-bundled legacy cli.js TUI. This restores the
+    //        daily-driver interactive path without giving up latest Claude
+    //        for smoke checks and prompt mode. Debug override:
+    //        SHELLY_CLAUDE_EXTRACTED_TUI=1.
+    private const val BASHRC_VERSION = 85
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1472,6 +1482,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __apk_extracted_cli_js=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
             sb.appendLine("  local __extracted_cli_js=\"\"")
             sb.appendLine("  local __bun_tmp=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
+            sb.appendLine("  local __claude_bare_tui=0")
+            sb.appendLine("  [ \"\$#\" -eq 0 ] && __claude_bare_tui=1")
             sb.appendLine("  mkdir -p \"\$__bun_tmp\" 2>/dev/null")
             // PR #48: Drain runtime-failures into failed-versions BEFORE
             // deciding the tier. Without this, a freshly-crashed native
@@ -1614,7 +1626,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    esac")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_CLAUDE_EXTRACTED_TUI:-0}\" != \"1\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
+            sb.appendLine("    echo '[shelly] claude: bare TUI uses bundled legacy cli.js; set SHELLY_CLAUDE_EXTRACTED_TUI=1 to debug extracted TUI' >&2")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && { [ \"\$__claude_bare_tui\" -ne 1 ] || [ \"\${SHELLY_CLAUDE_EXTRACTED_TUI:-0}\" = \"1\" ]; } && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
@@ -1643,10 +1658,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  # Legacy fallback: pre-2.1.113 cli.js three-tier chain")
             sb.appendLine("  local __cli_js=\"\"")
             sb.appendLine("  local __tier=\"\"")
-            sb.appendLine("  for __pair in \\")
-            sb.appendLine("    \"\$HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js|auto\" \\")
-            sb.appendLine("    \"\$HOME/.shelly-cli.prev/node_modules/@anthropic-ai/claude-code/cli.js|prev\" \\")
-            sb.appendLine("    \"$libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"; do")
+            sb.appendLine("  local __legacy_pairs=\"\"")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_CLAUDE_TUI_AUTO_LEGACY:-0}\" != \"1\" ]; then")
+            sb.appendLine("    __legacy_pairs=\"$libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"")
+            sb.appendLine("  else")
+            sb.appendLine("    __legacy_pairs=\"\$HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js|auto \$HOME/.shelly-cli.prev/node_modules/@anthropic-ai/claude-code/cli.js|prev $libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  for __pair in \$__legacy_pairs; do")
             sb.appendLine("    local __path=\"\${__pair%|*}\"")
             sb.appendLine("    local __tname=\"\${__pair##*|}\"")
             sb.appendLine("    if [ -f \"\$__path\" ]; then")
