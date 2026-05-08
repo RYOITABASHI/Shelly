@@ -441,10 +441,37 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     setCurrentUrl(url);
   }, [inputUrl]);
 
+  // Track URL bar focus so background navigation events (redirects, OAuth
+  // bounces, YouTube prefetch frames, etc.) don't trample the URL the user
+  // is in the middle of typing. Without this guard, typing
+  // `youtube.com<enter>` while WebView still has a previous page mounted
+  // results in setInputUrl(currentPageUrl) firing mid-keystroke and the
+  // user sees their input apparently deleted.
+  const [urlFocused, setUrlFocused] = useState(false);
+  const urlFocusedRef = useRef(false);
+  useEffect(() => { urlFocusedRef.current = urlFocused; }, [urlFocused]);
+
+  // Android: TextInput.onBlur does NOT fire when the soft keyboard is
+  // dismissed via the system back button (RN issue facebook/react-native#29571,
+  // open since 2020). If the user focuses the URL bar, types nothing, then
+  // back-presses to close the keyboard, `urlFocused` stays true forever and
+  // `handleNavigationStateChange` permanently stops syncing the URL bar with
+  // the live WebView URL — every subsequent page navigation looks broken.
+  // Wire keyboardDidHide as a forced-blur fallback. Safe because if the bar
+  // really is focused with keyboard up via a different IME path, hide-then-
+  // show cycles will re-focus and re-set urlFocused via onFocus.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = Keyboard.addListener('keyboardDidHide', () => {
+      setUrlFocused(false);
+    });
+    return () => sub.remove();
+  }, []);
+
   const handleNavigationStateChange = useCallback((state: WebViewNavigation) => {
     setCanGoBack(state.canGoBack);
     setCanGoForward(state.canGoForward);
-    if (state.url && state.url !== 'about:blank') {
+    if (state.url && state.url !== 'about:blank' && !urlFocusedRef.current) {
       setInputUrl(state.url);
     }
     setCurrentUrl(state.url ?? 'about:blank');
@@ -508,8 +535,10 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           value={inputUrl}
           onChangeText={setInputUrl}
           onSubmitEditing={handleSubmit}
+          onFocus={() => setUrlFocused(true)}
+          onBlur={() => setUrlFocused(false)}
           placeholder="Enter a URL"
-          placeholderTextColor="#6B7280"
+          placeholderTextColor={C.text2}
           // Explicit selectionColor / cursorColor so the caret + text-
           // selection highlight remain visible against the dark URL bar
           // background regardless of the active theme preset. Some Android
@@ -521,16 +550,23 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           cursorColor={C.accent}
           autoCapitalize="none"
           autoCorrect={false}
+          // autoComplete + importantForAutofill kill the Android autofill
+          // overlay that competes with IME composition on URL fields. Without
+          // these, Samsung IME on Galaxy Z Fold6 shows suggestion chips for
+          // "youtube" but never commits the composing text into the field
+          // because autofill thinks it owns the input — user sees their typed
+          // text disappear into the suggestion bar.
+          autoComplete="off"
+          importantForAutofill="no"
           keyboardType="url"
           returnKeyType="go"
-          selectTextOnFocus
         />
         {inputUrl.length > 0 && (
           <TouchableOpacity
             onPress={() => setInputUrl('')}
             style={[styles.navBtn, compactChrome && styles.navBtnCompact]}
           >
-            <MaterialIcons name="close" size={compactChrome ? 12 : 14} color="#6B7280" />
+            <MaterialIcons name="close" size={compactChrome ? 12 : 14} color={C.text2} />
           </TouchableOpacity>
         )}
         <TouchableOpacity
@@ -731,19 +767,22 @@ const styles = StyleSheet.create({
   },
   urlInput: {
     flex: 1,
-    height: 28,
+    height: 32,
     borderRadius: 4,
     backgroundColor: C.border,
     paddingHorizontal: 8,
+    paddingVertical: 0,
     fontFamily: F.family,
-    fontSize: 11,
+    fontSize: 13,
     color: C.text1,
+    textAlignVertical: 'center',
+    includeFontPadding: false,
   },
   urlInputCompact: {
-    height: 22,
+    height: 26,
     borderRadius: 3,
     paddingHorizontal: 6,
-    fontSize: 9,
+    fontSize: 12,
   },
   bookmarksBar: {
     height: 32,
