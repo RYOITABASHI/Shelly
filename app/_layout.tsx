@@ -237,12 +237,21 @@ export default function RootLayout() {
           const raw = parsed.queryParams?.url;
           const target = Array.isArray(raw) ? raw[0] : raw;
           if (typeof target === 'string' && target.length > 0) {
-            // Ensure a Browser pane exists before firing the openSignal —
-            // otherwise navigations fire into the void if the user has no
-            // Browser pane materialised yet. addPane is idempotent with
-            // respect to 'browser' type (the multi-pane store merges into
-            // an existing slot when available).
-            try { useMultiPaneStore.getState().addPane('browser'); } catch {}
+            // Only addPane('browser') when no Browser Pane is mounted.
+            // The store's addPane unconditionally creates a new slot; if
+            // we called it on every deep link, repeated `shelly://browser`
+            // dispatches would spawn extra Browser Panes side-by-side.
+            // BrowserPane reads openSignal.url at initial mount so a
+            // freshly-created pane still picks up the URL on first
+            // render. (Was: "addPane is idempotent" — that was wrong;
+            // verified by use-multi-pane.ts:471.)
+            try {
+              const slots = useMultiPaneStore.getState().slots;
+              const hasBrowser = slots.some((s) => s?.tab === 'browser');
+              if (!hasBrowser) {
+                useMultiPaneStore.getState().addPane('browser');
+              }
+            } catch {}
             useBrowserStore.getState().openUrl(target);
             logInfo('DeepLink', `openUrl dispatched: ${target}`);
           }
@@ -311,7 +320,25 @@ export default function RootLayout() {
             logError('DeepLinkQueue', `rejected non-http(s) url: ${url.slice(0, 64)}`);
             continue;
           }
-          try { useMultiPaneStore.getState().addPane('browser'); } catch {}
+          // Only call addPane('browser') if no Browser Pane is already
+          // mounted. addPane unconditionally allocates a new slot, so
+          // calling it when a Browser Pane already exists creates a
+          // SECOND one — and even worse, the new pane misses the
+          // openSignal because its lastOpenSeqRef captures the current
+          // (post-openUrl) seq on mount and the useEffect skips the
+          // navigation. The combined effect is the "Browser Pane
+          // appears but the URL doesn't load" bug observed on Z Fold6.
+          // BrowserPane's currentUrl initial state also reads
+          // openSignal.url so a fresh pane picks up the URL on first
+          // render; this guard just keeps us from spamming new panes
+          // on every queued URL.
+          try {
+            const slots = useMultiPaneStore.getState().slots;
+            const hasBrowser = slots.some((s) => s?.tab === 'browser');
+            if (!hasBrowser) {
+              useMultiPaneStore.getState().addPane('browser');
+            }
+          } catch {}
           useBrowserStore.getState().openUrl(url);
           logInfo('DeepLinkQueue', `openUrl dispatched (queue): ${url}`);
         }
