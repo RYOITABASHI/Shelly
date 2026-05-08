@@ -1322,11 +1322,26 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
-            // @anthropic-ai/claude-code dispatch. Default route is the
-            // verified latest linux-arm64 musl Bun SEA binary. The extracted
-            // Node route remains a fallback only: upstream Claude can add Bun
-            // APIs that pass --version after extraction but hang during real
-            // --print sessions.
+            // @anthropic-ai/claude-code dispatch. As of 2026-05-08 (BASHRC
+            // v83), the **default route is the extracted Node tier**
+            // (cli.js + Bun.* polyfill via $libDir/node) — Bun 1.3.14 +
+            // Claude Code 2.1.133 panic-crashes the native musl Bun SEA on
+            // Galaxy Z Fold6 with exit 133 (SIGTRAP) / 135 (SIGBUS) AFTER
+            // drawing a partial TUI banner, polluting the foreground REPL
+            // even though the tier-fallback eventually succeeds.
+            //
+            // The native Bun SEA tiers (latest under
+            // ~/.shelly-runtime/claude/current/, and the APK-bundled
+            // Path C-bis under $libDir/claude) remain available but are
+            // gated behind SHELLY_PREFER_NATIVE_CLAUDE=1. Set the env var
+            // to opt back in for testing / smoke-validation. The runtime
+            // updater's background smoke is the right end-state for
+            // promoting "known good" native binaries (deferred, see PR
+            // description follow-up).
+            //
+            // Earlier comment said the opposite (native default, Node
+            // fallback). It was correct until 2.1.133; do not revert
+            // without re-validating both tiers on a real device.
             sb.appendLine("claude() {")
             sb.appendLine("  local __trampoline=\"$libDir/shelly_musl_exec\"")
             sb.appendLine("  local __musl_claude=\"$libDir/claude\"")
@@ -1415,7 +1430,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          ;;")
             sb.appendLine("      esac")
             sb.appendLine("    fi")
-            sb.appendLine("    if [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
+            // Codex review fix-up: announce condition must also gate on
+            // SHELLY_PREFER_NATIVE_CLAUDE=1 — without it, the "Path C-bis"
+            // banner prints (and SHELLY_CLAUDE_TIER_ANNOUNCED=1 is set,
+            // suppressing the *real* banner from the extracted Node tier
+            // below) even though the native execution block is skipped.
+            sb.appendLine("    if [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] && [ -x \"\$__musl_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      echo '[shelly] claude: Path C-bis (musl Bun SEA)' >&2")
             sb.appendLine("    fi")
