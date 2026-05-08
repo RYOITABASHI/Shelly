@@ -260,18 +260,27 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const compactChrome = (paneWidth > 0 && paneWidth < 430) || (paneHeight > 0 && paneHeight < 380);
   const tinyChrome = (paneWidth > 0 && paneWidth < 320) || (paneHeight > 0 && paneHeight < 300);
 
-  // Keyboard height tracking — same pattern as TerminalPane
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKeyboardHeight(e.endCoordinates.height);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, []);
+  // NOTE (2026-05-08): keyboard avoidance was previously done locally here
+  // with a Keyboard.addListener + paddingBottom: keyboardHeight on the root
+  // View. This duplicated MultiPaneContainer's own keyboard handling
+  // (gridHeight = size.H - keyboardHeight + paddingBottom: keyboardHeight on
+  // its root) — the BrowserPane root was being shrunk a SECOND time on top
+  // of the container shrink, which forced the WebView to resize 2-3 times
+  // per keyboard toggle. YouTube and other heavy SPAs (custom compositors,
+  // IntersectionObservers, layered scrollers) couldn't re-rasterize their
+  // tiles fast enough and ended up with corrupted paint (search bar
+  // duplicated, video grid disappearing, sections going black) until the
+  // keyboard was dismissed. Plain HTML pages were unaffected because their
+  // compositor has nothing to invalidate.
+  //
+  // Removed the local listener + padding entirely. The container already
+  // moves the whole pane grid up by keyboardHeight, so PaneInputBar (which
+  // renders inside this BrowserPane) rides above the keyboard automatically
+  // without WebView needing to resize.
+  //
+  // Codex independent review confirmed the diagnosis (2026-05-08):
+  //   "BrowserPane の paddingBottom は消すべき。MultiPaneContainer の
+  //    設計コメントと矛盾している。これは明確に二重管理"
 
   // Fullscreen bridge: when the WebView posts 'shelly:fs:on' we maximize
   // this pane, force landscape orientation, and hide the system chrome so
@@ -509,7 +518,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
 
   return (
     <View
-      style={[styles.root, { backgroundColor: C.bgDeep, paddingBottom: keyboardHeight }]}
+      style={[styles.root, { backgroundColor: C.bgDeep }]}
     >
       {/* URL bar */}
       <View style={[styles.toolbar, compactChrome && styles.toolbarCompact]}>
