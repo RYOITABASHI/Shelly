@@ -716,7 +716,36 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        daily-driver interactive path without giving up latest Claude
     //        for smoke checks and prompt mode. Debug override:
     //        SHELLY_CLAUDE_EXTRACTED_TUI=1.
-    private const val BASHRC_VERSION = 85
+    //    86: PR #53 Claude TUI diagnostic instrumentation. Codex review
+    //        (2026-05-09) on bare-claude silent-exit on extracted Node tier
+    //        pointed out we were chasing Bun.* details before verifying
+    //        the preload itself loads — external NODE_OPTIONS=--require=
+    //        diag hooks tested via `export NODE_OPTIONS=...; claude` did
+    //        NOT fire heartbeat or any process event handler, suggesting
+    //        the user-side hook never reached cli.js. Bake diagnostic into
+    //        the generated ~/.shelly-claude-node-preload.js itself (which
+    //        the claude bash function loads unconditionally) so we capture:
+    //          - [SHELLY-PRELOAD] loaded — proves preload reached cli.js
+    //          - [SHELLY-PRELOAD] uncaughtExceptionMonitor (observe-only,
+    //            does NOT alter Node's terminate-on-throw disposition)
+    //          - [SHELLY-PRELOAD] unhandledRejection
+    //          - [SHELLY-PRELOAD] beforeExit / exit code=N
+    //          - [SHELLY-BUN-MISSING] <prop> + 10-line stack — when cli.js
+    //            reads a Bun.* property we don't polyfill, log once per
+    //            prop with the call site (minified bundle needs more frames)
+    //        Gated:
+    //          SHELLY_CLAUDE_DIAG=1 → all events + Bun Proxy missing logger
+    //          SHELLY_VERBOSE_CLI_TIER=1 → preload-loaded log only
+    //          (No event listeners under VERBOSE_CLI_TIER because users
+    //          already set it for normal tier debug; adding beforeExit/exit
+    //          would make every claude --version / -p invocation noisy.)
+    //        Default install: completely silent, zero behaviour change.
+    //        Diagnostic install: SHELLY_CLAUDE_DIAG=1 claude → next-install
+    //        log capture for root-cause analysis.
+    //        NB: this is a PURELY DIAGNOSTIC bump. PR #52's bare-TUI →
+    //        legacy fallback is the user-facing fix until root cause is
+    //        identified.
+    private const val BASHRC_VERSION = 86
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1449,6 +1478,109 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("if (typeof globalThis.Bun.generateHeapSnapshot !== 'function') {")
             sb.appendLine("  globalThis.Bun.generateHeapSnapshot = function() { throw new Error('Bun.generateHeapSnapshot unavailable on Shelly Node tier'); };")
+            sb.appendLine("}")
+
+            // ──────────────────────────────────────────────────────────────
+            // PR #53 diagnostic instrumentation (Codex review 2026-05-09)
+            //
+            // The bare-claude-TUI silent-exit issue surfaced after PR #47
+            // demoted native to opt-in and made extracted Node tier the
+            // default. External NODE_OPTIONS=--require=...diag-hook.js
+            // attempts did NOT fire a heartbeat, suggesting the diagnostic
+            // hook itself never loaded — so chasing Bun.* details before
+            // verifying the preload-load path is premature. Codex's
+            // recommendation: bake the diagnostic INTO this generated
+            // preload file (which the claude bash function loads
+            // unconditionally), not into a separate user-side file.
+            //
+            // Two surfaces:
+            //
+            // 1. Process-level signal capture: log preload load,
+            //    uncaughtException, unhandledRejection, beforeExit, exit.
+            //    These should fire on every claude() invocation; absence in
+            //    the next install run means even the preload itself isn't
+            //    loaded (different bug class).
+            //
+            // 2. Bun.* missing-API trace: wrap globalThis.Bun in a Proxy
+            //    whose `get` trap logs every access to a property that
+            //    isn't polyfilled, with a stack frame. cli.js's TUI
+            //    bootstrap will trip every Bun-specific API it expects, and
+            //    we'll see the exact call sites in stderr.
+            //
+            // Both surfaces gate on SHELLY_CLAUDE_DIAG=1 (or
+            // SHELLY_VERBOSE_CLI_TIER=1, which users already set for tier
+            // observability) so the diagnostic noise stays out of normal
+            // claude sessions. Default install: silent, no behaviour
+            // change. Diagnostic install: rich stderr trace.
+            //
+            // This is a PURELY DIAGNOSTIC PR. No fix attempt. Goal: capture
+            // enough on-device evidence to identify the real root cause.
+            // Codex push-prep review (2026-05-09) fix-ups:
+            //   - Split gates: VERBOSE_CLI_TIER=1 = preload-loaded log ONLY
+            //     (it's already used by users for normal tier debug; adding
+            //     beforeExit/exit listeners here would make every claude
+            //     --version / -p invocation noisy).
+            //   - DIAG=1 = all listeners + Bun Proxy.
+            //   - uncaughtException -> uncaughtExceptionMonitor: a normal
+            //     `uncaughtException` listener SUPPRESSES Node's default
+            //     terminate-on-throw behaviour, which would mask the real
+            //     bug we're trying to find. The Monitor variant observes
+            //     without altering disposition.
+            //   - Stack trace truncation 5 -> 10 lines: cli.js is minified,
+            //     5 frames is often not enough to identify the call site.
+            sb.appendLine("if (process.env.SHELLY_VERBOSE_CLI_TIER === '1') {")
+            sb.appendLine("  try {")
+            sb.appendLine("    process.stderr.write('[SHELLY-PRELOAD] loaded ' + JSON.stringify({")
+            sb.appendLine("      node: process.version,")
+            sb.appendLine("      argv: process.argv,")
+            sb.appendLine("      isTTYStdin: !!process.stdin.isTTY,")
+            sb.appendLine("      isTTYStdout: !!process.stdout.isTTY,")
+            sb.appendLine("      nodeOptions: process.env.NODE_OPTIONS || null,")
+            sb.appendLine("      cwd: process.cwd(),")
+            sb.appendLine("    }) + '\\n');")
+            sb.appendLine("  } catch (_) {}")
+            sb.appendLine("}")
+            sb.appendLine("if (process.env.SHELLY_CLAUDE_DIAG === '1') {")
+            sb.appendLine("  try {")
+            sb.appendLine("    process.stderr.write('[SHELLY-PRELOAD] loaded ' + JSON.stringify({")
+            sb.appendLine("      node: process.version,")
+            sb.appendLine("      argv: process.argv,")
+            sb.appendLine("      isTTYStdin: !!process.stdin.isTTY,")
+            sb.appendLine("      isTTYStdout: !!process.stdout.isTTY,")
+            sb.appendLine("      nodeOptions: process.env.NODE_OPTIONS || null,")
+            sb.appendLine("      cwd: process.cwd(),")
+            sb.appendLine("    }) + '\\n');")
+            sb.appendLine("  } catch (_) {}")
+            sb.appendLine("  process.on('uncaughtExceptionMonitor', function(e) {")
+            sb.appendLine("    try { process.stderr.write('[SHELLY-PRELOAD] uncaughtExceptionMonitor ' + ((e && e.stack) || e) + '\\n'); } catch (_) {}")
+            sb.appendLine("  });")
+            sb.appendLine("  process.on('unhandledRejection', function(e) {")
+            sb.appendLine("    try { process.stderr.write('[SHELLY-PRELOAD] unhandledRejection ' + ((e && e.stack) || e) + '\\n'); } catch (_) {}")
+            sb.appendLine("  });")
+            sb.appendLine("  process.on('beforeExit', function(code) {")
+            sb.appendLine("    try { process.stderr.write('[SHELLY-PRELOAD] beforeExit code=' + code + '\\n'); } catch (_) {}")
+            sb.appendLine("  });")
+            sb.appendLine("  process.on('exit', function(code) {")
+            sb.appendLine("    try { process.stderr.write('[SHELLY-PRELOAD] exit code=' + code + '\\n'); } catch (_) {}")
+            sb.appendLine("  });")
+            // Bun missing-API logger. Logged once per missing prop name to
+            // avoid spam if the same property is read in a loop.
+            sb.appendLine("  var __shellyBunMissingSeen = Object.create(null);")
+            sb.appendLine("  var __shellyBunBase = globalThis.Bun;")
+            sb.appendLine("  globalThis.Bun = new Proxy(__shellyBunBase, {")
+            sb.appendLine("    get: function(target, prop) {")
+            sb.appendLine("      if (prop in target) return target[prop];")
+            sb.appendLine("      var key = String(prop);")
+            sb.appendLine("      if (!__shellyBunMissingSeen[key]) {")
+            sb.appendLine("        __shellyBunMissingSeen[key] = true;")
+            sb.appendLine("        try {")
+            sb.appendLine("          var stack = (new Error()).stack || '';")
+            sb.appendLine("          process.stderr.write('[SHELLY-BUN-MISSING] ' + key + '\\n' + stack.split('\\n').slice(1, 11).join('\\n') + '\\n');")
+            sb.appendLine("        } catch (_) {}")
+            sb.appendLine("      }")
+            sb.appendLine("      return undefined;")
+            sb.appendLine("    },")
+            sb.appendLine("  });")
             sb.appendLine("}")
             sb.appendLine("__SHELLY_CLAUDE_NODE_PRELOAD__")
             sb.appendLine("chmod 600 \"\$__shelly_claude_node_preload\" 2>/dev/null || true")
