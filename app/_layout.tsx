@@ -468,6 +468,53 @@ export default function RootLayout() {
             logError('DeepLinkQueue', `rejected non-http(s) url: ${url.slice(0, 64)}`);
             continue;
           }
+          // Phase 1.2 Stage 2 (Google OAuth safety routing): upgrade any
+          // queue line currently routed in-app whose host is
+          // accounts.google.com to external-browser dispatch. Google's
+          // OAuth flow blocks WebView via the X-Requested-With header
+          // that Chromium injects unconditionally, and UA spoofing alone
+          // can't bypass it (established 2026-05-08). Custom Tabs runs
+          // the same Chromium core but as the system browser process, no
+          // `wv` token, no X-Requested-With, so Google accepts the sign-in.
+          //
+          // SAFETY WINS over explicit declaration: an emitter that sent
+          // {"authMode":"in-app"} for a Google OAuth URL is also upgraded.
+          // OAuth URLs in WebView fail predictably; routing them through
+          // Custom Tabs is the safer default. Emitters that have a real
+          // reason to need in-app rendering for accounts.google.com would
+          // be misrouting OAuth into a known-broken path. Explicit
+          // {"authMode":"external-browser"} is left untouched (already
+          // resolved upstream of this branch).
+          //
+          // We narrow the auto-upgrade to accounts.google.com exactly
+          // (NOT *.google.com) because:
+          //   - User-pasted YouTube / Drive / Maps URLs should still open
+          //     in-app (Phase 1 behaviour, no auth gating).
+          //   - Only the OAuth host is the one that fingerprints WebView.
+          //
+          // Scope note: this layer makes Google OAuth URLs SAFE once they
+          // reach the queue. It does NOT implement Gemini auth on its
+          // own. Gemini CLI must invoke xdg-open (which routes through
+          // shelly-xdg-open.c → file queue) for this upgrade to fire. If
+          // Gemini CLI only prints the OAuth URL to stdout without
+          // invoking xdg-open, a follow-up wrapper that pushes the URL
+          // into the queue is still needed (deferred until on-device
+          // observation confirms which behaviour Gemini CLI exhibits).
+          if (authMode === 'in-app') {
+            try {
+              const parsedUrl = new URL(url);
+              if (parsedUrl.host.toLowerCase() === 'accounts.google.com') {
+                authMode = 'external-browser';
+                provider = provider ?? 'google';
+                logInfo('DeepLinkQueue', `auto-upgraded Google OAuth URL to external-browser: ${url}`);
+              }
+            } catch {
+              // URL constructor threw on a string that passed http(s)
+              // regex earlier — extremely unlikely. Fall through to
+              // existing in-app dispatch; safer than hard-fail on a path
+              // that's only best-effort anyway.
+            }
+          }
           if (authMode === 'external-browser') {
             await dispatchExternalBrowser(url, provider);
             logInfo('DeepLinkQueue', `external dispatched (provider=${provider ?? 'unknown'}): ${url}`);
