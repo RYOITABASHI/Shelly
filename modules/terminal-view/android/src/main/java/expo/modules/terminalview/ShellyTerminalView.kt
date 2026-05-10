@@ -335,7 +335,7 @@ class ShellyTerminalView(
      * race. See the buffer-content race comment in attachShellySession.
      */
     private fun scheduleCatchupBlits() {
-        val delays = longArrayOf(150, 400, 1000)
+        val delays = longArrayOf(150, 400, 1000, 2000, 4000, 8000)
         for (d in delays) {
             terminalView.postDelayed({
                 if (terminalView.width > 0 && currentShellySession != null) {

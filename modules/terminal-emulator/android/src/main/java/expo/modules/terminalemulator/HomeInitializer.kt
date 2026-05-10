@@ -741,7 +741,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        NB: this bump forces devices to regenerate ~/.bashrc so the
     //        latest claude() / gemini() launch rules and IME behavior land
     //        immediately after upgrade.
-    private const val BASHRC_VERSION = 92
+    private const val BASHRC_VERSION = 93
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1626,6 +1626,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __bun_tmp=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
             sb.appendLine("  local __claude_bare_tui=0")
             sb.appendLine("  [ \"\$#\" -eq 0 ] && __claude_bare_tui=1")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_PREFER_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" != \"1\" ]; then")
+            sb.appendLine("    SHELLY_FORCE_LEGACY_CLAUDE=1")
+            sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__bun_tmp\" 2>/dev/null")
             // PR #48: Drain runtime-failures into failed-versions BEFORE
             // deciding the tier. Without this, a freshly-crashed native
@@ -1770,7 +1773,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
-            sb.appendLine("    echo '[shelly] claude: bare TUI uses extracted Bun cli.js by default; legacy cli.js is fallback only' >&2")
+            sb.appendLine("    if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" = \"1\" ]; then")
+            sb.appendLine("      echo '[shelly] claude: bare TUI uses legacy cli.js by default; set SHELLY_PREFER_EXTRACTED_CLAUDE=1 to debug extracted Bun cli.js' >&2")
+            sb.appendLine("    else")
+            sb.appendLine("      echo '[shelly] claude: bare TUI uses extracted/native tier by request' >&2")
+            sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
@@ -1873,7 +1880,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __prev_arg=\"\$__arg\"")
             sb.appendLine("  done")
             sb.appendLine("  local __gemini_args=(\"\$@\")")
-            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ] && [ \"\$#\" -gt 0 ]; then")
+            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ]; then")
             sb.appendLine("    __gemini_args=(--model flash \"\${__gemini_args[@]}\")")
             sb.appendLine("  fi")
             sb.appendLine("  __shelly_paste_tui_begin")

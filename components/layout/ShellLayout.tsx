@@ -228,7 +228,7 @@ export function ShellLayout() {
   }, []);
   const closeSidebar = useCallback(() => {
     if (!layout.isWide) {
-      useSidebarStore.getState().setMode('hidden');
+      useSidebarStore.getState().setMode('icons');
     }
   }, [layout.isWide]);
 
