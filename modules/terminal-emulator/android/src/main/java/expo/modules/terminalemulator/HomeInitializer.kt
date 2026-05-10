@@ -741,7 +741,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        NB: this is a PURELY DIAGNOSTIC bump. PR #52's bare-TUI →
     //        legacy fallback is the user-facing fix until root cause is
     //        identified.
-    private const val BASHRC_VERSION = 88
+    private const val BASHRC_VERSION = 89
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1756,9 +1756,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
-            sb.appendLine("    echo '[shelly] claude: bare TUI uses extracted Bun cli.js (Node); set SHELLY_FORCE_LEGACY_CLAUDE=1 to debug legacy cli.js' >&2")
+            sb.appendLine("    echo '[shelly] claude: bare TUI uses legacy cli.js by default; set SHELLY_PREFER_EXTRACTED_CLAUDE=1 to debug extracted Bun cli.js' >&2")
             sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 0 ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
@@ -1859,7 +1859,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __prev_arg=\"\$__arg\"")
             sb.appendLine("  done")
             sb.appendLine("  local __gemini_args=(\"\$@\")")
-            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ]; then")
+            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ] && [ \"\$#\" -gt 0 ]; then")
             sb.appendLine("    __gemini_args=(--model flash \"\${__gemini_args[@]}\")")
             sb.appendLine("  fi")
             sb.appendLine("  __shelly_paste_tui_begin")
