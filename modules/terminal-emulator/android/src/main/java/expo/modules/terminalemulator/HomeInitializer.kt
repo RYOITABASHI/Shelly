@@ -738,10 +738,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        Default install: completely silent, zero behaviour change.
     //        Diagnostic install: SHELLY_CLAUDE_DIAG=1 claude → next-install
     //        log capture for root-cause analysis.
-    //        NB: this is a PURELY DIAGNOSTIC bump. PR #52's bare-TUI →
-    //        legacy fallback is the user-facing fix until root cause is
-    //        identified.
-    private const val BASHRC_VERSION = 89
+    //        NB: this bump forces devices to regenerate ~/.bashrc so the
+    //        latest claude() / gemini() launch rules and IME behavior land
+    //        immediately after upgrade.
+    private const val BASHRC_VERSION = 90
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1756,7 +1756,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
-            sb.appendLine("    echo '[shelly] claude: bare TUI prefers extracted Bun cli.js; legacy cli.js remains fallback' >&2")
+            sb.appendLine("    echo '[shelly] claude: bare TUI uses extracted Bun cli.js by default; legacy cli.js is fallback only' >&2")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")

@@ -57,18 +57,30 @@ class TerminalImeHostView private constructor(context: Context) : View(context) 
         }
         activeTerminal = terminal
         if (!isAttachedToWindow) {
-            Log.i(TAG, "bindToTerminal: host not attached yet, deferring focus/IMM")
+            Log.i(TAG, "bindToTerminal: host not attached yet, deferring focus/IMM until attach")
             return
         }
-        // Intentionally steals Android view focus from the pane — this
-        // is the whole point of the design. Pane "active" state lives
+        applyImeFocus(terminal, "bindToTerminal")
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        val terminal = activeTerminal ?: return
+        // If a terminal was bound before the host finished attaching,
+        // replay the focus/IME handoff now that the view is eligible.
+        applyImeFocus(terminal, "onAttachedToWindow")
+    }
+
+    private fun applyImeFocus(terminal: TerminalView, reason: String) {
+        // Intentionally steals Android view focus from the pane — this is
+        // the whole point of the design. Pane "active" state lives
         // separately on the React side and in TerminalImeHostView's
         // activeTerminal field, not in Android's view-focus tree.
         requestFocusFromTouch()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.restartInput(this)
         imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
-        Log.i(TAG, "bindToTerminal active=${System.identityHashCode(terminal)} hostFocused=$isFocused")
+        Log.i(TAG, "$reason active=${System.identityHashCode(terminal)} hostFocused=$isFocused")
     }
 
     fun unbindIfActive(terminal: TerminalView) {
