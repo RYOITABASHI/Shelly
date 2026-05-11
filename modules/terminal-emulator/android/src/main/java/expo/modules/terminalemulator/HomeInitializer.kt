@@ -741,7 +741,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        NB: this bump forces devices to regenerate ~/.bashrc so the
     //        latest claude() / gemini() launch rules and IME behavior land
     //        immediately after upgrade.
-    private const val BASHRC_VERSION = 93
+    private const val BASHRC_VERSION = 94
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1625,9 +1625,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __extracted_cli_js=\"\"")
             sb.appendLine("  local __bun_tmp=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
             sb.appendLine("  local __claude_bare_tui=0")
+            sb.appendLine("  local __claude_prefer_bundled_legacy=0")
             sb.appendLine("  [ \"\$#\" -eq 0 ] && __claude_bare_tui=1")
             sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_PREFER_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" != \"1\" ]; then")
             sb.appendLine("    SHELLY_FORCE_LEGACY_CLAUDE=1")
+            sb.appendLine("    __claude_prefer_bundled_legacy=1")
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__bun_tmp\" 2>/dev/null")
             // PR #48: Drain runtime-failures into failed-versions BEFORE
@@ -1809,6 +1811,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __cli_js=\"\"")
             sb.appendLine("  local __tier=\"\"")
             sb.appendLine("  local __legacy_pairs=\"\$HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js|auto \$HOME/.shelly-cli.prev/node_modules/@anthropic-ai/claude-code/cli.js|prev $libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"")
+            sb.appendLine("  if [ \"\$__claude_prefer_bundled_legacy\" -eq 1 ]; then")
+            sb.appendLine("    __legacy_pairs=\"$libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled \$HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js|auto \$HOME/.shelly-cli.prev/node_modules/@anthropic-ai/claude-code/cli.js|prev\"")
+            sb.appendLine("  fi")
             sb.appendLine("  for __pair in \$__legacy_pairs; do")
             sb.appendLine("    local __path=\"\${__pair%|*}\"")
             sb.appendLine("    local __tname=\"\${__pair##*|}\"")
@@ -1853,13 +1858,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // prompt calls to the stable flash alias; keep diagnostic commands
             // (`--version`, `--help`, etc.) untouched.
             sb.appendLine("gemini() {")
-            sb.appendLine("  local __gemini_pkg=\"\$__cli_dir/@google/gemini-cli/package.json\"")
+            sb.appendLine("  local __gemini_base=\"\$__cli_dir/@google/gemini-cli\"")
+            sb.appendLine("  local __gemini_bare_tui=0")
+            sb.appendLine("  [ \"\$#\" -eq 0 ] && __gemini_bare_tui=1")
+            sb.appendLine("  if [ \"\$__gemini_bare_tui\" -eq 1 ] && [ \"\${SHELLY_PREFER_RUNTIME_GEMINI:-0}\" != \"1\" ] && [ -f \"$libDir/node_modules/@google/gemini-cli/package.json\" ]; then")
+            sb.appendLine("    __gemini_base=\"$libDir/node_modules/@google/gemini-cli\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  local __gemini_pkg=\"\$__gemini_base/package.json\"")
             sb.appendLine("  local __gemini_bin=\"bundle/gemini.js\"")
             sb.appendLine("  if [ -f \"\$__gemini_pkg\" ]; then")
             sb.appendLine("    local __pkg_bin=\$(timeout 10 /system/bin/linker64 \"$libDir/node\" -e 'try{const p=require(process.argv[1]);const b=p.bin;if(typeof b===\"string\"){process.stdout.write(b)}else if(b&&typeof b===\"object\"){const v=b.gemini||b[Object.keys(b)[0]];if(v)process.stdout.write(v)}}catch(e){}' \"\$__gemini_pkg\" 2>/dev/null)")
             sb.appendLine("    [ -n \"\$__pkg_bin\" ] && __gemini_bin=\"\$__pkg_bin\"")
             sb.appendLine("  fi")
-            sb.appendLine("  local __gemini_entry=\"\$__cli_dir/@google/gemini-cli/\$__gemini_bin\"")
+            sb.appendLine("  local __gemini_entry=\"\$__gemini_base/\$__gemini_bin\"")
             sb.appendLine("  if [ ! -f \"\$__gemini_entry\" ]; then")
             sb.appendLine("    echo \"gemini: package bin not found: \$__gemini_entry\" >&2")
             sb.appendLine("    return 127")
