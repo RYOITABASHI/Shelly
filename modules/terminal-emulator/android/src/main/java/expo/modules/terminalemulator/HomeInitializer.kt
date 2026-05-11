@@ -760,7 +760,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      must therefore be a hermetic APK-bundled Node launch: no Bun env,
     //      no updater env, no extracted/native tier env. Experimental runtime
     //      launch remains opt-in via the existing SHELLY_* debug flags.
-    private const val BASHRC_VERSION = 101
+    private const val BASHRC_VERSION = 102
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1191,6 +1191,25 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    NPM_CONFIG_PREFIX=\"\${NPM_CONFIG_PREFIX:-\$HOME/.npm-global}\" XDG_CONFIG_HOME=\"\${XDG_CONFIG_HOME:-\$HOME/.config}\" XDG_CACHE_HOME=\"\${XDG_CACHE_HOME:-\$HOME/.cache}\" XDG_DATA_HOME=\"\${XDG_DATA_HOME:-\$HOME/.local/share}\" \\")
             sb.appendLine("    GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 SHELLY_AUTO_UPDATE_CLIS=0 \\")
             sb.appendLine("    /system/bin/linker64 $libDir/node \"\$@\"")
+            sb.appendLine("}")
+            sb.appendLine("__shelly_run_claude_musl_clean() {")
+            sb.appendLine("  local __trampoline=\"\$1\"")
+            sb.appendLine("  local __musl_ld=\"\$2\"")
+            sb.appendLine("  local __musl_exec_wrapper=\"\$3\"")
+            sb.appendLine("  local __claude_bin=\"\$4\"")
+            sb.appendLine("  shift 4")
+            sb.appendLine("  local __shelly_tmp=\"\${TMPDIR:-\$HOME/.tmp}\"")
+            sb.appendLine("  local __bun_tmp=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\"")
+            sb.appendLine("  local __claude_tmp=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\"")
+            sb.appendLine("  mkdir -p \"\$__shelly_tmp\" \"\$__bun_tmp\" \"\$__claude_tmp\" \"\$HOME/.config\" \"\$HOME/.cache\" \"\$HOME/.local/share\" 2>/dev/null || true")
+            sb.appendLine("  /system/bin/env -i \\")
+            sb.appendLine("    HOME=\"\$HOME\" PWD=\"\$PWD\" USER=\"\${USER:-shelly}\" LOGNAME=\"\${LOGNAME:-shelly}\" SHELL=\"\$SHELL\" \\")
+            sb.appendLine("    TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" LANG=\"\${LANG:-C.UTF-8}\" LC_ALL=\"\${LC_ALL:-C.UTF-8}\" \\")
+            sb.appendLine("    PATH=\"\$PATH\" LD_LIBRARY_PATH=\"\$LD_LIBRARY_PATH\" ANDROID_DATA=\"\${ANDROID_DATA:-/data}\" ANDROID_ROOT=\"\${ANDROID_ROOT:-/system}\" \\")
+            sb.appendLine("    TMPDIR=\"\$__shelly_tmp\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\$__claude_tmp\" CLAUDE_TMPDIR=\"\$__claude_tmp\" \\")
+            sb.appendLine("    XDG_CONFIG_HOME=\"\${XDG_CONFIG_HOME:-\$HOME/.config}\" XDG_CACHE_HOME=\"\${XDG_CACHE_HOME:-\$HOME/.cache}\" XDG_DATA_HOME=\"\${XDG_DATA_HOME:-\$HOME/.local/share}\" \\")
+            sb.appendLine("    NO_UPDATE_NOTIFIER=1 USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 SHELLY_MUSL_LD_PRELOAD=\"\$__musl_exec_wrapper\" \\")
+            sb.appendLine("    /system/bin/linker64 \"\$__trampoline\" \"\$__musl_ld\" \"\$__claude_bin\" \"\$@\"")
             sb.appendLine("}")
             // bug #116 paste-routing override (Codex 2026-04-25): the
             // /proc/<bash>/task/<bash>/children heuristic in
@@ -1674,23 +1693,50 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __claude_bare_tui=0")
             sb.appendLine("  [ \"\$#\" -eq 0 ] && __claude_bare_tui=1")
             sb.appendLine("  mkdir -p \"\$__bun_tmp\" \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
-            // Emergency stable foreground route for the bare Claude TUI.
-            //
-            // The runtime/extracted/native tier resolver below is useful for
-            // one-shot prompts and updater smoke tests, but real devices have
-            // shown blank foreground TUI launches after the wrapper prints its
-            // tier banner. For `claude` with no args, minimize side effects:
-            // APK-bundled legacy cli.js, no package probing, no tier banner,
-            // no paste marker, no NODE_OPTIONS preload. Non-bare invocations
-            // still use the fuller tier chain below.
-            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_EXPERIMENTAL_CLAUDE_LAUNCH:-0}\" != \"1\" ]; then")
-            sb.appendLine("    local __stable_claude_cli=\"$libDir/node_modules/@anthropic-ai/claude-code/cli.js\"")
-            sb.appendLine("    if [ -f \"\$__stable_claude_cli\" ]; then")
+            // Foreground Claude must not use the extracted/bundled Node
+            // cli.js route by default. Real-device evidence shows that route
+            // is a false positive: version checks pass, but TUI / --print can
+            // hang with no repaint. The old working screenshots show native
+            // musl Bun SEA rendering correctly; the actual bug was fallback
+            // pollution after a native crash. For foreground launches, prefer
+            // native and return on failure instead of falling through into
+            // Node tiers that corrupt or hang the session.
+            sb.appendLine("  local __claude_foreground_native=0")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ]; then")
+            sb.appendLine("    __claude_foreground_native=1")
+            sb.appendLine("  fi")
+            sb.appendLine("  case \"\${1:-}\" in")
+            sb.appendLine("    --print|-p)")
+            sb.appendLine("      __claude_foreground_native=1")
+            sb.appendLine("      ;;")
+            sb.appendLine("  esac")
+            sb.appendLine("  if [ \"\$__claude_foreground_native\" -eq 1 ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
+            sb.appendLine("    if [ ! -s \"\$HOME/.shelly-ssl/resolv.conf\" ]; then")
+            sb.appendLine("      mkdir -p \"\$HOME/.shelly-ssl\"")
+            sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
+            sb.appendLine("    fi")
+            sb.appendLine("    local __foreground_claude_bin=\"\"")
+            sb.appendLine("    if [ -x \"\$__runtime_claude\" ]; then")
+            sb.appendLine("      __foreground_claude_bin=\"\$__runtime_claude\"")
+            sb.appendLine("    elif [ -x \"\$__musl_claude\" ]; then")
+            sb.appendLine("      __foreground_claude_bin=\"\$__musl_claude\"")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ -n \"\$__foreground_claude_bin\" ]; then")
             sb.appendLine("      __shelly_paste_tui_begin")
-            sb.appendLine("      __shelly_run_node_clean \"\$__stable_claude_cli\"")
-            sb.appendLine("      local __stable_claude_rc=\$?")
+            sb.appendLine("      __shelly_run_claude_musl_clean \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_exec_wrapper\" \"\$__foreground_claude_bin\" \"\$@\"")
+            sb.appendLine("      local __foreground_claude_rc=\$?")
+            sb.appendLine("      case \"\$__foreground_claude_rc\" in")
+            sb.appendLine("        133|134|135|139|159)")
+            sb.appendLine("          rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
+            sb.appendLine("          __shelly_run_claude_musl_clean \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_exec_wrapper\" \"\$__foreground_claude_bin\" \"\$@\"")
+            sb.appendLine("          __foreground_claude_rc=\$?")
+            sb.appendLine("          ;;")
+            sb.appendLine("      esac")
             sb.appendLine("      __shelly_paste_tui_end")
-            sb.appendLine("      return \"\$__stable_claude_rc\"")
+            sb.appendLine("      if [ \"\$__foreground_claude_rc\" -ne 0 ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
+            sb.appendLine("        echo \"[shelly] claude: native foreground exited \$__foreground_claude_rc; not falling back to Node tiers\" >&2")
+            sb.appendLine("      fi")
+            sb.appendLine("      return \"\$__foreground_claude_rc\"")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             // PR #48: Drain runtime-failures into failed-versions BEFORE
