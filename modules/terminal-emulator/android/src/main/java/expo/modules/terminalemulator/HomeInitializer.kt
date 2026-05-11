@@ -748,7 +748,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        This keeps the interactive shell in sync with the verified
     //        auto-updated tree instead of shadowing it with stale bundled
     //        binaries.
-    private const val BASHRC_VERSION = 96
+    private const val BASHRC_VERSION = 97
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1777,10 +1777,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    esac")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
-            sb.appendLine("    echo '[shelly] claude: bare TUI uses extracted Bun cli.js by default; legacy cli.js is fallback only' >&2")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_CLAUDE_EXTRACTED_TUI:-0}\" != \"1\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
+            sb.appendLine("    echo '[shelly] claude: bare TUI uses bundled legacy cli.js; set SHELLY_CLAUDE_EXTRACTED_TUI=1 to debug extracted Bun cli.js' >&2")
             sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && [ -n \"\$__extracted_cli_js\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && { [ \"\$__claude_bare_tui\" -ne 1 ] || [ \"\${SHELLY_CLAUDE_EXTRACTED_TUI:-0}\" = \"1\" ]; } && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
             sb.appendLine("      export SHELLY_CLAUDE_TIER_ANNOUNCED=1")
             sb.appendLine("      if [ \"\$__extracted_cli_js\" = \"\$__runtime_extracted_cli_js\" ]; then")
@@ -1808,7 +1808,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  # Legacy fallback: pre-2.1.113 cli.js three-tier chain")
             sb.appendLine("  local __cli_js=\"\"")
             sb.appendLine("  local __tier=\"\"")
-            sb.appendLine("  local __legacy_pairs=\"\$HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js|auto \$HOME/.shelly-cli.prev/node_modules/@anthropic-ai/claude-code/cli.js|prev $libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"")
+            sb.appendLine("  local __legacy_pairs=\"\"")
+            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_CLAUDE_TUI_AUTO_LEGACY:-0}\" != \"1\" ]; then")
+            sb.appendLine("    __legacy_pairs=\"$libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"")
+            sb.appendLine("  else")
+            sb.appendLine("    __legacy_pairs=\"\$HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js|auto \$HOME/.shelly-cli.prev/node_modules/@anthropic-ai/claude-code/cli.js|prev $libDir/node_modules/@anthropic-ai/claude-code/cli.js|bundled\"")
+            sb.appendLine("  fi")
             sb.appendLine("  for __pair in \$__legacy_pairs; do")
             sb.appendLine("    local __path=\"\${__pair%|*}\"")
             sb.appendLine("    local __tname=\"\${__pair##*|}\"")
@@ -1890,7 +1895,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __prev_arg=\"\$__arg\"")
             sb.appendLine("  done")
             sb.appendLine("  local __gemini_args=(\"\$@\")")
-            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ]; then")
+            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ] && [ \"\$#\" -gt 0 ]; then")
             sb.appendLine("    __gemini_args=(--model flash \"\${__gemini_args[@]}\")")
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
