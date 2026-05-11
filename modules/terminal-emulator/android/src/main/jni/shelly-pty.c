@@ -337,9 +337,9 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
                     fprintf(rc, "export PATH=\"%s\"\n", pathVal);
                     fprintf(rc, "export LD_LIBRARY_PATH=\"%s\"\n", ldLibPath);
                     fprintf(rc, "export PS1='shelly:~$ '\n");
-                    fprintf(rc, "claude() { \"%s/node\" \"%s/node_modules/@anthropic-ai/claude-code/cli.js\" \"$@\"; }\n", ldLibPath, ldLibPath);
-                    fprintf(rc, "gemini() { \"%s/node\" \"%s/node_modules/@google/gemini-cli/bundle/gemini.js\" \"$@\"; }\n", ldLibPath, ldLibPath);
-                    fprintf(rc, "codex() { \"%s/node\" \"%s/node_modules/@openai/codex/bin/codex.js\" \"$@\"; }\n", ldLibPath, ldLibPath);
+                    fprintf(rc, "claude() { /system/bin/linker64 \"%s/node\" \"%s/node_modules/@anthropic-ai/claude-code/cli.js\" \"$@\"; }\n", ldLibPath, ldLibPath);
+                    fprintf(rc, "gemini() { GEMINI_CLI_NO_RELAUNCH=true /system/bin/linker64 \"%s/node\" \"%s/node_modules/@google/gemini-cli/bundle/gemini.js\" \"$@\"; }\n", ldLibPath, ldLibPath);
+                    fprintf(rc, "codex() { /system/bin/linker64 \"%s/node\" \"%s/node_modules/@openai/codex/bin/codex.js\" \"$@\"; }\n", ldLibPath, ldLibPath);
                     fprintf(rc, "export -f claude gemini codex\n");
                     fclose(rc);
                 }

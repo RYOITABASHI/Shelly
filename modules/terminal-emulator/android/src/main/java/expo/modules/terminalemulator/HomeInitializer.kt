@@ -754,7 +754,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //     explicitly requested. Also add a non-auth-destructive runtime/cache
     //     reset command for devices whose persisted ~/.shelly-cli tree was
     //     poisoned by earlier launcher experiments.
-    private const val BASHRC_VERSION = 99
+    // 101: PR #40/#47/#48 regression isolation. On-device evidence showed
+    //      delayed Bun native-tier logs being written into the foreground
+    //      Claude TUI PTY after a successful draw. Bare `claude` / `gemini`
+    //      must therefore be a hermetic APK-bundled Node launch: no Bun env,
+    //      no updater env, no extracted/native tier env. Experimental runtime
+    //      launch remains opt-in via the existing SHELLY_* debug flags.
+    private const val BASHRC_VERSION = 101
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -979,6 +985,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export SHELL=\"$libDir/shelly_shell\"")
             sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("export BASHRC_VERSION=\"$BASHRC_VERSION\"")
+            sb.appendLine("export SHELLY_AUTO_UPDATE_CLIS=0")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export LD_LIBRARY_PATH=\"\${LD_LIBRARY_PATH:-$libDir}\"")
             // bug #128 (2026-04-27): tell git where to find its
@@ -1172,6 +1179,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      return 64")
             sb.appendLine("      ;;")
             sb.appendLine("  esac")
+            sb.appendLine("}")
+            sb.appendLine("__shelly_run_node_clean() {")
+            sb.appendLine("  local __shelly_tmp=\"\${TMPDIR:-\$HOME/.tmp}\"")
+            sb.appendLine("  mkdir -p \"\$__shelly_tmp\" \"\$HOME/.config\" \"\$HOME/.cache\" \"\$HOME/.local/share\" 2>/dev/null || true")
+            sb.appendLine("  /system/bin/env -i \\")
+            sb.appendLine("    HOME=\"\$HOME\" PWD=\"\$PWD\" USER=\"\${USER:-shelly}\" LOGNAME=\"\${LOGNAME:-shelly}\" SHELL=\"\$SHELL\" \\")
+            sb.appendLine("    TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" LANG=\"\${LANG:-C.UTF-8}\" LC_ALL=\"\${LC_ALL:-C.UTF-8}\" \\")
+            sb.appendLine("    PATH=\"\$PATH\" LD_LIBRARY_PATH=\"\$LD_LIBRARY_PATH\" ANDROID_DATA=\"\${ANDROID_DATA:-/data}\" ANDROID_ROOT=\"\${ANDROID_ROOT:-/system}\" \\")
+            sb.appendLine("    TMPDIR=\"\$__shelly_tmp\" \\")
+            sb.appendLine("    NPM_CONFIG_PREFIX=\"\${NPM_CONFIG_PREFIX:-\$HOME/.npm-global}\" XDG_CONFIG_HOME=\"\${XDG_CONFIG_HOME:-\$HOME/.config}\" XDG_CACHE_HOME=\"\${XDG_CACHE_HOME:-\$HOME/.cache}\" XDG_DATA_HOME=\"\${XDG_DATA_HOME:-\$HOME/.local/share}\" \\")
+            sb.appendLine("    GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 SHELLY_AUTO_UPDATE_CLIS=0 \\")
+            sb.appendLine("    /system/bin/linker64 $libDir/node \"\$@\"")
             sb.appendLine("}")
             // bug #116 paste-routing override (Codex 2026-04-25): the
             // /proc/<bash>/task/<bash>/children heuristic in
@@ -1667,8 +1686,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] && [ \"\${SHELLY_EXPERIMENTAL_CLAUDE_LAUNCH:-0}\" != \"1\" ]; then")
             sb.appendLine("    local __stable_claude_cli=\"$libDir/node_modules/@anthropic-ai/claude-code/cli.js\"")
             sb.appendLine("    if [ -f \"\$__stable_claude_cli\" ]; then")
-            sb.appendLine("      USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" _run $libDir/node \"\$__stable_claude_cli\"")
-            sb.appendLine("      return \$?")
+            sb.appendLine("      __shelly_paste_tui_begin")
+            sb.appendLine("      __shelly_run_node_clean \"\$__stable_claude_cli\"")
+            sb.appendLine("      local __stable_claude_rc=\$?")
+            sb.appendLine("      __shelly_paste_tui_end")
+            sb.appendLine("      return \"\$__stable_claude_rc\"")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             // PR #48: Drain runtime-failures into failed-versions BEFORE
@@ -1908,8 +1930,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \"\$__gemini_bare_tui\" -eq 1 ] && [ \"\${SHELLY_EXPERIMENTAL_GEMINI_LAUNCH:-0}\" != \"1\" ]; then")
             sb.appendLine("    local __stable_gemini_entry=\"$libDir/node_modules/@google/gemini-cli/bundle/gemini.js\"")
             sb.appendLine("    if [ -f \"\$__stable_gemini_entry\" ]; then")
-            sb.appendLine("      GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" _run $libDir/node --max-old-space-size=5557 \"\$__stable_gemini_entry\"")
-            sb.appendLine("      return \$?")
+            sb.appendLine("      __shelly_paste_tui_begin")
+            sb.appendLine("      __shelly_run_node_clean --max-old-space-size=5557 \"\$__stable_gemini_entry\"")
+            sb.appendLine("      local __stable_gemini_rc=\$?")
+            sb.appendLine("      __shelly_paste_tui_end")
+            sb.appendLine("      return \"\$__stable_gemini_rc\"")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\$__gemini_bare_tui\" -eq 1 ] && [ \"\${SHELLY_PREFER_RUNTIME_GEMINI:-0}\" != \"1\" ] && [ -f \"\$__gemini_bundle_base/package.json\" ]; then")
