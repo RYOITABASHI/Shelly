@@ -748,7 +748,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //        This keeps the interactive shell in sync with the verified
     //        auto-updated tree instead of shadowing it with stale bundled
     //        binaries.
-    private const val BASHRC_VERSION = 97
+    // 98: CLI TUI recovery hardening. Keep the latest-runtime updater in
+    //     place, but make bare interactive Claude/Gemini prefer stable
+    //     APK-bundled Node launch paths until the runtime TUI path is
+    //     explicitly requested. Also add a non-auth-destructive runtime/cache
+    //     reset command for devices whose persisted ~/.shelly-cli tree was
+    //     poisoned by earlier launcher experiments.
+    private const val BASHRC_VERSION = 98
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1179,6 +1185,20 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // brackets while marker is present.
             sb.appendLine("__shelly_paste_tui_begin() { printf '%s\\n' \"\$\$\" > \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine("__shelly_paste_tui_end() { rm -f \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
+            sb.appendLine("shelly-reset-cli-runtime() {")
+            sb.appendLine("  local __stamp=\$(date +%s 2>/dev/null || echo now)")
+            sb.appendLine("  local __trash=\"\$HOME/.shelly-cli-reset-\$__stamp\"")
+            sb.appendLine("  mkdir -p \"\$__trash\" 2>/dev/null || true")
+            sb.appendLine("  local __p")
+            sb.appendLine("  for __p in \"\$HOME/.shelly-cli\" \"\$HOME/.shelly-cli.prev\" \"\$HOME/.shelly-cli.staging\" \"\$HOME/.shelly-runtime\" \"\$HOME/.bun-tmp\" \"\$HOME/.claude-tmp\" \"\$HOME/.tmp\"; do")
+            sb.appendLine("    [ -e \"\$__p\" ] || continue")
+            sb.appendLine("    mv \"\$__p\" \"\$__trash/\" 2>/dev/null || rm -rf \"\$__p\" 2>/dev/null || true")
+            sb.appendLine("  done")
+            sb.appendLine("  rm -f \"\$HOME/.shelly_last_update\" \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true")
+            sb.appendLine("  mkdir -p \"\$HOME/.shelly-runtime\" \"\$HOME/.tmp\" \"\$HOME/.bun-tmp\" \"\$HOME/.claude-tmp\" 2>/dev/null || true")
+            sb.appendLine("  echo \"[shelly] CLI runtime/cache moved to \$__trash\" >&2")
+            sb.appendLine("  echo '[shelly] Auth files are preserved. Close this tab and open a new Shell.' >&2")
+            sb.appendLine("}")
             sb.appendLine()
 
             // ── PR #48: foreground crash → cooldown fast feedback ─────────
@@ -1832,7 +1852,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" \"\$__bun_tmp\" 2>/dev/null")
             sb.appendLine("  __shelly_paste_tui_begin")
-            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_claude_node_preload\" _run $libDir/node \"\$__cli_js\" \"\$@\"")
+            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" _run $libDir/node \"\$__cli_js\" \"\$@\"")
             sb.appendLine("  local __legacy_rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  return \"\$__legacy_rc\"")
@@ -1862,7 +1882,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __gemini_runtime_base=\"\$__cli_dir/@google/gemini-cli\"")
             sb.appendLine("  local __gemini_bundle_base=\"$libDir/node_modules/@google/gemini-cli\"")
             sb.appendLine("  local __gemini_base=\"\$__gemini_runtime_base\"")
-            sb.appendLine("  if [ ! -f \"\$__gemini_runtime_base/package.json\" ] && [ -f \"\$__gemini_bundle_base/package.json\" ]; then")
+            sb.appendLine("  local __gemini_bare_tui=0")
+            sb.appendLine("  [ \"\$#\" -eq 0 ] && __gemini_bare_tui=1")
+            sb.appendLine("  if [ \"\$__gemini_bare_tui\" -eq 1 ] && [ \"\${SHELLY_PREFER_RUNTIME_GEMINI:-0}\" != \"1\" ] && [ -f \"\$__gemini_bundle_base/package.json\" ]; then")
+            sb.appendLine("    __gemini_base=\"\$__gemini_bundle_base\"")
+            sb.appendLine("  elif [ ! -f \"\$__gemini_runtime_base/package.json\" ] && [ -f \"\$__gemini_bundle_base/package.json\" ]; then")
             sb.appendLine("    __gemini_base=\"\$__gemini_bundle_base\"")
             sb.appendLine("  fi")
             sb.appendLine("  local __gemini_pkg=\"\$__gemini_base/package.json\"")
@@ -1877,7 +1901,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    return 127")
             sb.appendLine("  fi")
             sb.appendLine("  if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ \"\$__gemini_base\" = \"\$__gemini_bundle_base\" ]; then")
-            sb.appendLine("    echo '[shelly] gemini: APK bundle fallback (runtime package missing)' >&2")
+            sb.appendLine("    if [ \"\$__gemini_bare_tui\" -eq 1 ] && [ -f \"\$__gemini_runtime_base/package.json\" ]; then")
+            sb.appendLine("      echo '[shelly] gemini: bare TUI uses APK bundle; set SHELLY_PREFER_RUNTIME_GEMINI=1 to test runtime package' >&2")
+            sb.appendLine("    else")
+            sb.appendLine("      echo '[shelly] gemini: APK bundle fallback (runtime package missing)' >&2")
+            sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  local __has_model=0")
             sb.appendLine("  local __skip_default_model=0")
