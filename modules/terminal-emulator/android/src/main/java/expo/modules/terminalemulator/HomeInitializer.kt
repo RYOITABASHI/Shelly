@@ -801,7 +801,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      `gemini auth login`. On Shelly mobile the consent prompt can be
     //      hidden before the auth URL is emitted, leaving the terminal looking
     //      stuck at a blank line.
-    private const val BASHRC_VERSION = 111
+    // 112: Keep Gemini auth stdin attached to the PTY. Piping a newline into
+    //      Gemini makes stdin non-TTY and can stall the interactive auth path,
+    //      so send the auto-confirm newline to /dev/tty from a short-lived
+    //      background task instead.
+    private const val BASHRC_VERSION = 112
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2151,12 +2155,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
             sb.appendLine("  __shelly_paste_tui_begin")
+            sb.appendLine("  local __gemini_rc=0")
             sb.appendLine("  if [ \"\$__gemini_auth_login\" -eq 1 ]; then")
-            sb.appendLine("    printf '\\n' | TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
+            sb.appendLine("    ( sleep 0.8; printf '\\n' > /dev/tty 2>/dev/null || true; sleep 1.2; printf '\\n' > /dev/tty 2>/dev/null || true; sleep 2; printf '\\n' > /dev/tty 2>/dev/null || true ) &")
+            sb.appendLine("    local __gemini_auth_confirm_pid=\$!")
+            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
+            sb.appendLine("    __gemini_rc=\$?")
+            sb.appendLine("    wait \"\$__gemini_auth_confirm_pid\" 2>/dev/null || true")
             sb.appendLine("  else")
             sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
+            sb.appendLine("    __gemini_rc=\$?")
             sb.appendLine("  fi")
-            sb.appendLine("  local __gemini_rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  if [ \"\$__gemini_auth_login\" -eq 1 ]; then")
             sb.appendLine("    stty sane 2>/dev/null || true")
