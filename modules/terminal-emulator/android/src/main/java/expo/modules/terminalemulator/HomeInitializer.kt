@@ -772,7 +772,20 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      self-updater run. Keep the APK bundle only as explicit fallback or
     //      SHELLY_PREFER_BUNDLED_GEMINI=1, and suppress Gemini self-update
     //      checks because Shelly owns runtime updates.
-    private const val BASHRC_VERSION = 104
+    // 105: Apply the same Gemini self-update suppression to the clean Node
+    //      launcher helper used by fallback / diagnostic paths, so every
+    //      Shelly-managed Gemini route stays quiet and lets Shelly's updater
+    //      own version tracking.
+    // 106: Do not route ordinary bare `claude` TUI launches through the
+    //      native Bun SEA by default. It can render, crash, and dump Bun's
+    //      panic report into the foreground PTY before the next tier recovers.
+    //      Keep native available for explicit diagnostics, but keep the
+    //      user-facing TUI path clean.
+    // 107: Add auth isolation helpers for real-device validation. They move
+    //      Claude/Gemini/Codex auth state into timestamped snapshots and can
+    //      restore it later, so testers can prove Shelly authenticates each
+    //      CLI without reusing old Termux/imported credentials.
+    private const val BASHRC_VERSION = 107
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1201,7 +1214,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    PATH=\"\$PATH\" LD_LIBRARY_PATH=\"\$LD_LIBRARY_PATH\" ANDROID_DATA=\"\${ANDROID_DATA:-/data}\" ANDROID_ROOT=\"\${ANDROID_ROOT:-/system}\" \\")
             sb.appendLine("    TMPDIR=\"\$__shelly_tmp\" \\")
             sb.appendLine("    NPM_CONFIG_PREFIX=\"\${NPM_CONFIG_PREFIX:-\$HOME/.npm-global}\" XDG_CONFIG_HOME=\"\${XDG_CONFIG_HOME:-\$HOME/.config}\" XDG_CACHE_HOME=\"\${XDG_CACHE_HOME:-\$HOME/.cache}\" XDG_DATA_HOME=\"\${XDG_DATA_HOME:-\$HOME/.local/share}\" \\")
-            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 SHELLY_AUTO_UPDATE_CLIS=0 \\")
+            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 SHELLY_AUTO_UPDATE_CLIS=0 \\")
             sb.appendLine("    /system/bin/linker64 $libDir/node \"\$@\"")
             sb.appendLine("}")
             sb.appendLine("__shelly_patch_bundled_gemini_once() {")
@@ -1259,6 +1272,95 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  mkdir -p \"\$HOME/.shelly-runtime\" \"\$HOME/.tmp\" \"\$HOME/.bun-tmp\" \"\$HOME/.claude-tmp\" 2>/dev/null || true")
             sb.appendLine("  echo \"[shelly] CLI runtime/cache moved to \$__trash\" >&2")
             sb.appendLine("  echo '[shelly] Auth files are preserved. Close this tab and open a new Shell.' >&2")
+            sb.appendLine("}")
+            sb.appendLine("__shelly_auth_paths() {")
+            sb.appendLine("  printf '%s\\n' \\")
+            sb.appendLine("    '.claude' \\")
+            sb.appendLine("    '.claude.json' \\")
+            sb.appendLine("    '.claude.json.bak' \\")
+            sb.appendLine("    '.config/claude' \\")
+            sb.appendLine("    '.config/claude-code' \\")
+            sb.appendLine("    '.config/anthropic' \\")
+            sb.appendLine("    '.gemini' \\")
+            sb.appendLine("    '.config/gemini' \\")
+            sb.appendLine("    '.config/google-generative-ai' \\")
+            sb.appendLine("    '.codex' \\")
+            sb.appendLine("    '.config/codex' \\")
+            sb.appendLine("    '.config/openai' \\")
+            sb.appendLine("    '.openai'")
+            sb.appendLine("}")
+            sb.appendLine("shelly-auth-list() {")
+            sb.appendLine("  local __dir=\"\$HOME/.shelly-auth-snapshots\"")
+            sb.appendLine("  if [ ! -d \"\$__dir\" ]; then")
+            sb.appendLine("    echo '[shelly] no auth snapshots yet'")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
+            sb.appendLine("  ls -1 \"\$__dir\" 2>/dev/null | sed 's/^/  /'")
+            sb.appendLine("}")
+            sb.appendLine("shelly-auth-snapshot() {")
+            sb.appendLine("  local __stamp=\"\$(date +%Y%m%d-%H%M%S 2>/dev/null || date +%s 2>/dev/null || echo now)\"")
+            sb.appendLine("  local __snap=\"\$HOME/.shelly-auth-snapshots/\$__stamp\"")
+            sb.appendLine("  mkdir -p \"\$__snap\"")
+            sb.appendLine("  local __rel __src __dst __moved=0")
+            sb.appendLine("  : > \"\$__snap/manifest.txt\"")
+            sb.appendLine("  while IFS= read -r __rel; do")
+            sb.appendLine("    [ -n \"\$__rel\" ] || continue")
+            sb.appendLine("    __src=\"\$HOME/\$__rel\"")
+            sb.appendLine("    [ -e \"\$__src\" ] || continue")
+            sb.appendLine("    __dst=\"\$__snap/\$__rel\"")
+            sb.appendLine("    mkdir -p \"\${__dst%/*}\"")
+            sb.appendLine("    if mv \"\$__src\" \"\$__dst\" 2>/dev/null; then")
+            sb.appendLine("      printf '%s\\n' \"\$__rel\" >> \"\$__snap/manifest.txt\"")
+            sb.appendLine("      __moved=\$((__moved + 1))")
+            sb.appendLine("    else")
+            sb.appendLine("      echo \"[shelly] could not move \$__rel\" >&2")
+            sb.appendLine("    fi")
+            sb.appendLine("  done < <(__shelly_auth_paths)")
+            sb.appendLine("  if [ \"\$__moved\" -eq 0 ]; then")
+            sb.appendLine("    rm -f \"\$__snap/manifest.txt\"")
+            sb.appendLine("    rmdir \"\$__snap\" 2>/dev/null || true")
+            sb.appendLine("    echo '[shelly] no Claude/Gemini/Codex auth files found to snapshot'")
+            sb.appendLine("  else")
+            sb.appendLine("    echo \"[shelly] moved \$__moved auth path(s) to \$__snap\"")
+            sb.appendLine("    echo '[shelly] open a new Shell, then test: codex-login --open, claude (/login), gemini auth login'")
+            sb.appendLine("  fi")
+            sb.appendLine("}")
+            sb.appendLine("shelly-auth-isolate() { shelly-auth-snapshot \"\$@\"; }")
+            sb.appendLine("shelly-auth-restore() {")
+            sb.appendLine("  local __base=\"\$HOME/.shelly-auth-snapshots\"")
+            sb.appendLine("  local __name=\"\${1:-}\"")
+            sb.appendLine("  local __snap")
+            sb.appendLine("  if [ -n \"\$__name\" ]; then")
+            sb.appendLine("    case \"\$__name\" in /*) __snap=\"\$__name\" ;; *) __snap=\"\$__base/\$__name\" ;; esac")
+            sb.appendLine("  else")
+            sb.appendLine("    __snap=\"\$__base/\$(ls -1 \"\$__base\" 2>/dev/null | tail -1)\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ ! -d \"\$__snap\" ] || [ ! -f \"\$__snap/manifest.txt\" ]; then")
+            sb.appendLine("    echo '[shelly] auth snapshot not found. Run shelly-auth-list.' >&2")
+            sb.appendLine("    return 1")
+            sb.appendLine("  fi")
+            sb.appendLine("  local __conflicts=\"\$__snap/.restore-conflicts-\$(date +%s 2>/dev/null || echo now)\"")
+            sb.appendLine("  local __rel __src __dst __parent __restored=0")
+            sb.appendLine("  while IFS= read -r __rel || [ -n \"\$__rel\" ]; do")
+            sb.appendLine("    [ -n \"\$__rel\" ] || continue")
+            sb.appendLine("    __src=\"\$__snap/\$__rel\"")
+            sb.appendLine("    __dst=\"\$HOME/\$__rel\"")
+            sb.appendLine("    [ -e \"\$__src\" ] || continue")
+            sb.appendLine("    if [ -e \"\$__dst\" ]; then")
+            sb.appendLine("      __parent=\"\${__rel%/*}\"")
+            sb.appendLine("      [ \"\$__parent\" = \"\$__rel\" ] && __parent=''")
+            sb.appendLine("      mkdir -p \"\$__conflicts/\$__parent\"")
+            sb.appendLine("      mv \"\$__dst\" \"\$__conflicts/\$__rel\" 2>/dev/null || { echo \"[shelly] could not protect existing \$__rel\" >&2; continue; }")
+            sb.appendLine("    fi")
+            sb.appendLine("    mkdir -p \"\${__dst%/*}\"")
+            sb.appendLine("    if mv \"\$__src\" \"\$__dst\" 2>/dev/null; then")
+            sb.appendLine("      __restored=\$((__restored + 1))")
+            sb.appendLine("    else")
+            sb.appendLine("      echo \"[shelly] could not restore \$__rel\" >&2")
+            sb.appendLine("    fi")
+            sb.appendLine("  done < \"\$__snap/manifest.txt\"")
+            sb.appendLine("  echo \"[shelly] restored \$__restored auth path(s) from \$__snap\"")
+            sb.appendLine("  [ -d \"\$__conflicts\" ] && echo \"[shelly] pre-existing auth state moved to \$__conflicts\"")
             sb.appendLine("}")
             sb.appendLine()
 
@@ -1716,23 +1818,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __claude_bare_tui=0")
             sb.appendLine("  [ \"\$#\" -eq 0 ] && __claude_bare_tui=1")
             sb.appendLine("  mkdir -p \"\$__bun_tmp\" \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
-            // Foreground Claude must not use the extracted/bundled Node
-            // cli.js route by default. Real-device evidence shows that route
-            // is a false positive: version checks pass, but TUI / --print can
-            // hang with no repaint. The old working screenshots show native
-            // musl Bun SEA rendering correctly; the actual bug was fallback
-            // pollution after a native crash. For foreground launches, prefer
-            // native and return on failure instead of falling through into
-            // Node tiers that corrupt or hang the session.
+            // Native Bun SEA can render Claude Code and then crash with a Bun
+            // panic dump in the foreground PTY. That dump corrupts the user's
+            // visible terminal even when a later tier recovers. Keep native
+            // available for explicit diagnostics, but do not use it for normal
+            // bare TUI launches.
             sb.appendLine("  local __claude_foreground_native=0")
-            sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_CLAUDE_NATIVE_TUI:-0}\" = \"1\" ] || [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ]; then")
             sb.appendLine("    __claude_foreground_native=1")
             sb.appendLine("  fi")
-            sb.appendLine("  case \"\${1:-}\" in")
-            sb.appendLine("    --print|-p)")
-            sb.appendLine("      __claude_foreground_native=1")
-            sb.appendLine("      ;;")
-            sb.appendLine("  esac")
             sb.appendLine("  if [ \"\$__claude_foreground_native\" -eq 1 ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
             sb.appendLine("    if [ ! -s \"\$HOME/.shelly-ssl/resolv.conf\" ]; then")
             sb.appendLine("      mkdir -p \"\$HOME/.shelly-ssl\"")

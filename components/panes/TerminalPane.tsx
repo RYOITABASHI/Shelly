@@ -417,11 +417,13 @@ export default function TerminalScreen() {
   // TerminalView.focus(tag) helper which does requestFocus +
   // showSoftInput and restores typing without the stray tap.
   const refocusTick = useFocusStore((s) => s.refocusTick);
+  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   useEffect(() => {
     if (refocusTick === 0) return; // initial mount, nothing to do
+    if (paneId && focusedPaneId !== paneId) return;
     const tag = findNodeHandle(terminalViewRef.current);
     if (tag) TerminalViewModule.focus(tag);
-  }, [refocusTick]);
+  }, [refocusTick, focusedPaneId, paneId]);
 
   // bug #116: Per-pane focus follow. When the user taps another terminal
   // pane, `PaneSlot.onTouchStart` -> `handleFocusPane` updates
@@ -430,7 +432,6 @@ export default function TerminalScreen() {
   // focus so keyboard input lands here instead of the previously-focused
   // pane. The `refocusTick` effect above covers modal-dismiss recovery
   // (global bump); this effect covers inter-pane switching (per-pane edge).
-  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   useEffect(() => {
     if (!paneId) return;
     if (focusedPaneId !== paneId) return;
@@ -666,15 +667,6 @@ export default function TerminalScreen() {
   // Send raw key code to terminal
   const sendKey = useCallback((keyCode: string) => {
     if (!activeSession) return;
-    if (keyCode === '\x03') {
-      TerminalEmulator.interruptSession(activeSession.nativeSessionId).catch((err) => {
-        console.warn('[Terminal] interruptSession failed, falling back to writeToSession:', err);
-        TerminalEmulator.writeToSession(activeSession.nativeSessionId, keyCode).catch((writeErr) => {
-          console.warn('[Terminal] Ctrl+C fallback writeToSession failed:', writeErr);
-        });
-      });
-      return;
-    }
     TerminalEmulator.writeToSession(activeSession.nativeSessionId, keyCode).catch((err) => {
       console.warn('[Terminal] sendKey failed:', err);
     });

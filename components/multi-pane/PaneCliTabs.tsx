@@ -26,6 +26,7 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useFocusStore } from '@/store/focus-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -139,6 +140,15 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
     // here rather than silently becoming the global active and leaving
     // the clicked pane on its old session.
     if (leafId) setSlotSessionId(leafId, newId);
+    setActiveSession(newId);
+    if (leafId) {
+      try {
+        const { usePaneStore } = require('@/store/pane-store');
+        usePaneStore.getState().setFocusedPane(leafId);
+      } catch {}
+    }
+    setTimeout(() => useFocusStore.getState().requestTerminalRefocus(), 80);
+    setTimeout(() => useFocusStore.getState().requestTerminalRefocus(), 240);
   };
 
   return (

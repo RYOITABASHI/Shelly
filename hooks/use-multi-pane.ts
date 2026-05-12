@@ -488,6 +488,9 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         try {
           const { usePaneStore } = require('@/store/pane-store');
           usePaneStore.getState().setFocusedPane(slotId);
+          const { useFocusStore } = require('@/store/focus-store');
+          setTimeout(() => useFocusStore.getState().requestTerminalRefocus(), 80);
+          setTimeout(() => useFocusStore.getState().requestTerminalRefocus(), 240);
         } catch { /* pane-store unavailable (tests) */ }
         return null;
       };
