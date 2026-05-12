@@ -77,7 +77,7 @@ function patchGemini() {
   // subprocess audit live in BOTH chunk bundles and the top-level
   // gemini-*.js entry points.
   const files = fs.readdirSync(d).filter(f => (f.startsWith("chunk-") || f.startsWith("gemini-")) && f.endsWith(".js"));
-  let termuxPatched = 0, shellPatched = 0, commandExistsPatched = 0;
+  let termuxPatched = 0, shellPatched = 0, commandExistsPatched = 0, oauthConsentPatched = 0;
   for (const f of files) {
     const p = d + "/" + f;
     let s = fs.readFileSync(p, "utf8");
@@ -102,6 +102,14 @@ function patchGemini() {
     s = s.replace(
       /execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/g,
       'execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})');
+    // 4) Shelly selects Google OAuth before launching `gemini auth login`.
+    //    Current Gemini still asks for a pre-browser OAuth consent in the TUI.
+    //    On Android that prompt can be hidden or stuck behind mobile input, and
+    //    the old background Enter helper leaked `[1] PID` job-control lines.
+    //    Keep OAuth enabled, but skip only this local consent gate.
+    s = s.replace(
+      /const userConsent = await getConsentForOauth\(""\);\n\s*if \(!userConsent\) \{/g,
+      'const userConsent = true;\n      if (!userConsent) {');
     if (s !== before) {
       // Reconcile counters after all three passes.
       if (s.length !== before.length || s.includes('/* shelly-gemini-shelltrue */') === false) {
@@ -110,10 +118,11 @@ function patchGemini() {
       }
       if (before.match(/shell:\s*true[,}]/)) shellPatched++;
       if (before.match(/execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/)) commandExistsPatched++;
+      if (before.match(/const userConsent = await getConsentForOauth\(""\);\n\s*if \(!userConsent\) \{/)) oauthConsentPatched++;
       fs.writeFileSync(p, s);
     }
   }
-  console.log("[patch] gemini termux=" + termuxPatched + " shellTrue=" + shellPatched + " commandExists=" + commandExistsPatched + " /" + files.length + " files (at " + d + ")");
+  console.log("[patch] gemini termux=" + termuxPatched + " shellTrue=" + shellPatched + " commandExists=" + commandExistsPatched + " oauthConsent=" + oauthConsentPatched + " /" + files.length + " files (at " + d + ")");
 }
 
 function patchClaude() {
@@ -808,7 +817,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 113: Same as 112, but keep the helper off bash job control so
     //      `gemini auth login` does not print a noisy `[1] PID` notification
     //      before the auth UI is fully visible.
-    private const val BASHRC_VERSION = 113
+    // 114: Stop using a background newline helper for Gemini OAuth. Bash
+    //      prints `[1] PID` for interactive background jobs on Android, so
+    //      preselect Google auth in ~/.gemini/settings.json, patch Gemini's
+    //      local OAuth consent gate, and keep Gemini on the foreground PTY
+    //      from the start.
+    private const val BASHRC_VERSION = 114
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2160,14 +2174,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  __shelly_paste_tui_begin")
             sb.appendLine("  local __gemini_rc=0")
             sb.appendLine("  if [ \"\$__gemini_auth_login\" -eq 1 ]; then")
-            sb.appendLine("    local __gemini_job_control=\"\$(set -o | awk '\$1 == \"monitor\" { print \$2 }' 2>/dev/null || echo on)\"")
-            sb.appendLine("    [ \"\$__gemini_job_control\" = on ] && set +m")
-            sb.appendLine("    ( sleep 0.8; printf '\\n' > /dev/tty 2>/dev/null || true; sleep 1.2; printf '\\n' > /dev/tty 2>/dev/null || true; sleep 2; printf '\\n' > /dev/tty 2>/dev/null || true ) >/dev/null 2>&1 &")
-            sb.appendLine("    local __gemini_auth_confirm_pid=\$!")
-            sb.appendLine("    [ \"\$__gemini_job_control\" = on ] && set -m")
+            sb.appendLine("    mkdir -p \"\$HOME/.gemini\" 2>/dev/null || true")
+            sb.appendLine("    _run $libDir/node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.gemini/settings.json\";let j={};try{j=JSON.parse(fs.readFileSync(p,\"utf8\"))}catch{};j.security={...(j.security||{}),auth:{...((j.security||{}).auth||{}),selectedType:\"oauth-personal\"}};fs.writeFileSync(p,JSON.stringify(j,null,2)+\"\\n\")' 2>/dev/null || true")
             sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
             sb.appendLine("    __gemini_rc=\$?")
-            sb.appendLine("    wait \"\$__gemini_auth_confirm_pid\" 2>/dev/null || true")
             sb.appendLine("  else")
             sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
             sb.appendLine("    __gemini_rc=\$?")
