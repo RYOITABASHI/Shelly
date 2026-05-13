@@ -275,7 +275,7 @@ function collect() {
     gemini: {
       bundle: statInfo(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js')),
       apk_bundle: statInfo(path.join(LIB, 'node_modules/@google/gemini-cli/bundle/gemini.js')),
-      version: exists(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
+      version: process.env.SHELLY_PREFER_RUNTIME_GEMINI === '1' && exists(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
         ? geminiVersion(path.join(HOME, '.shelly-cli/node_modules/@google/gemini-cli/bundle/gemini.js'))
         : geminiVersion(path.join(LIB, 'node_modules/@google/gemini-cli/bundle/gemini.js')),
     },

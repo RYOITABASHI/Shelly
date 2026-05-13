@@ -879,6 +879,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      even though android/app keeps versionCode fixed at 1. This makes
     //      refreshed cli-tools.tar.gz reach existing installs.
     //
+    // 127: Apply Shelly's stable Gemini model default to bare TUI launches as
+    //      well. v126 updated APK Gemini to 0.42.0, but bare `gemini` could
+    //      stall before drawing while prompt-mode calls already received the
+    //      safer `--model flash` default.
+    //
     // 121: Make bare-Claude native foreground honour runtime crash cooldown
     //      before tier selection. v120 proved trust seed works: Claude can
     //      answer after the wrapper's cache-clear retry, but runtime current
@@ -894,7 +899,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exact state in ~/.claude.json under projects[path], and trusts
     //      child paths by walking parents. Seed only HOME, preserve
     //      oauthAccount and credentials, and keep an opt-out for diagnostics.
-    private const val BASHRC_VERSION = 126
+    private const val BASHRC_VERSION = 127
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2401,7 +2406,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \"\${__gemini_args[0]:-}\" = 'auth' ] && [ \"\${__gemini_args[1]:-}\" = 'login' ]; then")
             sb.appendLine("    __gemini_auth_login=1")
             sb.appendLine("  fi")
-            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ] && [ \"\$#\" -gt 0 ]; then")
+            sb.appendLine("  if [ \"\$__has_model\" -eq 0 ] && [ \"\$__skip_default_model\" -eq 0 ] && [ -z \"\${GEMINI_MODEL:-}\" ]; then")
             sb.appendLine("    __gemini_args=(--model flash \"\${__gemini_args[@]}\")")
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
