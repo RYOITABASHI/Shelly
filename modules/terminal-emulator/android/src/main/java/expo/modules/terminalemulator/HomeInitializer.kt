@@ -875,6 +875,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      tarball. No shell behavior changes; the bump gives devices a clear
     //      post-install marker for the refreshed APK payload.
     //
+    // 126: Force APK payload re-extraction when bundled assets/libs change
+    //      even though android/app keeps versionCode fixed at 1. This makes
+    //      refreshed cli-tools.tar.gz reach existing installs.
+    //
     // 121: Make bare-Claude native foreground honour runtime crash cooldown
     //      before tier selection. v120 proved trust seed works: Claude can
     //      answer after the wrapper's cache-clear retry, but runtime current
@@ -890,7 +894,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exact state in ~/.claude.json under projects[path], and trusts
     //      child paths by walking parents. Seed only HOME, preserve
     //      oauthAccount and credentials, and keep an opt-out for diagnostics.
-    private const val BASHRC_VERSION = 125
+    private const val BASHRC_VERSION = 126
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }

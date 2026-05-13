@@ -287,7 +287,31 @@ object LibExtractor {
 
     private fun appVersionMarker(context: Context): String {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-        return packageInfo.longVersionCode.toString()
+        val apkPath = context.applicationInfo.sourceDir
+        return try {
+            ZipFile(apkPath).use { zip ->
+                buildString {
+                    append("vc=").append(packageInfo.longVersionCode)
+                    append("|cli=").append(zipEntryFingerprint(zip, "assets/cli-tools.tar", "assets/cli-tools.tar.gz"))
+                    append("|claudeExtracted=").append(zipEntryFingerprint(zip, "assets/claude-extracted.tar", "assets/claude-extracted.tar.gz"))
+                    for (entryName in LIBS.keys.sorted()) {
+                        append("|").append(entryName).append("=")
+                        append(zipEntryFingerprint(zip, entryName))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to compute APK extraction marker from assets/libs: ${e.message}")
+            packageInfo.longVersionCode.toString()
+        }
+    }
+
+    private fun zipEntryFingerprint(zip: ZipFile, vararg candidates: String): String {
+        for (name in candidates) {
+            val entry = zip.getEntry(name) ?: continue
+            return "${entry.name}:${entry.crc}:${entry.size}:${entry.compressedSize}"
+        }
+        return "missing:${candidates.joinToString(",")}"
     }
 
     /** Try .tar first (aapt strips .gz), fall back to .tar.gz */
