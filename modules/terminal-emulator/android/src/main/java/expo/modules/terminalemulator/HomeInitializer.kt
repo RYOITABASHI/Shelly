@@ -936,7 +936,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      user config on ordinary `gemini` commands. `gemini auth login`
     //      still seeds OAuth selection because Gemini requires selectedType
     //      before it starts browser auth.
-    private const val BASHRC_VERSION = 132
+    // 133: exec-wrapper follow-up for Gemini Shell tool. `execve("bash")`
+    //      rewrites to $SHELL, but the wrapper was then raw-execing that
+    //      app-private ELF path instead of applying the linker64 route. Node
+    //      child_process.spawn("bash") surfaced this as EACCES, and Gemini's
+    //      Shell tool reported signal 11 for simple commands.
+    private const val BASHRC_VERSION = 133
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }

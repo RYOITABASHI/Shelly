@@ -226,12 +226,11 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     char rewrite_buf[PATH_BUF_SIZE];
     const char *rewritten = rewrite_path(pathname, envp, rewrite_buf, sizeof(rewrite_buf));
     if (!rewritten) return -1;
-    if (rewritten != pathname) return raw_execve_call(rewritten, argv, envp);
-    if (!should_linker_exec(pathname)) return raw_execve_call(pathname, argv, envp);
+    if (!should_linker_exec(rewritten)) return raw_execve_call(rewritten, argv, envp);
 
     char *new_argv[MAX_ARGC + 2];
-    if (build_linker_argv(pathname, argv, new_argv) != 0) {
-        return raw_execve_call(pathname, argv, envp);
+    if (build_linker_argv(rewritten, argv, new_argv) != 0) {
+        return raw_execve_call(rewritten, argv, envp);
     }
     return raw_execve_call(LINKER64, new_argv, envp);
 }
