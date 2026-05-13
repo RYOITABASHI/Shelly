@@ -879,6 +879,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      even though android/app keeps versionCode fixed at 1. This makes
     //      refreshed cli-tools.tar.gz reach existing installs.
     //
+    // 128: Seed conservative Gemini UI defaults for Shelly before every launch.
+    //      Gemini CLI 0.42.0 can reach the APK bundle and OAuth credentials but
+    //      then sit on a blank PTY before drawing the TUI. Keep user-chosen
+    //      settings intact, but default the render process/background probing
+    //      path off in Shelly's app-private terminal.
+    //
     // 127: Apply Shelly's stable Gemini model default to bare TUI launches as
     //      well. v126 updated APK Gemini to 0.42.0, but bare `gemini` could
     //      stall before drawing while prompt-mode calls already received the
@@ -899,7 +905,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exact state in ~/.claude.json under projects[path], and trusts
     //      child paths by walking parents. Seed only HOME, preserve
     //      oauthAccount and credentials, and keep an opt-out for diagnostics.
-    private const val BASHRC_VERSION = 127
+    private const val BASHRC_VERSION = 128
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2410,6 +2416,34 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __gemini_args=(--model flash \"\${__gemini_args[@]}\")")
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
+            sb.appendLine("  mkdir -p \"\$HOME/.gemini\" 2>/dev/null || true")
+            sb.appendLine("  _run $libDir/node <<'__SHELLY_GEMINI_SETTINGS__' 2>/dev/null || true")
+            sb.appendLine("const fs = require('fs');")
+            sb.appendLine("const p = process.env.HOME + '/.gemini/settings.json';")
+            sb.appendLine("let j = {};")
+            sb.appendLine("try { j = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}")
+            sb.appendLine("const setDefault = (path, value) => {")
+            sb.appendLine("  let o = j;")
+            sb.appendLine("  for (const k of path.slice(0, -1)) {")
+            sb.appendLine("    if (!o[k] || typeof o[k] !== 'object' || Array.isArray(o[k])) o[k] = {};")
+            sb.appendLine("    o = o[k];")
+            sb.appendLine("  }")
+            sb.appendLine("  const last = path[path.length - 1];")
+            sb.appendLine("  if (o[last] === undefined) o[last] = value;")
+            sb.appendLine("};")
+            sb.appendLine("setDefault(['security', 'auth', 'selectedType'], 'oauth-personal');")
+            sb.appendLine("setDefault(['ui', 'autoThemeSwitching'], false);")
+            sb.appendLine("setDefault(['ui', 'terminalBackgroundPollingInterval'], 999999);")
+            sb.appendLine("setDefault(['ui', 'hideWindowTitle'], true);")
+            sb.appendLine("setDefault(['ui', 'dynamicWindowTitle'], false);")
+            sb.appendLine("setDefault(['ui', 'useAlternateBuffer'], false);")
+            sb.appendLine("setDefault(['ui', 'renderProcess'], false);")
+            sb.appendLine("setDefault(['ui', 'terminalBuffer'], false);")
+            sb.appendLine("setDefault(['ui', 'useBackgroundColor'], false);")
+            sb.appendLine("setDefault(['ui', 'incrementalRendering'], false);")
+            sb.appendLine("setDefault(['ui', 'loadingPhrases'], 'off');")
+            sb.appendLine("fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\\n', { mode: 0o600 });")
+            sb.appendLine("__SHELLY_GEMINI_SETTINGS__")
             sb.appendLine("  __shelly_paste_tui_begin")
             sb.appendLine("  local __gemini_rc=0")
             sb.appendLine("  if [ \"\$__gemini_auth_login\" -eq 1 ]; then")
