@@ -870,6 +870,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      and pin the callback port by default while still allowing an
     //      explicit OAUTH_CALLBACK_PORT override for diagnostics.
     //
+    // 125: Track the CI payload-cache fix that makes APK-bundled Gemini/Codex
+    //      follow npm @latest versions instead of reusing a stale cli-tools
+    //      tarball. No shell behavior changes; the bump gives devices a clear
+    //      post-install marker for the refreshed APK payload.
+    //
     // 121: Make bare-Claude native foreground honour runtime crash cooldown
     //      before tier selection. v120 proved trust seed works: Claude can
     //      answer after the wrapper's cache-clear retry, but runtime current
@@ -885,7 +890,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exact state in ~/.claude.json under projects[path], and trusts
     //      child paths by walking parents. Seed only HOME, preserve
     //      oauthAccount and credentials, and keep an opt-out for diagnostics.
-    private const val BASHRC_VERSION = 124
+    private const val BASHRC_VERSION = 125
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }

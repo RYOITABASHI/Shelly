@@ -40,6 +40,14 @@ jobs:
         id: bundle-cache-key
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve CLI versions for payload cache
+        run: |
+          mkdir -p .ci-versions
+          npm view @google/gemini-cli version > .ci-versions/gemini-cli.txt
+          npm view @openai/codex version > .ci-versions/codex.txt
+          printf 'gemini-cli: '; cat .ci-versions/gemini-cli.txt
+          printf 'codex: '; cat .ci-versions/codex.txt
+
       - name: Restore generated Android payload cache
         id: android-payload-cache
         uses: actions/cache@v4
@@ -72,7 +80,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
-          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/gemini-cli.txt', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
             android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
 
