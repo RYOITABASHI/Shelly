@@ -77,7 +77,7 @@ function patchGemini() {
   // subprocess audit live in BOTH chunk bundles and the top-level
   // gemini-*.js entry points.
   const files = fs.readdirSync(d).filter(f => (f.startsWith("chunk-") || f.startsWith("gemini-")) && f.endsWith(".js"));
-  let termuxPatched = 0, shellPatched = 0, commandExistsPatched = 0, oauthConsentPatched = 0;
+  let termuxPatched = 0, shellPatched = 0, commandExistsPatched = 0, oauthConsentPatched = 0, capabilityPatched = 0, capabilityPresent = 0;
   for (const f of files) {
     const p = d + "/" + f;
     let s = fs.readFileSync(p, "utf8");
@@ -110,6 +110,24 @@ function patchGemini() {
     s = s.replace(
       /const userConsent = await getConsentForOauth\(""\);\n\s*if \(!userConsent\) \{/g,
       'const userConsent = true;\n      if (!userConsent) {');
+    // 5) Gemini 0.42's interactive startup always probes terminal
+    //    capabilities before rendering. On Shelly that probe can hang the
+    //    TUI path, so short-circuit it behind a Shelly-only env flag instead
+    //    of rewriting user settings on every launch.
+    const capabilityRe = /process\.on\("SIGINT", cleanupTerminalOnExit\);\n    return new Promise\(\(resolve\d+\) => \{/g;
+    const capabilityMatches = s.match(capabilityRe);
+    if (s.includes("SHELLY_SKIP_GEMINI_CAPABILITY_DETECT")) {
+      capabilityPresent++;
+    } else if (capabilityMatches) {
+      s = s.replace(
+        capabilityRe,
+        (m) => m.replace(
+          /return new Promise\(\(resolve\d+\) => \{/,
+          'if (process.env.SHELLY_SKIP_GEMINI_CAPABILITY_DETECT === "1") {\n      this.detectionComplete = true;\n      return;\n    }\n    ${'$'}&'
+        ));
+      capabilityPatched += capabilityMatches.length;
+      capabilityPresent++;
+    }
     if (s !== before) {
       // Reconcile counters after all three passes.
       if (s.length !== before.length || s.includes('/* shelly-gemini-shelltrue */') === false) {
@@ -122,7 +140,10 @@ function patchGemini() {
       fs.writeFileSync(p, s);
     }
   }
-  console.log("[patch] gemini termux=" + termuxPatched + " shellTrue=" + shellPatched + " commandExists=" + commandExistsPatched + " oauthConsent=" + oauthConsentPatched + " /" + files.length + " files (at " + d + ")");
+  if (capabilityPresent === 0) {
+    throw new Error("[patch] gemini drift: terminal capability detector not found or patched at " + d);
+  }
+  console.log("[patch] gemini termux=" + termuxPatched + " shellTrue=" + shellPatched + " commandExists=" + commandExistsPatched + " oauthConsent=" + oauthConsentPatched + " capability=" + capabilityPatched + " /" + files.length + " files (at " + d + ")");
 }
 
 function patchClaude() {
@@ -909,7 +930,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exact state in ~/.claude.json under projects[path], and trusts
     //      child paths by walking parents. Seed only HOME, preserve
     //      oauthAccount and credentials, and keep an opt-out for diagnostics.
-    private const val BASHRC_VERSION = 129
+    // 130: skip Gemini terminal capability detection in Shelly via a
+    //      runtime env gate instead of mutating Gemini settings on every
+    //      launch. This avoids the blank-TUI probe path without rewriting
+    //      user config on ordinary `gemini` commands. `gemini auth login`
+    //      still seeds OAuth selection because Gemini requires selectedType
+    //      before it starts browser auth.
+    private const val BASHRC_VERSION = 130
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2420,46 +2447,30 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __gemini_args=(--model flash \"\${__gemini_args[@]}\")")
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\${TMPDIR:-\$HOME/.tmp}\" 2>/dev/null")
-            sb.appendLine("  mkdir -p \"\$HOME/.gemini\" 2>/dev/null || true")
-            sb.appendLine("  SHELLY_GEMINI_AUTH_LOGIN=\"\$__gemini_auth_login\" _run $libDir/node <<'__SHELLY_GEMINI_SETTINGS__' 2>/dev/null || true")
+            sb.appendLine("  if [ \"\$__gemini_auth_login\" -eq 1 ]; then")
+            sb.appendLine("    mkdir -p \"\$HOME/.gemini\" 2>/dev/null || true")
+            sb.appendLine("    _run $libDir/node <<'__SHELLY_GEMINI_AUTH_SETTINGS__' 2>/dev/null || true")
             sb.appendLine("const fs = require('fs');")
             sb.appendLine("const p = process.env.HOME + '/.gemini/settings.json';")
             sb.appendLine("let j = {};")
             sb.appendLine("if (fs.existsSync(p)) {")
             sb.appendLine("  try { j = JSON.parse(fs.readFileSync(p, 'utf8')); }")
-            sb.appendLine("  catch { process.exit(0); }")
+            sb.appendLine("  catch { try { fs.renameSync(p, p + '.shelly-invalid-' + Date.now()); } catch {} }")
             sb.appendLine("}")
-            sb.appendLine("const setDefault = (path, value) => {")
-            sb.appendLine("  let o = j;")
-            sb.appendLine("  for (const k of path.slice(0, -1)) {")
-            sb.appendLine("    if (!o[k] || typeof o[k] !== 'object' || Array.isArray(o[k])) o[k] = {};")
-            sb.appendLine("    o = o[k];")
-            sb.appendLine("  }")
-            sb.appendLine("  const last = path[path.length - 1];")
-            sb.appendLine("  if (o[last] === undefined) o[last] = value;")
-            sb.appendLine("};")
-            sb.appendLine("if (process.env.SHELLY_GEMINI_AUTH_LOGIN === '1') {")
-            sb.appendLine("  setDefault(['security', 'auth', 'selectedType'], 'oauth-personal');")
-            sb.appendLine("}")
-            sb.appendLine("setDefault(['ui', 'autoThemeSwitching'], false);")
-            sb.appendLine("setDefault(['ui', 'terminalBackgroundPollingInterval'], 999999);")
-            sb.appendLine("setDefault(['ui', 'hideWindowTitle'], true);")
-            sb.appendLine("setDefault(['ui', 'dynamicWindowTitle'], false);")
-            sb.appendLine("setDefault(['ui', 'useAlternateBuffer'], false);")
-            sb.appendLine("setDefault(['ui', 'renderProcess'], false);")
-            sb.appendLine("setDefault(['ui', 'terminalBuffer'], false);")
-            sb.appendLine("setDefault(['ui', 'useBackgroundColor'], false);")
-            sb.appendLine("setDefault(['ui', 'incrementalRendering'], false);")
-            sb.appendLine("setDefault(['ui', 'loadingPhrases'], 'off');")
-            sb.appendLine("fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\\n', { mode: 0o600 });")
-            sb.appendLine("__SHELLY_GEMINI_SETTINGS__")
+            sb.appendLine("j.security = j.security && typeof j.security === 'object' && !Array.isArray(j.security) ? j.security : {};")
+            sb.appendLine("j.security.auth = j.security.auth && typeof j.security.auth === 'object' && !Array.isArray(j.security.auth) ? j.security.auth : {};")
+            sb.appendLine("j.security.auth.selectedType = 'oauth-personal';")
+            sb.appendLine("fs.writeFileSync(p + '.tmp', JSON.stringify(j, null, 2) + '\\n', { mode: 0o600 });")
+            sb.appendLine("fs.renameSync(p + '.tmp', p);")
+            sb.appendLine("__SHELLY_GEMINI_AUTH_SETTINGS__")
+            sb.appendLine("  fi")
             sb.appendLine("  __shelly_paste_tui_begin")
             sb.appendLine("  local __gemini_rc=0")
             sb.appendLine("  if [ \"\$__gemini_auth_login\" -eq 1 ]; then")
-            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" BROWSER=\"\$HOME/bin/xdg-open\" GEMINI_DEFAULT_AUTH_TYPE=oauth-personal GEMINI_CLI_TRUST_WORKSPACE=true OAUTH_CALLBACK_PORT=\"\${OAUTH_CALLBACK_PORT:-43217}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_node_compat_preload\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
+            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" BROWSER=\"\$HOME/bin/xdg-open\" SHELLY_SKIP_GEMINI_CAPABILITY_DETECT=1 GEMINI_DEFAULT_AUTH_TYPE=oauth-personal GEMINI_CLI_TRUST_WORKSPACE=true OAUTH_CALLBACK_PORT=\"\${OAUTH_CALLBACK_PORT:-43217}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_node_compat_preload\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
             sb.appendLine("    __gemini_rc=\$?")
             sb.appendLine("  else")
-            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" BROWSER=\"\$HOME/bin/xdg-open\" GEMINI_CLI_TRUST_WORKSPACE=true OAUTH_CALLBACK_PORT=\"\${OAUTH_CALLBACK_PORT:-43217}\" GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_node_compat_preload\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
+            sb.appendLine("    TERMUX_VERSION=\"\${TERMUX_VERSION:-shelly}\" DISPLAY=\"\${DISPLAY:-shelly}\" BROWSER=\"\$HOME/bin/xdg-open\" SHELLY_SKIP_GEMINI_CAPABILITY_DETECT=1 GEMINI_CLI_TRUST_WORKSPACE=true GEMINI_CLI_NO_RELAUNCH=true NO_UPDATE_NOTIFIER=1 DISABLE_AUTOUPDATER=1 DISABLE_UPDATE_CHECK=1 GEMINI_CLI_DISABLE_AUTO_UPDATE=1 SHELLY_AUTO_UPDATE_CLIS=0 USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require=\$__shelly_node_compat_preload\" _run $libDir/node --max-old-space-size=5557 \"\$__gemini_entry\" \"\${__gemini_args[@]}\"")
             sb.appendLine("    __gemini_rc=\$?")
             sb.appendLine("  fi")
             sb.appendLine("  __shelly_paste_tui_end")
