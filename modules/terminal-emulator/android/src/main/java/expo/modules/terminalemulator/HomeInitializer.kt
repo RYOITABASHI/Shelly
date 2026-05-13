@@ -849,6 +849,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      Claude Code successfully. Make bare `claude` prefer that native
     //      foreground route by default, keeping Node tiers for non-TUI
     //      commands and as an opt-out path via SHELLY_DISABLE_NATIVE_CLAUDE=1.
+    // 121: Make bare-Claude native foreground honour runtime crash cooldown
+    //      before tier selection. v120 proved trust seed works: Claude can
+    //      answer after the wrapper's cache-clear retry, but runtime current
+    //      2.1.138 can print a Bun 0x10 crash banner before recovering. Keep
+    //      the one-shot same-binary retry for cache-recoverable crashes, but
+    //      record and fall through to APK musl after two consecutive signal
+    //      exits from runtime current.
+    //
     // 120: Pre-seed Claude Code workspace trust for Shelly's app-private HOME
     //      before launching Claude. v119's native route reaches `/login`, but
     //      Claude Code's post-login trust prompt trips a Bun SEA segfault at
@@ -856,7 +864,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exact state in ~/.claude.json under projects[path], and trusts
     //      child paths by walking parents. Seed only HOME, preserve
     //      oauthAccount and credentials, and keep an opt-out for diagnostics.
-    private const val BASHRC_VERSION = 120
+    private const val BASHRC_VERSION = 121
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1974,6 +1982,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  if [ \"\$__claude_bare_tui\" -eq 1 ] || [ \"\${SHELLY_CLAUDE_SEED_HOME_TRUST_FOR_ARGS:-0}\" = \"1\" ]; then")
             sb.appendLine("    __shelly_seed_claude_home_trust")
             sb.appendLine("  fi")
+            sb.appendLine("  __shelly_consume_runtime_failures")
             // v119: real-device triage showed the Node-based tiers hang before
             // rendering, while the musl Bun SEA tier reaches the Claude TUI.
             // Prefer native for bare TUI launches, but keep an explicit opt-out
@@ -1988,22 +1997,55 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > \"\$HOME/.shelly-ssl/resolv.conf\"")
             sb.appendLine("    fi")
             sb.appendLine("    local __foreground_claude_bin=\"\"")
-            sb.appendLine("    if [ -x \"\$__runtime_claude\" ]; then")
+            sb.appendLine("    local __foreground_claude_tier=\"\"")
+            sb.appendLine("    if [ -x \"\$__runtime_claude\" ] && { [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ] || ! __shelly_claude_native_in_cooldown; }; then")
             sb.appendLine("      __foreground_claude_bin=\"\$__runtime_claude\"")
-            sb.appendLine("    elif [ -x \"\$__musl_claude\" ]; then")
+            sb.appendLine("      __foreground_claude_tier=\"runtime\"")
+            sb.appendLine("    elif [ -x \"\$__runtime_claude\" ] && [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ]; then")
+            sb.appendLine("      echo '[shelly] claude: runtime native cooldown active, using APK musl foreground tier' >&2")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ -z \"\$__foreground_claude_bin\" ] && [ -x \"\$__musl_claude\" ]; then")
             sb.appendLine("      __foreground_claude_bin=\"\$__musl_claude\"")
+            sb.appendLine("      __foreground_claude_tier=\"apk\"")
             sb.appendLine("    fi")
             sb.appendLine("    if [ -n \"\$__foreground_claude_bin\" ]; then")
             sb.appendLine("      __shelly_paste_tui_begin")
             sb.appendLine("      __shelly_run_claude_musl_clean \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_exec_wrapper\" \"\$__foreground_claude_bin\" \"\$@\"")
             sb.appendLine("      local __foreground_claude_rc=\$?")
+            sb.appendLine("      local __foreground_claude_retried=0")
             sb.appendLine("      case \"\$__foreground_claude_rc\" in")
             sb.appendLine("        133|134|135|139|159)")
+            sb.appendLine("          __foreground_claude_retried=1")
             sb.appendLine("          rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
             sb.appendLine("          __shelly_run_claude_musl_clean \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_exec_wrapper\" \"\$__foreground_claude_bin\" \"\$@\"")
             sb.appendLine("          __foreground_claude_rc=\$?")
             sb.appendLine("          ;;")
             sb.appendLine("      esac")
+            sb.appendLine("      if [ \"\$__foreground_claude_retried\" -eq 1 ] && [ \"\$__foreground_claude_tier\" = \"runtime\" ]; then")
+            sb.appendLine("        case \"\$__foreground_claude_rc\" in")
+            sb.appendLine("          133|134|135|139|159)")
+            sb.appendLine("            if [ -f \"\$HOME/.shelly-runtime/claude/version\" ]; then")
+            sb.appendLine("              local __native_ver=\$(cat \"\$HOME/.shelly-runtime/claude/version\" 2>/dev/null | tr -d '\\n')")
+            sb.appendLine("              if [ -n \"\$__native_ver\" ]; then")
+            sb.appendLine("                mkdir -p \"\$HOME/.shelly-runtime\" 2>/dev/null")
+            sb.appendLine("                printf 'claude=%s %s %s native\\n' \"\$__native_ver\" \"\$(date -u +%s)\" \"\$__foreground_claude_rc\" >> \"\$HOME/.shelly-runtime/.runtime-failures\" 2>/dev/null")
+            sb.appendLine("              fi")
+            sb.appendLine("            fi")
+            sb.appendLine("            if [ -x \"\$__musl_claude\" ]; then")
+            sb.appendLine("              [ -n \"\$SHELLY_SILENT_CLI_TIER\" ] || echo \"[shelly] claude: runtime native failed twice (exit \$__foreground_claude_rc), falling back to APK musl\" >&2")
+            sb.appendLine("              __shelly_run_claude_musl_clean \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_exec_wrapper\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("              __foreground_claude_rc=\$?")
+            sb.appendLine("              case \"\$__foreground_claude_rc\" in")
+            sb.appendLine("                133|134|135|139|159)")
+            sb.appendLine("                  rm -f \"\$__bun_tmp\"/.*.node 2>/dev/null")
+            sb.appendLine("                  __shelly_run_claude_musl_clean \"\$__trampoline\" \"\$__musl_ld\" \"\$__musl_exec_wrapper\" \"\$__musl_claude\" \"\$@\"")
+            sb.appendLine("                  __foreground_claude_rc=\$?")
+            sb.appendLine("                  ;;")
+            sb.appendLine("              esac")
+            sb.appendLine("            fi")
+            sb.appendLine("            ;;")
+            sb.appendLine("        esac")
+            sb.appendLine("      fi")
             sb.appendLine("      if [ \"\$__foreground_claude_rc\" -eq 139 ] && [ \"\$__claude_bare_tui\" -eq 1 ] && [ ! -f \"\$HOME/.claude/.credentials.json\" ]; then")
             sb.appendLine("        echo '[shelly] claude: native exit 139 during /login. Trust seed may not have applied. Run shelly-doctor to inspect ~/.claude.json state.' >&2")
             sb.appendLine("      fi")
@@ -2014,11 +2056,6 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      return \"\$__foreground_claude_rc\"")
             sb.appendLine("    fi")
             sb.appendLine("  fi")
-            // PR #48: Drain runtime-failures into failed-versions BEFORE
-            // deciding the tier. Without this, a freshly-crashed native
-            // version keeps getting re-tried until the next background
-            // updater run wakes up and consumes the queue.
-            sb.appendLine("  __shelly_consume_runtime_failures")
             sb.appendLine("  if [ -f \"\$__runtime_extracted_cli_js\" ]; then")
             sb.appendLine("    __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
             sb.appendLine("  elif [ -f \"\$__apk_extracted_cli_js\" ]; then")
