@@ -18,6 +18,7 @@
   <img alt="Built with" src="https://img.shields.io/badge/built%20with-Claude%20Code-D4A574?style=flat-square">
   <img alt="Expo" src="https://img.shields.io/badge/Expo%2054-000020?style=flat-square&logo=expo&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white">
+  <a href="https://buymeacoffee.com/ryo1221"><img alt="Buy Me a Coffee" src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black"></a>
 </p>
 
 <p align="center">
@@ -31,7 +32,8 @@
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
   <a href="#architecture"><b>Architecture</b></a> &nbsp;&middot;&nbsp;
   <a href="#status"><b>Status</b></a> &nbsp;&middot;&nbsp;
-  <a href="#contributing"><b>Contributing</b></a>
+  <a href="#contributing"><b>Contributing</b></a> &nbsp;&middot;&nbsp;
+  <a href="#support"><b>Support</b></a>
 </p>
 
 
@@ -618,6 +620,25 @@ I still don't hand-write code. I describe what I need, the AI builds it, and I d
 The keyboard in the screenshots is **Nacre** — a split-layout Android IME I built (also through AI) to solve the input problem on mobile. Shelly handles the interface. Nacre handles the input. Together, they make phone-only development actually possible.
 
 **Both were developed entirely on a Samsung Galaxy Z Fold6, without ever touching a desktop computer.**
+
+---
+
+## Support
+
+Shelly is a solo, self-funded project. If it saves you a Termux setup or makes phone development viable for you, a coffee goes a long way.
+
+<p align="center">
+  <a href="https://buymeacoffee.com/ryo1221"><img alt="Buy Me a Coffee" src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
+</p>
+
+You can also support the project by:
+
+- ⭐ Starring this repo
+- 🐛 [Reporting bugs](https://github.com/RYOITABASHI/Shelly/issues)
+- 🔧 Sending a PR — see [Contributing](#contributing)
+- 💬 Sharing what you built with Shelly
+
+GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo.
 
 ---
 
