@@ -971,7 +971,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      are missing; do not promote or run a half-patched runtime tree.
     // 137: Keep Gemini off node-pty, add stronger Gemini patch diagnostics,
     //      and force the unsafe bionic posix_spawn shim to fork+exec fallback.
-    private const val BASHRC_VERSION = 137
+    // 138: Install a PATH-level Codex wrapper in addition to the bash
+    //      function. Restored/non-standard sessions can bypass bash
+    //      functions and hit stock codex_tui directly, which shows Codex's
+    //      built-in login selector instead of Shelly's browser-pane
+    //      device-code flow. Also validate auth.json shape, not just file
+    //      existence, before trusting it.
+    private const val BASHRC_VERSION = 138
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1222,6 +1228,68 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("NPM_SHIM_EOF")
             sb.appendLine("  chmod +x \"\$HOME/bin/npm\" 2>/dev/null")
             sb.appendLine("fi")
+            // v138: PATH-level Codex wrapper. The bash `codex()` function
+            // below is preferred in normal interactive shells, but restored
+            // sessions and some direct command launches can bypass functions
+            // and resolve the native codex_tui binary instead. Keep a real
+            // command in ~/bin (first on PATH) so bare `codex` still uses
+            // Shelly-managed device-code login before starting the TUI.
+            sb.appendLine("cat > \"\$HOME/bin/codex\" <<'SHELLY_CODEX_SHIM_EOF'")
+            sb.appendLine("if [ -z \"\${SHELLY_LIB_DIR:-}\" ]; then")
+            sb.appendLine("  SHELLY_LIB_DIR=\"$libDir\"")
+            sb.appendLine("fi")
+            sb.appendLine("__codex_home=\"\${CODEX_HOME:-\$HOME/.codex}\"")
+            sb.appendLine("__codex_auth=\"\$__codex_home/auth.json\"")
+            sb.appendLine("__codex_auth_ok=0")
+            sb.appendLine("if [ -s \"\$__codex_auth\" ]; then")
+            sb.appendLine("  /system/bin/linker64 \"\$SHELLY_LIB_DIR/node\" -e 'const fs=require(\"fs\");try{const a=JSON.parse(fs.readFileSync(process.argv[1],\"utf8\"));process.exit(a&&a.auth_mode===\"chatgpt\"&&a.tokens&&a.tokens.refresh_token?0:1)}catch(_){process.exit(1)}' \"\$__codex_auth\" >/dev/null 2>&1 && __codex_auth_ok=1")
+            sb.appendLine("fi")
+            sb.appendLine("if [ \"\$#\" -eq 0 ] && [ \"\$__codex_auth_ok\" != \"1\" ]; then")
+            sb.appendLine("  echo '[shelly] Codex sign-in required; opening Shelly device-code login.'")
+            sb.appendLine("  /system/bin/linker64 \"\$SHELLY_LIB_DIR/node\" \"\$HOME/.shelly-codex-auth.js\" --open || exit \$?")
+            sb.appendLine("  __codex_auth_ok=0")
+            sb.appendLine("  if [ -s \"\$__codex_auth\" ]; then")
+            sb.appendLine("    /system/bin/linker64 \"\$SHELLY_LIB_DIR/node\" -e 'const fs=require(\"fs\");try{const a=JSON.parse(fs.readFileSync(process.argv[1],\"utf8\"));process.exit(a&&a.auth_mode===\"chatgpt\"&&a.tokens&&a.tokens.refresh_token?0:1)}catch(_){process.exit(1)}' \"\$__codex_auth\" >/dev/null 2>&1 && __codex_auth_ok=1")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ \"\$__codex_auth_ok\" != \"1\" ]; then")
+            sb.appendLine("    echo \"codex: login did not create \$__codex_auth\" >&2")
+            sb.appendLine("    exit 1")
+            sb.appendLine("  fi")
+            sb.appendLine("  echo '[shelly] Codex login OK; starting Codex.'")
+            sb.appendLine("fi")
+            sb.appendLine("__runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("__runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
+            sb.appendLine("__tui=\"\$SHELLY_LIB_DIR/codex_tui\"")
+            sb.appendLine("__exec=\"\$SHELLY_LIB_DIR/codex_exec\"")
+            sb.appendLine("__first=\"\${1:-}\"")
+            sb.appendLine("case \"\$__first\" in")
+            sb.appendLine("  exec)")
+            sb.appendLine("    [ -x \"\$__runtime_exec\" ] && __exec=\"\$__runtime_exec\"")
+            sb.appendLine("    if [ -x \"\$__exec\" ]; then")
+            sb.appendLine("      shift")
+            sb.appendLine("      exec /system/bin/linker64 \"\$__exec\" \"\$@\"")
+            sb.appendLine("    fi")
+            sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
+            sb.appendLine("    exit 127")
+            sb.appendLine("    ;;")
+            sb.appendLine("  resume|review|help)")
+            sb.appendLine("    [ -x \"\$__runtime_exec\" ] && __exec=\"\$__runtime_exec\"")
+            sb.appendLine("    if [ -x \"\$__exec\" ]; then")
+            sb.appendLine("      exec /system/bin/linker64 \"\$__exec\" \"\$@\"")
+            sb.appendLine("    fi")
+            sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
+            sb.appendLine("    exit 127")
+            sb.appendLine("    ;;")
+            sb.appendLine("esac")
+            sb.appendLine("[ -x \"\$__runtime_tui\" ] && __tui=\"\$__runtime_tui\"")
+            sb.appendLine("if [ -x \"\$__tui\" ]; then")
+            sb.appendLine("  exec /system/bin/linker64 \"\$__tui\" \"\$@\"")
+            sb.appendLine("fi")
+            sb.appendLine("echo \"codex: codex_tui binary missing at \$__tui\" >&2")
+            sb.appendLine("exit 127")
+            sb.appendLine("SHELLY_CODEX_SHIM_EOF")
+            sb.appendLine("chmod 700 \"\$HOME/bin/codex\" 2>/dev/null || true")
+            sb.appendLine("hash -r 2>/dev/null || true")
             // bug #102 / #115 phase 1: xdg-open replacement. Claude Code's
             // i3() and Gemini CLI's authWithWeb() both default to
             // spawning xdg-open (or whatever $BROWSER points to). Bionic
@@ -2562,10 +2630,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __dispatch=\"\$__first\"")
             sb.appendLine("  local __codex_home=\"\${CODEX_HOME:-\$HOME/.codex}\"")
             sb.appendLine("  local __codex_auth=\"\$__codex_home/auth.json\"")
-            sb.appendLine("  if [ \"\$#\" -eq 0 ] && [ ! -s \"\$__codex_auth\" ]; then")
+            sb.appendLine("  local __codex_auth_ok=0")
+            sb.appendLine("  if [ -s \"\$__codex_auth\" ]; then")
+            sb.appendLine("    _run $libDir/node -e 'const fs=require(\"fs\");try{const a=JSON.parse(fs.readFileSync(process.argv[1],\"utf8\"));process.exit(a&&a.auth_mode===\"chatgpt\"&&a.tokens&&a.tokens.refresh_token?0:1)}catch(_){process.exit(1)}' \"\$__codex_auth\" >/dev/null 2>&1 && __codex_auth_ok=1")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ \"\$#\" -eq 0 ] && [ \"\$__codex_auth_ok\" != \"1\" ]; then")
             sb.appendLine("    echo '[shelly] Codex sign-in required; opening Shelly device-code login.'")
             sb.appendLine("    codex-login --open || return \$?")
-            sb.appendLine("    if [ ! -s \"\$__codex_auth\" ]; then")
+            sb.appendLine("    __codex_auth_ok=0")
+            sb.appendLine("    if [ -s \"\$__codex_auth\" ]; then")
+            sb.appendLine("      _run $libDir/node -e 'const fs=require(\"fs\");try{const a=JSON.parse(fs.readFileSync(process.argv[1],\"utf8\"));process.exit(a&&a.auth_mode===\"chatgpt\"&&a.tokens&&a.tokens.refresh_token?0:1)}catch(_){process.exit(1)}' \"\$__codex_auth\" >/dev/null 2>&1 && __codex_auth_ok=1")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ \"\$__codex_auth_ok\" != \"1\" ]; then")
             sb.appendLine("      echo \"codex: login did not create \$__codex_auth\" >&2")
             sb.appendLine("      return 1")
             sb.appendLine("    fi")
