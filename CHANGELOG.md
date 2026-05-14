@@ -6,6 +6,45 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-05-14
+
+### Added
+
+- **Supported Codex CLI login path** — bare `codex` now routes through
+  Shelly's device-code wrapper when `~/.codex/auth.json` is missing or
+  invalid, opens the in-app Browser Pane, writes credentials with private
+  file modes, then launches the normal Codex TUI. Device validation shows
+  `codex-exec 0.130.0` and GPT-5.5.
+- **Release-surface documentation** — README, CLAUDE.md, AGENTS.md, and
+  GEMINI.md now explicitly distinguish supported foreground CLIs,
+  API-backed AI pane/background providers, and Experimental Gemini CLI.
+
+### Changed
+
+- **Release version bumped to 5.3.0** across Expo config, package metadata,
+  Android versionName/versionCode, and runtimeVersion.
+- **Claude Code subscription boundary tightened** — Claude Code remains a
+  foreground user-controlled terminal CLI. AI Pane and background agents use
+  explicit API providers such as Gemini API, Cerebras, Groq, Perplexity, and
+  OpenAI-compatible local routes.
+- **Sidebar Worktrees and Quick Launch narrowed to Claude Code and Codex**.
+  Gemini CLI is hidden from release shortcuts while investigation continues.
+- **New terminal tabs autofocus their terminal** so split-pane session
+  creation lands keyboard input in the newly opened shell.
+
+### Fixed
+
+- **Codex auth loop from the normal startup prompt** — the wrapper now
+  launches Shelly's device-code login path before the upstream Codex TUI
+  starts, avoiding the unsupported `/login` REPL route on Android.
+
+### Known limitations
+
+- **Gemini CLI remains Experimental**. `gemini --version` works through the
+  APK bundle tier, but Gemini CLI 0.42.x has shown blank TUI startup, slow
+  rendering, and shell-tool signal 11 behavior on Android/musl. Gemini API
+  remains supported for AI Pane/background use.
+
 ## [5.2.0] - 2026-05-06
 
 ### Added

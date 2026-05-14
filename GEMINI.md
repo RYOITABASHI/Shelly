@@ -20,6 +20,19 @@ Layout: AgentBar (top) + Sidebar (left) + PaneContainer (center, up to 4 panes) 
 - **API keys**: `lib/secure-store.ts` (expo-secure-store, encrypted)
 - **Bundled tools**: bash, Node.js, Python 3, git, curl, sqlite3. No `pkg install`.
 
+## Gemini Release Status (2026-05-14)
+
+Gemini API is supported in AI Pane/background flows when the user configures a Gemini API key. The interactive Gemini CLI is Experimental for v5.3.0.
+
+Known device findings:
+
+- `gemini --version` works through the APK bundle tier.
+- Authenticated Gemini accounts can be present under `~/.gemini`.
+- The interactive TUI has shown upstream Android/musl instability: blank launch, slow rendering, and shell-tool commands terminating with signal 11.
+- Worktrees and CLI Quick Launch must not expose Gemini in the release surface.
+
+When changing Gemini support, update README, `CLAUDE.md`, `AGENTS.md`, and `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md` together.
+
 ## Key Stores (Zustand)
 
 | Store | File | Purpose |
@@ -40,10 +53,9 @@ git push origin main                 # triggers GitHub Actions APK build
 
 Bundle ID: `dev.shelly.terminal`
 
-## Current Task: Termux Dependency Removal (2026-04-08)
+## Current Task
 
-9 files still have Termux bridge/pkg assumptions that break in the new JNI architecture.
-See `docs/current-tasks.md` for the full task list with file paths, problems, and fix strategies.
+Keep Gemini CLI investigation isolated from the supported Claude Code / Codex release path.
 
 ### Rules for this work:
 - Use `execCommand()` from `hooks/use-native-exec.ts` for shell execution

@@ -56,10 +56,15 @@ gh run download <run-id>             # download APK
 
 Bundle ID: `dev.shelly.terminal`
 
-## Current Task: Termux Dependency Removal (2026-04-08)
+## Current Release Surface (2026-05-14)
 
-9 files still have Termux bridge/pkg assumptions that break in the new JNI architecture.
-See `docs/current-tasks.md` for the full task list with file paths, problems, and fix strategies.
+Read `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md` before changing CLI/auth behavior.
+
+- Supported foreground CLIs: Claude Code and Codex.
+- Experimental CLI: Gemini. Keep it bundled for investigation, but do not expose it in Worktrees or Quick Launch.
+- AI Pane/background agents use explicit API providers only: Gemini API, Cerebras, Groq, Perplexity, OpenAI-compatible local routes, etc.
+- Do not drive Claude Code subscription access as a hidden background worker. Claude Code remains a user-controlled terminal CLI.
+- Bare `codex` must route through Shelly's login wrapper when `~/.codex/auth.json` is missing or invalid, then launch the normal Codex TUI.
 
 ### Rules for this work:
 - Use `execCommand()` from `hooks/use-native-exec.ts` for shell execution (NOT pseudo-shell, NOT bridge)
@@ -67,7 +72,7 @@ See `docs/current-tasks.md` for the full task list with file paths, problems, an
 - API keys go to `lib/secure-store.ts` (NOT `~/.shellyrc`)
 - Settings go to `store/settings-store.ts` `updateSettings()`
 - NO `pkg install/upgrade` commands (tools are bundled)
-- Remove the word "Termux" from all user-facing messages
+- Remove the word "Termux" from user-facing messages unless explicitly describing compatibility boundaries
 - `shelly` prefix commands (e.g. `shelly config`) stay in pseudo-shell — everything else uses real JNI exec
 
 ## Dev Rules

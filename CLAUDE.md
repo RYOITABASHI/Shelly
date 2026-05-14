@@ -6,7 +6,7 @@
 
 **[docs/superpowers/DEFERRED.md](./docs/superpowers/DEFERRED.md)** — 後回しリストの唯一の真実の情報源。
 
-**[docs/superpowers/specs/2026-05-13-v119-claude-native-auth-crash-handoff.md](./docs/superpowers/specs/2026-05-13-v119-claude-native-auth-crash-handoff.md)** — 2026-05-13 時点の最新引き継ぎ。v119 で Claude Code の native TUI 描画は通ったが、`/login` 後の workspace trust/onboarding で Bun SEA が `Segmentation fault at address 0x10` になる。次セッションはこのファイルを読んでから v120 修正に入る。
+**[docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md](./docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md)** — 2026-05-14 時点の最新引き継ぎ。v5.3.0 の release surface は Claude Code CLI / Codex CLI を正式対応、Gemini CLI を Experimental、AI Pane / background を明示的 API provider 経路に整理済み。
 
 このファイルには「将来実装する」「次リリースで対応」「意図的に descope した」と判断されたすべての項目が、理由と優先度 (P0/P1/P2/P3) 付きで登録されている。過去に README との不整合や機能取りこぼしが発生した反省から 2026-04-14 に導入。
 
@@ -36,7 +36,7 @@
 - **設定**: ConfigTUI（歯車ボタン or `shelly config`）— 設定タブは廃止済み
 - **Storage**: `MANAGE_EXTERNAL_STORAGE` を取得して `/sdcard` 直接読み書き（bug #92）。初回起動時に `lib/first-launch-setup.ts` が Intent 経由で権限を要求
 - **Paste 経路**: すべてのペースト（IME commitText / middle-click / CommandKeyBar Paste）は `TerminalView.pasteViaEmulator()` に集約、`TerminalEmulator.paste()` が DECSET 2004 状態で分岐: (a) bracketed-paste mode 有効 (readline guest) → `\C-x\C-b` (0x18 0x02) + payload + `\e[201~`。`\C-x\C-b` は .bashrc で emacs / vi-insert / vi-command 全 keymap に `bracketed-paste-begin` を bind、END 側の ESC は関数内の直接 read で preserve される。(b) bracketed-paste mode 無効 (vim/less/nano 等 TUI) → `\r?\n → \r` fallback で各行を個別 Enter として送信（bug #91 / #94 / #97）
-- **AI CLIs**: Claude Code / Codex / Gemini は Shelly 管理 updater が staging に取得し、`--version` probe を通したものだけを live/current に昇格。Claude/Codex native runtime は `~/.shelly-runtime/*/current`、npm tier は `~/.shelly-cli` の staged promote で管理する。
+- **AI CLIs**: v5.3.0 の正式 CLI surface は Claude Code と Codex。Shelly 管理 updater が staging に取得し、`--version` probe を通したものだけを live/current に昇格する。Claude/Codex runtime は `~/.shelly-runtime/*/current` と `$HOME/bin` wrapper で管理する。Gemini CLI は bundle/patched investigation 用の Experimental 扱いで、Worktrees / Quick Launch には出さない。Gemini は AI Pane/background の API provider として使う。
 - **bash wrapper**: `$HOME/bin/bash` に linker64 経由の shim を配置して `bash script.sh` や `#!/usr/bin/env bash` shebang を動作させる（bug #93）
 
 ---
@@ -193,9 +193,9 @@ Shelly/
 | shellyコマンド → pseudo-shell | `shelly config/workflow/voice`等はアプリ内処理 | pseudo-shell.ts |
 | 設定タブ廃止 → ConfigTUI | 歯車ボタン or `shelly config`。全設定をボトムシートに集約 | ConfigTUI.tsx |
 | APIキーはSecureStore | settings-store.updateSettingsが自動ルーティング | secure-store.ts, settings-store.ts |
-| AI PaneルーティングはGroq > Gemini > Perplexity > Local | use-ai-pane-dispatch.tsで分岐 | use-ai-pane-dispatch.ts |
+| AI Paneルーティングは明示的 API provider のみ | Gemini API / Cerebras / Groq / Perplexity / OpenAI-compatible local を use-ai-pane-dispatch.ts で分岐。Claude Code subscription/CLI は hidden background worker として使わない | use-ai-pane-dispatch.ts, agent-executor.ts |
 | APIキーは Settings → API Keys の inline editor | Wizard 廃止、SettingsDropdown に 1 行ずつ masked editor を展開 | components/settings/* |
-| AI CLI は staging + probe 後に自動更新 | `shelly-runtime-update.js` が Claude/Codex native runtime を current/ symlink で昇格し、`__shelly_bg_cli_update` が npm tier (Claude/Codex/Gemini) を staging で `--version` smoke 後に昇格。failed-version cooldown で broken latest を再試行しすぎない | HomeInitializer.kt, shelly-runtime-update.js |
+| Claude/Codex CLI は staging + probe 後に自動更新 | `shelly-runtime-update.js` が Claude/Codex runtime を current/ symlink で昇格。failed-version cooldown で broken latest を再試行しすぎない。Gemini CLI は Experimental のため正式ランチャーから外す | HomeInitializer.kt, shelly-runtime-update.js, Sidebar.tsx |
 | Chat UIはv0.1.0で削除 | 旧 chelly/ は git history に保存。別 repo 切り出し予定 | — |
 | デバッグログ全箇所 | `[Shelly][Module]`形式、logcat対応 | debug-logger.ts |
 | Paste は単一チョークポイント | `TerminalEmulator.paste()` に全経路を funnel。bug #97 で bionic bash の readline dispatch が `\e[200~` の ESC を swallow する問題が発覚 → 入口を ESC-free な `\C-x\C-b` に変更し、.bashrc で emacs/vi-insert/vi-command に `bracketed-paste-begin` を bind。END の `\e[201~` は関数内で直接 read されるため ESC が保持される。DECSET 2004 未設定の TUI (vim/less/nano) には `\r?\n → \r` fallback を適用。line 2649 で ESC と C1 制御文字を strip 済みなので paste 内に literal `\e[201~` が含まれても早期終了の command injection は不可 | TerminalView.java, TerminalEmulator.java, HomeInitializer.kt |

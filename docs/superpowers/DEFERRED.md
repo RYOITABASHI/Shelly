@@ -14,6 +14,37 @@
 
 ---
 
+## 🟢 現状サマリ (2026-05-14、v5.3.0 release surface)
+
+**リリース判断**: Claude Code CLI / Codex CLI を正式対応、Gemini CLI は Experimental に降格。AI Pane / background agents は Gemini API / Cerebras / Groq / Perplexity / OpenAI-compatible local などの明示的 API provider 経路で提供する。Claude Code subscription/CLI を hidden background worker として使わない。
+
+| Surface | 状態 | メモ |
+|---|---|---|
+| **Claude Code CLI** | ✅ Supported | foreground Terminal pane でユーザーが直接操作。home trust/onboarding と credential mode は実機確認済み。 |
+| **Codex CLI** | ✅ Supported | bare `codex` が `~/.codex/auth.json` を検証し、必要なら `codex-login --open` の device-code auth に誘導。`codex-exec 0.130.0` / GPT-5.5 で実機確認。 |
+| **AI Pane / background** | ✅ Supported via APIs | Gemini API / Cerebras / Groq / Perplexity / local/OpenAI-compatible。Claude Code subscription automation は無効。 |
+| **Gemini API** | ✅ Supported | API key 設定時の AI Pane/background route として残す。 |
+| **Gemini CLI** | ⚠ Experimental | `gemini --version` は通るが、0.42.x TUI blank / slow rendering / shell tool signal 11 が残るため Worktrees / Quick Launch から除外。 |
+
+**次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
+
+### bug #150 — Gemini CLI interactive TUI promotion blocked
+
+**優先度**: P2  
+**状態**: v5.3.0 release blocker から除外。API route は維持。
+
+**症状**:
+- Gemini CLI 0.42.x が Android/musl PTY で blank startup / slow response / Shell tool signal 11 を出すことがある。
+- patcher が minified production bundle に対して silent fail していたケースがある。
+- `gemini --version` と account files の存在だけでは interactive CLI の release 品質を保証できない。
+
+**戻す条件**:
+1. Patcher を fail-loud 化し、miss した patch を `shelly-doctor` と logs に出す。
+2. fresh install で `gemini` TUI 起動、1往復応答、Shell tool `find` / `ls` / `bash` 実行、失敗後の raw mode 復旧をすべて実機確認。
+3. Worktrees / Quick Launch への復帰は README / AGENTS / CLAUDE / GEMINI / release notes 同期後。
+
+**Why not now**: v5.3.0 の価値は Claude Code + Codex の real Android CLI 体験と API-backed AI Pane にある。Gemini CLI を launch blocker にすると、既に動く主要体験のリリースを遅らせる割に品質保証ができない。
+
 ## 🟢 現状サマリ (2026-05-08、BASHRC_VERSION 81、PR #34 + #37 着地)
 
 **Phase 1 OAuth bridge 実機完了** (Galaxy Z Fold6 / Android 14):
