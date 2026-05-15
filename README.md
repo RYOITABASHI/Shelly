@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="Shelly — AI reads your terminal error and suggests a fix with COPY and INSERT buttons" width="800">
+  <img src="docs/images/hero.jpg" alt="Shelly running Claude Code natively on Android with slash-command autocomplete" width="800">
 </p>
 
 <p align="center">
@@ -43,9 +43,9 @@
 
 ## See it run
 
-**Claude Code (Opus 4.7) and Codex (GPT-5.5) running side-by-side on Galaxy Z Fold6**
+**Claude Code running natively on Android with slash-command autocomplete**
 
-https://github.com/user-attachments/assets/de04f935-7f81-4b84-b8b0-b5bbac22d26c
+[Watch the demo video](docs/videos/demo-claude-codex-2pane.mp4)
 
 **AI reading a runtime error and suggesting the fix in real time**
 
