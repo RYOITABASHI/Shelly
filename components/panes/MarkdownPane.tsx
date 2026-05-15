@@ -18,6 +18,8 @@ import {
   Platform,
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
+import { colors as C } from '@/theme.config';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTheme } from '@/lib/theme-engine';
 import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
@@ -111,11 +113,12 @@ export default function MarkdownPane() {
     // Future: search within document
     ToastAndroid.show('Search within document — coming soon', ToastAndroid.SHORT);
   }, []);
+  const paneBg = usePanelBackground(C.bgDeep);
 
   // ── Markdown style rules keyed to current theme ──────────────────────────
   const markdownStyles = StyleSheet.create({
     body: {
-      backgroundColor: '#0A0A0A',
+      backgroundColor: 'transparent',
       color: theme.colors.foreground,
       fontSize: sf(14),
       lineHeight: sf(22),
@@ -255,7 +258,7 @@ export default function MarkdownPane() {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <View style={[styles.container, { paddingBottom: keyboardHeight }]}>
+    <View style={[styles.container, { paddingBottom: keyboardHeight, backgroundColor: paneBg }]}>
       {/* Header bar */}
       <View style={[styles.header, { borderBottomColor: theme.colors.border }]}>
         <Text style={[styles.headerTitle, { color: theme.colors.muted }]} numberOfLines={1}>

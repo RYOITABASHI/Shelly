@@ -11,7 +11,7 @@ type PaneEntry = {
 
 function StubPane({ label }: { label: string }) {
   return React.createElement(View, {
-    style: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', alignItems: 'center' },
+    style: { flex: 1, backgroundColor: 'transparent', justifyContent: 'center', alignItems: 'center' },
   }, React.createElement(Text, {
     style: { color: '#666', fontFamily: 'JetBrainsMono_400Regular', fontSize: 12 },
   }, `${label} — Coming Soon`));

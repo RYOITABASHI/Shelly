@@ -36,6 +36,7 @@ import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
@@ -71,7 +72,7 @@ const emptyStyles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: C.bgDeep,
+    backgroundColor: 'transparent',
     gap: 12,
   },
   title: {
@@ -114,6 +115,7 @@ const emptyStyles = StyleSheet.create({
 });
 
 export function MultiPaneContainer() {
+  const containerBg = usePanelBackground(C.bgDeep);
   // Bug #64 — wait for persist rehydration before rendering any pane chrome.
   // Without this, a force-stop/relaunch cycle can briefly flash the
   // EmptyState (or stale slots) before restored state arrives, which in
@@ -232,13 +234,13 @@ export function MultiPaneContainer() {
   }, []);
 
   if (!hasHydrated) {
-    return <View style={styles.root} onLayout={onContainerLayout} />;
+    return <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout} />;
   }
 
   const usedCount = slots.filter((s) => s !== null).length;
   if (usedCount === 0) {
     return (
-      <View style={styles.root}>
+      <View style={[styles.root, { backgroundColor: containerBg }]}>
         <EmptyState />
       </View>
     );
@@ -248,7 +250,7 @@ export function MultiPaneContainer() {
   if (maximized !== null && slots[maximized]) {
     const slot = slots[maximized]!;
     return (
-      <View style={styles.root} onLayout={onContainerLayout}>
+      <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout}>
         <View
           style={[styles.slotAbs, { left: 0, top: 0, width: size.W, height: size.H }]}
         >
@@ -274,7 +276,10 @@ export function MultiPaneContainer() {
   const { slotRects, dividers } = getLayout(preset, ratios, size.W, gridHeight);
 
   return (
-    <View style={[styles.root, { paddingBottom: keyboardHeight }]} onLayout={onContainerLayout}>
+    <View
+      style={[styles.root, { paddingBottom: keyboardHeight, backgroundColor: containerBg }]}
+      onLayout={onContainerLayout}
+    >
       {slots.map((slot, i) => {
         if (!slot) return null;
         const rect = slotRects[i as SlotIndex];

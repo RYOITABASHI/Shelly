@@ -32,6 +32,8 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
+import { colors as C } from '@/theme.config';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useSettingsStore } from '@/store/settings-store';
 import { getApiKey } from '@/lib/secure-store';
 import { buildAskSystemPrompt, extractStatus, stripStatusTag, type AskStatus } from '@/lib/ask-context';
@@ -136,6 +138,7 @@ export default function AskPane() {
   }, [question, busy, groqModel]);
 
   const styles = React.useMemo(() => makeStyles(theme), [theme]);
+  const paneBg = usePanelBackground(C.bgDeep);
 
   return (
     <KeyboardAvoidingView
@@ -143,7 +146,7 @@ export default function AskPane() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={0}
     >
-      <View style={styles.root}>
+      <View style={[styles.root, { backgroundColor: paneBg }]}>
         <View style={styles.header}>
           <MaterialIcons name="help-outline" size={16} color={theme.colors.accent ?? '#a78bfa'} />
           <Text style={styles.headerTitle}>Ask Shelly</Text>

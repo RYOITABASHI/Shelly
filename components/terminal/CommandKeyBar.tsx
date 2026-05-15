@@ -16,8 +16,9 @@ import { withAlpha } from '@/lib/theme-utils';
 import { useTerminalStore } from '@/store/terminal-store';
 import { KEY_BAR_HEIGHT, BORDER_WIDTH } from '@/lib/layout-constants';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
-import { fonts as F } from '@/theme.config';
+import { colors as C, fonts as F } from '@/theme.config';
 import { themePresets, type ThemePresetId } from '@/lib/theme-presets';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   sendKey: (keyCode: string) => void;
@@ -130,6 +131,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   const foreground = presetColors?.text1 ?? c.foreground;
   const muted = presetColors?.text2 ?? c.muted;
   const border = presetColors?.border ?? c.border;
+  const barBg = usePanelBackground(C.bgDeep);
   const keyChrome = useMemo(() => {
     if (visualPreset === 'blue') {
       return {
@@ -305,7 +307,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   }, [barWidth, accent, altActive, isCompact, handleKeyPress, keyChrome]);
 
   return (
-    <View style={[styles.container, { backgroundColor: '#000000', borderTopColor: border }]} onLayout={onBarLayout}>
+    <View style={[styles.container, { backgroundColor: barBg, borderTopColor: border }]} onLayout={onBarLayout}>
       {/* Single row: attach/voice + swipeable keys + dots */}
       <View style={styles.singleRow}>
         {/* Attach + Voice mini buttons */}

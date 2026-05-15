@@ -18,6 +18,7 @@ import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlo
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 // JS injected before the page loads so our fullscreen hooks are in place
 // before YouTube or any other video app tries to go fullscreen.
@@ -515,10 +516,11 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     setInputUrl(url);
     setCurrentUrl(url);
   }, []);
+  const paneBg = usePanelBackground(C.bgDeep);
 
   return (
     <View
-      style={[styles.root, { backgroundColor: C.bgDeep }]}
+      style={[styles.root, { backgroundColor: paneBg }]}
     >
       {/* URL bar */}
       <View style={[styles.toolbar, compactChrome && styles.toolbarCompact]}>
@@ -851,7 +853,7 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
-    backgroundColor: C.bgDeep,
+    backgroundColor: 'transparent',
   },
   blankScreen: {
     flex: 1,

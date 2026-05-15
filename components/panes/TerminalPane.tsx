@@ -38,6 +38,7 @@ import { useUsageStore } from '@/store/usage-store';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useCosmeticStore } from '@/store/cosmetic-store';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
@@ -577,6 +578,7 @@ export default function TerminalScreen() {
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme, settings.uiFont]);
+  const terminalPaneBg = usePanelBackground(terminalColorScheme.background);
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -714,7 +716,7 @@ export default function TerminalScreen() {
   // the Keyboard listener around only because other UX pieces (scroll
   // anchoring) may read it later.
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: terminalColorScheme.background }]}>
+    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: terminalPaneBg }]}>
       {/* Headers moved into PaneSlot so each pane only pays for one header row */}
 
       {/* Preview Banner — slides in when localhost URL detected */}
@@ -753,7 +755,7 @@ export default function TerminalScreen() {
               styles.terminalView,
               {
                 flex: showSplitPreview ? splitRatio : 1,
-                backgroundColor: terminalColorScheme.background,
+                backgroundColor: wallpaperActive ? 'transparent' : terminalColorScheme.background,
                 paddingBottom: terminalBottomInset,
               },
             ]}
@@ -896,7 +898,7 @@ export default function TerminalScreen() {
 
       {/* Recovery splash — shown while session re-creates */}
       {isRecovering && (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: terminalPaneBg, justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
           <ActivityIndicator size="small" color={C.accent} />
           <Text style={{ color: C.text3, fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, marginTop: 8 }}>
             Restoring session...
@@ -905,7 +907,7 @@ export default function TerminalScreen() {
       )}
 
       {connectionState === 'connecting' && !isRecovering && activeSession && (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: terminalPaneBg, justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
           <ActivityIndicator size="small" color={C.accent} />
           <Text style={{ color: C.text3, fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, marginTop: 8 }}>
             Starting terminal...
@@ -1052,13 +1054,8 @@ const styles = StyleSheet.create({
   // getPaddingLeft/Right before computing cols, so this correctly reduces
   // the reflow width instead of just cropping the rightmost column.
   //
-  // Phase B (2026-04-21): backgroundColor removed from the RN wrapper.
-  // The native terminal view itself still paints opaque (#000 or the
-  // active colour-scheme bg) — so on a wallpaper-enabled install the
-  // terminal body stays opaque while the chrome around it (Sidebar,
-  // AgentBar, ContextBar, pane header) shows the wallpaper through.
-  // Proper terminal transparency needs a native Kotlin change to
-  // honour an alpha-channel scheme background; tracked as a follow-up.
+  // Wallpaper mode: the native TerminalView receives transparentBackground,
+  // and the RN wrapper stays transparent so the shared BackgroundLayer shows.
   terminalView: { paddingHorizontal: 6, paddingVertical: 2 },
 
   // Error state

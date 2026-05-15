@@ -32,6 +32,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { VoiceChat } from '@/components/VoiceChat';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 import {
   getAiPaneAgentMeta,
   isAiPaneAgent,
@@ -224,6 +225,7 @@ const bubbleStyles = StyleSheet.create({
 
 export default function AIPane() {
   const paneId = useContext(PaneIdContext);
+  const paneBg = usePanelBackground(C.bgDeep);
   // Bug #56 — narrow grid layouts (2×2 or 1+2) drop pane width below
   // ~360dp. Shrink horizontal padding so bubble content does not get
   // clipped by the pane chrome.
@@ -331,7 +333,7 @@ export default function AIPane() {
     // which collapsed the terminal content to 0px. Container now
     // shrinks the whole grid by keyboardHeight once, panes render
     // at their natural size.
-    <View style={[paneStyles.container, compactOverlay]}>
+    <View style={[paneStyles.container, { backgroundColor: paneBg }, compactOverlay]}>
       {/* Context badge — READING TERMINAL 1 */}
       {contextBadge && (
         <View style={paneStyles.contextBadge}>
