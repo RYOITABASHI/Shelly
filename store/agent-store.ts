@@ -18,6 +18,7 @@ interface AgentState {
   removeAgent: (id: string) => void;
 
   addRunLog: (log: AgentRunLog) => void;
+  setRunHistory: (history: Record<string, AgentRunLog[]>) => void;
   getRunHistory: (agentId: string) => AgentRunLog[];
 
   getAgentByName: (name: string) => Agent | undefined;
@@ -56,6 +57,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       history[log.agentId] = logs.slice(-30);
       return { runHistory: history };
     }),
+
+  setRunHistory: (history) => set({ runHistory: history }),
 
   getRunHistory: (agentId) => get().runHistory[agentId] || [],
 

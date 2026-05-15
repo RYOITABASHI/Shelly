@@ -3,7 +3,7 @@
  * Entry point for all agent operations from the chat UI.
  */
 import { useAgentStore } from '@/store/agent-store';
-import { Agent, ToolChoice } from '@/store/types';
+import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
@@ -193,6 +193,7 @@ export async function runAgentNow(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
   await TerminalEmulator.runAgent(agentId);
+  await syncAgentRunLogsFromDisk(runCommand, agentId);
 }
 
 export async function stopAgent(
@@ -268,17 +269,88 @@ export async function loadAgentsFromDisk(
         // Skip malformed agent files
       }
     }
-    for (const agent of agents) {
+    const runHistory = await readAgentRunLogs(runCommand);
+    const agentsWithStatus = agents.map((agent) => {
+      const latest = runHistory[agent.id]?.at(-1);
+      return latest
+        ? {
+            ...agent,
+            lastRun: latest.timestamp,
+            lastResult: latest.status === 'success' ? 'success' as const : latest.status === 'error' ? 'error' as const : agent.lastResult,
+          }
+        : agent;
+    });
+
+    for (const agent of agentsWithStatus) {
       try {
         await materializeAgent(agent, runCommand, Boolean(agent.enabled && agent.schedule));
       } catch (error) {
         console.warn('Failed to materialize agent from disk', agent.id, error);
       }
     }
-    useAgentStore.getState().setAgents(agents);
+    useAgentStore.getState().setRunHistory(runHistory);
+    useAgentStore.getState().setAgents(agentsWithStatus);
   } catch {
     useAgentStore.getState().setAgents([]);
   }
+}
+
+export async function syncAgentRunLogsFromDisk(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId?: string
+): Promise<void> {
+  const runHistory = await readAgentRunLogs(runCommand, agentId);
+  const store = useAgentStore.getState();
+  const mergedHistory = agentId
+    ? { ...store.runHistory, [agentId]: runHistory[agentId] || [] }
+    : runHistory;
+
+  const agents = store.agents.map((agent) => {
+    const latest = mergedHistory[agent.id]?.at(-1);
+    if (!latest) return agent;
+    return {
+      ...agent,
+      lastRun: latest.timestamp,
+      lastResult: latest.status === 'success' ? 'success' as const : latest.status === 'error' ? 'error' as const : agent.lastResult,
+    };
+  });
+
+  store.setRunHistory(mergedHistory);
+  store.setAgents(agents);
+}
+
+async function readAgentRunLogs(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId?: string
+): Promise<Record<string, AgentRunLog[]>> {
+  const logsRoot = `${agentsDir()}/logs`;
+  const command = agentId
+    ? `for f in ${shellQuote(`${logsRoot}/${agentId}`)}/*.json; do [ -f "$f" ] || continue; cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done 2>/dev/null`
+    : `for d in ${shellQuote(logsRoot)}/*; do [ -d "$d" ] || continue; for f in "$d"/*.json; do [ -f "$f" ] || continue; cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done; done 2>/dev/null`;
+  const output = await runCommand(command);
+  const logs: AgentRunLog[] = [];
+  for (const chunk of output.split('---SHELLY_AGENT_LOG---')) {
+    const text = chunk.trim();
+    if (!text) continue;
+    try {
+      const log = JSON.parse(text) as AgentRunLog;
+      if (
+        typeof log.agentId === 'string' &&
+        typeof log.timestamp === 'number' &&
+        (log.status === 'success' || log.status === 'error' || log.status === 'skipped')
+      ) {
+        logs.push(log);
+      }
+    } catch {
+      // Ignore partially written or malformed logs.
+    }
+  }
+
+  const grouped: Record<string, AgentRunLog[]> = {};
+  for (const log of logs.sort((a, b) => a.timestamp - b.timestamp)) {
+    grouped[log.agentId] = [...(grouped[log.agentId] || []), log].slice(-30);
+  }
+  return grouped;
 }
 
 /**
