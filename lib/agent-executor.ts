@@ -10,6 +10,10 @@ const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function paths() {
   const home = getHomePath();
   const shellyDir = `${home}/.shelly`;
@@ -52,16 +56,16 @@ export function generateRunScript(agent: Agent): string {
 # Do not edit manually.
 set -euo pipefail
 
-AGENT_ID='${agentId}'
-RESULT_FILE='${resultFile}'
-LOCK_FILE='${lockFile}'
-LOG_DIR='${logDir}'
+AGENT_ID=${shellQuote(agentId)}
+RESULT_FILE=${shellQuote(resultFile)}
+LOCK_FILE=${shellQuote(lockFile)}
+LOG_DIR=${shellQuote(logDir)}
 TIMEOUT=${DEFAULT_TIMEOUT_SEC}
-OUTPUT_DIR='${outputDir}'
-SLUG='${slug}'
-TOOL_LABEL='${toolLabel}'
-ENV_FILE='${envFile}'
-LOCKS_DIR='${locksDir}'
+OUTPUT_DIR=${shellQuote(outputDir)}
+SLUG=${shellQuote(slug)}
+TOOL_LABEL=${shellQuote(toolLabel)}
+ENV_FILE=${shellQuote(envFile)}
+LOCKS_DIR=${shellQuote(locksDir)}
 MAX_CONCURRENT=${MAX_CONCURRENT}
 
 START_TIME=$(date +%s)
@@ -364,5 +368,6 @@ export function generateInstallCommands(agent: Agent): string[] {
 }
 
 export function generateStopCommand(agentId: string): string {
-  return `pid_file='${paths().locksDir}/${agentId}.pid'; if [ -f "$pid_file" ]; then kill "$(cat "$pid_file")" 2>/dev/null || true; rm -f "$pid_file"; fi`;
+  const pidFile = `${paths().locksDir}/${agentId}.pid`;
+  return `pid_file=${shellQuote(pidFile)}; if [ -f "$pid_file" ]; then pid="$(cat "$pid_file")"; kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 1; kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f "$pid_file"; fi`;
 }

@@ -1,5 +1,7 @@
 package expo.modules.terminalemulator
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
@@ -64,6 +66,31 @@ class TerminalEmulatorModule : Module() {
         val nextId = prefs.getInt("_next_id", 1000)
         prefs.edit().putInt(agentId, nextId).putInt("_next_id", nextId + 1).apply()
         return nextId
+    }
+
+    private fun scheduleAgentAlarm(
+        alarmManager: AlarmManager,
+        triggerAtMs: Long,
+        pendingIntent: PendingIntent
+    ) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms())
+            ) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            }
+        } catch (e: SecurityException) {
+            Log.w("TerminalEmulator", "Exact alarm denied; falling back to inexact alarm", e)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            }
+        }
     }
 
     override fun definition() = ModuleDefinition {
@@ -633,20 +660,16 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("scheduleAgent") { agentId: String, intervalMs: Long, triggerAtMs: Long ->
             val context = appContext.reactContext ?: return@AsyncFunction null
             val requestCode = getAgentRequestCode(context, agentId)
-            val am = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
                 putExtra(AgentAlarmReceiver.EXTRA_AGENT_ID, agentId)
                 putExtra(AgentAlarmReceiver.EXTRA_INTERVAL_MS, intervalMs)
             }
-            val pi = android.app.PendingIntent.getBroadcast(
+            val pi = PendingIntent.getBroadcast(
                 context, requestCode, intent,
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
-            } else {
-                am.setExact(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
-            }
+            scheduleAgentAlarm(am, triggerAtMs, pi)
             Log.i("TerminalEmulator", "Scheduled agent $agentId (reqCode=$requestCode): interval=${intervalMs}ms")
             null
         }

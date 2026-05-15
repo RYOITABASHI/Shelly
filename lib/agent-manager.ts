@@ -269,7 +269,11 @@ export async function loadAgentsFromDisk(
       }
     }
     for (const agent of agents) {
-      await materializeAgent(agent, runCommand, Boolean(agent.enabled && agent.schedule));
+      try {
+        await materializeAgent(agent, runCommand, Boolean(agent.enabled && agent.schedule));
+      } catch (error) {
+        console.warn('Failed to materialize agent from disk', agent.id, error);
+      }
     }
     useAgentStore.getState().setAgents(agents);
   } catch {

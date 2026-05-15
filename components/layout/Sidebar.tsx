@@ -287,13 +287,13 @@ export function Sidebar() {
               <Text style={styles.taskAge}>{task.age}</Text>
             </View>
           ))}
-          {agents.length > 0 && (
+          {agents.some((a) => a.enabled && a.schedule) && (
             <>
               {(runningAgents.length > 0 || recentTasks.length > 0) && (
                 <View style={styles.tasksSeparator} />
               )}
               <Text style={styles.tasksSubheader}>SCHEDULED</Text>
-              {agents.filter((a) => a.enabled).map((agent) => (
+              {agents.filter((a) => a.enabled && a.schedule).map((agent) => (
                 <View key={`sched-${agent.id}`} style={styles.taskRow}>
                   <View style={[styles.taskDot, { backgroundColor: C.text3 }]} />
                   <View style={styles.taskInfo}>

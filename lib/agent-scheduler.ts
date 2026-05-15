@@ -32,6 +32,23 @@ function nextTriggerMs(cron: string): number {
   const now = new Date();
   const target = new Date();
 
+  const everyMinMatch = min.match(/^\*\/(\d+)$/);
+  if (everyMinMatch && hour === '*') {
+    const intervalMin = parseInt(everyMinMatch[1], 10);
+    if (intervalMin > 0) {
+      const nextMinute = Math.ceil((now.getMinutes() + 1) / intervalMin) * intervalMin;
+      target.setSeconds(0);
+      target.setMilliseconds(0);
+      if (nextMinute >= 60) {
+        target.setHours(target.getHours() + 1);
+        target.setMinutes(nextMinute % 60);
+      } else {
+        target.setMinutes(nextMinute);
+      }
+      return target.getTime();
+    }
+  }
+
   if (/^\d+$/.test(min)) target.setMinutes(parseInt(min));
   if (/^\d+$/.test(hour)) target.setHours(parseInt(hour));
   target.setSeconds(0);

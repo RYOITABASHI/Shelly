@@ -112,6 +112,7 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
 
     if (pid == 0) {
         /* ============ CHILD ============ */
+        setsid();
 
         /* Redirect stdout/stderr to pipes */
         close(stdout_pipe[0]);
@@ -227,8 +228,10 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
         struct timeval tv;
         time_t remaining = deadline - time(NULL);
         if (remaining <= 0) {
-            LOGE("execSubprocess: timeout after %ds, killing pid %d", timeout_sec, (int)pid);
-            kill(pid, SIGKILL);
+            LOGE("execSubprocess: timeout after %ds, killing process group %d", timeout_sec, (int)pid);
+            if (kill(-pid, SIGKILL) != 0) {
+                kill(pid, SIGKILL);
+            }
             break;
         }
         tv.tv_sec = (remaining > 2) ? 2 : remaining;

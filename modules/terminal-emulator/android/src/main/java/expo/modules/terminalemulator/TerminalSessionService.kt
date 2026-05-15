@@ -211,6 +211,10 @@ class TerminalSessionService : Service() {
                 else -> "Agent failed: $agentId (${result.exitCode})"
             }
             updateNotification(info)
+            if (sessionRegistry.isEmpty()) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }.apply {
             name = "ShellyAgent-$agentId"
             isDaemon = true
