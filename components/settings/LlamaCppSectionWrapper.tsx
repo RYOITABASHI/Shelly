@@ -224,7 +224,7 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
     (model: LlamaCppModel) => {
       setActiveModelId(model.id);
       const cfg = getLlamaCppLocalLlmConfig(model);
-      updateSettings({ localLlmUrl: cfg.baseUrl });
+      updateSettings({ localLlmUrl: cfg.baseUrl, localLlmModel: cfg.model });
     },
     [updateSettings],
   );

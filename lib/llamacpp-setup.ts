@@ -75,8 +75,8 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
       'https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf',
   },
   {
-    id: 'qwen3-8b-q4',
-    name: 'Qwen 3 8B',
+    id: 'qwen3-8b-q4-k-m',
+    name: 'Qwen3-8B Q4_K_M',
     description: '推奨・高品質。日本語、コード、クロスペイン補助のバランスが最も良いZ Fold6向けモデル。',
     sizeGb: 4.7,
     ramRequiredGb: 6.0,
