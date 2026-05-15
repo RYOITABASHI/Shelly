@@ -13,7 +13,6 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore, type PaletteAction } from '@/hooks/use-command-palette';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useSettingsStore } from '@/store/settings-store';
-import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useFocusStore } from '@/store/focus-store';
@@ -147,22 +146,14 @@ export function CommandPalette() {
       { id: 'pane-add-preview', label: 'Pane: Add Preview', hint: 'split current layout', icon: 'preview', category: 'pane',
         onExecute: () => { addPane('preview'); close(); } },
 
-      // Theme presets — intentionally narrowed to the three maintained
-      // black-background UI directions.
-      { id: 'theme-studio', label: 'Theme: Studio', hint: 'SUPERSET-style neon black', icon: 'palette', category: 'action',
-        onExecute: () => { applyPalette('shelly'); close(); } },
-      { id: 'theme-blackline', label: 'Theme: Blackline', hint: 'WezTerm-style blue black', icon: 'palette', category: 'action',
-        onExecute: () => { applyPalette('blackline'); close(); } },
-      { id: 'theme-modal', label: 'Theme: Modal', hint: 'NeoVim-style green black', icon: 'palette', category: 'action',
-        onExecute: () => { applyPalette('modal'); close(); } },
-
-      // CRT toggle
-      { id: 'crt-toggle', label: 'CRT: Toggle', hint: 'scanline + bloom overlay', icon: 'tv', category: 'action',
-        onExecute: () => {
-          const cs = useCosmeticStore.getState();
-          cs.setCrt(!cs.crtEnabled);
-          close();
-        } },
+      // Brand accent presets — the v5.4 Noir family. Blue is the
+      // default; switching is also exposed in Settings → Accent.
+      { id: 'accent-blue', label: 'Accent: Blue', hint: 'electric royal blue', icon: 'palette', category: 'action',
+        onExecute: () => { applyPalette('noir-blue'); close(); } },
+      { id: 'accent-violet', label: 'Accent: Violet', hint: 'rich electric violet', icon: 'palette', category: 'action',
+        onExecute: () => { applyPalette('noir-violet'); close(); } },
+      { id: 'accent-orange', label: 'Accent: Orange', hint: 'warm rust orange', icon: 'palette', category: 'action',
+        onExecute: () => { applyPalette('noir-orange'); close(); } },
 
       // Voice dialogue
       { id: 'voice-open', label: 'Voice: Open Dialogue', hint: 'mic long-press shortcut', icon: 'mic', category: 'action',

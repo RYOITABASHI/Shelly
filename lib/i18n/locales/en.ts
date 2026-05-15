@@ -1057,8 +1057,6 @@ const en: Record<string, string> = {
   'motd.login_prompt': 'Log in with your account to get started:',
 
   // ── UI Overhaul (Step 3) ──────────────────────────────────────────
-  'agentbar.crt_on': 'CRT: ON',
-  'agentbar.crt_off': 'CRT: OFF',
   'agentbar.add_agent': 'ADD AGENT',
   'agentbar.all_agents_enabled': 'All agents enabled',
   'agentbar.enable': 'ENABLE',

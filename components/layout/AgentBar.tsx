@@ -15,17 +15,14 @@ import { BuildsModal, buildStatusColor, fetchBuildRuns, statusFromRun, type Buil
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
-import { useSettingsStore } from '@/store/settings-store';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
-// Calvin S figlet-style 3-line ASCII logo for SHELLY.
-// Uses box-drawing chars — requires JetBrainsMono_400Regular (loaded in _layout.tsx).
-const SHELLY_LOGO =
-  '╔═╗╦ ╦╔═╗╦  ╦  ╦ ╦\n' +
-  '╚═╗╠═╣║╣ ║  ║  ╚╦╝\n' +
-  '╚═╝╩ ╩╚═╝╩═╝╩═╝ ╩ ';
+// Wordmark — replaced the Calvin S figlet ASCII (v5.4 design refresh,
+// 2026-05-15). Renders as "Shelly" in JetBrains Mono Bold with the
+// active brand colour and a soft halo, so the brand follows the
+// AccentSection swatch chosen in Settings.
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -33,7 +30,6 @@ export function AgentBar() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [buildsOpen, setBuildsOpen] = useState(false);
   const [buildStatus, setBuildStatus] = useState<BuildStatus>('unknown');
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
   const barBg = usePanelBackground(C.bgSidebar);
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
@@ -68,7 +64,7 @@ export function AgentBar() {
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
       <View style={styles.logoMark} pointerEvents="none">
-        <Text style={styles.asciiLogo}>{SHELLY_LOGO}</Text>
+        <Text style={styles.wordmark}>Shelly</Text>
       </View>
 
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
@@ -163,13 +159,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     justifyContent: 'center',
   },
-  asciiLogo: {
+  wordmark: {
     color: C.accent,
-    fontFamily: 'JetBrainsMono_400Regular',
-    fontSize: 5.5,
-    lineHeight: 7,
+    fontFamily: 'JetBrainsMono_700Bold',
+    fontSize: 13,
+    lineHeight: 16,
     includeFontPadding: false,
-    letterSpacing: 0,
+    letterSpacing: -0.2,
+    // Soft halo so the wordmark reads as glowing against pure black
+    // without leaning into a louder neon look. Stays subtle on a 28px
+    // bar where heavy bloom would smear the surrounding chrome.
+    textShadowColor: withAlpha(C.accent, 0.55),
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
   addBtn: {
     width: 32,

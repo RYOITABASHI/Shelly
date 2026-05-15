@@ -71,7 +71,7 @@ export default function RootLayout() {
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,
   });
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'noir-blue');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
   // Runtime theme preset swap. applyThemePreset() rewrites the live
   // colors object in place, re-injects Text.defaultProps.style.fontFamily,

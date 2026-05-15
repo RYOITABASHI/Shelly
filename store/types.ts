@@ -423,23 +423,18 @@ export type AppSettings = {
    * PTY-state auto-detection.
    */
   showVimKeyBar?: boolean;
-  /** UI visual preset. Legacy ids remain accepted for existing installs. */
-  uiFont?:
-    | 'shelly'
-    | 'blackline'
-    | 'modal'
-    | 'silkscreen'
-    | 'pixel'
-    | 'mono'
-    | 'dracula'
-    | 'nord'
-    | 'gruvbox'
-    | 'tokyo-night'
-    | 'catppuccin-mocha'
-    | 'rose-pine'
-    | 'kanagawa'
-    | 'everforest'
-    | 'one-dark';
+  /**
+   * Brand accent for the Noir theme family. The name `uiFont` is
+   * historical — it used to gate both the colour palette AND the UI
+   * font, but the v5.4 design refresh unified the font (JetBrains Mono)
+   * and reduced presets to three accent colours. Renaming the key would
+   * break every user's persisted settings, so the name stays.
+   *
+   * Existing installs on a legacy id (silkscreen / dracula / nord / etc.)
+   * are migrated to 'noir-blue' on boot — see settings-store
+   * loadSettings().
+   */
+  uiFont?: 'noir-blue' | 'noir-violet' | 'noir-orange';
 };
 
 // ─── Background Agents ──────────────────────────────────────────────────────

@@ -1,0 +1,1075 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Shelly — Superset skin preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* ── Surfaces ─────────────────────────────────────── */
+    --bg:            #000000;       /* absolute black, page */
+    --surface:       #0d0d0d;       /* sidebar / agentbar */
+    --surface-2:     #141414;       /* expanded sections / hover */
+    --surface-3:     #1a1a1a;       /* popovers / modals / raised */
+    --surface-4:     #232323;       /* divider chip / active */
+    /* ── Borders ─────────────────────────────────────── */
+    --border:        rgba(255,255,255,0.07);
+    --border-strong: rgba(255,255,255,0.14);
+    /* ── Text ────────────────────────────────────────── */
+    --fg:            #fafafa;
+    --fg-muted:      #a1a1a1;
+    --fg-dim:        #5a5a5a;
+    --fg-faint:      #3a3a3a;
+    /* ── Brand accent (default: violet, swappable via [data-accent]) ── */
+    --brand:         #7c3aed;
+    --brand-2:       #a78bfa;
+    --brand-halo:    #b58fff;
+    --brand-soft:    rgba(124,58,237,0.14);
+    --brand-glow:    rgba(155,100,255,0.55);
+    --brand-glow-strong: rgba(181,143,255,0.75);
+    --brand-ring:    rgba(124,58,237,0.40);
+    /* ── Status ──────────────────────────────────────── */
+    --warning:       #ffd236;
+    --error:         #ff2357;
+    --info:          #54a2ff;
+    /* ── Type (unified, no picker) ───────────────────── */
+    --font-ui:       'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --font-mono:     'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  /* ── Accent: Orange (red-leaning) ─────────────────── */
+  body[data-accent="orange"] {
+    --brand:             #e63218;
+    --brand-2:           #ff5236;
+    --brand-halo:        #ff7a5c;
+    --brand-soft:        rgba(230,50,24,0.14);
+    --brand-glow:        rgba(255,82,54,0.55);
+    --brand-glow-strong: rgba(255,122,92,0.75);
+    --brand-ring:        rgba(230,50,24,0.40);
+  }
+  /* ── Accent: Violet (default) ─────────────────────── */
+  body[data-accent="violet"] {
+    --brand:             #7c3aed;
+    --brand-2:           #a78bfa;
+    --brand-halo:        #b58fff;
+    --brand-soft:        rgba(124,58,237,0.14);
+    --brand-glow:        rgba(155,100,255,0.55);
+    --brand-glow-strong: rgba(181,143,255,0.75);
+    --brand-ring:        rgba(124,58,237,0.40);
+  }
+  /* ── Accent: Blue (electric) ──────────────────────── */
+  body[data-accent="blue"] {
+    --brand:             #2563eb;
+    --brand-2:           #60a5fa;
+    --brand-halo:        #93c5fd;
+    --brand-soft:        rgba(37,99,235,0.14);
+    --brand-glow:        rgba(96,165,250,0.55);
+    --brand-glow-strong: rgba(147,197,253,0.75);
+    --brand-ring:        rgba(37,99,235,0.40);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+  /* ─────────────────────────────────────────────────────
+     App shell
+  ───────────────────────────────────────────────────── */
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    grid-template-rows: 44px 1fr 28px;
+    grid-template-areas:
+      "agentbar agentbar"
+      "sidebar  panes"
+      "context  context";
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ── AgentBar ──────────────────────────────────────── */
+  .agentbar {
+    grid-area: agentbar;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 14px;
+  }
+  .wordmark {
+    font-family: var(--font-ui);
+    font-weight: 600;
+    font-size: 16px;
+    letter-spacing: -0.025em;
+    color: var(--brand-halo);
+    text-shadow:
+      0 0 1px var(--brand-halo),
+      0 0 10px var(--brand-glow),
+      0 0 22px var(--brand-glow);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .wordmark .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--brand-halo);
+    box-shadow:
+      0 0 6px var(--brand-glow-strong),
+      0 0 14px var(--brand-glow);
+  }
+  .agentbar .spacer { flex: 1; }
+
+  .agentbar .agent-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: var(--surface-2);
+    letter-spacing: 0.02em;
+  }
+  .agentbar .agent-chip.active {
+    color: var(--fg);
+    border-color: var(--brand-ring);
+    background: var(--brand-soft);
+  }
+  .agentbar .agent-chip .ico { color: var(--brand); }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: var(--fg-muted);
+    transition: background 120ms, color 120ms;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+  .icon-btn.on { color: var(--brand-halo); background: var(--brand-soft); }
+
+  /* ── Accent picker (3 swatches) ───────────────────── */
+  .accent-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-2);
+  }
+  .swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.10);
+    cursor: pointer;
+    position: relative;
+    transition: transform 120ms;
+  }
+  .swatch:hover { transform: scale(1.1); }
+  .swatch[data-c="orange"] {
+    background: #e63218;
+    box-shadow: 0 0 8px rgba(255,82,54,0.55);
+  }
+  .swatch[data-c="violet"] {
+    background: #7c3aed;
+    box-shadow: 0 0 8px rgba(155,100,255,0.55);
+  }
+  .swatch[data-c="blue"] {
+    background: #2563eb;
+    box-shadow: 0 0 8px rgba(96,165,250,0.55);
+  }
+  .swatch.active {
+    border-color: rgba(255,255,255,0.85);
+    transform: scale(1.12);
+  }
+  .swatch.active::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 7px;
+    border: 1px solid rgba(255,255,255,0.20);
+  }
+
+  /* ── Settings modal ───────────────────────────────── */
+  .settings-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 30;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .settings-overlay.open { display: flex; }
+  .settings-modal {
+    width: 100%;
+    max-width: 460px;
+    background: var(--surface-3);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.7);
+    overflow: hidden;
+  }
+  .settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-title {
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: -0.01em;
+  }
+  .settings-body {
+    padding: 6px 0 8px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .setting-group { padding: 10px 18px 14px; border-bottom: 1px solid var(--border); }
+  .setting-group:last-child { border-bottom: 0; }
+  .setting-label {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--fg-dim);
+    font-weight: 500;
+    margin-bottom: 10px;
+  }
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 0;
+    gap: 12px;
+  }
+  .setting-row .name { font-size: 13px; color: var(--fg); }
+  .setting-row .hint { font-size: 11px; color: var(--fg-muted); margin-top: 2px; }
+
+  .swatch-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 4px 0 2px;
+  }
+  .swatch-lg {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    border: 1px solid rgba(255,255,255,0.10);
+    cursor: pointer;
+    position: relative;
+    transition: transform 120ms;
+  }
+  .swatch-lg:hover { transform: scale(1.06); }
+  .swatch-lg[data-c="violet"] { background: #7c3aed; box-shadow: 0 0 12px rgba(155,100,255,0.55); }
+  .swatch-lg[data-c="orange"] { background: #e63218; box-shadow: 0 0 12px rgba(255,82,54,0.55); }
+  .swatch-lg[data-c="blue"]   { background: #2563eb; box-shadow: 0 0 12px rgba(96,165,250,0.55); }
+  .swatch-lg.active {
+    border-color: rgba(255,255,255,0.95);
+  }
+  .swatch-lg.active::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+    border-radius: 9px;
+    border: 1px solid rgba(255,255,255,0.30);
+  }
+  .swatch-name {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  /* ── Toggle switch ────────────────────────────────── */
+  .toggle {
+    width: 34px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--surface-4);
+    border: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+    transition: background 160ms, border-color 160ms;
+    flex-shrink: 0;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--fg-muted);
+    transition: transform 160ms, background 160ms;
+  }
+  .toggle.on {
+    background: var(--brand-soft);
+    border-color: var(--brand-ring);
+  }
+  .toggle.on::after {
+    transform: translateX(14px);
+    background: var(--brand-halo);
+    box-shadow: 0 0 8px var(--brand-glow);
+  }
+
+  /* ── Pick button (Choose image) ───────────────────── */
+  .pick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11.5px;
+    color: var(--fg);
+    background: var(--surface-2);
+    cursor: pointer;
+    transition: all 120ms;
+  }
+  .pick-btn:hover { border-color: var(--border-strong); background: var(--surface-4); }
+  .pick-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Wallpaper layer (background transparency demo) ── */
+  .wallpaper-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 240ms;
+    background:
+      radial-gradient(ellipse at 18% 22%, rgba(124,58,237,0.30) 0%, transparent 55%),
+      radial-gradient(ellipse at 82% 78%, rgba(37,99,235,0.28) 0%, transparent 55%),
+      radial-gradient(ellipse at 50% 50%, rgba(230,50,24,0.10) 0%, transparent 60%),
+      linear-gradient(135deg, #0a0a18 0%, #050510 100%);
+  }
+  body.wallpaper .wallpaper-layer { opacity: 1; }
+  body.wallpaper .app { background: transparent; }
+  body.wallpaper .agentbar,
+  body.wallpaper .sidebar,
+  body.wallpaper .contextbar,
+  body.wallpaper .pane-tabs,
+  body.wallpaper .pane-input {
+    background: rgba(13,13,13,0.55);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+  }
+  body.wallpaper .pane { background: rgba(0,0,0,0.30); backdrop-filter: blur(8px); }
+  body.wallpaper .panes { background: rgba(255,255,255,0.06); }
+  body.wallpaper .ai-msg { background: rgba(13,13,13,0.55); backdrop-filter: blur(10px); }
+  body.wallpaper .ai-msg.user { background: var(--brand-soft); }
+  .app { position: relative; z-index: 1; }
+
+  /* ── Sidebar ───────────────────────────────────────── */
+  .sidebar {
+    grid-area: sidebar;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+  .sidebar::-webkit-scrollbar { width: 6px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+
+  .sb-section { border-bottom: 1px solid var(--border); }
+  .sb-section:last-child { border-bottom: 0; }
+
+  .sb-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    color: var(--fg-muted);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    font-weight: 500;
+    text-transform: uppercase;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sb-header:hover { background: var(--surface-2); color: var(--fg); }
+  .sb-header .chev {
+    margin-left: auto;
+    color: var(--fg-dim);
+    transition: transform 150ms;
+  }
+  .sb-section.open .sb-header .chev { transform: rotate(90deg); }
+  .sb-body { display: none; padding: 4px 0 10px; background: var(--surface); }
+  .sb-section.open .sb-body { display: block; }
+
+  .sb-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 14px 7px 30px;
+    color: var(--fg-muted);
+    font-size: 12px;
+    cursor: pointer;
+    position: relative;
+  }
+  .sb-item:hover { background: var(--surface-2); color: var(--fg); }
+  .sb-item.active {
+    color: var(--fg);
+    background: var(--brand-soft);
+  }
+  .sb-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 4px; bottom: 4px; width: 2px;
+    background: var(--brand-halo);
+    border-radius: 0 2px 2px 0;
+    box-shadow: 0 0 8px var(--brand-glow);
+  }
+  .sb-item .badge {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-dim);
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface-2);
+  }
+  .sb-item .badge.brand {
+    color: var(--brand-2);
+    border-color: var(--brand-ring);
+    background: var(--brand-soft);
+  }
+
+  /* ── Panes ─────────────────────────────────────────── */
+  .panes {
+    grid-area: panes;
+    background: var(--bg);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+  }
+  .pane {
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .pane.focused {
+    box-shadow:
+      inset 0 0 0 1px var(--brand-ring),
+      inset 0 0 14px var(--brand-soft);
+  }
+
+  .pane-tabs {
+    display: flex;
+    align-items: center;
+    height: 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    padding: 0 4px;
+  }
+  .pane-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    font-size: 11.5px;
+    color: var(--fg-muted);
+    border-radius: 5px;
+    margin: 2px 1px;
+  }
+  .pane-tab:hover { color: var(--fg); background: var(--surface-2); }
+  .pane-tab.active { color: var(--fg); background: var(--surface-3); }
+  .pane-tab .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--brand-halo);
+    box-shadow:
+      0 0 4px var(--brand-glow-strong),
+      0 0 10px var(--brand-glow);
+  }
+  .pane-tabs .add { margin-left: auto; }
+
+  .pane-body {
+    flex: 1;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    padding: 12px 14px;
+    color: var(--fg);
+  }
+  .pane-body.ai { font-family: var(--font-ui); font-size: 13px; }
+
+  .terminal-line { white-space: pre-wrap; }
+  .term-prompt { color: var(--brand); }
+  .term-user { color: var(--brand-2); }
+  .term-host { color: var(--fg-muted); }
+  .term-path { color: var(--info); }
+  .term-out { color: var(--fg-muted); }
+  .term-ok { color: var(--brand); }
+  .term-err { color: var(--error); }
+  .term-warn { color: var(--warning); }
+  .cursor {
+    display: inline-block;
+    width: 8px; height: 15px;
+    background: var(--brand-halo);
+    vertical-align: text-bottom;
+    animation: blink 1.05s steps(2,end) infinite;
+    box-shadow:
+      0 0 4px var(--brand-glow-strong),
+      0 0 12px var(--brand-glow);
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .ai-msg {
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .ai-msg.user {
+    background: var(--brand-soft);
+    border-color: var(--brand-ring);
+  }
+  .ai-msg .role {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--fg-dim);
+    margin-bottom: 6px;
+  }
+  .ai-msg.user .role { color: var(--brand-2); }
+  .ai-msg .body { color: var(--fg); font-size: 13px; }
+  .ai-msg code {
+    font-family: var(--font-mono);
+    background: var(--surface-3);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--brand-2);
+  }
+  .ai-actions {
+    display: flex; gap: 6px; margin-top: 10px;
+  }
+  .ai-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 11px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11.5px;
+    color: var(--fg);
+    background: var(--surface-2);
+    transition: all 120ms;
+  }
+  .ai-btn:hover { border-color: var(--border-strong); background: var(--surface-3); }
+  .ai-btn.primary {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+    box-shadow:
+      0 0 0 1px var(--brand-ring),
+      0 0 14px var(--brand-glow);
+  }
+  .ai-btn.primary:hover {
+    background: var(--brand-2);
+    border-color: var(--brand-2);
+    box-shadow:
+      0 0 0 1px var(--brand-ring),
+      0 0 22px var(--brand-glow-strong);
+  }
+
+  .pane-input {
+    height: 40px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 10px;
+    background: var(--surface);
+  }
+  .pane-input input {
+    flex: 1;
+    background: none;
+    border: 0;
+    outline: 0;
+    color: var(--fg);
+    font-family: var(--font-ui);
+    font-size: 13px;
+  }
+  .pane-input input::placeholder { color: var(--fg-dim); }
+
+  /* ── ContextBar ────────────────────────────────────── */
+  .contextbar {
+    grid-area: context;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+  }
+  .contextbar .seg { display: inline-flex; align-items: center; gap: 6px; }
+  .contextbar .branch { color: var(--brand-2); }
+  .contextbar .dirty { color: var(--warning); }
+  .contextbar .ok { color: var(--brand); }
+  .contextbar .spacer { flex: 1; }
+
+  /* ─────────────────────────────────────────────────────
+     Icons (Lucide-style 1.5px stroke inline SVG)
+  ───────────────────────────────────────────────────── */
+  svg.ico {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex-shrink: 0;
+  }
+  svg.ico-sm { width: 13px; height: 13px; }
+  svg.ico-lg { width: 18px; height: 18px; }
+</style>
+</head>
+<body data-accent="violet">
+
+<div class="wallpaper-layer"></div>
+
+<!-- Icon sprite (Lucide-style) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-tasks" viewBox="0 0 24 24">
+      <path d="M3 5h7M3 12h7M3 19h7"/>
+      <path d="m14 5 2 2 4-4"/>
+      <path d="m14 12 2 2 4-4"/>
+      <path d="m14 19 2 2 4-4"/>
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+    </symbol>
+    <symbol id="i-file" viewBox="0 0 24 24">
+      <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+      <path d="M14 3v6h6"/>
+    </symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24">
+      <rect x="6" y="3" width="12" height="18" rx="2.5"/>
+      <path d="M11 18h2"/>
+    </symbol>
+    <symbol id="i-network" viewBox="0 0 24 24">
+      <circle cx="12" cy="5" r="2.5"/>
+      <circle cx="5" cy="19" r="2.5"/>
+      <circle cx="19" cy="19" r="2.5"/>
+      <path d="M12 7.5v3.5M12 11l-6 5.5M12 11l6 5.5"/>
+    </symbol>
+    <symbol id="i-user" viewBox="0 0 24 24">
+      <circle cx="12" cy="8" r="4"/>
+      <path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>
+    </symbol>
+    <symbol id="i-worktree" viewBox="0 0 24 24">
+      <circle cx="6" cy="6" r="2.5"/>
+      <circle cx="18" cy="6" r="2.5"/>
+      <circle cx="12" cy="18" r="2.5"/>
+      <path d="M6 8.5v3.5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8.5"/>
+      <path d="M12 14v1.5"/>
+    </symbol>
+    <symbol id="i-rocket" viewBox="0 0 24 24">
+      <path d="M4.5 16.5c-1.5 1.5-2 5-2 5s3.5-.5 5-2c.9-.9 1-2.4 0-3.4s-2.5-.5-3 .4z"/>
+      <path d="M12 15 9 12"/>
+      <path d="M15 12 12 9"/>
+      <path d="M14.5 9.5a4.5 4.5 0 0 0-2-2L6 14l4 4 6.5-6.5a4.5 4.5 0 0 0-2-2z"/>
+      <path d="M9 7c1-5 7-5 12-5 0 5 0 11-5 12"/>
+      <circle cx="15.5" cy="8.5" r="1.5"/>
+    </symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24">
+      <path d="m9 6 6 6-6 6"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24">
+      <path d="M12 5v14M5 12h14"/>
+    </symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24">
+      <circle cx="11" cy="11" r="7"/>
+      <path d="m20 20-3.5-3.5"/>
+    </symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24">
+      <rect x="9" y="3" width="6" height="11" rx="3"/>
+      <path d="M5 11a7 7 0 0 0 14 0"/>
+      <path d="M12 18v3"/>
+    </symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24">
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.5 5.5l2.5 2.5M16 16l2.5 2.5M5.5 18.5 8 16M16 8l2.5-2.5"/>
+    </symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24">
+      <path d="m5 8 4 4-4 4"/>
+      <path d="M11 16h8"/>
+    </symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24">
+      <circle cx="6" cy="5" r="2"/>
+      <circle cx="6" cy="19" r="2"/>
+      <circle cx="18" cy="7" r="2"/>
+      <path d="M6 7v10M8 7h2a4 4 0 0 1 4 4v0a4 4 0 0 0 4 4"/>
+    </symbol>
+    <symbol id="i-circle-dot" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9"/>
+      <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path d="m5 12 5 5L20 7"/>
+    </symbol>
+    <symbol id="i-image" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="2"/>
+      <circle cx="9" cy="10" r="1.5"/>
+      <path d="m21 16-5-5-9 9"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="app">
+  <!-- ── AGENT BAR ─────────────────────────────────── -->
+  <header class="agentbar">
+    <div class="wordmark">
+      <span class="dot"></span>
+      <span>Shelly</span>
+    </div>
+
+    <span class="agent-chip active">
+      <svg class="ico ico-sm ico"><use href="#i-sparkle"/></svg>
+      Claude Code
+    </span>
+    <span class="agent-chip">
+      <svg class="ico ico-sm"><use href="#i-terminal"/></svg>
+      Codex
+    </span>
+
+    <div class="spacer"></div>
+
+    <button class="icon-btn" title="Search"><svg class="ico"><use href="#i-search"/></svg></button>
+    <button class="icon-btn" title="Voice"><svg class="ico"><use href="#i-mic"/></svg></button>
+    <button class="icon-btn" title="Add pane"><svg class="ico"><use href="#i-plus"/></svg></button>
+    <button class="icon-btn" title="Settings" onclick="openSettings()"><svg class="ico"><use href="#i-cog"/></svg></button>
+  </header>
+
+  <!-- ── SIDEBAR ───────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <section class="sb-section open" data-section="tasks">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-tasks"/></svg>
+        <span>Tasks</span>
+        <span class="badge brand" style="margin-left:auto;font-size:10px">3</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item active">
+          <span>Refactor pane store</span>
+          <span class="badge">running</span>
+        </div>
+        <div class="sb-item">
+          <span>Fix paste fallback</span>
+          <span class="badge">queued</span>
+        </div>
+        <div class="sb-item">
+          <span>Update README hero</span>
+          <span class="badge">done</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="sb-section open" data-section="repos">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-folder"/></svg>
+        <span>Repositories</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">~/Shelly <span class="badge brand">main</span></div>
+        <div class="sb-item">~/projects/notes</div>
+        <div class="sb-item">~/scratch/demo-react</div>
+      </div>
+    </section>
+
+    <section class="sb-section" data-section="worktrees">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-worktree"/></svg>
+        <span>Worktrees</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">relaxed-curie-3fa49d</div>
+      </div>
+    </section>
+
+    <section class="sb-section" data-section="files">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-file"/></svg>
+        <span>File tree</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">components/</div>
+        <div class="sb-item">lib/</div>
+        <div class="sb-item">store/</div>
+        <div class="sb-item">CLAUDE.md</div>
+      </div>
+    </section>
+
+    <section class="sb-section" data-section="device">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-phone"/></svg>
+        <span>Device</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">~ <span class="badge">home</span></div>
+        <div class="sb-item">/sdcard/Download</div>
+      </div>
+    </section>
+
+    <section class="sb-section" data-section="ports">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-network"/></svg>
+        <span>Ports</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">:3000 <span class="badge brand">dev</span></div>
+        <div class="sb-item">:8080</div>
+      </div>
+    </section>
+
+    <section class="sb-section" data-section="profiles">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-user"/></svg>
+        <span>Profiles</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">prod-bastion</div>
+        <div class="sb-item">staging-1</div>
+      </div>
+    </section>
+
+    <section class="sb-section" data-section="quick">
+      <div class="sb-header" onclick="toggleSection(this)">
+        <svg class="ico"><use href="#i-rocket"/></svg>
+        <span>Quick launch</span>
+        <svg class="ico ico-sm chev"><use href="#i-chev"/></svg>
+      </div>
+      <div class="sb-body">
+        <div class="sb-item">claude --resume</div>
+        <div class="sb-item">codex</div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ── PANES ─────────────────────────────────────── -->
+  <main class="panes">
+
+    <section class="pane focused">
+      <div class="pane-tabs">
+        <span class="pane-tab active">
+          <span class="dot"></span>
+          claude
+        </span>
+        <span class="pane-tab">bash</span>
+        <span class="pane-tab">codex</span>
+        <button class="icon-btn add"><svg class="ico ico-sm"><use href="#i-plus"/></svg></button>
+      </div>
+      <div class="pane-body">
+        <div class="terminal-line"><span class="term-user">ryo</span><span class="term-host">@fold6</span> <span class="term-path">~/Shelly</span> <span class="term-prompt">$</span> git status</div>
+        <div class="terminal-line"><span class="term-out">On branch </span><span class="term-ok">claude/relaxed-curie-3fa49d</span></div>
+        <div class="terminal-line"><span class="term-out">Your branch is up to date with 'origin/main'.</span></div>
+        <div class="terminal-line"><span class="term-out">nothing to commit, working tree clean</span></div>
+        <div class="terminal-line">&nbsp;</div>
+        <div class="terminal-line"><span class="term-user">ryo</span><span class="term-host">@fold6</span> <span class="term-path">~/Shelly</span> <span class="term-prompt">$</span> claude --resume</div>
+        <div class="terminal-line"><span class="term-ok">✓</span> <span class="term-out">resumed conversation 6d551e46</span></div>
+        <div class="terminal-line"><span class="term-warn">!</span> <span class="term-out">3 files changed since last save</span></div>
+        <div class="terminal-line">&nbsp;</div>
+        <div class="terminal-line"><span class="term-user">ryo</span><span class="term-host">@fold6</span> <span class="term-path">~/Shelly</span> <span class="term-prompt">$</span> pnpm typecheck<span class="cursor"></span></div>
+      </div>
+    </section>
+
+    <section class="pane">
+      <div class="pane-tabs">
+        <span class="pane-tab active">
+          <span class="dot"></span>
+          AI · Claude Sonnet 4.6
+        </span>
+        <button class="icon-btn add"><svg class="ico ico-sm"><use href="#i-plus"/></svg></button>
+      </div>
+      <div class="pane-body ai">
+        <div class="ai-msg user">
+          <div class="role">You</div>
+          <div class="body">右のターミナルで <code>pnpm typecheck</code> が止まってる。原因見て直して。</div>
+        </div>
+        <div class="ai-msg">
+          <div class="role">Assistant</div>
+          <div class="body">
+            <code>store/pane-store.ts:42</code> で <code>PaneNode</code> の <code>children</code> プロパティが
+            optional になっていて、<code>focusedId</code> の補正で <code>undefined.find</code> を踏んでる。
+            <code>?? []</code> でガードすれば PASS する。
+          </div>
+          <div class="ai-actions">
+            <button class="ai-btn primary"><svg class="ico ico-sm"><use href="#i-check"/></svg> Apply &amp; run</button>
+            <button class="ai-btn">View diff</button>
+            <button class="ai-btn">Dismiss</button>
+          </div>
+        </div>
+      </div>
+      <div class="pane-input">
+        <svg class="ico" style="color:var(--fg-dim)"><use href="#i-sparkle"/></svg>
+        <input placeholder="Ask Shelly anything…" />
+        <button class="icon-btn"><svg class="ico"><use href="#i-mic"/></svg></button>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── CONTEXT BAR ───────────────────────────────── -->
+  <footer class="contextbar">
+    <span class="seg"><svg class="ico ico-sm"><use href="#i-folder"/></svg> ~/Shelly</span>
+    <span class="seg"><svg class="ico ico-sm"><use href="#i-branch"/></svg> <span class="branch">claude/relaxed-curie-3fa49d</span></span>
+    <span class="seg ok"><svg class="ico ico-sm"><use href="#i-check"/></svg> clean</span>
+    <div class="spacer"></div>
+    <span class="seg">claude 2.1.7</span>
+    <span class="seg">codex 0.130</span>
+    <span class="seg ok">● online</span>
+  </footer>
+</div>
+
+<!-- ── SETTINGS MODAL ─────────────────────────────── -->
+<div class="settings-overlay" id="settings" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-modal">
+    <div class="settings-head">
+      <div class="settings-title">Settings</div>
+      <button class="icon-btn" title="Close" onclick="closeSettings()">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 6l12 12M18 6 6 18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="settings-body">
+
+      <div class="setting-group">
+        <div class="setting-label">Appearance · Accent</div>
+        <div class="swatch-row" id="accent-swatches">
+          <span class="swatch-lg active" data-c="violet" onclick="setAccent('violet')"></span>
+          <span class="swatch-lg" data-c="orange" onclick="setAccent('orange')"></span>
+          <span class="swatch-lg" data-c="blue"   onclick="setAccent('blue')"></span>
+          <span class="swatch-name" id="accent-name">violet</span>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="setting-label">Appearance · Wallpaper</div>
+        <div class="setting-row">
+          <div>
+            <div class="name">Use wallpaper</div>
+            <div class="hint">背景を透過してユーザー画像を敷く</div>
+          </div>
+          <div class="toggle" id="wallpaper-toggle" onclick="toggleWallpaper()"></div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="name">Image</div>
+            <div class="hint" id="wallpaper-hint">nebula-demo.gradient (built-in)</div>
+          </div>
+          <button class="pick-btn"><svg class="ico ico-sm"><use href="#i-image"/></svg> Choose…</button>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="setting-label">Display</div>
+        <div class="setting-row">
+          <div>
+            <div class="name">CRT effect</div>
+            <div class="hint">scanlines + phosphor glow</div>
+          </div>
+          <div class="toggle" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="name">Reduce motion</div>
+            <div class="hint">アニメーション抑制</div>
+          </div>
+          <div class="toggle" onclick="this.classList.toggle('on')"></div>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="setting-label">Feedback</div>
+        <div class="setting-row">
+          <div>
+            <div class="name">Haptics</div>
+            <div class="hint">ペイン切替・コマンド完了で振動</div>
+          </div>
+          <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="name">Sound profile</div>
+            <div class="hint">Modern / Retro / Silent</div>
+          </div>
+          <button class="pick-btn">Modern</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  function toggleSection(headerEl) {
+    headerEl.parentElement.classList.toggle('open');
+  }
+  function setAccent(name) {
+    document.body.dataset.accent = name;
+    document.querySelectorAll('.swatch-lg').forEach(s => {
+      s.classList.toggle('active', s.dataset.c === name);
+    });
+    const label = document.getElementById('accent-name');
+    if (label) label.textContent = name;
+  }
+  function toggleWallpaper() {
+    const on = document.body.classList.toggle('wallpaper');
+    const tgl = document.getElementById('wallpaper-toggle');
+    if (tgl) tgl.classList.toggle('on', on);
+  }
+  function openSettings()  { document.getElementById('settings').classList.add('open'); }
+  function closeSettings() { document.getElementById('settings').classList.remove('open'); }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSettings(); });
+</script>
+</body>
+</html>

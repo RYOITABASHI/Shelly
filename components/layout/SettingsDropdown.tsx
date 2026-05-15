@@ -1,8 +1,9 @@
 // components/layout/SettingsDropdown.tsx
 //
 // Drop-down settings panel anchored to the gear button in AgentBar.
-// Consolidates Display (CRT/Font), Language, AI Agents, and API Keys
-// that were previously scattered across the top bar.
+// Consolidates Display (Font Size / Accent), Wallpaper, Language, AI
+// Agents, and API Keys that were previously scattered across the top
+// bar.
 
 import React, { useRef, useState, useEffect } from 'react';
 import {
@@ -249,10 +250,6 @@ function RecoverySection() {
 // The picked file is copied into app document storage so it survives cache
 // eviction and OS cleanup; the source URI under /data/user/0/.../cache would
 // eventually be purged and leave the wallpaper blank.
-//
-// CRT + wallpaper both enabled reads poorly (scanlines over a photo =
-// visual mud), so we warn on toggle but do not hard-block — some users
-// might actually want that retro-monitor-over-poster look.
 
 function WallpaperSection() {
   const wallpaperUri = useCosmeticStore((s) => s.wallpaperUri);
@@ -261,7 +258,6 @@ function WallpaperSection() {
   const setWallpaper = useCosmeticStore((s) => s.setWallpaper);
   const setWallpaperOpacity = useCosmeticStore((s) => s.setWallpaperOpacity);
   const setPanelOpacity = useCosmeticStore((s) => s.setPanelOpacity);
-  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
   // Note: blurEnabled / blurIntensity still live in cosmetic-store but no
   // UI toggle renders today — there is no chrome BlurView consumer yet,
   // so exposing a toggle would be a dead switch. Store fields stay so the
@@ -299,16 +295,6 @@ function WallpaperSection() {
         FileSystem.deleteAsync(wallpaperUri, { idempotent: true }).catch(() => {});
       }
       setWallpaper(dest);
-      if (crtEnabled) {
-        Alert.alert(
-          'CRT + Wallpaper',
-          'CRT scanlines tend to read as visual noise over a photo. Disable CRT?',
-          [
-            { text: 'Keep both', style: 'cancel' },
-            { text: 'Disable CRT', onPress: () => useCosmeticStore.getState().setCrt(false) },
-          ],
-        );
-      }
     } catch (e) {
       Alert.alert('Pick failed', String((e as Error)?.message ?? e));
     }
@@ -364,9 +350,10 @@ function WallpaperSection() {
 }
 
 /**
- * Small reusable 0-100 slider row. Extracted so WallpaperSection can
- * reuse the same geometry as DisplaySection's CRT Intensity control
- * without copy-pasting the PanResponder boilerplate.
+ * Small reusable 0-100 slider row. Used by WallpaperSection for Image
+ * Opacity / Panel Opacity. Kept generic so other 0-100 settings can
+ * adopt the same geometry without copy-pasting the PanResponder
+ * boilerplate.
  */
 function SliderRow({
   label,
@@ -411,60 +398,11 @@ function SliderRow({
 // ─── Display ─────────────────────────────────────────────────────────────────
 
 function DisplaySection() {
-  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
-  const crtIntensity = useCosmeticStore((s) => s.crtIntensity);
-  const setCrt = useCosmeticStore((s) => s.setCrt);
-  const setCrtIntensity = useCosmeticStore((s) => s.setCrtIntensity);
-
   const fontSize = useSettingsStore((s) => s.settings.fontSize);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
-  const trackWidth = 140;
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const x = e.nativeEvent.locationX;
-        setCrtIntensity(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
-      },
-      onPanResponderMove: (e) => {
-        const x = e.nativeEvent.locationX;
-        setCrtIntensity(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
-      },
-    })
-  ).current;
-
-  const fillWidth = (crtIntensity / 100) * trackWidth;
-
   return (
     <Section title="DISPLAY">
-      {/* CRT Effect toggle */}
-      <Row label="CRT Effect">
-        <Pressable
-          style={[styles.switchTrack, crtEnabled && styles.switchTrackOn]}
-          onPress={() => setCrt(!crtEnabled)}
-          hitSlop={4}
-        >
-          <View style={[styles.switchThumb, crtEnabled && styles.switchThumbOn]} />
-        </Pressable>
-      </Row>
-
-      {/* Intensity slider (only when CRT enabled) */}
-      {crtEnabled && (
-        <Row label="Intensity">
-          <View style={styles.sliderGroup}>
-            <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
-              <View style={styles.sliderTrack}>
-                <View style={[styles.sliderFill, { width: fillWidth }]} />
-                <View style={[styles.sliderThumb, { left: fillWidth - 5 }]} />
-              </View>
-            </View>
-            <Text style={styles.sliderPercent}>{crtIntensity}%</Text>
-          </View>
-        </Row>
-      )}
-
       {/* Font size preset */}
       <Row label="Font Size">
         <View style={styles.segGroup}>
@@ -486,57 +424,50 @@ function DisplaySection() {
         </View>
       </Row>
 
-      {/* UI visual preset */}
-      <ThemeRow />
+      {/* Brand accent (3-swatch picker) */}
+      <AccentRow />
     </Section>
   );
 }
 
-type UiFontId =
-  | 'shelly'
-  | 'blackline'
-  | 'modal'
-  | 'silkscreen'
-  | 'pixel'
-  | 'mono'
-  | 'dracula'
-  | 'nord'
-  | 'gruvbox'
-  | 'tokyo-night'
-  | 'catppuccin-mocha'
-  | 'rose-pine'
-  | 'kanagawa'
-  | 'everforest'
-  | 'one-dark';
+// ─── Accent (brand colour picker) ────────────────────────────────────────────
+//
+// v5.4 design refresh (2026-05-15): the 15 legacy `uiFont` themes
+// collapsed into a single Noir base in three accent colours. Each
+// swatch maps to a `noir-*` preset; tapping a swatch routes through
+// applyThemePreset() so the live `colors` object swap is synchronous
+// (avoids the AsyncStorage race that bit bugs #28 / #54), then
+// updateSettings() persists the choice for the next launch.
 
-function ThemeRow() {
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
+type AccentId = 'noir-blue' | 'noir-violet' | 'noir-orange';
+
+const ACCENT_SWATCHES: Array<{ id: AccentId; label: string; color: string }> = [
+  { id: 'noir-blue',   label: 'Blue',   color: '#3B82F6' },
+  { id: 'noir-violet', label: 'Violet', color: '#7C3AED' },
+  { id: 'noir-orange', label: 'Orange', color: '#E63218' },
+];
+
+function AccentRow() {
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'noir-blue');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const options: Array<{ value: UiFontId; label: string }> = [
-    { value: 'shelly',    label: 'Studio' },
-    { value: 'blackline', label: 'Blackline' },
-    { value: 'modal',     label: 'Modal' },
-  ];
   return (
-    <Row label="Theme">
-      <View style={styles.segGroup}>
-        {options.map((opt) => {
-          const active = uiFont === opt.value;
+    <Row label="Accent">
+      <View style={styles.accentRow}>
+        {ACCENT_SWATCHES.map((sw) => {
+          const active = uiFont === sw.id;
           return (
             <Pressable
-              key={opt.value}
-              style={[styles.segBtn, active && styles.segBtnActive]}
+              key={sw.id}
+              accessibilityRole="button"
+              accessibilityLabel={`Accent ${sw.label}`}
               onPress={() => {
-                // Apply synchronously to avoid the AsyncStorage race that
-                // caused bug #28/#54.
-                applyThemePreset(opt.value);
-                updateSettings({ uiFont: opt.value });
+                applyThemePreset(sw.id);
+                updateSettings({ uiFont: sw.id });
               }}
               hitSlop={4}
+              style={[styles.accentSwatch, active && styles.accentSwatchActive]}
             >
-              <Text style={[styles.segLabel, active && styles.segLabelActive]}>
-                {opt.label}
-              </Text>
+              <View style={[styles.accentSwatchFill, { backgroundColor: sw.color }]} />
             </Pressable>
           );
         })}
@@ -1433,6 +1364,27 @@ const styles = StyleSheet.create({
   },
   segLabelActive: {
     color: C.accent,
+  },
+  // Accent swatches (3-colour brand picker — v5.4)
+  accentRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  accentSwatch: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  accentSwatchActive: {
+    borderColor: '#FAFAFA',
+  },
+  accentSwatchFill: {
+    flex: 1,
+    borderRadius: 4,
   },
   // Integrations
   integrationRow: {
