@@ -22,12 +22,20 @@ import { usePaneStore } from '@/store/pane-store';
 import { WorktreeAddModal } from './WorktreeAddModal';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, sizes as S } from '@/theme.config';
+import { neonGlowPurple } from '@/lib/neon-glow';
 
 const AGENT_COLORS: Record<WorktreeAgent, string> = {
-  claude: C.text1,
-  gemini: C.text1,
-  codex:  C.text1,
-  none:   C.text3,
+  claude: '#A78BFA',
+  gemini: '#60A5FA',
+  codex:  '#22C55E',
+  none:   '#9CA3AF',
+};
+
+const AGENT_EMOJI: Record<WorktreeAgent, string> = {
+  claude: '🟣',
+  gemini: '🔵',
+  codex:  '🟢',
+  none:   '⚪',
 };
 
 function supportedAgent(agent: WorktreeAgent): Exclude<WorktreeAgent, 'gemini'> {
@@ -181,6 +189,8 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
         isOpen={isOpen}
         onToggle={onToggle}
         iconsOnly={iconsOnly}
+        accent={C.accentPurple}
+        glow={neonGlowPurple}
       >
         {!activeRepoPath ? (
           <Text style={styles.empty}>
@@ -197,7 +207,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
             return (
               <View key={wt.id} style={styles.row}>
                 <Pressable style={styles.rowMain} onPress={() => handleOpen(wt.id)}>
-                  <MaterialIcons name="account-tree" size={12} color={C.text2} />
+                  <Text style={styles.emoji}>{AGENT_EMOJI[agent]}</Text>
                   <View style={styles.rowText}>
                     <Text style={[styles.branch, { color: AGENT_COLORS[agent] }]} numberOfLines={1}>
                       {wt.branch}
@@ -209,7 +219,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
                     </Text>
                   </View>
                   {resumable ? (
-                    <MaterialIcons name="play-arrow" size={12} color={C.text2} />
+                    <MaterialIcons name="play-arrow" size={12} color={AGENT_COLORS[agent]} />
                   ) : null}
                 </Pressable>
                 <Pressable
@@ -236,7 +246,8 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
                 style={[styles.addChip, { borderColor: AGENT_COLORS[a] }]}
                 onPress={() => handleAdd(a)}
               >
-                <Text style={styles.addChipText}>+ {a}</Text>
+                <Text style={styles.addChipEmoji}>{AGENT_EMOJI[a]}</Text>
+                <Text style={[styles.addChipText, { color: AGENT_COLORS[a] }]}>+ {a}</Text>
               </Pressable>
             ))}
           </View>
@@ -280,6 +291,9 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 1,
   },
+  emoji: {
+    fontSize: 10,
+  },
   branch: {
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,
@@ -316,7 +330,6 @@ const styles = StyleSheet.create({
     fontSize: 9,
   },
   addChipText: {
-    color: C.text2,
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,
     fontWeight: '700',

@@ -16,8 +16,21 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, radii as R } from '@/theme.config';
+import { neonGlowSky } from '@/lib/neon-glow';
 
 type Cli = 'claude' | 'codex';
+
+// Anthropic Claude brand: warm copper/orange (#CC785C). Codex green matches
+// OpenAI's primary brand identity.
+const CLI_COLORS: Record<Cli, string> = {
+  claude: '#CC785C',
+  codex: '#22C55E',
+};
+
+const CLI_EMOJI: Record<Cli, string> = {
+  claude: '🟠',
+  codex: '🟢',
+};
 
 const CLI_LABEL: Record<Cli, string> = {
   claude: 'Claude',
@@ -54,18 +67,21 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
       isOpen={isOpen}
       onToggle={onToggle}
       iconsOnly={iconsOnly}
+      accent={C.accentSky}
+      glow={neonGlowSky}
     >
       <View style={styles.row}>
         {(['claude', 'codex'] as const).map((cli) => (
           <Pressable
             key={cli}
-            style={styles.chip}
+            style={[styles.chip, { borderColor: CLI_COLORS[cli] }]}
             onPress={() => launch(cli)}
             hitSlop={4}
             accessibilityRole="button"
             accessibilityLabel={`Launch ${CLI_LABEL[cli]} in a new terminal pane`}
           >
-            <Text style={styles.chipLabel}>
+            <Text style={styles.emoji}>{CLI_EMOJI[cli]}</Text>
+            <Text style={[styles.chipLabel, { color: CLI_COLORS[cli] }]}>
               {CLI_LABEL[cli]}
             </Text>
           </Pressable>
@@ -93,11 +109,13 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: R.agentTab,
     borderWidth: 1,
-    borderColor: C.border,
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  emoji: {
+    fontSize: 9,
+    lineHeight: 11,
   },
   chipLabel: {
-    color: C.text2,
     fontFamily: F.family,
     fontSize: 9,
     fontWeight: '600',
