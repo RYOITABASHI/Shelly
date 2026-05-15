@@ -727,18 +727,12 @@ export default function TerminalScreen() {
             sessionId={activeSession.nativeSessionId}
             // Terminal font is deliberately NOT Silkscreen. Silkscreen's
             // glyph design has all letters drawn in uppercase shapes —
-            // even lowercase code points render as visual capitals — so
-            // using it in the terminal makes it impossible to tell what
-            // you actually typed. The surrounding UI chrome can still
-            // wear Silkscreen as its brand identity, but the terminal
-            // pane itself uses JetBrains Mono so character case is
-            // readable. The 'pixel' preset still gets PixelMplus for
-            // users who want a pixel aesthetic with real lowercase.
-            fontFamily={
-              settings.uiFont === 'pixel'
-                ? 'pixel-mplus'
-                : 'jetbrains-mono'
-            }
+            // v5.4 design refresh: terminal font is fixed to JetBrains
+            // Mono so character case in the PTY is always readable.
+            // (Legacy 'silkscreen' / 'pixel' uiFont presets that swapped
+            // the terminal font were retired with the Noir family
+            // collapse.)
+            fontFamily={'jetbrains-mono'}
             fontSize={termFontSize}
             cursorShape={settings.cursorShape || 'block'}
             cursorBlink={true}

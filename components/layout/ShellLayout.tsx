@@ -19,7 +19,6 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
-import { CrtOverlay } from '@/components/CrtOverlay';
 import { BackgroundLayer } from '@/components/BackgroundLayer';
 import { VoiceChat } from '@/components/VoiceChat';
 import { useSettingsStore } from '@/store/settings-store';
@@ -293,9 +292,6 @@ export function ShellLayout() {
       <View pointerEvents="none" style={styles.saveBadgeSlot}>
         <SaveBadge />
       </View>
-
-      {/* CRT effect — must be last so it renders on top of everything */}
-      <CrtOverlay />
     </View>
   );
 }

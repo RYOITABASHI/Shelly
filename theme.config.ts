@@ -16,62 +16,63 @@
 // type` vs `import {}`). So keep this file import-free. Mutable
 // palette object is seeded inline here; lib/theme-presets.ts holds the
 // identical shellyPalette for runtime preset swaps via Object.assign.
+// Seed values match the Noir Blue preset (the new default). Existing
+// users on a legacy `uiFont` (silkscreen / dracula / nord / ...) are
+// migrated to 'noir-blue' at boot via settings-store loadSettings, so
+// the live `colors` object will always end up reflecting one of the
+// three Noir presets after applyThemePreset() runs in app/_layout.tsx.
 export const colors = {
   bgDeep:     '#000000',
-  bgSurface:  '#000000',
-  bgSidebar:  '#000000',
-  border:     '#1F1F2E',
+  bgSurface:  '#0D0D0D',
+  bgSidebar:  '#0D0D0D',
+  border:     '#1F1F1F',
 
-  accent:        '#00F0C8',
-  accentGreen:   '#39FF14',
-  accentBlue:    '#0AF0FF',
-  accentSky:     '#38E1FF',
-  accentPurple:  '#B14AFF',
-  accentPink:    '#FF2ED3',
-  accentAmber:   '#FFE500',
-  accentCode:    '#0AF0FF',
-  warning:       '#FFE500',
+  accent:        '#3B82F6',
+  accentGreen:   '#3B82F6',
+  accentBlue:    '#3B82F6',
+  accentSky:     '#38BDF8',
+  accentPurple:  '#A78BFA',
+  accentPink:    '#EC4899',
+  accentAmber:   '#F59E0B',
+  accentCode:    '#60A5FA',
+  warning:       '#F59E0B',
 
-  text1:      '#F5F7FF',
-  text2:      '#A9B0CF',
-  text3:      '#5C6385',
+  text1:      '#FAFAFA',
+  text2:      '#A1A1A1',
+  text3:      '#5A5A5A',
 
   // Semantic
-  errorText:  '#FF3366',
-  errorBg:    'rgba(255,51,102,0.14)',
-  addText:    '#39FF14',
-  addBg:      'rgba(57,255,20,0.14)',
+  errorText:  '#EF4444',
+  errorBg:    'rgba(239,68,68,0.14)',
+  addText:    '#3B82F6',
+  addBg:      'rgba(59,130,246,0.14)',
 
   // Buttons
-  btnPrimaryBg:     '#00F0C8',
-  btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#1A1A2E',
-  btnSecondaryText: '#F5F7FF',
+  btnPrimaryBg:     '#3B82F6',
+  btnPrimaryText:   '#FFFFFF',
+  btnSecondaryBg:   '#1A1A1A',
+  btnSecondaryText: '#FAFAFA',
 
   // Badges
-  badgeRunningBg:   'rgba(255,229,0,0.18)',
-  badgeRunningText: '#FFE500',
-  badgeLinkedBg:    'rgba(57,255,20,0.18)',
-  badgeLinkedText:  '#39FF14',
+  badgeRunningBg:   'rgba(245,158,11,0.18)',
+  badgeRunningText: '#F59E0B',
+  badgeLinkedBg:    'rgba(59,130,246,0.18)',
+  badgeLinkedText:  '#60A5FA',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#5C6385',
+  badgeConnectText: '#5A5A5A',
 
   // Layout buttons
-  layoutActiveBg:     '#00F0C8',
-  layoutActiveText:   '#000000',
+  layoutActiveBg:     '#3B82F6',
+  layoutActiveText:   '#FFFFFF',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#5C6385',
-
-  // CRT badge
-  crtBadgeBg:   '#000000',
-  crtBadgeText: '#00F0C8',
+  layoutInactiveText: '#5A5A5A',
 
   // Auto-save
   autoSaveBg: '#000000',
 
   // Diff
-  diffAddBorder:    '#39FF14',
-  diffRemoveBorder: '#FF3366',
+  diffAddBorder:    '#3B82F6',
+  diffRemoveBorder: '#EF4444',
 };
 
 // ─── Fonts ──────────────────────────────────────────────────────────────────

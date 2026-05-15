@@ -53,9 +53,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   externalKeyboardShortcuts: false,
   terminalTheme: 'shelly',
   gpuRendering: false,
-  uiFont: 'shelly',
+  // v5.4 design refresh (2026-05-15): default brand accent for fresh
+  // installs. Existing installs with a legacy value (silkscreen / nord
+  // / dracula / etc.) get migrated to this on the next load — see
+  // loadSettings.
+  uiFont: 'noir-blue',
   showVimKeyBar: false,
 };
+
+// Legacy `uiFont` ids accepted by previous versions. Anything not in
+// the current Noir union is mapped to the default at load time so the
+// app never tries to applyThemePreset() on a stale id.
+const VALID_UI_FONTS = new Set<string>(['noir-blue', 'noir-violet', 'noir-orange']);
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
@@ -89,6 +98,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ...(settingsRaw ? JSON.parse(settingsRaw) : {}),
         ...secureKeys,
       };
+      // Legacy `uiFont` migration. Pre-v5.4 installs may have any of
+      // 15 retired preset ids saved here (shelly, dracula, nord, etc.).
+      // Map them all to the new default so the boot path never calls
+      // applyThemePreset() with an unknown id.
+      if (!settings.uiFont || !VALID_UI_FONTS.has(settings.uiFont)) {
+        settings.uiFont = 'noir-blue';
+      }
       // Sync sound store on load
       useSoundStore.getState().setEnabled(settings.soundEffects ?? true);
       useSoundStore.getState().setVolume(settings.soundVolume ?? 0.6);

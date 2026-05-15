@@ -43,9 +43,9 @@ export const FEATURE_CATALOG: Feature[] = [
   { id: 'savepoints', name: 'Auto Savepoints', description: 'Automatic git snapshots with undo', category: 'workflow' },
 
   // Config
-  { id: 'crt-mode', name: 'CRT Mode', description: 'Retro CRT display effect with scanlines', category: 'config' },
+  { id: 'accent-color', name: 'Accent Color', description: 'Pick a brand accent: Blue, Violet, or Orange (Settings → Accent)', category: 'config' },
+  { id: 'wallpaper', name: 'Wallpaper', description: 'Set a background image with transparency control', category: 'config' },
   { id: 'sound-profiles', name: 'Sound Profiles', description: 'Modern, Retro (8-bit), or Silent sounds', category: 'config' },
-  { id: 'fonts', name: 'Font Selection', description: 'Multiple monospace fonts including pixel fonts', category: 'config' },
 ];
 
 /** Compressed catalog for AI system prompt injection */

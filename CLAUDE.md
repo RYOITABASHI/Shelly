@@ -98,7 +98,6 @@ Shelly/
 │   │   └── LinkContextMenu.tsx     # パス/URL長押しメニュー
 │   ├── config/
 │   │   └── ConfigTUI.tsx           # 設定ボトムシート（全設定移植済み）
-│   ├── CrtOverlay.tsx              # CRTエフェクト（scanlines+phosphor+flicker）
 │   ├── ContextHint.tsx             # 行動トリガーヒント
 │   ├── CommandPalette.tsx          # コマンドパレット（recent+suggested+search）
 │   └── VoiceChat.tsx               # フルスクリーン音声モード
@@ -119,7 +118,7 @@ Shelly/
 │   ├── ai-pane-context.ts          # AIペインへのターミナルコンテキスト注入
 │   ├── feature-catalog.ts          # 167機能カタログ（AI Discovery用）
 │   ├── context-hint-manager.ts     # 行動トリガーヒント管理
-│   ├── font-manager.ts             # フォント選択（CRT連動）
+│   ├── font-manager.ts             # フォント選択ヘルパ
 │   ├── sound-profiles.ts           # Modern/Retro/Silent
 │   ├── haptics.ts                  # ハプティクスフィードバック
 │   ├── workspace-manager.ts        # リポジトリごとのワークスペース切替
@@ -207,6 +206,7 @@ Shelly/
 | **shell→RN bridge は file-queue (am start 不可)** | Android Knox sepolicy で `untrusted_app` uid からの `am start` が AMS で拒否 (`Failed transaction (2147483646)`)。代替として `$HOME/.shelly-deep-link-queue` に append、RN 側 250ms poll で drain → `useBrowserStore.openUrl()` 直接呼び出し (RN main thread は activity context、AMS 経由しない) | shelly-xdg-open.c, shelly-codex-auth.js, app/_layout.tsx |
 | **PATH-visible shim は native binary 必須 (#! script 不可)** | kernel binfmt_script が `app_data_file` の `file{read}` を caller domain に要求するが Knox sepolicy で deny。`#!/system/bin/sh`、`#!$HOME/bin/bash`、`#!/system/bin/linker64 ...libbash.so` 全て同じエラー (`bad interpreter: Success`)。jniLibs に native binary を同梱、LibExtractor で $libDir に展開、$HOME/bin から symlink するパターンが唯一動く (libDir SELinux label が exec 許可) | shelly-xdg-open.c, shelly-shell-launcher.c, LibExtractor.kt |
 | WebView UA は `wv` token 抜き必須 (OAuth 突破) | Android デフォルト UA の `wv` token を OAuth provider が embedded WebView 検出に使う。Anthropic / GitHub は UA 修正で通るが、Google は `X-Requested-With: <package>` header (Chromium 自動付与) でも検出するので Custom Tabs trampoline が別途必要 (Phase 1.2 deferred) | components/panes/BrowserPane.tsx |
+| **テーマは Noir 3色 (Blue / Violet / Orange) のみ・フォント統一** | v5.4 design refresh (2026-05-15)。旧 15 プリセット (shelly / blackline / modal / silkscreen / pixel / mono / dracula / nord / gruvbox / tokyo-night / catppuccin-mocha / rose-pine / kanagawa / everforest / one-dark) と CRT scanline オーバーレイを削除。Wallpaper / 透過は温存。AgentBar の SHELLY ASCII figlet は "Shelly" wordmark に置換。既存ユーザーの `uiFont` レガシー値は loadSettings で `noir-blue` に migrate | lib/theme-presets.ts, theme.config.ts, store/settings-store.ts, store/cosmetic-store.ts, components/layout/AgentBar.tsx, components/layout/SettingsDropdown.tsx |
 
 ---
 

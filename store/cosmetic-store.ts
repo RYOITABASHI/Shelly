@@ -2,11 +2,16 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type SoundProfile = 'modern' | 'retro' | 'silent';
+// Kept for type compatibility with any callsite that still references
+// the cosmetic-store font field. The active UI / terminal fonts are
+// now fixed (JetBrains Mono via theme-presets.ts and TerminalView), so
+// `fontFamily` here is effectively decorative state.
 export type FontFamily = 'jetbrains-mono' | 'fira-code' | 'source-code-pro' | 'ibm-plex-mono' | 'pixel-mplus' | 'press-start-2p' | 'silkscreen';
 
 /**
- * Phase B (2026-04-21) — wallpaper + chrome transparency state.
+ * Cosmetic store — wallpaper, transparency, sound, haptic.
  *
+ * Phase B (2026-04-21): wallpaper + chrome transparency state.
  * - `wallpaperUri` is a file:// path copied into app document storage on
  *   pick (so it survives cache eviction) — null when no wallpaper.
  * - `wallpaperOpacity` scales the image's own alpha (0-100 → 0.0-1.0).
@@ -18,16 +23,14 @@ export type FontFamily = 'jetbrains-mono' | 'fira-code' | 'source-code-pro' | 'i
  *   when supported; lower API levels fall back to a dimmed tint.
  * - `blurIntensity` maps 0-100 → expo-blur `intensity`.
  *
- * CRT conflict: the scanline overlay reads weirdly over a user photo,
- * so we expose both toggles independently but Settings warns when the
- * user tries to enable CRT while a wallpaper is set.
+ * v5.4 design refresh (2026-05-15): the CRT scanline overlay was
+ * removed. Persisted state from older builds with `crtEnabled` /
+ * `crtIntensity` is harmless — the spread in `loadCosmetics` just
+ * drops unknown keys via the explicit destructure below.
  */
 interface CosmeticState {
-  crtEnabled: boolean;
-  crtIntensity: number; // 0-100
   soundProfile: SoundProfile;
   fontFamily: FontFamily;
-  crtFont: FontFamily;
   hapticEnabled: boolean;
   isLoaded: boolean;
 
@@ -38,11 +41,8 @@ interface CosmeticState {
   blurEnabled: boolean;
   blurIntensity: number;    // 0-100
 
-  setCrt: (enabled: boolean) => void;
-  setCrtIntensity: (intensity: number) => void;
   setSoundProfile: (profile: SoundProfile) => void;
   setFontFamily: (font: FontFamily) => void;
-  setCrtFont: (font: FontFamily) => void;
   setHapticEnabled: (enabled: boolean) => void;
   setWallpaper: (uri: string | null) => void;
   setWallpaperOpacity: (n: number) => void;
@@ -55,17 +55,8 @@ interface CosmeticState {
 const clamp = (n: number) => Math.max(0, Math.min(100, n));
 
 export const useCosmeticStore = create<CosmeticState>((set, get) => ({
-  // Phase C (2026-04-20): CRT defaults to OFF. Scanlines + phosphor
-  // tint are opt-in now — users who want the retro look toggle from
-  // Settings. Keeps the default install looking modern and stops
-  // surprising users who later switch to Tokyo Night / Catppuccin.
-  // Intensity seeded at a visible 35 (old 11 was nearly invisible) so
-  // when users DO flip the switch they see an immediate effect.
-  crtEnabled: false,
-  crtIntensity: 35,
   soundProfile: 'modern',
   fontFamily: 'jetbrains-mono',
-  crtFont: 'pixel-mplus',
   hapticEnabled: true,
   isLoaded: false,
 
@@ -77,11 +68,8 @@ export const useCosmeticStore = create<CosmeticState>((set, get) => ({
   blurEnabled: false,
   blurIntensity: 55,
 
-  setCrt: (enabled) => { set({ crtEnabled: enabled }); persist(get()); },
-  setCrtIntensity: (intensity) => { set({ crtIntensity: clamp(intensity) }); persist(get()); },
   setSoundProfile: (profile) => { set({ soundProfile: profile }); persist(get()); },
   setFontFamily: (font) => { set({ fontFamily: font }); persist(get()); },
-  setCrtFont: (font) => { set({ crtFont: font }); persist(get()); },
   setHapticEnabled: (enabled) => { set({ hapticEnabled: enabled }); persist(get()); },
   setWallpaper: (uri) => { set({ wallpaperUri: uri }); persist(get()); },
   setWallpaperOpacity: (n) => { set({ wallpaperOpacity: clamp(n) }); persist(get()); },
@@ -91,8 +79,30 @@ export const useCosmeticStore = create<CosmeticState>((set, get) => ({
   loadCosmetics: async () => {
     try {
       const raw = await AsyncStorage.getItem('shelly_cosmetics');
-      if (raw) { const d = JSON.parse(raw); set({ ...d, isLoaded: true }); }
-      else set({ isLoaded: true });
+      if (raw) {
+        // Whitelist known keys so legacy persisted state (e.g. crtEnabled /
+        // crtIntensity / crtFont from pre-v5.4 installs) doesn't reappear
+        // in the store. Anything missing falls back to the defaults set
+        // above.
+        const d = JSON.parse(raw);
+        const known: Partial<CosmeticState> = {
+          soundProfile:     d.soundProfile,
+          fontFamily:       d.fontFamily,
+          hapticEnabled:    d.hapticEnabled,
+          wallpaperUri:     d.wallpaperUri,
+          wallpaperOpacity: d.wallpaperOpacity,
+          panelOpacity:     d.panelOpacity,
+          blurEnabled:      d.blurEnabled,
+          blurIntensity:    d.blurIntensity,
+        };
+        // Drop undefined keys so they don't blow away the defaults.
+        Object.keys(known).forEach((k) => {
+          if ((known as any)[k] === undefined) delete (known as any)[k];
+        });
+        set({ ...known, isLoaded: true });
+      } else {
+        set({ isLoaded: true });
+      }
     } catch { set({ isLoaded: true }); }
   },
 }));
@@ -100,7 +110,7 @@ export const useCosmeticStore = create<CosmeticState>((set, get) => ({
 function persist(s: CosmeticState) {
   const {
     isLoaded,
-    setCrt, setCrtIntensity, setSoundProfile, setFontFamily, setCrtFont,
+    setSoundProfile, setFontFamily,
     setHapticEnabled, setWallpaper, setWallpaperOpacity, setPanelOpacity,
     setBlurEnabled, setBlurIntensity, loadCosmetics,
     ...data
