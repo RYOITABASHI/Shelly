@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 
 class TerminalEmulatorModule : Module() {
 
@@ -106,6 +107,7 @@ class TerminalEmulatorModule : Module() {
             for (session in sessions.values) {
                 session.emitEvent = ::emitEvent
             }
+            appContext.reactContext?.let { ScouterLifecycleService.get(it).ensureStartedIfEnabled() }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
         }
 
@@ -498,6 +500,26 @@ class TerminalEmulatorModule : Module() {
             }
             context.startActivity(intent)
             null
+        }
+
+        AsyncFunction("setScouterEnabled") { enabled: Boolean ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val scouter = ScouterLifecycleService.get(context)
+            if (enabled) scouter.start() else scouter.stop()
+            null
+        }
+
+        AsyncFunction("getScouterDebugInfo") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterLifecycleService.get(context).debugJson().toString(2)
+        }
+
+        AsyncFunction("getScouterHookTemplate") { source: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterLifecycleService.get(context).hookTemplate(source).toString(2)
         }
 
         // Phase 0: execve verification test

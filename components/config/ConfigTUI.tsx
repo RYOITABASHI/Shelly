@@ -158,6 +158,15 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     ],
   },
   {
+    title: 'Scouter',
+    icon: 'radar',
+    items: [
+      { key: 'scouterEnabled', label: 'Scouter Widget', type: 'boolean', source: 'custom', description: 'Local agent status widget. Phase 1A MVP.' },
+      { key: 'scouterDebugInfo', label: 'Scouter Debug Info', type: 'action', source: 'custom', actionLabel: 'Show' },
+      { key: 'scouterHookTemplate', label: 'Scouter Hook Template', type: 'action', source: 'custom', actionLabel: 'Show' },
+    ],
+  },
+  {
     title: 'Data',
     icon: 'storage',
     items: [
@@ -451,12 +460,22 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
 
   // Custom context (loaded async)
   const [customContextText, setCustomContextText] = useState('');
+  const [scouterEnabled, setScouterEnabled] = useState(false);
   useEffect(() => {
     if (visible) {
       logLifecycle('ConfigTUI', 'opened');
       loadCustomContext().then(setCustomContextText).catch((e) => {
         logError('ConfigTUI', 'Failed to load custom context', e);
       });
+      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+      TerminalEmulator.getScouterDebugInfo()
+        .then((raw: string) => {
+          const parsed = JSON.parse(raw);
+          setScouterEnabled(Boolean(parsed?.enabled));
+        })
+        .catch((e: unknown) => {
+          logError('ConfigTUI', 'Failed to load Scouter debug info', e);
+        });
     }
   }, [visible]);
 
@@ -472,6 +491,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     customContext: customContextText,
     usageAlertEnabled: usageStore.alertEnabled,
     dotfilesPat: dotfiles.pat,
+    scouterEnabled,
   };
 
   const getVal = useCallback(
@@ -500,6 +520,20 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           case 'usageAlertEnabled':
             usageStore.setAlertSettings({ alertEnabled: Boolean(rawValue) });
             break;
+          case 'scouterEnabled': {
+            const enabled = Boolean(rawValue);
+            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+            TerminalEmulator.setScouterEnabled(enabled)
+              .then(() => {
+                setScouterEnabled(enabled);
+                ToastAndroid.show(enabled ? 'Scouter enabled' : 'Scouter disabled', ToastAndroid.SHORT);
+              })
+              .catch((e: unknown) => {
+                logError('ConfigTUI', 'Failed to toggle Scouter', e);
+                Alert.alert('Scouter failed', String((e as any)?.message || e));
+              });
+            break;
+          }
           case 'dotfilesPat':
             dotfiles.setPat(String(rawValue));
             break;
@@ -621,6 +655,29 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             },
           ],
         );
+        break;
+      case 'scouterDebugInfo':
+        (async () => {
+          try {
+            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+            const info = await TerminalEmulator.getScouterDebugInfo();
+            Alert.alert('Scouter Debug', info.slice(0, 3500));
+          } catch (e: any) {
+            Alert.alert('Scouter Debug failed', String(e?.message || e));
+          }
+        })();
+        break;
+      case 'scouterHookTemplate':
+        (async () => {
+          try {
+            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+            const cc = await TerminalEmulator.getScouterHookTemplate('cc');
+            const codex = await TerminalEmulator.getScouterHookTemplate('codex');
+            Alert.alert('Scouter Hooks', `Claude Code:\n${cc}\n\nCodex:\n${codex}`.slice(0, 3500));
+          } catch (e: any) {
+            Alert.alert('Scouter Hooks failed', String(e?.message || e));
+          }
+        })();
         break;
     }
   }, [dotfiles]);

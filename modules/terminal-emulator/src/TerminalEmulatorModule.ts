@@ -40,6 +40,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   installApk(apkPath: string): Promise<void>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
   pasteClipboardToSession(sessionId: string): Promise<void>;
+  setScouterEnabled(enabled: boolean): Promise<void>;
+  getScouterDebugInfo(): Promise<string>;
+  getScouterHookTemplate(source: 'cc' | 'codex' | string): Promise<string>;
 }
 
 export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator');
