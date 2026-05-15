@@ -28,7 +28,7 @@ export function AgentBar() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [buildsOpen, setBuildsOpen] = useState(false);
   const [buildStatus, setBuildStatus] = useState<BuildStatus>('unknown');
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
   const barBg = usePanelBackground(C.bgSidebar);
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText

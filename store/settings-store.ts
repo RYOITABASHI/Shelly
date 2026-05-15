@@ -53,7 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   externalKeyboardShortcuts: false,
   terminalTheme: 'shelly',
   gpuRendering: false,
-  uiFont: 'shelly',
+  uiFont: 'blue',
   showVimKeyBar: false,
 };
 

@@ -17,52 +17,11 @@ type FileEntry = {
   isDirectory: boolean;
 };
 
-/**
- * Per-extension color palette. Matches the mock's colored file icons where
- * .tsx / .ts / .json / .md / .py / README each read as a different hue. Keeps
- * the default blue for unknown extensions and directories.
- */
 function fileIconColor(name: string, isDir: boolean): string {
-  if (isDir) return C.accentBlue;
-  const lower = name.toLowerCase();
-  if (lower === 'readme.md' || lower === 'readme') return C.errorText;
-  const dot = lower.lastIndexOf('.');
-  const ext = dot === -1 ? '' : lower.slice(dot + 1);
-  switch (ext) {
-    case 'tsx':
-    case 'jsx':       return C.accentSky;       // React: sky
-    case 'ts':        return C.accentBlue;      // TypeScript: blue
-    case 'js':
-    case 'mjs':
-    case 'cjs':       return C.accentAmber;     // JavaScript: amber
-    case 'json':
-    case 'toml':
-    case 'yaml':
-    case 'yml':       return C.accentAmber;     // config: amber
-    case 'md':
-    case 'mdx':       return C.accentPurple;    // markdown: purple
-    case 'py':        return C.accentGreen;     // python: green
-    case 'go':        return C.accentSky;
-    case 'rs':        return C.errorText;       // rust: red
-    case 'sh':
-    case 'bash':
-    case 'zsh':       return C.accentGreen;
-    case 'css':
-    case 'scss':      return C.accentPink;
-    case 'html':      return C.accentAmber;
-    case 'png':
-    case 'jpg':
-    case 'jpeg':
-    case 'gif':
-    case 'svg':
-    case 'webp':      return C.accentPink;
-    default:          return C.accentBlue;
-  }
+  return isDir ? C.accent : C.text2;
 }
 
 function fileNameColor(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower === 'readme.md' || lower === 'readme') return C.errorText;
   return C.text1;
 }
 
@@ -243,10 +202,10 @@ export function FileTree() {
           onChangeText={setSearch}
         />
         <Pressable onPress={() => { setCreateMode('file'); setCreateName(''); }} hitSlop={6}>
-          <MaterialIcons name="note-add" size={11} color={C.text2} />
+          <MaterialIcons name="note-add" size={11} color={C.accent} />
         </Pressable>
         <Pressable onPress={() => { setCreateMode('dir'); setCreateName(''); }} hitSlop={6}>
-          <MaterialIcons name="create-new-folder" size={11} color={C.text2} />
+          <MaterialIcons name="create-new-folder" size={11} color={C.accent} />
         </Pressable>
       </View>
 
@@ -306,7 +265,7 @@ export function FileTree() {
       <ShellyModal visible={createMode !== null} transparent animationType="fade" onRequestClose={() => setCreateMode(null)}>
         <Pressable style={promptStyles.backdrop} onPress={() => setCreateMode(null)}>
           <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
-            <Text style={promptStyles.title}>
+            <Text style={[promptStyles.title, { color: C.accent }]}>
               {createMode === 'dir' ? 'New Folder' : 'New File'}
             </Text>
             <TextInput
@@ -322,7 +281,10 @@ export function FileTree() {
               <Pressable onPress={() => setCreateMode(null)} style={promptStyles.btn}>
                 <Text style={promptStyles.btnText}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={performCreate} style={[promptStyles.btn, promptStyles.btnPrimary]}>
+              <Pressable
+                onPress={performCreate}
+                style={[promptStyles.btn, promptStyles.btnPrimary, { backgroundColor: C.accent, borderColor: C.accent }]}
+              >
                 <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>Create</Text>
               </Pressable>
             </View>
@@ -334,7 +296,7 @@ export function FileTree() {
       <ShellyModal visible={renameTarget !== null} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}>
         <Pressable style={promptStyles.backdrop} onPress={() => setRenameTarget(null)}>
           <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
-            <Text style={promptStyles.title}>Rename</Text>
+            <Text style={[promptStyles.title, { color: C.accent }]}>Rename</Text>
             <TextInput
               style={promptStyles.input}
               value={renameName}
@@ -346,7 +308,10 @@ export function FileTree() {
               <Pressable onPress={() => setRenameTarget(null)} style={promptStyles.btn}>
                 <Text style={promptStyles.btnText}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={performRename} style={[promptStyles.btn, promptStyles.btnPrimary]}>
+              <Pressable
+                onPress={performRename}
+                style={[promptStyles.btn, promptStyles.btnPrimary, { backgroundColor: C.accent, borderColor: C.accent }]}
+              >
                 <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>Rename</Text>
               </Pressable>
             </View>
@@ -378,7 +343,7 @@ const promptStyles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: 10,
     fontWeight: '700',
-    color: C.accent,
+    color: C.text1,
     letterSpacing: 0.5,
   },
   input: {
@@ -405,8 +370,8 @@ const promptStyles = StyleSheet.create({
     borderColor: C.border,
   },
   btnPrimary: {
-    backgroundColor: C.accent,
-    borderColor: C.accent,
+    backgroundColor: C.text1,
+    borderColor: C.text1,
   },
   btnText: {
     fontFamily: F.family,

@@ -15,63 +15,63 @@
 // of theme.config.ts (column 8 parse error, regardless of `import
 // type` vs `import {}`). So keep this file import-free. Mutable
 // palette object is seeded inline here; lib/theme-presets.ts holds the
-// identical shellyPalette for runtime preset swaps via Object.assign.
+// matching bluePalette for runtime preset swaps via Object.assign.
 export const colors = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#1F1F2E',
+  border:     '#243040',
 
-  accent:        '#00F0C8',
-  accentGreen:   '#39FF14',
-  accentBlue:    '#0AF0FF',
-  accentSky:     '#38E1FF',
-  accentPurple:  '#B14AFF',
-  accentPink:    '#FF2ED3',
-  accentAmber:   '#FFE500',
-  accentCode:    '#0AF0FF',
-  warning:       '#FFE500',
+  accent:        '#4DA3FF',
+  accentGreen:   '#35D07F',
+  accentBlue:    '#4DA3FF',
+  accentSky:     '#65D7FF',
+  accentPurple:  '#9B8CFF',
+  accentPink:    '#FF5C9A',
+  accentAmber:   '#FFD166',
+  accentCode:    '#65D7FF',
+  warning:       '#FFD166',
 
-  text1:      '#F5F7FF',
-  text2:      '#A9B0CF',
-  text3:      '#5C6385',
+  text1:      '#E8EEF8',
+  text2:      '#97A6BA',
+  text3:      '#526070',
 
   // Semantic
-  errorText:  '#FF3366',
-  errorBg:    'rgba(255,51,102,0.14)',
-  addText:    '#39FF14',
-  addBg:      'rgba(57,255,20,0.14)',
+  errorText:  '#FF5C7A',
+  errorBg:    'rgba(255,92,122,0.12)',
+  addText:    '#35D07F',
+  addBg:      'rgba(53,208,127,0.12)',
 
   // Buttons
-  btnPrimaryBg:     '#00F0C8',
+  btnPrimaryBg:     '#4DA3FF',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#1A1A2E',
-  btnSecondaryText: '#F5F7FF',
+  btnSecondaryBg:   '#000000',
+  btnSecondaryText: '#E8EEF8',
 
   // Badges
-  badgeRunningBg:   'rgba(255,229,0,0.18)',
-  badgeRunningText: '#FFE500',
-  badgeLinkedBg:    'rgba(57,255,20,0.18)',
-  badgeLinkedText:  '#39FF14',
+  badgeRunningBg:   'rgba(255,209,102,0.14)',
+  badgeRunningText: '#FFD166',
+  badgeLinkedBg:    'rgba(53,208,127,0.14)',
+  badgeLinkedText:  '#35D07F',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#5C6385',
+  badgeConnectText: '#526070',
 
   // Layout buttons
-  layoutActiveBg:     '#00F0C8',
+  layoutActiveBg:     '#4DA3FF',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#5C6385',
+  layoutInactiveText: '#526070',
 
   // CRT badge
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#00F0C8',
+  crtBadgeText: '#4DA3FF',
 
   // Auto-save
   autoSaveBg: '#000000',
 
   // Diff
-  diffAddBorder:    '#39FF14',
-  diffRemoveBorder: '#FF3366',
+  diffAddBorder:    '#35D07F',
+  diffRemoveBorder: '#FF5C7A',
 };
 
 // ─── Fonts ──────────────────────────────────────────────────────────────────

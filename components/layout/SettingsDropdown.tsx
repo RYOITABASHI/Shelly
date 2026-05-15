@@ -28,7 +28,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
 import { BuildsModal } from '@/components/layout/BuildsModal';
-import { applyThemePreset } from '@/lib/theme-presets';
+import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useAddPane } from '@/hooks/use-add-pane';
@@ -493,6 +493,9 @@ function DisplaySection() {
 }
 
 type UiFontId =
+  | 'blue'
+  | 'orange'
+  | 'purple'
   | 'shelly'
   | 'blackline'
   | 'modal'
@@ -510,12 +513,16 @@ type UiFontId =
   | 'one-dark';
 
 function ThemeRow() {
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'shelly');
+  const rawUiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
+  const uiFont: UiFontId =
+    rawUiFont === 'shelly' || rawUiFont === 'modal' ? 'purple'
+      : rawUiFont === 'blackline' ? 'blue'
+        : rawUiFont;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const options: Array<{ value: UiFontId; label: string }> = [
-    { value: 'shelly',    label: 'Studio' },
-    { value: 'blackline', label: 'Blackline' },
-    { value: 'modal',     label: 'Modal' },
+  const options: Array<{ value: UiFontId; label: string; swatch: string }> = [
+    { value: 'blue',   label: 'Blue',   swatch: themePresets.blue.colors.accent },
+    { value: 'orange', label: 'Orange', swatch: themePresets.orange.colors.accent },
+    { value: 'purple', label: 'Purple', swatch: themePresets.purple.colors.accent },
   ];
   return (
     <Row label="Theme">
@@ -525,7 +532,11 @@ function ThemeRow() {
           return (
             <Pressable
               key={opt.value}
-              style={[styles.segBtn, active && styles.segBtnActive]}
+              style={[
+                styles.segBtn,
+                active && styles.segBtnActive,
+                active && { backgroundColor: withAlpha(C.accent, 0.15) },
+              ]}
               onPress={() => {
                 // Apply synchronously to avoid the AsyncStorage race that
                 // caused bug #28/#54.
@@ -534,7 +545,14 @@ function ThemeRow() {
               }}
               hitSlop={4}
             >
-              <Text style={[styles.segLabel, active && styles.segLabelActive]}>
+              <View
+                style={[
+                  styles.themeSwatch,
+                  { backgroundColor: opt.swatch },
+                  active && styles.themeSwatchActive,
+                ]}
+              />
+              <Text style={[styles.segLabel, active && styles.segLabelActive, active && { color: C.accent }]}>
                 {opt.label}
               </Text>
             </Pressable>
@@ -1418,12 +1436,15 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   segBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     paddingHorizontal: 10,
     paddingVertical: 3,
     backgroundColor: 'transparent',
   },
   segBtnActive: {
-    backgroundColor: withAlpha(C.accent, 0.15),
+    backgroundColor: withAlpha(C.text1, 0.08),
   },
   segLabel: {
     color: C.text2,
@@ -1432,7 +1453,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   segLabelActive: {
-    color: C.accent,
+    color: C.text1,
+  },
+  themeSwatch: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    opacity: 0.65,
+  },
+  themeSwatchActive: {
+    opacity: 1,
   },
   // Integrations
   integrationRow: {

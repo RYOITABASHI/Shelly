@@ -50,7 +50,7 @@ export const FREE_THEME_COUNT = 3;
 export const FREE_TEMPLATE_COUNT = 2;
 
 /** Free theme IDs (first 3) */
-export const FREE_THEME_IDS = ['shelly', 'dracula', 'nord'] as const;
+export const FREE_THEME_IDS = ['blue', 'orange', 'purple'] as const;
 
 // ── Gate logic ───────────────────────────────────────────────────────────────
 

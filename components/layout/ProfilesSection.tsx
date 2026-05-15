@@ -86,8 +86,8 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
               accessibilityRole="button"
               accessibilityLabel="Back to profiles"
             >
-              <MaterialIcons name="arrow-back" size={16} color={c.accent} />
-              <Text style={[styles.modalBackText, { color: c.accent }]}>BACK</Text>
+              <MaterialIcons name="arrow-back" size={16} color={c.muted} />
+              <Text style={[styles.modalBackText, { color: c.muted }]}>BACK</Text>
             </Pressable>
             <Text style={[styles.modalTitle, { color: c.foreground, flex: 1, textAlign: 'center' }]} numberOfLines={1}>
               {initial.id ? 'Edit Profile' : 'Add Profile'}
@@ -122,7 +122,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
             <Pressable style={[styles.btn, { borderColor: c.border }]} onPress={onClose}>
               <Text style={{ color: c.muted, fontSize: 13 }}>Cancel</Text>
             </Pressable>
-            <Pressable style={[styles.btn, { backgroundColor: c.accent, borderColor: c.accent }]} onPress={handleSave}>
+            <Pressable style={[styles.btn, { backgroundColor: c.foreground, borderColor: c.foreground }]} onPress={handleSave}>
               <Text style={{ color: '#000', fontSize: 13, fontWeight: '700' }}>Save</Text>
             </Pressable>
           </View>
@@ -211,13 +211,13 @@ export function ProfilesSection() {
             key={p.id}
             style={({ pressed }) => [
               styles.profileRow,
-              pressed && { backgroundColor: c.accent + '15' },
+              pressed && { backgroundColor: c.muted + '15' },
             ]}
             onPress={() => handleConnect(p)}
             onLongPress={() => handleLongPress(p)}
             delayLongPress={400}
           >
-            <View style={[styles.profileSquare, { backgroundColor: p.name.toLowerCase().includes('prod') ? '#4ADE80' : '#60A5FA' }]} />
+            <View style={[styles.profileSquare, { backgroundColor: c.muted }]} />
             <View style={styles.profileText}>
               <Text style={[styles.profileName, { color: c.foreground }]} numberOfLines={1}>
                 {p.name}
@@ -247,8 +247,8 @@ export function ProfilesSection() {
         style={[styles.actionBtn, { borderColor: c.border }]}
         onPress={() => setEditTarget({})}
       >
-        <MaterialIcons name="add" size={12} color={c.accent} />
-        <Text style={[styles.actionBtnText, { color: c.accent }]}>Add Profile</Text>
+        <MaterialIcons name="add" size={12} color={c.muted} />
+        <Text style={[styles.actionBtnText, { color: c.muted }]}>Add Profile</Text>
       </Pressable>
 
       {/* Edit / Add modal */}

@@ -105,6 +105,10 @@ export type Palette = {
 };
 
 export type ThemePresetId =
+  | 'blue'
+  | 'orange'
+  | 'purple'
+  // Legacy persisted ids only. They are not exposed in the UI.
   | 'shelly'
   | 'blackline'
   | 'modal'
@@ -209,10 +213,10 @@ export const shellyPalette: Palette = {
   diffRemoveBorder: '#FF3366',
 };
 
-// ── Blackline palette — WezTerm-inspired terminal workstation.
+// ── Blue palette — WezTerm-inspired terminal workstation.
 // Pure black surfaces keep transparency compatible; the theme difference
 // comes from crisp blue chrome, cool secondary text, and low-fill buttons.
-export const blacklinePalette: Palette = {
+export const bluePalette: Palette = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
@@ -263,57 +267,107 @@ export const blacklinePalette: Palette = {
   diffRemoveBorder: '#FF5C7A',
 };
 
-// ── Modal palette — NeoVim-inspired modal editing surface.
-// Green is the normal-mode anchor; blue/purple/yellow act as insert,
-// visual, and command-mode cues without changing actual behavior.
-export const modalPalette: Palette = {
+// ── Orange palette — Claude Code-inspired warm terminal chrome.
+export const orangePalette: Palette = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#1E3322',
+  border:     '#3A2A22',
 
-  accent:        '#7CFF6B',
-  accentGreen:   '#7CFF6B',
-  accentBlue:    '#5AA9FF',
+  accent:        '#CC785C',
+  accentGreen:   '#7FD88F',
+  accentBlue:    '#82AAFF',
+  accentSky:     '#89DDFF',
+  accentPurple:  '#C792EA',
+  accentPink:    '#FF8FB3',
+  accentAmber:   '#FFB454',
+  accentCode:    '#82AAFF',
+  warning:       '#FFB454',
+
+  text1:      '#F4EEE8',
+  text2:      '#B7A79C',
+  text3:      '#6F5E54',
+
+  errorText:  '#FF6B6B',
+  errorBg:    'rgba(255,107,107,0.12)',
+  addText:    '#7FD88F',
+  addBg:      'rgba(127,216,143,0.12)',
+
+  btnPrimaryBg:     '#CC785C',
+  btnPrimaryText:   '#000000',
+  btnSecondaryBg:   '#120D0A',
+  btnSecondaryText: '#F4EEE8',
+
+  badgeRunningBg:   'rgba(255,180,84,0.14)',
+  badgeRunningText: '#FFB454',
+  badgeLinkedBg:    'rgba(127,216,143,0.14)',
+  badgeLinkedText:  '#7FD88F',
+  badgeConnectBg:   '#000000',
+  badgeConnectText: '#6F5E54',
+
+  layoutActiveBg:     '#CC785C',
+  layoutActiveText:   '#000000',
+  layoutInactiveBg:   '#000000',
+  layoutInactiveText: '#6F5E54',
+
+  crtBadgeBg:   '#000000',
+  crtBadgeText: '#CC785C',
+
+  autoSaveBg: '#000000',
+
+  diffAddBorder:    '#7FD88F',
+  diffRemoveBorder: '#FF6B6B',
+};
+
+// ── Purple palette — violet-first dark editor chrome.
+export const purplePalette: Palette = {
+  bgDeep:     '#000000',
+  bgSurface:  '#000000',
+  bgSidebar:  '#000000',
+  border:     '#2B2140',
+
+  accent:        '#B14AFF',
+  accentGreen:   '#39FF14',
+  accentBlue:    '#7AA2FF',
   accentSky:     '#66E7FF',
-  accentPurple:  '#B98CFF',
+  accentPurple:  '#B14AFF',
   accentPink:    '#FF6BB5',
   accentAmber:   '#FFD76A',
   accentCode:    '#5AA9FF',
   warning:       '#FFD76A',
 
-  text1:      '#E7F5E7',
-  text2:      '#9FB09F',
-  text3:      '#526052',
+  text1:      '#F2EAFE',
+  text2:      '#B8A8D6',
+  text3:      '#66557E',
 
   errorText:  '#FF5F87',
   errorBg:    'rgba(255,95,135,0.12)',
-  addText:    '#7CFF6B',
-  addBg:      'rgba(124,255,107,0.12)',
+  addText:    '#39FF14',
+  addBg:      'rgba(57,255,20,0.12)',
 
-  btnPrimaryBg:     '#7CFF6B',
+  btnPrimaryBg:     '#B14AFF',
   btnPrimaryText:   '#000000',
   btnSecondaryBg:   '#000000',
-  btnSecondaryText: '#E7F5E7',
+  btnSecondaryText: '#F2EAFE',
 
   badgeRunningBg:   'rgba(255,215,106,0.14)',
   badgeRunningText: '#FFD76A',
-  badgeLinkedBg:    'rgba(124,255,107,0.14)',
-  badgeLinkedText:  '#7CFF6B',
+  badgeLinkedBg:    'rgba(57,255,20,0.14)',
+  badgeLinkedText:  '#39FF14',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#526052',
+  badgeConnectText: '#66557E',
 
-  layoutActiveBg:     '#7CFF6B',
+  layoutActiveBg:     '#B14AFF',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#526052',
+  layoutInactiveText: '#66557E',
 
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#7CFF6B',
+  crtBadgeText: '#B14AFF',
 
   autoSaveBg: '#000000',
 
-  diffAddBorder:    '#7CFF6B',
+  diffAddBorder:    '#39FF14',
   diffRemoveBorder: '#FF5F87',
 };
 
@@ -776,9 +830,12 @@ export const oneDarkPalette: Palette = {
 // silkscreen/pixel preset ids remain accepted so old settings do not break,
 // but they no longer switch the app chrome back to dot-matrix fonts.
 export const themePresets: Record<ThemePresetId, ThemePreset> = {
-  shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: shellyPalette },
-  blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: blacklinePalette },
-  modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: modalPalette },
+  blue:         { id: 'blue',         font: 'JetBrainsMono_400Regular', colors: bluePalette },
+  orange:       { id: 'orange',       font: 'JetBrainsMono_400Regular', colors: orangePalette },
+  purple:       { id: 'purple',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
+  shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
+  blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: bluePalette },
+  modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: purplePalette },
   silkscreen:   { id: 'silkscreen',   font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },
   pixel:        { id: 'pixel',        font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },
   mono:         { id: 'mono',         font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },

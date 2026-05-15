@@ -425,6 +425,9 @@ export type AppSettings = {
   showVimKeyBar?: boolean;
   /** UI visual preset. Legacy ids remain accepted for existing installs. */
   uiFont?:
+    | 'blue'
+    | 'orange'
+    | 'purple'
     | 'shelly'
     | 'blackline'
     | 'modal'

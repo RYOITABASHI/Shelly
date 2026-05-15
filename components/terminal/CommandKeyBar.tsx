@@ -121,15 +121,17 @@ const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong }: Props) {
   const { colors: c } = useTheme();
   const { settings } = useTerminalStore();
-  const visualPreset = settings.uiFont === 'blackline' ? 'blackline' : settings.uiFont === 'modal' ? 'modal' : 'studio';
+  const visualPreset =
+    settings.uiFont === 'orange' ? 'orange'
+      : settings.uiFont === 'purple' || settings.uiFont === 'shelly' || settings.uiFont === 'modal' ? 'purple'
+        : 'blue';
   const presetColors = themePresets[settings.uiFont as ThemePresetId]?.colors;
   const accent = presetColors?.accent ?? c.accent;
-  const success = presetColors?.accentGreen ?? c.success;
   const foreground = presetColors?.text1 ?? c.foreground;
   const muted = presetColors?.text2 ?? c.muted;
   const border = presetColors?.border ?? c.border;
   const keyChrome = useMemo(() => {
-    if (visualPreset === 'blackline') {
+    if (visualPreset === 'blue') {
       return {
         key: {
           backgroundColor: withAlpha(accent, 0.06),
@@ -140,15 +142,26 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
         iconColor: accent,
       };
     }
-    if (visualPreset === 'modal') {
+    if (visualPreset === 'orange') {
       return {
         key: {
-          backgroundColor: withAlpha(success, 0.05),
-          borderColor: withAlpha(success, 0.46),
+          backgroundColor: withAlpha(accent, 0.07),
+          borderColor: withAlpha(accent, 0.44),
+          borderRadius: 4,
+        },
+        textColor: accent,
+        iconColor: accent,
+      };
+    }
+    if (visualPreset === 'purple') {
+      return {
+        key: {
+          backgroundColor: withAlpha(accent, 0.06),
+          borderColor: withAlpha(accent, 0.46),
           borderRadius: 3,
         },
-        textColor: success,
-        iconColor: success,
+        textColor: accent,
+        iconColor: accent,
       };
     }
     return {
@@ -160,7 +173,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
       textColor: foreground,
       iconColor: foreground,
     };
-  }, [accent, border, foreground, success, visualPreset]);
+  }, [accent, border, foreground, visualPreset]);
   // bug #48: Gate the Vim key page behind a settings toggle. Vim users opt in
   // via Settings → Terminal → "Show Vim key bar" (default off). Until then
   // ":w / :q / :wq / dd" don't clutter the bar for non-vim users.
