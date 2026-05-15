@@ -22,6 +22,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   startSessionService(): Promise<void>;
   stopSessionService(): Promise<void>;
   updateSessionNotification(info: string): Promise<void>;
+  runAgent(agentId: string): Promise<void>;
   isIgnoringBatteryOptimizations(): Promise<boolean>;
   requestBatteryOptimizationExemption(): Promise<void>;
   /** bug #92: Android 11+ MANAGE_EXTERNAL_STORAGE gate — true on < API 30 since legacy perms cover /sdcard. */

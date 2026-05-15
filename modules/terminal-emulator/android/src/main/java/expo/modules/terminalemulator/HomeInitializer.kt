@@ -988,6 +988,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
         File(home, "projects").mkdirs()
+        seedShellyContentStudio(home)
 
         // bug #76 / #139 (2026-04-27): the Alpine rootfs + proot wrapper
         // path was fully replaced by the DioNanos codex-termux native
@@ -3369,5 +3370,307 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
         }
 
         return home
+    }
+
+    private fun seedShellyContentStudio(home: File) {
+        try {
+            val project = File(home, "projects/shelly-content-studio")
+            val dirs = listOf(
+                "sources",
+                "drafts/substack",
+                "drafts/x",
+                "drafts/articles",
+                "images/prompts",
+                "evals",
+                "templates",
+            )
+            dirs.forEach { File(project, it).mkdirs() }
+
+            writeIfMissing(
+                File(project, ".env.example"),
+                """
+PERPLEXITY_API_KEY=
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.0-flash
+LOCAL_LLM_URL=http://127.0.0.1:8080
+LOCAL_LLM_MODEL=Qwen3-8B
+OBSIDIAN_VAULT_PATH=/sdcard/Documents/ObsidianVault
+""".trimIndent() + "\n"
+            )
+
+            writeIfMissing(
+                File(project, "AI_CONTEXT.md"),
+                """
+# Shelly Content Studio Context
+
+## Pillars
+- Shelly/Chelly development log.
+- STEAM x AI, with academic and primary-source evidence.
+
+## Core Thesis
+AI-era STEAM education is not primarily about introducing AI tools into classrooms. It is about understanding what AI is, then returning to foundational academic abilities: vocabulary, reading comprehension, imagination, creativity, judgment, and critical thinking.
+
+## Publishing Policy
+- Substack: academic papers, journals, conference material, public documents, and recent primary sources. Avoid duplicate sources.
+- X: casual news, trends, and user-interest driven observations are acceptable.
+- Source collection: Perplexity.
+- Drafting and reasoning: Codex CLI first, local Qwen3-8B as an A/B candidate.
+- Image prompts: Gemini API only when needed.
+""".trimIndent() + "\n"
+            )
+
+            writeIfMissing(
+                File(project, "templates/source-collection.md"),
+                """
+# Source Collection
+
+Find fresh sources for STEAM x AI and foundational academic ability.
+
+Prioritize papers, journals, conference talks, public documents, and primary sources.
+Avoid sources already present in the source registry or recent notes.
+
+Return:
+- title
+- authors / organization
+- year / date
+- URL or DOI
+- why it matters
+- relation to vocabulary, reading comprehension, imagination, creativity, judgment, or critical thinking
+""".trimIndent() + "\n"
+            )
+
+            writeIfMissing(
+                File(project, "templates/substack-draft.md"),
+                """
+# Substack Draft
+
+Write a serious Japanese article for Substack.
+
+Position:
+AI-era STEAM education should re-center foundational academic ability: vocabulary, reading comprehension, imagination, creativity, judgment, and critical thinking.
+
+Requirements:
+- Evidence-backed.
+- Use primary sources where possible.
+- Distinguish facts from interpretation.
+- Avoid hype.
+- End with a clear thesis the author can own.
+""".trimIndent() + "\n"
+            )
+
+            writeIfMissing(
+                File(project, "templates/x-thread.md"),
+                """
+# X Draft
+
+Write concise Japanese posts from the latest sources or build log.
+
+Tone:
+- direct
+- curious
+- useful
+- not overclaiming
+
+Return 3 variants:
+1. short post
+2. thread starter
+3. sharper opinion
+""".trimIndent() + "\n"
+            )
+
+            writeIfMissing(
+                File(project, "templates/qwen-vs-codex-eval.md"),
+                """
+# Qwen3-8B vs Codex Article Evaluation
+
+Use the same source context and prompt for both models.
+
+Evaluate:
+- thesis alignment
+- source faithfulness
+- Japanese readability
+- structure
+- originality
+- publishability
+
+Write outputs and metrics under evals/YYYY-MM-DD-topic/.
+""".trimIndent() + "\n"
+            )
+
+            val agentsDir = File(home, ".shelly/agents")
+            agentsDir.mkdirs()
+            val envFile = File(agentsDir, ".env")
+            writeIfMissing(
+                envFile,
+                """
+# Shelly background agent environment
+# Fill values here or sync them from Settings.
+PERPLEXITY_API_KEY=
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.0-flash
+LOCAL_LLM_URL=http://127.0.0.1:8080
+LOCAL_LLM_MODEL=Qwen3-8B
+OBSIDIAN_VAULT_PATH=/sdcard/Documents/ObsidianVault
+""".trimIndent() + "\n"
+            )
+            envFile.setReadable(false, false)
+            envFile.setWritable(false, false)
+            envFile.setReadable(true, true)
+            envFile.setWritable(true, true)
+
+            seedAgent(
+                agentsDir,
+                id = "content-source-collector",
+                name = "Content Source Collector",
+                description = "Collects fresh STEAM x AI sources with Perplexity sonar.",
+                prompt = """
+Use Perplexity sonar to collect fresh sources for STEAM x AI and AI-era foundational academic ability.
+
+Prioritize:
+- academic papers
+- journals
+- conference presentations
+- public documents
+- primary sources
+
+Avoid duplicates when possible. Return concise source notes with URLs, dates, and why each source matters.
+""".trimIndent(),
+                toolJson = """{"type":"perplexity","model":"sonar"}""",
+                outputPath = File(project, "sources").absolutePath,
+            )
+
+            seedAgent(
+                agentsDir,
+                id = "substack-deep-research-draft",
+                name = "Substack Deep Research Draft",
+                description = "Drafts evidence-heavy Substack material with sonar-deep-research.",
+                prompt = """
+Use sonar-deep-research for an evidence-heavy Japanese Substack draft.
+
+Theme:
+AI-era STEAM education is not primarily about introducing AI tools. It is about understanding AI and re-centering foundational academic abilities: vocabulary, reading comprehension, imagination, creativity, judgment, and critical thinking.
+
+Use fresh primary sources where possible. Distinguish facts from interpretation.
+""".trimIndent(),
+                toolJson = """{"type":"perplexity","model":"sonar-deep-research"}""",
+                outputPath = File(project, "drafts/substack").absolutePath,
+            )
+
+            seedAgent(
+                agentsDir,
+                id = "x-casual-draft",
+                name = "X Casual Draft",
+                description = "Drafts casual X posts from news, trends, and project context.",
+                prompt = """
+Create concise Japanese X post drafts from recent AI, education, STEAM, Shelly, and Chelly context.
+
+Return:
+1. short post
+2. thread starter
+3. sharper opinion
+
+Keep it casual, useful, and not overclaiming.
+""".trimIndent(),
+                toolJson = """{"type":"perplexity","model":"sonar"}""",
+                outputPath = File(project, "drafts/x").absolutePath,
+            )
+
+            seedAgent(
+                agentsDir,
+                id = "codex-article-draft",
+                name = "Codex Article Draft",
+                description = "Uses Codex CLI for article reasoning and drafting.",
+                prompt = """
+Read the project context and recent source notes, then draft a Japanese article.
+
+The article should argue that AI-era STEAM education requires a renewed focus on vocabulary, reading comprehension, imagination, creativity, judgment, and critical thinking.
+
+Use a strong structure and make the author's position clear.
+""".trimIndent(),
+                toolJson = """{"type":"cli","cli":"codex"}""",
+                outputPath = File(project, "drafts/articles").absolutePath,
+            )
+
+            seedAgent(
+                agentsDir,
+                id = "gemini-image-prompt",
+                name = "Gemini Image Prompt",
+                description = "Creates image prompts for article visuals using Gemini API.",
+                prompt = """
+Create image-generation prompts for the latest article draft.
+
+Visual direction:
+- educational
+- technical but approachable
+- grounded in AI and STEAM
+- avoid stock-photo cliches
+
+Return 3 prompt variants in Japanese and English.
+""".trimIndent(),
+                toolJson = """{"type":"gemini-api","model":"gemini-2.0-flash"}""",
+                outputPath = File(project, "images/prompts").absolutePath,
+            )
+
+            seedAgent(
+                agentsDir,
+                id = "qwen-codex-article-eval",
+                name = "Qwen Codex Article Eval",
+                description = "Compares Qwen3-8B local output against Codex CLI for article drafting.",
+                prompt = """
+Run an A/B article evaluation.
+
+Use the same context and prompt for Qwen3-8B and Codex. Compare which output is more publishable for the STEAM x AI Substack thesis.
+
+Focus on thesis alignment, source faithfulness, Japanese readability, structure, originality, and publishability.
+""".trimIndent(),
+                toolJson = """{"type":"ab-article-eval","localModel":"Qwen3-8B","codexCmd":"codex"}""",
+                outputPath = File(project, "evals").absolutePath,
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "content studio seed failed: ${e.message}")
+        }
+    }
+
+    private fun seedAgent(
+        agentsDir: File,
+        id: String,
+        name: String,
+        description: String,
+        prompt: String,
+        toolJson: String,
+        outputPath: String,
+    ) {
+        writeIfMissing(
+            File(agentsDir, "$id.json"),
+            """
+{
+  "id": ${jsonString(id)},
+  "name": ${jsonString(name)},
+  "description": ${jsonString(description)},
+  "prompt": ${jsonString(prompt)},
+  "schedule": null,
+  "tool": $toolJson,
+  "outputPath": ${jsonString(outputPath)},
+  "outputTemplate": null,
+  "enabled": true,
+  "lastRun": null,
+  "lastResult": null,
+  "createdAt": 0,
+  "version": 1
+}
+""".trimIndent() + "\n"
+        )
+    }
+
+    private fun jsonString(value: String): String =
+        "\"" + value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n") + "\""
+
+    private fun writeIfMissing(file: File, content: String) {
+        if (file.exists()) return
+        file.parentFile?.mkdirs()
+        file.writeText(content)
     }
 }

@@ -23,7 +23,6 @@ import { logInfo } from '@/lib/debug-logger';
 import { useAgentStore } from '@/store/agent-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { deleteAgent } from '@/lib/agent-manager';
-import { generateRunNowCommand } from '@/lib/agent-executor';
 import { useSettingsStore } from '@/store/settings-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -304,7 +303,9 @@ export function Sidebar() {
                   </View>
                   <Pressable
                     onPress={() => {
-                      useTerminalStore.setState({ pendingCommand: generateRunNowCommand(agent.id) });
+                      TerminalEmulator.runAgent(agent.id).catch(() => {
+                        Alert.alert('Agent failed', `Could not start "${agent.name}".`);
+                      });
                     }}
                     hitSlop={8}
                     style={styles.tasksAction}

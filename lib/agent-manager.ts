@@ -5,11 +5,13 @@
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
-import { generateRunScript, generateRunNowCommand, generateStopCommand } from './agent-executor';
+import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
+import { getHomePath } from '@/lib/home-path';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
 
-const AGENTS_DIR = '$HOME/.shelly/agents';
+const agentsDir = () => `${getHomePath()}/.shelly/agents`;
 
 /**
  * Parse @agent commands from chat input.
@@ -154,10 +156,69 @@ export function createAgent(params: {
 }
 
 /**
+ * Materialize an agent into Shelly HOME so AlarmManager can run it without
+ * Termux: JSON metadata, generated bash script, executable bit, and schedule.
+ */
+export async function installAgent(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  await materializeAgent(agent, runCommand, true);
+}
+
+async function materializeAgent(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  installAlarm: boolean
+): Promise<void> {
+  const scriptPath = getScriptPath(agent.id);
+  const metadataPath = `${agentsDir()}/${agent.id}.json`;
+  const commands = [
+    `mkdir -p ${shellQuote(agentsDir())}`,
+    writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
+    writeFileCommand(scriptPath, generateRunScript(agent)),
+    ...generateInstallCommands(agent),
+  ];
+
+  for (const command of commands) {
+    await runCommand(command);
+  }
+  if (installAlarm) {
+    await installSchedule(agent);
+  }
+}
+
+export async function runAgentNow(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  await TerminalEmulator.runAgent(agentId);
+}
+
+export async function stopAgent(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  await runCommand(generateStopCommand(agentId));
+}
+
+/**
  * Delete an agent and clean up.
  */
 export async function deleteAgent(agentId: string): Promise<void> {
   await uninstallSchedule(agentId);
+  const dir = agentsDir();
+  const command = [
+    `rm -f ${shellQuote(`${dir}/${agentId}.json`)}`,
+    `rm -f ${shellQuote(`${dir}/run-agent-${agentId}.sh`)}`,
+    `rm -f ${shellQuote(`${dir}/locks/${agentId}.pid`)}`,
+    `rm -rf ${shellQuote(`${dir}/logs/${agentId}`)}`,
+  ].join(' && ');
+  try {
+    await TerminalEmulator.execCommand(command, 30_000);
+  } catch {
+    // Deleting store state should not be blocked by filesystem cleanup.
+  }
   useAgentStore.getState().removeAgent(agentId);
 }
 
@@ -189,7 +250,7 @@ export async function loadAgentsFromDisk(
 ): Promise<void> {
   try {
     const output = await runCommand(
-      `ls ${AGENTS_DIR}/*.json 2>/dev/null | while read f; do cat "$f"; echo "---SEPARATOR---"; done`
+      `ls ${shellQuote(agentsDir())}/*.json 2>/dev/null | while read f; do cat "$f"; echo "---SEPARATOR---"; done`
     );
 
     if (!output.trim()) {
@@ -207,6 +268,9 @@ export async function loadAgentsFromDisk(
         // Skip malformed agent files
       }
     }
+    for (const agent of agents) {
+      await materializeAgent(agent, runCommand, Boolean(agent.enabled && agent.schedule));
+    }
     useAgentStore.getState().setAgents(agents);
   } catch {
     useAgentStore.getState().setAgents([]);
@@ -219,5 +283,17 @@ export async function loadAgentsFromDisk(
 export function generateSaveCommand(agent: Agent): string {
   const json = JSON.stringify(agent, null, 2);
   const escaped = json.replace(/'/g, "'\\''");
-  return `mkdir -p ${AGENTS_DIR} && echo '${escaped}' > ${AGENTS_DIR}/${agent.id}.json`;
+  const dir = agentsDir();
+  return `mkdir -p ${shellQuote(dir)} && echo '${escaped}' > ${shellQuote(`${dir}/${agent.id}.json`)}`;
+}
+
+function writeFileCommand(path: string, content: string): string {
+  const marker = `SHELLY_AGENT_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  return `mkdir -p "$(dirname ${shellQuote(path)})" && cat > ${shellQuote(path)} <<'${marker}'
+${content}
+${marker}`;
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
 }

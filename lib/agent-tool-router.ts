@@ -25,19 +25,33 @@ const TRANSFORM_KEYWORDS = [
   '要約', '整形', '翻訳', '書き直',
 ];
 
+const ARTICLE_EVAL_KEYWORDS = [
+  'qwen', 'qwen3', 'codex', 'a/b', 'ab test', 'article eval',
+  '記事評価', '文章評価', '比較', '書き比べ',
+];
+
 export function suggestTool(prompt: string): ToolSuggestion {
   const lower = prompt.toLowerCase();
 
-  // Priority 1: Academic
+  // Priority 1: Qwen/Codex article drafting evaluation
+  if (ARTICLE_EVAL_KEYWORDS.some((kw) => lower.includes(kw))) {
+    return {
+      tool: { type: 'ab-article-eval', localModel: 'Qwen3-8B', codexCmd: 'codex' },
+      label: 'Qwen/Codex A/B Eval',
+      reason: 'Article drafting comparison — runs local Qwen and Codex against the same source context',
+    };
+  }
+
+  // Priority 2: Academic
   if (ACADEMIC_KEYWORDS.some((kw) => lower.includes(kw))) {
     return {
-      tool: { type: 'perplexity' },
+      tool: { type: 'perplexity', model: 'sonar-deep-research' },
       label: 'Perplexity API',
       reason: 'Academic/research content — Perplexity provides search-backed results with citations',
     };
   }
 
-  // Priority 2: Code/GitHub
+  // Priority 3: Code/GitHub
   if (CODE_KEYWORDS.some((kw) => lower.includes(kw))) {
     return {
       tool: { type: 'cli', cli: 'codex' },
@@ -46,7 +60,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
     };
   }
 
-  // Priority 3: Text transformation
+  // Priority 4: Text transformation
   if (TRANSFORM_KEYWORDS.some((kw) => lower.includes(kw))) {
     return {
       tool: { type: 'local' },
@@ -99,11 +113,13 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
     case 'cli':
       return `${tool.cli.charAt(0).toUpperCase()}${tool.cli.slice(1)} CLI`;
     case 'gemini-api':
-      return 'Gemini API';
+      return tool.model ? `Gemini API (${tool.model})` : 'Gemini API';
     case 'local':
       return 'Local LLM';
     case 'perplexity':
-      return 'Perplexity API';
+      return tool.model ? `Perplexity API (${tool.model})` : 'Perplexity API';
+    case 'ab-article-eval':
+      return `A/B Article Eval (${tool.localModel || 'local'} vs ${tool.codexCmd || 'codex'})`;
     case 'auto':
       return 'Auto';
   }

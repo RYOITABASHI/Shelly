@@ -56,7 +56,7 @@ import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
 import { execCommand } from '@/hooks/use-native-exec';
 import { parseInput } from '@/lib/input-router';
-import { parseAgentCommand, createAgent } from '@/lib/agent-manager';
+import { parseAgentCommand, createAgent, installAgent, runAgentNow, stopAgent } from '@/lib/agent-manager';
 import { suggestTool } from '@/lib/agent-tool-router';
 import { getHomePath } from '@/lib/home-path';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
@@ -782,7 +782,7 @@ export default function TerminalScreen() {
               useFocusStore.getState().requestTerminalRefocus();
             }}
             onOutput={() => {}}
-            onBlockCompleted={(e) => {
+            onBlockCompleted={async (e) => {
               const { command, output, exitCode } = e.nativeEvent;
               if (command && command.trim()) {
                 const trimmedCmd = command.trim();
@@ -814,9 +814,28 @@ export default function TerminalScreen() {
                         prompt: promptText,
                         schedule: null,
                         tool: suggestion.tool,
-                        outputPath: `$HOME/.shelly/agents/${name}/output.md`,
+                        outputPath: `~/.shelly/agents/${name}/output`,
                       });
-                      resultMessage = `✅ Agent "${agent.name}" registered (${suggestion.label}). Run it with: @agent run ${agent.name}`;
+                      await installAgent(agent, async (cmd) => {
+                        const result = await execCommand(cmd, 120_000);
+                        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+                        return result.stdout;
+                      });
+                      resultMessage = `✅ Agent "${agent.name}" installed (${suggestion.label}). Run it with: @agent run ${agent.name}`;
+                    } else if (agentResult.type === 'run') {
+                      await runAgentNow(agentResult.data.agentId, async (cmd) => {
+                        const result = await execCommand(cmd, 120_000);
+                        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+                        return result.stdout;
+                      });
+                      resultMessage = agentResult.message;
+                    } else if (agentResult.type === 'stop') {
+                      await stopAgent(agentResult.data.agentId, async (cmd) => {
+                        const result = await execCommand(cmd, 120_000);
+                        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+                        return result.stdout;
+                      });
+                      resultMessage = agentResult.message;
                     } else {
                       resultMessage = agentResult.message;
                     }

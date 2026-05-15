@@ -354,6 +354,20 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        AsyncFunction("runAgent") { agentId: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            val intent = Intent(context, TerminalSessionService::class.java).apply {
+                action = TerminalSessionService.ACTION_RUN_AGENT
+                putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            null
+        }
+
         AsyncFunction("isIgnoringBatteryOptimizations") {
             val context = appContext.reactContext ?: return@AsyncFunction false
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -621,13 +635,18 @@ class TerminalEmulatorModule : Module() {
             val requestCode = getAgentRequestCode(context, agentId)
             val am = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
             val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
-                putExtra("agent_id", agentId)
+                putExtra(AgentAlarmReceiver.EXTRA_AGENT_ID, agentId)
+                putExtra(AgentAlarmReceiver.EXTRA_INTERVAL_MS, intervalMs)
             }
             val pi = android.app.PendingIntent.getBroadcast(
                 context, requestCode, intent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
-            am.setRepeating(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, intervalMs, pi)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
+            } else {
+                am.setExact(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
+            }
             Log.i("TerminalEmulator", "Scheduled agent $agentId (reqCode=$requestCode): interval=${intervalMs}ms")
             null
         }
@@ -636,7 +655,7 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext ?: return@AsyncFunction null
             val requestCode = getAgentRequestCode(context, agentId)
             val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
-                putExtra("agent_id", agentId)
+                putExtra(AgentAlarmReceiver.EXTRA_AGENT_ID, agentId)
             }
             val pi = android.app.PendingIntent.getBroadcast(
                 context, requestCode, intent,
@@ -718,7 +737,7 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("getHomeDir") {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
-            HomeInitializer.getHomeDir(context).absolutePath
+            HomeInitializer.initialize(context).absolutePath
         }
     }
 }

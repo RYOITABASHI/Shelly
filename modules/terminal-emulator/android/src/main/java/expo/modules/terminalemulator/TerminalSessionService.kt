@@ -5,10 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 
 /**
@@ -29,6 +31,8 @@ class TerminalSessionService : Service() {
         const val NOTIFICATION_ID = 7734  // "SHEL" on a phone keypad
         const val ACTION_UPDATE_NOTIFICATION = "expo.modules.terminalemulator.UPDATE_NOTIFICATION"
         const val ACTION_STOP = "expo.modules.terminalemulator.STOP"
+        const val ACTION_RUN_AGENT = "expo.modules.terminalemulator.RUN_AGENT"
+        const val EXTRA_AGENT_ID = "agent_id"
 
         /**
          * Authoritative session registry. Lives here (Service companion) rather
@@ -62,6 +66,17 @@ class TerminalSessionService : Service() {
             ACTION_UPDATE_NOTIFICATION -> {
                 val info = intent.getStringExtra("session_info") ?: ""
                 updateNotification(info)
+                return START_STICKY
+            }
+            ACTION_RUN_AGENT -> {
+                val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
+                if (agentId.isNullOrBlank()) {
+                    Log.w(TAG, "RUN_AGENT action received without agent id")
+                    startForegroundWithNotification(null)
+                    return START_STICKY
+                }
+                startForegroundWithNotification("Running agent: $agentId")
+                runAgentInBackground(agentId)
                 return START_STICKY
             }
         }
@@ -176,5 +191,55 @@ class TerminalSessionService : Service() {
         val notification = buildNotification(info)
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun runAgentInBackground(agentId: String) {
+        Thread {
+            val wakeLock = acquireAgentWakeLock(agentId)
+            val result = try {
+                AgentRuntime.runAgent(applicationContext, agentId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Agent $agentId crashed while running", e)
+                null
+            } finally {
+                releaseAgentWakeLock(wakeLock, agentId)
+            }
+
+            val info = when {
+                result == null -> "Agent failed: $agentId"
+                result.success -> "Agent completed: $agentId"
+                else -> "Agent failed: $agentId (${result.exitCode})"
+            }
+            updateNotification(info)
+        }.apply {
+            name = "ShellyAgent-$agentId"
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun acquireAgentWakeLock(agentId: String): PowerManager.WakeLock? {
+        return try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "shelly:agent:$agentId").also {
+                it.setReferenceCounted(false)
+                it.acquire(35 * 60 * 1000L)
+                Log.i(TAG, "Agent WakeLock acquired: $agentId")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire agent WakeLock for $agentId", e)
+            null
+        }
+    }
+
+    private fun releaseAgentWakeLock(wakeLock: PowerManager.WakeLock?, agentId: String) {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock.release()
+                Log.i(TAG, "Agent WakeLock released: $agentId")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release agent WakeLock for $agentId", e)
+        }
     }
 }

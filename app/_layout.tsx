@@ -25,6 +25,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { execCommand } from '@/hooks/use-native-exec';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -95,20 +96,18 @@ export default function RootLayout() {
       logError('RootLayout', 'loadSettings failed', e);
     });
 
-    // Load background agents from disk
-    loadAgentsFromDisk(async (_cmd) => {
-      try {
-        // Bridge may not be ready at startup — return empty string
-        // Agents will be re-loaded when a session connects
-        return '';
-      } catch {
-        return '';
-      }
-    }).then(() => {
-      logInfo('RootLayout', 'Loaded: agents');
-    }).catch((e: any) => {
-      logError('RootLayout', 'loadAgentsFromDisk failed', e);
-      console.warn(e);
+    // Load background agents after HOME resolves; otherwise the fallback path
+    // can clear persisted agents from JS state before native HOME is known.
+    import('@/lib/home-path').then(({ initHomePath }) => {
+      initHomePath().then(() => loadAgentsFromDisk(async (cmd) => {
+        const result = await execCommand(cmd, 30_000);
+        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+        return result.stdout;
+      })).then(() => {
+        logInfo('RootLayout', 'Loaded: agents');
+      }).catch((e: any) => {
+        logError('RootLayout', 'loadAgentsFromDisk failed', e);
+      });
     });
 
 
