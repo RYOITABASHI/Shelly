@@ -16,5 +16,5 @@ export const PlainTextRenderer = memo(function PlainTextRenderer({ content }: Pr
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { padding: 12 },
-  text: { fontFamily: 'Silkscreen', fontSize: 12, lineHeight: 18 },
+  text: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, lineHeight: 18 },
 });

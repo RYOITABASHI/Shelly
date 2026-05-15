@@ -21,11 +21,12 @@ module.exports = {
     extend: {
       colors: tailwindColors,
       fontFamily: {
-        // Ship all UI on Silkscreen (the mock's pixel font). The name
-        // MUST match useFonts() in app/_layout.tsx.
-        mono: ['Silkscreen'],
-        sans: ['Silkscreen'],
-        pixel: ['Silkscreen'],
+        // Keep app chrome and settings on the readable primary UI font.
+        // Legacy pixel utility names resolve here too so no surface can
+        // accidentally fall back to dot-matrix text.
+        mono: ['JetBrainsMono_400Regular'],
+        sans: ['JetBrainsMono_400Regular'],
+        pixel: ['JetBrainsMono_400Regular'],
       },
     },
   },

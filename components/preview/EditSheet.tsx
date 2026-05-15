@@ -145,8 +145,8 @@ const chipStyles = StyleSheet.create({
     borderRadius: 4,
     marginRight: 6,
   },
-  label: { fontSize: 9, fontFamily: 'Silkscreen', fontWeight: '600' },
-  value: { fontSize: 10, fontFamily: 'Silkscreen', maxWidth: 80 },
+  label: { fontSize: 9, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '600' },
+  value: { fontSize: 10, fontFamily: 'JetBrainsMono_400Regular', maxWidth: 80 },
 });
 
 // ─── Helper ─────────────────────────────────────────────────────────────────

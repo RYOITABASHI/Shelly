@@ -772,16 +772,15 @@ export const oneDarkPalette: Palette = {
   diffRemoveBorder: '#E06C75',
 };
 
-// NOTE: after bug #28, every preset except the explicit 'silkscreen' /
-// 'pixel' opt-ins defaults to JetBrainsMono_400Regular so lowercase UI
-// text renders as lowercase. The Silkscreen preset still ships for users
-// who want the original aesthetic, but it is no longer the default.
+// All visual presets now keep JetBrains Mono as the UI font. Legacy
+// silkscreen/pixel preset ids remain accepted so old settings do not break,
+// but they no longer switch the app chrome back to dot-matrix fonts.
 export const themePresets: Record<ThemePresetId, ThemePreset> = {
   shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: shellyPalette },
   blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: blacklinePalette },
   modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: modalPalette },
-  silkscreen:   { id: 'silkscreen',   font: 'Silkscreen',               colors: silkscreenPalette },
-  pixel:        { id: 'pixel',        font: 'PressStart2P',             colors: silkscreenPalette },
+  silkscreen:   { id: 'silkscreen',   font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },
+  pixel:        { id: 'pixel',        font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },
   mono:         { id: 'mono',         font: 'JetBrainsMono_400Regular', colors: silkscreenPalette },
   dracula:      { id: 'dracula',      font: 'JetBrainsMono_400Regular', colors: draculaPalette },
   nord:         { id: 'nord',         font: 'JetBrainsMono_400Regular', colors: nordPalette },

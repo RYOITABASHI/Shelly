@@ -53,9 +53,9 @@ const styles = StyleSheet.create({
   codeBlock: { padding: 8 },
   lineRow: { flexDirection: 'row', minHeight: 18 },
   lineNumber: {
-    fontFamily: 'Silkscreen', fontSize: 11, textAlign: 'right',
+    fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, textAlign: 'right',
     paddingRight: 8, opacity: 0.5,
   },
-  lineContent: { fontFamily: 'Silkscreen', fontSize: 12, flex: 1 },
-  truncatedNotice: { fontFamily: 'Silkscreen', fontSize: 11, padding: 8, textAlign: 'center' },
+  lineContent: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, flex: 1 },
+  truncatedNotice: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, padding: 8, textAlign: 'center' },
 });

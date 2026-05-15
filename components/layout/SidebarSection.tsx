@@ -1,9 +1,8 @@
 // components/layout/SidebarSection.tsx
 import React from 'react';
-import { View, Text, Pressable, StyleSheet, TextStyle } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
-import { withAlpha } from '@/lib/theme-utils';
 
 type Props = {
   title: string;
@@ -13,17 +12,9 @@ type Props = {
   badge?: number;
   iconsOnly?: boolean;
   children: React.ReactNode;
-  /**
-   * Phase C "ビカビカ" pass — per-section neon hue. The default (undefined)
-   * keeps the old muted `C.text2` heading. Passing a color makes the
-   * heading, chevron, count badge, and icon-mode glyph light up in that
-   * hue + a matching halo. We pass shellyPalette accent tokens so theme
-   * swaps flow through (tokyoNight's pink reads as pastel, shelly's as
-   * neon, etc).
-   */
+  /** Legacy accent hooks accepted for compatibility while the sidebar uses neutral chrome. */
   accent?: string;
-  /** Matching per-color text-glow style so the title reads as neon */
-  glow?: TextStyle;
+  glow?: unknown;
 };
 
 export function SidebarSection({
@@ -33,13 +24,11 @@ export function SidebarSection({
   onToggle,
   badge,
   iconsOnly,
-  accent,
-  glow,
   children,
 }: Props) {
-  const headingColor = accent ?? C.text2;
-  const chevronColor = accent ? withAlpha(accent, 0.8) : C.text2;
-  const iconActiveColor = accent ?? C.accent;
+  const headingColor = C.text2;
+  const chevronColor = C.text2;
+  const iconActiveColor = C.text1;
 
   if (iconsOnly) {
     return (
@@ -50,12 +39,7 @@ export function SidebarSection({
           color={isOpen ? iconActiveColor : C.text2}
         />
         {badge != null && badge > 0 && (
-          <View
-            style={[
-              styles.badge,
-              accent ? { backgroundColor: accent } : null,
-            ]}
-          >
+          <View style={styles.badge}>
             <Text style={styles.badgeText}>{badge > 9 ? '9+' : badge}</Text>
           </View>
         )}
@@ -66,17 +50,12 @@ export function SidebarSection({
   return (
     <View style={styles.section}>
       <Pressable style={styles.header} onPress={onToggle}>
-        <Text style={[styles.title, { color: headingColor }, glow]}>{title}</Text>
+        <Text style={[styles.title, { color: headingColor }]}>{title}</Text>
         {badge != null && badge > 0 && (
           <View
-            style={[
-              styles.countBadge,
-              accent
-                ? { backgroundColor: withAlpha(accent, 0.18), borderColor: withAlpha(accent, 0.55) }
-                : null,
-            ]}
+            style={styles.countBadge}
           >
-            <Text style={[styles.countText, accent ? { color: accent } : null]}>{badge}</Text>
+            <Text style={styles.countText}>{badge}</Text>
           </View>
         )}
         <View style={styles.spacer} />
@@ -116,15 +95,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: P.statusBadge.px,
     paddingVertical: P.statusBadge.py,
     marginLeft: 4,
-    backgroundColor: C.badgeRunningBg,
+    backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: 'transparent',
+    borderColor: C.border,
   },
   countText: {
     fontSize: F.badge.size - 1,
     fontFamily: F.family,
     fontWeight: F.badge.weight,
-    color: C.badgeRunningText,
+    color: C.text2,
   },
   body: {
     paddingBottom: 4,
@@ -142,12 +121,12 @@ const styles = StyleSheet.create({
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: C.accent,
+    backgroundColor: C.text1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   badgeText: {
-    color: C.btnPrimaryText,
+    color: C.bgDeep,
     fontFamily: F.family,
     fontSize: F.badge.size,
     fontWeight: F.badge.weight,

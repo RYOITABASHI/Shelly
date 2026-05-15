@@ -20,12 +20,7 @@ import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
-// Calvin S figlet-style 3-line ASCII logo for SHELLY.
-// Uses box-drawing chars — requires JetBrainsMono_400Regular (loaded in _layout.tsx).
-const SHELLY_LOGO =
-  '╔═╗╦ ╦╔═╗╦  ╦  ╦ ╦\n' +
-  '╚═╗╠═╣║╣ ║  ║  ╚╦╝\n' +
-  '╚═╝╩ ╩╚═╝╩═╝╩═╝ ╩ ';
+const SHELLY_WORDMARK = 'Shelly';
 
 export function AgentBar() {
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -68,7 +63,9 @@ export function AgentBar() {
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
       <View style={styles.logoMark} pointerEvents="none">
-        <Text style={styles.asciiLogo}>{SHELLY_LOGO}</Text>
+        <Text style={styles.wordmark} numberOfLines={1}>
+          {SHELLY_WORDMARK}
+        </Text>
       </View>
 
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
@@ -159,15 +156,17 @@ const styles = StyleSheet.create({
   logoMark: {
     height: 28,
     marginLeft: 6,
-    marginRight: 2,
-    paddingHorizontal: 4,
+    marginRight: 4,
+    minWidth: 52,
+    paddingHorizontal: 6,
     justifyContent: 'center',
   },
-  asciiLogo: {
+  wordmark: {
     color: C.accent,
-    fontFamily: 'JetBrainsMono_400Regular',
-    fontSize: 5.5,
-    lineHeight: 7,
+    fontFamily: F.family,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '700',
     includeFontPadding: false,
     letterSpacing: 0,
   },

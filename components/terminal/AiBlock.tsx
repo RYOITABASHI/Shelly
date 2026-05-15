@@ -52,7 +52,7 @@ function StreamingCursor({ color }: { color: string }) {
   const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   return (
-    <Animated.Text style={[{ color, fontSize: 14, fontFamily: 'Silkscreen' }, animStyle]}>
+    <Animated.Text style={[{ color, fontSize: 14, fontFamily: 'JetBrainsMono_400Regular' }, animStyle]}>
       {'\u258B'}
     </Animated.Text>
   );

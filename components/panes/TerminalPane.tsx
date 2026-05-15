@@ -894,7 +894,7 @@ export default function TerminalScreen() {
       {isRecovering && (
         <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
           <ActivityIndicator size="small" color={C.accent} />
-          <Text style={{ color: C.text3, fontFamily: 'Silkscreen', fontSize: 11, marginTop: 8 }}>
+          <Text style={{ color: C.text3, fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, marginTop: 8 }}>
             Restoring session...
           </Text>
         </View>
@@ -903,7 +903,7 @@ export default function TerminalScreen() {
       {connectionState === 'connecting' && !isRecovering && activeSession && (
         <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', zIndex: 10 }]}>
           <ActivityIndicator size="small" color={C.accent} />
-          <Text style={{ color: C.text3, fontFamily: 'Silkscreen', fontSize: 11, marginTop: 8 }}>
+          <Text style={{ color: C.text3, fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, marginTop: 8 }}>
             Starting terminal...
           </Text>
         </View>
@@ -914,7 +914,7 @@ export default function TerminalScreen() {
         <View style={[StyleSheet.absoluteFill, { zIndex: 20, backgroundColor: c.background }]}>
           {/* Panel Header */}
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.surface }}>
-            <Text style={{ color: c.foreground, fontFamily: 'Silkscreen', fontSize: 13, fontWeight: '700', flex: 1 }}>
+            <Text style={{ color: c.foreground, fontFamily: 'JetBrainsMono_400Regular', fontSize: 13, fontWeight: '700', flex: 1 }}>
               {showSetupOverlay ? 'Setup' : 'Block History'}
             </Text>
             <TouchableOpacity onPress={() => {
@@ -1041,7 +1041,7 @@ const styles = StyleSheet.create({
 
   // Connecting
   connectingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  connectingText: { fontSize: 15, fontFamily: 'Silkscreen', fontWeight: '600' },
+  connectingText: { fontSize: 15, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '600' },
 
   // Native terminal view. bug #82: small horizontal gutter so text
   // doesn't crash into the pane edge. The native updateSize() subtracts
@@ -1059,12 +1059,12 @@ const styles = StyleSheet.create({
 
   // Error state
   errorContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 },
-  errorTitle: { fontSize: 18, fontWeight: '700', fontFamily: 'Silkscreen' },
-  errorSubtitle: { fontSize: 13, fontFamily: 'Silkscreen', textAlign: 'center', lineHeight: 20 },
+  errorTitle: { fontSize: 18, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
+  errorSubtitle: { fontSize: 13, fontFamily: 'JetBrainsMono_400Regular', textAlign: 'center', lineHeight: 20 },
 
   // Retry button
   retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
-  retryBtnText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'Silkscreen' },
+  retryBtnText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
 
   // Scroll FAB (kept for potential future use)
   scrollToBottomFab: {

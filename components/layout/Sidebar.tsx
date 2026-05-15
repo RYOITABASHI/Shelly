@@ -16,7 +16,6 @@ import {
 } from 'react-native';
 import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useTheme } from '@/lib/theme-engine';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
@@ -34,18 +33,6 @@ import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
 import { QuickLaunchSection } from './QuickLaunchSection';
-import {
-  neonTextGlow,
-  neonDotGlow,
-  neonBorderGlow,
-  neonGlowSky,
-  neonGlowPink,
-  neonGlowPurple,
-  neonGlowAmber,
-  neonGlowGreen,
-  neonGlowBlue,
-  neonGlowTeal,
-} from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
@@ -62,22 +49,15 @@ function formatTimeAgo(ts: number): string {
   return `${Math.floor(diff / 86400)}D AGO`;
 }
 
-// Per-quick-folder neon palette. Each shortcut gets its own hue so the
-// DEVICE section reads as a colour-coded grid instead of a teal column.
-// Uses shellyPalette accent tokens so theme swaps flow through (TokyoNight
-// / Catppuccin pastels replace the shelly neons automatically).
 const QUICK_FOLDERS = [
-  { label: '~',        path: '~/',                 icon: 'home',          color: C.accentPink,   glow: neonGlowPink },
-  { label: 'DCIM',     path: '/sdcard/DCIM',       icon: 'photo-camera',  color: C.accentAmber,  glow: neonGlowAmber },
-  { label: 'DOWNLOAD', path: '/sdcard/Download',   icon: 'download',      color: C.accentBlue,   glow: neonGlowBlue },
-  { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description',   color: C.accentPurple, glow: neonGlowPurple },
-  { label: 'MUSIC',    path: '/sdcard/Music',      icon: 'music-note',    color: C.accentGreen,  glow: neonGlowGreen },
+  { label: '~',        path: '~/',                 icon: 'home' },
+  { label: 'DCIM',     path: '/sdcard/DCIM',       icon: 'photo-camera' },
+  { label: 'DOWNLOAD', path: '/sdcard/Download',   icon: 'download' },
+  { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description' },
+  { label: 'MUSIC',    path: '/sdcard/Music',      icon: 'music-note' },
 ] as const;
 
 export function Sidebar() {
-  const theme = useTheme();
-  const c = theme.colors;
-
   const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo } =
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
@@ -283,25 +263,23 @@ export function Sidebar() {
           onToggle={() => toggleSection('tasks')}
           badge={runningAgents.length}
           iconsOnly={iconsOnly}
-          accent={C.accentPink}
-          glow={neonGlowPink}
         >
           {runningAgents.map((agent) => (
             <View key={`running-${agent.id}`} style={styles.taskRow}>
-              <View style={[styles.taskDot, { backgroundColor: C.accentGreen }]} />
+              <View style={[styles.taskDot, { backgroundColor: C.text2 }]} />
               <View style={styles.taskInfo}>
                 <Text style={styles.taskName} numberOfLines={1}>
                   {agent.name.toUpperCase()}
                 </Text>
               </View>
-              <View style={[styles.statusBadge, { backgroundColor: C.badgeRunningBg }]}>
-                <Text style={[styles.statusBadgeText, { color: C.badgeRunningText }]}>RUNNING</Text>
+              <View style={styles.statusBadge}>
+                <Text style={styles.statusBadgeText}>RUNNING</Text>
               </View>
             </View>
           ))}
           {recentTasks.map((task) => (
             <View key={`recent-${task.id}`} style={styles.taskRow}>
-              <MaterialIcons name="check-circle" size={10} color={C.accent} />
+              <MaterialIcons name="check-circle" size={10} color={C.text2} />
               <View style={styles.taskInfo}>
                 <Text style={styles.taskName} numberOfLines={1}>
                   {task.name.toUpperCase()}
@@ -333,7 +311,7 @@ export function Sidebar() {
                     accessibilityRole="button"
                     accessibilityLabel={`Run agent ${agent.name} now`}
                   >
-                    <MaterialIcons name="play-arrow" size={12} color={C.accentGreen} />
+                    <MaterialIcons name="play-arrow" size={12} color={C.text2} />
                   </Pressable>
                   <Pressable
                     onPress={() => {
@@ -358,7 +336,7 @@ export function Sidebar() {
                     accessibilityRole="button"
                     accessibilityLabel={`Delete agent ${agent.name}`}
                   >
-                    <MaterialIcons name="delete-outline" size={12} color={C.errorText} />
+                    <MaterialIcons name="delete-outline" size={12} color={C.text2} />
                   </Pressable>
                 </View>
               ))}
@@ -388,8 +366,6 @@ export function Sidebar() {
           isOpen={openSections.repos}
           onToggle={() => toggleSection('repos')}
           iconsOnly={iconsOnly}
-          accent={C.accent}
-          glow={neonGlowTeal}
         >
           {repoPaths.length === 0 ? (
             <Text style={styles.emptyRepoHint}>
@@ -402,7 +378,7 @@ export function Sidebar() {
               return (
                 <Pressable
                   key={p}
-                  style={[styles.repoRow, isActive && styles.repoRowActive, isActive && neonBorderGlow]}
+                  style={[styles.repoRow, isActive && styles.repoRowActive]}
                   onPress={() => setActiveRepo(p)}
                   onLongPress={() => {
                     Alert.alert(
@@ -416,22 +392,21 @@ export function Sidebar() {
                   }}
                   delayLongPress={350}
                 >
-                  <View style={[styles.repoIcon, { backgroundColor: isActive ? C.accent : C.btnSecondaryBg }, isActive && neonDotGlow]}>
+                  <View style={[styles.repoIcon, { backgroundColor: isActive ? C.text1 : C.btnSecondaryBg }]}>
                     <MaterialIcons
                       name="folder"
                       size={10}
-                      color={isActive ? C.btnPrimaryText : C.accentSky}
-                      style={isActive ? undefined : neonGlowSky}
+                      color={isActive ? C.bgDeep : C.text2}
                     />
                   </View>
                   <Text
-                    style={[styles.repoName, { color: isActive ? C.accent : C.text1 }, isActive && neonTextGlow]}
+                    style={[styles.repoName, { color: isActive ? C.text1 : C.text2 }]}
                     numberOfLines={1}
                   >
                     {name.toUpperCase()}
                   </Text>
                   {isActive && (
-                    <Text style={[styles.repoVersion, neonGlowSky]}>V9.2</Text>
+                    <Text style={styles.repoVersion}>V9.2</Text>
                   )}
                 </Pressable>
               );
@@ -458,8 +433,6 @@ export function Sidebar() {
           isOpen={openSections.files}
           onToggle={() => toggleSection('files')}
           iconsOnly={iconsOnly}
-          accent={C.accentSky}
-          glow={neonGlowSky}
         >
           <FileTree />
         </SidebarSection>
@@ -471,17 +444,15 @@ export function Sidebar() {
           isOpen={openSections.device}
           onToggle={() => toggleSection('device')}
           iconsOnly={iconsOnly}
-          accent={C.accentAmber}
-          glow={neonGlowAmber}
         >
-          {QUICK_FOLDERS.map(({ label, path, icon, color, glow }) => (
+          {QUICK_FOLDERS.map(({ label, path, icon }) => (
             <Pressable
               key={path}
               style={styles.deviceRow}
               onPress={() => setActiveRepo(path)}
             >
-              <MaterialIcons name={icon as any} size={13} color={color} style={glow} />
-              <Text style={[styles.deviceLabel, { color }]} numberOfLines={1} ellipsizeMode="tail">
+              <MaterialIcons name={icon as any} size={13} color={C.text2} />
+              <Text style={styles.deviceLabel} numberOfLines={1} ellipsizeMode="tail">
                 {label}
               </Text>
             </Pressable>
@@ -495,8 +466,6 @@ export function Sidebar() {
           isOpen={openSections.ports}
           onToggle={() => toggleSection('ports')}
           iconsOnly={iconsOnly}
-          accent={C.accentGreen}
-          glow={neonGlowGreen}
         >
           {portEntries.length === 0 ? (
             // Android 10+ SELinux denies BOTH /proc/net/tcp reads AND
@@ -508,9 +477,6 @@ export function Sidebar() {
             </Text>
           ) : (
             portEntries.map((entry) => {
-              // Color map: Expo ports go sky, everything else green.
-              const isExpo = entry.port === 8081 || (entry.port >= 19000 && entry.port <= 19002);
-              const dotColor = isExpo ? C.accentSky : C.accentGreen;
               const label = portLabel(entry);
               return (
                 <Pressable
@@ -518,7 +484,7 @@ export function Sidebar() {
                   style={styles.portRow}
                   onPress={() => openUrl(`http://localhost:${entry.port}`)}
                 >
-                  <View style={[styles.portDot, { backgroundColor: dotColor }, neonDotGlow]} />
+                  <View style={styles.portDot} />
                   <Text style={styles.portLabel}>{`${entry.address}:${entry.port}`}</Text>
                   {label ? <Text style={styles.portName}>{label}</Text> : null}
                   <View style={{ flex: 1 }} />
@@ -536,8 +502,6 @@ export function Sidebar() {
           isOpen={openSections.profiles}
           onToggle={() => toggleSection('profiles')}
           iconsOnly={iconsOnly}
-          accent={C.accentBlue}
-          glow={neonGlowBlue}
         >
           <ProfilesSection />
         </SidebarSection>
@@ -671,12 +635,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: P.statusBadge.px,
     paddingVertical: P.statusBadge.py,
     borderRadius: R.badge,
+    backgroundColor: withAlpha(C.text2, 0.12),
   },
   statusBadgeText: {
     fontSize: F.badge.size,
     fontFamily: F.family,
     fontWeight: F.badge.weight,
     letterSpacing: 0.5,
+    color: C.text2,
   },
   // Repos
   repoRow: {
@@ -692,11 +658,8 @@ const styles = StyleSheet.create({
     borderLeftColor: 'transparent',
   },
   repoRowActive: {
-    // Teal-tinted glow instead of the muddy amber that clashed with the
-    // accent border. Pairs with neonBorderGlow (passed inline) for the
-    // subtle bleed effect.
-    backgroundColor: withAlpha(C.accent, 0.12),
-    borderLeftColor: C.accent,
+    backgroundColor: withAlpha(C.text1, 0.08),
+    borderLeftColor: C.text2,
   },
   repoIcon: {
     width: 14,
@@ -716,9 +679,7 @@ const styles = StyleSheet.create({
     fontSize: F.badge.size,
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
-    // Sky so it bleeds together with the neonGlowSky applied inline; using
-    // text2 (gray) made the glow look ghosted against a washed-out label.
-    color: C.accentSky,
+    color: C.text3,
   },
   emptyRepoHint: {
     fontSize: F.sidebarItem.size,
@@ -753,10 +714,7 @@ const styles = StyleSheet.create({
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
-    // Default colour is overridden inline per-row (QUICK_FOLDERS carries
-    // a per-folder neon hue); text1 stays as the fallback for any other
-    // caller that reuses this style.
-    color: C.text1,
+    color: C.text2,
     letterSpacing: 0.3,
   },
   // Ports
@@ -773,6 +731,7 @@ const styles = StyleSheet.create({
     width: S.agentDotSize,
     height: S.agentDotSize,
     borderRadius: S.agentDotSize / 2,
+    backgroundColor: C.text2,
   },
   portLabel: {
     fontSize: F.sidebarItem.size,
@@ -864,10 +823,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: P.sidebarItem.px,
     paddingVertical: 6,
     borderRadius: R.agentTab,
-    backgroundColor: C.badgeRunningBg,
+    backgroundColor: C.text1,
   },
   modalAddText: {
-    color: C.accent,
+    color: C.bgDeep,
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,
     fontWeight: '700',

@@ -17,52 +17,11 @@ type FileEntry = {
   isDirectory: boolean;
 };
 
-/**
- * Per-extension color palette. Matches the mock's colored file icons where
- * .tsx / .ts / .json / .md / .py / README each read as a different hue. Keeps
- * the default blue for unknown extensions and directories.
- */
 function fileIconColor(name: string, isDir: boolean): string {
-  if (isDir) return C.accentBlue;
-  const lower = name.toLowerCase();
-  if (lower === 'readme.md' || lower === 'readme') return C.errorText;
-  const dot = lower.lastIndexOf('.');
-  const ext = dot === -1 ? '' : lower.slice(dot + 1);
-  switch (ext) {
-    case 'tsx':
-    case 'jsx':       return C.accentSky;       // React: sky
-    case 'ts':        return C.accentBlue;      // TypeScript: blue
-    case 'js':
-    case 'mjs':
-    case 'cjs':       return C.accentAmber;     // JavaScript: amber
-    case 'json':
-    case 'toml':
-    case 'yaml':
-    case 'yml':       return C.accentAmber;     // config: amber
-    case 'md':
-    case 'mdx':       return C.accentPurple;    // markdown: purple
-    case 'py':        return C.accentGreen;     // python: green
-    case 'go':        return C.accentSky;
-    case 'rs':        return C.errorText;       // rust: red
-    case 'sh':
-    case 'bash':
-    case 'zsh':       return C.accentGreen;
-    case 'css':
-    case 'scss':      return C.accentPink;
-    case 'html':      return C.accentAmber;
-    case 'png':
-    case 'jpg':
-    case 'jpeg':
-    case 'gif':
-    case 'svg':
-    case 'webp':      return C.accentPink;
-    default:          return C.accentBlue;
-  }
+  return isDir ? C.text1 : C.text2;
 }
 
 function fileNameColor(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower === 'readme.md' || lower === 'readme') return C.errorText;
   return C.text1;
 }
 
@@ -253,8 +212,8 @@ export function FileTree() {
       {/* Breadcrumb */}
       {cwd !== repoPath && (
         <Pressable style={styles.breadcrumb} onPress={handleGoUp}>
-          <MaterialIcons name="arrow-back" size={I.fileIcon} color={C.accent} />
-          <Text style={[styles.breadcrumbText, { color: C.accent }]} numberOfLines={1}>
+          <MaterialIcons name="arrow-back" size={I.fileIcon} color={C.text2} />
+          <Text style={[styles.breadcrumbText, { color: C.text2 }]} numberOfLines={1}>
             ..
           </Text>
         </Pressable>
@@ -378,7 +337,7 @@ const promptStyles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: 10,
     fontWeight: '700',
-    color: C.accent,
+    color: C.text1,
     letterSpacing: 0.5,
   },
   input: {
@@ -405,8 +364,8 @@ const promptStyles = StyleSheet.create({
     borderColor: C.border,
   },
   btnPrimary: {
-    backgroundColor: C.accent,
-    borderColor: C.accent,
+    backgroundColor: C.text1,
+    borderColor: C.text1,
   },
   btnText: {
     fontFamily: F.family,

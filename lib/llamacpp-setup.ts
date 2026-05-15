@@ -61,20 +61,6 @@ export type SetupPhase =
  */
 export const MODEL_CATALOG: LlamaCppModel[] = [
   {
-    id: 'gemma3-4b-q4',
-    name: 'Gemma 3 4B',
-    description: '日本語インストラクション追従が3-4Bクラス最強。意図分類・出力解釈・チャット全てに最適。',
-    sizeGb: 2.5,
-    ramRequiredGb: 5.0,
-    language: 'multilingual',
-    useCase: 'balanced',
-    quantization: 'Q4_K_M',
-    huggingFaceRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
-    filename: 'gemma-3-4b-it-Q4_K_M.gguf',
-    downloadUrl:
-      'https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf',
-  },
-  {
     id: 'qwen3-8b-q4-k-m',
     name: 'Qwen3-8B Q4_K_M',
     description: '推奨・高品質。日本語、コード、クロスペイン補助のバランスが最も良いZ Fold6向けモデル。',
@@ -89,6 +75,20 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
       'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
     recommended: true,
     badge: '推奨・高品質',
+  },
+  {
+    id: 'gemma3-4b-q4',
+    name: 'Gemma 3 4B',
+    description: '日本語インストラクション追従が3-4Bクラス最強。意図分類・出力解釈・チャット全てに最適。',
+    sizeGb: 2.5,
+    ramRequiredGb: 5.0,
+    language: 'multilingual',
+    useCase: 'balanced',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
+    filename: 'gemma-3-4b-it-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf',
   },
   {
     id: 'qwen2.5-1.5b-q4',

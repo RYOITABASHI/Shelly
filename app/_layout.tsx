@@ -10,7 +10,6 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-context";
 import { useFonts } from "expo-font";
-import { Silkscreen_400Regular, Silkscreen_700Bold } from "@expo-google-fonts/silkscreen";
 import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fonts/jetbrains-mono";
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
@@ -54,20 +53,6 @@ export const unstable_settings = {
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
-    'PixelMplus12': require('@/assets/fonts/PixelMplus12-Regular.ttf'),
-    'GeistPixel-Square': require('@/assets/fonts/GeistPixel-Square.ttf'),
-    'PressStart2P': require('@/assets/fonts/PressStart2P_400Regular.ttf'),
-    // Silkscreen — closer to the mock's readable pixel aesthetic than
-    // PressStart2P (which is a pure 8×8 grid). Provided via
-    // @expo-google-fonts/silkscreen's named export (not a direct .ttf
-    // path — Metro can't resolve that through the package subpath).
-    'Silkscreen': Silkscreen_400Regular,
-    'Silkscreen-Bold': Silkscreen_700Bold,
-    // JetBrains Mono — default UI font replacing Silkscreen. Silkscreen
-    // renders lowercase code points with uppercase glyphs (Google Fonts
-    // design), which made every lowercase UI label read as shouting.
-    // JetBrains Mono gives us real lowercase, keeps the monospace feel
-    // across terminal + UI, and avoids shipping yet another font file.
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,
   });
