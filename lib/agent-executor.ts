@@ -84,8 +84,8 @@ cleanup() {
 }
 json_escape_text() {
   text="$1"
-  if command -v node >/dev/null 2>&1; then
-    node -e 'process.stdout.write(JSON.stringify(process.argv[1]).slice(1, -1))' "$text"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=False)[1:-1], end="")' "$text"
   else
     printf '%s' "$text" | tr '\\n\\r\\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
   fi
@@ -113,38 +113,62 @@ finish() {
 
 json_string_file() {
   file="$1"
-  if command -v node >/dev/null 2>&1; then
-    node -e 'const fs=require("fs"); process.stdout.write(JSON.stringify(fs.readFileSync(process.argv[1],"utf8")))' "$file"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1], "r", encoding="utf-8", errors="replace").read(), ensure_ascii=False), end="")' "$file"
   else
     printf '"'
-    sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$file" | tr -d '\\n'
+    sed 's/\r/ /g; s/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$file" | tr -d '\\n'
     printf '"'
   fi
 }
 
 extract_ai_content() {
   file="$1"
-  if command -v node >/dev/null 2>&1; then
-    node -e '
-const fs = require("fs");
-const text = fs.readFileSync(process.argv[1], "utf8");
-try {
-  const json = JSON.parse(text);
-  const content = json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text;
-  const err = json?.error?.message ?? json?.error ?? json?.message;
-  if (content) {
-    process.stdout.write(content);
-  } else if (err) {
-    process.stdout.write("API error: " + (typeof err === "string" ? err : JSON.stringify(err)));
-    process.exit(2);
-  } else {
-    process.stdout.write(text);
-  }
-} catch {
-  process.stdout.write(text);
-}
-' "$file"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" <<'PYEOF'
+import json
+import sys
+
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8", errors="replace").read()
+try:
+    data = json.loads(text)
+except Exception:
+    sys.stdout.write(text)
+    raise SystemExit(0)
+
+content = None
+try:
+    content = data.get("choices", [{}])[0].get("message", {}).get("content")
+except Exception:
+    content = None
+if not content:
+    try:
+        content = data.get("choices", [{}])[0].get("text")
+    except Exception:
+        content = None
+if not content:
+    try:
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        content = "\\n".join(part.get("text", "") for part in parts if part.get("text"))
+    except Exception:
+        content = None
+
+err = data.get("error") or data.get("message")
+if content:
+    sys.stdout.write(content)
+elif err:
+    sys.stdout.write("API error: " + (err if isinstance(err, str) else json.dumps(err, ensure_ascii=False)))
+    raise SystemExit(2)
+else:
+    sys.stdout.write(text)
+PYEOF
   else
+    if grep -q '"error"' "$file" 2>/dev/null; then
+      printf 'API error response: '
+      head -c 4000 "$file"
+      return 2
+    fi
     cat "$file"
   fi
 }
@@ -503,11 +527,7 @@ else
     -H "x-goog-api-key: $GEMINI_API_KEY" \\
     -d "{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":$PROMPT_JSON}]}],\\"generationConfig\\":{\\"maxOutputTokens\\":4096,\\"temperature\\":0.7}}" \\
     > "$RESULT_FILE.response.json" 2> "$RESULT_FILE.stderr" || true
-  if command -v node >/dev/null 2>&1; then
-    node -e 'const fs=require("fs"); const text=fs.readFileSync(process.argv[1],"utf8"); try { const j=JSON.parse(text); const out=(j.candidates?.[0]?.content?.parts || []).map((p)=>p.text || "").join("\\n"); const err=j.error?.message ?? j.error; if (out) process.stdout.write(out); else if (err) { process.stdout.write("API error: " + (typeof err === "string" ? err : JSON.stringify(err))); process.exit(2); } else process.stdout.write(text); } catch { process.stdout.write(text); }' "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
-  else
-    cat "$RESULT_FILE.response.json" > ${resultVar}
-  fi
+  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
   rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 fi
 rm -f "$PROMPT_FILE"`;
