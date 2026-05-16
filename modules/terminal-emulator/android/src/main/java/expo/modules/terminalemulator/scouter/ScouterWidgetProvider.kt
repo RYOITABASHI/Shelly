@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.widget.RemoteViews
 import expo.modules.terminalemulator.R
@@ -38,7 +39,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun render(context: Context, snapshot: SessionSnapshot?): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+                action = Intent.ACTION_VIEW
+                data = Uri.parse("shelly://scouter")
+            }
             val pendingIntent = if (launchIntent != null) {
                 PendingIntent.getActivity(
                     context,
@@ -64,7 +68,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val sourceName = displaySourceName(snapshot.source)
             val branch = snapshot.gitBranch?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
             val title = "$sourceName · $project$branch"
-            val detail = displayStatus(snapshot, project)
+            val stale = isStale(snapshot)
+            val detail = if (stale) "Stale · ${displayStatus(snapshot, project)}" else displayStatus(snapshot, project)
             val metrics = buildString {
                 if (snapshot.totalCostUsd > 0.0) append("$").append(String.format(Locale.US, "%.2f", snapshot.totalCostUsd)).append(" · ")
                 if (snapshot.tokensUsed > 0L) append(formatTokens(snapshot.tokensUsed)).append(" tokens · ")
@@ -76,7 +81,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(R.id.scouter_source_badge, snapshot.source.badge())
             views.setTextViewText(R.id.scouter_detail, detail.redactForScouter())
             views.setTextViewText(R.id.scouter_metrics, metrics)
-            views.setInt(R.id.scouter_status_dot, "setColorFilter", colorForStatus(snapshot.currentStatus))
+            views.setInt(R.id.scouter_status_dot, "setColorFilter", colorForStatus(snapshot.currentStatus, stale))
             return views
         }
 
@@ -122,13 +127,19 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 .ifBlank { raw }
         }
 
-        private fun colorForStatus(status: ScouterStatus): Int = when (status) {
-            ScouterStatus.IDLE -> Color.rgb(122, 150, 122)
-            ScouterStatus.THINKING -> Color.rgb(125, 219, 125)
-            ScouterStatus.TOOL_RUNNING -> Color.rgb(47, 175, 47)
-            ScouterStatus.WAITING_PERMISSION -> Color.rgb(158, 217, 93)
-            ScouterStatus.COMPLETED -> Color.rgb(155, 196, 155)
-            ScouterStatus.ERROR -> Color.rgb(255, 92, 92)
+        private fun isStale(snapshot: SessionSnapshot): Boolean {
+            return System.currentTimeMillis() - snapshot.lastEventAt > STALE_AFTER_MS
+        }
+
+        private fun colorForStatus(status: ScouterStatus, stale: Boolean = false): Int = when {
+            stale -> Color.rgb(122, 150, 122)
+            status == ScouterStatus.IDLE -> Color.rgb(122, 150, 122)
+            status == ScouterStatus.THINKING -> Color.rgb(125, 219, 125)
+            status == ScouterStatus.TOOL_RUNNING -> Color.rgb(47, 175, 47)
+            status == ScouterStatus.WAITING_PERMISSION -> Color.rgb(158, 217, 93)
+            status == ScouterStatus.COMPLETED -> Color.rgb(155, 196, 155)
+            status == ScouterStatus.ERROR -> Color.rgb(255, 92, 92)
+            else -> Color.rgb(122, 150, 122)
         }
 
         private fun formatTokens(tokens: Long): String {
@@ -139,5 +150,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val pattern = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) "HH:mm:ss" else "HH:mm"
             return SimpleDateFormat(pattern, Locale.US).format(Date(time))
         }
+
+        private const val STALE_AFTER_MS = 10 * 60 * 1000L
     }
 }

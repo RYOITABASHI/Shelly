@@ -28,6 +28,7 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 - Medium 4x2 AppWidget:
   - event-driven `AppWidgetManager.updateAppWidget`
   - no short-period `updatePeriodMillis`
+  - tap opens the in-app Scouter monitor through `shelly://scouter`
 - Basic notifications:
   - completed
   - error
@@ -35,6 +36,7 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 - Minimal settings/debug controls:
   - gear menu -> `SCOUTER`
   - `shelly config` -> `Scouter` -> `Scouter Widget`
+  - `Open Scouter monitor`
   - native terminal helper: `shelly scouter status|hooks`
   - `Scouter Debug Info`
   - `Scouter Hook Template`
@@ -169,6 +171,22 @@ The Medium widget shows the latest session snapshot observed by Scouter, not nec
 - Footer: optional cost/tokens/context, followed by `Last event HH:mm:ss`.
 
 Long Android private paths are shortened for readability. For example, the Shelly terminal home path is displayed as `home` instead of the full app-private directory.
+
+If the latest event is more than 10 minutes old, the widget marks the snapshot as `Stale`. Phase 1A+ still avoids short-period widget polling, so stale state appears on the next event-driven render, manual refresh, or launcher-driven widget refresh.
+
+## Scouter Monitor
+
+Tap the Medium widget, or use gear menu -> `SCOUTER` -> `Open Scouter monitor`.
+
+The monitor is the inspection layer for Phase 1A+:
+
+- Service status: Scouter ON/OFF, hook server port, JSONL watcher, token preview.
+- Latest session: source, project, status, last event, duration, token/cost/context hints, and last error.
+- Session list: up to the latest 20 snapshots stored by Scouter.
+- Hook URLs: current Claude Code and Codex hook base URLs.
+- Copy hooks: copies runtime hook templates with the full token.
+
+The monitor auto-refreshes while open. Widget remains the glance layer and intentionally shows only the latest observed session.
 
 Dogfood checklist for the first week:
 

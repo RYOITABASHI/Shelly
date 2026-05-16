@@ -86,7 +86,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <AgentsSection />
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
-            <ScouterSection visible={visible} />
+            <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
             <ClaudeLoginSection onClose={onClose} />
@@ -142,7 +142,7 @@ function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
   );
 }
 
-function ScouterSection({ visible }: { visible: boolean }) {
+function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onCloseSettings: () => void }) {
   const [enabled, setEnabled] = useState(false);
   const [port, setPort] = useState(-1);
   const [busy, setBusy] = useState(false);
@@ -233,6 +233,21 @@ function ScouterSection({ visible }: { visible: boolean }) {
         <Text style={styles.integrationLabel}>Copy debug info</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="content-copy" size={14} color={C.text3} />
+      </Pressable>
+      <View style={styles.credentialGap} />
+      <Pressable
+        style={styles.integrationRow}
+        onPress={() => {
+          onCloseSettings();
+          useSettingsStore.getState().setShowScouterDetail(true);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Open Scouter detail"
+      >
+        <MaterialIcons name="desktop-windows" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Open Scouter monitor</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="open-in-new" size={14} color={C.text3} />
       </Pressable>
       <View style={styles.credentialGap} />
       <Pressable

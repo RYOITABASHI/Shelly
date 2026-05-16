@@ -69,12 +69,14 @@ interface SettingsState {
   isSettingsLoaded: boolean;
   showConfigTUI: boolean;
   showVoiceMode: boolean;
+  showScouterDetail: boolean;
 
   loadSettings: () => Promise<void>;
   updateSettings: (partial: Partial<AppSettings>) => void;
   resetSettings: () => void;
   setShowConfigTUI: (show: boolean) => void;
   setShowVoiceMode: (show: boolean) => void;
+  setShowScouterDetail: (show: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -82,6 +84,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   isSettingsLoaded: false,
   showConfigTUI: false,
   showVoiceMode: false,
+  showScouterDetail: false,
 
   loadSettings: async () => {
     try {
@@ -158,4 +161,5 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),
   setShowVoiceMode: (show: boolean) => set({ showVoiceMode: show }),
+  setShowScouterDetail: (show: boolean) => set({ showScouterDetail: show }),
 }));

@@ -233,6 +233,7 @@ export default function RootLayout() {
     //
     // Supported schemes so far:
     //   shelly://browser?url=<encoded>  — navigate the Browser Pane to a URL.
+    //   shelly://scouter                 — open Scouter detail.
     //                                     Adds a browser pane if none exists.
     //
     // Primary client today is `shelly-cs open <codespace>` which fires
@@ -278,6 +279,9 @@ export default function RootLayout() {
             });
             logInfo('DeepLink', `clipboard set (${text.length} chars)`);
           }
+        } else if (parsed.hostname === 'scouter') {
+          useSettingsStore.getState().setShowScouterDetail(true);
+          logInfo('DeepLink', 'Scouter detail opened');
         }
       } catch (e) {
         logError('DeepLink', 'parse failed', e);

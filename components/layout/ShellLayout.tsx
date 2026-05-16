@@ -27,6 +27,7 @@ import { ConfigTUI } from '@/components/config/ConfigTUI';
 import { SaveBadge } from '@/components/SaveBadge';
 import { useFocusStore } from '@/store/focus-store';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
+import { ScouterDetailModal } from '@/components/scouter/ScouterDetailModal';
 
 const LAST_UNFOLDED_PRESET_KEY = 'shelly:lastUnfoldedPreset';
 const FALLBACK_UNFOLDED_PRESET: PresetId = 'p3l';
@@ -165,8 +166,13 @@ export function ShellLayout() {
   // activity's window focus returns to the terminal view instead of going
   // null (keyboard would stay visible but commitText would nowhere-land).
   const showVoice = useSettingsStore((s) => s.showVoiceMode);
+  const showScouterDetail = useSettingsStore((s) => s.showScouterDetail);
   const closeVoice = useCallback(() => {
     useSettingsStore.getState().setShowVoiceMode(false);
+    useFocusStore.getState().requestTerminalRefocus();
+  }, []);
+  const closeScouterDetail = useCallback(() => {
+    useSettingsStore.getState().setShowScouterDetail(false);
     useFocusStore.getState().requestTerminalRefocus();
   }, []);
 
@@ -287,6 +293,9 @@ export function ShellLayout() {
 
       {/* Full-screen voice overlay */}
       <VoiceChat visible={showVoice} onClose={closeVoice} />
+
+      {/* Scouter detail overlay */}
+      <ScouterDetailModal visible={showScouterDetail} onClose={closeScouterDetail} />
 
       {/* Savepoint badge — floating top-right indicator, fires when
           auto-savepoint writes a commit (see savepoint bridge in _layout.tsx) */}
