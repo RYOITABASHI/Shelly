@@ -63,15 +63,15 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 
 ```sh
 cat ~/.bashrc_version
-command -v shelly
+type shelly
 shelly scouter status
 shelly scouter hooks
 ```
 
 Expected:
 
-- `~/.bashrc_version` is `139` or newer
-- `command -v shelly` prints `$HOME/bin/shelly`
+- `~/.bashrc_version` is `141` or newer
+- `type shelly` prints a shell function that invokes `$HOME/bin/shelly`
 - `shelly scouter status` prints cached state from `~/.scouter-state.json`
 - `shelly scouter hooks` prints the full hook token and base URLs
 
@@ -106,7 +106,7 @@ curl -sS \
 
 Expected:
 
-- widget status color changes to completed
+- widget status color changes to completed/idle and the previous tool label is cleared
 - basic completion notification is posted if notification permission is granted
 
 ## Hook Template Shape
@@ -140,10 +140,32 @@ X-Scouter-Token: <hookToken>
 ## Known Runtime Limits
 
 - Phase 1A intentionally does not use a foreground service. The hook server and JSONL watcher run while the Shelly app process is alive. If Android kills or force-stops Shelly, Scouter restarts only after Shelly is opened again.
+- The hook server port is dynamic per Scouter process lifetime. After Shelly is restarted, old copied hook URLs can fail with `curl: (7) Failed to connect`; run `shelly scouter hooks` or use the gear debug action again to get the current port.
 - The loopback server accepts local device traffic only (`127.0.0.1`), requires `X-Scouter-Token`, caps request bodies at 64 KiB, and uses a small fixed request pool.
 - Debug output redacts the token. `Copy hook templates` intentionally copies the full token because CC/Codex hook setup needs it.
 - Disabling Scouter clears widget snapshots so the widget falls back to the waiting state.
 - The native terminal `shelly` helper reads cached status/hooks from `~/.scouter-state.json`. ON/OFF remains a gear-menu action because starting/stopping the hook server requires the in-process Android service. Gear-menu debug is authoritative for live in-memory service state.
+- The helper is exposed as a bash function instead of executing `$HOME/bin/shelly` directly. Some Samsung/Android app-private filesystems returned `/system/bin/sh: bad interpreter: Success` for direct shebang execution.
+
+## Device Verification Log
+
+2026-05-16 dogfood candidate, Galaxy Z Fold6 + One UI Home:
+
+- `SCOUTER` gear controls are visible and can enable Scouter.
+- `shelly scouter hooks` works from a fresh Shelly terminal after `~/.bashrc_version` `141`.
+- Runtime hooks expose `127.0.0.1:<dynamic-port>/hook/cc` and `/hook/codex` with `X-Scouter-Token`.
+- Manual Claude-style `pre-tool-use` request returns `{"ok":true}` and updates the widget to show the test session, `CC`, and `Bash`.
+- Manual `stop` request returns `{"ok":true}`; terminal states no longer leave a stale `Bash` tool label on the widget.
+- One UI can add the Medium widget after the RemoteViews layout avoids unsupported raw `View` children.
+- Reusing an old hook URL after app/process restart correctly fails because Phase 1A does not keep a foreground service alive and the port is regenerated.
+
+Dogfood checklist for the first week:
+
+- Keep the Medium widget on the home screen and watch stale-state behavior after screen off, app switch, and app restart.
+- Run `shelly scouter hooks` after opening Shelly before testing hooks, because copied ports are process-local.
+- Observe notification volume for completed/error/long-running events.
+- Watch JSONL watcher noise from old CC/Codex history and note whether old sessions should be filtered more aggressively.
+- Decide before Phase 1B whether the no-foreground-service constraint is still acceptable for real hook reliability.
 
 ## PoC 5A Notes
 
