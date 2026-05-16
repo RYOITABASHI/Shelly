@@ -67,16 +67,94 @@ TOOL_LABEL=${shellQuote(toolLabel)}
 ENV_FILE=${shellQuote(envFile)}
 LOCKS_DIR=${shellQuote(locksDir)}
 MAX_CONCURRENT=${MAX_CONCURRENT}
+REGISTRY_LOCK=""
+REGISTRY_LOCK_ACQUIRED=0
+BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
 
 START_TIME=$(date +%s)
 
+export HOME="${home}"
+export PATH="$HOME/.local/bin:$PATH"
+
+cleanup() {
+  if [ "\${REGISTRY_LOCK_ACQUIRED:-0}" = "1" ] && [ -n "\${REGISTRY_LOCK:-}" ] && [ -d "$REGISTRY_LOCK" ]; then
+    rmdir "$REGISTRY_LOCK" 2>/dev/null || true
+  fi
+  rm -f "$LOCK_FILE"
+}
+json_escape_text() {
+  text="$1"
+  if command -v node >/dev/null 2>&1; then
+    node -e 'process.stdout.write(JSON.stringify(process.argv[1]).slice(1, -1))' "$text"
+  else
+    printf '%s' "$text" | tr '\\n\\r\\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+  fi
+}
+write_failure_log() {
+  code="$1"
+  line="$2"
+  END_TIME=$(date +%s)
+  DURATION=$(( (END_TIME - START_TIME) * 1000 ))
+  TS=$(date +%s)
+  PREVIEW=$(printf 'Agent script failed before producing a result. exit=%s line=%s. PATH=%s' "$code" "$line" "$PATH" | head -c 500 | tr '\\n' ' ')
+  PREVIEW_JSON=$(json_escape_text "$PREVIEW")
+  TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
+  cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"error","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$PREVIEW_JSON"}
+LOGEOF
+}
+finish() {
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    write_failure_log "$code" "\${BASH_LINENO[0]:-unknown}" || true
+  fi
+  cleanup
+}
+
+json_string_file() {
+  file="$1"
+  if command -v node >/dev/null 2>&1; then
+    node -e 'const fs=require("fs"); process.stdout.write(JSON.stringify(fs.readFileSync(process.argv[1],"utf8")))' "$file"
+  else
+    printf '"'
+    sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$file" | tr -d '\\n'
+    printf '"'
+  fi
+}
+
+extract_ai_content() {
+  file="$1"
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const text = fs.readFileSync(process.argv[1], "utf8");
+try {
+  const json = JSON.parse(text);
+  const content = json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text;
+  const err = json?.error?.message ?? json?.error ?? json?.message;
+  if (content) {
+    process.stdout.write(content);
+  } else if (err) {
+    process.stdout.write("API error: " + (typeof err === "string" ? err : JSON.stringify(err)));
+    process.exit(2);
+  } else {
+    process.stdout.write(text);
+  }
+} catch {
+  process.stdout.write(text);
+}
+' "$file"
+  else
+    cat "$file"
+  fi
+}
+
+# Create directories before installing the failure trap so JSON logs have a target.
+mkdir -p '${tmpDir}' '${locksDir}' "$LOG_DIR"
+trap finish EXIT
+
 # Source environment
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
-export PATH="$HOME/.local/bin:$PATH"
-export HOME="${home}"
-
-# Create directories
-mkdir -p '${tmpDir}' '${locksDir}' "$LOG_DIR"
 
 PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
 SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-registry.tsv}"
@@ -91,8 +169,9 @@ fi
 ACTIVE_COUNT=$(find "$LOCKS_DIR" -name '*.pid' -exec sh -c 'kill -0 $(cat "{}") 2>/dev/null && echo 1' \\; | wc -l)
 if [ "$ACTIVE_COUNT" -ge "$MAX_CONCURRENT" ]; then
   TS=$(date +%s)
+  TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
   cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"global concurrency limit reached","durationMs":0,"toolUsed":"$TOOL_LABEL"}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"global concurrency limit reached","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON"}
 LOGEOF
   exit 0
 fi
@@ -102,8 +181,9 @@ if [ -f "$LOCK_FILE" ]; then
   OLD_PID=$(cat "$LOCK_FILE")
   if kill -0 "$OLD_PID" 2>/dev/null; then
     TS=$(date +%s)
+    TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
     cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL"}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON"}
 LOGEOF
     exit 0
   fi
@@ -112,21 +192,19 @@ fi
 
 # Acquire lock
 echo $$ > "$LOCK_FILE"
-cleanup() {
-  rm -f "$LOCK_FILE"
-}
-trap cleanup EXIT
 
 # Execute tool
+rm -f "$BACKEND_ERROR_FILE"
 ${toolCommand}
 
 # Check result
 END_TIME=$(date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
-if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
-  PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ' | tr '"' "'")
+if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
+  PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ')
   STATUS="success"
+  ERROR_MESSAGE=""
 
   # Copy to output directory
   mkdir -p "$OUTPUT_DIR"
@@ -149,14 +227,17 @@ if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
   fi
 
   REGISTRY_LOCK="$SOURCE_REGISTRY_FILE.lock"
+  REGISTRY_LOCK_ACQUIRED=0
   lock_attempt=0
-  while ! mkdir "$REGISTRY_LOCK" 2>/dev/null; do
+  until mkdir "$REGISTRY_LOCK" 2>/dev/null; do
     lock_attempt=$((lock_attempt + 1))
-    [ "$lock_attempt" -lt 30 ] || break
+    if [ "$lock_attempt" -ge 30 ]; then
+      break
+    fi
     sleep 1
   done
-  if [ -d "$REGISTRY_LOCK" ]; then
-    trap 'rm -f "$LOCK_FILE"; rmdir "$REGISTRY_LOCK" 2>/dev/null || true' EXIT
+  if [ "$lock_attempt" -lt 30 ]; then
+    REGISTRY_LOCK_ACQUIRED=1
   fi
   { grep -Eo 'https?://[^][ )<>"'"'"']+' "$RESULT_FILE" 2>/dev/null || true; } | sed 's/[.,;)]$//' | sort -u | while read -r url; do
     [ -n "$url" ] || continue
@@ -164,26 +245,35 @@ if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
       printf '%s\\t%s\\t%s\\t%s\\n' "$(date -Iseconds)" "$AGENT_ID" "$TOOL_LABEL" "$url" >> "$SOURCE_REGISTRY_FILE"
     fi
   done
-  if [ -d "$REGISTRY_LOCK" ]; then
+  if [ "$REGISTRY_LOCK_ACQUIRED" = "1" ] && [ -d "$REGISTRY_LOCK" ]; then
     rmdir "$REGISTRY_LOCK" 2>/dev/null || true
-    trap cleanup EXIT
+    REGISTRY_LOCK_ACQUIRED=0
+    REGISTRY_LOCK=""
   fi
 else
-  PREVIEW=""
+  if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
+    PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ')
+  else
+    PREVIEW="Agent produced no output. Check backend configuration and required commands. Tool=$TOOL_LABEL PATH=$PATH"
+  fi
+  ERROR_MESSAGE="$PREVIEW"
   STATUS="error"
 fi
 
 # Log run result
 TS=$(date +%s)
+PREVIEW_JSON=$(json_escape_text "$PREVIEW")
+TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
+ERROR_MESSAGE_JSON=$(json_escape_text "$ERROR_MESSAGE")
 cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL"}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON"}
 LOGEOF
 
 # Prune old logs (keep last 30)
 ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 
 # Cleanup temp
-rm -f "$RESULT_FILE"
+rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"
 `;
 }
 
@@ -207,31 +297,36 @@ rm -f "$PROMPT_FILE"`;
       return `echo 'Gemini CLI is experimental in Shelly. Use Gemini API for background agents.' > ${resultVar}`;
     case 'gemini-api':
       return geminiApiCommand(escapedPrompt, resultVar, tool.model);
-    case 'local':
-      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-PROMPT_JSON=$(jq -Rs '.' < "$PROMPT_FILE")
-timeout "$TIMEOUT" curl -s http://127.0.0.1:8080/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d "{\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":$PROMPT_JSON}],\\"max_tokens\\":4096}" \\
-  | jq -r '.choices[0].message.content // "Error: no response"' > ${resultVar} 2>&1 || true
-rm -f "$PROMPT_FILE"`;
+	    case 'local':
+	      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+	timeout "$TIMEOUT" curl -s http://127.0.0.1:8080/v1/chat/completions \\
+	  -H "Content-Type: application/json" \\
+	  -d "{\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":$PROMPT_JSON}],\\"max_tokens\\":4096}" \\
+	  > "$RESULT_FILE.response.json" 2> "$RESULT_FILE.stderr" || true
+	extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+	rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	rm -f "$PROMPT_FILE"`;
     case 'perplexity':
       const perplexityModel = tool.model || 'sonar';
-      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-PROMPT_JSON=$(jq -Rs '.' < "$PROMPT_FILE")
-MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
-if [ -z "\${PERPLEXITY_API_KEY:-}" ]; then
-  echo 'Perplexity API key is not set. Add PERPLEXITY_API_KEY to ~/.shelly/agents/.env.' > ${resultVar}
-else
-timeout "$TIMEOUT" curl -s https://api.perplexity.ai/chat/completions \\
-  -H "Authorization: Bearer $PERPLEXITY_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d "{\\"model\\":\\"$MODEL\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":$PROMPT_JSON}]}" \\
-  | jq -r '.choices[0].message.content // "Error: no response"' > ${resultVar} 2>&1 || true
-fi
-rm -f "$PROMPT_FILE"`;
+	      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+	MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
+	if [ -z "\${PERPLEXITY_API_KEY:-}" ]; then
+	  echo 'Perplexity API key is not set. Add PERPLEXITY_API_KEY to ~/.shelly/agents/.env.' > ${resultVar}
+	  touch "$BACKEND_ERROR_FILE"
+	else
+	timeout "$TIMEOUT" curl -s https://api.perplexity.ai/chat/completions \\
+	  -H "Authorization: Bearer $PERPLEXITY_API_KEY" \\
+	  -H "Content-Type: application/json" \\
+	  -d "{\\"model\\":\\"$MODEL\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":$PROMPT_JSON}]}" \\
+	  > "$RESULT_FILE.response.json" 2> "$RESULT_FILE.stderr" || true
+	extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+	rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	fi
+	rm -f "$PROMPT_FILE"`;
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, tool.localModel, tool.codexCmd);
     case 'auto':
@@ -308,7 +403,7 @@ PROMPTEOF
   cat "$RUN_DIR/context.md"
 } >> "$RUN_DIR/prompt.md"
 
-PROMPT_JSON=$(jq -Rs '.' < "$RUN_DIR/prompt.md")
+PROMPT_JSON=$(json_string_file "$RUN_DIR/prompt.md")
 
 LOCAL_START=$(date +%s)
 set +e
@@ -320,7 +415,7 @@ LOCAL_EXIT=$?
 set -e
 LOCAL_END=$(date +%s)
 if [ "$LOCAL_EXIT" -eq 0 ]; then
-  jq -r '.choices[0].message.content // .choices[0].text // "Error: no local response"' "$RUN_DIR/local.response.json" > "$RUN_DIR/local-qwen3-8b.md" 2>> "$RUN_DIR/local.stderr.log" || true
+  extract_ai_content "$RUN_DIR/local.response.json" > "$RUN_DIR/local-qwen3-8b.md" 2>> "$RUN_DIR/local.stderr.log" || true
 else
   echo "Local LLM failed with exit $LOCAL_EXIT" > "$RUN_DIR/local-qwen3-8b.md"
 fi
@@ -397,16 +492,23 @@ function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: stri
   const defaultModel = model || 'gemini-2.0-flash';
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-PROMPT_JSON=$(jq -Rs '.' < "$PROMPT_FILE")
+PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"
 if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
+  touch "$BACKEND_ERROR_FILE"
 else
   timeout "$TIMEOUT" curl -s "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" \\
     -H "Content-Type: application/json" \\
     -H "x-goog-api-key: $GEMINI_API_KEY" \\
     -d "{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":$PROMPT_JSON}]}],\\"generationConfig\\":{\\"maxOutputTokens\\":4096,\\"temperature\\":0.7}}" \\
-    | jq -r '.candidates[0].content.parts[]?.text // empty' > ${resultVar} 2>&1 || true
+    > "$RESULT_FILE.response.json" 2> "$RESULT_FILE.stderr" || true
+  if command -v node >/dev/null 2>&1; then
+    node -e 'const fs=require("fs"); const text=fs.readFileSync(process.argv[1],"utf8"); try { const j=JSON.parse(text); const out=(j.candidates?.[0]?.content?.parts || []).map((p)=>p.text || "").join("\\n"); const err=j.error?.message ?? j.error; if (out) process.stdout.write(out); else if (err) { process.stdout.write("API error: " + (typeof err === "string" ? err : JSON.stringify(err))); process.exit(2); } else process.stdout.write(text); } catch { process.stdout.write(text); }' "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+  else
+    cat "$RESULT_FILE.response.json" > ${resultVar}
+  fi
+  rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 fi
 rm -f "$PROMPT_FILE"`;
 }
