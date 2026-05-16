@@ -161,7 +161,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     title: 'Scouter',
     icon: 'radar',
     items: [
-      { key: 'scouterEnabled', label: 'Scouter Widget', type: 'boolean', source: 'custom', description: 'Local agent status widget. Phase 1A MVP.' },
+      { key: 'scouterEnabled', label: 'Scouter Service', type: 'boolean', source: 'custom', description: 'Enables the local widget, hook server, and JSONL watcher.' },
       { key: 'scouterDebugInfo', label: 'Scouter Debug Info', type: 'action', source: 'custom', actionLabel: 'Show' },
       { key: 'scouterHookTemplate', label: 'Scouter Hook Template', type: 'action', source: 'custom', actionLabel: 'Show' },
     ],

@@ -35,7 +35,7 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 - Minimal settings/debug controls:
   - gear menu -> `SCOUTER`
   - `shelly config` -> `Scouter` -> `Scouter Widget`
-  - `shelly scouter status|on|off|hooks`
+  - native terminal helper: `shelly scouter status|hooks`
   - `Scouter Debug Info`
   - `Scouter Hook Template`
 
@@ -54,14 +54,30 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 
 1. Build and install Shelly.
 2. Open the top-right gear menu.
-3. Enable `SCOUTER` -> `Widget`.
+3. Enable `SCOUTER` -> `Scouter`.
 4. Tap `Scouter Debug Info` and verify:
    - `enabled: true`
    - `port` is greater than zero
    - `hookTokenPreview` is present
-5. Tap `Copy hook templates` to copy the exact runtime token and endpoints.
-6. Add the `Scouter` widget to the Android home screen.
-7. Send a test event from a Shelly terminal:
+5. Open a fresh Shelly terminal and verify the native helper:
+
+```sh
+cat ~/.bashrc_version
+command -v shelly
+shelly scouter status
+shelly scouter hooks
+```
+
+Expected:
+
+- `~/.bashrc_version` is `139` or newer
+- `command -v shelly` prints `$HOME/bin/shelly`
+- `shelly scouter status` prints cached state from `~/.scouter-state.json`
+- `shelly scouter hooks` prints the full hook token and base URLs
+
+6. Tap `Copy hook templates` to copy the exact runtime token and endpoints, or use `shelly scouter hooks`.
+7. Add the `Scouter` widget to the Android home screen.
+8. Send a test event from a Shelly terminal:
 
 ```sh
 PORT=<port from Scouter Debug Info>
@@ -127,6 +143,7 @@ X-Scouter-Token: <hookToken>
 - The loopback server accepts local device traffic only (`127.0.0.1`), requires `X-Scouter-Token`, caps request bodies at 64 KiB, and uses a small fixed request pool.
 - Debug output redacts the token. `Copy hook templates` intentionally copies the full token because CC/Codex hook setup needs it.
 - Disabling Scouter clears widget snapshots so the widget falls back to the waiting state.
+- The native terminal `shelly` helper reads cached status/hooks from `~/.scouter-state.json`. ON/OFF remains a gear-menu action because starting/stopping the hook server requires the in-process Android service. Gear-menu debug is authoritative for live in-memory service state.
 
 ## PoC 5A Notes
 

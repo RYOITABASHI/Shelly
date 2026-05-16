@@ -195,7 +195,7 @@ function ScouterSection({ visible }: { visible: boolean }) {
   const copyHooks = React.useCallback(async () => {
     try {
       if (!enabled || port <= 0) {
-        Alert.alert('Scouter disabled', 'Turn Scouter Widget on first, then copy hook templates.');
+        Alert.alert('Scouter disabled', 'Turn Scouter on first, then copy hook templates.');
         return;
       }
       const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
@@ -212,7 +212,7 @@ function ScouterSection({ visible }: { visible: boolean }) {
 
   return (
     <Section title="SCOUTER">
-      <Row label="Widget">
+      <Row label="Scouter">
         <Pressable
           style={[styles.switchTrack, enabled && styles.switchTrackOn, busy && styles.integrationRowDisabled]}
           onPress={toggle}

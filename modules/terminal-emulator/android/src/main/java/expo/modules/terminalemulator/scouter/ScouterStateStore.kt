@@ -1,29 +1,34 @@
 package expo.modules.terminalemulator.scouter
 
 import android.content.Context
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
 class ScouterStateStore(context: Context) {
     private val prefs = context.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
+    private val helperStateFile = File(context.filesDir, "home/.scouter-state.json")
     private val lock = Any()
 
     fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
 
     fun setEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()
+        prefs.edit().putBoolean(KEY_ENABLED, enabled).commit()
+        writeHelperState()
     }
 
     fun getSessionToken(): String {
         val existing = prefs.getString(KEY_TOKEN, null)
         if (!existing.isNullOrBlank()) return existing
         val generated = java.util.UUID.randomUUID().toString().replace("-", "")
-        prefs.edit().putString(KEY_TOKEN, generated).apply()
+        prefs.edit().putString(KEY_TOKEN, generated).commit()
+        writeHelperState()
         return generated
     }
 
     fun setRuntimePort(port: Int) {
-        prefs.edit().putInt(KEY_PORT, port).apply()
+        prefs.edit().putInt(KEY_PORT, port).commit()
+        writeHelperState()
     }
 
     fun getRuntimePort(): Int = prefs.getInt(KEY_PORT, -1)
@@ -35,6 +40,7 @@ class ScouterStateStore(context: Context) {
             val snapshot = event.toSnapshot(previous)
             all[event.sessionId] = snapshot
             writeAll(all)
+            writeHelperStateLocked(all)
             return snapshot
         }
     }
@@ -53,7 +59,8 @@ class ScouterStateStore(context: Context) {
 
     fun clearSnapshots() {
         synchronized(lock) {
-            prefs.edit().putString(KEY_SNAPSHOTS, "[]").apply()
+            prefs.edit().putString(KEY_SNAPSHOTS, "[]").commit()
+            writeHelperStateLocked(emptyMap())
         }
     }
 
@@ -82,7 +89,33 @@ class ScouterStateStore(context: Context) {
         values.values.sortedByDescending { it.lastEventAt }.take(20).forEach {
             arr.put(it.toJson())
         }
-        prefs.edit().putString(KEY_SNAPSHOTS, arr.toString()).apply()
+        prefs.edit().putString(KEY_SNAPSHOTS, arr.toString()).commit()
+    }
+
+    private fun writeHelperState() {
+        synchronized(lock) {
+            writeHelperStateLocked(readAllMutable())
+        }
+    }
+
+    private fun writeHelperStateLocked(values: Map<String, SessionSnapshot>) {
+        val token = prefs.getString(KEY_TOKEN, "") ?: ""
+        val json = JSONObject().apply {
+            put("enabled", isEnabled())
+            put("port", getRuntimePort())
+            put("hookTokenPreview", if (token.isNotBlank()) token.take(6) + "…" else "")
+            put("hookToken", token)
+            put("sessions", JSONArray().also { arr ->
+                values.values.sortedByDescending { it.lastEventAt }.take(20).forEach { arr.put(it.toJson()) }
+            })
+        }
+        helperStateFile.parentFile?.mkdirs()
+        val tmp = File(helperStateFile.parentFile, helperStateFile.name + ".tmp")
+        tmp.writeText(json.toString(2))
+        if (!tmp.renameTo(helperStateFile)) {
+            tmp.copyTo(helperStateFile, overwrite = true)
+            tmp.delete()
+        }
     }
 
     companion object {
