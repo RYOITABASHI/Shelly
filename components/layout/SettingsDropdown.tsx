@@ -85,7 +85,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <AgentsSection />
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
-            <ScouterSection />
+            <ScouterSection visible={visible} />
             <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
             <ClaudeLoginSection onClose={onClose} />
@@ -141,8 +141,9 @@ function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
   );
 }
 
-function ScouterSection() {
+function ScouterSection({ visible }: { visible: boolean }) {
   const [enabled, setEnabled] = useState(false);
+  const [port, setPort] = useState(-1);
   const [busy, setBusy] = useState(false);
 
   const load = React.useCallback(async () => {
@@ -151,14 +152,15 @@ function ScouterSection() {
       const info = await TerminalEmulator.getScouterDebugInfo();
       const parsed = JSON.parse(info);
       setEnabled(Boolean(parsed?.enabled));
+      setPort(Number(parsed?.port ?? -1));
     } catch (e: any) {
       logError('SettingsDropdown', 'Failed to load Scouter debug info', e);
     }
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (visible) load();
+  }, [visible, load]);
 
   const toggle = React.useCallback(async () => {
     const next = !enabled;
@@ -167,6 +169,7 @@ function ScouterSection() {
       const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       await TerminalEmulator.setScouterEnabled(next);
       setEnabled(next);
+      await load();
       ToastAndroid.show(next ? 'Scouter enabled' : 'Scouter disabled', ToastAndroid.SHORT);
       logInfo('SettingsDropdown', 'Scouter enabled=' + next);
     } catch (e: any) {
@@ -191,6 +194,10 @@ function ScouterSection() {
 
   const copyHooks = React.useCallback(async () => {
     try {
+      if (!enabled || port <= 0) {
+        Alert.alert('Scouter disabled', 'Turn Scouter Widget on first, then copy hook templates.');
+        return;
+      }
       const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       const cc = await TerminalEmulator.getScouterHookTemplate('cc');
       const codex = await TerminalEmulator.getScouterHookTemplate('codex');
@@ -201,7 +208,7 @@ function ScouterSection() {
       Alert.alert('Scouter Hooks failed', String(e?.message || e));
       logError('SettingsDropdown', 'Failed to get Scouter hook templates', e);
     }
-  }, []);
+  }, [enabled, port]);
 
   return (
     <Section title="SCOUTER">

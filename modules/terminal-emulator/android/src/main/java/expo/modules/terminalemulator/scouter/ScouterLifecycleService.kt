@@ -11,6 +11,7 @@ class ScouterLifecycleService private constructor(private val context: Context) 
     private val notificationDispatcher = NotificationDispatcher(appContext)
     private var server: HookHttpServer? = null
     private var watcher: JsonlWatcher? = null
+    private val longRunningChecks = mutableMapOf<String, Long>()
 
     @Synchronized
     fun start() {
@@ -35,6 +36,8 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         server = null
         watcher = null
         store.setRuntimePort(-1)
+        store.clearSnapshots()
+        longRunningChecks.clear()
         ScouterWidgetProvider.updateAll(appContext)
     }
 
@@ -49,7 +52,7 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         val base = store.debugJson()
         base.put("serverRunning", server != null)
         base.put("jsonlWatcherRunning", watcher != null)
-        base.put("hookToken", store.getSessionToken())
+        base.put("hookTokenPreview", store.getSessionToken().take(6) + "…")
         base.put("claudeHookUrl", hookUrl("cc"))
         base.put("codexHookUrl", hookUrl("codex"))
         return base
@@ -74,10 +77,37 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         Log.i(TAG, "event source=${event.source} type=${event.eventType} status=${event.derivedStatus} session=${event.sessionId}")
         ScouterWidgetProvider.updateAll(appContext)
         notificationDispatcher.maybeNotify(event, snapshot)
+        scheduleLongRunningCheck(snapshot)
+    }
+
+    @Synchronized
+    private fun scheduleLongRunningCheck(snapshot: SessionSnapshot) {
+        if (snapshot.currentStatus != ScouterStatus.TOOL_RUNNING) return
+        longRunningChecks[snapshot.sessionId] = snapshot.lastEventAt
+        Thread({
+            try {
+                Thread.sleep(LONG_RUNNING_THRESHOLD_MS)
+                val latest = store.all().firstOrNull { it.sessionId == snapshot.sessionId }
+                val expectedStartedAt = synchronized(this) { longRunningChecks[snapshot.sessionId] }
+                if (
+                    expectedStartedAt == snapshot.lastEventAt &&
+                    latest?.currentStatus == ScouterStatus.TOOL_RUNNING &&
+                    latest.lastEventAt == snapshot.lastEventAt
+                ) {
+                    notificationDispatcher.notifyLongRunning(latest)
+                }
+            } catch (_: InterruptedException) {
+                // Best-effort timer; Scouter Phase 1A has no foreground worker.
+            }
+        }, "ScouterLongRunningCheck").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     companion object {
         private const val TAG = "Scouter"
+        private const val LONG_RUNNING_THRESHOLD_MS = 120_000L
         @Volatile private var instance: ScouterLifecycleService? = null
 
         fun get(context: Context): ScouterLifecycleService {
@@ -87,4 +117,3 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         }
     }
 }
-

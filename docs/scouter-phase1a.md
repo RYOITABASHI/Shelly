@@ -31,9 +31,11 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 - Basic notifications:
   - completed
   - error
-  - long-running placeholder path
+  - long-running tool activity after 120 seconds while Shelly remains alive
 - Minimal settings/debug controls:
+  - gear menu -> `SCOUTER`
   - `shelly config` -> `Scouter` -> `Scouter Widget`
+  - `shelly scouter status|on|off|hooks`
   - `Scouter Debug Info`
   - `Scouter Hook Template`
 
@@ -46,22 +48,24 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 - polished UI, animation, or screenshot tooling
 - high-precision token/cost accounting
 - automatic CC/Codex settings injection
+- process-death survival without reopening Shelly
 
 ## Manual Verification
 
 1. Build and install Shelly.
-2. Open `shelly config`.
-3. Enable `Scouter Widget`.
+2. Open the top-right gear menu.
+3. Enable `SCOUTER` -> `Widget`.
 4. Tap `Scouter Debug Info` and verify:
    - `enabled: true`
    - `port` is greater than zero
-   - `hookToken` is present
-5. Add the `Scouter` widget to the Android home screen.
-6. Send a test event from a Shelly terminal:
+   - `hookTokenPreview` is present
+5. Tap `Copy hook templates` to copy the exact runtime token and endpoints.
+6. Add the `Scouter` widget to the Android home screen.
+7. Send a test event from a Shelly terminal:
 
 ```sh
 PORT=<port from Scouter Debug Info>
-TOKEN=<hookToken from Scouter Debug Info>
+TOKEN=<token from Copy hook templates>
 curl -sS \
   -H "X-Scouter-Token: $TOKEN" \
   -H "Content-Type: application/json" \
@@ -74,7 +78,7 @@ Expected:
 - `{"ok":true}` from curl
 - widget updates to show `demo`, `CC`, and `Bash`
 
-7. Send a completion event:
+8. Send a completion event:
 
 ```sh
 curl -sS \
@@ -117,6 +121,13 @@ Every request must include:
 X-Scouter-Token: <hookToken>
 ```
 
+## Known Runtime Limits
+
+- Phase 1A intentionally does not use a foreground service. The hook server and JSONL watcher run while the Shelly app process is alive. If Android kills or force-stops Shelly, Scouter restarts only after Shelly is opened again.
+- The loopback server accepts local device traffic only (`127.0.0.1`), requires `X-Scouter-Token`, caps request bodies at 64 KiB, and uses a small fixed request pool.
+- Debug output redacts the token. `Copy hook templates` intentionally copies the full token because CC/Codex hook setup needs it.
+- Disabling Scouter clears widget snapshots so the widget falls back to the waiting state.
+
 ## PoC 5A Notes
 
 Phase 1A includes the native surface needed for later command injection but does not implement command injection. The current Shelly native PTY layer already exposes `TerminalEmulator.writeToSession(sessionId, text)`, which is the likely path for Shelly-managed sessions.
@@ -127,4 +138,3 @@ Open items for the dedicated PoC:
 - confirm CC accepts normal prompt text through PTY stdin 20/20 times
 - confirm Codex accepts normal prompt text through PTY stdin 20/20 times
 - separately test permission prompt allow/deny before adding notification actions
-

@@ -393,6 +393,54 @@ export async function executeCommand(
     case 'shelly': {
       const sub = args[0];
 
+      // ── shelly scouter ───────────────────────────────────────────────────────
+      if (sub === 'scouter') {
+        const action = args[1] ?? 'status';
+        const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+
+        if (action === 'on' || action === 'enable') {
+          await TerminalEmulator.setScouterEnabled(true);
+          return { lines: out('Scouter enabled'), newState: {} };
+        }
+
+        if (action === 'off' || action === 'disable') {
+          await TerminalEmulator.setScouterEnabled(false);
+          return { lines: out('Scouter disabled'), newState: {} };
+        }
+
+        if (action === 'status' || action === 'debug') {
+          const infoText = await TerminalEmulator.getScouterDebugInfo();
+          return { lines: out(...infoText.split('\n')), newState: {} };
+        }
+
+        if (action === 'hooks') {
+          const cc = await TerminalEmulator.getScouterHookTemplate('cc');
+          const codex = await TerminalEmulator.getScouterHookTemplate('codex');
+          return {
+            lines: out(
+              'Claude Code:',
+              cc,
+              '',
+              'Codex:',
+              codex
+            ),
+            newState: {},
+          };
+        }
+
+        return {
+          lines: out(
+            'Usage: shelly scouter [status|debug|on|off|hooks]',
+            '',
+            'Subcommands:',
+            '  status/debug  Print runtime state',
+            '  on/off        Enable or disable Scouter',
+            '  hooks         Print CC/Codex hook templates'
+          ),
+          newState: {},
+        };
+      }
+
       // ── shelly config ────────────────────────────────────────────────────────
       if (sub === 'config') {
         const configSub = args[1];
@@ -428,6 +476,13 @@ export async function executeCommand(
             realtimeTranslateEnabled:settings.realtimeTranslateEnabled,
             gpuRendering:            settings.gpuRendering,
           };
+          try {
+            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+            const infoText = await TerminalEmulator.getScouterDebugInfo();
+            configMap.scouterEnabled = Boolean(JSON.parse(infoText)?.enabled);
+          } catch {
+            configMap.scouterEnabled = false;
+          }
           const rows = Object.entries(configMap).map(([k, v]) => `${k}=${v}`);
           return { lines: out(...rows), newState: {} };
         }
@@ -445,6 +500,11 @@ export async function executeCommand(
             soundProfile: cosmetics.soundProfile,
             fontFamily: cosmetics.fontFamily,
           };
+          if (key === 'scouterEnabled') {
+            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+            const infoText = await TerminalEmulator.getScouterDebugInfo();
+            return { lines: out(`scouterEnabled=${Boolean(JSON.parse(infoText)?.enabled)}`), newState: {} };
+          }
           if (!(key in combined)) return { lines: err(`config: unknown key '${key}'`), newState: {} };
           return { lines: out(`${key}=${combined[key]}`), newState: {} };
         }
@@ -455,6 +515,13 @@ export async function executeCommand(
           const rawVal = args[3];
           if (!key || rawVal === undefined) {
             return { lines: err('Usage: shelly config set <key> <value>'), newState: {} };
+          }
+
+          if (key === 'scouterEnabled') {
+            const boolVal = rawVal === 'true' || rawVal === '1' || rawVal === 'on';
+            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+            await TerminalEmulator.setScouterEnabled(boolVal);
+            return { lines: out(`scouterEnabled = ${boolVal}`), newState: {} };
           }
 
           // Cosmetic keys

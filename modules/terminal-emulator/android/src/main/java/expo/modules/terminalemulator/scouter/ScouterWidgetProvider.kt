@@ -16,7 +16,8 @@ import java.util.Locale
 
 class ScouterWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        val snapshot = ScouterStateStore(context).latest()
+        val store = ScouterStateStore(context)
+        val snapshot = if (store.isEnabled()) store.latest() else null
         ids.forEach { id ->
             manager.updateAppWidget(id, render(context, snapshot))
         }
@@ -28,7 +29,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val component = ComponentName(context, ScouterWidgetProvider::class.java)
             val ids = manager.getAppWidgetIds(component)
             if (ids.isEmpty()) return
-            val snapshot = ScouterStateStore(context).latest()
+            val store = ScouterStateStore(context)
+            val snapshot = if (store.isEnabled()) store.latest() else null
             ids.forEach { id ->
                 manager.updateAppWidget(id, render(context, snapshot))
             }
@@ -96,4 +98,3 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
     }
 }
-

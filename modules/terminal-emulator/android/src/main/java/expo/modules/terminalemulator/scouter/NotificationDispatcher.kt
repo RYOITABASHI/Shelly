@@ -37,14 +37,12 @@ class NotificationDispatcher(private val context: Context) {
                 "Agent completed",
                 "${snapshot.source.badge()} · ${snapshot.projectName}"
             )
-            ScouterStatus.TOOL_RUNNING -> {
-                val runningFor = System.currentTimeMillis() - snapshot.lastEventAt
-                if (runningFor > 120_000L) {
-                    notify(9203, "Agent still running", "${snapshot.currentTool ?: "Tool"} · ${snapshot.projectName}")
-                }
-            }
             else -> Unit
         }
+    }
+
+    fun notifyLongRunning(snapshot: SessionSnapshot) {
+        notify(9203, "Agent still running", "${snapshot.currentTool ?: "Tool"} · ${snapshot.projectName}")
     }
 
     private fun notify(id: Int, title: String, text: String) {
@@ -78,4 +76,3 @@ class NotificationDispatcher(private val context: Context) {
         private const val CHANNEL_ID = "scouter"
     }
 }
-

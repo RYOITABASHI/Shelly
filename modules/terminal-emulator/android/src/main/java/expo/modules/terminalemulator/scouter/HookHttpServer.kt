@@ -7,6 +7,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class HookHttpServer(
@@ -16,6 +17,9 @@ class HookHttpServer(
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var thread: Thread? = null
+    private val requestExecutor = Executors.newFixedThreadPool(4) { runnable ->
+        Thread(runnable, "ScouterHookRequest").apply { isDaemon = true }
+    }
     var port: Int = -1
         private set
 
@@ -38,6 +42,7 @@ class HookHttpServer(
         try { serverSocket?.close() } catch (_: Throwable) {}
         serverSocket = null
         thread = null
+        requestExecutor.shutdownNow()
         port = -1
     }
 
@@ -49,15 +54,13 @@ class HookHttpServer(
                 if (!running.get()) return
                 continue
             }
-            Thread({ handle(client) }, "ScouterHookRequest").apply {
-                isDaemon = true
-                start()
-            }
+            requestExecutor.execute { handle(client) }
         }
     }
 
     private fun handle(socket: Socket) {
         socket.use { client ->
+            client.soTimeout = SOCKET_READ_TIMEOUT_MS
             val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.UTF_8))
             val requestLine = reader.readLine().orEmpty()
             val parts = requestLine.split(" ")
@@ -72,7 +75,19 @@ class HookHttpServer(
                     headers[line.substring(0, idx).trim().lowercase(Locale.US)] = line.substring(idx + 1).trim()
                 }
             }
+            if (method != "POST" || !path.startsWith("/hook/")) {
+                respond(client, 404, "not found")
+                return
+            }
+            if (headers["x-scouter-token"] != token) {
+                respond(client, 401, "unauthorized")
+                return
+            }
             val length = headers["content-length"]?.toIntOrNull() ?: 0
+            if (length < 0 || length > MAX_BODY_BYTES) {
+                respond(client, 413, "payload too large")
+                return
+            }
             val chars = CharArray(length)
             var read = 0
             while (read < length) {
@@ -82,14 +97,6 @@ class HookHttpServer(
             }
             val body = String(chars, 0, read)
 
-            if (method != "POST" || !path.startsWith("/hook/")) {
-                respond(client, 404, "not found")
-                return
-            }
-            if (headers["x-scouter-token"] != token) {
-                respond(client, 401, "unauthorized")
-                return
-            }
             val eventName = path.removePrefix("/hook/").trim('/')
             val source = when {
                 eventName.startsWith("codex/") -> ScouterSource.CODEX
@@ -108,6 +115,7 @@ class HookHttpServer(
             200 -> "OK"
             401 -> "Unauthorized"
             404 -> "Not Found"
+            413 -> "Payload Too Large"
             else -> "Error"
         }
         val bytes = body.toByteArray(Charsets.UTF_8)
@@ -122,6 +130,7 @@ class HookHttpServer(
 
     companion object {
         private const val TAG = "ScouterHookHttpServer"
+        private const val MAX_BODY_BYTES = 64 * 1024
+        private const val SOCKET_READ_TIMEOUT_MS = 5_000
     }
 }
-

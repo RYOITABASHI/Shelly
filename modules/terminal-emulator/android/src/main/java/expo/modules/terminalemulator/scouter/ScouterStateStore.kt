@@ -51,6 +51,12 @@ class ScouterStateStore(context: Context) {
         }
     }
 
+    fun clearSnapshots() {
+        synchronized(lock) {
+            prefs.edit().putString(KEY_SNAPSHOTS, "[]").apply()
+        }
+    }
+
     fun debugJson(): JSONObject = JSONObject().apply {
         put("enabled", isEnabled())
         put("port", getRuntimePort())
@@ -86,4 +92,3 @@ class ScouterStateStore(context: Context) {
         private const val KEY_SNAPSHOTS = "snapshots"
     }
 }
-
