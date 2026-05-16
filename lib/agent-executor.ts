@@ -90,7 +90,10 @@ fi
 # Global concurrency check
 ACTIVE_COUNT=$(find "$LOCKS_DIR" -name '*.pid' -exec sh -c 'kill -0 $(cat "{}") 2>/dev/null && echo 1' \\; | wc -l)
 if [ "$ACTIVE_COUNT" -ge "$MAX_CONCURRENT" ]; then
-  echo '{"status":"skipped","error":"global concurrency limit reached"}' > "$LOG_DIR/$(date +%s).json"
+  TS=$(date +%s)
+  cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"global concurrency limit reached","durationMs":0,"toolUsed":"$TOOL_LABEL"}
+LOGEOF
   exit 0
 fi
 
@@ -98,7 +101,10 @@ fi
 if [ -f "$LOCK_FILE" ]; then
   OLD_PID=$(cat "$LOCK_FILE")
   if kill -0 "$OLD_PID" 2>/dev/null; then
-    echo '{"status":"skipped","error":"previous run still active"}' > "$LOG_DIR/$(date +%s).json"
+    TS=$(date +%s)
+    cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL"}
+LOGEOF
     exit 0
   fi
   rm -f "$LOCK_FILE"
@@ -142,7 +148,7 @@ if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
     cp "$SAVED_FILE" "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$DATE-$SLUG.md"
   fi
 
-  grep -Eo 'https?://[^][ )<>"'"'"']+' "$RESULT_FILE" 2>/dev/null | sed 's/[.,;)]$//' | sort -u | while read -r url; do
+  { grep -Eo 'https?://[^][ )<>"'"'"']+' "$RESULT_FILE" 2>/dev/null || true; } | sed 's/[.,;)]$//' | sort -u | while read -r url; do
     [ -n "$url" ] || continue
     if ! grep -Fq "$url" "$SOURCE_REGISTRY_FILE"; then
       printf '%s\\t%s\\t%s\\t%s\\n' "$(date -Iseconds)" "$AGENT_ID" "$TOOL_LABEL" "$url" >> "$SOURCE_REGISTRY_FILE"

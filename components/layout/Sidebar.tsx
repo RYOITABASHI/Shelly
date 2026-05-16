@@ -62,6 +62,7 @@ export function Sidebar() {
   const agents = useAgentStore((s) => s.agents);
   const runHistory = useAgentStore((s) => s.runHistory);
   const [runningAgentIds, setRunningAgentIds] = useState<Set<string>>(new Set());
+  const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(new Set());
   const [addRepoVisible, setAddRepoVisible] = useState(false);
   const [repoInput, setRepoInput] = useState('');
 
@@ -224,7 +225,7 @@ export function Sidebar() {
   }, [runHistory, agents]);
 
   const refreshRunningAgents = React.useCallback(async () => {
-    const output = await TerminalEmulator.execCommand(
+    const result = await TerminalEmulator.execCommand(
       `for f in "$HOME"/.shelly/agents/locks/*.pid; do ` +
         `[ -f "$f" ] || continue; ` +
         `pid="$(cat "$f" 2>/dev/null || true)"; ` +
@@ -232,8 +233,9 @@ export function Sidebar() {
         `if kill -0 "$pid" 2>/dev/null; then basename "$f" .pid; fi; ` +
       `done`,
       10_000,
-    ).catch(() => '');
-    setRunningAgentIds(new Set(output.split(/\s+/).filter(Boolean)));
+    ).catch(() => null);
+    const stdout = result?.exitCode === 0 ? result.stdout : '';
+    setRunningAgentIds(new Set(stdout.split(/\s+/).filter(Boolean)));
   }, []);
 
   const runCommandForAgentSync = React.useCallback(async (cmd: string) => {
@@ -243,7 +245,7 @@ export function Sidebar() {
   }, []);
 
   const handleRunScheduledAgent = React.useCallback(async (agentId: string, agentName: string) => {
-    setRunningAgentIds((prev) => new Set(prev).add(agentId));
+    setPendingAgentIds((prev) => new Set(prev).add(agentId));
     try {
       await TerminalEmulator.runAgent(agentId);
       setTimeout(() => void refreshRunningAgents(), 1_000);
@@ -251,8 +253,15 @@ export function Sidebar() {
       setTimeout(() => {
         void syncAgentRunLogsFromDisk(runCommandForAgentSync, agentId).catch(() => {});
       }, 8_000);
+      setTimeout(() => {
+        setPendingAgentIds((prev) => {
+          const next = new Set(prev);
+          next.delete(agentId);
+          return next;
+        });
+      }, 30_000);
     } catch (error) {
-      setRunningAgentIds((prev) => {
+      setPendingAgentIds((prev) => {
         const next = new Set(prev);
         next.delete(agentId);
         return next;
@@ -275,7 +284,7 @@ export function Sidebar() {
     };
   }, [agents.length, refreshRunningAgents]);
 
-  const runningAgents = agents.filter((a) => runningAgentIds.has(a.id));
+  const runningAgents = agents.filter((a) => runningAgentIds.has(a.id) || pendingAgentIds.has(a.id));
 
   const targetWidth =
     mode === 'expanded' ? S.sidebarWidth : mode === 'icons' ? WIDTH_ICONS : WIDTH_HIDDEN;
