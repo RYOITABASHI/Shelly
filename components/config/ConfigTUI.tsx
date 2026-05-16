@@ -39,6 +39,7 @@ import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt
 import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
+import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -500,7 +501,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   );
 
   const applyValue = useCallback(
-    (def: SettingDef, rawValue: unknown) => {
+    async (def: SettingDef, rawValue: unknown) => {
       const displayValue = def.type === 'secret' ? (rawValue ? 'set' : 'empty') : String(rawValue);
       logInfo('ConfigTUI', 'Setting ' + def.key + ' = ' + displayValue);
       try {
@@ -557,6 +558,9 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           updateSettings({ [parent]: { ...(current as object), [child]: rawValue } } as any);
         } else {
           updateSettings({ [def.key]: rawValue } as any);
+          if (def.type === 'secret' || def.key === 'geminiModel') {
+            await flushPendingAgentEnvSync(def.label);
+          }
         }
       } else {
         // cosmetic store

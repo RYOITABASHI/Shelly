@@ -16,6 +16,11 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function dotenvValue(value: string): string {
+  const normalized = value.trim().replace(/[\r\n]/g, '');
+  return `'${normalized.replace(/'/g, "'\\''")}'`;
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 14,
   lineHeight: 1.4,
@@ -126,7 +131,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         const keys = envUpdates.map(([key]) => key);
         const grepPattern = keys.map((key) => `^${key}=`).join('|');
         const lines = envUpdates
-          .map(([key, value]) => `printf '%s\\n' ${shQuote(`${key}=${value}`)}`)
+          .map(([key, value]) => `printf '%s\\n' ${shQuote(`${key}=${dotenvValue(value)}`)}`)
           .join('; ');
         const cmd = `mkdir -p ~/.shelly/agents && (grep -Ev '${grepPattern}' ~/.shelly/agents/.env 2>/dev/null || true; ${lines}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
         useAgentStore.getState().setPendingEnvSync(cmd);
