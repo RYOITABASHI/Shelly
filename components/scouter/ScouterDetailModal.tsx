@@ -167,6 +167,7 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
   const source = sourceName(session.source);
   const project = projectName(session.projectName);
   const status = statusText(session);
+  const note = session.lastError ? summarizeSessionNote(session.lastError, session.currentStatus === 'ERROR') : null;
   return (
     <View style={[styles.sessionCard, primary && styles.sessionCardPrimary, stale && styles.sessionCardStale]}>
       <View style={styles.sessionTop}>
@@ -181,7 +182,11 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
       <Text style={styles.sessionMeta} numberOfLines={1}>
         {metrics(session)}
       </Text>
-      {session.lastError ? <Text style={styles.sessionError} numberOfLines={1}>{summarizeError(session.lastError)}</Text> : null}
+      {note ? (
+        <Text style={[styles.sessionNote, note.tone === 'error' && styles.sessionNoteError]} numberOfLines={1}>
+          {note.text}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -224,18 +229,18 @@ function metrics(session: ScouterSession): string {
   return parts.length ? parts.join(' · ') : shortSessionId(session.sessionId);
 }
 
-function summarizeError(error: string): string {
+function summarizeSessionNote(error: string, isErrorStatus: boolean): { text: string; tone: 'info' | 'error' } {
   const value = error.trim();
-  if (!value) return '';
+  if (!value) return { text: '', tone: 'info' };
   if (looksLikeJson(value)) {
     const parsed = tryParseJson(value);
     const text = findJsonText(parsed);
-    if (text) return `Last payload: ${shorten(text, 90)}`;
+    if (text) return { text: `Payload: ${shorten(text, 90)}`, tone: isErrorStatus ? 'error' : 'info' };
     const message = findJsonString(parsed, ['message', 'error', 'stop_reason', 'type']);
-    if (message) return `Last payload: ${shorten(message, 90)}`;
-    return 'Last payload: JSON response';
+    if (message) return { text: `Payload: ${shorten(message, 90)}`, tone: isErrorStatus ? 'error' : 'info' };
+    return { text: 'Payload: JSON response', tone: isErrorStatus ? 'error' : 'info' };
   }
-  return `Last error: ${shorten(value.replace(/\s+/g, ' '), 120)}`;
+  return { text: `Error: ${shorten(value.replace(/\s+/g, ' '), 120)}`, tone: 'error' };
 }
 
 function looksLikeJson(value: string): boolean {
@@ -472,10 +477,13 @@ const styles = StyleSheet.create({
     fontFamily: 'JetBrainsMono_400Regular',
     fontSize: 11,
   },
-  sessionError: {
-    color: '#FF8A8A',
+  sessionNote: {
+    color: '#9BC49B',
     fontFamily: 'JetBrainsMono_400Regular',
     fontSize: 11,
+  },
+  sessionNoteError: {
+    color: '#FF8A8A',
   },
   codeLine: {
     color: '#9BC49B',
