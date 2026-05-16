@@ -159,6 +159,17 @@ X-Scouter-Token: <hookToken>
 - One UI can add the Medium widget after the RemoteViews layout avoids unsupported raw `View` children.
 - Reusing an old hook URL after app/process restart correctly fails because Phase 1A does not keep a foreground service alive and the port is regenerated.
 
+## Widget Display
+
+The Medium widget shows the latest session snapshot observed by Scouter, not necessarily the currently focused Shelly tab.
+
+- Title: source and project, for example `Claude Code · demo`, `Codex · hw`, or `Shelly · home`.
+- Badge: compact source code, `CC`, `CX`, or `SH`.
+- Status line: human-readable state, for example `Running Bash in demo`, `Thinking in hw`, `Waiting in home`, `Completed in demo`, or `Error in demo`.
+- Footer: optional cost/tokens/context, followed by `Last event HH:mm:ss`.
+
+Long Android private paths are shortened for readability. For example, the Shelly terminal home path is displayed as `home` instead of the full app-private directory.
+
 Dogfood checklist for the first week:
 
 - Keep the Medium widget on the home screen and watch stale-state behavior after screen off, app switch, and app restart.

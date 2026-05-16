@@ -52,23 +52,24 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
 
             if (snapshot == null) {
-                views.setTextViewText(R.id.scouter_title, "Scouter · waiting")
+                views.setTextViewText(R.id.scouter_title, "Scouter")
                 views.setTextViewText(R.id.scouter_source_badge, "SH")
-                views.setTextViewText(R.id.scouter_detail, "No agent session yet")
-                views.setTextViewText(R.id.scouter_metrics, "Open Shelly and start Claude Code or Codex")
+                views.setTextViewText(R.id.scouter_detail, "Waiting for Claude Code or Codex")
+                views.setTextViewText(R.id.scouter_metrics, "Open Shelly to start observing")
                 views.setInt(R.id.scouter_status_dot, "setColorFilter", Color.GRAY)
                 return views
             }
 
-            val branch = snapshot.gitBranch?.let { " · $it" }.orEmpty()
-            val title = "${snapshot.projectName}$branch"
-            val detail = listOfNotNull(snapshot.currentTool, snapshot.currentFile).joinToString(" · ")
-                .ifBlank { snapshot.currentStatus.name.lowercase(Locale.US).replace('_', ' ') }
+            val project = displayProjectName(snapshot.projectName)
+            val sourceName = displaySourceName(snapshot.source)
+            val branch = snapshot.gitBranch?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+            val title = "$sourceName · $project$branch"
+            val detail = displayStatus(snapshot, project)
             val metrics = buildString {
                 if (snapshot.totalCostUsd > 0.0) append("$").append(String.format(Locale.US, "%.2f", snapshot.totalCostUsd)).append(" · ")
                 if (snapshot.tokensUsed > 0L) append(formatTokens(snapshot.tokensUsed)).append(" tokens · ")
                 snapshot.contextPercentRemaining?.let { append(String.format(Locale.US, "%.0f%% context · ", it)) }
-                append("updated ").append(formatTime(snapshot.lastEventAt))
+                append("Last event ").append(formatTime(snapshot.lastEventAt))
             }
 
             views.setTextViewText(R.id.scouter_title, title)
@@ -77,6 +78,48 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(R.id.scouter_metrics, metrics)
             views.setInt(R.id.scouter_status_dot, "setColorFilter", colorForStatus(snapshot.currentStatus))
             return views
+        }
+
+        private fun displaySourceName(source: ScouterSource): String = when (source) {
+            ScouterSource.CLAUDE_CODE -> "Claude Code"
+            ScouterSource.CODEX -> "Codex"
+            ScouterSource.SHELLY -> "Shelly"
+        }
+
+        private fun displayStatus(snapshot: SessionSnapshot, project: String): String {
+            val tool = snapshot.currentTool?.takeIf { it.isNotBlank() }
+            val file = snapshot.currentFile?.takeIf { it.isNotBlank() }?.let { displayPathLeaf(it) }
+            return when (snapshot.currentStatus) {
+                ScouterStatus.IDLE -> "Waiting in $project"
+                ScouterStatus.THINKING -> "Thinking in $project"
+                ScouterStatus.TOOL_RUNNING -> {
+                    val action = tool?.let { "Running $it" } ?: "Running tool"
+                    file?.let { "$action on $it" } ?: "$action in $project"
+                }
+                ScouterStatus.WAITING_PERMISSION -> "Waiting for permission in $project"
+                ScouterStatus.COMPLETED -> "Completed in $project"
+                ScouterStatus.ERROR -> "Error in $project"
+            }.redactForScouter()
+        }
+
+        private fun displayProjectName(raw: String): String {
+            val value = raw.redactForScouter().trim().trim('"', '\'')
+            if (value.isBlank()) return "Shelly"
+            val lower = value.lowercase(Locale.US)
+            if ("dev-shelly-terminal-files-home" in lower || "dev.shelly.terminal/files/home" in lower) {
+                return "home"
+            }
+            if ("/" in value || "\\" in value) {
+                return displayPathLeaf(value).ifBlank { "Shelly" }
+            }
+            return value
+        }
+
+        private fun displayPathLeaf(raw: String): String {
+            return raw.replace('\\', '/')
+                .trimEnd('/')
+                .substringAfterLast('/')
+                .ifBlank { raw }
         }
 
         private fun colorForStatus(status: ScouterStatus): Int = when (status) {
