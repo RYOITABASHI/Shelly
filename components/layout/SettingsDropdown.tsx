@@ -35,6 +35,7 @@ import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useAgentStore } from '@/store/agent-store';
 
 type Props = {
   visible: boolean;
@@ -804,6 +805,26 @@ function maskKey(value: string): string {
   return value.slice(0, 4) + '…' + value.slice(-4);
 }
 
+async function flushPendingAgentEnvSync(label: string): Promise<boolean> {
+  const cmd = useAgentStore.getState().consumePendingEnvSync();
+  if (!cmd) return true;
+  try {
+    const result = await execCommand(cmd, 30_000);
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || result.stdout || `exit code ${result.exitCode}`).trim();
+      Alert.alert(`${label} saved`, `Saved in secure storage, but background agent env sync failed:\n\n${detail}`);
+      logError('SettingsDropdown', `${label} env sync failed`, detail);
+      return false;
+    }
+    ToastAndroid.show(`${label} key synced for agents`, ToastAndroid.SHORT);
+    return true;
+  } catch (e: any) {
+    Alert.alert(`${label} saved`, `Saved in secure storage, but background agent env sync failed:\n\n${String(e?.message || e)}`);
+    logError('SettingsDropdown', `${label} env sync threw`, e);
+    return false;
+  }
+}
+
 function ApiKeyRow({ field }: { field: ApiKeyField }) {
   const stored = useSettingsStore((s) => (s.settings[field.key] as string | undefined) ?? '');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
@@ -819,9 +840,10 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
 
   const hasStored = stored.trim().length > 0;
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const trimmed = draft.trim();
     updateSettings({ [field.key]: trimmed } as Record<string, string>);
+    await flushPendingAgentEnvSync(field.label);
     setEditing(false);
     setReveal(false);
   };
@@ -832,8 +854,9 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
     setReveal(false);
   };
 
-  const handleClear = () => {
+  const handleClear = async () => {
     updateSettings({ [field.key]: '' } as Record<string, string>);
+    await flushPendingAgentEnvSync(field.label);
     setDraft('');
     setEditing(false);
     setReveal(false);
