@@ -16,10 +16,12 @@ import {
   TextInput,
   Alert,
   Image,
+  ToastAndroid,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Clipboard from 'expo-clipboard';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useI18n } from '@/lib/i18n';
@@ -83,6 +85,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <AgentsSection />
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
+            <ScouterSection />
             <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
             <ClaudeLoginSection onClose={onClose} />
@@ -133,6 +136,107 @@ function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
         <Text style={styles.integrationLabel}>Check builds / install APK</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+function ScouterSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = React.useCallback(async () => {
+    try {
+      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+      const info = await TerminalEmulator.getScouterDebugInfo();
+      const parsed = JSON.parse(info);
+      setEnabled(Boolean(parsed?.enabled));
+    } catch (e: any) {
+      logError('SettingsDropdown', 'Failed to load Scouter debug info', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const toggle = React.useCallback(async () => {
+    const next = !enabled;
+    setBusy(true);
+    try {
+      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+      await TerminalEmulator.setScouterEnabled(next);
+      setEnabled(next);
+      ToastAndroid.show(next ? 'Scouter enabled' : 'Scouter disabled', ToastAndroid.SHORT);
+      logInfo('SettingsDropdown', 'Scouter enabled=' + next);
+    } catch (e: any) {
+      Alert.alert('Scouter failed', String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to toggle Scouter', e);
+    } finally {
+      setBusy(false);
+    }
+  }, [enabled]);
+
+  const copyDebug = React.useCallback(async () => {
+    try {
+      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+      const info = await TerminalEmulator.getScouterDebugInfo();
+      await Clipboard.setStringAsync(info);
+      Alert.alert('Scouter Debug', `${info.slice(0, 2500)}\n\nCopied to clipboard.`);
+    } catch (e: any) {
+      Alert.alert('Scouter Debug failed', String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to get Scouter debug info', e);
+    }
+  }, []);
+
+  const copyHooks = React.useCallback(async () => {
+    try {
+      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+      const cc = await TerminalEmulator.getScouterHookTemplate('cc');
+      const codex = await TerminalEmulator.getScouterHookTemplate('codex');
+      const text = `Claude Code:\n${cc}\n\nCodex:\n${codex}`;
+      await Clipboard.setStringAsync(text);
+      Alert.alert('Scouter Hooks', `${text.slice(0, 2500)}\n\nCopied to clipboard.`);
+    } catch (e: any) {
+      Alert.alert('Scouter Hooks failed', String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to get Scouter hook templates', e);
+    }
+  }, []);
+
+  return (
+    <Section title="SCOUTER">
+      <Row label="Widget">
+        <Pressable
+          style={[styles.switchTrack, enabled && styles.switchTrackOn, busy && styles.integrationRowDisabled]}
+          onPress={toggle}
+          disabled={busy}
+          hitSlop={4}
+        >
+          <View style={[styles.switchThumb, enabled && styles.switchThumbOn]} />
+        </Pressable>
+      </Row>
+      <Pressable
+        style={styles.integrationRow}
+        onPress={copyDebug}
+        accessibilityRole="button"
+        accessibilityLabel="Copy Scouter debug info"
+      >
+        <MaterialIcons name="bug-report" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Copy debug info</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="content-copy" size={14} color={C.text3} />
+      </Pressable>
+      <View style={styles.credentialGap} />
+      <Pressable
+        style={styles.integrationRow}
+        onPress={copyHooks}
+        accessibilityRole="button"
+        accessibilityLabel="Copy Scouter hook templates"
+      >
+        <MaterialIcons name="webhook" size={13} color={C.text2} />
+        <Text style={styles.integrationLabel}>Copy hook templates</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="content-copy" size={14} color={C.text3} />
       </Pressable>
     </Section>
   );
