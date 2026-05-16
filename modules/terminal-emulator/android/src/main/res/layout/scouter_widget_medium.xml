@@ -4,7 +4,7 @@
   android:layout_width="match_parent"
   android:layout_height="match_parent"
   android:orientation="vertical"
-  android:padding="10dp"
+  android:padding="12dp"
   android:background="@drawable/scouter_widget_bg">
 
   <LinearLayout
@@ -29,8 +29,8 @@
       android:ellipsize="middle"
       android:singleLine="true"
       android:text="Scouter"
-      android:textColor="#F2FFF2"
-      android:textSize="14sp"
+      android:textColor="#F4FFF4"
+      android:textSize="16sp"
       android:typeface="monospace"
       android:textStyle="bold" />
 
@@ -39,13 +39,13 @@
       android:layout_width="wrap_content"
       android:layout_height="wrap_content"
       android:background="@drawable/scouter_badge_bg"
-      android:paddingStart="6dp"
-      android:paddingEnd="6dp"
+      android:paddingStart="7dp"
+      android:paddingEnd="7dp"
       android:paddingTop="2dp"
       android:paddingBottom="2dp"
       android:text="SH"
-      android:textColor="#001400"
-      android:textSize="10sp"
+      android:textColor="#001200"
+      android:textSize="11sp"
       android:typeface="monospace"
       android:textStyle="bold" />
   </LinearLayout>
@@ -58,8 +58,8 @@
     android:ellipsize="middle"
     android:singleLine="true"
     android:text="No agent session yet"
-    android:textColor="#B8FFB8"
-    android:textSize="13sp"
+    android:textColor="#7DDB7D"
+    android:textSize="15sp"
     android:typeface="monospace" />
 
   <TextView
@@ -67,7 +67,7 @@
     android:layout_height="1dp"
     android:layout_marginTop="8dp"
     android:layout_marginBottom="7dp"
-    android:background="#4466FF66"
+    android:background="#66338F33"
     android:text="" />
 
   <TextView
@@ -77,7 +77,7 @@
     android:ellipsize="end"
     android:singleLine="true"
     android:text="Open Shelly to start"
-    android:textColor="#8FAF8F"
-    android:textSize="12sp"
+    android:textColor="#9BC49B"
+    android:textSize="13sp"
     android:typeface="monospace" />
 </LinearLayout>
