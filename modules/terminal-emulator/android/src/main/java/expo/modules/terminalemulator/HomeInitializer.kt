@@ -999,7 +999,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
         File(home, "projects").mkdirs()
-        seedShellyContentStudio(home)
+        if (shouldSeedShellyContentStudio(home)) {
+            seedShellyContentStudio(home)
+        }
 
         // bug #76 / #139 (2026-04-27): the Alpine rootfs + proot wrapper
         // path was fully replaced by the DioNanos codex-termux native
@@ -3748,6 +3750,13 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "content studio seed failed: ${e.message}")
         }
+    }
+
+    private fun shouldSeedShellyContentStudio(home: File): Boolean {
+        val marker = File(home, ".shelly/enable-content-studio")
+        val existingProject = File(home, "projects/shelly-content-studio")
+        val existingAgent = File(home, ".shelly/agents/x-trend-source-collector.json")
+        return marker.exists() || existingProject.exists() || existingAgent.exists()
     }
 
     private fun seedAgent(
