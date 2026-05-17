@@ -273,6 +273,120 @@ find_llama_server_bin() {
   return 1
 }
 
+download_file_node() {
+  url="$1"
+  out_file="$2"
+  err_file="$3"
+  if ! command -v node >/dev/null 2>&1; then
+    echo "node is required for download" > "$err_file"
+    return 127
+  fi
+  node - "$url" "$out_file" > /dev/null 2> "$err_file" <<'NODEEOF'
+const fs = require('fs');
+const http = require('http');
+const https = require('https');
+
+const [urlText, outFile] = process.argv.slice(2);
+
+function download(urlText, redirects) {
+  const url = new URL(urlText);
+  const client = url.protocol === 'https:' ? https : http;
+  const req = client.get(url, {
+    headers: { 'User-Agent': 'Shelly-local-llm-installer/1' },
+  }, (res) => {
+    if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
+      res.resume();
+      if (redirects <= 0) {
+        console.error('too many redirects');
+        process.exit(1);
+        return;
+      }
+      download(new URL(res.headers.location, url).toString(), redirects - 1);
+      return;
+    }
+    if (!res.statusCode || res.statusCode >= 400) {
+      console.error('download failed: HTTP ' + res.statusCode);
+      res.resume();
+      process.exit(1);
+      return;
+    }
+    const tmp = outFile + '.part';
+    const file = fs.createWriteStream(tmp);
+    res.pipe(file);
+    file.on('finish', () => {
+      file.close(() => {
+        fs.renameSync(tmp, outFile);
+      });
+    });
+    file.on('error', (err) => {
+      console.error(err && err.message ? err.message : String(err));
+      try { fs.unlinkSync(tmp); } catch (_) {}
+      process.exit(1);
+    });
+  });
+  req.on('error', (err) => {
+    console.error(err && err.message ? err.message : String(err));
+    process.exit(1);
+  });
+  req.setTimeout(120000, () => req.destroy(new Error('download timed out')));
+}
+
+download(urlText, 5);
+NODEEOF
+}
+
+extract_zip_file() {
+  zip_file="$1"
+  dest_dir="$2"
+  err_file="$3"
+  mkdir -p "$dest_dir"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -o "$zip_file" -d "$dest_dir" > /dev/null 2> "$err_file"
+    return $?
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$zip_file" "$dest_dir" > /dev/null 2> "$err_file" <<'PYEOF'
+import sys
+import zipfile
+
+zip_file, dest_dir = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zip_file) as z:
+    z.extractall(dest_dir)
+PYEOF
+    return $?
+  fi
+  echo "unzip or python3 is required to extract llama-server" > "$err_file"
+  return 127
+}
+
+install_llama_server_bin() {
+  err_file="$TMP_DIR/llama-server-install-$AGENT_ID.err"
+  mkdir -p "$HOME/.local/bin" "$TMP_DIR"
+  zip_file="$TMP_DIR/llama-server-android-arm64.zip"
+  extract_dir="$TMP_DIR/llama-server-android-arm64"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+
+  url="\${LLAMA_SERVER_DOWNLOAD_URL:-https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-server-android-arm64.zip}"
+  if ! download_file_node "$url" "$zip_file" "$err_file"; then
+    echo "auto-install failed: could not download llama-server from $url: $(head -c 300 "$err_file" 2>/dev/null | tr '\\n' ' ')"
+    return 1
+  fi
+  if ! extract_zip_file "$zip_file" "$extract_dir" "$err_file"; then
+    echo "auto-install failed: could not extract llama-server zip: $(head -c 300 "$err_file" 2>/dev/null | tr '\\n' ' ')"
+    return 1
+  fi
+
+  extracted=$(find "$extract_dir" -type f -name 'llama-server' 2>/dev/null | head -n 1 || true)
+  if [ -z "$extracted" ]; then
+    echo "auto-install failed: llama-server binary was not found inside downloaded zip"
+    return 1
+  fi
+  cp "$extracted" "$HOME/.local/bin/llama-server"
+  chmod +x "$HOME/.local/bin/llama-server"
+  printf '%s\\n' "$HOME/.local/bin/llama-server"
+}
+
 find_local_llm_model() {
   model_name="\${1:-Qwen3-8B-Q4_K_M}"
   if [ -n "\${LOCAL_LLM_MODEL_PATH:-}" ] && [ -f "$LOCAL_LLM_MODEL_PATH" ]; then
@@ -341,9 +455,18 @@ ensure_local_llm_server() {
 
   server_bin=$(find_llama_server_bin || true)
   if [ -z "$server_bin" ]; then
-    echo "auto-start failed: llama-server binary not found in PATH, $HOME/.local/bin, or $HOME/bin" > "$reason_file"
-    rmdir "$lock_dir" 2>/dev/null || true
-    return 1
+    if [ "\${LOCAL_LLM_INSTALL_LLAMA_SERVER:-1}" = "0" ]; then
+      echo "auto-start failed: llama-server binary not found in PATH, $HOME/.local/bin, or $HOME/bin" > "$reason_file"
+      rmdir "$lock_dir" 2>/dev/null || true
+      return 1
+    fi
+    install_result=$(install_llama_server_bin || true)
+    server_bin=$(find_llama_server_bin || true)
+    if [ -z "$server_bin" ]; then
+      echo "auto-start failed: llama-server binary not found and auto-install did not produce an executable. $install_result" > "$reason_file"
+      rmdir "$lock_dir" 2>/dev/null || true
+      return 1
+    fi
   fi
 
   model_path=$(find_local_llm_model "$model_name" || true)
