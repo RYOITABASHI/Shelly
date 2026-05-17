@@ -60,11 +60,17 @@ object EventNormalizer {
             toolName = toolName,
             targetFile = targetFile,
             commandSummary = commandSummary,
-            errorMessage = firstNonBlank(payload.optString("error"), payload.optString("message"))?.redactForScouter(),
+            errorMessage = errorMessageFromPayload(payload, eventType),
             notificationMessage = firstNonBlank(payload.optString("notification"), payload.optString("message"))?.redactForScouter(),
+            modelName = firstNonBlank(payload.optString("model"), json.optString("model")),
             tokensUsed = extractLong(payload, "tokensUsed", "tokens_used", "total_tokens"),
+            inputTokens = extractLong(payload, "inputTokens", "input_tokens"),
+            outputTokens = extractLong(payload, "outputTokens", "output_tokens"),
+            cacheCreationInputTokens = extractLong(payload, "cacheCreationInputTokens", "cache_creation_input_tokens"),
+            cacheReadInputTokens = extractLong(payload, "cacheReadInputTokens", "cache_read_input_tokens", "cached_input_tokens"),
             totalCostUsd = extractDouble(payload, "totalCostUsd", "total_cost_usd", "cost_usd"),
-            contextPercentRemaining = extractNullableDouble(payload, "contextPercentRemaining", "context_percent_remaining")
+            contextPercentRemaining = extractNullableDouble(payload, "contextPercentRemaining", "context_percent_remaining"),
+            lastMessage = safeText(payload.opt("message"))?.redactForScouter()?.take(240)
         )
     }
 
@@ -88,9 +94,15 @@ object EventNormalizer {
             toolName = firstNonBlank(json.optString("toolName"), json.optString("tool_name")),
             targetFile = firstNonBlank(json.optString("file_path"), json.optString("path"))?.redactForScouter(),
             commandSummary = firstNonBlank(json.optString("command"), json.optString("prompt"))?.redactForScouter()?.take(160),
-            errorMessage = firstNonBlank(json.optString("error"), json.optString("message"))?.redactForScouter(),
+            errorMessage = firstNonBlank(json.optString("error"))?.redactForScouter(),
+            modelName = firstNonBlank(json.optString("model"), json.optJSONObject("message")?.optString("model")),
             tokensUsed = extractLong(json, "tokensUsed", "tokens_used", "total_tokens"),
-            totalCostUsd = extractDouble(json, "totalCostUsd", "total_cost_usd", "cost_usd")
+            inputTokens = extractLong(json, "inputTokens", "input_tokens"),
+            outputTokens = extractLong(json, "outputTokens", "output_tokens"),
+            cacheCreationInputTokens = extractLong(json, "cacheCreationInputTokens", "cache_creation_input_tokens"),
+            cacheReadInputTokens = extractLong(json, "cacheReadInputTokens", "cache_read_input_tokens", "cached_input_tokens"),
+            totalCostUsd = extractDouble(json, "totalCostUsd", "total_cost_usd", "cost_usd"),
+            lastMessage = safeText(json.opt("message"))?.redactForScouter()?.take(240)
         )
     }
 
@@ -141,5 +153,20 @@ object EventNormalizer {
         for (key in keys) if (json.has(key) && !json.isNull(key)) return json.optDouble(key)
         return null
     }
-}
 
+    private fun errorMessageFromPayload(payload: JSONObject, eventType: ScouterEventType): String? {
+        val explicit = firstNonBlank(payload.optString("error"), payload.optString("errorMessage"))
+        if (explicit != null) return explicit.redactForScouter()
+        if (eventType == ScouterEventType.POST_TOOL_USE_FAILURE) {
+            return safeText(payload.opt("message"))?.redactForScouter()
+        }
+        return null
+    }
+
+    private fun safeText(value: Any?): String? {
+        return when (value) {
+            is String -> value.ifBlank { null }
+            else -> null
+        }
+    }
+}

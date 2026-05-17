@@ -55,9 +55,15 @@ data class ScouterEvent(
     val commandSummary: String? = null,
     val errorMessage: String? = null,
     val notificationMessage: String? = null,
+    val modelName: String? = null,
     val tokensUsed: Long = 0,
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val cacheCreationInputTokens: Long = 0,
+    val cacheReadInputTokens: Long = 0,
     val totalCostUsd: Double = 0.0,
-    val contextPercentRemaining: Double? = null
+    val contextPercentRemaining: Double? = null,
+    val lastMessage: String? = null
 ) {
     fun toSnapshot(previous: SessionSnapshot? = null): SessionSnapshot {
         val isTerminalState = derivedStatus == ScouterStatus.COMPLETED ||
@@ -73,10 +79,16 @@ data class ScouterEvent(
             currentFile = if (isTerminalState) null else targetFile ?: previous?.currentFile,
             lastEventAt = timestamp,
             sessionStartAt = previous?.sessionStartAt ?: timestamp,
+            modelName = modelName ?: previous?.modelName,
             totalCostUsd = if (totalCostUsd > 0.0) totalCostUsd else previous?.totalCostUsd ?: 0.0,
             tokensUsed = if (tokensUsed > 0L) tokensUsed else previous?.tokensUsed ?: 0L,
+            inputTokens = if (inputTokens > 0L) inputTokens else previous?.inputTokens ?: 0L,
+            outputTokens = if (outputTokens > 0L) outputTokens else previous?.outputTokens ?: 0L,
+            cacheCreationInputTokens = if (cacheCreationInputTokens > 0L) cacheCreationInputTokens else previous?.cacheCreationInputTokens ?: 0L,
+            cacheReadInputTokens = if (cacheReadInputTokens > 0L) cacheReadInputTokens else previous?.cacheReadInputTokens ?: 0L,
             contextPercentRemaining = contextPercentRemaining ?: previous?.contextPercentRemaining,
-            lastError = errorMessage ?: previous?.lastError
+            lastError = errorMessage ?: previous?.lastError,
+            lastMessage = lastMessage ?: previous?.lastMessage
         )
     }
 }
@@ -91,10 +103,16 @@ data class SessionSnapshot(
     val currentFile: String?,
     val lastEventAt: Long,
     val sessionStartAt: Long,
+    val modelName: String?,
     val totalCostUsd: Double,
     val tokensUsed: Long,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cacheCreationInputTokens: Long,
+    val cacheReadInputTokens: Long,
     val contextPercentRemaining: Double?,
-    val lastError: String?
+    val lastError: String?,
+    val lastMessage: String?
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("sessionId", sessionId)
@@ -107,10 +125,16 @@ data class SessionSnapshot(
         put("currentFile", currentFile)
         put("lastEventAt", lastEventAt)
         put("sessionStartAt", sessionStartAt)
+        put("modelName", modelName)
         put("totalCostUsd", totalCostUsd)
         put("tokensUsed", tokensUsed)
+        put("inputTokens", inputTokens)
+        put("outputTokens", outputTokens)
+        put("cacheCreationInputTokens", cacheCreationInputTokens)
+        put("cacheReadInputTokens", cacheReadInputTokens)
         put("contextPercentRemaining", contextPercentRemaining)
         put("lastError", lastError)
+        put("lastMessage", lastMessage)
     }
 
     companion object {
@@ -125,12 +149,18 @@ data class SessionSnapshot(
                 currentFile = json.optString("currentFile").ifBlank { null },
                 lastEventAt = json.optLong("lastEventAt", System.currentTimeMillis()),
                 sessionStartAt = json.optLong("sessionStartAt", System.currentTimeMillis()),
+                modelName = json.optString("modelName").ifBlank { null },
                 totalCostUsd = json.optDouble("totalCostUsd", 0.0),
                 tokensUsed = json.optLong("tokensUsed", 0L),
+                inputTokens = json.optLong("inputTokens", 0L),
+                outputTokens = json.optLong("outputTokens", 0L),
+                cacheCreationInputTokens = json.optLong("cacheCreationInputTokens", 0L),
+                cacheReadInputTokens = json.optLong("cacheReadInputTokens", 0L),
                 contextPercentRemaining = if (json.has("contextPercentRemaining") && !json.isNull("contextPercentRemaining")) {
                     json.optDouble("contextPercentRemaining")
                 } else null,
-                lastError = json.optString("lastError").ifBlank { null }
+                lastError = json.optString("lastError").ifBlank { null },
+                lastMessage = json.optString("lastMessage").ifBlank { null }
             )
         }
     }

@@ -10,6 +10,7 @@ class JsonlWatcher(
 ) {
     private val running = AtomicBoolean(false)
     private val offsets = mutableMapOf<String, Long>()
+    private val parsers = mutableMapOf<String, JsonlSessionParser>()
     private var thread: Thread? = null
 
     fun start() {
@@ -48,13 +49,17 @@ class JsonlWatcher(
         val key = file.absolutePath
         val previous = offsets[key] ?: 0L
         val length = file.length()
-        if (length < previous) offsets[key] = 0L
+        if (length < previous) {
+            offsets[key] = 0L
+            parsers.remove(key)
+        }
         if (length == previous) return
+        val parser = parsers.getOrPut(key) { JsonlSessionParser(source, file) }
         file.inputStream().buffered().use { input ->
             input.skip(offsets[key] ?: 0L)
             input.bufferedReader().forEachLine { line ->
                 if (line.isNotBlank()) {
-                    EventNormalizer.fromJsonl(source, file, line)?.let(onEvent)
+                    parser.parse(line)?.let(onEvent)
                 }
             }
         }
@@ -65,4 +70,3 @@ class JsonlWatcher(
         private const val TAG = "ScouterJsonlWatcher"
     }
 }
-

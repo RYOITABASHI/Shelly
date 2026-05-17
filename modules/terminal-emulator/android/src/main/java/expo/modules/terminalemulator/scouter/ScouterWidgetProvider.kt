@@ -71,8 +71,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val stale = isStale(snapshot)
             val detail = if (stale) "Stale · ${displayStatus(snapshot, project)}" else displayStatus(snapshot, project)
             val metrics = buildString {
+                snapshot.modelName?.takeIf { it.isNotBlank() }?.let { append(shortModelName(it)).append(" · ") }
                 if (snapshot.totalCostUsd > 0.0) append("$").append(String.format(Locale.US, "%.2f", snapshot.totalCostUsd)).append(" · ")
                 if (snapshot.tokensUsed > 0L) append(formatTokens(snapshot.tokensUsed)).append(" tokens · ")
+                if (snapshot.cacheReadInputTokens > 0L) append(formatTokens(snapshot.cacheReadInputTokens)).append(" cached · ")
                 snapshot.contextPercentRemaining?.let { append(String.format(Locale.US, "%.0f%% context · ", it)) }
                 append("Last event ").append(formatTime(snapshot.lastEventAt))
             }
@@ -144,6 +146,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun formatTokens(tokens: Long): String {
             return if (tokens >= 1000) String.format(Locale.US, "%.1fK", tokens / 1000.0) else tokens.toString()
+        }
+
+        private fun shortModelName(model: String): String {
+            return model
+                .removePrefix("claude-")
+                .removePrefix("gpt-")
+                .replace("-2025", "")
+                .replace("-2026", "")
+                .take(18)
         }
 
         private fun formatTime(time: Long): String {

@@ -29,10 +29,16 @@ type ScouterSession = {
   currentFile?: string | null;
   lastEventAt?: number;
   sessionStartAt?: number;
+  modelName?: string | null;
   totalCostUsd?: number;
   tokensUsed?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
   contextPercentRemaining?: number | null;
   lastError?: string | null;
+  lastMessage?: string | null;
 };
 
 type ScouterDebugInfo = {
@@ -168,6 +174,7 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
   const project = projectName(session.projectName);
   const status = statusText(session);
   const note = session.lastError ? summarizeSessionNote(session.lastError, session.currentStatus === 'ERROR') : null;
+  const lastMessage = session.lastMessage ? shorten(session.lastMessage, 110) : null;
   return (
     <View style={[styles.sessionCard, primary && styles.sessionCardPrimary, stale && styles.sessionCardStale]}>
       <View style={styles.sessionTop}>
@@ -182,6 +189,16 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
       <Text style={styles.sessionMeta} numberOfLines={1}>
         {metrics(session)}
       </Text>
+      {usageDetails(session) ? (
+        <Text style={styles.sessionMeta} numberOfLines={1}>
+          {usageDetails(session)}
+        </Text>
+      ) : null}
+      {lastMessage ? (
+        <Text style={styles.sessionMessage} numberOfLines={1}>
+          Last: {lastMessage}
+        </Text>
+      ) : null}
       {note ? (
         <Text style={[styles.sessionNote, note.tone === 'error' && styles.sessionNoteError]} numberOfLines={1}>
           {note.text}
@@ -222,11 +239,30 @@ function statusText(session: ScouterSession): string {
 
 function metrics(session: ScouterSession): string {
   const parts: string[] = [];
+  if (session.modelName) parts.push(shortModelName(session.modelName));
+  if (session.currentTool) parts.push(`tool ${session.currentTool}`);
   if ((session.tokensUsed || 0) > 0) parts.push(`${formatTokens(session.tokensUsed || 0)} tokens`);
   if ((session.totalCostUsd || 0) > 0) parts.push(`$${(session.totalCostUsd || 0).toFixed(2)}`);
   if (typeof session.contextPercentRemaining === 'number') parts.push(`${session.contextPercentRemaining.toFixed(0)}% context`);
   if (session.gitBranch) parts.push(session.gitBranch);
   return parts.length ? parts.join(' · ') : shortSessionId(session.sessionId);
+}
+
+function usageDetails(session: ScouterSession): string | null {
+  const parts: string[] = [];
+  if ((session.inputTokens || 0) > 0) parts.push(`in ${formatTokens(session.inputTokens || 0)}`);
+  if ((session.outputTokens || 0) > 0) parts.push(`out ${formatTokens(session.outputTokens || 0)}`);
+  if ((session.cacheCreationInputTokens || 0) > 0) parts.push(`cache+ ${formatTokens(session.cacheCreationInputTokens || 0)}`);
+  if ((session.cacheReadInputTokens || 0) > 0) parts.push(`cache ${formatTokens(session.cacheReadInputTokens || 0)}`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function shortModelName(model: string): string {
+  return model
+    .replace(/^claude-/, '')
+    .replace(/^gpt-/, '')
+    .replace(/-20\d{6}$/, '')
+    .slice(0, 24);
 }
 
 function summarizeSessionNote(error: string, isErrorStatus: boolean): { text: string; tone: 'info' | 'error' } {
@@ -479,6 +515,11 @@ const styles = StyleSheet.create({
   },
   sessionNote: {
     color: '#9BC49B',
+    fontFamily: 'JetBrainsMono_400Regular',
+    fontSize: 11,
+  },
+  sessionMessage: {
+    color: '#7DDB7D',
     fontFamily: 'JetBrainsMono_400Regular',
     fontSize: 11,
   },

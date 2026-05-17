@@ -188,6 +188,28 @@ The monitor is the inspection layer for Phase 1A+:
 
 The monitor auto-refreshes while open. Widget remains the glance layer and intentionally shows only the latest observed session.
 
+## JSONL Parser Pack v1
+
+Scouter now includes a small native parser pack based on the data shapes used by `ccusage`, `Claude-Code-Usage-Monitor`, and the same Codex `token_count` conventions used by `ccusage codex`.
+
+Claude Code JSONL support:
+
+- reads `~/.claude/projects/**/*.jsonl`
+- tracks `message.model`
+- aggregates `message.usage.input_tokens`, `output_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`
+- uses `costUSD` when Claude Code writes it
+- extracts the latest assistant text and latest `tool_use.name`
+
+Codex JSONL support:
+
+- reads `~/.codex/sessions/**/*.jsonl`
+- tracks model updates from `turn_context`
+- aggregates `event_msg` / `token_count` entries
+- handles `last_token_usage` directly and falls back to deltas from `total_token_usage`
+- treats `cached_input_tokens` as cache-read tokens
+
+Phase 1A+ deliberately does not yet implement full ccusage-style daily/monthly reporting, model pricing lookup, or request-id deduplication. The parser pack is scoped to live session display: model, token totals, cache totals, cost when available, latest message, latest tool, and status.
+
 Dogfood checklist for the first week:
 
 - Keep the Medium widget on the home screen and watch stale-state behavior after screen off, app switch, and app restart.
