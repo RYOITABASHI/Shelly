@@ -261,14 +261,69 @@ if (!globalThis.Bun.JSONL) {
     stringify: function(values) { return Array.from(values ?? []).map(function(value) { return JSON.stringify(value); }).join('\\n'); }
   };
 }
+(function shellyPatchClaudeChildProcessShell() {
+  const childProcess = require('child_process');
+  const shellyShellPath = function() { return process.env.SHELL || '/system/bin/sh'; };
+  const normalizeOptions = function(options, forceShell) {
+    if (!options || typeof options !== 'object') return options;
+    if (options.shell === true || (forceShell && options.shell === undefined)) return Object.assign({}, options, { shell: shellyShellPath() });
+    return options;
+  };
+  const wrap = function(name, index) {
+    const original = childProcess[name];
+    if (typeof original !== 'function' || original.__shellyShellPatched) return;
+    const patched = function(...args) {
+      const i = index(args);
+      if (i >= 0) args[i] = normalizeOptions(args[i], false);
+      return original.apply(this, args);
+    };
+    try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}
+    childProcess[name] = patched;
+  };
+  const wrapExec = function(name) {
+    const original = childProcess[name];
+    if (typeof original !== 'function' || original.__shellyShellPatched) return;
+    const patched = function(command, options, callback) {
+      if (typeof options === 'function' || options === undefined) return original.call(this, command, { shell: shellyShellPath() }, options);
+      return original.call(this, command, normalizeOptions(options, true), callback);
+    };
+    try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}
+    childProcess[name] = patched;
+  };
+  wrap('spawn', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
+  wrap('spawnSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
+  wrapExec('exec');
+  wrapExec('execSync');
+  wrap('execFile', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
+  wrap('execFileSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
+})();
 if (typeof globalThis.Bun.spawn !== 'function') {
   globalThis.Bun.spawn = function shellyBunSpawn(command, options) {
     const childProcess = require('child_process');
-    const cmd = Array.isArray(command) ? command[0] : command;
-    const args = Array.isArray(command) ? command.slice(1) : [];
-    const child = childProcess.spawn(String(cmd), args.map(String), options || {});
+    const spec = command && typeof command === 'object' && !Array.isArray(command) ? command : null;
+    const cmdSpec = spec && Array.isArray(spec.cmd) ? spec.cmd : command;
+    const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;
+    const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];
+    const spawnOptions = Object.assign({}, options || {});
+    if (spec) {
+      if (spec.cwd) spawnOptions.cwd = spec.cwd;
+      if (spec.env) spawnOptions.env = Object.assign({}, process.env, spec.env);
+      if (spec.stdin || spec.stdout || spec.stderr) {
+        const map = function(v, fallback) { return v === 'inherit' || v === 'ignore' || v === 'pipe' ? v : fallback; };
+        spawnOptions.stdio = [map(spec.stdin, 'pipe'), map(spec.stdout, 'pipe'), map(spec.stderr, 'pipe')];
+      }
+      if (spec.shell !== undefined) spawnOptions.shell = spec.shell;
+    }
+    if (spawnOptions.shell === true) spawnOptions.shell = process.env.SHELL || '/system/bin/sh';
+    const child = childProcess.spawn(String(cmd), args.map(String), spawnOptions);
+    try {
+      const Readable = require('stream').Readable;
+      if (child.stdout && Readable.toWeb) child.stdout = Readable.toWeb(child.stdout);
+      if (child.stderr && Readable.toWeb) child.stderr = Readable.toWeb(child.stderr);
+    } catch (_) {}
     child.exited = new Promise(function(resolve) {
       child.on('exit', function(code) { resolve(code ?? 0); });
+      child.on('error', function() { resolve(1); });
     });
     return child;
   };
