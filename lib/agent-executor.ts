@@ -190,6 +190,199 @@ NODEEOF
   return 127
 }
 
+http_get_ok() {
+  url="$1"
+  err_file="$2"
+  timeout_seconds="\${3:-5}"
+  if command -v node >/dev/null 2>&1; then
+    HTTP_TIMEOUT_SECONDS="$timeout_seconds" node - "$url" > /dev/null 2> "$err_file" <<'NODEEOF'
+const http = require('http');
+const https = require('https');
+
+const url = new URL(process.argv[2]);
+const isHttps = url.protocol === 'https:';
+const client = isHttps ? https : http;
+const timeoutSeconds = Number(process.env.HTTP_TIMEOUT_SECONDS || '5');
+
+const req = client.request({
+  method: 'GET',
+  protocol: url.protocol,
+  hostname: url.hostname,
+  port: url.port || (isHttps ? 443 : 80),
+  path: url.pathname + url.search,
+}, (res) => {
+  res.resume();
+  res.on('end', () => {
+    process.exitCode = res.statusCode && res.statusCode < 500 ? 0 : 22;
+  });
+});
+
+req.on('error', (err) => {
+  console.error(err && err.message ? err.message : String(err));
+  process.exitCode = 1;
+});
+req.setTimeout(timeoutSeconds * 1000, () => {
+  req.destroy(new Error('request timed out'));
+});
+req.end();
+NODEEOF
+    return $?
+  fi
+
+  echo "No HTTP client available: node is missing or unavailable." > "$err_file"
+  return 127
+}
+
+local_llm_is_loopback_url() {
+  case "$1" in
+    http://127.0.0.1|http://127.0.0.1:*|http://localhost|http://localhost:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+local_llm_ready() {
+  base_url="$1"
+  timeout_seconds="\${2:-5}"
+  err_file="\${3:-$TMP_DIR/local-llm-ready.err}"
+  http_get_ok "\${base_url%/}/health" "$err_file" "$timeout_seconds" && return 0
+  http_get_ok "\${base_url%/}/v1/models" "$err_file" "$timeout_seconds" && return 0
+  return 1
+}
+
+local_llm_port() {
+  base_url="$1"
+  port=$(printf '%s\\n' "$base_url" | sed -n 's#^http://127\\.0\\.0\\.1:\\([0-9][0-9]*\\).*#\\1#p; s#^http://localhost:\\([0-9][0-9]*\\).*#\\1#p' | head -n 1)
+  printf '%s' "\${port:-8080}"
+}
+
+find_llama_server_bin() {
+  if [ -n "\${LLAMA_SERVER_BIN:-}" ] && [ -x "$LLAMA_SERVER_BIN" ]; then
+    printf '%s\\n' "$LLAMA_SERVER_BIN"
+    return 0
+  fi
+  if command -v llama-server >/dev/null 2>&1; then
+    command -v llama-server
+    return 0
+  fi
+  for candidate in "$HOME/.local/bin/llama-server" "$HOME/bin/llama-server"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_local_llm_model() {
+  model_name="\${1:-Qwen3-8B-Q4_K_M}"
+  if [ -n "\${LOCAL_LLM_MODEL_PATH:-}" ] && [ -f "$LOCAL_LLM_MODEL_PATH" ]; then
+    printf '%s\\n' "$LOCAL_LLM_MODEL_PATH"
+    return 0
+  fi
+
+  case "$model_name" in
+    *.gguf) model_file="$model_name" ;;
+    *) model_file="$model_name.gguf" ;;
+  esac
+
+  for dir in "$HOME/models" "$HOME" "$HOME/.local/share/shelly/models" "/sdcard/Download" "/sdcard/models" "/sdcard/llama" "/sdcard/Documents/models" "/sdcard/Models"; do
+    [ -d "$dir" ] || continue
+    if [ -f "$dir/$model_file" ]; then
+      printf '%s\\n' "$dir/$model_file"
+      return 0
+    fi
+  done
+
+  for dir in "$HOME/models" "$HOME" "/sdcard/Download" "/sdcard/models" "/sdcard/llama" "/sdcard/Documents/models" "/sdcard/Models"; do
+    [ -d "$dir" ] || continue
+    found=$(find "$dir" -maxdepth 2 -type f -name '*.gguf' 2>/dev/null | grep -i 'Qwen3.*8B.*Q4_K_M\\|Qwen3.*Q4_K_M.*8B' | head -n 1 || true)
+    if [ -n "$found" ]; then
+      printf '%s\\n' "$found"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_local_llm_server() {
+  base_url="$1"
+  model_name="\${2:-Qwen3-8B-Q4_K_M}"
+  reason_file="$TMP_DIR/local-llm-start-$AGENT_ID.reason"
+  : > "$reason_file"
+
+  local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" && return 0
+
+  if ! local_llm_is_loopback_url "$base_url"; then
+    echo "auto-start skipped: LOCAL_LLM_URL is not loopback ($base_url)" > "$reason_file"
+    return 1
+  fi
+  if [ "\${LOCAL_LLM_AUTOSTART:-1}" = "0" ]; then
+    echo "auto-start disabled: LOCAL_LLM_AUTOSTART=0" > "$reason_file"
+    return 1
+  fi
+
+  lock_dir="$LOCKS_DIR/local-llm-server-start.lock"
+  lock_acquired=0
+  for _i in $(seq 1 30); do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      lock_acquired=1
+      break
+    fi
+    local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" && return 0
+    sleep 1
+  done
+  if [ "$lock_acquired" != "1" ]; then
+    echo "auto-start skipped: could not acquire start lock $lock_dir" > "$reason_file"
+    return 1
+  fi
+
+  local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" && { rmdir "$lock_dir" 2>/dev/null || true; return 0; }
+
+  server_bin=$(find_llama_server_bin || true)
+  if [ -z "$server_bin" ]; then
+    echo "auto-start failed: llama-server binary not found in PATH, $HOME/.local/bin, or $HOME/bin" > "$reason_file"
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 1
+  fi
+
+  model_path=$(find_local_llm_model "$model_name" || true)
+  if [ -z "$model_path" ]; then
+    echo "auto-start failed: GGUF model not found for $model_name. Set LOCAL_LLM_MODEL_PATH or place it under $HOME/models or /sdcard/Download." > "$reason_file"
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 1
+  fi
+
+  port=$(local_llm_port "$base_url")
+  log_file="\${LLAMA_SERVER_LOG:-$HOME/models/llama-server.log}"
+  pid_file="\${LLAMA_SERVER_PID:-$HOME/models/llama-server.pid}"
+  mkdir -p "$(dirname "$log_file")" "$(dirname "$pid_file")"
+
+  nohup "$server_bin" --model "$model_path" --host 127.0.0.1 --port "$port" --ctx-size "\${LOCAL_LLM_CTX_SIZE:-4096}" --threads "\${LOCAL_LLM_THREADS:-6}" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+  echo $! > "$pid_file"
+
+  ready_seconds="\${LOCAL_LLM_START_TIMEOUT_SECONDS:-90}"
+  for _i in $(seq 1 "$ready_seconds"); do
+    if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+      rmdir "$lock_dir" 2>/dev/null || true
+      return 0
+    fi
+    sleep 1
+  done
+
+  {
+    echo "auto-start failed: llama-server did not become ready within $ready_seconds seconds"
+    echo "server: $server_bin"
+    echo "model: $model_path"
+    echo "endpoint: $base_url"
+    echo "log: $log_file"
+    echo "log tail:"
+    tail -n 40 "$log_file" 2>/dev/null || true
+  } > "$reason_file"
+  rmdir "$lock_dir" 2>/dev/null || true
+  return 1
+}
+
 extract_ai_content() {
   file="$1"
   if command -v python3 >/dev/null 2>&1; then
@@ -452,12 +645,14 @@ rm -f "$PROMPT_FILE"`;
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
 	LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"
 	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL" || true
 	set +e
 	HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "\${LOCAL_URL%/}/v1/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 	LOCAL_EXIT=$?
 	set -e
 	if [ "$LOCAL_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-	  local_context_fallback "http exit=$LOCAL_EXIT $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+	  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
+	  local_context_fallback "http exit=$LOCAL_EXIT $START_REASON $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
 	else
 	  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
 	fi
@@ -569,6 +764,7 @@ LOCAL_REQUEST_FILE="$RUN_DIR/local-request.json"
 printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
 
 LOCAL_START=$(date +%s)
+ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL" || true
 set +e
 HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "\${LOCAL_URL%/}/v1/chat/completions" "$LOCAL_REQUEST_FILE" "$RUN_DIR/local.response.json" "$RUN_DIR/local.stderr.log"
 LOCAL_EXIT=$?
