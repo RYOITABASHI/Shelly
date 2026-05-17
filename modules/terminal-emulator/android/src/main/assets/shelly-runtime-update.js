@@ -84,6 +84,7 @@ if (!['verified', 'stable', 'latest'].includes(CHANNEL)) {
 const STABLE_DELAY_DAYS = Number(process.env.SHELLY_UPDATER_STABLE_DELAY_DAYS || 7);
 const STABLE_DELAY_MS = STABLE_DELAY_DAYS * 24 * 60 * 60 * 1000;
 const FUNCTIONAL_CHECK = process.env.SHELLY_UPDATER_FUNCTIONAL_CHECK === '1';
+const NATIVE_CLAUDE_UPDATE = process.env.SHELLY_UPDATER_NATIVE_CLAUDE === '1';
 
 const CLAUDE_BUN_NODE_POLYFILL = `
 if (!globalThis.Bun) globalThis.Bun = {};
@@ -551,7 +552,7 @@ function currentVersion(tool) {
 }
 
 function currentClaudeVersion() {
-  return currentVersion('claude') || currentVersion('claude-extracted');
+  return currentVersion('claude-extracted') || (NATIVE_CLAUDE_UPDATE ? currentVersion('claude') : '');
 }
 
 function currentClaudeNativeVersion() {
@@ -600,6 +601,7 @@ function runClaudeNative(binary, args = [], extraEnv = {}) {
     ...args,
   ], {
     SHELLY_MUSL_LD_PRELOAD: path.join(LIB, 'libexec_wrapper_musl.so'),
+    SHELLY_MUSL_DISABLE_POSIX_SPAWN: '1',
     USE_BUILTIN_RIPGREP: '0',
     DISABLE_AUTOUPDATER: '1',
     DISABLE_INSTALLATION_CHECKS: '1',
@@ -834,10 +836,11 @@ function claudeNativeFunctionalMarker(version = currentClaudeNativeVersion()) {
 }
 
 function currentClaudeFunctionalSmokeOk() {
-  const nativeMarker = claudeNativeFunctionalMarker();
   const extractedMarker = claudeFunctionalMarker();
-  return (!!nativeMarker && fs.existsSync(nativeMarker))
-    || (!!extractedMarker && fs.existsSync(extractedMarker));
+  if (!!extractedMarker && fs.existsSync(extractedMarker)) return true;
+  if (!NATIVE_CLAUDE_UPDATE) return false;
+  const nativeMarker = claudeNativeFunctionalMarker();
+  return !!nativeMarker && fs.existsSync(nativeMarker);
 }
 
 // Per-process unique staging suffix avoids the race where two
@@ -941,85 +944,35 @@ async function tryClaudeVersion(pkgMeta, version) {
     if (!bin) return { ok: false, reason: 'package/claude missing from tarball' };
     const patchedBin = patchClaudeNativeAddons(bin);
 
-    // Native Bun SEA route. We preserve upstream behavior except for Shelly's
-    // Android-incompatible embedded native add-ons, patched above.
-    // The extracted-Node route is still prepared as a fallback, but it cannot
-    // be the primary validation path anymore: Claude 2.1.129 passed
-    // `--version` after extraction but hung on `--print` because newer bundles
-    // exercise more Bun APIs than our small Node polyfill covers.
-    const nativeStaging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
-    ensureCleanDir(nativeStaging);
-    const nativeOut = path.join(nativeStaging, 'claude');
-    fs.writeFileSync(nativeOut, patchedBin, { mode: 0o755 });
-    fs.chmodSync(nativeOut, 0o755);
+    let nativeStaging = null;
+    if (NATIVE_CLAUDE_UPDATE) {
+      nativeStaging = path.join(TMP, `claude-${version}-${RUN_TAG}`);
+      ensureCleanDir(nativeStaging);
+      const nativeOut = path.join(nativeStaging, 'claude');
+      fs.writeFileSync(nativeOut, patchedBin, { mode: 0o755 });
+      fs.chmodSync(nativeOut, 0o755);
 
-    // PR #48 (Codex 2026-05-08): run --version 3 times. Some upstream Bun
-    // SEA crash modes only fire on the 2nd or 3rd invocation (cache /
-    // .node extraction race). A single PASS isn't enough proof that the
-    // binary is stable for foreground REPL use. Cheap: each --version
-    // takes <500 ms and is fully offline.
-    //
-    // NOTE: this catches *startup-version-smoke* failures, not REPL/TUI
-    // stability. The Z Fold6 2.1.133 crash that motivated PR #47 was
-    // foreground TUI corruption AFTER the welcome banner started
-    // drawing — three --version runs do not exercise the Ink/TUI
-    // rendering path. PR #48 is about not promoting binaries that
-    // outright fail to boot; it does NOT make native safe enough to be
-    // the default again. Native stays opt-in via PR #47's gate.
-    //
-    // Codex push-prep review (item D): validate env override so NaN /
-    // 0 / negative don't break the loop. Floor at 1, default 3.
-    const __PARSED_SMOKE_RUNS = Number(process.env.SHELLY_NATIVE_VERSION_SMOKE_RUNS || 3);
-    const NATIVE_VERSION_SMOKE_RUNS =
-      Number.isInteger(__PARSED_SMOKE_RUNS) && __PARSED_SMOKE_RUNS > 0
-        ? __PARSED_SMOKE_RUNS
-        : 3;
-    let nativeSmoke;
-    let nativeCombined = '';
-    for (let i = 1; i <= NATIVE_VERSION_SMOKE_RUNS; i += 1) {
-      nativeSmoke = runClaudeNative(nativeOut, ['--version']);
-      nativeCombined = `${nativeSmoke.stdout || ''}${nativeSmoke.stderr || ''}`;
-      if (nativeSmoke.status !== 0 || !nativeCombined.includes(version)) {
-        const category = classifyFailure(nativeSmoke);
-        const reason = `native --version run ${i}/${NATIVE_VERSION_SMOKE_RUNS} status=${nativeSmoke.status} signal=${nativeSmoke.signal || ''} cat=${category}: ${nativeCombined.slice(0, 200)}`;
-        fs.rmSync(nativeStaging, { recursive: true, force: true });
-        recordFailedVersion('claude', version, category, reason);
-        return { ok: false, reason };
+      const __PARSED_SMOKE_RUNS = Number(process.env.SHELLY_NATIVE_VERSION_SMOKE_RUNS || 3);
+      const NATIVE_VERSION_SMOKE_RUNS =
+        Number.isInteger(__PARSED_SMOKE_RUNS) && __PARSED_SMOKE_RUNS > 0
+          ? __PARSED_SMOKE_RUNS
+          : 3;
+      let nativeSmoke;
+      let nativeCombined = '';
+      for (let i = 1; i <= NATIVE_VERSION_SMOKE_RUNS; i += 1) {
+        nativeSmoke = runClaudeNative(nativeOut, ['--version']);
+        nativeCombined = `${nativeSmoke.stdout || ''}${nativeSmoke.stderr || ''}`;
+        if (nativeSmoke.status !== 0 || !nativeCombined.includes(version)) {
+          const category = classifyFailure(nativeSmoke);
+          const reason = `native --version run ${i}/${NATIVE_VERSION_SMOKE_RUNS} status=${nativeSmoke.status} signal=${nativeSmoke.signal || ''} cat=${category}: ${nativeCombined.slice(0, 200)}`;
+          fs.rmSync(nativeStaging, { recursive: true, force: true });
+          recordFailedVersion('claude', version, category, reason);
+          return { ok: false, reason };
+        }
       }
-    }
-    info(`[claude] try ${version} — native --version smoke OK (${NATIVE_VERSION_SMOKE_RUNS}x)`);
-
-    if (shouldFunctionalCheckClaude()) {
-      const nativeFunc = runClaudeNative(nativeOut, ['--print', 'Reply exactly OK'], {
-        SHELLY_UPDATER_FUNCTIONAL_CHECK: '',
-      });
-      const nativeFuncOut = `${nativeFunc.stdout || ''}${nativeFunc.stderr || ''}`;
-      if (nativeFunc.status !== 0) {
-        // Codex review (PR #48 spec item 8): classify before recording.
-        // auth/network failures must NOT cooldown the binary — the user
-        // can fix their auth and the same binary version becomes valid
-        // again. Only signal-killed and unexplained-exit failures
-        // genuinely indicate the binary is broken.
-        const category = classifyFailure(nativeFunc);
-        const reason = `native --print status=${nativeFunc.status} signal=${nativeFunc.signal || ''} cat=${category}: ${nativeFuncOut.slice(0, 200)}`;
-        fs.rmSync(nativeStaging, { recursive: true, force: true });
-        recordFailedVersion('claude', version, category, reason);
-        return { ok: false, reason };
-      }
-      if (!/\bOK\b/i.test(nativeFunc.stdout || '')) {
-        // Process exited 0 but didn't say OK — could be rate limit, model
-        // output drift, stderr warning, prompt mismatch, etc. Codex push-
-        // prep review pushed back on the earlier 'auth' label here as too
-        // coarse for diagnostics. Use a dedicated 'unexpected-output'
-        // category so the failure log makes the cause readable; cooldown
-        // exclusion is the same as 'auth' (not in COOLDOWN_CATEGORIES).
-        const reason = `native --print did not return OK: ${nativeFuncOut.slice(0, 200)}`;
-        fs.rmSync(nativeStaging, { recursive: true, force: true });
-        recordFailedVersion('claude', version, 'unexpected-output', reason);
-        return { ok: false, reason };
-      }
-      info(`[claude] try ${version} — native functional check OK`);
-      fs.writeFileSync(path.join(nativeStaging, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
+      info(`[claude] try ${version} — native --version smoke OK (${NATIVE_VERSION_SMOKE_RUNS}x)`);
+    } else {
+      info(`[claude] try ${version} — native smoke skipped (set SHELLY_UPDATER_NATIVE_CLAUDE=1 to opt in)`);
     }
 
     let staging = null;
@@ -1069,12 +1022,37 @@ async function tryClaudeVersion(pkgMeta, version) {
         throw new Error(`extracted --version status=${smoke.status}: ${combined.slice(0, 200)}`);
       }
       info(`[claude] try ${version} — extracted --version smoke OK`);
+
+      if (shouldFunctionalCheckClaude()) {
+        const func = runNodeScript(out, ['--print', 'Reply exactly OK'], {
+          USE_BUILTIN_RIPGREP: '0',
+          DISABLE_AUTOUPDATER: '1',
+          DISABLE_INSTALLATION_CHECKS: '1',
+          TMPDIR: GENERIC_TMP,
+          BUN_TMPDIR: CLAUDE_BUN_TMP,
+          CLAUDE_TMPDIR: CLAUDE_TMP,
+          CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
+        });
+        const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
+        if (func.status !== 0) {
+          throw new Error(`extracted --print status=${func.status}: ${funcOut.slice(0, 200)}`);
+        }
+        if (!/\bOK\b/i.test(func.stdout || '')) {
+          throw new Error(`extracted --print did not return OK: ${funcOut.slice(0, 200)}`);
+        }
+        info(`[claude] try ${version} — extracted functional check OK`);
+        fs.writeFileSync(path.join(pkgDir, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
+      }
     } catch (e) {
+      if (nativeStaging) fs.rmSync(nativeStaging, { recursive: true, force: true });
       if (staging) fs.rmSync(staging, { recursive: true, force: true });
       staging = null;
       info(`[claude] try ${version} — extracted fallback unavailable: ${e.message}`);
     }
 
+    if (!staging) {
+      return { ok: false, reason: 'extracted cli.js fallback unavailable' };
+    }
     return { ok: true, nativeStaging, staging };
   } catch (err) {
     // Network / I/O exception — don't poison the failed-versions list. The

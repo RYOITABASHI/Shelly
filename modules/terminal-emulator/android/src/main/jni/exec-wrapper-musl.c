@@ -274,25 +274,33 @@ int posix_spawn(pid_t *pid, const char *path,
                 const posix_spawn_file_actions_t *file_actions,
                 const posix_spawnattr_t *attrp,
                 char *const argv[], char *const envp[]) {
-    if (env_value(envp, "SHELLY_MUSL_DISABLE_POSIX_SPAWN=")) return ENOSYS;
-    if (file_actions || attrp) return ENOSYS;
-
-    long child = raw_syscall5(__NR_clone, SIGCHLD, 0, 0, 0, 0);
-    if (child < 0) return (int)-child;
-    if (child == 0) {
-        execve(path, argv, envp);
-        raw_exit_group(127);
-    }
-
-    if (pid) *pid = (pid_t)child;
-    return 0;
+    (void)pid;
+    (void)path;
+    (void)file_actions;
+    (void)attrp;
+    (void)argv;
+    (void)envp;
+    /*
+     * Do not emulate posix_spawn here. The previous raw clone(SIGCHLD, NULL)
+     * path is not a valid fork substitute on Android/aarch64 and can crash
+     * callers that expect libc-managed child setup. Returning ENOSYS lets the
+     * caller fall back to fork+exec, where execve above still performs Shelly's
+     * linker64/path rewrite.
+     */
+    return ENOSYS;
 }
 
 int posix_spawnp(pid_t *pid, const char *file,
                  const posix_spawn_file_actions_t *file_actions,
                  const posix_spawnattr_t *attrp,
                  char *const argv[], char *const envp[]) {
-    return posix_spawn(pid, file, file_actions, attrp, argv, envp);
+    (void)pid;
+    (void)file;
+    (void)file_actions;
+    (void)attrp;
+    (void)argv;
+    (void)envp;
+    return ENOSYS;
 }
 
 int execvp(const char *file, char *const argv[]) {
