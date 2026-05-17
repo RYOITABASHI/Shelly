@@ -599,6 +599,9 @@ function promote(tool, version, staging) {
   fs.rmSync(current, { recursive: true, force: true });
   fs.renameSync(next, current);
   fs.writeFileSync(path.join(toolDir, 'version'), `${version}\n`);
+  if (tool === 'claude-extracted') {
+    fs.rmSync(path.join(toolDir, '.needs-repair'), { force: true });
+  }
 }
 
 function currentVersion(tool) {
@@ -616,6 +619,73 @@ function currentClaudeNativeVersion() {
 
 function currentClaudeExtractedVersion() {
   return currentVersion('claude-extracted');
+}
+
+function currentClaudeExtractedCli() {
+  return path.join(
+    ROOT,
+    'claude-extracted',
+    'current',
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code-extracted',
+    'cli.js',
+  );
+}
+
+function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
+  return {
+    USE_BUILTIN_RIPGREP: '0',
+    DISABLE_AUTOUPDATER: '1',
+    DISABLE_INSTALLATION_CHECKS: '1',
+    NO_UPDATE_NOTIFIER: '1',
+    TMPDIR: GENERIC_TMP,
+    BUN_TMPDIR: CLAUDE_BUN_TMP,
+    CLAUDE_TMPDIR: CLAUDE_TMP,
+    CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
+    NODE_OPTIONS: '',
+    BASH_ENV: '',
+    ENV: '',
+    ...extraEnv,
+  };
+}
+
+function invalidateClaudeExtractedCurrent(reason) {
+  const toolDir = path.join(ROOT, 'claude-extracted');
+  try {
+    fs.mkdirSync(toolDir, { recursive: true, mode: 0o700 });
+    fs.rmSync(path.join(toolDir, 'current'), { recursive: true, force: true });
+    fs.rmSync(path.join(toolDir, 'version'), { force: true });
+    fs.writeFileSync(path.join(toolDir, '.needs-repair'), `${new Date().toISOString()} ${reason}\n`, { mode: 0o600 });
+  } catch (err) {
+    info(`[claude] failed to invalidate extracted current after ${reason}: ${err.message}`);
+  }
+}
+
+function currentClaudeExtractedVerifiedVersion() {
+  const marker = currentClaudeExtractedVersion();
+  if (!marker) return '';
+  const cli = currentClaudeExtractedCli();
+  if (!fs.existsSync(cli)) {
+    invalidateClaudeExtractedCurrent('missing-cli');
+    return '';
+  }
+
+  const smoke = runNodeScript(cli, ['--version'], claudeExtractedNodeSmokeEnv());
+  const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
+  if (/\[DBG-A|\[CKPT-|claude-code_2-1-131_harness/.test(combined)) {
+    invalidateClaudeExtractedCurrent('stale-harness-output');
+    return '';
+  }
+  if (smoke.status !== 0 || !combined.includes(marker)) {
+    invalidateClaudeExtractedCurrent(`version-mismatch-${marker}`);
+    return '';
+  }
+  return marker;
+}
+
+function currentClaudeVerifiedVersion() {
+  return currentClaudeExtractedVerifiedVersion() || (NATIVE_CLAUDE_UPDATE ? currentVersion('claude') : '');
 }
 
 function currentNpmVersion(pkgName) {
@@ -1073,15 +1143,7 @@ async function tryClaudeVersion(pkgMeta, version) {
         throw new Error('extracted package dependencies missing');
       }
 
-      const smoke = runNodeScript(out, ['--version'], {
-        USE_BUILTIN_RIPGREP: '0',
-        DISABLE_AUTOUPDATER: '1',
-        DISABLE_INSTALLATION_CHECKS: '1',
-        TMPDIR: GENERIC_TMP,
-        BUN_TMPDIR: CLAUDE_BUN_TMP,
-        CLAUDE_TMPDIR: CLAUDE_TMP,
-        CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
-      });
+      const smoke = runNodeScript(out, ['--version'], claudeExtractedNodeSmokeEnv());
       const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
       if (smoke.status !== 0 || !combined.includes(version)) {
         throw new Error(`extracted --version status=${smoke.status}: ${combined.slice(0, 200)}`);
@@ -1089,15 +1151,7 @@ async function tryClaudeVersion(pkgMeta, version) {
       info(`[claude] try ${version} — extracted --version smoke OK`);
 
       if (shouldFunctionalCheckClaude()) {
-        const func = runNodeScript(out, ['--print', 'Reply exactly OK'], {
-          USE_BUILTIN_RIPGREP: '0',
-          DISABLE_AUTOUPDATER: '1',
-          DISABLE_INSTALLATION_CHECKS: '1',
-          TMPDIR: GENERIC_TMP,
-          BUN_TMPDIR: CLAUDE_BUN_TMP,
-          CLAUDE_TMPDIR: CLAUDE_TMP,
-          CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
-        });
+        const func = runNodeScript(out, ['--print', 'Reply exactly OK'], claudeExtractedNodeSmokeEnv());
         const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
         if (func.status !== 0) {
           throw new Error(`extracted --print status=${func.status}: ${funcOut.slice(0, 200)}`);
@@ -1150,7 +1204,7 @@ async function updateClaude() {
   // candidate (the absolute newest), we're already on the verified
   // latest. Don't re-download unless this authenticated device has never
   // proven that current release can complete `--print`.
-  if (!FORCE && currentClaudeVersion() === candidates[0]) {
+  if (!FORCE && currentClaudeExtractedVerifiedVersion() === candidates[0]) {
     if (needsFunctionalSmoke && !currentClaudeFunctionalSmokeOk()) {
       info(`[claude] current ${candidates[0]} lacks functional smoke marker; re-testing`);
     } else {
@@ -1161,7 +1215,7 @@ async function updateClaude() {
 
   // Walk candidates newest-first. First one that passes smoke wins.
   for (const version of candidates) {
-    if (!FORCE && currentClaudeVersion() === version) {
+    if (!FORCE && currentClaudeExtractedVerifiedVersion() === version) {
       if (needsFunctionalSmoke && !currentClaudeFunctionalSmokeOk()) {
         info(`[claude] current ${version} lacks functional smoke marker; re-testing before keeping`);
       } else {
@@ -1182,7 +1236,7 @@ async function updateClaude() {
   // All candidates failed — keep current promotion as-is. The bundled
   // golden APK version is the ultimate fallback in claude() bash
   // function, so the user always has a working Claude.
-  info(`[claude] all ${candidates.length} candidates failed smoke; keeping current=${currentClaudeVersion() || '(none)'}`);
+  info(`[claude] all ${candidates.length} candidates failed smoke; keeping current=${currentClaudeVerifiedVersion() || currentClaudeVersion() || '(none)'}`);
 }
 
 async function tryCodexTag(releases, tag) {
@@ -1382,7 +1436,7 @@ async function checkClaudeAvailable() {
     const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
     const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
     if (candidates.length === 0) return false;
-    return currentClaudeVersion() !== candidates[0];
+    return currentClaudeExtractedVerifiedVersion() !== candidates[0];
   } catch (err) {
     info(`[check] claude metadata fetch failed: ${err.message}`);
     return false;

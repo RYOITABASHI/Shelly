@@ -1004,7 +1004,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 146: Refresh the native shelly_shell launcher used as Claude's Bash
     //      tool shell, and keep stale user NODE_OPTIONS/BASH_ENV/ENV out of
     //      Claude's extracted/legacy Node routes by default.
-    private const val BASHRC_VERSION = 146
+    // 147: Validate the promoted Claude extracted runtime by executing its
+    //      real cli.js --version before trusting the `current` symlink.
+    //      If a stale/corrupt runtime still prints an old harness despite a
+    //      latest version marker, quarantine it and fall back to the APK
+    //      extracted route while the updater repairs the runtime.
+    private const val BASHRC_VERSION = 147
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2600,6 +2605,47 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __shelly_claude_node_options=\"--require=\$__shelly_node_compat_preload --require=\$__shelly_claude_node_preload\"")
             sb.appendLine("  if [ \"\${SHELLY_CLAUDE_ALLOW_USER_NODE_OPTIONS:-0}\" = \"1\" ] && [ -n \"\${NODE_OPTIONS:-}\" ]; then")
             sb.appendLine("    __shelly_claude_node_options=\"\$NODE_OPTIONS \$__shelly_claude_node_options\"")
+            sb.appendLine("  fi")
+            sb.appendLine("  __shelly_claude_runtime_extracted_expected() {")
+            sb.appendLine("    cat \"\$HOME/.shelly-runtime/claude-extracted/version\" 2>/dev/null | tr -d '\\n'")
+            sb.appendLine("  }")
+            sb.appendLine("  __shelly_claude_invalidate_runtime_extracted() {")
+            sb.appendLine("    local __reason=\"\$1\"")
+            sb.appendLine("    local __dir=\"\$HOME/.shelly-runtime/claude-extracted\"")
+            sb.appendLine("    mkdir -p \"\$__dir\" 2>/dev/null || true")
+            sb.appendLine("    rm -rf \"\$__dir/current\" \"\$__dir/version\" 2>/dev/null || true")
+            sb.appendLine("    printf '%s %s\\n' \"\$(date -u +%s 2>/dev/null || date +%s)\" \"\$__reason\" > \"\$__dir/.needs-repair\" 2>/dev/null || true")
+            sb.appendLine("  }")
+            sb.appendLine("  __shelly_claude_validate_runtime_extracted() {")
+            sb.appendLine("    local __cli=\"\$1\"")
+            sb.appendLine("    local __expected=\"\$(__shelly_claude_runtime_extracted_expected)\"")
+            sb.appendLine("    [ -n \"\$__expected\" ] || return 1")
+            sb.appendLine("    [ -f \"\$__cli\" ] || return 1")
+            sb.appendLine("    local __out=\"\"")
+            sb.appendLine("    local __rc=0")
+            sb.appendLine("    __out=\$(USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" BASH_ENV= ENV= timeout 15 /system/bin/linker64 \"$libDir/node\" \"\$__cli\" --version 2>&1)")
+            sb.appendLine("    __rc=\$?")
+            sb.appendLine("    case \"\$__out\" in *'[DBG-A'*|*'[CKPT-'*|*'claude-code_2-1-131_harness'*)")
+            sb.appendLine("      [ -z \"\$SHELLY_VERBOSE_CLI_TIER\" ] || echo '[shelly] claude: runtime extracted stale harness detected; using APK extracted tier' >&2")
+            sb.appendLine("      return 1")
+            sb.appendLine("      ;;")
+            sb.appendLine("    esac")
+            sb.appendLine("    if [ \"\$__rc\" -eq 0 ]; then")
+            sb.appendLine("      case \"\$__out\" in *\"\$__expected\"*) return 0 ;; esac")
+            sb.appendLine("    fi")
+            sb.appendLine("    [ -z \"\$SHELLY_VERBOSE_CLI_TIER\" ] || echo \"[shelly] claude: runtime extracted version mismatch (expected \$__expected, got \${__out%%\$'\\n'*}); using APK extracted tier\" >&2")
+            sb.appendLine("    return 1")
+            sb.appendLine("  }")
+            sb.appendLine("  __extracted_cli_js=\"\"")
+            sb.appendLine("  if [ -f \"\$__runtime_extracted_cli_js\" ]; then")
+            sb.appendLine("    if __shelly_claude_validate_runtime_extracted \"\$__runtime_extracted_cli_js\"; then")
+            sb.appendLine("      __extracted_cli_js=\"\$__runtime_extracted_cli_js\"")
+            sb.appendLine("    else")
+            sb.appendLine("      __shelly_claude_invalidate_runtime_extracted 'runtime-extracted-version-mismatch'")
+            sb.appendLine("    fi")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ -z \"\$__extracted_cli_js\" ] && [ -f \"\$__apk_extracted_cli_js\" ]; then")
+            sb.appendLine("    __extracted_cli_js=\"\$__apk_extracted_cli_js\"")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ \"\${SHELLY_DISABLE_EXTRACTED_CLAUDE:-0}\" != \"1\" ] && { [ \"\$__claude_bare_tui\" -ne 1 ] || [ \"\${SHELLY_CLAUDE_LEGACY_TUI:-0}\" != \"1\" ]; } && [ -n \"\$__extracted_cli_js\" ]; then")
             sb.appendLine("    if [ -n \"\$SHELLY_VERBOSE_CLI_TIER\" ] && [ -z \"\$SHELLY_CLAUDE_TIER_ANNOUNCED\" ]; then")
