@@ -137,6 +137,11 @@ object LibExtractor {
         // wrapper cannot be preloaded into musl, so claude() injects this
         // library only for the musl launch path.
         "lib/arm64-v8a/libexec_wrapper_musl.so" to "libexec_wrapper_musl.so",
+        // Shell launcher used as $SHELL for Claude Code's Bash tool.
+        // HomeInitializer symlinks $HOME/bin/bash to this file so Node
+        // children see a bash-like basename while the launcher still routes
+        // through linker64 + Shelly's exec wrapper.
+        "lib/arm64-v8a/libshelly_shell.so" to "shelly_shell",
         // bug #117 Path C-bis: claude-code 2.1.113+ Bun SEA binary + matching
         // Shelly-patched musl libc loader. claude is ET_EXEC (~220 MB) and
         // can't be exec'd by bionic's linker64 directly; ld-musl-aarch64.so.1
@@ -172,6 +177,10 @@ object LibExtractor {
         // fixes both rely on this being force-extracted.
         "libexec_wrapper.so",
         "libexec_wrapper_musl.so",
+        // v146: this is $SHELL for Claude Code Bash. Force refresh so stale
+        // diagnostic launcher builds cannot keep printing DBG/CKPT logs or
+        // breaking Bash tool executions after an APK upgrade.
+        "shelly_shell",
         "shelly_musl_exec",
         // v76: byte-patched bundled libclaude.so (audio-capture / image-
         // processor .node loaders neutered) needs to reach existing
