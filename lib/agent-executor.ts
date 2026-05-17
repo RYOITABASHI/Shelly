@@ -148,7 +148,7 @@ if (process.env.HTTP_AUTH_HEADER) {
   headers.Authorization = process.env.HTTP_AUTH_HEADER;
 }
 if (process.env.HTTP_EXTRA_HEADERS) {
-  for (const line of process.env.HTTP_EXTRA_HEADERS.split('\n')) {
+  for (const line of process.env.HTTP_EXTRA_HEADERS.split('\\n')) {
     const idx = line.indexOf(':');
     if (idx > 0) {
       headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
