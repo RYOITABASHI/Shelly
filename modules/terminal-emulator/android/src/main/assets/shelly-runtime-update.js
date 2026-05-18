@@ -296,6 +296,40 @@ if (!globalThis.Bun.JSONL) {
 }
 (function shellyPatchClaudeChildProcessShell() {
   const childProcess = require('child_process');
+  const shellyDiag = process.env.SHELLY_CLAUDE_DIAG === '1';
+  const shellyDiagValue = function(value) {
+    if (Array.isArray(value)) return { first: String(value[0] ?? ''), length: value.length };
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    if (value.cmd !== undefined) out.cmd = Array.isArray(value.cmd) ? { first: String(value.cmd[0] ?? ''), length: value.cmd.length } : String(value.cmd);
+    if (value.cwd !== undefined) out.cwd = value.cwd;
+    if (value.shell !== undefined) out.shell = value.shell;
+    if (value.stdin !== undefined) out.stdin = typeof value.stdin === 'string' ? value.stdin : typeof value.stdin;
+    if (value.stdout !== undefined) out.stdout = value.stdout;
+    if (value.stderr !== undefined) out.stderr = value.stderr;
+    if (value.stdio !== undefined) out.stdio = value.stdio;
+    if (value.env) {
+      out.env = {};
+      for (const key of ['HOME', 'PATH', 'SHELL', 'BASH', 'SHELLY_LIB_DIR', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'TMPDIR', 'BUN_TMPDIR', 'CLAUDE_TMPDIR', 'CLAUDE_CODE_TMPDIR', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB']) {
+        if (value.env[key] !== undefined) out.env[key] = value.env[key];
+      }
+    }
+    return out;
+  };
+  const shellyDiagCommand = function(value) {
+    const text = String(value ?? '');
+    const risky = /\s/.test(text) || [59, 38, 124, 60, 62, 36, 96, 92, 39, 34, 40, 41, 123, 125, 91, 93, 42, 63, 33].some(function(code) { return text.includes(String.fromCharCode(code)); });
+    return risky ? '[redacted command]' : text;
+  };
+  const shellyDiagLog = function(label, value) {
+    if (!shellyDiag) return;
+    try {
+      const json = JSON.stringify(value);
+      process.stderr.write('[SHELLY-CLAUDE-SPAWN] ' + label + ' ' + json + '\\n');
+    } catch (err) {
+      try { process.stderr.write('[SHELLY-CLAUDE-SPAWN] ' + label + ' <log failed: ' + err.message + '>\\n'); } catch (_) {}
+    }
+  };
   const shellyShellPath = function() { return process.env.SHELL || '/system/bin/sh'; };
   const shellyLibDir = function() {
     return process.env.SHELLY_LIB_DIR || require('path').dirname(shellyShellPath());
@@ -350,6 +384,7 @@ if (!globalThis.Bun.JSONL) {
     const original = childProcess[name];
     if (typeof original !== 'function' || original.__shellyShellPatched) return;
     const patched = function(...args) {
+      const before = { cmd: shellyDiagCommand(args[0]), argCount: Array.isArray(args[1]) ? args[1].length : null, options: args[2] || args[1] };
       if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && args.length > 0) {
         args[0] = shellyCommandValue(args[0]);
       }
@@ -357,6 +392,7 @@ if (!globalThis.Bun.JSONL) {
       if (i >= 0) args[i] = normalizeOptions(args[i], false);
       else if (name === 'execFile' && typeof args[args.length - 1] === 'function') args.splice(args.length - 1, 0, normalizeOptions(undefined, false));
       else if (name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') args.push(normalizeOptions(undefined, false));
+      shellyDiagLog('child_process.' + name, { before: shellyDiagValue(before), after: { cmd: shellyDiagCommand(args[0]), argCount: Array.isArray(args[1]) ? args[1].length : null, options: shellyDiagValue(args[2] || args[1]) } });
       return original.apply(this, args);
     };
     try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}
@@ -366,9 +402,19 @@ if (!globalThis.Bun.JSONL) {
     const original = childProcess[name];
     if (typeof original !== 'function' || original.__shellyShellPatched) return;
     const patched = function(command, options, callback) {
-      if (typeof options === 'function') return original.call(this, command, normalizeOptions(undefined, true), options);
-      if (options === undefined) return original.call(this, command, normalizeOptions(undefined, true), callback);
-      return original.call(this, command, normalizeOptions(options, true), callback);
+      if (typeof options === 'function') {
+        const normalized = normalizeOptions(undefined, true);
+        shellyDiagLog('child_process.' + name, { command: '[redacted shell command]', options: shellyDiagValue(normalized) });
+        return original.call(this, command, normalized, options);
+      }
+      if (options === undefined) {
+        const normalized = normalizeOptions(undefined, true);
+        shellyDiagLog('child_process.' + name, { command: '[redacted shell command]', options: shellyDiagValue(normalized) });
+        return original.call(this, command, normalized, callback);
+      }
+      const normalized = normalizeOptions(options, true);
+      shellyDiagLog('child_process.' + name, { command: '[redacted shell command]', options: shellyDiagValue(normalized) });
+      return original.call(this, command, normalized, callback);
     };
     try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}
     childProcess[name] = patched;
@@ -454,6 +500,7 @@ if (!globalThis.Bun.JSONL) {
     };
     globalThis.Bun.spawn = function shellyBunSpawn(command, options) {
       const normalized = normalizeBunSpawnSpec(command, options);
+      shellyDiagLog('Bun.spawn', { cmd: shellyDiagCommand(normalized.cmd), argCount: normalized.args.length, options: shellyDiagValue(normalized.options), hasStdinPayload: normalized.stdinPayload != null, hasOnExit: Boolean(normalized.onExit) });
       const child = childProcess.spawn(normalized.cmd, normalized.args, normalized.options);
       if (normalized.stdinPayload != null && child.stdin) {
         try {
@@ -530,7 +577,11 @@ if (!globalThis.Bun.JSONL) {
       delete spawnOptions.stdout;
       delete spawnOptions.stderr;
       if (stdinPayload != null && spawnOptions.input === undefined) spawnOptions.input = stdinPayload;
-      const result = childProcess.spawnSync(String(shellyCommandValue(cmd)), args.map(String), normalizeOptions(spawnOptions, false));
+      const normalizedCmd = String(shellyCommandValue(cmd));
+      const normalizedArgs = args.map(String);
+      const normalizedOptions = normalizeOptions(spawnOptions, false);
+      shellyDiagLog('Bun.spawnSync', { cmd: shellyDiagCommand(normalizedCmd), argCount: normalizedArgs.length, options: shellyDiagValue(normalizedOptions), hasInput: normalizedOptions.input !== undefined });
+      const result = childProcess.spawnSync(normalizedCmd, normalizedArgs, normalizedOptions);
       const exitCode = result.status ?? (result.error ? 1 : 0);
       return {
         success: exitCode === 0,
@@ -1024,6 +1075,13 @@ function currentClaudeExtractedCli() {
 }
 
 function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
+  const preloadOptions = [
+    path.join(HOME, '.shelly-node-compat-preload.js'),
+    path.join(HOME, '.shelly-claude-node-preload.js'),
+  ]
+    .filter((p) => fs.existsSync(p))
+    .map((p) => `--require=${p}`)
+    .join(' ');
   return {
     HOME,
     PWD: HOME,
@@ -1043,7 +1101,7 @@ function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
     BUN_TMPDIR: CLAUDE_BUN_TMP,
     CLAUDE_TMPDIR: CLAUDE_TMP,
     CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
-    NODE_OPTIONS: '',
+    NODE_OPTIONS: preloadOptions,
     LD_PRELOAD: path.join(LIB, 'libexec_wrapper.so'),
     BASH_ENV: '',
     ENV: '',
