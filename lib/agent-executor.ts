@@ -359,21 +359,98 @@ PYEOF
   return 127
 }
 
+extract_archive_file() {
+  archive_file="$1"
+  dest_dir="$2"
+  err_file="$3"
+  mkdir -p "$dest_dir"
+  case "$archive_file" in
+    *.zip) extract_zip_file "$archive_file" "$dest_dir" "$err_file"; return $? ;;
+  esac
+  if command -v tar >/dev/null 2>&1; then
+    tar -xzf "$archive_file" -C "$dest_dir" > /dev/null 2> "$err_file"
+    return $?
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$archive_file" "$dest_dir" > /dev/null 2> "$err_file" <<'PYEOF'
+import sys
+import tarfile
+
+archive_file, dest_dir = sys.argv[1], sys.argv[2]
+with tarfile.open(archive_file, "r:*") as t:
+    t.extractall(dest_dir)
+PYEOF
+    return $?
+  fi
+  echo "tar or python3 is required to extract llama-server archive" > "$err_file"
+  return 127
+}
+
+resolve_llama_server_download_url() {
+  err_file="$TMP_DIR/llama-server-release-$AGENT_ID.err"
+  if [ -n "\${LLAMA_SERVER_DOWNLOAD_URL:-}" ]; then
+    printf '%s\\n' "$LLAMA_SERVER_DOWNLOAD_URL"
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "node is required to resolve latest llama-server release" > "$err_file"
+    return 127
+  fi
+  node - > "$TMP_DIR/llama-server-url-$AGENT_ID.txt" 2> "$err_file" <<'NODEEOF'
+const https = require('https');
+
+https.get('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest', {
+  headers: { 'User-Agent': 'Shelly-local-llm-installer/1' },
+}, (res) => {
+  let body = '';
+  res.setEncoding('utf8');
+  res.on('data', (chunk) => body += chunk);
+  res.on('end', () => {
+    if (!res.statusCode || res.statusCode >= 400) {
+      console.error('release lookup failed: HTTP ' + res.statusCode);
+      process.exit(1);
+      return;
+    }
+    const release = JSON.parse(body);
+    const assets = Array.isArray(release.assets) ? release.assets : [];
+    const asset = assets.find((a) => /bin-android-arm64\\.(tar\\.gz|tgz|zip)$/i.test(a.name || ''));
+    if (!asset || !asset.browser_download_url) {
+      console.error('release lookup failed: android arm64 llama.cpp asset not found');
+      process.exit(1);
+      return;
+    }
+    process.stdout.write(asset.browser_download_url);
+  });
+}).on('error', (err) => {
+  console.error(err && err.message ? err.message : String(err));
+  process.exit(1);
+});
+NODEEOF
+  if [ ! -s "$TMP_DIR/llama-server-url-$AGENT_ID.txt" ]; then
+    return 1
+  fi
+  cat "$TMP_DIR/llama-server-url-$AGENT_ID.txt"
+}
+
 install_llama_server_bin() {
   err_file="$TMP_DIR/llama-server-install-$AGENT_ID.err"
   mkdir -p "$HOME/.local/bin" "$TMP_DIR"
-  zip_file="$TMP_DIR/llama-server-android-arm64.zip"
+  archive_file="$TMP_DIR/llama-server-android-arm64.archive"
   extract_dir="$TMP_DIR/llama-server-android-arm64"
   rm -rf "$extract_dir"
   mkdir -p "$extract_dir"
 
-  url="\${LLAMA_SERVER_DOWNLOAD_URL:-https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-server-android-arm64.zip}"
-  if ! download_file_node "$url" "$zip_file" "$err_file"; then
+  url=$(resolve_llama_server_download_url || true)
+  if [ -z "$url" ]; then
+    echo "auto-install failed: could not resolve latest Android arm64 llama-server asset: $(head -c 300 "$TMP_DIR/llama-server-release-$AGENT_ID.err" 2>/dev/null | tr '\\n' ' ')"
+    return 1
+  fi
+  if ! download_file_node "$url" "$archive_file" "$err_file"; then
     echo "auto-install failed: could not download llama-server from $url: $(head -c 300 "$err_file" 2>/dev/null | tr '\\n' ' ')"
     return 1
   fi
-  if ! extract_zip_file "$zip_file" "$extract_dir" "$err_file"; then
-    echo "auto-install failed: could not extract llama-server zip: $(head -c 300 "$err_file" 2>/dev/null | tr '\\n' ' ')"
+  if ! extract_archive_file "$archive_file" "$extract_dir" "$err_file"; then
+    echo "auto-install failed: could not extract llama-server archive: $(head -c 300 "$err_file" 2>/dev/null | tr '\\n' ' ')"
     return 1
   fi
 
