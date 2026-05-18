@@ -182,6 +182,155 @@ const HEALTH_CHECK_CMD = [
   `wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
 ].join(' || ');
 
+const INSTALL_LLAMA_SERVER_CMD = `cat > /tmp/shelly-install-llama-server.js <<'NODE'
+const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const { spawnSync } = require('child_process');
+
+const home = process.env.HOME;
+const tmpDir = '/tmp/shelly-llama-server-install';
+const outDir = home + '/.local/bin';
+const installDir = home + '/.local/llama.cpp';
+const tmpInstallDir = home + '/.local/llama.cpp.tmp';
+const releaseApi = 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest';
+
+function requestText(urlText, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlText);
+    const client = url.protocol === 'https:' ? https : http;
+    const req = client.get(url, { headers: { 'User-Agent': 'Shelly-local-llm-installer/1' } }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
+        res.resume();
+        if (redirects <= 0) reject(new Error('too many redirects'));
+        else resolve(requestText(new URL(res.headers.location, url).toString(), redirects - 1));
+        return;
+      }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode >= 400) reject(new Error('HTTP ' + res.statusCode + ' from ' + urlText));
+        else resolve(body);
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => req.destroy(new Error('request timed out')));
+  });
+}
+
+function download(urlText, outFile, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlText);
+    const client = url.protocol === 'https:' ? https : http;
+    const req = client.get(url, { headers: { 'User-Agent': 'Shelly-local-llm-installer/1' } }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
+        res.resume();
+        if (redirects <= 0) reject(new Error('too many redirects'));
+        else resolve(download(new URL(res.headers.location, url).toString(), outFile, redirects - 1));
+        return;
+      }
+      if (!res.statusCode || res.statusCode >= 400) {
+        res.resume();
+        reject(new Error('download failed: HTTP ' + res.statusCode));
+        return;
+      }
+      const tmp = outFile + '.part';
+      const file = fs.createWriteStream(tmp);
+      res.pipe(file);
+      file.on('finish', () => file.close(() => {
+        fs.renameSync(tmp, outFile);
+        resolve();
+      }));
+      file.on('error', (err) => {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+        reject(err);
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(120000, () => req.destroy(new Error('download timed out')));
+  });
+}
+
+function run(cmd, args) {
+  const r = spawnSync(cmd, args, { stdio: 'inherit' });
+  if (r.status !== 0) throw new Error(cmd + ' failed with exit ' + r.status);
+}
+
+function findFile(dir, name) {
+  const stack = [dir];
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const path = cur + '/' + entry.name;
+      if (entry.isDirectory()) stack.push(path);
+      else if (entry.isFile() && entry.name === name) return path;
+    }
+  }
+  return null;
+}
+
+function collectSoDirs(dir) {
+  const dirs = new Set();
+  const stack = [dir];
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const path = cur + '/' + entry.name;
+      if (entry.isDirectory()) stack.push(path);
+      else if (entry.isFile() && /\\\\.so(\\\\.|$)/.test(entry.name)) dirs.add(cur);
+    }
+  }
+  return Array.from(dirs);
+}
+
+(async () => {
+  if (!home) throw new Error('HOME is not set');
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const release = JSON.parse(await requestText(releaseApi));
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const asset = assets.find((a) => /bin-android-arm64\\\\.(tar\\\\.gz|tgz|zip)$/i.test(a.name || ''));
+  if (!asset || !asset.browser_download_url) {
+    throw new Error('android arm64 llama.cpp asset not found in latest release');
+  }
+
+  const archive = tmpDir + '/' + asset.name;
+  console.log('Downloading ' + asset.name);
+  await download(asset.browser_download_url, archive);
+
+  const extractDir = tmpDir + '/extract';
+  fs.mkdirSync(extractDir, { recursive: true });
+  if (/\\\\.zip$/i.test(asset.name)) run('unzip', ['-o', archive, '-d', extractDir]);
+  else run('tar', ['-xzf', archive, '-C', extractDir]);
+
+  const binary = findFile(extractDir, 'llama-server');
+  if (!binary) throw new Error('llama-server binary not found inside archive');
+
+  fs.rmSync(tmpInstallDir, { recursive: true, force: true });
+  fs.mkdirSync(tmpInstallDir, { recursive: true });
+  fs.cpSync(extractDir, tmpInstallDir, { recursive: true });
+  const installedBinary = findFile(tmpInstallDir, 'llama-server');
+  fs.chmodSync(installedBinary, 0o755);
+  fs.rmSync(installDir, { recursive: true, force: true });
+  fs.renameSync(tmpInstallDir, installDir);
+
+  const finalBinary = findFile(installDir, 'llama-server');
+  const binaryDir = finalBinary.slice(0, finalBinary.lastIndexOf('/'));
+  const libPath = [...collectSoDirs(installDir), binaryDir, installDir, installDir + '/lib'].join(':');
+  const wrapper = '#!/bin/sh\\nexport LD_LIBRARY_PATH="' + libPath + ':\${LD_LIBRARY_PATH:-}"\\nexec "' + finalBinary + '" "$@"\\n';
+  fs.writeFileSync(outDir + '/llama-server', wrapper, { mode: 0o755 });
+  fs.chmodSync(outDir + '/llama-server', 0o755);
+  console.log('Installed: ' + outDir + '/llama-server');
+})().catch((err) => {
+  console.error(err && err.message ? err.message : String(err));
+  process.exit(1);
+});
+NODE
+node /tmp/shelly-install-llama-server.js`;
+
 /**
  * llama.cppのセットアップステップ一覧を生成する。
  * v2.7: npm or manual install（ビルド不要・数秒で完了）
@@ -191,8 +340,8 @@ export function buildSetupSteps(): LlamaCppSetupStep[] {
     {
       id: 'install_llamacpp',
       label: 'llama-cppをインストール',
-      command: 'wget -q https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-server-android-arm64.zip -O /tmp/llama-server.zip && unzip -o /tmp/llama-server.zip llama-server -d $HOME/.local/bin && chmod +x $HOME/.local/bin/llama-server',
-      estimatedSeconds: 30,
+      command: INSTALL_LLAMA_SERVER_CMD,
+      estimatedSeconds: 60,
       critical: true,
     },
     {

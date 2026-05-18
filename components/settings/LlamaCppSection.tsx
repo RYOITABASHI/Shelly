@@ -112,13 +112,13 @@ export function LlamaCppSection({
             for (const step of steps) {
               setSetupLog((prev) => [...prev, `[shelly] ${step.label}...`]);
               const result = await onRunCommand(step.command, step.label);
+              if (result.output) {
+                setSetupLog((prev) => [...prev, result.output as string]);
+              }
               if (!result.success && step.critical) {
                 setSetupLog((prev) => [...prev, `[ERROR] ${step.label}  failed. Setup aborted.`]);
                 setIsSettingUp(false);
                 return;
-              }
-              if (result.output) {
-                setSetupLog((prev) => [...prev, result.output as string]);
               }
             }
 
