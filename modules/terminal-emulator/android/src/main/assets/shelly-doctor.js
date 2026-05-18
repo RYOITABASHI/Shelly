@@ -117,6 +117,33 @@ function claudeExtractedVersion(script) {
   });
 }
 
+function claudeExtractedPatchInfo(script) {
+  if (!script || !exists(script)) {
+    return {
+      path: script || '',
+      exists: false,
+      bun_extracted_marker: false,
+      shell_patch: false,
+      spawn_shim: false,
+      spawn_sync_shim: false,
+      ok: false,
+    };
+  }
+  const raw = readText(script);
+  const info = {
+    path: script,
+    exists: true,
+    bun_extracted_marker: raw.includes('__SHELLY_CLAUDE_BUN_EXTRACTED__'),
+    shell_patch: raw.includes('shellyPatchClaudeChildProcessShell'),
+    spawn_shim: raw.includes('shellyBunSpawn'),
+    spawn_sync_shim: raw.includes('shellyBunSpawnSync'),
+  };
+  return {
+    ...info,
+    ok: info.bun_extracted_marker && info.shell_patch && info.spawn_shim && info.spawn_sync_shim,
+  };
+}
+
 function claudeFunctionalMarker() {
   const version = readText(path.join(RUNTIME_ROOT, 'claude-extracted', 'version')).trim();
   if (!version) return { version: null, marker: '', info: { exists: false } };
@@ -247,6 +274,7 @@ function collect() {
   const apkClaude = path.join(LIB, 'claude');
   const apkCodexExec = path.join(LIB, 'codex_exec');
   const apkCodexTui = path.join(LIB, 'codex_tui');
+  const selectedClaudeExtracted = exists(runtimeClaudeExtracted) ? runtimeClaudeExtracted : apkClaudeExtracted;
 
   const security = {
     download_credentials: [
@@ -273,12 +301,18 @@ function collect() {
       canary_suppression_tail: readText(path.join(HOME, '.shelly-runtime/.canary-suppressions')).trim().split('\n').filter(Boolean).slice(-5),
     },
     claude: {
+      launch_policy: {
+        default_route: 'extracted-node',
+        native_route: 'explicit opt-in via SHELLY_PREFER_NATIVE_CLAUDE=1 or SHELLY_FORCE_NATIVE_CLAUDE=1',
+        legacy_route: 'explicit via SHELLY_FORCE_LEGACY_CLAUDE=1 or fallback after extracted failure',
+      },
       runtime_current: readlink(path.join(HOME, '.shelly-runtime/claude/current')) || null,
       extracted_current: readlink(path.join(HOME, '.shelly-runtime/claude-extracted/current')) || null,
       extracted_binary: statInfo(runtimeClaudeExtracted),
       extracted_version: exists(runtimeClaudeExtracted)
         ? claudeExtractedVersion(runtimeClaudeExtracted)
         : claudeExtractedVersion(apkClaudeExtracted),
+      extracted_patch: claudeExtractedPatchInfo(selectedClaudeExtracted),
       functional_canary: claudeFunctionalMarker(),
       runtime_binary: statInfo(runtimeClaude),
       runtime_version: claudeVersion(runtimeClaude),
@@ -324,6 +358,8 @@ function printHuman(d) {
   process.stdout.write('\n');
 
   line('claude extracted', `${mark(d.claude.extracted_version.ok)} ${d.claude.extracted_version.stdout || d.claude.extracted_version.stderr}`);
+  line('claude route', d.claude.launch_policy.default_route);
+  line('claude patch', `${mark(d.claude.extracted_patch.ok)} marker=${d.claude.extracted_patch.bun_extracted_marker} shell=${d.claude.extracted_patch.shell_patch} spawn=${d.claude.extracted_patch.spawn_shim} sync=${d.claude.extracted_patch.spawn_sync_shim}`);
   line('claude canary', d.claude.functional_canary.info.exists
     ? `${d.claude.functional_canary.complete ? 'OK' : 'WARN partial'} ${d.claude.functional_canary.version} ${d.claude.functional_canary.content || ''}`
     : `WARN missing${d.claude.functional_canary.version ? ` for ${d.claude.functional_canary.version}` : ''}`);

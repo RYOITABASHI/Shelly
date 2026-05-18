@@ -1041,7 +1041,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 155: Align the extracted-runtime shell smoke and Claude Node launch env
     //      with the real Bash-tool path, and complete Bun.spawn object-form
     //      onExit/signal handling for Claude tool subprocesses.
-    private const val BASHRC_VERSION = 156
+    // 156: Keep the generated bashrc route selection aligned with the
+    //      updater-managed extracted Claude runtime after 2.1.143.
+    // 157: Add an explicit Claude tier diagnostic command so real-device
+    //      testing can prove default/extracted/native/legacy routing without
+    //      adding any noise to normal `claude` startup.
+    private const val BASHRC_VERSION = 157
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -3273,7 +3278,43 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("shelly-doctor() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-doctor.js\" \"\$@\"; }")
             sb.appendLine("shelly-runtime-canary() { SHELLY_UPDATER_FUNCTIONAL_CHECK=1 SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" claude --force; }")
-            sb.appendLine("export -f shelly-update-clis shelly-doctor shelly-runtime-canary")
+            sb.appendLine("shelly-claude-diagnose() {")
+            sb.appendLine("  local __runtime_extracted=\"\$HOME/.shelly-runtime/claude-extracted/current/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
+            sb.appendLine("  local __apk_extracted=\"$libDir/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
+            sb.appendLine("  local __runtime_native=\"\$HOME/.shelly-runtime/claude/current/claude\"")
+            sb.appendLine("  local __marker=\"\"")
+            sb.appendLine("  local __selected_extracted=\"\"")
+            sb.appendLine("  printf 'bashrc=%s\\n' \"\$(cat \"\$HOME/.bashrc_version\" 2>/dev/null || echo missing)\"")
+            sb.appendLine("  if [ -f \"\$__runtime_extracted\" ]; then")
+            sb.appendLine("    __marker=\"runtime-extracted\"")
+            sb.appendLine("    __selected_extracted=\"\$__runtime_extracted\"")
+            sb.appendLine("    printf 'extracted=%s\\n' \"\$__runtime_extracted\"")
+            sb.appendLine("  elif [ -f \"\$__apk_extracted\" ]; then")
+            sb.appendLine("    __marker=\"apk-extracted\"")
+            sb.appendLine("    __selected_extracted=\"\$__apk_extracted\"")
+            sb.appendLine("    printf 'extracted=%s\\n' \"\$__apk_extracted\"")
+            sb.appendLine("  else")
+            sb.appendLine("    printf 'extracted=missing\\n'")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ -n \"\$__marker\" ]; then")
+            sb.appendLine("    if grep -q '__SHELLY_CLAUDE_BUN_EXTRACTED__' \"\$__selected_extracted\" 2>/dev/null && grep -q 'shellyPatchClaudeChildProcessShell' \"\$__selected_extracted\" 2>/dev/null; then")
+            sb.appendLine("      printf 'extracted_patch=OK %s\\n' \"\$__marker\"")
+            sb.appendLine("    else")
+            sb.appendLine("      printf 'extracted_patch=WARN missing-marker %s\\n' \"\$__marker\"")
+            sb.appendLine("    fi")
+            sb.appendLine("  fi")
+            sb.appendLine("  [ -x \"\$__runtime_native\" ] && printf 'native_runtime=%s\\n' \"\$__runtime_native\" || printf 'native_runtime=missing\\n'")
+            sb.appendLine("  printf '\\n[default]\\n'")
+            sb.appendLine("  SHELLY_VERBOSE_CLI_TIER=1 SHELLY_DISABLE_NATIVE_CLAUDE=1 claude --version")
+            sb.appendLine("  printf '\\n[legacy]\\n'")
+            sb.appendLine("  SHELLY_VERBOSE_CLI_TIER=1 SHELLY_FORCE_LEGACY_CLAUDE=1 claude --version")
+            sb.appendLine("  printf '\\n[native opt-in]\\n'")
+            sb.appendLine("  SHELLY_VERBOSE_CLI_TIER=1 SHELLY_FORCE_NATIVE_CLAUDE=1 claude --version")
+            sb.appendLine("  printf '\\n[doctor]\\n'")
+            sb.appendLine("  shelly-doctor | sed -n '/^claude extracted/p;/^claude canary/p;/^claude musl runtime/p;/^claude apk/p'")
+            sb.appendLine("  printf '\\nRun shelly-runtime-canary for the authenticated Bash-tool gate.\\n'")
+            sb.appendLine("}")
+            sb.appendLine("export -f shelly-update-clis shelly-doctor shelly-runtime-canary shelly-claude-diagnose")
             sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
             sb.appendLine("__shelly_runtime_update_interval=86400")
             sb.appendLine("__shelly_runtime_quick_marker=\"\$HOME/.shelly-runtime/.last_quick_check\"")
