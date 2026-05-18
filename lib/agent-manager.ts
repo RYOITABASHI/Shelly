@@ -192,6 +192,10 @@ export async function runAgentNow(
   agentId: string,
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
+  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (agent) {
+    await materializeAgent(agent, runCommand, false);
+  }
   await TerminalEmulator.runAgent(agentId);
   await syncAgentRunLogsFromDisk(runCommand, agentId);
 }
