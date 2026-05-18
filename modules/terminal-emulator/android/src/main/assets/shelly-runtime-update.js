@@ -422,7 +422,9 @@ if (!globalThis.Bun.JSONL) {
       const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;
       const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];
       const spawnOptions = Object.assign({}, options || {});
-      const onExit = typeof spawnOptions.onExit === 'function' ? spawnOptions.onExit : null;
+      const onExit = typeof spawnOptions.onExit === 'function'
+        ? spawnOptions.onExit
+        : (spec && typeof spec.onExit === 'function' ? spec.onExit : null);
       delete spawnOptions.onExit;
       let stdinPayload = null;
       if (spec) {
@@ -462,7 +464,7 @@ if (!globalThis.Bun.JSONL) {
         }
       }
       const exited = new Promise(function(resolve) {
-        child.on('exit', function(code) { resolve(code ?? 0); });
+        child.on('exit', function(code, signal) { resolve(code ?? (signal ? 1 : 0)); });
         child.on('error', function() { resolve(1); });
       });
       const subprocess = {
@@ -480,7 +482,7 @@ if (!globalThis.Bun.JSONL) {
       };
       if (normalized.onExit) {
         child.on('exit', function(code, signal) {
-          normalized.onExit(subprocess, code ?? 0, signal || null, null);
+          normalized.onExit(subprocess, code ?? (signal ? 1 : 0), signal || null, null);
         });
         child.on('error', function(error) {
           normalized.onExit(subprocess, 1, null, error);
@@ -1037,9 +1039,10 @@ function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
 }
 
 function runShellyShellSmoke() {
+  const homeBash = path.join(HOME, 'bin', 'bash');
   return runLinker([
-    path.join(LIB, 'shelly_shell'),
-    '-c',
+    homeBash,
+    '-lc',
     'printf SHELLY_SHELL_CANARY_OK; pwd >/dev/null',
   ], {
     HOME,
@@ -1047,14 +1050,16 @@ function runShellyShellSmoke() {
     USER: 'shelly',
     LOGNAME: 'shelly',
     SHELLY_LIB_DIR: LIB,
-    SHELL: path.join(LIB, 'shelly_shell'),
-    BASH: path.join(LIB, 'shelly_shell'),
+    SHELL: homeBash,
+    BASH: homeBash,
     PATH: `${path.join(HOME, 'bin')}:${LIB}:/system/bin:/vendor/bin`,
     LD_LIBRARY_PATH: LIB,
     LD_PRELOAD: path.join(LIB, 'libexec_wrapper.so'),
     ANDROID_ROOT: '/system',
     ANDROID_DATA: '/data',
     TMPDIR: GENERIC_TMP,
+    BASH_ENV: '',
+    ENV: '',
   });
 }
 
@@ -1126,6 +1131,17 @@ function runNodeScript(script, args = [], extraEnv = {}, timeout = 30000) {
     encoding: 'utf8',
     timeout,
   });
+}
+
+function resultSummary(result) {
+  if (!result) return 'result=<null>';
+  const parts = [`status=${result.status}`];
+  if (result.signal) parts.push(`signal=${result.signal}`);
+  if (result.error) {
+    parts.push(`error=${result.error.code || result.error.name || 'Error'}`);
+    if (result.error.message) parts.push(`message=${result.error.message}`);
+  }
+  return parts.join(' ');
 }
 
 function runClaudeNative(binary, args = [], extraEnv = {}) {
@@ -1376,7 +1392,7 @@ function claudeCanaryResult(name, result, expectedRe) {
     return {
       ok: false,
       category,
-      reason: `${name} status=${result.status} signal=${result.signal || ''}: ${out.slice(0, 240)}`,
+      reason: `${name} ${resultSummary(result)}: ${out.slice(0, 240)}`,
     };
   }
   if (expectedRe && !expectedRe.test(out)) {
@@ -1649,8 +1665,8 @@ async function tryClaudeVersion(pkgMeta, version) {
       const shellCombined = `${shellSmoke.stdout || ''}${shellSmoke.stderr || ''}`;
       if (shellSmoke.status !== 0 || !shellCombined.includes('SHELLY_SHELL_CANARY_OK')) {
         const category = classifyFailure(shellSmoke);
-        recordFailedVersion('claude', version, category, `shelly_shell smoke failed: ${shellCombined.slice(0, 200)}`);
-        throw new Error(`shelly_shell smoke status=${shellSmoke.status}: ${shellCombined.slice(0, 200)}`);
+        recordFailedVersion('claude', version, category, `shelly_shell smoke failed: ${resultSummary(shellSmoke)} ${shellCombined.slice(0, 200)}`);
+        throw new Error(`shelly_shell smoke ${resultSummary(shellSmoke)}: ${shellCombined.slice(0, 200)}`);
       }
       info(`[claude] try ${version} — shelly_shell smoke OK`);
 

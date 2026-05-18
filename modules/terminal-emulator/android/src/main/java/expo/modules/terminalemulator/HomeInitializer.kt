@@ -1035,7 +1035,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      web streams with text/json helpers, and add Bun.spawnSync.
     //      Keep Claude smoke env SHELL/BASH on $HOME/bin/bash because the CLI
     //      validates the shell basename before using the Bash tool.
-    private const val BASHRC_VERSION = 153
+    // 154: Keep shelly_shell's repaired child environment on $HOME/bin/bash
+    //      instead of $SHELLY_LIB_DIR/shelly_shell so Claude's nested Bash
+    //      tool subprocesses keep seeing a bash-named shell.
+    // 155: Align the extracted-runtime shell smoke and Claude Node launch env
+    //      with the real Bash-tool path, and complete Bun.spawn object-form
+    //      onExit/signal handling for Claude tool subprocesses.
+    private const val BASHRC_VERSION = 155
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2277,7 +2283,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;")
             sb.appendLine("      const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];")
             sb.appendLine("      const spawnOptions = Object.assign({}, options || {});")
-            sb.appendLine("      const onExit = typeof spawnOptions.onExit === 'function' ? spawnOptions.onExit : null;")
+            sb.appendLine("      const onExit = typeof spawnOptions.onExit === 'function'")
+            sb.appendLine("        ? spawnOptions.onExit")
+            sb.appendLine("        : (spec && typeof spec.onExit === 'function' ? spec.onExit : null);")
             sb.appendLine("      delete spawnOptions.onExit;")
             sb.appendLine("      let stdinPayload = null;")
             sb.appendLine("      if (spec) {")
@@ -2317,7 +2325,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        }")
             sb.appendLine("      }")
             sb.appendLine("      const exited = new Promise(function(resolve) {")
-            sb.appendLine("        child.on('exit', function(code) { resolve(code ?? 0); });")
+            sb.appendLine("        child.on('exit', function(code, signal) { resolve(code ?? (signal ? 1 : 0)); });")
             sb.appendLine("        child.on('error', function() { resolve(1); });")
             sb.appendLine("      });")
             sb.appendLine("      const subprocess = {")
@@ -2335,7 +2343,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      };")
             sb.appendLine("      if (normalized.onExit) {")
             sb.appendLine("        child.on('exit', function(code, signal) {")
-            sb.appendLine("          normalized.onExit(subprocess, code ?? 0, signal || null, null);")
+            sb.appendLine("          normalized.onExit(subprocess, code ?? (signal ? 1 : 0), signal || null, null);")
             sb.appendLine("        });")
             sb.appendLine("        child.on('error', function(error) {")
             sb.appendLine("          normalized.onExit(subprocess, 1, null, error);")
@@ -2898,7 +2906,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" \"\$__bun_tmp\"")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
+            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 SHELL=\"\$HOME/bin/bash\" BASH=\"\$HOME/bin/bash\" SHELLY_LIB_DIR=\"$libDir\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" LD_LIBRARY_PATH=\"$libDir\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
             sb.appendLine("    local __extracted_rc=\$?")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__extracted_rc\" in")
@@ -2939,7 +2947,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" \"\$__bun_tmp\" 2>/dev/null")
             sb.appendLine("  __shelly_paste_tui_begin")
-            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= _run $libDir/node \"\$__cli_js\" \"\$@\"")
+            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 SHELL=\"\$HOME/bin/bash\" BASH=\"\$HOME/bin/bash\" SHELLY_LIB_DIR=\"$libDir\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" LD_LIBRARY_PATH=\"$libDir\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= _run $libDir/node \"\$__cli_js\" \"\$@\"")
             sb.appendLine("  local __legacy_rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  return \"\$__legacy_rc\"")

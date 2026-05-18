@@ -49,10 +49,13 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     int need_shell = 1;
     int need_bash = 1;
     char home_bin[PATH_MAX + 8];
+    char home_bash[PATH_MAX + 16];
     if (home && home[0]) {
         snprintf(home_bin, sizeof(home_bin), "%s/bin", home);
+        snprintf(home_bash, sizeof(home_bash), "%s/bin/bash", home);
     } else {
         home_bin[0] = '\0';
+        home_bash[0] = '\0';
     }
     for (; envp && envp[count]; count++) {
         if (strncmp(envp[count], "LD_PRELOAD=", 11) == 0) {
@@ -62,8 +65,8 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
         }
         if (strncmp(envp[count], "LD_LIBRARY_PATH=", 16) == 0 && envp[count][16]) need_ld_library_path = 0;
         if (strncmp(envp[count], "SHELLY_LIB_DIR=", 15) == 0 && strcmp(envp[count] + 15, lib_dir) == 0) need_shelly_lib_dir = 0;
-        if (strncmp(envp[count], "SHELL=", 6) == 0 && strstr(envp[count] + 6, "shelly_shell") != NULL) need_shell = 0;
-        if (strncmp(envp[count], "BASH=", 5) == 0 && strstr(envp[count] + 5, "shelly_shell") != NULL) need_bash = 0;
+        if (strncmp(envp[count], "SHELL=", 6) == 0 && home_bash[0] && strcmp(envp[count] + 6, home_bash) == 0) need_shell = 0;
+        if (strncmp(envp[count], "BASH=", 5) == 0 && home_bash[0] && strcmp(envp[count] + 5, home_bash) == 0) need_bash = 0;
         if (strncmp(envp[count], "PATH=", 5) == 0 && envp[count][5]) {
             int has_system_bin = strstr(envp[count] + 5, "/system/bin") != NULL;
             int has_lib_dir = strstr(envp[count] + 5, lib_dir) != NULL;
@@ -79,9 +82,17 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     char shelly_lib_dir[PATH_MAX + 32];
     snprintf(shelly_lib_dir, sizeof(shelly_lib_dir), "SHELLY_LIB_DIR=%s", lib_dir);
     char shell_env[PATH_MAX + 32];
-    snprintf(shell_env, sizeof(shell_env), "SHELL=%s/shelly_shell", lib_dir);
+    if (home && home[0]) {
+        snprintf(shell_env, sizeof(shell_env), "SHELL=%s/bin/bash", home);
+    } else {
+        snprintf(shell_env, sizeof(shell_env), "SHELL=%s/shelly_shell", lib_dir);
+    }
     char bash_env[PATH_MAX + 32];
-    snprintf(bash_env, sizeof(bash_env), "BASH=%s/shelly_shell", lib_dir);
+    if (home && home[0]) {
+        snprintf(bash_env, sizeof(bash_env), "BASH=%s/bin/bash", home);
+    } else {
+        snprintf(bash_env, sizeof(bash_env), "BASH=%s/shelly_shell", lib_dir);
+    }
     char path_env[(PATH_MAX * 2) + 64];
     if (home && home[0]) {
         snprintf(path_env, sizeof(path_env), "PATH=%s/bin:%s:/system/bin:/vendor/bin", home, lib_dir);
