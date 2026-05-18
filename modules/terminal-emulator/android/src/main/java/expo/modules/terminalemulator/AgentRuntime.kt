@@ -23,9 +23,11 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+    private const val CURRENT_SCRIPT_VERSION = 3
 
     fun runAgent(context: Context, agentId: String): AgentRunResult {
         val appContext = context.applicationContext
+        HomeInitializer.initialize(appContext)
         val libDir = LibExtractor.extractAll(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
         val bashPath = LibExtractor.getBashPath(appContext)
@@ -37,6 +39,13 @@ object AgentRuntime {
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
             return AgentRunResult(agentId, 127, "", message)
+        }
+        val scriptVersion = readScriptVersion(script)
+        if (scriptVersion < CURRENT_SCRIPT_VERSION) {
+            val message = "stale script: $scriptPath version=$scriptVersion expected=$CURRENT_SCRIPT_VERSION. Open Shelly or run the agent manually once to regenerate it."
+            Log.e(TAG, message)
+            writeReceiverLog(homeDir, agentId, "error", message)
+            return AgentRunResult(agentId, 126, "", message)
         }
 
         val libPath = libDir.absolutePath
@@ -77,6 +86,24 @@ object AgentRuntime {
         }
 
         return AgentRunResult(agentId, exitCode, stdout, stderr)
+    }
+
+    private fun readScriptVersion(script: File): Int {
+        return try {
+            script.useLines { lines ->
+                val versionRegex = Regex("""^SHELLY_AGENT_SCRIPT_VERSION=(\d+)\s*$""")
+                for (line in lines.take(20)) {
+                    val version = versionRegex.find(line.trim())
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+                    if (version != null) return@useLines version
+                }
+                0
+            } ?: 0
+        } catch (_: Exception) {
+            0
+        }
     }
 
     private fun writeReceiverLog(homeDir: File, agentId: String, status: String, message: String) {
