@@ -274,7 +274,20 @@ function collect() {
   const apkClaude = path.join(LIB, 'claude');
   const apkCodexExec = path.join(LIB, 'codex_exec');
   const apkCodexTui = path.join(LIB, 'codex_tui');
-  const selectedClaudeExtracted = exists(runtimeClaudeExtracted) ? runtimeClaudeExtracted : apkClaudeExtracted;
+  const runtimeClaudeExtractedVersion = claudeExtractedVersion(runtimeClaudeExtracted);
+  const apkClaudeExtractedVersion = claudeExtractedVersion(apkClaudeExtracted);
+  const runtimeClaudeExtractedPatch = claudeExtractedPatchInfo(runtimeClaudeExtracted);
+  const apkClaudeExtractedPatch = claudeExtractedPatchInfo(apkClaudeExtracted);
+  const expectedClaudeExtractedVersion = readText(path.join(RUNTIME_ROOT, 'claude-extracted', 'version')).trim();
+  const runtimeClaudeExtractedUsable = Boolean(
+    expectedClaudeExtractedVersion
+    && runtimeClaudeExtractedVersion.ok
+    && runtimeClaudeExtractedVersion.stdout.includes(expectedClaudeExtractedVersion)
+    && runtimeClaudeExtractedPatch.ok,
+  );
+  const selectedClaudeExtractedPatch = runtimeClaudeExtractedUsable
+    ? runtimeClaudeExtractedPatch
+    : apkClaudeExtractedPatch;
 
   const security = {
     download_credentials: [
@@ -309,10 +322,15 @@ function collect() {
       runtime_current: readlink(path.join(HOME, '.shelly-runtime/claude/current')) || null,
       extracted_current: readlink(path.join(HOME, '.shelly-runtime/claude-extracted/current')) || null,
       extracted_binary: statInfo(runtimeClaudeExtracted),
-      extracted_version: exists(runtimeClaudeExtracted)
-        ? claudeExtractedVersion(runtimeClaudeExtracted)
-        : claudeExtractedVersion(apkClaudeExtracted),
-      extracted_patch: claudeExtractedPatchInfo(selectedClaudeExtracted),
+      extracted_version: runtimeClaudeExtractedUsable
+        ? runtimeClaudeExtractedVersion
+        : apkClaudeExtractedVersion,
+      extracted_patch: {
+        selected: runtimeClaudeExtractedUsable ? 'runtime-extracted' : 'apk-extracted',
+        runtime_usable: runtimeClaudeExtractedUsable,
+        expected_runtime_version: expectedClaudeExtractedVersion || null,
+        ...selectedClaudeExtractedPatch,
+      },
       functional_canary: claudeFunctionalMarker(),
       runtime_binary: statInfo(runtimeClaude),
       runtime_version: claudeVersion(runtimeClaude),
@@ -359,7 +377,7 @@ function printHuman(d) {
 
   line('claude extracted', `${mark(d.claude.extracted_version.ok)} ${d.claude.extracted_version.stdout || d.claude.extracted_version.stderr}`);
   line('claude route', d.claude.launch_policy.default_route);
-  line('claude patch', `${mark(d.claude.extracted_patch.ok)} marker=${d.claude.extracted_patch.bun_extracted_marker} shell=${d.claude.extracted_patch.shell_patch} spawn=${d.claude.extracted_patch.spawn_shim} sync=${d.claude.extracted_patch.spawn_sync_shim}`);
+  line('claude patch', `${mark(d.claude.extracted_patch.ok)} ${d.claude.extracted_patch.selected} runtime_usable=${d.claude.extracted_patch.runtime_usable} marker=${d.claude.extracted_patch.bun_extracted_marker} shell=${d.claude.extracted_patch.shell_patch} spawn=${d.claude.extracted_patch.spawn_shim} sync=${d.claude.extracted_patch.spawn_sync_shim}`);
   line('claude canary', d.claude.functional_canary.info.exists
     ? `${d.claude.functional_canary.complete ? 'OK' : 'WARN partial'} ${d.claude.functional_canary.version} ${d.claude.functional_canary.content || ''}`
     : `WARN missing${d.claude.functional_canary.version ? ` for ${d.claude.functional_canary.version}` : ''}`);
