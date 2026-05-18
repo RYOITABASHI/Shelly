@@ -81,7 +81,7 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
     return () => clearInterval(id);
   }, [visible, load]);
 
-  const sessions = useMemo(() => info?.sessions ?? [], [info]);
+  const sessions = useMemo(() => dedupeSessions(info?.sessions ?? []), [info]);
   const latest = sessions[0];
 
   const copyHooks = useCallback(async () => {
@@ -131,7 +131,7 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
               {sessions.length === 0 ? (
                 <Text style={styles.empty}>Open Claude Code or Codex, or send a hook event.</Text>
               ) : (
-                sessions.map((session) => <SessionCard key={session.sessionId || `${session.source}-${session.lastEventAt}`} session={session} />)
+                sessions.map((session) => <SessionCard key={sessionKey(session)} session={session} />)
               )}
             </Section>
 
@@ -208,6 +208,24 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
   );
 }
 
+function dedupeSessions(sessions: ScouterSession[]): ScouterSession[] {
+  const byKey = new Map<string, ScouterSession>();
+  for (const session of sessions) {
+    const key = sessionKey(session);
+    const previous = byKey.get(key);
+    if (!previous || (session.lastEventAt || 0) >= (previous.lastEventAt || 0)) {
+      byKey.set(key, session);
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => (b.lastEventAt || 0) - (a.lastEventAt || 0));
+}
+
+function sessionKey(session: ScouterSession): string {
+  const id = session.sessionId?.trim();
+  if (id) return `${session.source || 'SHELLY'}:${id}`;
+  return `${session.source || 'SHELLY'}:${projectName(session.projectName)}:${session.sessionStartAt || 0}`;
+}
+
 function sourceName(source?: string): string {
   if (source === 'CLAUDE_CODE') return 'Claude Code';
   if (source === 'CODEX') return 'Codex';
@@ -271,12 +289,20 @@ function summarizeSessionNote(error: string, isErrorStatus: boolean): { text: st
   if (looksLikeJson(value)) {
     const parsed = tryParseJson(value);
     const text = findJsonText(parsed);
-    if (text) return { text: `Payload: ${shorten(text, 90)}`, tone: isErrorStatus ? 'error' : 'info' };
-    const message = findJsonString(parsed, ['message', 'error', 'stop_reason', 'type']);
-    if (message) return { text: `Payload: ${shorten(message, 90)}`, tone: isErrorStatus ? 'error' : 'info' };
-    return { text: 'Payload: JSON response', tone: isErrorStatus ? 'error' : 'info' };
+    if (text) return { text: `Message: ${shorten(text, 90)}`, tone: isErrorStatus ? 'error' : 'info' };
+    const errorMessage = findJsonString(parsed, ['error', 'errorMessage']);
+    if (errorMessage) return { text: `Error: ${shorten(errorMessage, 90)}`, tone: 'error' };
+    const stopReason = findJsonString(parsed, ['stop_reason', 'subtype', 'type']);
+    if (stopReason && !isLowValuePayloadLabel(stopReason)) {
+      return { text: `Result: ${shorten(stopReason, 90)}`, tone: isErrorStatus ? 'error' : 'info' };
+    }
+    return { text: isErrorStatus ? 'Error: JSON response' : 'Result: JSON response', tone: isErrorStatus ? 'error' : 'info' };
   }
   return { text: `Error: ${shorten(value.replace(/\s+/g, ' '), 120)}`, tone: 'error' };
+}
+
+function isLowValuePayloadLabel(value: string): boolean {
+  return /^(ok|success|true|false|message|text|assistant|user)$/i.test(value.trim());
 }
 
 function looksLikeJson(value: string): boolean {

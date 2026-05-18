@@ -4,17 +4,6 @@
     <shape>
       <solid android:color="#B3000000" />
       <corners android:radius="8dp" />
-    </shape>
-  </item>
-
-  <item
-    android:left="3dp"
-    android:top="3dp"
-    android:right="3dp"
-    android:bottom="3dp">
-    <shape>
-      <solid android:color="#00000000" />
-      <corners android:radius="6dp" />
       <stroke android:width="2dp" android:color="#48E048" />
     </shape>
   </item>

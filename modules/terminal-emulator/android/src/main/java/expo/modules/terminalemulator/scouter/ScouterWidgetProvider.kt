@@ -60,6 +60,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 views.setTextViewText(R.id.scouter_source_badge, "SH")
                 views.setTextViewText(R.id.scouter_detail, "Waiting for Claude Code or Codex")
                 views.setTextViewText(R.id.scouter_metrics, "Open Shelly to start observing")
+                views.setTextViewText(R.id.scouter_usage, "No local session snapshot yet")
                 views.setInt(R.id.scouter_status_dot, "setColorFilter", Color.GRAY)
                 return views
             }
@@ -70,19 +71,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val title = "$sourceName · $project$branch"
             val stale = isStale(snapshot)
             val detail = if (stale) "Stale · ${displayStatus(snapshot, project)}" else displayStatus(snapshot, project)
-            val metrics = buildString {
-                snapshot.modelName?.takeIf { it.isNotBlank() }?.let { append(shortModelName(it)).append(" · ") }
-                if (snapshot.totalCostUsd > 0.0) append("$").append(String.format(Locale.US, "%.2f", snapshot.totalCostUsd)).append(" · ")
-                if (snapshot.tokensUsed > 0L) append(formatTokens(snapshot.tokensUsed)).append(" tokens · ")
-                if (snapshot.cacheReadInputTokens > 0L) append(formatTokens(snapshot.cacheReadInputTokens)).append(" cached · ")
-                snapshot.contextPercentRemaining?.let { append(String.format(Locale.US, "%.0f%% context · ", it)) }
-                append("Last event ").append(formatTime(snapshot.lastEventAt))
-            }
+            val metrics = usageSummary(snapshot)
+            val timing = listOfNotNull(
+                "Last ${formatTime(snapshot.lastEventAt)}",
+                durationSummary(snapshot),
+                snapshot.lastMessage?.takeIf { it.isNotBlank() }?.let { "Msg ${shorten(it.redactForScouter(), 34)}" }
+            ).joinToString(" · ")
 
             views.setTextViewText(R.id.scouter_title, title)
             views.setTextViewText(R.id.scouter_source_badge, snapshot.source.badge())
             views.setTextViewText(R.id.scouter_detail, detail.redactForScouter())
             views.setTextViewText(R.id.scouter_metrics, metrics)
+            views.setTextViewText(R.id.scouter_usage, timing)
             views.setInt(R.id.scouter_status_dot, "setColorFilter", colorForStatus(snapshot.currentStatus, stale))
             return views
         }
@@ -146,6 +146,40 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun formatTokens(tokens: Long): String {
             return if (tokens >= 1000) String.format(Locale.US, "%.1fK", tokens / 1000.0) else tokens.toString()
+        }
+
+        private fun usageSummary(snapshot: SessionSnapshot): String {
+            val parts = mutableListOf<String>()
+            snapshot.modelName?.takeIf { it.isNotBlank() }?.let { parts += shortModelName(it) }
+            if (snapshot.tokensUsed > 0L) parts += "${formatTokens(snapshot.tokensUsed)} tok"
+            if (snapshot.inputTokens > 0L || snapshot.outputTokens > 0L) {
+                parts += "in ${formatTokens(snapshot.inputTokens)} / out ${formatTokens(snapshot.outputTokens)}"
+            }
+            val cacheTokens = snapshot.cacheCreationInputTokens + snapshot.cacheReadInputTokens
+            if (cacheTokens > 0L) parts += "cache ${formatTokens(cacheTokens)}"
+            if (snapshot.totalCostUsd > 0.0) parts += "$" + String.format(Locale.US, "%.2f", snapshot.totalCostUsd)
+            snapshot.contextPercentRemaining?.let { parts += String.format(Locale.US, "%.0f%% ctx", it) }
+            return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ") ?: "Session ${shortSessionId(snapshot.sessionId)}"
+        }
+
+        private fun durationSummary(snapshot: SessionSnapshot): String? {
+            val durationMs = snapshot.lastEventAt - snapshot.sessionStartAt
+            if (durationMs < 0L) return null
+            val minutes = durationMs / 60_000L
+            return when {
+                minutes < 1L -> "<1m"
+                minutes < 60L -> "${minutes}m"
+                else -> "${minutes / 60L}h ${minutes % 60L}m"
+            }
+        }
+
+        private fun shortSessionId(sessionId: String): String {
+            return if (sessionId.length > 10) sessionId.take(8) else sessionId
+        }
+
+        private fun shorten(value: String, max: Int): String {
+            val cleaned = value.replace(Regex("\\s+"), " ").trim()
+            return if (cleaned.length > max) cleaned.take(max - 1) + "…" else cleaned
         }
 
         private fun shortModelName(model: String): String {
