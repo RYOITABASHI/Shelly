@@ -1046,7 +1046,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 157: Add an explicit Claude tier diagnostic command so real-device
     //      testing can prove default/extracted/native/legacy routing without
     //      adding any noise to normal `claude` startup.
-    private const val BASHRC_VERSION = 157
+    // 158: Stop seeding Claude Code project allowedTools as an empty array.
+    //      Claude Code 2.1.143 can treat an empty project allowlist as a hard
+    //      denial in interactive TUI sessions, so Bash(echo test) failed
+    //      before the subprocess layer was reached. Remove that empty
+    //      allowlist; broad Bash auto-allow remains explicit opt-in.
+    private const val BASHRC_VERSION = 158
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2509,6 +2514,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("const homeArg = process.argv[2];")
             sb.appendLine("if (!homeArg) process.exit(0);")
             sb.appendLine("const verbose = Boolean(process.env.SHELLY_VERBOSE_CLI_TIER);")
+            sb.appendLine("const autoAllowBash = process.env.SHELLY_CLAUDE_AUTO_ALLOW_BASH === '1';")
             sb.appendLine("const literalHome = path.resolve(homeArg);")
             sb.appendLine("let realHome = literalHome;")
             sb.appendLine("try { realHome = fs.realpathSync(literalHome); } catch (_) {}")
@@ -2531,7 +2537,6 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  process.exit(0);")
             sb.appendLine("}")
             sb.appendLine("const baseProject = {")
-            sb.appendLine("  allowedTools: [],")
             sb.appendLine("  mcpContextUris: [],")
             sb.appendLine("  mcpServers: {},")
             sb.appendLine("  enabledMcpjsonServers: [],")
@@ -2545,7 +2550,38 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("};")
             sb.appendLine("cfg.projects = { ...(cfg.projects || {}) };")
             sb.appendLine("for (const key of projectKeys) {")
-            sb.appendLine("  cfg.projects[key] = { ...baseProject, ...(cfg.projects[key] || {}), hasTrustDialogAccepted: true, hasTrustDialogHooksAccepted: true, hasCompletedProjectOnboarding: true };")
+            sb.appendLine("  const existingProject = cfg.projects[key] || {};")
+            sb.appendLine("  const nextProject = { ...baseProject, ...existingProject, hasTrustDialogAccepted: true, hasTrustDialogHooksAccepted: true, hasCompletedProjectOnboarding: true };")
+            sb.appendLine("  if (autoAllowBash) {")
+            sb.appendLine("    const tools = Array.isArray(nextProject.allowedTools) ? nextProject.allowedTools : [];")
+            sb.appendLine("    nextProject.allowedTools = Array.from(new Set([...tools, 'Bash']));")
+            sb.appendLine("  } else if (Array.isArray(nextProject.allowedTools) && nextProject.allowedTools.length === 0) {")
+            sb.appendLine("    delete nextProject.allowedTools;")
+            sb.appendLine("  }")
+            sb.appendLine("  cfg.projects[key] = nextProject;")
+            sb.appendLine("}")
+            sb.appendLine("if (autoAllowBash) {")
+            sb.appendLine("  const settingsBase = configDir === literalHome ? path.join(literalHome, '.claude') : configDir;")
+            sb.appendLine("  const settings = path.join(settingsBase, 'settings.json');")
+            sb.appendLine("  let settingsCfg = {};")
+            sb.appendLine("  try {")
+            sb.appendLine("    const raw = fs.existsSync(settings) ? fs.readFileSync(settings, 'utf8') : '';")
+            sb.appendLine("    if (raw.trim()) settingsCfg = JSON.parse(raw);")
+            sb.appendLine("  } catch (err) {")
+            sb.appendLine("    try { fs.copyFileSync(settings, settings + '.shelly-permissions-corrupt.' + Date.now()); } catch (_) {}")
+            sb.appendLine("    if (verbose) process.stderr.write('[shelly] claude: permissions seed skipped (malformed settings: ' + err.message + ')\\n');")
+            sb.appendLine("    settingsCfg = null;")
+            sb.appendLine("  }")
+            sb.appendLine("  if (settingsCfg) {")
+            sb.appendLine("    settingsCfg.permissions = { ...(settingsCfg.permissions || {}) };")
+            sb.appendLine("    const allow = Array.isArray(settingsCfg.permissions.allow) ? settingsCfg.permissions.allow : [];")
+            sb.appendLine("    settingsCfg.permissions.allow = Array.from(new Set([...allow, 'Bash']));")
+            sb.appendLine("    fs.mkdirSync(path.dirname(settings), { recursive: true });")
+            sb.appendLine("    const settingsTmp = settings + '.shelly-permissions.' + process.pid + '.tmp';")
+            sb.appendLine("    fs.writeFileSync(settingsTmp, JSON.stringify(settingsCfg, null, 2), { mode: 0o600 });")
+            sb.appendLine("    fs.renameSync(settingsTmp, settings);")
+            sb.appendLine("    try { fs.chmodSync(settings, 0o600); } catch (_) {}")
+            sb.appendLine("  }")
             sb.appendLine("}")
             sb.appendLine("fs.mkdirSync(path.dirname(target), { recursive: true });")
             sb.appendLine("const tmp = target + '.shelly-trust-seed.' + process.pid + '.tmp';")
