@@ -317,8 +317,8 @@ if (!globalThis.Bun.JSONL) {
     const out = Object.assign({}, process.env, env || {});
     out.HOME = out.HOME || shellyHome();
     out.PATH = shellyRepairPath(out.PATH);
-    out.SHELL = out.SHELL || shellyShellPath();
-    out.BASH = out.BASH || shellyShellPath();
+    out.SHELL = shellyCommandValue(out.SHELL || shellyShellPath());
+    out.BASH = shellyCommandValue(out.BASH || shellyShellPath());
     out.SHELLY_LIB_DIR = out.SHELLY_LIB_DIR || shellyLibDir();
     out.LD_LIBRARY_PATH = out.LD_LIBRARY_PATH || shellyLibDir();
     out.LD_PRELOAD = out.LD_PRELOAD || (shellyLibDir() + '/libexec_wrapper.so');
@@ -379,12 +379,51 @@ if (!globalThis.Bun.JSONL) {
   wrap('execFile', function(args) { return args.length >= 3 && typeof args[2] !== 'function' ? 2 : (args.length >= 2 && !Array.isArray(args[1]) && typeof args[1] !== 'function' ? 1 : -1); });
   wrap('execFileSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
   if (typeof globalThis.Bun.spawn !== 'function') {
-    globalThis.Bun.spawn = function shellyBunSpawn(command, options) {
+    const stream = require('stream');
+    const toBunReadable = function(value) {
+      if (!value) return null;
+      const web = typeof value.getReader === 'function'
+        ? value
+        : (typeof stream.Readable?.toWeb === 'function' ? stream.Readable.toWeb(value) : value);
+      if (web && typeof web.text !== 'function') {
+        web.text = function() { return new Response(web).text(); };
+      }
+      if (web && typeof web.arrayBuffer !== 'function') {
+        web.arrayBuffer = function() { return new Response(web).arrayBuffer(); };
+      }
+      if (web && typeof web.json !== 'function') {
+        web.json = function() { return new Response(web).json(); };
+      }
+      return web;
+    };
+    const toWebWritable = function(value) {
+      if (!value || typeof value.getWriter === 'function') return value || null;
+      return typeof stream.Writable?.toWeb === 'function' ? stream.Writable.toWeb(value) : value;
+    };
+    const applyBunSpawnOptions = function(spawnOptions) {
+      const isMode = function(v) { return v === 'inherit' || v === 'ignore' || v === 'pipe'; };
+      const map = function(v, fallback) { return isMode(v) ? v : fallback; };
+      if (spawnOptions.stdio === undefined && (
+        spawnOptions.stdin !== undefined || spawnOptions.stdout !== undefined || spawnOptions.stderr !== undefined
+      )) {
+        spawnOptions.stdio = [
+          map(spawnOptions.stdin, 'ignore'),
+          map(spawnOptions.stdout, 'pipe'),
+          map(spawnOptions.stderr, 'pipe'),
+        ];
+      }
+      delete spawnOptions.stdin;
+      delete spawnOptions.stdout;
+      delete spawnOptions.stderr;
+    };
+    const normalizeBunSpawnSpec = function(command, options) {
       const spec = command && typeof command === 'object' && !Array.isArray(command) ? command : null;
       const cmdSpec = spec && spec.cmd !== undefined ? spec.cmd : command;
       const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;
       const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];
       const spawnOptions = Object.assign({}, options || {});
+      const onExit = typeof spawnOptions.onExit === 'function' ? spawnOptions.onExit : null;
+      delete spawnOptions.onExit;
       let stdinPayload = null;
       if (spec) {
         if (spec.cwd) spawnOptions.cwd = spec.cwd;
@@ -397,26 +436,96 @@ if (!globalThis.Bun.JSONL) {
         }
         if (spec.shell !== undefined) spawnOptions.shell = spec.shell;
       }
-      const normalizedOptions = normalizeOptions(spawnOptions, false);
-      const child = childProcess.spawn(String(shellyCommandValue(cmd)), args.map(String), normalizedOptions);
-      if (stdinPayload != null && child.stdin) {
+      applyBunSpawnOptions(spawnOptions);
+      return {
+        cmd: String(shellyCommandValue(cmd)),
+        args: args.map(String),
+        options: normalizeOptions(spawnOptions, false),
+        stdinPayload,
+        onExit,
+      };
+    };
+    globalThis.Bun.spawn = function shellyBunSpawn(command, options) {
+      const normalized = normalizeBunSpawnSpec(command, options);
+      const child = childProcess.spawn(normalized.cmd, normalized.args, normalized.options);
+      if (normalized.stdinPayload != null && child.stdin) {
         try {
-          if (typeof stdinPayload === 'string' || Buffer.isBuffer(stdinPayload) || stdinPayload instanceof Uint8Array) {
-            child.stdin.end(stdinPayload);
-          } else if (stdinPayload && typeof stdinPayload.arrayBuffer === 'function') {
-            stdinPayload.arrayBuffer().then(function(ab) { child.stdin.end(Buffer.from(ab)); }, function() { child.stdin.end(); });
+          if (typeof normalized.stdinPayload === 'string' || Buffer.isBuffer(normalized.stdinPayload) || normalized.stdinPayload instanceof Uint8Array) {
+            child.stdin.end(normalized.stdinPayload);
+          } else if (normalized.stdinPayload && typeof normalized.stdinPayload.arrayBuffer === 'function') {
+            normalized.stdinPayload.arrayBuffer().then(function(ab) { child.stdin.end(Buffer.from(ab)); }, function() { child.stdin.end(); });
           } else {
-            child.stdin.end(String(stdinPayload));
+            child.stdin.end(String(normalized.stdinPayload));
           }
         } catch (_) {
           try { child.stdin.end(); } catch (_) {}
         }
       }
-      child.exited = new Promise(function(resolve) {
+      const exited = new Promise(function(resolve) {
         child.on('exit', function(code) { resolve(code ?? 0); });
         child.on('error', function() { resolve(1); });
       });
-      return child;
+      const subprocess = {
+        pid: child.pid,
+        stdin: toWebWritable(child.stdin),
+        stdout: toBunReadable(child.stdout),
+        stderr: toBunReadable(child.stderr),
+        exited,
+        kill: function(signal) { return child.kill(signal); },
+        ref: function() { child.ref(); return this; },
+        unref: function() { child.unref(); return this; },
+        get exitCode() { return child.exitCode; },
+        get signalCode() { return child.signalCode; },
+        nodeChildProcess: child,
+      };
+      if (normalized.onExit) {
+        child.on('exit', function(code, signal) {
+          normalized.onExit(subprocess, code ?? 0, signal || null, null);
+        });
+        child.on('error', function(error) {
+          normalized.onExit(subprocess, 1, null, error);
+        });
+      }
+      return subprocess;
+    };
+  }
+  if (typeof globalThis.Bun.spawnSync !== 'function') {
+    globalThis.Bun.spawnSync = function shellyBunSpawnSync(command, options) {
+      const spec = command && typeof command === 'object' && !Array.isArray(command) ? command : null;
+      const cmdSpec = spec && spec.cmd !== undefined ? spec.cmd : command;
+      const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;
+      const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];
+      const spawnOptions = Object.assign({}, options || {});
+      if (spec) {
+        if (spec.cwd) spawnOptions.cwd = spec.cwd;
+        if (spec.env) spawnOptions.env = shellyRepairEnv(spec.env);
+        if (spawnOptions.stdio === undefined) {
+          const isMode = function(v) { return v === 'inherit' || v === 'ignore' || v === 'pipe'; };
+          const map = function(v, fallback) { return isMode(v) ? v : fallback; };
+          spawnOptions.stdio = [map(spec.stdin, 'ignore'), map(spec.stdout, 'pipe'), map(spec.stderr, 'pipe')];
+        }
+        if (spec.shell !== undefined) spawnOptions.shell = spec.shell;
+      }
+      if (spawnOptions.stdio === undefined && (
+        spawnOptions.stdin !== undefined || spawnOptions.stdout !== undefined || spawnOptions.stderr !== undefined
+      )) {
+        const isMode = function(v) { return v === 'inherit' || v === 'ignore' || v === 'pipe'; };
+        const map = function(v, fallback) { return isMode(v) ? v : fallback; };
+        spawnOptions.stdio = [map(spawnOptions.stdin, 'ignore'), map(spawnOptions.stdout, 'pipe'), map(spawnOptions.stderr, 'pipe')];
+      }
+      delete spawnOptions.stdin;
+      delete spawnOptions.stdout;
+      delete spawnOptions.stderr;
+      const result = childProcess.spawnSync(String(shellyCommandValue(cmd)), args.map(String), normalizeOptions(spawnOptions, false));
+      const exitCode = result.status ?? (result.error ? 1 : 0);
+      return {
+        success: exitCode === 0,
+        exitCode,
+        signalCode: result.signal || null,
+        stdout: result.stdout || Buffer.alloc(0),
+        stderr: result.stderr || Buffer.alloc(0),
+        error: result.error,
+      };
     };
   }
 })();
@@ -902,6 +1011,15 @@ function currentClaudeExtractedCli() {
 
 function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
   return {
+    HOME,
+    PWD: HOME,
+    USER: process.env.USER || 'shelly',
+    LOGNAME: process.env.LOGNAME || 'shelly',
+    SHELLY_LIB_DIR: LIB,
+    SHELL: path.join(HOME, 'bin', 'bash'),
+    BASH: path.join(HOME, 'bin', 'bash'),
+    PATH: `${path.join(HOME, 'bin')}:${LIB}:/system/bin:/vendor/bin`,
+    LD_LIBRARY_PATH: LIB,
     USE_BUILTIN_RIPGREP: '0',
     DISABLE_AUTOUPDATER: '1',
     DISABLE_INSTALLATION_CHECKS: '1',
