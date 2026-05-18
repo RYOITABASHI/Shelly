@@ -473,14 +473,37 @@ jobs:
           # passes on-device smoke tests.
           EXTRACT_ROOT="/tmp/claude-extracted-root"
           EXTRACT_PKG="${EXTRACT_ROOT}/node_modules/@anthropic-ai/claude-code-extracted"
+          EXTRACT_POLYFILL="/tmp/claude-extracted-polyfill.js"
           rm -rf "${EXTRACT_ROOT}"
           mkdir -p "${EXTRACT_PKG}"
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const runtimeUpdate = path.join(
+            process.env.GITHUB_WORKSPACE,
+            'modules/terminal-emulator/android/src/main/assets/shelly-runtime-update.js',
+          );
+          const src = fs.readFileSync(runtimeUpdate, 'utf8');
+          const polyStart = 'const CLAUDE_BUN_NODE_POLYFILL = `\n';
+          const polyEnd = '\n`;\n\nfunction log';
+          const start = src.indexOf(polyStart);
+          const end = src.indexOf(polyEnd, start + polyStart.length);
+          if (start < 0 || end < 0) {
+            throw new Error('Claude Bun/Node polyfill block not found');
+          }
+          const raw = src.slice(start + polyStart.length, end);
+          const polyfill = Function('return `\n' + raw + '\n`;')().replace(/^\n|\n$/g, '');
+          if (!polyfill.includes('shellyPatchClaudeChildProcessShell')) {
+            throw new Error('extracted Claude polyfill missing child_process shell patch');
+          }
+          fs.writeFileSync('/tmp/claude-extracted-polyfill.js', polyfill);
+          NODE
           aarch64-linux-gnu-objcopy -O binary --only-section=.bun package/claude /tmp/claude.bun.section
-          python3 - /tmp/claude.bun.section "${EXTRACT_PKG}/cli.js" <<'PY'
+          python3 - /tmp/claude.bun.section "${EXTRACT_PKG}/cli.js" "${EXTRACT_POLYFILL}" <<'PY'
           import re
           import sys
 
-          section_path, out_path = sys.argv[1], sys.argv[2]
+          section_path, out_path, polyfill_path = sys.argv[1], sys.argv[2], sys.argv[3]
           with open(section_path, "rb") as f:
               data = f.read()
 
@@ -577,7 +600,11 @@ jobs:
           body, using_count = re.subn(r"(?<![\w$])using\s+", "const ", body)
           print(f"[claude-extract] lowered using declarations: await={using_await_count} sync={using_count}")
 
-          out = "#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n" + body
+          polyfill = open(polyfill_path, "r", encoding="utf-8").read()
+          if "shellyPatchClaudeChildProcessShell" not in polyfill:
+              sys.exit("FATAL: extracted Claude polyfill missing child_process shell patch")
+
+          out = "#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n" + polyfill + "\n" + body
           with open(out_path, "w", encoding="utf-8") as f:
               f.write(out)
           print(f"[claude-extract] wrote {out_path} ({len(out)} bytes)")

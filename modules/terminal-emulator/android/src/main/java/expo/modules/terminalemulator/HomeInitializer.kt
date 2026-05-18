@@ -1018,7 +1018,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      close object-form Bun.spawn stdin payloads, default object-form
     //      stdin to ignore, stop mutating stdout / stderr streams, and make
     //      shelly_shell replace wrong LD_PRELOAD.
-    private const val BASHRC_VERSION = 149
+    // 150: Add authenticated Claude runtime canaries to the updater path so
+    //      future upstream releases are not treated as safe just because
+    //      `claude --version` and the TUI splash work. The canary exercises
+    //      `--print` plus Bash tool execution and records a marker before a
+    //      version is considered functionally verified.
+    // 151: Harden Claude canaries for real devices: do not treat Shelly's
+    //      trust-seed .claude.json as auth, pass explicit Bash tool permission
+    //      flags for the Bash canary, add a credential-keyed suppression for
+    //      auth/network/permission failures, run a default shelly_shell smoke,
+    //      and keep LD_PRELOAD on the extracted Node route so absolute
+    //      /bin/sh-style child process calls can still be redirected.
+    private const val BASHRC_VERSION = 152
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1984,16 +1995,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    return width;")
             sb.appendLine("  };")
             sb.appendLine("}")
-            // v76 Bun.hash shim. Claude Code 2.1.112 cli.js calls
-            // Bun.hash(input) for cache-key dedup at startup; without
-            // this shim cli.js throws "Bun.hash is not a function"
-            // before printing the splash. SHA-256-based stub returns a
-            // deterministic BigInt for the default + 64-bit named
-            // variants and a 32-bit Number for the *32 variants
-            // (crc32, xxHash32, ...). Hash values do NOT match Bun's
-            // native output, but cli.js never compares against
-            // externally-stored Bun hashes so determinism within one
-            // run is enough.
+            sb.appendLine("// v76 (2026-05-06): Bun.hash shim for the extracted-Node tier. Mirror of")
+            sb.appendLine("// the bashrc heredoc so the same polyfill applies whether cli.js is run")
+            sb.appendLine("// from ~/.shelly-cli (legacy npm) or ~/.shelly-runtime/claude-extracted.")
             sb.appendLine("if (typeof globalThis.Bun.hash !== 'function') {")
             sb.appendLine("  const __shellyCryptoMod = require('crypto');")
             sb.appendLine("  const __shellyHashBuf = function(input) {")
@@ -2003,11 +2007,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    if (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer) return Buffer.from(new Uint8Array(input));")
             sb.appendLine("    return Buffer.from(typeof input === 'string' ? input : String(input ?? ''));")
             sb.appendLine("  };")
-            // v76 review fix (Codex): Bun.hash(input, seed) per public API.
-            // Without mixing seed into the digest, `Bun.hash(K, Bun.hash(q))`
-            // collapses to one value across q's, killing cli.js's cache key
-            // / dedup paths. SHA-256 digest of seed || 0x00 || input keeps
-            // the seed-distinct invariant.
+            sb.appendLine("  // v76 review fix (Codex): honour the seed argument of Bun.hash(input, seed)")
+            sb.appendLine("  // so Bun.hash(K, Bun.hash(q)) varies with q.")
             sb.appendLine("  const __shellySeedBuf = function(seed) {")
             sb.appendLine("    return seed === undefined ? Buffer.alloc(0) : Buffer.from(String(seed));")
             sb.appendLine("  };")
@@ -2035,20 +2036,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  __shellyHashBase.crc32 = __shellyHash32;")
             sb.appendLine("  globalThis.Bun.hash = __shellyHashBase;")
             sb.appendLine("}")
-            // v82 Bun.* polyfill expansion. Claude Code 2.1.133's bundled
-            // cli.js (extracted-Node tier) checks `typeof globalThis.Bun
-            // !== "u"` before every Bun.* call, then unconditionally calls
-            // the member. Our previous polyfill installed `globalThis.Bun
-            // = {}` which makes ALL 33 typeof guards take the Bun branch
-            // — any unfilled member crashes. On-device repro 2026-05-08
-            // (Z Fold6): `globalThis.Bun.which is not a function` thrown
-            // from cli.js exec-discovery path. Independent agent audit
-            // (`grep "Bun\." cli.js`) found 13 distinct Bun.* surfaces;
-            // 4 of them (which / semver / YAML / gc) are called on every
-            // startup and need shims. The rest (wrapAnsi / JSONL /
-            // embeddedFiles / listen / spawn / generateHeapSnapshot /
-            // version) are tolerantly handled by cli.js when undefined,
-            // so we leave them absent.
+            sb.appendLine("// v82 (2026-05-08): Bun.* polyfill expansion. Sync mirror of the")
+            sb.appendLine("// HomeInitializer.kt heredoc \u2014 Claude Code 2.1.133's cli.js wraps every")
+            sb.appendLine("// Bun.* call in `typeof Bun !== \"u\"` guards then unconditionally")
+            sb.appendLine("// invokes the member, so when our polyfill installs `Bun = {}` every")
+            sb.appendLine("// guard takes the Bun branch and unfilled members crash. Repro 2026-05-08")
+            sb.appendLine("// on Z Fold6: `globalThis.Bun.which is not a function`. Audit found 4")
+            sb.appendLine("// surfaces called every startup (which / semver / YAML / gc) plus 1 rare")
+            sb.appendLine("// (generateHeapSnapshot) that we shim for safety. The remaining Bun.*")
+            sb.appendLine("// (wrapAnsi / JSONL / embeddedFiles / listen / spawn / version) are")
+            sb.appendLine("// tolerantly handled by cli.js when undefined and stay absent.")
             sb.appendLine("if (typeof globalThis.Bun.which !== 'function') {")
             sb.appendLine("  const __shellyChild = require('child_process');")
             sb.appendLine("  globalThis.Bun.which = function shellyBunWhich(name) {")
@@ -2062,8 +2059,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("}")
             sb.appendLine("if (!globalThis.Bun.semver || typeof globalThis.Bun.semver.order !== 'function') {")
             sb.appendLine("  const __shellySemverCmp = function(a, b) {")
-            sb.appendLine("    const pa = String(a).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+\$/.test(x) ? Number(x) : x; });")
-            sb.appendLine("    const pb = String(b).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+\$/.test(x) ? Number(x) : x; });")
+            sb.appendLine("    const pa = String(a).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+\\$/.test(x) ? Number(x) : x; });")
+            sb.appendLine("    const pb = String(b).replace(/^v/, '').split(/[.+-]/).map(function(x){ return /^\\d+\\$/.test(x) ? Number(x) : x; });")
             sb.appendLine("    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {")
             sb.appendLine("      const x = pa[i] === undefined ? 0 : pa[i];")
             sb.appendLine("      const y = pb[i] === undefined ? 0 : pb[i];")
@@ -2077,7 +2074,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    satisfies: function(version, range) {")
             sb.appendLine("      const v = String(version).replace(/^v/, '');")
             sb.appendLine("      const r = String(range).trim();")
-            sb.appendLine("      const m = r.match(/^([<>]=?|=)?\\s*v?([\\w.+-]+)\$/);")
+            sb.appendLine("      const m = r.match(/^([<>]=?|=)?\\s*v?([\\w.+-]+)\\$/);")
             sb.appendLine("      if (!m) return false;")
             sb.appendLine("      const op = m[1] || '=', target = m[2];")
             sb.appendLine("      const c = __shellySemverCmp(v, target);")
@@ -2148,17 +2145,65 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("(function shellyPatchClaudeChildProcessShell() {")
             sb.appendLine("  const childProcess = require('child_process');")
             sb.appendLine("  const shellyShellPath = function() { return process.env.SHELL || '/system/bin/sh'; };")
+            sb.appendLine("  const shellyLibDir = function() {")
+            sb.appendLine("    return process.env.SHELLY_LIB_DIR || require('path').dirname(shellyShellPath());")
+            sb.appendLine("  };")
+            sb.appendLine("  const shellyHome = function() {")
+            sb.appendLine("    return process.env.HOME || '/data/data/dev.shelly.terminal/files/home';")
+            sb.appendLine("  };")
+            sb.appendLine("  const shellyRepairPath = function(pathValue) {")
+            sb.appendLine("    const seen = Object.create(null);")
+            sb.appendLine("    const parts = [shellyHome() + '/bin', shellyLibDir(), '/system/bin', '/vendor/bin']")
+            sb.appendLine("      .concat(String(pathValue || process.env.PATH || '').split(':'));")
+            sb.appendLine("    return parts.filter(function(part) {")
+            sb.appendLine("      if (!part || seen[part]) return false;")
+            sb.appendLine("      seen[part] = true;")
+            sb.appendLine("      return true;")
+            sb.appendLine("    }).join(':');")
+            sb.appendLine("  };")
+            sb.appendLine("  const shellyRepairEnv = function(env) {")
+            sb.appendLine("    const out = Object.assign({}, process.env, env || {});")
+            sb.appendLine("    out.HOME = out.HOME || shellyHome();")
+            sb.appendLine("    out.PATH = shellyRepairPath(out.PATH);")
+            sb.appendLine("    out.SHELL = out.SHELL || shellyShellPath();")
+            sb.appendLine("    out.BASH = out.BASH || shellyShellPath();")
+            sb.appendLine("    out.SHELLY_LIB_DIR = out.SHELLY_LIB_DIR || shellyLibDir();")
+            sb.appendLine("    out.LD_LIBRARY_PATH = out.LD_LIBRARY_PATH || shellyLibDir();")
+            sb.appendLine("    out.LD_PRELOAD = out.LD_PRELOAD || (shellyLibDir() + '/libexec_wrapper.so');")
+            sb.appendLine("    out.ANDROID_ROOT = out.ANDROID_ROOT || process.env.ANDROID_ROOT || '/system';")
+            sb.appendLine("    out.ANDROID_DATA = out.ANDROID_DATA || process.env.ANDROID_DATA || '/data';")
+            sb.appendLine("    out.TMPDIR = out.TMPDIR || process.env.TMPDIR || (shellyHome() + '/.tmp');")
+            sb.appendLine("    out.BUN_TMPDIR = out.BUN_TMPDIR || process.env.BUN_TMPDIR || (shellyHome() + '/.bun-tmp');")
+            sb.appendLine("    out.CLAUDE_TMPDIR = out.CLAUDE_TMPDIR || process.env.CLAUDE_TMPDIR || (shellyHome() + '/.claude-tmp');")
+            sb.appendLine("    out.CLAUDE_CODE_TMPDIR = out.CLAUDE_CODE_TMPDIR || process.env.CLAUDE_CODE_TMPDIR || out.CLAUDE_TMPDIR;")
+            sb.appendLine("    return out;")
+            sb.appendLine("  };")
+            sb.appendLine("  const shellyShellValue = function(value) {")
+            sb.appendLine("    if (value === true || value === undefined) return shellyShellPath();")
+            sb.appendLine("    const s = String(value);")
+            sb.appendLine("    return (s === '/bin/sh' || s === '/bin/bash' || s === 'sh' || s === 'bash') ? shellyShellPath() : value;")
+            sb.appendLine("  };")
+            sb.appendLine("  const shellyCommandValue = function(value) {")
+            sb.appendLine("    const s = String(value);")
+            sb.appendLine("    return (s === '/bin/sh' || s === '/bin/bash' || s === 'sh' || s === 'bash') ? shellyShellPath() : value;")
+            sb.appendLine("  };")
             sb.appendLine("  const normalizeOptions = function(options, forceShell) {")
-            sb.appendLine("    if (!options || typeof options !== 'object') return options;")
-            sb.appendLine("    if (options.shell === true || (forceShell && options.shell === undefined)) return Object.assign({}, options, { shell: shellyShellPath() });")
-            sb.appendLine("    return options;")
+            sb.appendLine("    const out = (!options || typeof options !== 'object') ? {} : Object.assign({}, options);")
+            sb.appendLine("    if (forceShell || out.shell !== undefined) out.shell = shellyShellValue(out.shell);")
+            sb.appendLine("    out.env = shellyRepairEnv(out.env);")
+            sb.appendLine("    return out;")
             sb.appendLine("  };")
             sb.appendLine("  const wrap = function(name, index) {")
             sb.appendLine("    const original = childProcess[name];")
             sb.appendLine("    if (typeof original !== 'function' || original.__shellyShellPatched) return;")
             sb.appendLine("    const patched = function(...args) {")
+            sb.appendLine("      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && args.length > 0) {")
+            sb.appendLine("        args[0] = shellyCommandValue(args[0]);")
+            sb.appendLine("      }")
             sb.appendLine("      const i = index(args);")
             sb.appendLine("      if (i >= 0) args[i] = normalizeOptions(args[i], false);")
+            sb.appendLine("      else if (name === 'execFile' && typeof args[args.length - 1] === 'function') args.splice(args.length - 1, 0, normalizeOptions(undefined, false));")
+            sb.appendLine("      else if (name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') args.push(normalizeOptions(undefined, false));")
             sb.appendLine("      return original.apply(this, args);")
             sb.appendLine("    };")
             sb.appendLine("    try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}")
@@ -2168,8 +2213,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    const original = childProcess[name];")
             sb.appendLine("    if (typeof original !== 'function' || original.__shellyShellPatched) return;")
             sb.appendLine("    const patched = function(command, options, callback) {")
-            sb.appendLine("      if (typeof options === 'function') return original.call(this, command, { shell: shellyShellPath() }, options);")
-            sb.appendLine("      if (options === undefined) return original.call(this, command, { shell: shellyShellPath() }, callback);")
+            sb.appendLine("      if (typeof options === 'function') return original.call(this, command, normalizeOptions(undefined, true), options);")
+            sb.appendLine("      if (options === undefined) return original.call(this, command, normalizeOptions(undefined, true), callback);")
             sb.appendLine("      return original.call(this, command, normalizeOptions(options, true), callback);")
             sb.appendLine("    };")
             sb.appendLine("    try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}")
@@ -2179,21 +2224,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  wrap('spawnSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });")
             sb.appendLine("  wrapExec('exec');")
             sb.appendLine("  wrapExec('execSync');")
-            sb.appendLine("  wrap('execFile', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });")
+            sb.appendLine("  wrap('execFile', function(args) { return args.length >= 3 && typeof args[2] !== 'function' ? 2 : (args.length >= 2 && !Array.isArray(args[1]) && typeof args[1] !== 'function' ? 1 : -1); });")
             sb.appendLine("  wrap('execFileSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });")
-            sb.appendLine("})();")
             sb.appendLine("if (typeof globalThis.Bun.spawn !== 'function') {")
             sb.appendLine("  globalThis.Bun.spawn = function shellyBunSpawn(command, options) {")
-            sb.appendLine("    const childProcess = require('child_process');")
             sb.appendLine("    const spec = command && typeof command === 'object' && !Array.isArray(command) ? command : null;")
-            sb.appendLine("    const cmdSpec = spec && Array.isArray(spec.cmd) ? spec.cmd : command;")
+            sb.appendLine("    const cmdSpec = spec && spec.cmd !== undefined ? spec.cmd : command;")
             sb.appendLine("    const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;")
             sb.appendLine("    const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];")
             sb.appendLine("    const spawnOptions = Object.assign({}, options || {});")
             sb.appendLine("    let stdinPayload = null;")
             sb.appendLine("    if (spec) {")
             sb.appendLine("      if (spec.cwd) spawnOptions.cwd = spec.cwd;")
-            sb.appendLine("      if (spec.env) spawnOptions.env = Object.assign({}, process.env, spec.env);")
+            sb.appendLine("      if (spec.env) spawnOptions.env = shellyRepairEnv(spec.env);")
             sb.appendLine("      if (spawnOptions.stdio === undefined) {")
             sb.appendLine("        const isMode = function(v) { return v === 'inherit' || v === 'ignore' || v === 'pipe'; };")
             sb.appendLine("        const map = function(v, fallback) { return isMode(v) ? v : fallback; };")
@@ -2202,8 +2245,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      }")
             sb.appendLine("      if (spec.shell !== undefined) spawnOptions.shell = spec.shell;")
             sb.appendLine("    }")
-            sb.appendLine("    if (spawnOptions.shell === true) spawnOptions.shell = process.env.SHELL || '/system/bin/sh';")
-            sb.appendLine("    const child = childProcess.spawn(String(cmd), args.map(String), spawnOptions);")
+            sb.appendLine("    const normalizedOptions = normalizeOptions(spawnOptions, false);")
+            sb.appendLine("    const child = childProcess.spawn(String(shellyCommandValue(cmd)), args.map(String), normalizedOptions);")
             sb.appendLine("    if (stdinPayload != null && child.stdin) {")
             sb.appendLine("      try {")
             sb.appendLine("        if (typeof stdinPayload === 'string' || Buffer.isBuffer(stdinPayload) || stdinPayload instanceof Uint8Array) {")
@@ -2224,7 +2267,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    return child;")
             sb.appendLine("  };")
             sb.appendLine("}")
-
+            sb.appendLine("})();")
             // ──────────────────────────────────────────────────────────────
             // PR #53 diagnostic instrumentation (Codex review 2026-05-09)
             //
@@ -2698,9 +2741,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    local __expected=\"\$(__shelly_claude_runtime_extracted_expected)\"")
             sb.appendLine("    [ -n \"\$__expected\" ] || return 1")
             sb.appendLine("    [ -f \"\$__cli\" ] || return 1")
+            sb.appendLine("    if ! grep -q 'shellyPatchClaudeChildProcessShell' \"\$__cli\" 2>/dev/null; then")
+            sb.appendLine("      [ -z \"\$SHELLY_VERBOSE_CLI_TIER\" ] || echo '[shelly] claude: runtime extracted missing shell patch; using APK extracted tier' >&2")
+            sb.appendLine("      return 1")
+            sb.appendLine("    fi")
             sb.appendLine("    local __out=\"\"")
             sb.appendLine("    local __rc=0")
-            sb.appendLine("    __out=\$(USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" BASH_ENV= ENV= timeout 15 /system/bin/linker64 \"$libDir/node\" \"\$__cli\" --version 2>&1)")
+            sb.appendLine("    __out=\$(USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= timeout 15 /system/bin/linker64 \"$libDir/node\" \"\$__cli\" --version 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    case \"\$__out\" in *'[DBG-A'*|*'[CKPT-'*|*'claude-code_2-1-131_harness'*)")
             sb.appendLine("      [ -z \"\$SHELLY_VERBOSE_CLI_TIER\" ] || echo '[shelly] claude: runtime extracted stale harness detected; using APK extracted tier' >&2")
@@ -2735,7 +2782,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    fi")
             sb.appendLine("    mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" \"\$__bun_tmp\"")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" BASH_ENV= ENV= _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
+            sb.appendLine("    USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= _run $libDir/node \"\$__extracted_cli_js\" \"\$@\"")
             sb.appendLine("    local __extracted_rc=\$?")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    case \"\$__extracted_rc\" in")
@@ -2776,7 +2823,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  fi")
             sb.appendLine("  mkdir -p \"\$__claude_tmp\" \"\${TMPDIR:-\$HOME/.tmp}\" \"\$__bun_tmp\" 2>/dev/null")
             sb.appendLine("  __shelly_paste_tui_begin")
-            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" BASH_ENV= ENV= _run $libDir/node \"\$__cli_js\" \"\$@\"")
+            sb.appendLine("  USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\$__bun_tmp\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$__claude_tmp}\" CLAUDE_TMPDIR=\"\$__claude_tmp\" NODE_OPTIONS=\"\$__shelly_claude_node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= _run $libDir/node \"\$__cli_js\" \"\$@\"")
             sb.appendLine("  local __legacy_rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  return \"\$__legacy_rc\"")
@@ -3088,6 +3135,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  esac")
             sb.appendLine("}")
             sb.appendLine("shelly-doctor() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-doctor.js\" \"\$@\"; }")
+            sb.appendLine("shelly-runtime-canary() { SHELLY_UPDATER_FUNCTIONAL_CHECK=1 SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-runtime-update.js\" claude --force; }")
+            sb.appendLine("export -f shelly-update-clis shelly-doctor shelly-runtime-canary")
             sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
             sb.appendLine("__shelly_runtime_update_interval=86400")
             sb.appendLine("__shelly_runtime_quick_marker=\"\$HOME/.shelly-runtime/.last_quick_check\"")

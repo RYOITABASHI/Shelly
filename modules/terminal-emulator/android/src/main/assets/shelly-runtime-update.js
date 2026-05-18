@@ -19,10 +19,15 @@
  *
  * Environment variables:
  *   SHELLY_UPDATER_FUNCTIONAL_CHECK=1
- *     Adds a `node cli.js --print "reply OK"` smoke check for Claude
- *     beyond `--version`. Exercises DNS, TLS, auth, and actual inference.
+ *     Adds Claude functional canaries beyond `--version`. Exercises DNS,
+ *     TLS, auth, actual inference, and the Bash tool path that often breaks
+ *     when upstream Claude changes its shell/subprocess implementation.
  *     Gated behind an env var because it requires valid upstream credentials
- *     on this device; default install would fail it even on a healthy release.
+ *     and consumes a small amount of quota on this device.
+ *   SHELLY_UPDATER_TOOL_CANARY=0
+ *     Keep the authenticated `--print "Reply exactly OK"` check but skip
+ *     the Bash-tool canary. Useful when debugging credentials separately
+ *     from Shelly's subprocess compatibility layer.
  *   SHELLY_UPDATER_STABLE_DELAY_DAYS=7
  *     Override stable-channel cooldown in days.
  */
@@ -83,7 +88,35 @@ if (!['verified', 'stable', 'latest'].includes(CHANNEL)) {
 }
 const STABLE_DELAY_DAYS = Number(process.env.SHELLY_UPDATER_STABLE_DELAY_DAYS || 7);
 const STABLE_DELAY_MS = STABLE_DELAY_DAYS * 24 * 60 * 60 * 1000;
-const FUNCTIONAL_CHECK = process.env.SHELLY_UPDATER_FUNCTIONAL_CHECK === '1';
+const CLAUDE_ENV_AUTH_NAMES = [
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+];
+
+function hasClaudeEnvAuth() {
+  return CLAUDE_ENV_AUTH_NAMES.some((name) => Boolean(process.env[name]));
+}
+
+function hasClaudeAuthForCanary() {
+  if (hasClaudeEnvAuth()) return true;
+  if (fs.existsSync(path.join(HOME, '.claude', '.credentials.json'))) return true;
+  try {
+    const raw = fs.readFileSync(path.join(HOME, '.claude.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    return Boolean(
+      parsed?.tokens?.refresh_token
+        || parsed?.tokens?.access_token
+        || parsed?.oauthAccount?.accountUuid,
+    );
+  } catch (_e) {
+    return false;
+  }
+}
+
+const FUNCTIONAL_CHECK = process.env.SHELLY_UPDATER_FUNCTIONAL_CHECK === '1'
+  || (process.env.SHELLY_UPDATER_FUNCTIONAL_CHECK !== '0' && hasClaudeAuthForCanary());
+const TOOL_CANARY = FUNCTIONAL_CHECK && process.env.SHELLY_UPDATER_TOOL_CANARY !== '0';
 const NATIVE_CLAUDE_UPDATE = process.env.SHELLY_UPDATER_NATIVE_CLAUDE === '1';
 
 const CLAUDE_BUN_NODE_POLYFILL = `
@@ -264,17 +297,65 @@ if (!globalThis.Bun.JSONL) {
 (function shellyPatchClaudeChildProcessShell() {
   const childProcess = require('child_process');
   const shellyShellPath = function() { return process.env.SHELL || '/system/bin/sh'; };
+  const shellyLibDir = function() {
+    return process.env.SHELLY_LIB_DIR || require('path').dirname(shellyShellPath());
+  };
+  const shellyHome = function() {
+    return process.env.HOME || '/data/data/dev.shelly.terminal/files/home';
+  };
+  const shellyRepairPath = function(pathValue) {
+    const seen = Object.create(null);
+    const parts = [shellyHome() + '/bin', shellyLibDir(), '/system/bin', '/vendor/bin']
+      .concat(String(pathValue || process.env.PATH || '').split(':'));
+    return parts.filter(function(part) {
+      if (!part || seen[part]) return false;
+      seen[part] = true;
+      return true;
+    }).join(':');
+  };
+  const shellyRepairEnv = function(env) {
+    const out = Object.assign({}, process.env, env || {});
+    out.HOME = out.HOME || shellyHome();
+    out.PATH = shellyRepairPath(out.PATH);
+    out.SHELL = out.SHELL || shellyShellPath();
+    out.BASH = out.BASH || shellyShellPath();
+    out.SHELLY_LIB_DIR = out.SHELLY_LIB_DIR || shellyLibDir();
+    out.LD_LIBRARY_PATH = out.LD_LIBRARY_PATH || shellyLibDir();
+    out.LD_PRELOAD = out.LD_PRELOAD || (shellyLibDir() + '/libexec_wrapper.so');
+    out.ANDROID_ROOT = out.ANDROID_ROOT || process.env.ANDROID_ROOT || '/system';
+    out.ANDROID_DATA = out.ANDROID_DATA || process.env.ANDROID_DATA || '/data';
+    out.TMPDIR = out.TMPDIR || process.env.TMPDIR || (shellyHome() + '/.tmp');
+    out.BUN_TMPDIR = out.BUN_TMPDIR || process.env.BUN_TMPDIR || (shellyHome() + '/.bun-tmp');
+    out.CLAUDE_TMPDIR = out.CLAUDE_TMPDIR || process.env.CLAUDE_TMPDIR || (shellyHome() + '/.claude-tmp');
+    out.CLAUDE_CODE_TMPDIR = out.CLAUDE_CODE_TMPDIR || process.env.CLAUDE_CODE_TMPDIR || out.CLAUDE_TMPDIR;
+    return out;
+  };
+  const shellyShellValue = function(value) {
+    if (value === true || value === undefined) return shellyShellPath();
+    const s = String(value);
+    return (s === '/bin/sh' || s === '/bin/bash' || s === 'sh' || s === 'bash') ? shellyShellPath() : value;
+  };
+  const shellyCommandValue = function(value) {
+    const s = String(value);
+    return (s === '/bin/sh' || s === '/bin/bash' || s === 'sh' || s === 'bash') ? shellyShellPath() : value;
+  };
   const normalizeOptions = function(options, forceShell) {
-    if (!options || typeof options !== 'object') return options;
-    if (options.shell === true || (forceShell && options.shell === undefined)) return Object.assign({}, options, { shell: shellyShellPath() });
-    return options;
+    const out = (!options || typeof options !== 'object') ? {} : Object.assign({}, options);
+    if (forceShell || out.shell !== undefined) out.shell = shellyShellValue(out.shell);
+    out.env = shellyRepairEnv(out.env);
+    return out;
   };
   const wrap = function(name, index) {
     const original = childProcess[name];
     if (typeof original !== 'function' || original.__shellyShellPatched) return;
     const patched = function(...args) {
+      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && args.length > 0) {
+        args[0] = shellyCommandValue(args[0]);
+      }
       const i = index(args);
       if (i >= 0) args[i] = normalizeOptions(args[i], false);
+      else if (name === 'execFile' && typeof args[args.length - 1] === 'function') args.splice(args.length - 1, 0, normalizeOptions(undefined, false));
+      else if (name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') args.push(normalizeOptions(undefined, false));
       return original.apply(this, args);
     };
     try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}
@@ -284,8 +365,8 @@ if (!globalThis.Bun.JSONL) {
     const original = childProcess[name];
     if (typeof original !== 'function' || original.__shellyShellPatched) return;
     const patched = function(command, options, callback) {
-      if (typeof options === 'function') return original.call(this, command, { shell: shellyShellPath() }, options);
-      if (options === undefined) return original.call(this, command, { shell: shellyShellPath() }, callback);
+      if (typeof options === 'function') return original.call(this, command, normalizeOptions(undefined, true), options);
+      if (options === undefined) return original.call(this, command, normalizeOptions(undefined, true), callback);
       return original.call(this, command, normalizeOptions(options, true), callback);
     };
     try { Object.defineProperty(patched, '__shellyShellPatched', { value: true }); } catch (_) {}
@@ -295,51 +376,50 @@ if (!globalThis.Bun.JSONL) {
   wrap('spawnSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
   wrapExec('exec');
   wrapExec('execSync');
-  wrap('execFile', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
+  wrap('execFile', function(args) { return args.length >= 3 && typeof args[2] !== 'function' ? 2 : (args.length >= 2 && !Array.isArray(args[1]) && typeof args[1] !== 'function' ? 1 : -1); });
   wrap('execFileSync', function(args) { return args.length >= 3 ? 2 : (args.length >= 2 && !Array.isArray(args[1]) ? 1 : -1); });
-})();
-if (typeof globalThis.Bun.spawn !== 'function') {
-  globalThis.Bun.spawn = function shellyBunSpawn(command, options) {
-    const childProcess = require('child_process');
-    const spec = command && typeof command === 'object' && !Array.isArray(command) ? command : null;
-    const cmdSpec = spec && Array.isArray(spec.cmd) ? spec.cmd : command;
-    const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;
-    const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];
-    const spawnOptions = Object.assign({}, options || {});
-    let stdinPayload = null;
-    if (spec) {
-      if (spec.cwd) spawnOptions.cwd = spec.cwd;
-      if (spec.env) spawnOptions.env = Object.assign({}, process.env, spec.env);
-      if (spawnOptions.stdio === undefined) {
-        const isMode = function(v) { return v === 'inherit' || v === 'ignore' || v === 'pipe'; };
-        const map = function(v, fallback) { return isMode(v) ? v : fallback; };
-        stdinPayload = spec.stdin && !isMode(spec.stdin) ? spec.stdin : null;
-        spawnOptions.stdio = [stdinPayload ? 'pipe' : map(spec.stdin, 'ignore'), map(spec.stdout, 'pipe'), map(spec.stderr, 'pipe')];
-      }
-      if (spec.shell !== undefined) spawnOptions.shell = spec.shell;
-    }
-    if (spawnOptions.shell === true) spawnOptions.shell = process.env.SHELL || '/system/bin/sh';
-    const child = childProcess.spawn(String(cmd), args.map(String), spawnOptions);
-    if (stdinPayload != null && child.stdin) {
-      try {
-        if (typeof stdinPayload === 'string' || Buffer.isBuffer(stdinPayload) || stdinPayload instanceof Uint8Array) {
-          child.stdin.end(stdinPayload);
-        } else if (stdinPayload && typeof stdinPayload.arrayBuffer === 'function') {
-          stdinPayload.arrayBuffer().then(function(ab) { child.stdin.end(Buffer.from(ab)); }, function() { child.stdin.end(); });
-        } else {
-          child.stdin.end(String(stdinPayload));
+  if (typeof globalThis.Bun.spawn !== 'function') {
+    globalThis.Bun.spawn = function shellyBunSpawn(command, options) {
+      const spec = command && typeof command === 'object' && !Array.isArray(command) ? command : null;
+      const cmdSpec = spec && spec.cmd !== undefined ? spec.cmd : command;
+      const cmd = Array.isArray(cmdSpec) ? cmdSpec[0] : cmdSpec;
+      const args = Array.isArray(cmdSpec) ? cmdSpec.slice(1) : [];
+      const spawnOptions = Object.assign({}, options || {});
+      let stdinPayload = null;
+      if (spec) {
+        if (spec.cwd) spawnOptions.cwd = spec.cwd;
+        if (spec.env) spawnOptions.env = shellyRepairEnv(spec.env);
+        if (spawnOptions.stdio === undefined) {
+          const isMode = function(v) { return v === 'inherit' || v === 'ignore' || v === 'pipe'; };
+          const map = function(v, fallback) { return isMode(v) ? v : fallback; };
+          stdinPayload = spec.stdin && !isMode(spec.stdin) ? spec.stdin : null;
+          spawnOptions.stdio = [stdinPayload ? 'pipe' : map(spec.stdin, 'ignore'), map(spec.stdout, 'pipe'), map(spec.stderr, 'pipe')];
         }
-      } catch (_) {
-        try { child.stdin.end(); } catch (_) {}
+        if (spec.shell !== undefined) spawnOptions.shell = spec.shell;
       }
-    }
-    child.exited = new Promise(function(resolve) {
-      child.on('exit', function(code) { resolve(code ?? 0); });
-      child.on('error', function() { resolve(1); });
-    });
-    return child;
-  };
-}
+      const normalizedOptions = normalizeOptions(spawnOptions, false);
+      const child = childProcess.spawn(String(shellyCommandValue(cmd)), args.map(String), normalizedOptions);
+      if (stdinPayload != null && child.stdin) {
+        try {
+          if (typeof stdinPayload === 'string' || Buffer.isBuffer(stdinPayload) || stdinPayload instanceof Uint8Array) {
+            child.stdin.end(stdinPayload);
+          } else if (stdinPayload && typeof stdinPayload.arrayBuffer === 'function') {
+            stdinPayload.arrayBuffer().then(function(ab) { child.stdin.end(Buffer.from(ab)); }, function() { child.stdin.end(); });
+          } else {
+            child.stdin.end(String(stdinPayload));
+          }
+        } catch (_) {
+          try { child.stdin.end(); } catch (_) {}
+        }
+      }
+      child.exited = new Promise(function(resolve) {
+        child.on('exit', function(code) { resolve(code ?? 0); });
+        child.on('error', function() { resolve(1); });
+      });
+      return child;
+    };
+  }
+})();
 `;
 
 function log(line) {
@@ -507,6 +587,7 @@ function readFailedVersions() {
 //   network    — caller caught a network/IO exception
 //   shape      — tarball or SEA shape unexpected (validateClaudeShape)
 //   extraction — extractClaudeCliFromSea threw
+//   permission — canary failed because Claude refused a tool permission
 //
 // Cooldown semantics: only `signal` and `exit` and `shape` are recorded
 // to .failed-versions (the binary itself is bad). `auth` / `network` /
@@ -514,12 +595,20 @@ function readFailedVersions() {
 // updater run sees the history but the version isn't blocked from
 // promotion when the user fixes their auth or net comes back.
 const FAILURE_LOG = path.join(ROOT, '.failure-log');
+const CANARY_SUPPRESSIONS = path.join(ROOT, '.canary-suppressions');
 const COOLDOWN_CATEGORIES = new Set(['signal', 'exit', 'shape']);
+const SUPPRESSIBLE_CANARY_CATEGORIES = new Set(['auth', 'network', 'permission']);
+const __PARSED_CANARY_SUPPRESSION = Number(process.env.SHELLY_CANARY_SUPPRESSION_SECONDS || 21600);
+const CANARY_SUPPRESSION_S =
+  Number.isFinite(__PARSED_CANARY_SUPPRESSION) && __PARSED_CANARY_SUPPRESSION > 0
+    ? __PARSED_CANARY_SUPPRESSION
+    : 21600;
 
-function classifyFailure({ status, signal, stdout = '', stderr = '' } = {}) {
+function classifyFailure({ status, signal, stdout = '', stderr = '', error = null } = {}) {
   // Native runs return status >= 128 for signal-killed processes
   // (128 + signal_number). Node child_process also exposes `signal`
   // directly, which we prefer when present.
+  if (error && error.code === 'ETIMEDOUT') return 'network';
   if (signal) return 'signal';
   if (typeof status === 'number' && status >= 128) return 'signal';
   // Auth-failure patterns observed in Claude Code stderr/stdout when
@@ -535,10 +624,121 @@ function classifyFailure({ status, signal, stdout = '', stderr = '' } = {}) {
   if (/(unauthori[sz]ed|unauthenticated|authentication|invalid api key|expired token|\b401\b|\b403\b)/.test(combined)) {
     return 'auth';
   }
+  if (/(permission denied|permissions required|permission mode|not allowed|tool.*denied|tool.*not.*allowed|approval required|allowedtools|allowed tools|bypasspermissions)/.test(combined)) {
+    return 'permission';
+  }
   // Default: non-zero non-signal exit means the binary returned an error
   // we can't categorise more specifically. Treat as cooldown-worthy
   // (the binary itself misbehaved on input it should handle).
   return 'exit';
+}
+
+function claudeAuthFingerprint() {
+  const hash = crypto.createHash('sha256');
+  let hasStableAuth = false;
+  const credentials = path.join(HOME, '.claude', '.credentials.json');
+  try {
+    const st = fs.statSync(credentials);
+    if (st.isFile()) {
+      hasStableAuth = true;
+      hash.update(credentials);
+      hash.update('\0');
+      hash.update(String(st.size));
+      hash.update('\0');
+      hash.update(String(Math.floor(st.mtimeMs)));
+      hash.update('\0');
+    }
+  } catch (_e) {
+    // Optional credentials file.
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(HOME, '.claude.json'), 'utf8'));
+    const tokenShape = {
+      refresh: parsed?.tokens?.refresh_token || '',
+      access: parsed?.tokens?.access_token || '',
+      account: parsed?.oauthAccount?.accountUuid || '',
+    };
+    if (tokenShape.refresh || tokenShape.access || tokenShape.account) {
+      hasStableAuth = true;
+      hash.update(JSON.stringify(tokenShape));
+    }
+  } catch (_e) {
+    // Shelly trust-seed .claude.json is often absent or not auth-bearing.
+  }
+  for (const name of CLAUDE_ENV_AUTH_NAMES) {
+    const value = process.env[name];
+    if (!value) continue;
+    hasStableAuth = true;
+    hash.update(name);
+    hash.update('\0');
+    hash.update(crypto.createHash('sha256').update(value).digest('hex'));
+    hash.update('\0');
+  }
+  if (!hasStableAuth) return 'no-auth';
+  return hash.digest('hex').slice(0, 16);
+}
+
+function readCanarySuppressions() {
+  try {
+    return fs.readFileSync(CANARY_SUPPRESSIONS, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [toolVersion, fingerprint, epochStr, category] = line.split(/\s+/, 4);
+        const eq = toolVersion.indexOf('=');
+        const epoch = Number(epochStr);
+        if (eq < 0 || !fingerprint || !Number.isFinite(epoch)) return null;
+        return {
+          tool: toolVersion.slice(0, eq),
+          version: toolVersion.slice(eq + 1),
+          fingerprint,
+          epoch,
+          category,
+        };
+      })
+      .filter(Boolean);
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    log(`canary-suppressions read error: ${e.message}`);
+    return [];
+  }
+}
+
+function isClaudeCanarySuppressed(version, nowEpoch = Math.floor(Date.now() / 1000)) {
+  const fingerprint = claudeAuthFingerprint();
+  const records = readCanarySuppressions()
+    .filter((r) => r.tool === 'claude' && r.version === version && r.fingerprint === fingerprint);
+  if (records.length === 0) return false;
+  const latest = records.reduce((acc, r) => (r.epoch > acc.epoch ? r : acc));
+  return (nowEpoch - latest.epoch) < CANARY_SUPPRESSION_S;
+}
+
+function filterClaudeCandidatesForCanarySuppression(candidates) {
+  if (FORCE || !shouldFunctionalCheckClaude()) return candidates;
+  const filtered = candidates.filter((version) => !isClaudeCanarySuppressed(version));
+  const skipped = candidates.filter((version) => !filtered.includes(version));
+  if (skipped.length > 0) info(`[claude] suppressed canary retry for ${skipped.join(',')}`);
+  return filtered;
+}
+
+function isSuppressibleCanaryFailure(category) {
+  return SUPPRESSIBLE_CANARY_CATEGORIES.has(category);
+}
+
+function recordClaudeCanarySuppression(version, category, reason = '') {
+  if (!SUPPRESSIBLE_CANARY_CATEGORIES.has(category)) return;
+  try {
+    fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
+    const epoch = Math.floor(Date.now() / 1000);
+    const reasonOneLine = String(reason).replace(/\s+/g, ' ').slice(0, 180);
+    fs.appendFileSync(
+      CANARY_SUPPRESSIONS,
+      `claude=${version} ${claudeAuthFingerprint()} ${epoch} ${category} ${reasonOneLine}\n`,
+    );
+  } catch (e) {
+    log(`canary-suppressions write error: ${e.message}`);
+  }
 }
 
 function recordFailedVersion(tool, version, category = 'exit', reason = '') {
@@ -711,10 +911,33 @@ function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
     CLAUDE_TMPDIR: CLAUDE_TMP,
     CLAUDE_CODE_TMPDIR: CLAUDE_TMP,
     NODE_OPTIONS: '',
+    LD_PRELOAD: path.join(LIB, 'libexec_wrapper.so'),
     BASH_ENV: '',
     ENV: '',
     ...extraEnv,
   };
+}
+
+function runShellyShellSmoke() {
+  return runLinker([
+    path.join(LIB, 'shelly_shell'),
+    '-c',
+    'printf SHELLY_SHELL_CANARY_OK; pwd >/dev/null',
+  ], {
+    HOME,
+    PWD: HOME,
+    USER: 'shelly',
+    LOGNAME: 'shelly',
+    SHELLY_LIB_DIR: LIB,
+    SHELL: path.join(LIB, 'shelly_shell'),
+    BASH: path.join(LIB, 'shelly_shell'),
+    PATH: `${path.join(HOME, 'bin')}:${LIB}:/system/bin:/vendor/bin`,
+    LD_LIBRARY_PATH: LIB,
+    LD_PRELOAD: path.join(LIB, 'libexec_wrapper.so'),
+    ANDROID_ROOT: '/system',
+    ANDROID_DATA: '/data',
+    TMPDIR: GENERIC_TMP,
+  });
 }
 
 function invalidateClaudeExtractedCurrent(reason) {
@@ -774,12 +997,17 @@ function runLinker(args, extraEnv = {}) {
   });
 }
 
-function runNodeScript(script, args = [], extraEnv = {}) {
-  return runLinker([
+function runNodeScript(script, args = [], extraEnv = {}, timeout = 30000) {
+  const env = { ...process.env, ...extraEnv };
+  return spawnSync('/system/bin/linker64', [
     path.join(LIB, 'node'),
     script,
     ...args,
-  ], extraEnv);
+  ], {
+    env,
+    encoding: 'utf8',
+    timeout,
+  });
 }
 
 function runClaudeNative(binary, args = [], extraEnv = {}) {
@@ -1019,6 +1247,75 @@ function shouldFunctionalCheckClaude() {
   return FUNCTIONAL_CHECK;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function claudeCanaryResult(name, result, expectedRe) {
+  const out = `${result.stdout || ''}${result.stderr || ''}`;
+  if (result.status !== 0) {
+    const category = classifyFailure(result);
+    return {
+      ok: false,
+      category,
+      reason: `${name} status=${result.status} signal=${result.signal || ''}: ${out.slice(0, 240)}`,
+    };
+  }
+  if (expectedRe && !expectedRe.test(out)) {
+    const category = classifyFailure({
+      status: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+    return {
+      ok: false,
+      category,
+      reason: `${name} missing expected output: ${out.slice(0, 240)}`,
+    };
+  }
+  return { ok: true, out };
+}
+
+function runClaudeExtractedFunctionalCanaries(cli) {
+  const bashNonce = `SHELLY_BASH_${crypto.randomBytes(8).toString('hex')}`;
+  const checks = [
+    {
+      name: 'print-ok',
+      args: ['--print', 'Reply exactly SHELLY_CANARY_OK and nothing else.'],
+      expected: /\bSHELLY_CANARY_OK\b/,
+    },
+  ];
+  if (TOOL_CANARY) {
+    checks.push({
+      name: 'bash-tool',
+      args: [
+        '--print',
+        '--allowedTools',
+        'Bash',
+        '--tools',
+        'Bash',
+        '--permission-mode',
+        'bypassPermissions',
+        'Use the Bash tool to run this exact command: printf "$SHELLY_BASH_CANARY_NONCE". Return only the command output.',
+      ],
+      env: { SHELLY_BASH_CANARY_NONCE: bashNonce },
+      expected: new RegExp(escapeRegExp(bashNonce)),
+    });
+  }
+
+  const passed = [];
+  for (const check of checks) {
+    const result = runNodeScript(cli, check.args, claudeExtractedNodeSmokeEnv({
+      SHELLY_SILENT_CLI_TIER: '1',
+      ...(check.env || {}),
+    }), 120000);
+    const verdict = claudeCanaryResult(check.name, result, check.expected);
+    if (!verdict.ok) return { ...verdict, passed };
+    passed.push(check.name);
+  }
+  return { ok: true, passed };
+}
+
 function claudeFunctionalMarker(version = currentClaudeExtractedVersion()) {
   if (!version) return '';
   return path.join(
@@ -1032,6 +1329,18 @@ function claudeFunctionalMarker(version = currentClaudeExtractedVersion()) {
   );
 }
 
+function markerHasClaudeFunctionalChecks(markerPath) {
+  if (!markerPath || !fs.existsSync(markerPath)) return false;
+  try {
+    const content = fs.readFileSync(markerPath, 'utf8');
+    if (!/\bprint-ok\b/.test(content)) return false;
+    if (TOOL_CANARY && !/\bbash-tool\b/.test(content)) return false;
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 function claudeNativeFunctionalMarker(version = currentClaudeNativeVersion()) {
   if (!version) return '';
   return path.join(ROOT, 'claude', version, '.shelly-functional-smoke-ok');
@@ -1039,10 +1348,10 @@ function claudeNativeFunctionalMarker(version = currentClaudeNativeVersion()) {
 
 function currentClaudeFunctionalSmokeOk() {
   const extractedMarker = claudeFunctionalMarker();
-  if (!!extractedMarker && fs.existsSync(extractedMarker)) return true;
+  if (markerHasClaudeFunctionalChecks(extractedMarker)) return true;
   if (!NATIVE_CLAUDE_UPDATE) return false;
   const nativeMarker = claudeNativeFunctionalMarker();
-  return !!nativeMarker && fs.existsSync(nativeMarker);
+  return markerHasClaudeFunctionalChecks(nativeMarker);
 }
 
 // Per-process unique staging suffix avoids the race where two
@@ -1178,6 +1487,7 @@ async function tryClaudeVersion(pkgMeta, version) {
     }
 
     let staging = null;
+    let suppressibleCanaryFailure = null;
     try {
       // Per-run staging name avoids cross-process clobbering when two
       // updaters race on the same version (Codex review issue #1).
@@ -1217,17 +1527,34 @@ async function tryClaudeVersion(pkgMeta, version) {
       }
       info(`[claude] try ${version} — extracted --version smoke OK`);
 
+      const shellSmoke = runShellyShellSmoke();
+      const shellCombined = `${shellSmoke.stdout || ''}${shellSmoke.stderr || ''}`;
+      if (shellSmoke.status !== 0 || !shellCombined.includes('SHELLY_SHELL_CANARY_OK')) {
+        const category = classifyFailure(shellSmoke);
+        recordFailedVersion('claude', version, category, `shelly_shell smoke failed: ${shellCombined.slice(0, 200)}`);
+        throw new Error(`shelly_shell smoke status=${shellSmoke.status}: ${shellCombined.slice(0, 200)}`);
+      }
+      info(`[claude] try ${version} — shelly_shell smoke OK`);
+
       if (shouldFunctionalCheckClaude()) {
-        const func = runNodeScript(out, ['--print', 'Reply exactly OK'], claudeExtractedNodeSmokeEnv());
-        const funcOut = `${func.stdout || ''}${func.stderr || ''}`;
-        if (func.status !== 0) {
-          throw new Error(`extracted --print status=${func.status}: ${funcOut.slice(0, 200)}`);
+        const canary = runClaudeExtractedFunctionalCanaries(out);
+        if (!canary.ok) {
+          recordClaudeCanarySuppression(version, canary.category, canary.reason);
+          recordFailedVersion('claude', version, canary.category, canary.reason);
+          if (isSuppressibleCanaryFailure(canary.category)) {
+            suppressibleCanaryFailure = {
+              category: canary.category,
+              reason: canary.reason,
+            };
+          }
+          throw new Error(`extracted functional canary failed: ${canary.reason}`);
         }
-        if (!/\bOK\b/i.test(func.stdout || '')) {
-          throw new Error(`extracted --print did not return OK: ${funcOut.slice(0, 200)}`);
-        }
-        info(`[claude] try ${version} — extracted functional check OK`);
-        fs.writeFileSync(path.join(pkgDir, '.shelly-functional-smoke-ok'), `${new Date().toISOString()}\n`, { mode: 0o600 });
+        info(`[claude] try ${version} — extracted functional canary OK (${canary.passed.join(',')})`);
+        fs.writeFileSync(
+          path.join(pkgDir, '.shelly-functional-smoke-ok'),
+          `${new Date().toISOString()} ${canary.passed.join(',')}\n`,
+          { mode: 0o600 },
+        );
       }
     } catch (e) {
       if (nativeStaging) fs.rmSync(nativeStaging, { recursive: true, force: true });
@@ -1237,7 +1564,11 @@ async function tryClaudeVersion(pkgMeta, version) {
     }
 
     if (!staging) {
-      return { ok: false, reason: 'extracted cli.js fallback unavailable' };
+      return {
+        ok: false,
+        category: suppressibleCanaryFailure?.category,
+        reason: suppressibleCanaryFailure?.reason || 'extracted cli.js fallback unavailable',
+      };
     }
     return { ok: true, nativeStaging, staging };
   } catch (err) {
@@ -1258,7 +1589,18 @@ async function updateClaude() {
 
   const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
 
-  const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
+  const rawCandidates = selectClaudeCandidates(pkgMeta, CHANNEL);
+  const latestCandidate = rawCandidates[0] || '';
+  const currentExtracted = currentClaudeExtractedVerifiedVersion();
+  if (!FORCE && shouldFunctionalCheckClaude() && currentExtracted && !currentClaudeFunctionalSmokeOk() && isClaudeCanarySuppressed(currentExtracted)) {
+    info(`[claude] current ${currentExtracted} has suppressed canary retry; keeping current`);
+    return;
+  }
+  if (!FORCE && latestCandidate && currentExtracted === latestCandidate && isClaudeCanarySuppressed(latestCandidate)) {
+    info(`[claude] current latest ${latestCandidate} has suppressed canary retry; keeping current`);
+    return;
+  }
+  const candidates = filterClaudeCandidatesForCanarySuppression(rawCandidates);
   if (candidates.length === 0) {
     info(`[claude] no candidates (channel=${CHANNEL})`);
     return;
@@ -1271,7 +1613,7 @@ async function updateClaude() {
   // candidate (the absolute newest), we're already on the verified
   // latest. Don't re-download unless this authenticated device has never
   // proven that current release can complete `--print`.
-  if (!FORCE && currentClaudeExtractedVerifiedVersion() === candidates[0]) {
+  if (!FORCE && currentExtracted === candidates[0]) {
     if (needsFunctionalSmoke && !currentClaudeFunctionalSmokeOk()) {
       info(`[claude] current ${candidates[0]} lacks functional smoke marker; re-testing`);
     } else {
@@ -1298,6 +1640,10 @@ async function updateClaude() {
       return;
     }
     info(`[claude] reject ${version}: ${result.reason}`);
+    if (isSuppressibleCanaryFailure(result.category)) {
+      info(`[claude] stopping candidate walk after ${result.category} canary failure`);
+      return;
+    }
   }
 
   // All candidates failed — keep current promotion as-is. The bundled
@@ -1501,8 +1847,27 @@ function cleanupStaleStaging() {
 async function checkClaudeAvailable() {
   try {
     const pkgMeta = await json('https://registry.npmjs.org/@anthropic-ai%2fclaude-code-linux-arm64-musl');
-    const candidates = selectClaudeCandidates(pkgMeta, CHANNEL);
+    const rawCandidates = selectClaudeCandidates(pkgMeta, CHANNEL);
+    if (rawCandidates.length === 0) return false;
+    const latestCandidate = rawCandidates[0];
+    const currentExtracted = currentClaudeExtractedVerifiedVersion();
+    if (shouldFunctionalCheckClaude() && currentExtracted && !currentClaudeFunctionalSmokeOk() && isClaudeCanarySuppressed(currentExtracted)) {
+      info(`[check] claude current ${currentExtracted} canary retry suppressed`);
+      return false;
+    }
+    if (currentExtracted === latestCandidate && isClaudeCanarySuppressed(latestCandidate)) {
+      info(`[check] claude ${latestCandidate} canary retry suppressed`);
+      return false;
+    }
+    const candidates = filterClaudeCandidatesForCanarySuppression(rawCandidates);
     if (candidates.length === 0) return false;
+    if (shouldFunctionalCheckClaude()
+      && currentClaudeExtractedVerifiedVersion() === candidates[0]
+      && !currentClaudeFunctionalSmokeOk()
+      && !isClaudeCanarySuppressed(candidates[0])) {
+      info(`[check] claude ${candidates[0]} lacks functional canary marker`);
+      return true;
+    }
     return currentClaudeExtractedVerifiedVersion() !== candidates[0];
   } catch (err) {
     info(`[check] claude metadata fetch failed: ${err.message}`);

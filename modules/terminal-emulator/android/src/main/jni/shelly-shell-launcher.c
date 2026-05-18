@@ -21,6 +21,17 @@ static const char *lib_dir_from_env(void) {
     const char *from_env = getenv("SHELLY_LIB_DIR");
     if (from_env && from_env[0]) return from_env;
 
+    static char exe_dir[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe_dir, sizeof(exe_dir) - 1);
+    if (len > 0) {
+        exe_dir[len] = '\0';
+        char *slash = strrchr(exe_dir, '/');
+        if (slash && slash != exe_dir) {
+            *slash = '\0';
+            return exe_dir;
+        }
+    }
+
     const char *home = getenv("HOME");
     if (!home || !home[0]) return NULL;
 
@@ -35,6 +46,8 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     int need_ld_library_path = 1;
     int need_shelly_lib_dir = 1;
     int need_path = 1;
+    int need_shell = 1;
+    int need_bash = 1;
     char home_bin[PATH_MAX + 8];
     if (home && home[0]) {
         snprintf(home_bin, sizeof(home_bin), "%s/bin", home);
@@ -49,6 +62,8 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
         }
         if (strncmp(envp[count], "LD_LIBRARY_PATH=", 16) == 0 && envp[count][16]) need_ld_library_path = 0;
         if (strncmp(envp[count], "SHELLY_LIB_DIR=", 15) == 0 && strcmp(envp[count] + 15, lib_dir) == 0) need_shelly_lib_dir = 0;
+        if (strncmp(envp[count], "SHELL=", 6) == 0 && strstr(envp[count] + 6, "shelly_shell") != NULL) need_shell = 0;
+        if (strncmp(envp[count], "BASH=", 5) == 0 && strstr(envp[count] + 5, "shelly_shell") != NULL) need_bash = 0;
         if (strncmp(envp[count], "PATH=", 5) == 0 && envp[count][5]) {
             int has_system_bin = strstr(envp[count] + 5, "/system/bin") != NULL;
             int has_lib_dir = strstr(envp[count] + 5, lib_dir) != NULL;
@@ -63,6 +78,10 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     snprintf(ld_library_path, sizeof(ld_library_path), "LD_LIBRARY_PATH=%s", lib_dir);
     char shelly_lib_dir[PATH_MAX + 32];
     snprintf(shelly_lib_dir, sizeof(shelly_lib_dir), "SHELLY_LIB_DIR=%s", lib_dir);
+    char shell_env[PATH_MAX + 32];
+    snprintf(shell_env, sizeof(shell_env), "SHELL=%s/shelly_shell", lib_dir);
+    char bash_env[PATH_MAX + 32];
+    snprintf(bash_env, sizeof(bash_env), "BASH=%s/shelly_shell", lib_dir);
     char path_env[(PATH_MAX * 2) + 64];
     if (home && home[0]) {
         snprintf(path_env, sizeof(path_env), "PATH=%s/bin:%s:/system/bin:/vendor/bin", home, lib_dir);
@@ -73,7 +92,9 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     size_t extra = (need_preload ? 1 : 0) +
         (need_ld_library_path ? 1 : 0) +
         (need_shelly_lib_dir ? 1 : 0) +
-        (need_path ? 1 : 0);
+        (need_path ? 1 : 0) +
+        (need_shell ? 1 : 0) +
+        (need_bash ? 1 : 0);
     char **out = calloc(count + extra + 1, sizeof(char *));
     if (!out) return NULL;
 
@@ -82,6 +103,8 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     int added_ld_library_path = 0;
     int added_shelly_lib_dir = 0;
     int added_path = 0;
+    int added_shell = 0;
+    int added_bash = 0;
     for (size_t i = 0; i < count; i++) {
         if (strncmp(envp[i], "LD_PRELOAD=", 11) == 0 && need_preload) {
             out[j++] = strdup(preload);
@@ -92,6 +115,12 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
         } else if (strncmp(envp[i], "SHELLY_LIB_DIR=", 15) == 0 && need_shelly_lib_dir) {
             out[j++] = strdup(shelly_lib_dir);
             added_shelly_lib_dir = 1;
+        } else if (strncmp(envp[i], "SHELL=", 6) == 0 && need_shell) {
+            out[j++] = strdup(shell_env);
+            added_shell = 1;
+        } else if (strncmp(envp[i], "BASH=", 5) == 0 && need_bash) {
+            out[j++] = strdup(bash_env);
+            added_bash = 1;
         } else if (strncmp(envp[i], "PATH=", 5) == 0 && need_path) {
             out[j++] = strdup(path_env);
             added_path = 1;
@@ -103,6 +132,8 @@ static char **copy_env_with_preload(char *const envp[], const char *lib_dir, con
     if (need_ld_library_path && !added_ld_library_path) out[j++] = strdup(ld_library_path);
     if (need_shelly_lib_dir && !added_shelly_lib_dir) out[j++] = strdup(shelly_lib_dir);
     if (need_path && !added_path) out[j++] = strdup(path_env);
+    if (need_shell && !added_shell) out[j++] = strdup(shell_env);
+    if (need_bash && !added_bash) out[j++] = strdup(bash_env);
     out[j] = NULL;
     return out;
 }

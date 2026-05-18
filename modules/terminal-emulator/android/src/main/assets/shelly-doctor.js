@@ -15,6 +15,7 @@ const JSON_MODE = process.argv.includes('--json');
 const SDCARD_DOWNLOAD = '/sdcard/Download';
 const SECRET_ENV_NAMES = [
   'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'OPENAI_API_KEY',
   'CODEX_AUTH_TOKEN',
@@ -24,6 +25,7 @@ const SECRET_ENV_NAMES = [
   'CEREBRAS_API_KEY',
   'PERPLEXITY_API_KEY',
 ];
+const RUNTIME_ROOT = path.join(HOME, '.shelly-runtime');
 
 function exists(p) {
   try { return fs.existsSync(p); } catch { return false; }
@@ -113,6 +115,28 @@ function claudeExtractedVersion(script) {
     CLAUDE_TMPDIR: path.join(HOME, '.claude-tmp'),
     SHELLY_SILENT_CLI_TIER: '1',
   });
+}
+
+function claudeFunctionalMarker() {
+  const version = readText(path.join(RUNTIME_ROOT, 'claude-extracted', 'version')).trim();
+  if (!version) return { version: null, marker: '', info: { exists: false } };
+  const marker = path.join(
+    RUNTIME_ROOT,
+    'claude-extracted',
+    version,
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code-extracted',
+    '.shelly-functional-smoke-ok',
+  );
+  const content = readText(marker).trim() || null;
+  return {
+    version,
+    marker,
+    info: statInfo(marker),
+    content,
+    complete: Boolean(content && /\bprint-ok\b/.test(content) && /\bbash-tool\b/.test(content)),
+  };
 }
 
 function codexVersion(binary) {
@@ -245,6 +269,8 @@ function collect() {
     runtime: {
       update_log: statInfo(path.join(HOME, '.shelly-runtime/update.log')),
       last_update_marker: readText(path.join(HOME, '.shelly-runtime/.last_update')).trim() || null,
+      failure_log_tail: readText(path.join(HOME, '.shelly-runtime/.failure-log')).trim().split('\n').filter(Boolean).slice(-8),
+      canary_suppression_tail: readText(path.join(HOME, '.shelly-runtime/.canary-suppressions')).trim().split('\n').filter(Boolean).slice(-5),
     },
     claude: {
       runtime_current: readlink(path.join(HOME, '.shelly-runtime/claude/current')) || null,
@@ -253,6 +279,7 @@ function collect() {
       extracted_version: exists(runtimeClaudeExtracted)
         ? claudeExtractedVersion(runtimeClaudeExtracted)
         : claudeExtractedVersion(apkClaudeExtracted),
+      functional_canary: claudeFunctionalMarker(),
       runtime_binary: statInfo(runtimeClaude),
       runtime_version: claudeVersion(runtimeClaude),
       apk_binary: statInfo(apkClaude),
@@ -297,6 +324,9 @@ function printHuman(d) {
   process.stdout.write('\n');
 
   line('claude extracted', `${mark(d.claude.extracted_version.ok)} ${d.claude.extracted_version.stdout || d.claude.extracted_version.stderr}`);
+  line('claude canary', d.claude.functional_canary.info.exists
+    ? `${d.claude.functional_canary.complete ? 'OK' : 'WARN partial'} ${d.claude.functional_canary.version} ${d.claude.functional_canary.content || ''}`
+    : `WARN missing${d.claude.functional_canary.version ? ` for ${d.claude.functional_canary.version}` : ''}`);
   line('claude musl runtime', `${mark(d.claude.runtime_version.ok)} ${d.claude.runtime_version.stdout || d.claude.runtime_version.stderr}`);
   line('claude apk', `${mark(d.claude.apk_version.ok)} ${d.claude.apk_version.stdout || d.claude.apk_version.stderr}`);
   line('claude legacy', `${mark(d.claude.legacy_version.ok)} ${d.claude.legacy_version.stdout || d.claude.legacy_version.stderr}`);
@@ -325,6 +355,20 @@ function printHuman(d) {
   line('api env vars', d.security.env_keys_present.length > 0
     ? `WARN ${d.security.env_keys_present.join(', ')} present in process env`
     : 'OK none');
+  if (d.runtime.failure_log_tail.length > 0) {
+    process.stdout.write('\n');
+    line('runtime failures', `${d.runtime.failure_log_tail.length} recent`);
+    for (const entry of d.runtime.failure_log_tail) {
+      process.stdout.write(`  ${entry}\n`);
+    }
+  }
+  if (d.runtime.canary_suppression_tail.length > 0) {
+    process.stdout.write('\n');
+    line('canary suppressions', `${d.runtime.canary_suppression_tail.length} recent`);
+    for (const entry of d.runtime.canary_suppression_tail) {
+      process.stdout.write(`  ${entry}\n`);
+    }
+  }
   process.stdout.write('\n');
   process.stdout.write('Use --json for machine-readable output.\n');
 }
