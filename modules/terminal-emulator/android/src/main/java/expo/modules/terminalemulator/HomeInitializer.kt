@@ -1079,7 +1079,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      later env assignments cannot override Shelly's loader variables.
     // 168: Match both /data/user/0 and /data/data aliases for the nested bash
     //      path used by Claude's generated Bash-tool shell string.
-    private const val BASHRC_VERSION = 168
+    // 169: Add file-only nested-env patch tracing, gated by
+    //      SHELLY_CLAUDE_PATCH_TRACE=1, to confirm whether the repair fires.
+    private const val BASHRC_VERSION = 169
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2301,6 +2303,15 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    add(shellyHome() + '/bin/bash');")
             sb.appendLine("    return out;")
             sb.appendLine("  };")
+            sb.appendLine("  const shellyPatchTrace = function(message) {")
+            sb.appendLine("    if (process.env.SHELLY_CLAUDE_PATCH_TRACE !== '1') return;")
+            sb.appendLine("    try {")
+            sb.appendLine("      require('fs').appendFileSync(")
+            sb.appendLine("        shellyHome() + '/.shelly-claude-patch.log',")
+            sb.appendLine("        Date.now() + ' ' + message + '\\n'")
+            sb.appendLine("      );")
+            sb.appendLine("    } catch (_) {}")
+            sb.appendLine("  };")
             sb.appendLine("  const shellyPatchNestedEnvArgs = function(args) {")
             sb.appendLine("    if (!Array.isArray(args)) return args;")
             sb.appendLine("    const libDir = shellyLibDir();")
@@ -2316,11 +2327,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        .map(function(token) { return { token, index: tail.indexOf(token) }; })")
             sb.appendLine("        .filter(function(item) { return item.index >= 0; })")
             sb.appendLine("        .sort(function(a, b) { return a.index - b.index; });")
-            sb.appendLine("      if (candidates.length === 0) return arg;")
+            sb.appendLine("      if (candidates.length === 0) {")
+            sb.appendLine("        shellyPatchTrace('miss no-candidate marker=' + marker + ' tailLength=' + tail.length + ' candidateCount=' + shellyShellPathCandidates().length);")
+            sb.appendLine("        return arg;")
+            sb.appendLine("      }")
             sb.appendLine("      const picked = candidates[0];")
             sb.appendLine("      const absoluteIndex = marker + picked.index;")
             sb.appendLine("      const prefix = arg.slice(0, absoluteIndex);")
-            sb.appendLine("      if (prefix.slice(-inject.length) === inject) return arg;")
+            sb.appendLine("      if (prefix.slice(-inject.length) === inject) {")
+            sb.appendLine("        shellyPatchTrace('skip already-injected token=' + JSON.stringify(picked.token));")
+            sb.appendLine("        return arg;")
+            sb.appendLine("      }")
+            sb.appendLine("      shellyPatchTrace('fired token=' + JSON.stringify(picked.token) + ' index=' + absoluteIndex);")
             sb.appendLine("      return prefix + inject + arg.slice(absoluteIndex);")
             sb.appendLine("    });")
             sb.appendLine("  };")

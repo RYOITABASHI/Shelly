@@ -398,6 +398,15 @@ if (!globalThis.Bun.JSONL) {
     add(shellyHome() + '/bin/bash');
     return out;
   };
+  const shellyPatchTrace = function(message) {
+    if (process.env.SHELLY_CLAUDE_PATCH_TRACE !== '1') return;
+    try {
+      require('fs').appendFileSync(
+        shellyHome() + '/.shelly-claude-patch.log',
+        Date.now() + ' ' + message + '\n'
+      );
+    } catch (_) {}
+  };
   const shellyPatchNestedEnvArgs = function(args) {
     if (!Array.isArray(args)) return args;
     const libDir = shellyLibDir();
@@ -413,11 +422,18 @@ if (!globalThis.Bun.JSONL) {
         .map(function(token) { return { token, index: tail.indexOf(token) }; })
         .filter(function(item) { return item.index >= 0; })
         .sort(function(a, b) { return a.index - b.index; });
-      if (candidates.length === 0) return arg;
+      if (candidates.length === 0) {
+        shellyPatchTrace('miss no-candidate marker=' + marker + ' tailLength=' + tail.length + ' candidateCount=' + shellyShellPathCandidates().length);
+        return arg;
+      }
       const picked = candidates[0];
       const absoluteIndex = marker + picked.index;
       const prefix = arg.slice(0, absoluteIndex);
-      if (prefix.slice(-inject.length) === inject) return arg;
+      if (prefix.slice(-inject.length) === inject) {
+        shellyPatchTrace('skip already-injected token=' + JSON.stringify(picked.token));
+        return arg;
+      }
+      shellyPatchTrace('fired token=' + JSON.stringify(picked.token) + ' index=' + absoluteIndex);
       return prefix + inject + arg.slice(absoluteIndex);
     });
   };
