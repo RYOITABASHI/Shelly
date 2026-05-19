@@ -390,8 +390,8 @@ if (!globalThis.Bun.JSONL) {
       if (!text || seen[text]) return;
       seen[text] = true;
       out.push(text);
-      if (text.indexOf('/data/user/0/') === 0) add(text.replace(/^\/data\/user\/0\//, '/data/data/'));
-      if (text.indexOf('/data/data/') === 0) add(text.replace(/^\/data\/data\//, '/data/user/0/'));
+      if (text.indexOf('/data/user/0/') === 0) add('/data/data/' + text.slice('/data/user/0/'.length));
+      if (text.indexOf('/data/data/') === 0) add('/data/user/0/' + text.slice('/data/data/'.length));
     };
     add(shellyShellPath());
     add(process.env.BASH);
