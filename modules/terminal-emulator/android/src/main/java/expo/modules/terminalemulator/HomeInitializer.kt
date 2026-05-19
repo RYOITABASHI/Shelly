@@ -1075,7 +1075,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      polyfill so Claude's Bash-tool fd routing is not silently replaced.
     // 166: Patch Claude Bash-tool nested `env ... bash` command strings so the
     //      inner bash keeps Shelly's loader variables after env scrubbing.
-    private const val BASHRC_VERSION = 166
+    // 167: Move that injection to immediately before the nested bash command so
+    //      later env assignments cannot override Shelly's loader variables.
+    private const val BASHRC_VERSION = 167
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2284,11 +2286,24 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    if (!Array.isArray(args)) return args;")
             sb.appendLine("    const libDir = shellyLibDir();")
             sb.appendLine("    const inject = 'LD_LIBRARY_PATH=' + libDir + ' LD_PRELOAD=' + libDir + '/libexec_wrapper.so ';")
+            sb.appendLine("    const shellPath = String(shellyShellPath());")
             sb.appendLine("    return args.map(function(arg) {")
-            sb.appendLine("      if (typeof arg !== 'string' || arg.indexOf('&& env ') < 0 || arg.indexOf('LD_PRELOAD=' + libDir + '/libexec_wrapper.so') >= 0) return arg;")
-            sb.appendLine("      return arg")
-            sb.appendLine("        .replace(/&& env -i /g, '&& env -i ' + inject)")
-            sb.appendLine("        .replace(/&& env (?!-i )/g, '&& env ' + inject);")
+            sb.appendLine("      if (typeof arg !== 'string') return arg;")
+            sb.appendLine("      const marker = arg.indexOf('&& env ');")
+            sb.appendLine("      if (marker < 0) return arg;")
+            sb.appendLine("      const tail = arg.slice(marker);")
+            sb.appendLine("      const quotedSingle = \"'\" + shellPath + \"'\";")
+            sb.appendLine("      const quotedDouble = '\"' + shellPath + '\"';")
+            sb.appendLine("      const candidates = [quotedSingle, quotedDouble, shellPath]")
+            sb.appendLine("        .map(function(token) { return { token, index: tail.indexOf(token) }; })")
+            sb.appendLine("        .filter(function(item) { return item.index >= 0; })")
+            sb.appendLine("        .sort(function(a, b) { return a.index - b.index; });")
+            sb.appendLine("      if (candidates.length === 0) return arg;")
+            sb.appendLine("      const picked = candidates[0];")
+            sb.appendLine("      const absoluteIndex = marker + picked.index;")
+            sb.appendLine("      const prefix = arg.slice(0, absoluteIndex);")
+            sb.appendLine("      if (prefix.slice(-inject.length) === inject) return arg;")
+            sb.appendLine("      return prefix + inject + arg.slice(absoluteIndex);")
             sb.appendLine("    });")
             sb.appendLine("  };")
             sb.appendLine("  const normalizeOptions = function(options, forceShell) {")

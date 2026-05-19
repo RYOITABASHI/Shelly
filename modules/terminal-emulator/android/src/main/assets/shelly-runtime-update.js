@@ -385,11 +385,24 @@ if (!globalThis.Bun.JSONL) {
     if (!Array.isArray(args)) return args;
     const libDir = shellyLibDir();
     const inject = 'LD_LIBRARY_PATH=' + libDir + ' LD_PRELOAD=' + libDir + '/libexec_wrapper.so ';
+    const shellPath = String(shellyShellPath());
     return args.map(function(arg) {
-      if (typeof arg !== 'string' || arg.indexOf('&& env ') < 0 || arg.indexOf('LD_PRELOAD=' + libDir + '/libexec_wrapper.so') >= 0) return arg;
-      return arg
-        .replace(/&& env -i /g, '&& env -i ' + inject)
-        .replace(/&& env (?!-i )/g, '&& env ' + inject);
+      if (typeof arg !== 'string') return arg;
+      const marker = arg.indexOf('&& env ');
+      if (marker < 0) return arg;
+      const tail = arg.slice(marker);
+      const quotedSingle = "'" + shellPath + "'";
+      const quotedDouble = '"' + shellPath + '"';
+      const candidates = [quotedSingle, quotedDouble, shellPath]
+        .map(function(token) { return { token, index: tail.indexOf(token) }; })
+        .filter(function(item) { return item.index >= 0; })
+        .sort(function(a, b) { return a.index - b.index; });
+      if (candidates.length === 0) return arg;
+      const picked = candidates[0];
+      const absoluteIndex = marker + picked.index;
+      const prefix = arg.slice(0, absoluteIndex);
+      if (prefix.slice(-inject.length) === inject) return arg;
+      return prefix + inject + arg.slice(absoluteIndex);
     });
   };
   const normalizeOptions = function(options, forceShell) {
