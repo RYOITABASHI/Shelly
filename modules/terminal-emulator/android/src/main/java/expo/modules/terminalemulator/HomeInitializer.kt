@@ -1061,7 +1061,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      bounded: print per-step progress, wrap the extracted CLI launch in
     //      Android's timeout command, and include sanitized Bash-tool spawn
     //      traces only for explicit canary runs.
-    private const val BASHRC_VERSION = 161
+    // 162: Include signal/error details in extracted Claude --version smoke
+    //      failures so status=null distinguishes timeout, SIGSEGV, and spawn
+    //      failures before the functional canary layer.
+    private const val BASHRC_VERSION = 162
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }

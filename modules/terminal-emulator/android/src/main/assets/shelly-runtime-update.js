@@ -1783,7 +1783,7 @@ async function tryClaudeVersion(pkgMeta, version) {
       const smoke = runNodeScript(out, ['--version'], claudeExtractedNodeSmokeEnv());
       const combined = `${smoke.stdout || ''}${smoke.stderr || ''}`;
       if (smoke.status !== 0 || !combined.includes(version)) {
-        throw new Error(`extracted --version status=${smoke.status}: ${combined.slice(0, 200)}`);
+        throw new Error(`extracted --version ${resultSummary(smoke)}: ${combined.slice(0, 200)}`);
       }
       info(`[claude] try ${version} — extracted --version smoke OK`);
 
