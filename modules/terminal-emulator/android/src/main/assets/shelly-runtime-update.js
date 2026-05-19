@@ -1131,13 +1131,10 @@ function claudeExtractedNodeSmokeEnv(extraEnv = {}) {
   };
 }
 
-function runShellyShellSmoke() {
+function runClaudeBashShellSmoke() {
   const homeBash = path.join(HOME, 'bin', 'bash');
-  return runLinker([
-    homeBash,
-    '-lc',
-    'printf SHELLY_SHELL_CANARY_OK; pwd >/dev/null',
-  ], {
+  const env = {
+    ...process.env,
     HOME,
     PWD: HOME,
     USER: 'shelly',
@@ -1153,6 +1150,15 @@ function runShellyShellSmoke() {
     TMPDIR: GENERIC_TMP,
     BASH_ENV: '',
     ENV: '',
+  };
+  return spawnSync('/system/bin/linker64', [
+    homeBash,
+    '-lc',
+    'printf SHELLY_SHELL_CANARY_OK; bash -lc "printf SHELLY_SHELL_CHILD_OK"; pwd >/dev/null',
+  ], {
+    env,
+    encoding: 'utf8',
+    timeout: 30000,
   });
 }
 
@@ -1787,14 +1793,16 @@ async function tryClaudeVersion(pkgMeta, version) {
       }
       info(`[claude] try ${version} — extracted --version smoke OK`);
 
-      const shellSmoke = runShellyShellSmoke();
+      const shellSmoke = runClaudeBashShellSmoke();
       const shellCombined = `${shellSmoke.stdout || ''}${shellSmoke.stderr || ''}`;
-      if (shellSmoke.status !== 0 || !shellCombined.includes('SHELLY_SHELL_CANARY_OK')) {
+      if (shellSmoke.status !== 0 ||
+          !shellCombined.includes('SHELLY_SHELL_CANARY_OK') ||
+          !shellCombined.includes('SHELLY_SHELL_CHILD_OK')) {
         const category = classifyFailure(shellSmoke);
-        recordFailedVersion('claude', version, category, `shelly_shell smoke failed: ${resultSummary(shellSmoke)} ${shellCombined.slice(0, 200)}`);
-        throw new Error(`shelly_shell smoke ${resultSummary(shellSmoke)}: ${shellCombined.slice(0, 200)}`);
+        recordFailedVersion('claude', version, category, `claude bash shell smoke failed: ${resultSummary(shellSmoke)} ${shellCombined.slice(0, 200)}`);
+        throw new Error(`claude bash shell smoke ${resultSummary(shellSmoke)}: ${shellCombined.slice(0, 200)}`);
       }
-      info(`[claude] try ${version} — shelly_shell smoke OK`);
+      info(`[claude] try ${version} — claude bash shell smoke OK`);
 
       if (shouldFunctionalCheckClaude()) {
         const canary = runClaudeExtractedFunctionalCanaries(out);
