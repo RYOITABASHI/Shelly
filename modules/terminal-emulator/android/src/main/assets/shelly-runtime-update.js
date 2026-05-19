@@ -381,6 +381,17 @@ if (!globalThis.Bun.JSONL) {
     const s = String(value);
     return (s === '/bin/sh' || s === '/bin/bash' || s === '/usr/bin/sh' || s === '/usr/bin/bash' || s === 'sh' || s === 'bash') ? shellyShellPath() : value;
   };
+  const shellyPatchNestedEnvArgs = function(args) {
+    if (!Array.isArray(args)) return args;
+    const libDir = shellyLibDir();
+    const inject = 'LD_LIBRARY_PATH=' + libDir + ' LD_PRELOAD=' + libDir + '/libexec_wrapper.so ';
+    return args.map(function(arg) {
+      if (typeof arg !== 'string' || arg.indexOf('&& env ') < 0 || arg.indexOf('LD_PRELOAD=' + libDir + '/libexec_wrapper.so') >= 0) return arg;
+      return arg
+        .replace(/&& env -i /g, '&& env -i ' + inject)
+        .replace(/&& env (?!-i )/g, '&& env ' + inject);
+    });
+  };
   const normalizeOptions = function(options, forceShell) {
     const out = (!options || typeof options !== 'object') ? {} : Object.assign({}, options);
     if (forceShell || out.shell !== undefined) out.shell = shellyShellValue(out.shell);
@@ -419,6 +430,9 @@ if (!globalThis.Bun.JSONL) {
       else if (name === 'execFile' && typeof args[args.length - 1] === 'function') args.splice(args.length - 1, 0, normalizeOptions(undefined, false));
       else if (name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') args.push(normalizeOptions(undefined, false));
       expandShellSpawn(name, args);
+      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && shellyCommandValue(args[0]) === shellyShellPath() && Array.isArray(args[1])) {
+        args[1] = shellyPatchNestedEnvArgs(args[1]);
+      }
       shellyDiagLog('child_process.' + name, { before: shellyDiagValue(before), after: { cmd: shellyDiagCommand(args[0]), argCount: Array.isArray(args[1]) ? args[1].length : null, options: shellyDiagValue(args[2] || args[1]) } });
       return original.apply(this, args);
     };

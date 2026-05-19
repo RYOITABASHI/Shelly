@@ -1073,7 +1073,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      is Claude's Bash tool path returning no output.
     // 165: Preserve numeric fd and fd-backed stdio modes in the Bun.spawn
     //      polyfill so Claude's Bash-tool fd routing is not silently replaced.
-    private const val BASHRC_VERSION = 165
+    // 166: Patch Claude Bash-tool nested `env ... bash` command strings so the
+    //      inner bash keeps Shelly's loader variables after env scrubbing.
+    private const val BASHRC_VERSION = 166
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2278,6 +2280,17 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    const s = String(value);")
             sb.appendLine("    return (s === '/bin/sh' || s === '/bin/bash' || s === '/usr/bin/sh' || s === '/usr/bin/bash' || s === 'sh' || s === 'bash') ? shellyShellPath() : value;")
             sb.appendLine("  };")
+            sb.appendLine("  const shellyPatchNestedEnvArgs = function(args) {")
+            sb.appendLine("    if (!Array.isArray(args)) return args;")
+            sb.appendLine("    const libDir = shellyLibDir();")
+            sb.appendLine("    const inject = 'LD_LIBRARY_PATH=' + libDir + ' LD_PRELOAD=' + libDir + '/libexec_wrapper.so ';")
+            sb.appendLine("    return args.map(function(arg) {")
+            sb.appendLine("      if (typeof arg !== 'string' || arg.indexOf('&& env ') < 0 || arg.indexOf('LD_PRELOAD=' + libDir + '/libexec_wrapper.so') >= 0) return arg;")
+            sb.appendLine("      return arg")
+            sb.appendLine("        .replace(/&& env -i /g, '&& env -i ' + inject)")
+            sb.appendLine("        .replace(/&& env (?!-i )/g, '&& env ' + inject);")
+            sb.appendLine("    });")
+            sb.appendLine("  };")
             sb.appendLine("  const normalizeOptions = function(options, forceShell) {")
             sb.appendLine("    const out = (!options || typeof options !== 'object') ? {} : Object.assign({}, options);")
             sb.appendLine("    if (forceShell || out.shell !== undefined) out.shell = shellyShellValue(out.shell);")
@@ -2316,6 +2329,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      else if (name === 'execFile' && typeof args[args.length - 1] === 'function') args.splice(args.length - 1, 0, normalizeOptions(undefined, false));")
             sb.appendLine("      else if (name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') args.push(normalizeOptions(undefined, false));")
             sb.appendLine("      expandShellSpawn(name, args);")
+            sb.appendLine("      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && shellyCommandValue(args[0]) === shellyShellPath() && Array.isArray(args[1])) {")
+            sb.appendLine("        args[1] = shellyPatchNestedEnvArgs(args[1]);")
+            sb.appendLine("      }")
             sb.appendLine("      shellyDiagLog('child_process.' + name, { before: shellyDiagValue(before), after: { cmd: shellyDiagCommand(args[0]), argCount: Array.isArray(args[1]) ? args[1].length : null, options: shellyDiagValue(args[2] || args[1]) } });")
             sb.appendLine("      return original.apply(this, args);")
             sb.appendLine("    };")
