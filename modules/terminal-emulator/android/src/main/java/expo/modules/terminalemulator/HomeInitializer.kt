@@ -1105,7 +1105,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 179: Avoid env(1) as the startup scrubber; env itself can be launched
     //      under the bad loader state. Clear LD_* globally and call toybox
     //      applets directly with empty loader vars for startup maintenance.
-    private const val BASHRC_VERSION = 179
+    // 180: Stop preloading libexec_wrapper.so into the interactive PTY bash.
+    //      A loaded interposer cannot be removed by .bashrc, so any wrapper
+    //      crash made new tabs print repeated segfaults before the prompt.
+    // 182: Keep libexec_wrapper.so on the existing raw-syscall path while
+    //      retaining the PTY preload removal from v180. The wrapper marker is
+    //      now only an APK freshness guard, not a behavior change.
+    private const val BASHRC_VERSION = 182
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1342,7 +1348,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
             sb.appendLine("unset LD_LIBRARY_PATH")
             sb.appendLine("unset LD_PRELOAD")
-            sb.appendLine("__shelly_toybox() { LD_LIBRARY_PATH= LD_PRELOAD= /system/bin/toybox \"\$@\"; }")
+            sb.appendLine("__shelly_toybox() { /system/bin/toybox \"\$@\"; }")
             sb.appendLine("__shelly_cat() { __shelly_toybox cat \"\$@\"; }")
             sb.appendLine("__shelly_chmod() { __shelly_toybox chmod \"\$@\"; }")
             sb.appendLine("__shelly_grep() { __shelly_toybox grep \"\$@\"; }")

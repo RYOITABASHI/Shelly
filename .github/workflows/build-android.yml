@@ -896,9 +896,24 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
+          rm -rf ../modules/terminal-emulator/android/.cxx ../modules/terminal-emulator/android/build
           ./gradlew assembleRelease -x lintVitalAnalyzeRelease --build-cache
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
+
+      - name: Validate bionic exec wrapper in APK
+        run: |
+          set -euo pipefail
+          apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
+          test -n "${apk}" || { echo "No release APK found"; exit 1; }
+          unzip -p "${apk}" lib/arm64-v8a/libexec_wrapper.so > /tmp/libexec_wrapper.so
+          readelf -n /tmp/libexec_wrapper.so | sed -n '/Build ID/p'
+          readelf -d /tmp/libexec_wrapper.so | grep NEEDED || true
+          execve_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="execve"{print $3; exit}')"
+          test -n "${execve_size}" || { echo "FATAL: execve symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so execve size=${execve_size}"
+          strings /tmp/libexec_wrapper.so | grep -F 'shelly-exec-wrapper:v182:raw-syscall' \
+            || { echo "FATAL: APK does not contain the v182 exec wrapper marker"; exit 1; }
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

@@ -15,6 +15,10 @@
 #define MAX_ENVP 4096
 #define PATH_BUF_SIZE 4096
 
+__attribute__((used))
+static const char shelly_exec_wrapper_build_marker[] =
+    "shelly-exec-wrapper:v182:raw-syscall";
+
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
 #endif

@@ -284,16 +284,12 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
         setenv("LANG",            "en_US.UTF-8",                     1);
         setenv("LD_LIBRARY_PATH", ldLibPath,                         1);
         setenv("SHELL",           bashPath,                          1);
-        /* LD_PRELOAD exec wrapper: intercepts execve() so that all child
-         * processes (node, git, python, etc.) are automatically launched
-         * via /system/bin/linker64, bypassing Android's SELinux noexec
-         * restriction on app_data_file (targetSdk >= 29). */
-        {
-            char preloadPath[1024];
-            snprintf(preloadPath, sizeof(preloadPath),
-                     "%s/libexec_wrapper.so", ldLibPath);
-            setenv("LD_PRELOAD", preloadPath, 1);
-        }
+        /* Do not preload the exec wrapper into the interactive bash process.
+         * Once a shared object is loaded into bash, unsetting LD_PRELOAD in
+         * .bashrc cannot remove its execve() interposer, so any wrapper crash
+         * bricks ordinary terminal startup. CLI launchers that need the wrapper
+         * inject it in their own scoped environments. */
+        unsetenv("LD_PRELOAD");
         /* npm global install prefix — avoids writing to /apex or system paths */
         {
             char npmPrefix[1024];
