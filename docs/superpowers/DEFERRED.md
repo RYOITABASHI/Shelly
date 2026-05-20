@@ -742,6 +742,41 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ## P1 — v0.1.1 で対応推奨
 
+### CC schema-diff watcher を updater に組み込む
+
+**発見**: 2026-05-20 Claude Code 2.1.143+ Bash tool 追従調査中
+
+**目的**: Claude Code の更新で Bash / Read / Edit などの tool contract、
+permission mode、sandbox flag、payload 形式が変わった時に、Shelly の
+runtime updater が無自覚に promote して壊すのを防ぐ。
+
+**実装方針**:
+1. `@anthropic-ai/claude-code` パッケージに含まれる `sdk-tools.d.ts` を
+   Shelly repo に snapshot する。
+2. updater の staging → promote に、前回 snapshot と候補 version の
+   `sdk-tools.d.ts` diff を挟む。
+3. コメント差分だけで落とさないよう、TypeScript AST から JSON Schema
+   相当へ正規化して比較する。
+4. Bash / Read / Edit / permission / sandbox / output path など既知 critical
+   schema に breaking diff が出た場合は promote を保留し、commit 可能な
+   changelog を生成する。
+5. behavior 層として headless `claude -p` smoke を 1-2 本追加し、
+   timeout、`persistedOutputPath`、`backgroundTaskId` など実際の返り値を
+   assert する。
+6. binary 層として `claude --version` の major/minor 変化を
+   `breaking_versions.txt` と突き合わせ、未知 major/minor は手動レビューを
+   強制する。
+
+**Why not now**: 現在は Claude Bash tool の実機 failure path 切り分けが
+優先。v172 native exec trace の結果で直す/ラッパーへ切り替える判断を先に
+行う。
+
+**優先度**: P1 (Claude Code 更新追従の再発防止)
+**見積**: 1-2 日。AST 正規化と updater promote gate の接続が主作業。
+**→ sync:** Claude update notes / release checklist
+
+---
+
 ### bug #135 — gpg cascade runtime deps (libgcrypt + chain) — v5.1.1
 
 **発見**: 2026-04-27 build #746 実機検証
@@ -1685,6 +1720,7 @@ claude() {
 - **2026-04-16**: v0.1.0 Wave L 実機検証セッション。Codex CLI を動かすために Alpine rootfs + proot wrapper を導入したが実機で複数の根本問題が顕在化。**bug #91** (ペースト改行分割、P0)、**bug #92** (/sdcard noexec/read 拒否、P0)、**bug #93** (`bash` コマンドが PATH 外、P1)、**bug #94** (ペースト経路設計がバラバラで同種バグが繰り返し発生、P0 調査)、**bug #95** (Wave L の codex.js sed patch が post-install 内で走らない、P1) を登録。bug #76 を Wave L 検証結果で更新。本日 v0.1.0 を出すのは **bug #91 を根本修正してから** という方針に変更。codex は v0.1.1 送り (claude + gemini の 2 本で v0.1.0 を出荷予定)。
 - **2026-04-21**: bug #117 Path C-bis **end-to-end 成立** ✅。Windows PC + WSL2 Ubuntu 24.04 + musl.cc `aarch64-linux-musl-gcc` で musl v1.2.4 を `src/network/resolvconf.c` patch 後に cross-build (633 KB stripped)。Termux 実機で `./ld-musl ./claude --print "reply with OK"` が `OK` を api.anthropic.com から取得。世界初「Android ネイティブで最新 Claude Code (2.1.116) 動作」実機確認。次は Shelly CI への取り込み (musl build step + LibExtractor + HomeInitializer BASHRC_VERSION 43) で v0.1.1 目玉機能化。
 - **2026-05-13**: v119 実機で bare `claude` native route が TUI まで到達する一方、`/login` 後の trust/onboarding prompt で Bun SEA が exit 139。v120 で `~/.claude.json` HOME trust seed と `shelly-doctor` 診断を追加。`SHELLY_AUTO_UPDATE_CLIS=0` は v101 の foreground TUI 汚染対策として維持し、auto-update 再有効化は P2 に defer。
+- **2026-05-20**: Claude Code 2.1.143+ Bash tool 追従で、内部 subprocess 実装追跡だけでは更新時に再発しやすいことを確認。`sdk-tools.d.ts` snapshot + schema diff + behavior smoke + breaking version gate を P1 として登録。
 
 ---
 
