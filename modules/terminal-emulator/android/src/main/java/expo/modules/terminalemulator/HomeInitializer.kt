@@ -1098,7 +1098,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      bashrc version. Claude Code restores functions with base64 during
     //      Bash-tool shell startup; Shelly's base64 wrapper needs _run in child
     //      shells or the snapshot self-breaks and Bash tool returns exit 1.
-    private const val BASHRC_VERSION = 176
+    private const val BASHRC_VERSION = 177
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2485,7 +2485,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("        if (item.index < 0) return false;")
             sb.appendLine("        const prev = item.index === 0 ? ' ' : tail[item.index - 1];")
             sb.appendLine("        if (prev === '=') return false;")
-            sb.appendLine("        if (item.token[0] !== \"'\" && item.token[0] !== '\"' && prev !== ' ' && prev !== '\\t' && prev !== '\\n') return false;")
+            sb.appendLine("        const prevCode = prev.charCodeAt(0);")
+            sb.appendLine("        if (item.token[0] !== \"'\" && item.token[0] !== '\"' && prevCode !== 32 && prevCode !== 9 && prevCode !== 10) return false;")
             sb.appendLine("        return true;")
             sb.appendLine("      })")
             sb.appendLine("      .sort(function(a, b) { return a.index - b.index; });")

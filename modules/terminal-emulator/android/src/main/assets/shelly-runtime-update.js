@@ -543,7 +543,8 @@ if (!globalThis.Bun.JSONL) {
         if (item.index < 0) return false;
         const prev = item.index === 0 ? ' ' : tail[item.index - 1];
         if (prev === '=') return false;
-        if (item.token[0] !== "'" && item.token[0] !== '"' && prev !== ' ' && prev !== '\t' && prev !== '\n') return false;
+        const prevCode = prev.charCodeAt(0);
+        if (item.token[0] !== "'" && item.token[0] !== '"' && prevCode !== 32 && prevCode !== 9 && prevCode !== 10) return false;
         return true;
       })
       .sort(function(a, b) { return a.index - b.index; });
