@@ -906,17 +906,31 @@ jobs:
           set -euo pipefail
           apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
           test -n "${apk}" || { echo "No release APK found"; exit 1; }
+
+          # Marker scan: `strings` only scans a build-config dependent subset
+          # of sections and gave a false negative on run 26197566814. A raw
+          # byte scan of the whole .so is section-agnostic and deterministic.
+          check_marker() {
+            so="$1"; marker="$2"
+            if grep -qaF "${marker}" "${so}"; then
+              echo "OK: marker '${marker}' present in $(basename "${so}")"
+            else
+              echo "FATAL: marker '${marker}' missing from $(basename "${so}")"
+              readelf -SW "${so}" || true
+              exit 1
+            fi
+          }
+
           unzip -p "${apk}" lib/arm64-v8a/libexec_wrapper.so > /tmp/libexec_wrapper.so
           readelf -n /tmp/libexec_wrapper.so | sed -n '/Build ID/p'
           readelf -d /tmp/libexec_wrapper.so | grep NEEDED || true
           execve_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="execve"{print $3; exit}')"
           test -n "${execve_size}" || { echo "FATAL: execve symbol missing from libexec_wrapper.so"; exit 1; }
           echo "libexec_wrapper.so execve size=${execve_size}"
-          strings /tmp/libexec_wrapper.so | grep -F 'shelly-exec-wrapper:v182:raw-syscall' \
-            || { echo "FATAL: APK does not contain the v182 exec wrapper marker"; exit 1; }
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v182:raw-syscall'
+
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
-          strings /tmp/libshelly-pty.so | grep -F 'shelly-pty:v184:scoped-loader-env' \
-            || { echo "FATAL: APK does not contain the v184 shelly-pty marker"; exit 1; }
+          check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

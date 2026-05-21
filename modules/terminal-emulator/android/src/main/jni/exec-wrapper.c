@@ -15,7 +15,9 @@
 #define MAX_ENVP 4096
 #define PATH_BUF_SIZE 4096
 
-__attribute__((used))
+/* used+retain keeps this CI freshness marker past compiler dead-strip and
+ * linker --gc-sections; `used` alone does not bind the linker. */
+__attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
     "shelly-exec-wrapper:v182:raw-syscall";
 
