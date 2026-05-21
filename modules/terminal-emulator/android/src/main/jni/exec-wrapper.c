@@ -11,15 +11,17 @@
 #include <unistd.h>
 
 #define LINKER64 "/system/bin/linker64"
-#define MAX_ARGC 4096
-#define MAX_ENVP 4096
+/* Kept modest: these size on-stack arrays in execve(); 4096 each ballooned the
+ * frame to ~82 KB and overflowed forked-child stacks (every child SIGSEGV'd). */
+#define MAX_ARGC 1024
+#define MAX_ENVP 512
 #define PATH_BUF_SIZE 4096
 
 /* used+retain keeps this CI freshness marker past compiler dead-strip and
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v184:exec-relay";
+    "shelly-exec-wrapper:v185:stack-frame-fix";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -438,7 +440,8 @@ static int scrub_system_envp(char *const envp[], char **out) {
         out[0] = NULL;
         return 0;
     }
-    for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
+    int i = 0;
+    for (; i < MAX_ENVP && envp[i]; i++) {
         if (starts_with(envp[i], "LD_LIBRARY_PATH=") ||
             starts_with(envp[i], "LD_PRELOAD=")) {
             continue;
@@ -448,6 +451,7 @@ static int scrub_system_envp(char *const envp[], char **out) {
         }
         out[n++] = envp[i];
     }
+    if (i >= MAX_ENVP) return -1;  /* env exceeds MAX_ENVP — fail, never silently truncate */
     out[n] = NULL;
     return 0;
 }
@@ -470,7 +474,8 @@ static int relay_envp(char *const envp[], char **out,
     if (append_str(preload_buf, preload_size, &nb, "/libexec_wrapper.so") != 0) return -1;
 
     if (envp) {
-        for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
+        int i = 0;
+        for (; i < MAX_ENVP && envp[i]; i++) {
             if (starts_with(envp[i], "LD_LIBRARY_PATH=") ||
                 starts_with(envp[i], "LD_PRELOAD=")) {
                 continue;
@@ -478,6 +483,7 @@ static int relay_envp(char *const envp[], char **out,
             if (n >= MAX_ENVP - 2) return -1;
             out[n++] = envp[i];
         }
+        if (i >= MAX_ENVP) return -1;
     }
     out[n++] = preload_buf;
     out[n] = NULL;
@@ -513,7 +519,8 @@ static int add_app_loader_envp(char *const envp[], char **out,
     if (append_str(dir_buf, dir_size, &nb, lib_dir) != 0) return -1;
 
     if (source) {
-        for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+        int i = 0;
+        for (; i < MAX_ENVP && source[i]; i++) {
             if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
                 starts_with(source[i], "LD_PRELOAD=") ||
                 starts_with(source[i], "SHELLY_LIB_DIR=")) {
@@ -522,6 +529,7 @@ static int add_app_loader_envp(char *const envp[], char **out,
             if (n >= MAX_ENVP - 4) return -1;
             out[n++] = source[i];
         }
+        if (i >= MAX_ENVP) return -1;
     }
     out[n++] = ld_buf;
     out[n++] = preload_buf;
@@ -564,17 +572,18 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
     if (!linker_exec) {
         if (should_scrub_system_env(rewritten)) {
+            char *scrubbed_env[MAX_ENVP];
             if (is_exec_relay(rewritten)) {
                 char *relay_env[MAX_ENVP];
                 char preload_buf[PATH_BUF_SIZE + 32];
                 if (relay_envp(envp, relay_env, preload_buf, sizeof(preload_buf)) == 0) {
                     return raw_execve_call(rewritten, argv, relay_env);
                 }
-            } else {
-                char *scrubbed_env[MAX_ENVP];
-                if (scrub_system_envp(envp, scrubbed_env) == 0) {
-                    return raw_execve_call(rewritten, argv, scrubbed_env);
-                }
+                /* relay env build failed — fall through to a plain scrub so a
+                 * /system binary never inherits Shelly's loader vars (v174). */
+            }
+            if (scrub_system_envp(envp, scrubbed_env) == 0) {
+                return raw_execve_call(rewritten, argv, scrubbed_env);
             }
         }
         return raw_execve_call(rewritten, argv, envp);
