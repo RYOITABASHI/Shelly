@@ -520,6 +520,7 @@ function xhrStream(
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     let lastIndex = 0;
+    let lineBuffer = '';
     let settled = false;
 
     const finish = (result: { success: boolean; error?: string }) => {
@@ -539,14 +540,25 @@ function xhrStream(
 
     // Throttle onprogress to prevent UI thread saturation
     let progressTimer: ReturnType<typeof setTimeout> | null = null;
-    const processNewData = () => {
+    const processNewData = (flush = false) => {
       const text = xhr.responseText;
-      if (!text || text.length <= lastIndex) return;
+      if (!text || text.length <= lastIndex) {
+        if (flush && lineBuffer) {
+          parseSSELine(lineBuffer, apiType, onChunk);
+          lineBuffer = '';
+        }
+        return;
+      }
 
       const newData = text.slice(lastIndex);
       lastIndex = text.length;
 
-      const lines = newData.split('\n');
+      const lines = (lineBuffer + newData).split('\n');
+      if (!flush) {
+        lineBuffer = lines.pop() ?? '';
+      } else {
+        lineBuffer = '';
+      }
       for (const line of lines) {
         parseSSELine(line, apiType, onChunk);
       }
@@ -567,7 +579,7 @@ function xhrStream(
         return;
       }
       // Process any remaining data
-      processNewData();
+      processNewData(true);
       onChunk('', true);
       finish({ success: true });
     };

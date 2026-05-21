@@ -20,6 +20,8 @@ import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
 import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
+import { ollamaChatStream } from '@/lib/local-llm';
+import type { OllamaMessage } from '@/lib/local-llm';
 import { parseInput } from '@/lib/input-router';
 import { parseAgentCommand, createAgent } from '@/lib/agent-manager';
 import { suggestTool } from '@/lib/agent-tool-router';
@@ -119,91 +121,6 @@ function createThrottledUpdate(updateFn: UpdateFn) {
   };
 
   return throttled;
-}
-
-// ─── streamToAgent ─────────────────────────────────────────────────────────────
-
-type StreamConfig = {
-  baseUrl: string;
-  model: string;
-  systemPrompt: string;
-  history: Array<{ role: 'user' | 'assistant'; content: string }>;
-  userText: string;
-  signal: AbortSignal;
-  onChunk: (chunk: string) => void;
-};
-
-/**
- * Stream a response from the local LLM (OpenAI-compatible /v1/chat/completions).
- * Uses SSE when available; falls back to a single JSON response.
- */
-async function streamLocalLLM(cfg: StreamConfig): Promise<void> {
-  const url = `${cfg.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
-
-  const messages = [
-    { role: 'system' as const, content: cfg.systemPrompt },
-    ...cfg.history,
-    { role: 'user' as const, content: cfg.userText },
-  ];
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 2048,
-    }),
-    signal: cfg.signal,
-  });
-
-  if (!response.ok) {
-    const errText = await response.text().catch(() => String(response.status));
-    throw new Error(`Local LLM error ${response.status}: ${errText.slice(0, 200)}`);
-  }
-
-  // ── SSE streaming path ──
-  const reader = response.body?.getReader();
-  if (reader) {
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === '[DONE]') return;
-
-        try {
-          const parsed = JSON.parse(data) as {
-            choices?: Array<{ delta?: { content?: string } }>;
-          };
-          const chunk = parsed.choices?.[0]?.delta?.content;
-          if (chunk) cfg.onChunk(chunk);
-        } catch {
-          // Malformed SSE line — skip
-        }
-      }
-    }
-    return;
-  }
-
-  // ── Fallback: non-streaming JSON ──
-  const json = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = json.choices?.[0]?.message?.content ?? '';
-  if (content) cfg.onChunk(content);
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -484,13 +401,7 @@ export function useAIPaneDispatch(paneId: string) {
         );
 
         if (agent === 'local') {
-          // ── Local LLM streaming ──
-          // Plan B: llama.cpp Setup 画面で Start すると localLlmUrl が
-          // セットされる (LlamaCppSectionWrapper)。localLlmEnabled トグルは
-          // Plan B 移行後は旧チャット画面専用で、Setup フローからは更新
-          // されない (bug #68)。従ってここでは URL が設定されているか
-          // だけをゲートに使い、実サーバーが落ちていれば streamLocalLLM
-          // が connection エラーを返すので UX 的にはそれで十分。
+          // ── Local LLM streaming (RN-aware XHR client from lib/local-llm) ──
           if (!settings.localLlmUrl) {
             throw new Error(
               'Local LLM server is not configured. Open Settings → Local LLM and start llama.cpp.',
@@ -503,15 +414,21 @@ export function useAIPaneDispatch(paneId: string) {
             streamingText: '',
           });
 
-          await streamLocalLLM({
-            baseUrl: settings.localLlmUrl,
-            model: settings.localLlmModel ?? 'default',
-            systemPrompt,
-            history,
-            userText,
-            signal,
-            onChunk: (chunk) => {
-              if (signal.aborted) return;
+          const messages: OllamaMessage[] = [
+            { role: 'system', content: systemPrompt },
+            ...history.map((m) => ({ role: m.role, content: m.content })),
+            { role: 'user', content: userText },
+          ];
+
+          const result = await ollamaChatStream(
+            {
+              baseUrl: settings.localLlmUrl,
+              model: settings.localLlmModel ?? 'default',
+              enabled: true,
+            },
+            messages,
+            (chunk, _done) => {
+              if (signal.aborted || !chunk) return;
               accumulated += chunk;
               throttledUpdate(paneId, assistantId, {
                 streamingText: accumulated,
@@ -519,15 +436,33 @@ export function useAIPaneDispatch(paneId: string) {
                 isStreaming: true,
               });
             },
-          });
+            120000,
+            signal,
+          );
 
-          if (!signal.aborted) {
-            logInfo('AIPaneDispatch', 'Response complete');
+          if (signal.aborted) {
             store.updateMessage(paneId, assistantId, {
               content: accumulated,
               streamingText: undefined,
               isStreaming: false,
               tokenCount: estimateTokens(accumulated),
+            });
+          } else if (result.success) {
+            logInfo('AIPaneDispatch', 'Local LLM response complete');
+            store.updateMessage(paneId, assistantId, {
+              content: accumulated,
+              streamingText: undefined,
+              isStreaming: false,
+              tokenCount: estimateTokens(accumulated),
+            });
+          } else {
+            logError('AIPaneDispatch', `Local LLM failed: ${result.error ?? 'unknown'}`);
+            store.updateMessage(paneId, assistantId, {
+              content:
+                `Could not reach the local LLM at ${settings.localLlmUrl}. ` +
+                `Make sure llama-server (or Ollama) is running.\n\n${result.error ?? ''}`.trim(),
+              streamingText: undefined,
+              isStreaming: false,
             });
           }
         } else if (agent === 'cerebras') {
