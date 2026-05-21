@@ -48,7 +48,7 @@
 ### Claude Code Bash tool Exit code 1
 
 **優先度**: P1
-**状態**: 未解決。v148〜v186 相当の Bash-tool / exec-wrapper / launcher 追従では解決せず、当て推量ビルドを停止。
+**状態**: 未解決。v148〜v186 相当の Bash-tool / exec-wrapper / launcher 追従では解決せず、当て推量ビルドを停止。2026-05-21 に APK 同梱 `strace` の観測手段は確立済み。
 
 **症状**:
 - Claude Code の Bash tool が `Exit code 1` になり、Terminal からの `claude --version` や TUI 起動とは別経路で失敗する。
@@ -60,9 +60,16 @@
 - リモートスクショ往復とデバイス内トレースだけでは、`--print` canary hang や `SHELLY_CLAUDE_PATCH_TRACE` 自体の起動阻害を切り分けきれなかった。
 
 **次の一手**:
-1. 当て推量ビルド禁止。まず観測手段を確立する。
-2. シンボル付き `libexec_wrapper.so` と一致 build ID の tombstone、または APK 同梱 `strace` 相当の syscall trace を用意する。
-3. native exec-wrapper / linker64 / env scrub の専用デバッグタスクとして再開し、1 仮説 1 証拠で進める。
+1. 当て推量ビルド禁止。APK 同梱 `strace` で Claude Bash tool canary を先に観測する。
+2. `strace -ff -e trace=execve,execveat,clone,posix_spawn -o /sdcard/Download/shelly-debug/<name>.log <canary>` で、どの `execve` / `clone` 境界で落ちるか確定する。
+3. 必要に応じてシンボル付き `libexec_wrapper.so` と一致 build ID の tombstone も併用する。
+4. native exec-wrapper / linker64 / env scrub の専用デバッグタスクとして再開し、1 仮説 1 証拠で進める。
+
+**観測手段ハンドオフ**:
+- [`2026-05-21-aarch64-strace-apk-native-crash-handoff.md`](specs/2026-05-21-aarch64-strace-apk-native-crash-handoff.md)
+- Branch `codex/aarch64-strace-debug` / commit `92f89af2`
+- CI run `26237234723` green
+- 実機 `strace -o /sdcard/Download/shelly-debug/smoke.log -e trace=execve echo ok` PASS
 
 **Why not now**: Codex / Claude CLI の既存サポート面を壊さずに main を green に戻すことを優先する。未検証の exec-wrapper relay や launcher churn は main に載せない。
 
@@ -1743,6 +1750,7 @@ claude() {
 - **2026-05-13**: v119 実機で bare `claude` native route が TUI まで到達する一方、`/login` 後の trust/onboarding prompt で Bun SEA が exit 139。v120 で `~/.claude.json` HOME trust seed と `shelly-doctor` 診断を追加。`SHELLY_AUTO_UPDATE_CLIS=0` は v101 の foreground TUI 汚染対策として維持し、auto-update 再有効化は P2 に defer。
 - **2026-05-20**: Claude Code 2.1.143+ Bash tool 追従で、内部 subprocess 実装追跡だけでは更新時に再発しやすいことを確認。`sdk-tools.d.ts` snapshot + schema diff + behavior smoke + breaking version gate を P1 として登録。
 - **2026-05-21**: Claude Code Bash tool `Exit code 1` 追跡で 7 ビルドを試したが未解決。証明済みの CI marker / exec-wrapper null-deref hardening のみ main に残し、未検証の relay / launcher / stack-frame churn は deferred 化。
+- **2026-05-21**: aarch64 `strace` を APK に同梱する観測手段を確立。Alpine packaged strace は libdw/elfutils 依存で実機失敗したため却下し、CI で upstream strace v6.16 を `stacktrace/libdw/libunwind` 無効で source build。CI run `26237234723` green、実機 `strace echo ok` syscall trace PASS。Claude Bash tool 修正は次回この trace を前提に再開する。
 
 ---
 
