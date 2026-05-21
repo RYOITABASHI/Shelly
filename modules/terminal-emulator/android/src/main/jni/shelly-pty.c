@@ -26,7 +26,9 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 
-__attribute__((used))
+/* used+retain keeps this CI freshness marker past compiler dead-strip and
+ * linker --gc-sections; `used` alone does not bind the linker. */
+__attribute__((used, retain))
 static const char shelly_pty_build_marker[] =
     "shelly-pty:v184:scoped-loader-env";
 
