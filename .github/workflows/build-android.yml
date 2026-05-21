@@ -121,6 +121,7 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 5 \
             https://github.com/strace/strace/releases/download/v6.16/strace-6.16.tar.xz \
             -o /tmp/strace-v6.16.tar.xz
+          echo "3d7aee7e4f044b2f67f3d51a8a76eda18076e9fb2774de54ac351d777d4ebffa  /tmp/strace-v6.16.tar.xz" | sha256sum -c -
           CID="$(docker create --platform linux/arm64 \
             -v /tmp/musl-out:/out \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
@@ -176,6 +177,7 @@ jobs:
               readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
               readelf -d /out/libexec_wrapper_musl.so | grep -E "Shared library: \\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"
               readelf -h /out/libstrace.so | grep -E "Type|Machine"
+              readelf -h /out/libstrace.so | grep -q "Type:.*DYN"
               readelf -l /out/libstrace.so | grep -q "/lib/ld-musl-aarch64.so.1"
               readelf -d /out/libstrace.so | grep "Shared library:"
               if readelf -d /out/libstrace.so | grep "Shared library:" | grep -Ev "\\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"; then
