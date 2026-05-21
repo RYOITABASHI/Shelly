@@ -78,6 +78,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_musl_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libstrace.so
             modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
           key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/gemini-cli.txt', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
@@ -117,11 +118,14 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 5 \
             https://github.com/ifduyue/musl/archive/refs/tags/v1.2.4.tar.gz \
             -o /tmp/musl-v1.2.4.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 \
+            https://github.com/strace/strace/releases/download/v6.16/strace-6.16.tar.xz \
+            -o /tmp/strace-v6.16.tar.xz
           CID="$(docker create --platform linux/arm64 \
             -v /tmp/musl-out:/out \
             -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
             alpine:3.19 sh -euxc '
-              apk add --no-progress build-base
+              apk add --no-progress build-base gawk linux-headers xz
               cd /tmp
               mkdir musl
               tar xzf /tmp/musl-v1.2.4.tar.gz -C musl --strip-components=1
@@ -146,26 +150,61 @@ jobs:
                 /tmp/exec-wrapper-musl.c \
                 -o /out/libexec_wrapper_musl.so
               strip --strip-unneeded /out/libexec_wrapper_musl.so
+              # Build strace from source instead of bundling the Alpine package:
+              # the packaged binary depends on elfutils/libdw stack tracing,
+              # whose versioned symbols do not resolve correctly in the Shelly
+              # Android + bundled musl-loader launch path.
+              cd /tmp
+              mkdir strace
+              tar xJf /tmp/strace-v6.16.tar.xz -C strace --strip-components=1
+              cd strace
+              ./configure \
+                --prefix=/tmp/strace-install \
+                --enable-mpers=no \
+                --enable-stacktrace=no \
+                --without-libdw \
+                --without-libunwind \
+                --without-libiberty \
+                >/tmp/strace-configure.log 2>&1 || { tail -60 /tmp/strace-configure.log; exit 1; }
+              make -j"$(nproc)" >/tmp/strace-make.log 2>&1 || { tail -60 /tmp/strace-make.log; exit 1; }
+              cp src/strace /out/libstrace.so
+              strip --strip-unneeded /out/libstrace.so
               # Sanity checks inside the container — readelf/strings are
               # the Alpine aarch64 natives, no cross-tool needed.
               readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
               strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
               readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
               readelf -d /out/libexec_wrapper_musl.so | grep -E "Shared library: \\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"
+              readelf -h /out/libstrace.so | grep -E "Type|Machine"
+              readelf -l /out/libstrace.so | grep -q "/lib/ld-musl-aarch64.so.1"
+              readelf -d /out/libstrace.so | grep "Shared library:"
+              if readelf -d /out/libstrace.so | grep "Shared library:" | grep -Ev "\\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"; then
+                echo "strace has unexpected runtime dependencies" >&2
+                exit 1
+              fi
             ')"
           trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
           docker cp /tmp/musl-v1.2.4.tar.gz "${CID}:/tmp/musl-v1.2.4.tar.gz"
+          docker cp /tmp/strace-v6.16.tar.xz "${CID}:/tmp/strace-v6.16.tar.xz"
           docker cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c" "${CID}:/tmp/exec-wrapper-musl.c"
           docker start -a "${CID}"
           docker rm "${CID}" >/dev/null
           trap - EXIT
           cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
           cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
+          cp /tmp/musl-out/libstrace.so "${GITHUB_WORKSPACE}/${JNILIBS}/libstrace.so"
+          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}"/libld_musl_shelly.so \
+            "${GITHUB_WORKSPACE}/${JNILIBS}"/libexec_wrapper_musl.so \
+            "${GITHUB_WORKSPACE}/${JNILIBS}"/libstrace.so
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}"/libld_musl_shelly.so \
+            "${GITHUB_WORKSPACE}/${JNILIBS}"/libexec_wrapper_musl.so \
+            "${GITHUB_WORKSPACE}/${JNILIBS}"/libstrace.so
+          file "${GITHUB_WORKSPACE}/${JNILIBS}"/libld_musl_shelly.so
+          file "${GITHUB_WORKSPACE}/${JNILIBS}"/libexec_wrapper_musl.so
+          file "${GITHUB_WORKSPACE}/${JNILIBS}"/libstrace.so
+          rm -rf /tmp/musl-out /tmp/musl-v1.2.4.tar.gz /tmp/strace-v6.16.tar.xz
+          docker system prune -af || true
+          df -h
 
       - name: Install aarch64 cross-binutils (for strip --strip-unneeded)
         if: steps.android-payload-cache.outputs.cache-hit != 'true'

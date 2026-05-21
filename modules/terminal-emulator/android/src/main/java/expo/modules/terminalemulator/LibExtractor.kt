@@ -153,6 +153,12 @@ object LibExtractor {
         "lib/arm64-v8a/libshelly_musl_exec.so" to "shelly_musl_exec",
         "lib/arm64-v8a/libclaude.so" to "claude",
         "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1",
+        // CI-built aarch64 strace. It is musl-linked and is launched by
+        // HomeInitializer.kt's strace() helper through the bundled
+        // ld-musl-aarch64.so.1, giving on-device native crash visibility.
+        // APK packaging only accepts lib*.so names, so CI ships the binary
+        // as libstrace.so and LibExtractor restores the PATH-visible name.
+        "lib/arm64-v8a/libstrace.so" to "strace",
         // bug #102 / #115 phase 1: native xdg-open replacement that fires
         // the shelly://browser deep link via `am start`. Direct execve
         // target (no #! shim) so it sidesteps Android binfmt_script's
@@ -188,9 +194,24 @@ object LibExtractor {
         // pre-patch binary on disk would mask the fix until forceRefresh
         // hits via versionCode bump.
         "claude",
+        // CI-provisioned native diagnostic tool; refresh like the other
+        // generated native payloads so APK rebuilds update existing homes.
+        "strace",
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.
         "shelly_xdg_open"
+    )
+
+    private val OBSOLETE_LIBS = setOf(
+        // strace rebuild: Alpine package dependencies were removed after
+        // libdw/elfutils failed under the Android + bundled musl-loader path.
+        "libstrace_dw.so",
+        "libstrace_elf.so",
+        "libstrace_fts.so",
+        "libstrace_bz2.so",
+        "libstrace_lzma.so",
+        "libstrace_z.so",
+        "libstrace_zstd.so"
     )
 
     fun getLibDir(context: Context): File =
@@ -223,6 +244,12 @@ object LibExtractor {
                     }
                 }
                 outFile.setExecutable(true, false)
+            }
+            for (fileName in OBSOLETE_LIBS) {
+                val obsolete = File(libDir, fileName)
+                if (obsolete.exists() && !obsolete.delete()) {
+                    Log.w(TAG, "failed to delete obsolete extracted file: $fileName")
+                }
             }
         } finally {
             zipFile.close()

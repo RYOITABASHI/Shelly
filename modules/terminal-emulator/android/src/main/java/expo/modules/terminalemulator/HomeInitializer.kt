@@ -1114,7 +1114,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 184: Keep LD_LIBRARY_PATH only for the linker64 -> libbash.so PTY exec,
     //      then rely on .bashrc to immediately unset it before any interactive
     //      system command or restored shell fragment can run.
-    private const val BASHRC_VERSION = 184
+    // 185: Add a PATH-visible strace() helper that launches the CI-provisioned
+    //      Alpine aarch64 strace through Shelly's bundled musl loader.
+    // 186: Add SHELLY_DEBUG_DIR plus helper commands that place diagnostic
+    //      exports under /sdcard/Download/shelly-debug when Android permits it.
+    private const val BASHRC_VERSION = 186
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1349,6 +1353,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
+            sb.appendLine("export SHELLY_DEBUG_DIR=\"\${SHELLY_DEBUG_DIR:-/sdcard/Download/shelly-debug}\"")
             sb.appendLine("unset LD_LIBRARY_PATH")
             sb.appendLine("unset LD_PRELOAD")
             sb.appendLine("__shelly_toybox() { /system/bin/toybox \"\$@\"; }")
@@ -1999,6 +2004,39 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("bash() { _run $libDir/libbash.so \"\$@\"; }")
             sb.appendLine("node() { _run $libDir/node \"\$@\"; }")
             sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
+            sb.appendLine("__shelly_debug_dir() {")
+            sb.appendLine("  local __dir=\"\${1:-\$SHELLY_DEBUG_DIR}\"")
+            sb.appendLine("  [ -n \"\$__dir\" ] || __dir=\"/sdcard/Download/shelly-debug\"")
+            sb.appendLine("  if /system/bin/toybox mkdir -p \"\$__dir\" 2>/dev/null && [ -d \"\$__dir\" ] && [ -w \"\$__dir\" ]; then")
+            sb.appendLine("    printf '%s\\n' \"\$__dir\"")
+            sb.appendLine("    return 0")
+            sb.appendLine("  fi")
+            sb.appendLine("  __dir=\"\$HOME/.shelly-debug\"")
+            sb.appendLine("  /system/bin/toybox mkdir -p \"\$__dir\" 2>/dev/null || return 1")
+            sb.appendLine("  printf '%s\\n' \"\$__dir\"")
+            sb.appendLine("}")
+            sb.appendLine("shelly-debug-dir() { __shelly_debug_dir \"\$@\"; }")
+            sb.appendLine("strace() {")
+            sb.appendLine("  if [ ! -x \"\$SHELLY_LIB_DIR/strace\" ] || [ ! -x \"\$SHELLY_LIB_DIR/ld-musl-aarch64.so.1\" ]; then")
+            sb.appendLine("    printf 'strace: bundled musl strace is not installed\\n' >&2")
+            sb.appendLine("    return 127")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ ! -x \"\$SHELLY_LIB_DIR/shelly_musl_exec\" ]; then")
+            sb.appendLine("    printf 'strace: bundled musl trampoline is not installed\\n' >&2")
+            sb.appendLine("    return 127")
+            sb.appendLine("  fi")
+            sb.appendLine("  /system/bin/env -u LD_PRELOAD -u LD_LIBRARY_PATH LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$SHELLY_LIB_DIR/shelly_musl_exec\" \"\$SHELLY_LIB_DIR/ld-musl-aarch64.so.1\" \"\$SHELLY_LIB_DIR/strace\" \"\$@\"")
+            sb.appendLine("}")
+            sb.appendLine("shelly-strace-debug() {")
+            sb.appendLine("  local __name=\"\${1:-trace}\"")
+            sb.appendLine("  [ \"\$#\" -gt 0 ] && shift")
+            sb.appendLine("  [ \"\$#\" -gt 0 ] || { printf 'usage: shelly-strace-debug <name> <strace-args...> <command> [args...]\\n' >&2; return 64; }")
+            sb.appendLine("  local __dir=\"\$(__shelly_debug_dir)\" || return 1")
+            sb.appendLine("  local __stamp=\"\$(date +%Y%m%d-%H%M%S 2>/dev/null || date +%s 2>/dev/null || echo now)\"")
+            sb.appendLine("  local __prefix=\"\$__dir/\$__name.\$__stamp.t.log\"")
+            sb.appendLine("  printf 'strace_log=%s\\n' \"\$__prefix\"")
+            sb.appendLine("  strace -ff -o \"\$__prefix\" \"\$@\"")
+            sb.appendLine("}")
             // bug #100: seed default identity for auto-savepoint. Runs now
             // (AFTER git() is defined) so bare `git config` resolves to the
             // shell function -> _run linker64 $libDir/git. User-set values
@@ -3864,7 +3902,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  shelly-doctor | sed -n '/^claude extracted/p;/^claude canary/p;/^claude musl runtime/p;/^claude apk/p'")
             sb.appendLine("  printf '\\nRun shelly-runtime-canary for the authenticated Bash-tool gate.\\n'")
             sb.appendLine("}")
-            sb.appendLine("export -f shelly-update-clis shelly-doctor shelly-runtime-canary shelly-claude-bash-canary shelly-claude-bash-trace shelly-bash-tool-trace shelly-claude-diagnose")
+            sb.appendLine("export -f shelly-update-clis shelly-doctor shelly-runtime-canary shelly-claude-bash-canary shelly-claude-bash-trace shelly-bash-tool-trace shelly-claude-diagnose __shelly_debug_dir shelly-debug-dir shelly-strace-debug strace")
             sb.appendLine("__shelly_runtime_update_marker=\"\$HOME/.shelly-runtime/.last_update\"")
             sb.appendLine("__shelly_runtime_update_interval=86400")
             sb.appendLine("__shelly_runtime_quick_marker=\"\$HOME/.shelly-runtime/.last_quick_check\"")

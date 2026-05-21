@@ -64,6 +64,8 @@ struct loaded_elf {
   uintptr_t phdr_addr;
   uint16_t phent;
   uint16_t phnum;
+  uint16_t type;
+  bool has_musl_interp;
 };
 
 static int phdr_prot(uint32_t flags) {
@@ -93,24 +95,25 @@ static void zero_range_with_prot(uintptr_t start, uintptr_t end, int prot, long 
   }
 }
 
-static struct loaded_elf map_elf_load_segments(const char *path, long page_size) {
+static struct loaded_elf map_elf_load_segments(const char *path, long page_size,
+                                               const char *what) {
   struct loaded_elf out = {0};
   int fd = open(path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) die_errno("open ld-musl failed");
+  if (fd < 0) die_errno("open ELF failed");
 
   struct stat st;
-  if (fstat(fd, &st) != 0) die_errno("fstat ld-musl failed");
-  if (st.st_size < (off_t)sizeof(Elf64_Ehdr)) die_msg("ld-musl too small: %s", path);
+  if (fstat(fd, &st) != 0) die_errno("fstat ELF failed");
+  if (st.st_size < (off_t)sizeof(Elf64_Ehdr)) die_msg("%s too small: %s", what, path);
 
   void *file_map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  if (file_map == MAP_FAILED) die_errno("mmap ld-musl file failed");
+  if (file_map == MAP_FAILED) die_errno("mmap ELF file failed");
 
   const Elf64_Ehdr *eh = (const Elf64_Ehdr *)file_map;
   if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) die_msg("not an ELF: %s", path);
   if (eh->e_ident[EI_CLASS] != ELFCLASS64) die_msg("ELF class is not 64-bit: %s", path);
   if (eh->e_ident[EI_DATA] != ELFDATA2LSB) die_msg("ELF endianness is not little-endian: %s", path);
   if (eh->e_machine != EM_AARCH64) die_msg("ELF machine is not AArch64: %s", path);
-  if (eh->e_type != ET_DYN) die_msg("ld-musl must be ET_DYN, got e_type=%u", eh->e_type);
+  if (eh->e_type != ET_DYN) die_msg("%s must be ET_DYN, got e_type=%u", what, eh->e_type);
   if (eh->e_phnum == 0) die_msg("no program headers in %s", path);
   if (eh->e_phentsize != sizeof(Elf64_Phdr)) {
     die_msg("unexpected e_phentsize=%u (expected %zu)", eh->e_phentsize, sizeof(Elf64_Phdr));
@@ -121,13 +124,31 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size)
   }
 
   const Elf64_Phdr *ph = (const Elf64_Phdr *)((const uint8_t *)file_map + eh->e_phoff);
+  bool has_musl_interp = false;
+  uintptr_t phdr_addr = 0;
 
   uintptr_t min_vaddr = UINTPTR_MAX;
   uintptr_t max_vaddr = 0;
   bool saw_load = false;
   for (uint16_t i = 0; i < eh->e_phnum; i++) {
+    if (ph[i].p_type == PT_INTERP && ph[i].p_filesz > 0 &&
+        ph[i].p_offset + ph[i].p_filesz <= (uint64_t)st.st_size) {
+      const char *interp = (const char *)file_map + ph[i].p_offset;
+      if (memchr(interp, '\0', ph[i].p_filesz) != NULL &&
+          strcmp(interp, "/lib/ld-musl-aarch64.so.1") == 0) {
+        has_musl_interp = true;
+      }
+    }
+    if (ph[i].p_type == PT_PHDR) {
+      phdr_addr = (uintptr_t)ph[i].p_vaddr;
+    }
     if (ph[i].p_type != PT_LOAD) continue;
     if (ph[i].p_memsz == 0) continue;
+    if (phdr_addr == 0 &&
+        eh->e_phoff >= ph[i].p_offset &&
+        eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr) <= ph[i].p_offset + ph[i].p_filesz) {
+      phdr_addr = (uintptr_t)ph[i].p_vaddr + (uintptr_t)(eh->e_phoff - ph[i].p_offset);
+    }
     uintptr_t seg_start = PAGE_ALIGN_DOWN((uintptr_t)ph[i].p_vaddr, page_size);
     uintptr_t seg_end = PAGE_ALIGN_UP((uintptr_t)ph[i].p_vaddr + (uintptr_t)ph[i].p_memsz, page_size);
     if (!saw_load || seg_start < min_vaddr) min_vaddr = seg_start;
@@ -135,6 +156,7 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size)
     saw_load = true;
   }
   if (!saw_load || min_vaddr >= max_vaddr) die_msg("no valid PT_LOAD segments in %s", path);
+  if (phdr_addr == 0) die_msg("could not locate in-memory program headers in %s", path);
 
   size_t total_map_len = (size_t)(max_vaddr - min_vaddr);
   void *reserved = mmap(NULL, total_map_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -184,13 +206,54 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size)
 
   out.load_bias = load_bias;
   out.entry = load_bias + (uintptr_t)eh->e_entry;
-  out.phdr_addr = load_bias + (uintptr_t)eh->e_phoff;
+  out.phdr_addr = load_bias + phdr_addr;
   out.phent = eh->e_phentsize;
   out.phnum = eh->e_phnum;
+  out.type = eh->e_type;
+  out.has_musl_interp = has_musl_interp;
 
   munmap(file_map, (size_t)st.st_size);
   close(fd);
   return out;
+}
+
+static bool is_musl_dyn_executable(const char *path) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return false;
+
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(Elf64_Ehdr)) {
+    close(fd);
+    return false;
+  }
+
+  void *file_map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  close(fd);
+  if (file_map == MAP_FAILED) return false;
+
+  const Elf64_Ehdr *eh = (const Elf64_Ehdr *)file_map;
+  bool ok = false;
+  if (memcmp(eh->e_ident, ELFMAG, SELFMAG) == 0 &&
+      eh->e_ident[EI_CLASS] == ELFCLASS64 &&
+      eh->e_ident[EI_DATA] == ELFDATA2LSB &&
+      eh->e_machine == EM_AARCH64 &&
+      eh->e_type == ET_DYN &&
+      eh->e_phentsize == sizeof(Elf64_Phdr) &&
+      eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr) <= (uint64_t)st.st_size) {
+    const Elf64_Phdr *ph = (const Elf64_Phdr *)((const uint8_t *)file_map + eh->e_phoff);
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+      if (ph[i].p_type == PT_INTERP && ph[i].p_filesz > 0 &&
+          ph[i].p_offset + ph[i].p_filesz <= (uint64_t)st.st_size) {
+        const char *interp = (const char *)file_map + ph[i].p_offset;
+        ok = memchr(interp, '\0', ph[i].p_filesz) != NULL &&
+             strcmp(interp, "/lib/ld-musl-aarch64.so.1") == 0;
+        break;
+      }
+    }
+  }
+
+  munmap(file_map, (size_t)st.st_size);
+  return ok;
 }
 
 static size_t count_env(char *const envp[]) {
@@ -270,10 +333,18 @@ int main(int argc, char *argv[], char *envp[]) {
   }
 
   const char *ld_path = argv[1];
+  const char *target_path = argv[2];
   long page_size = sysconf(_SC_PAGESIZE);
   if (page_size <= 0) die_msg("failed to query page size");
 
-  struct loaded_elf ld = map_elf_load_segments(ld_path, page_size);
+  struct loaded_elf ld = map_elf_load_segments(ld_path, page_size, "ld-musl");
+  struct loaded_elf target = {0};
+
+  bool kernel_style_target = false;
+  if (is_musl_dyn_executable(target_path)) {
+    kernel_style_target = true;
+    target = map_elf_load_segments(target_path, page_size, "target");
+  }
 
   void *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
@@ -282,12 +353,13 @@ int main(int argc, char *argv[], char *envp[]) {
   uint8_t *sp = (uint8_t *)stack + STACK_SIZE;
   sp = (uint8_t *)((uintptr_t)sp & ~((uintptr_t)0xf));
 
-  size_t new_argc = (size_t)(argc - 1);
+  size_t arg_skip = kernel_style_target ? 2 : 1;
+  size_t new_argc = (size_t)(argc - (int)arg_skip);
   char **new_argv = calloc(new_argc, sizeof(char *));
   if (!new_argv) die_errno("calloc new_argv failed");
 
   for (size_t i = 0; i < new_argc; i++) {
-    new_argv[i] = stack_strdup(&sp, argv[i + 1]);
+    new_argv[i] = stack_strdup(&sp, argv[i + arg_skip]);
   }
 
   size_t envc = count_env(envp);
@@ -340,11 +412,11 @@ int main(int argc, char *argv[], char *envp[]) {
   }
   uint8_t *random_on_stack = stack_alloc_bytes(&sp, random_bytes, sizeof(random_bytes), 16);
 
-  aux_set(new_auxv, auxc, AT_PHDR, (unsigned long)ld.phdr_addr);
-  aux_set(new_auxv, auxc, AT_PHENT, (unsigned long)ld.phent);
-  aux_set(new_auxv, auxc, AT_PHNUM, (unsigned long)ld.phnum);
-  aux_set(new_auxv, auxc, AT_BASE, 0UL);
-  aux_set(new_auxv, auxc, AT_ENTRY, (unsigned long)ld.entry);
+  aux_set(new_auxv, auxc, AT_PHDR, (unsigned long)(kernel_style_target ? target.phdr_addr : ld.phdr_addr));
+  aux_set(new_auxv, auxc, AT_PHENT, (unsigned long)(kernel_style_target ? target.phent : ld.phent));
+  aux_set(new_auxv, auxc, AT_PHNUM, (unsigned long)(kernel_style_target ? target.phnum : ld.phnum));
+  aux_set(new_auxv, auxc, AT_BASE, (unsigned long)(kernel_style_target ? ld.load_bias : 0UL));
+  aux_set(new_auxv, auxc, AT_ENTRY, (unsigned long)(kernel_style_target ? target.entry : ld.entry));
   aux_set(new_auxv, auxc, AT_PAGESZ, (unsigned long)page_size);
   auxc = aux_upsert(new_auxv, auxc, aux_cap, AT_EXECFN, (unsigned long)new_argv[0]);
   aux_set(new_auxv, auxc, AT_RANDOM, (unsigned long)random_on_stack);
