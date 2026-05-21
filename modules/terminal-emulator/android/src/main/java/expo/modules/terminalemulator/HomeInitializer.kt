@@ -1118,7 +1118,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      shelly_shell launcher. Claude Code 2.1.145 can scrub LD_PRELOAD
     //      from its nested Bash harness before executing $HOME/bin/bash, so a
     //      direct libbash.so symlink returns EACCES under SELinux.
-    private const val BASHRC_VERSION = 185
+    // 186: Revert v185 — the APK nativeLibraryDir is empty on this device, so
+    //      shelly_shell has no exec-permitted home either. Point $HOME/bin/bash
+    //      back at libbash.so and instead make libexec_wrapper.so a
+    //      self-propagating chokepoint: keep LD_PRELOAD across the
+    //      env/sh/timeout relay so nested Bash-tool execs stay interposed and
+    //      routed through linker64.
+    private const val BASHRC_VERSION = 186
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1979,7 +1985,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
 
             // Tool functions
             sb.appendLine("# v51: PATH-visible Android-compatible shell/env for AI CLIs")
-            sb.appendLine("__shelly_bash_target=\"\$SHELLY_LIB_DIR/shelly_shell\"")
+            sb.appendLine("__shelly_bash_target=\"\$SHELLY_LIB_DIR/libbash.so\"")
             sb.appendLine("if [ ! -e \"\$HOME/bin/bash\" ] || [ \"\$(__shelly_readlink \"\$HOME/bin/bash\" 2>/dev/null)\" != \"\$__shelly_bash_target\" ]; then")
             sb.appendLine("  __shelly_rm -f \"\$HOME/bin/bash\" 2>/dev/null")
             sb.appendLine("  __shelly_ln -s \"\$__shelly_bash_target\" \"\$HOME/bin/bash\" 2>/dev/null || true")

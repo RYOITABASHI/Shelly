@@ -19,7 +19,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v183:execve-hardening";
+    "shelly-exec-wrapper:v184:exec-relay";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -420,6 +420,18 @@ static int should_scrub_system_env(const char *pathname) {
             starts_with(pathname, "/apex/"));
 }
 
+/* Claude Code's Bash-tool harness runs `... env <vars> <bash> <flags> <cmd>`.
+ * These relay binaries re-exec an app-private bash, so they must keep the exec
+ * wrapper preloaded; without it their execve() of an app_data_file ELF is
+ * denied by SELinux. linker64 never reaches here (should_scrub_system_env
+ * exempts it) but is listed for intent. */
+static int is_exec_relay(const char *path) {
+    return streq(path, "/system/bin/env") ||
+           streq(path, "/system/bin/sh") ||
+           streq(path, "/system/bin/timeout") ||
+           streq(path, LINKER64);
+}
+
 static int scrub_system_envp(char *const envp[], char **out) {
     int n = 0;
     if (!envp) {
@@ -440,23 +452,80 @@ static int scrub_system_envp(char *const envp[], char **out) {
     return 0;
 }
 
-static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, size_t ld_buf_size) {
-    char *const *source = envp ? envp : environ;
-    const char *lib_dir = env_value(envp, "SHELLY_LIB_DIR=");
-    size_t nbuf = 0;
+/* Env for an exec-relay /system binary (env/sh/timeout): drop any inherited
+ * LD_LIBRARY_PATH (so the relay does not mis-load Shelly .so files) and any
+ * inherited LD_PRELOAD, then re-add Shelly's canonical exec wrapper as
+ * LD_PRELOAD so the relay's own execve() of an app-private binary stays
+ * interposed and gets routed through linker64. */
+static int relay_envp(char *const envp[], char **out,
+                      char *preload_buf, size_t preload_size) {
+    const char *lib_dir = env_value_direct(envp, "SHELLY_LIB_DIR=");
+    size_t nb = 0;
     int n = 0;
 
+    if (!lib_dir) lib_dir = env_value_direct(environ, "SHELLY_LIB_DIR=");
     if (!lib_dir || !lib_dir[0]) return -1;
-    if (append_str(ld_buf, ld_buf_size, &nbuf, "LD_LIBRARY_PATH=") != 0) return -1;
-    if (append_str(ld_buf, ld_buf_size, &nbuf, lib_dir) != 0) return -1;
+    if (append_str(preload_buf, preload_size, &nb, "LD_PRELOAD=") != 0) return -1;
+    if (append_str(preload_buf, preload_size, &nb, lib_dir) != 0) return -1;
+    if (append_str(preload_buf, preload_size, &nb, "/libexec_wrapper.so") != 0) return -1;
+
+    if (envp) {
+        for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
+            if (starts_with(envp[i], "LD_LIBRARY_PATH=") ||
+                starts_with(envp[i], "LD_PRELOAD=")) {
+                continue;
+            }
+            if (n >= MAX_ENVP - 2) return -1;
+            out[n++] = envp[i];
+        }
+    }
+    out[n++] = preload_buf;
+    out[n] = NULL;
+    return 0;
+}
+
+/* Env for a linker64-redirected app-private exec: drop any inherited
+ * LD_LIBRARY_PATH / LD_PRELOAD / SHELLY_LIB_DIR and append Shelly's canonical
+ * values, so a stale leading entry cannot shadow ours and the whole linker64
+ * subtree keeps the wrapper. SHELLY_LIB_DIR is re-added because an `env -i`
+ * child env lacks it but the interposing process's environ still has it. */
+static int add_app_loader_envp(char *const envp[], char **out,
+                               char *ld_buf, size_t ld_size,
+                               char *preload_buf, size_t preload_size,
+                               char *dir_buf, size_t dir_size) {
+    char *const *source = envp ? envp : environ;
+    const char *lib_dir = env_value_direct(envp, "SHELLY_LIB_DIR=");
+    size_t nb;
+    int n = 0;
+
+    if (!lib_dir) lib_dir = env_value_direct(environ, "SHELLY_LIB_DIR=");
+    if (!lib_dir || !lib_dir[0]) return -1;
+
+    nb = 0;
+    if (append_str(ld_buf, ld_size, &nb, "LD_LIBRARY_PATH=") != 0) return -1;
+    if (append_str(ld_buf, ld_size, &nb, lib_dir) != 0) return -1;
+    nb = 0;
+    if (append_str(preload_buf, preload_size, &nb, "LD_PRELOAD=") != 0) return -1;
+    if (append_str(preload_buf, preload_size, &nb, lib_dir) != 0) return -1;
+    if (append_str(preload_buf, preload_size, &nb, "/libexec_wrapper.so") != 0) return -1;
+    nb = 0;
+    if (append_str(dir_buf, dir_size, &nb, "SHELLY_LIB_DIR=") != 0) return -1;
+    if (append_str(dir_buf, dir_size, &nb, lib_dir) != 0) return -1;
 
     if (source) {
         for (int i = 0; i < MAX_ENVP && source[i]; i++) {
-            if (n >= MAX_ENVP - 2) return -1;
+            if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
+                starts_with(source[i], "LD_PRELOAD=") ||
+                starts_with(source[i], "SHELLY_LIB_DIR=")) {
+                continue;
+            }
+            if (n >= MAX_ENVP - 4) return -1;
             out[n++] = source[i];
         }
     }
     out[n++] = ld_buf;
+    out[n++] = preload_buf;
+    out[n++] = dir_buf;
     out[n] = NULL;
     return 0;
 }
@@ -494,10 +563,19 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     linker_exec = should_linker_exec(rewritten);
     trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
     if (!linker_exec) {
-        char *scrubbed_env[MAX_ENVP];
-        if (should_scrub_system_env(rewritten) &&
-            scrub_system_envp(envp, scrubbed_env) == 0) {
-            return raw_execve_call(rewritten, argv, scrubbed_env);
+        if (should_scrub_system_env(rewritten)) {
+            if (is_exec_relay(rewritten)) {
+                char *relay_env[MAX_ENVP];
+                char preload_buf[PATH_BUF_SIZE + 32];
+                if (relay_envp(envp, relay_env, preload_buf, sizeof(preload_buf)) == 0) {
+                    return raw_execve_call(rewritten, argv, relay_env);
+                }
+            } else {
+                char *scrubbed_env[MAX_ENVP];
+                if (scrub_system_envp(envp, scrubbed_env) == 0) {
+                    return raw_execve_call(rewritten, argv, scrubbed_env);
+                }
+            }
         }
         return raw_execve_call(rewritten, argv, envp);
     }
@@ -507,10 +585,14 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
         trace_exec_event("linker-argv-failed", pathname, rewritten, argv, envp, 0);
         return raw_execve_call(rewritten, argv, envp);
     }
-    if (!env_value(envp, "LD_LIBRARY_PATH=")) {
+    {
         char *app_env[MAX_ENVP];
         char ld_buf[PATH_BUF_SIZE + 32];
-        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf)) == 0) {
+        char preload_buf[PATH_BUF_SIZE + 32];
+        char dir_buf[PATH_BUF_SIZE + 32];
+        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
+                                preload_buf, sizeof(preload_buf),
+                                dir_buf, sizeof(dir_buf)) == 0) {
             return raw_execve_call(LINKER64, new_argv, app_env);
         }
     }
