@@ -19,7 +19,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v182:raw-syscall";
+    "shelly-exec-wrapper:v183:execve-hardening";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -190,8 +190,8 @@ static int starts_with(const char *s, const char *prefix) {
 }
 
 static const char *env_value_direct(char *const env[], const char *name_eq) {
-    if (!env) return NULL;
-    for (int i = 0; env[i]; i++) {
+    if (!env || !name_eq) return NULL;
+    for (int i = 0; i < MAX_ENVP && env[i]; i++) {
         const char *s = env[i];
         const char *p = name_eq;
         while (*p && *s == *p) {
@@ -286,7 +286,7 @@ static void trace_exec_event(const char *stage, const char *pathname, const char
     unsigned int argc = 0;
     if (!native_trace_enabled(envp)) return;
     if (argv) {
-        while (argv[argc] && argc < MAX_ARGC) argc++;
+        while (argc < MAX_ARGC && argv[argc]) argc++;
     }
 
     append_str(line, sizeof(line), &n, "native exec stage=");
@@ -347,6 +347,7 @@ static void trace_exec_event(const char *stage, const char *pathname, const char
 
 static int copy_rewrite(char *out, size_t out_size, const char *prefix, const char *suffix) {
     size_t n = 0;
+    if (!out || !prefix || !suffix || out_size == 0) return -1;
     while (*prefix) {
         if (n + 1 >= out_size) {
             return -1;
@@ -425,7 +426,7 @@ static int scrub_system_envp(char *const envp[], char **out) {
         out[0] = NULL;
         return 0;
     }
-    for (int i = 0; envp[i]; i++) {
+    for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
         if (starts_with(envp[i], "LD_LIBRARY_PATH=") ||
             starts_with(envp[i], "LD_PRELOAD=")) {
             continue;
@@ -450,7 +451,7 @@ static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, siz
     if (append_str(ld_buf, ld_buf_size, &nbuf, lib_dir) != 0) return -1;
 
     if (source) {
-        for (int i = 0; source[i]; i++) {
+        for (int i = 0; i < MAX_ENVP && source[i]; i++) {
             if (n >= MAX_ENVP - 2) return -1;
             out[n++] = source[i];
         }
@@ -462,20 +463,23 @@ static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, siz
 
 static int build_linker_argv(const char *pathname, char *const argv[], char **out) {
     int argc = 0;
+    if (!pathname || !out) return -1;
+
     if (argv) {
-        while (argv[argc]) {
-            if (argc >= MAX_ARGC) {
-                return -1;
-            }
-            argc++;
-        }
+        while (argc < MAX_ARGC && argv[argc]) argc++;
+        if (argc >= MAX_ARGC) return -1;
     }
 
     out[0] = (char *)LINKER64;
     out[1] = (char *)pathname;
-    for (int i = 1; i <= argc; i++) {
-        out[i + 1] = argv[i];
+
+    /* Copy argv[1..argc-1] after LINKER64+pathname, then always NULL-terminate.
+     * Relying on the source argv's terminator left out[2] unset when argc==0. */
+    int j = 2;
+    for (int i = 1; i < argc; i++) {
+        out[j++] = argv[i];
     }
+    out[j] = NULL;
     return 0;
 }
 

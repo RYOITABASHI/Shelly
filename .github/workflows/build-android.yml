@@ -927,7 +927,7 @@ jobs:
           execve_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="execve"{print $3; exit}')"
           test -n "${execve_size}" || { echo "FATAL: execve symbol missing from libexec_wrapper.so"; exit 1; }
           echo "libexec_wrapper.so execve size=${execve_size}"
-          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v182:raw-syscall'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v183:execve-hardening'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
