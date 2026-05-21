@@ -130,6 +130,53 @@ Long-term direction (designed, not yet built):
    `claude` command. This accepts the churn instead of racing it.
    See the "Background Updater Policy" section of the 2026-05-17 doc.
 
+## Next concrete step: bundle aarch64 strace (spec handed to Codex)
+
+The agreed next action — and the prerequisite for resuming the Bash-tool fix —
+is to bundle a static/musl aarch64 `strace` into the APK so an on-device agent
+can trace native crashes. A spec was handed to Codex:
+- Source: build in CI; reuse the existing Alpine-aarch64 + QEMU machinery in
+  `build-android.yml` (`apk add strace`, run on-device via Shelly's bundled
+  `ld-musl-aarch64.so.1` musl loader — same pattern as the bundled claude musl
+  binary). Do NOT bundle an unvetted prebuilt (APK supply-chain risk).
+- Wire it like the other bundled binaries: `jniLibs/arm64-v8a/libstrace.so` →
+  add to the payload-cache `path:` list → `LibExtractor` map entry
+  (`"lib/arm64-v8a/libstrace.so" to "strace"`) → `.bashrc` PATH/wrapper
+  (`BASHRC_VERSION` bump). No exec-wrapper marker bump needed.
+- Verify: `strace echo ok` on-device, then
+  `strace -ff -e trace=execve,execveat,clone,posix_spawn` the Bash-tool canary.
+Once strace lands: trace the canary, pin the crashing `execve`/`clone`, fix.
+No more guess-builds.
+
+## Self-hosting development model (direction)
+
+Shelly can largely develop itself, which is the intended way to resume this
+work: an on-device agent (Codex CLI runs in a terminal pane today) edits
+source, the AI pane has cross-pane intelligence (it reads terminal-pane output
+— `lib/ai-pane-context.ts`), builds go through GitHub Actions (a local APK
+build is neither possible nor needed — the workflow needs desktop SDK/NDK +
+Docker/QEMU), and Shelly's own updater installs the result. The loop
+edit → push → Actions → install → observe → iterate closes on-device, which
+removes the remote-screenshot round-trip that made this session so slow.
+- The one gap: `logcat`/tombstones need shell-uid, unreachable from the app
+  sandbox (so an on-device agent cannot see them). Bundling `strace` closes
+  exactly this gap — native crashes become observable inside a terminal pane.
+- It is "Codex" only because Claude Code's own Bash tool is broken, so Claude
+  cannot yet be the on-device dev agent (chicken-and-egg). The advantage is the
+  *environment* (agent inside the device), not the model.
+- Guardrail: an on-device agent debugs the very exec machinery it runs on, so a
+  bad build can self-brick it. Always keep an external recovery line (host adb
+  / sideload of a known-good APK).
+
+## Known parallel issue (lower priority than strace)
+
+The AI pane `LOCAL` provider fails with "Network request failed". The local
+LLM backend (llama-server + Qwen model) is simply not provisioned on the device
+— no llama-server process runs, and llama-server auto-install is opt-in (see
+the 2026-05-17 doc). Deprioritized behind strace; the AI pane can use the API
+providers meanwhile. Fixing it means provisioning the server binary + a
+multi-GB model — a separate, larger task.
+
 ## File map
 
 - `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c` — the
