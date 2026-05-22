@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <spawn.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <unistd.h>
 
@@ -23,6 +24,9 @@ static const char shelly_exec_wrapper_build_marker[] =
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
+#endif
+#ifndef AT_EMPTY_PATH
+#define AT_EMPTY_PATH 0x1000
 #endif
 #ifndef O_RDONLY
 #define O_RDONLY 0
@@ -145,6 +149,17 @@ static int append_uint(char *out, size_t out_size, size_t *n, unsigned int value
     return 0;
 }
 
+static int append_int(char *out, size_t out_size, size_t *n, int value) {
+    unsigned int magnitude;
+    if (value < 0) {
+        if (append_char(out, out_size, n, '-') != 0) return -1;
+        magnitude = (unsigned int)(-(value + 1)) + 1U;
+    } else {
+        magnitude = (unsigned int)value;
+    }
+    return append_uint(out, out_size, n, magnitude);
+}
+
 static int append_trunc_escaped(char *out, size_t out_size, size_t *n, const char *s, size_t limit) {
     size_t i = 0;
     if (!s) return append_str(out, out_size, n, "(null)");
@@ -187,6 +202,15 @@ static int starts_with(const char *s, const char *prefix) {
         if (*s++ != *prefix++) return 0;
     }
     return 1;
+}
+
+static int is_shebang_delim(char c) {
+    return c == '\0' || c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static int shebang_interp_is(const char *header, const char *interp) {
+    size_t len = str_len(interp);
+    return starts_with(header, interp) && is_shebang_delim(header[len]);
 }
 
 static const char *env_value_direct(char *const env[], const char *name_eq) {
@@ -391,11 +415,11 @@ static int is_shell_shebang_script(const char *path) {
     header[n] = '\0';
     if (header[0] != '#' || header[1] != '!') return 0;
 
-    return starts_with(header, "#!/system/bin/sh") ||
-           starts_with(header, "#!/bin/sh") ||
-           starts_with(header, "#!/usr/bin/sh") ||
-           starts_with(header, "#!/usr/bin/env sh") ||
-           starts_with(header, "#!/system/bin/env sh");
+    return shebang_interp_is(header, "#!/system/bin/sh") ||
+           shebang_interp_is(header, "#!/bin/sh") ||
+           shebang_interp_is(header, "#!/usr/bin/sh") ||
+           shebang_interp_is(header, "#!/usr/bin/env sh") ||
+           shebang_interp_is(header, "#!/system/bin/env sh");
 }
 
 static int is_app_private_path(const char *path) {
@@ -461,6 +485,25 @@ static int scrub_system_envp(char *const envp[], char **out) {
     for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
         if (starts_with(envp[i], "LD_LIBRARY_PATH=") ||
             starts_with(envp[i], "LD_PRELOAD=")) {
+            continue;
+        }
+        if (n >= MAX_ENVP - 1) {
+            return -1;
+        }
+        out[n++] = envp[i];
+    }
+    out[n] = NULL;
+    return 0;
+}
+
+static int scrub_ld_library_path_envp(char *const envp[], char **out) {
+    int n = 0;
+    if (!envp) {
+        out[0] = NULL;
+        return 0;
+    }
+    for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
+        if (starts_with(envp[i], "LD_LIBRARY_PATH=")) {
             continue;
         }
         if (n >= MAX_ENVP - 1) {
@@ -550,8 +593,18 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     if (shell_script_exec) {
         char *script_argv[MAX_ARGC + 2];
         if (build_shell_script_argv(rewritten, argv, script_argv) == 0) {
-            trace_exec_event("shell-script", "/system/bin/sh", "/system/bin/sh", script_argv, envp, 0);
-            return raw_execve_call("/system/bin/sh", script_argv, envp);
+            char *script_env[MAX_ENVP];
+            char *const *script_envp = envp;
+            /*
+             * /system/bin/sh is a bionic system binary, so it must not inherit
+             * Shelly's musl LD_LIBRARY_PATH. Keep LD_PRELOAD intentionally:
+             * shell shims re-enter this wrapper when they exec node/bash/etc.
+             */
+            if (scrub_ld_library_path_envp(envp, script_env) == 0) {
+                script_envp = script_env;
+            }
+            trace_exec_event("shell-script", "/system/bin/sh", "/system/bin/sh", script_argv, script_envp, 0);
+            return raw_execve_call("/system/bin/sh", script_argv, script_envp);
         }
         trace_exec_event("shell-script-argv-failed", pathname, rewritten, argv, envp, 0);
     }
@@ -577,6 +630,62 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
         }
     }
     return raw_execve_call(LINKER64, new_argv, envp);
+}
+
+int execv(const char *path, char *const argv[]) {
+    return execve(path, argv, environ);
+}
+
+int execle(const char *path, const char *arg, ...) {
+    char *argv[MAX_ARGC];
+    char *const *envp;
+    va_list ap;
+    int argc = 0;
+
+    argv[argc++] = (char *)arg;
+    va_start(ap, arg);
+    while (argc < MAX_ARGC - 1) {
+        char *next = va_arg(ap, char *);
+        argv[argc++] = next;
+        if (!next) break;
+    }
+    if (argv[argc - 1]) {
+        va_end(ap);
+        errno = E2BIG;
+        return -1;
+    }
+    envp = va_arg(ap, char *const *);
+    va_end(ap);
+    return execve(path, argv, (char *const *)envp);
+}
+
+int fexecve(int fd, char *const argv[], char *const envp[]) {
+    char proc_path[64];
+    size_t n = 0;
+    if (append_str(proc_path, sizeof(proc_path), &n, "/proc/self/fd/") != 0 ||
+        append_int(proc_path, sizeof(proc_path), &n, fd) != 0) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return execve(proc_path, argv, envp);
+}
+
+int execveat(int dirfd, const char *pathname, char *const argv[], char *const envp[], int flags) {
+    char proc_path[PATH_BUF_SIZE];
+    size_t n = 0;
+    if (dirfd == AT_FDCWD && !(flags & AT_EMPTY_PATH)) {
+        return execve(pathname, argv, envp);
+    }
+    if ((flags & AT_EMPTY_PATH) && (!pathname || !pathname[0])) {
+        if (append_str(proc_path, sizeof(proc_path), &n, "/proc/self/fd/") != 0 ||
+            append_int(proc_path, sizeof(proc_path), &n, dirfd) != 0) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        return execve(proc_path, argv, envp);
+    }
+    errno = ENOSYS;
+    return -1;
 }
 
 int posix_spawn(pid_t *pid, const char *path,
