@@ -20,7 +20,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v188:bare-path-search";
+    "shelly-exec-wrapper:v189:trace-envp-only";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -234,8 +234,11 @@ static const char *env_value(char *const envp[], const char *name_eq) {
 }
 
 static const char *trace_env_value(char *const envp[], const char *name_eq) {
-    const char *v = env_value_direct(environ, name_eq);
-    if (v) return v;
+    /*
+     * Some /system/bin/linker64 -> app-private ELF launches can enter this
+     * preload before bionic's global environ pointer is usable. Native tracing
+     * only needs the target exec environment, so keep this path envp-only.
+     */
     return env_value_direct(envp, name_eq);
 }
 
