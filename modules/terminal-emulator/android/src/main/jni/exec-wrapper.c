@@ -20,7 +20,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v187:app-private-shebang";
+    "shelly-exec-wrapper:v188:bare-path-search";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -267,6 +267,14 @@ static const char *base_name(const char *path) {
     return base;
 }
 
+static int has_slash(const char *path) {
+    if (!path) return 0;
+    while (*path) {
+        if (*path++ == '/') return 1;
+    }
+    return 0;
+}
+
 static const char *path_kind(const char *path) {
     const char *base = base_name(path);
     if (!base) return "null";
@@ -386,6 +394,53 @@ static int copy_rewrite(char *out, size_t out_size, const char *prefix, const ch
     }
     out[n] = '\0';
     return 0;
+}
+
+static int copy_path_entry(char *out, size_t out_size, const char *entry, size_t entry_len,
+                           const char *file) {
+    size_t n = 0;
+    if (!out || !entry || !file || out_size == 0 || entry_len == 0) return -1;
+    while (n < entry_len) {
+        if (n + 1 >= out_size) return -1;
+        out[n] = entry[n];
+        n++;
+    }
+    if (out[n - 1] != '/') {
+        if (n + 1 >= out_size) return -1;
+        out[n++] = '/';
+    }
+    while (*file) {
+        if (n + 1 >= out_size) return -1;
+        out[n++] = *file++;
+    }
+    out[n] = '\0';
+    return 0;
+}
+
+static const char *resolve_bare_path(const char *pathname, char *const envp[],
+                                     char *path_buf, size_t path_buf_size) {
+    const char *path_env;
+    const char *entry;
+    if (!pathname || !pathname[0] || has_slash(pathname)) return pathname;
+    path_env = env_value(envp, "PATH=");
+    if (!path_env || !path_env[0]) return pathname;
+
+    entry = path_env;
+    while (*entry) {
+        const char *end = entry;
+        int fd;
+        while (*end && *end != ':') end++;
+        if (end > entry &&
+            copy_path_entry(path_buf, path_buf_size, entry, (size_t)(end - entry), pathname) == 0) {
+            fd = raw_open_readonly(path_buf);
+            if (fd >= 0) {
+                raw_close_call(fd);
+                return path_buf;
+            }
+        }
+        entry = *end == ':' ? end + 1 : end;
+    }
+    return pathname;
 }
 
 static int trusted_shell_path(const char *path) {
@@ -580,6 +635,7 @@ static int build_shell_script_argv(const char *pathname, char *const argv[], cha
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     char rewrite_buf[PATH_BUF_SIZE];
+    char path_search_buf[PATH_BUF_SIZE];
     const char *rewritten = rewrite_path(pathname, envp, rewrite_buf, sizeof(rewrite_buf));
     int linker_exec;
     int shell_script_exec;
@@ -587,6 +643,7 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
         trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
         return -1;
     }
+    rewritten = resolve_bare_path(rewritten, envp, path_search_buf, sizeof(path_search_buf));
     linker_exec = should_linker_exec(rewritten);
     shell_script_exec = !linker_exec && should_shell_exec_script(rewritten);
     trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
