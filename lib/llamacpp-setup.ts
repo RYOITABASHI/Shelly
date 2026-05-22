@@ -171,10 +171,20 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
 const MODELS_DIR = '$HOME/models';
 // Resolved inside generated shell scripts. Native exec does not always source
 // interactive shell rc files, so do not rely on $HOME/.local/bin being on PATH.
-const SERVER_BIN = '"$LLAMA_SERVER_BIN"';
+const SERVER_BIN = 'run_llama_server';
 
 const LLAMA_SERVER_BIN_INIT =
   'LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-$(command -v llama-server 2>/dev/null || printf \'%s\' "$HOME/.local/bin/llama-server")}"';
+
+const LLAMA_SERVER_LAUNCHER_INIT = [
+  'run_llama_server() {',
+  '  if head -n 1 "$LLAMA_SERVER_BIN" 2>/dev/null | grep -q "^#!/"; then',
+  '    sh "$LLAMA_SERVER_BIN" "$@"',
+  '  else',
+  '    "$LLAMA_SERVER_BIN" "$@"',
+  '  fi',
+  '}',
+].join('\n');
 
 const HEALTH_CHECK_CMD = [
   `node -e 'const http=require("http");const req=http.get("http://127.0.0.1:8080/v1/models",res=>{process.exit(res.statusCode>=200&&res.statusCode<300?0:1)});req.on("error",()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});' >/dev/null 2>&1`,
@@ -324,7 +334,7 @@ function collectSoDirs(dir) {
   const finalBinary = findFile(installDir, 'llama-server');
   const binaryDir = finalBinary.slice(0, finalBinary.lastIndexOf('/'));
   const libPath = [...collectSoDirs(installDir), binaryDir, installDir, installDir + '/lib'].join(':');
-  const wrapper = '#!/bin/sh\\nexport LD_LIBRARY_PATH="' + libPath + ':\${LD_LIBRARY_PATH:-}"\\nexec "' + finalBinary + '" "$@"\\n';
+  const wrapper = '#!/bin/sh\\nexport LD_LIBRARY_PATH="' + libPath + ':\${LD_LIBRARY_PATH:-}"\\nif [ -x /system/bin/linker64 ]; then\\n  exec /system/bin/linker64 "' + finalBinary + '" "$@"\\nfi\\nexec "' + finalBinary + '" "$@"\\n';
   fs.writeFileSync(outDir + '/llama-server', wrapper, { mode: 0o755 });
   fs.chmodSync(outDir + '/llama-server', 0o755);
   console.log('Installed: ' + outDir + '/llama-server');
@@ -425,6 +435,7 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
     `  echo "llama-server not found or not executable: $LLAMA_SERVER_BIN"`,
     `  exit 1`,
     `fi`,
+    LLAMA_SERVER_LAUNCHER_INIT,
     `mkdir -p ${MODELS_DIR}`,
     `pkill -x llama-server 2>/dev/null || true`,
     `sleep 1`,
@@ -552,6 +563,7 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     `  echo "llama-server not found or not executable: $LLAMA_SERVER_BIN"`,
     `  exit 1`,
     `fi`,
+    LLAMA_SERVER_LAUNCHER_INIT,
     ``,
     `# 1. 既存プロセスを停止`,
     `pkill -x llama-server 2>/dev/null || true`,
