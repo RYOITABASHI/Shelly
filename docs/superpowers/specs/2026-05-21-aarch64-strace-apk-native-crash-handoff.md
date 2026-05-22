@@ -104,8 +104,9 @@ Use the external debug dir so wireless debugging / PC-side adb can read traces:
 ```sh
 mkdir -p /sdcard/Download/shelly-debug
 shelly-strace-debug claude-bash \
-  -ff -e trace=execve,execveat,clone,posix_spawn \
-  -- <Claude Bash tool canary>
+  -tt -s 256 -e trace=execve,execveat,clone,vfork,fork \
+  -- env LD_PRELOAD="$SHELLY_LIB_DIR/libexec_wrapper.so" \
+     timeout 90 bash -lc shelly-claude-bash-canary
 ```
 
 Then pull logs with adb:
@@ -119,6 +120,28 @@ Do not resume the Claude Bash tool fix by changing wrappers blindly. First run
 the canary under `strace` and identify the exact `execve` / `clone` boundary
 where the failure occurs.
 
+2026-05-22 follow-up observation:
+
+- `strace echo ok` still passed on the CI-built APK artifact from run
+  `26259019707`.
+- The Bash-tool canary reached Claude Code and spawned children; no
+  `SIGSEGV` / `SIGABRT` / `SIGBUS` / `SIGILL` appeared in the 163 trace files.
+- The only hard execution denial was:
+
+```text
+execve("/data/user/0/dev.shelly.terminal/files/home/bin/npm",
+       ["npm", "root", "-g"], ...) = -1 EACCES (Permission denied)
+```
+
+- That is the known Android/Samsung app-private shebang-script class, not a
+  native crash. The follow-up fix is in `libexec_wrapper.so`: app-private
+  `sh` shebang scripts are re-executed as `/system/bin/sh <script> ...`
+  before the kernel hits the direct app-data `execve`.
+- The outer `strace()` helper intentionally clears `LD_PRELOAD` for strace
+  itself. When tracing Claude/Bash paths that need Shelly's bionic exec
+  wrapper, pass `env LD_PRELOAD="$SHELLY_LIB_DIR/libexec_wrapper.so"` after
+  the `--` as shown above.
+
 ## Review
 
 Agent review was performed during this work. Findings fixed before final push:
@@ -127,4 +150,3 @@ Agent review was performed during this work. Findings fixed before final push:
   container script.
 - Removed stale `libstrace_*` extraction entries and added cleanup for existing
   devices.
-

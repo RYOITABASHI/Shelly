@@ -19,7 +19,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v183:execve-hardening";
+    "shelly-exec-wrapper:v187:app-private-shebang";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -381,6 +381,29 @@ static int is_elf(const char *path) {
            magic[2] == 'L' && magic[3] == 'F';
 }
 
+static int is_shell_shebang_script(const char *path) {
+    char header[96];
+    int fd = raw_open_readonly(path);
+    if (fd < 0) return 0;
+    long n = raw_read_call(fd, header, sizeof(header) - 1);
+    raw_close_call(fd);
+    if (n < 3) return 0;
+    header[n] = '\0';
+    if (header[0] != '#' || header[1] != '!') return 0;
+
+    return starts_with(header, "#!/system/bin/sh") ||
+           starts_with(header, "#!/bin/sh") ||
+           starts_with(header, "#!/usr/bin/sh") ||
+           starts_with(header, "#!/usr/bin/env sh") ||
+           starts_with(header, "#!/system/bin/env sh");
+}
+
+static int is_app_private_path(const char *path) {
+    return path &&
+           (starts_with(path, "/data/user/0/dev.shelly.terminal/") ||
+            starts_with(path, "/data/data/dev.shelly.terminal/"));
+}
+
 static const char *rewrite_path(const char *pathname, char *const envp[], char *rewrite_buf, size_t rewrite_buf_size) {
     if (!pathname) return NULL;
     if (streq(pathname, "/bin/sh") || streq(pathname, "sh")) return "/system/bin/sh";
@@ -410,6 +433,15 @@ static int should_linker_exec(const char *pathname) {
            !starts_with(pathname, "/vendor/") &&
            !starts_with(pathname, "/apex/") &&
            is_elf(pathname);
+}
+
+static int should_shell_exec_script(const char *pathname) {
+    return pathname &&
+           !starts_with(pathname, "/system/") &&
+           !starts_with(pathname, "/vendor/") &&
+           !starts_with(pathname, "/apex/") &&
+           is_app_private_path(pathname) &&
+           is_shell_shebang_script(pathname);
 }
 
 static int should_scrub_system_env(const char *pathname) {
@@ -483,16 +515,46 @@ static int build_linker_argv(const char *pathname, char *const argv[], char **ou
     return 0;
 }
 
+static int build_shell_script_argv(const char *pathname, char *const argv[], char **out) {
+    int argc = 0;
+    if (!pathname || !out) return -1;
+
+    if (argv) {
+        while (argc < MAX_ARGC && argv[argc]) argc++;
+        if (argc >= MAX_ARGC) return -1;
+    }
+
+    out[0] = (char *)"/system/bin/sh";
+    out[1] = (char *)pathname;
+
+    int j = 2;
+    for (int i = 1; i < argc; i++) {
+        out[j++] = argv[i];
+    }
+    out[j] = NULL;
+    return 0;
+}
+
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     char rewrite_buf[PATH_BUF_SIZE];
     const char *rewritten = rewrite_path(pathname, envp, rewrite_buf, sizeof(rewrite_buf));
     int linker_exec;
+    int shell_script_exec;
     if (!rewritten) {
         trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
         return -1;
     }
     linker_exec = should_linker_exec(rewritten);
+    shell_script_exec = !linker_exec && should_shell_exec_script(rewritten);
     trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
+    if (shell_script_exec) {
+        char *script_argv[MAX_ARGC + 2];
+        if (build_shell_script_argv(rewritten, argv, script_argv) == 0) {
+            trace_exec_event("shell-script", "/system/bin/sh", "/system/bin/sh", script_argv, envp, 0);
+            return raw_execve_call("/system/bin/sh", script_argv, envp);
+        }
+        trace_exec_event("shell-script-argv-failed", pathname, rewritten, argv, envp, 0);
+    }
     if (!linker_exec) {
         char *scrubbed_env[MAX_ENVP];
         if (should_scrub_system_env(rewritten) &&

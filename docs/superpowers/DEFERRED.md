@@ -48,7 +48,7 @@
 ### Claude Code Bash tool Exit code 1
 
 **優先度**: P1
-**状態**: 未解決。v148〜v186 相当の Bash-tool / exec-wrapper / launcher 追従では解決せず、当て推量ビルドを停止。2026-05-21 に APK 同梱 `strace` の観測手段は確立済み。
+**状態**: 未解決。v148〜v186 相当の Bash-tool / exec-wrapper / launcher 追従では解決せず、当て推量ビルドを停止。2026-05-21 に APK 同梱 `strace` の観測手段を確立。2026-05-22 の実機 `strace` では native signal ではなく app-private `sh` shebang shim の `EACCES` を確認し、`libexec_wrapper.so` 側で修正中。
 
 **症状**:
 - Claude Code の Bash tool が `Exit code 1` になり、Terminal からの `claude --version` や TUI 起動とは別経路で失敗する。
@@ -60,16 +60,17 @@
 - リモートスクショ往復とデバイス内トレースだけでは、`--print` canary hang や `SHELLY_CLAUDE_PATCH_TRACE` 自体の起動阻害を切り分けきれなかった。
 
 **次の一手**:
-1. 当て推量ビルド禁止。APK 同梱 `strace` で Claude Bash tool canary を先に観測する。
-2. `strace -ff -e trace=execve,execveat,clone,posix_spawn -o /sdcard/Download/shelly-debug/<name>.log <canary>` で、どの `execve` / `clone` 境界で落ちるか確定する。
-3. 必要に応じてシンボル付き `libexec_wrapper.so` と一致 build ID の tombstone も併用する。
-4. native exec-wrapper / linker64 / env scrub の専用デバッグタスクとして再開し、1 仮説 1 証拠で進める。
+1. app-private `sh` shebang shim 修正入り APK を CI build し、実機 install する。
+2. まず `strace echo ok` を再確認する。
+3. 次に `shelly-strace-debug claude-bash -tt -s 256 -e trace=execve,execveat,clone,vfork,fork -- env LD_PRELOAD="$SHELLY_LIB_DIR/libexec_wrapper.so" timeout 90 bash -lc shelly-claude-bash-canary` を回す。
+4. `EACCES` が消え、canary が nonce を返すかを確認する。残る場合は同じ trace から次の `execve` / `clone` 境界を特定する。
 
 **観測手段ハンドオフ**:
 - [`2026-05-21-aarch64-strace-apk-native-crash-handoff.md`](specs/2026-05-21-aarch64-strace-apk-native-crash-handoff.md)
 - Branch `codex/aarch64-strace-debug` / commit `92f89af2`
-- CI run `26237234723` green
+- CI run `26259019707` green
 - 実機 `strace -o /sdcard/Download/shelly-debug/smoke.log -e trace=execve echo ok` PASS
+- 実機 canary trace `claude-bash3.20260522-102159.t.log.*`: native signal なし、`/data/user/0/dev.shelly.terminal/files/home/bin/npm` 直接 `execve` が `EACCES`。
 
 **Why not now**: Codex / Claude CLI の既存サポート面を壊さずに main を green に戻すことを優先する。未検証の exec-wrapper relay や launcher churn は main に載せない。
 
