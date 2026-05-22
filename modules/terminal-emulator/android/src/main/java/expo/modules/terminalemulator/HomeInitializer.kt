@@ -1118,7 +1118,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      Alpine aarch64 strace through Shelly's bundled musl loader.
     // 186: Add SHELLY_DEBUG_DIR plus helper commands that place diagnostic
     //      exports under /sdcard/Download/shelly-debug when Android permits it.
-    private const val BASHRC_VERSION = 186
+    // 187: Repair Claude Bash tool shell argv when it arrives as
+    //      `bash -c -l <script>`, and route async app-private shell launches
+    //      through Android's linker64 instead of relying on native preload
+    //      interception in the spawned child.
+    private const val BASHRC_VERSION = 187
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2302,7 +2306,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  };")
             sb.appendLine("}")
             sb.appendLine("(function shellyPatchClaudeChildProcessShell() {")
-            sb.appendLine("  const SHELLY_CLAUDE_SHELL_PATCH_VERSION = 2;")
+            sb.appendLine("  const SHELLY_CLAUDE_SHELL_PATCH_VERSION = 3;")
             sb.appendLine("  const childProcess = require('child_process');")
             sb.appendLine("  const shellyDiag = process.env.SHELLY_CLAUDE_DIAG === '1';")
             sb.appendLine("  const shellyDiagValue = function(value) {")
@@ -2589,6 +2593,22 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    shellyPatchTrace('nestedArgs entry argCount=' + args.length + ' stringArgCount=' + stringArgCount + ' markerCount=' + markerCount);")
             sb.appendLine("    return args.map(function(arg) { return shellyPatchNestedEnvString(arg, 'argv'); });")
             sb.appendLine("  };")
+            sb.appendLine("  const shellyPatchShellArgv = function(cmd, args) {")
+            sb.appendLine("    if (!Array.isArray(args) || args.length < 3) return args;")
+            sb.appendLine("    const kind = shellyTraceCommandKind(cmd);")
+            sb.appendLine("    if (kind !== 'bash' && kind !== 'sh' && kind !== 'shelly_shell') return args;")
+            sb.appendLine("    if (args[0] !== '-c' || args[1] !== '-l') return args;")
+            sb.appendLine("    shellyPatchTrace('shellArgv repaired -c -l to -lc cmdKind=' + kind + ' argCount=' + args.length);")
+            sb.appendLine("    return ['-lc', args[2]].concat(args.slice(3));")
+            sb.appendLine("  };")
+            sb.appendLine("  const shellyPatchAsyncShellExec = function(name, args) {")
+            sb.appendLine("    if (name !== 'spawn' && name !== 'execFile') return;")
+            sb.appendLine("    if (!Array.isArray(args) || !Array.isArray(args[1])) return;")
+            sb.appendLine("    if (!shellyShellPathCandidates().includes(String(args[0]))) return;")
+            sb.appendLine("    shellyPatchTrace('shellExec routed through linker name=' + name + ' argCount=' + args[1].length);")
+            sb.appendLine("    args[1] = [String(args[0])].concat(args[1]);")
+            sb.appendLine("    args[0] = '/system/bin/linker64';")
+            sb.appendLine("  };")
             sb.appendLine("  const normalizeOptions = function(options, forceShell) {")
             sb.appendLine("    const out = (!options || typeof options !== 'object') ? {} : Object.assign({}, options);")
             sb.appendLine("    if (forceShell || out.shell !== undefined) out.shell = shellyShellValue(out.shell);")
@@ -2631,6 +2651,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && shellyCommandValue(args[0]) === shellyShellPath() && Array.isArray(args[1])) {")
             sb.appendLine("        args[1] = shellyPatchNestedEnvArgs(args[1]);")
             sb.appendLine("      }")
+            sb.appendLine("      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && Array.isArray(args[1])) {")
+            sb.appendLine("        args[1] = shellyPatchShellArgv(args[0], args[1]);")
+            sb.appendLine("      }")
+            sb.appendLine("      shellyPatchAsyncShellExec(name, args);")
             sb.appendLine("      const afterOptions = args.length >= 3 && args[2] && typeof args[2] === 'object' && !Array.isArray(args[2]) && typeof args[2] !== 'function'")
             sb.appendLine("        ? args[2]")
             sb.appendLine("        : (args.length >= 2 && args[1] && typeof args[1] === 'object' && !Array.isArray(args[1]) && typeof args[1] !== 'function' ? args[1] : null);")
@@ -3409,8 +3433,8 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    local __expected=\"\$(__shelly_claude_runtime_extracted_expected)\"")
             sb.appendLine("    [ -n \"\$__expected\" ] || return 1")
             sb.appendLine("    [ -f \"\$__cli\" ] || return 1")
-            sb.appendLine("    if ! grep -q 'shellyPatchClaudeChildProcessShell' \"\$__cli\" 2>/dev/null || ! grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 2' \"\$__cli\" 2>/dev/null; then")
-            sb.appendLine("      [ -z \"\$SHELLY_VERBOSE_CLI_TIER\" ] || echo '[shelly] claude: runtime extracted missing shell patch v2; using APK extracted tier' >&2")
+            sb.appendLine("    if ! grep -q 'shellyPatchClaudeChildProcessShell' \"\$__cli\" 2>/dev/null || ! grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 3' \"\$__cli\" 2>/dev/null; then")
+            sb.appendLine("      [ -z \"\$SHELLY_VERBOSE_CLI_TIER\" ] || echo '[shelly] claude: runtime extracted missing shell patch v3; using APK extracted tier' >&2")
             sb.appendLine("      return 1")
             sb.appendLine("    fi")
             sb.appendLine("    local __out=\"\"")
@@ -3811,7 +3835,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __node_options=\"--require=\$__shelly_node_compat_preload --require=\$__shelly_claude_node_preload\"")
             sb.appendLine("  local __expected=\"\$(cat \"\$HOME/.shelly-runtime/claude-extracted/version\" 2>/dev/null | tr -d '\\n')\"")
             sb.appendLine("  local __out=\"\"")
-            sb.appendLine("  if [ -n \"\$__expected\" ] && [ -f \"\$__runtime_cli\" ] && grep -q '__SHELLY_CLAUDE_BUN_EXTRACTED__' \"\$__runtime_cli\" 2>/dev/null && grep -q 'shellyPatchClaudeChildProcessShell' \"\$__runtime_cli\" 2>/dev/null && grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 2' \"\$__runtime_cli\" 2>/dev/null; then")
+            sb.appendLine("  if [ -n \"\$__expected\" ] && [ -f \"\$__runtime_cli\" ] && grep -q '__SHELLY_CLAUDE_BUN_EXTRACTED__' \"\$__runtime_cli\" 2>/dev/null && grep -q 'shellyPatchClaudeChildProcessShell' \"\$__runtime_cli\" 2>/dev/null && grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 3' \"\$__runtime_cli\" 2>/dev/null; then")
             sb.appendLine("    __out=\$(USE_BUILTIN_RIPGREP=0 DISABLE_AUTOUPDATER=1 DISABLE_INSTALLATION_CHECKS=1 NO_UPDATE_NOTIFIER=1 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 SHELL=\"\$HOME/bin/bash\" BASH=\"\$HOME/bin/bash\" SHELLY_LIB_DIR=\"$libDir\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" BUN_TMPDIR=\"\${BUN_TMPDIR:-\$HOME/.bun-tmp}\" CLAUDE_CODE_TMPDIR=\"\${CLAUDE_CODE_TMPDIR:-\$HOME/.claude-tmp}\" CLAUDE_TMPDIR=\"\${CLAUDE_TMPDIR:-\$HOME/.claude-tmp}\" NODE_OPTIONS=\"\$__node_options\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" BASH_ENV= ENV= timeout 15 /system/bin/env LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"$libDir/node\" \"\$__runtime_cli\" --version 2>&1)")
             sb.appendLine("    case \"\$__out\" in")
             sb.appendLine("      *'[DBG-A'*|*'[CKPT-'*|*'claude-code_2-1-131_harness'*) ;;")
@@ -3828,7 +3852,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __cli=\"\$__runtime_cli\"")
             sb.appendLine("  local __raw=0")
             sb.appendLine("  [ \"\${1:-}\" = \"--raw\" ] && __raw=1")
-            sb.appendLine("  if [ -f \"\$__cli\" ] && ! grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 2' \"\$__cli\" 2>/dev/null; then __cli=\"\$__apk_cli\"; fi")
+            sb.appendLine("  if [ -f \"\$__cli\" ] && ! grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 3' \"\$__cli\" 2>/dev/null; then __cli=\"\$__apk_cli\"; fi")
             sb.appendLine("  [ -f \"\$__cli\" ] || __cli=\"\$__apk_cli\"")
             sb.appendLine("  [ -f \"\$__cli\" ] || { echo 'shelly-claude-bash-trace: extracted cli.js missing' >&2; return 127; }")
             sb.appendLine("  local __node_options=\"--require=\$__shelly_node_compat_preload --require=\$__shelly_claude_node_preload\"")
@@ -3878,7 +3902,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    printf 'extracted=missing\\n'")
             sb.appendLine("  fi")
             sb.appendLine("  if [ -n \"\$__marker\" ]; then")
-            sb.appendLine("    if grep -q '__SHELLY_CLAUDE_BUN_EXTRACTED__' \"\$__selected_extracted\" 2>/dev/null && grep -q 'shellyPatchClaudeChildProcessShell' \"\$__selected_extracted\" 2>/dev/null && grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 2' \"\$__selected_extracted\" 2>/dev/null; then")
+            sb.appendLine("    if grep -q '__SHELLY_CLAUDE_BUN_EXTRACTED__' \"\$__selected_extracted\" 2>/dev/null && grep -q 'shellyPatchClaudeChildProcessShell' \"\$__selected_extracted\" 2>/dev/null && grep -q 'SHELLY_CLAUDE_SHELL_PATCH_VERSION = 3' \"\$__selected_extracted\" 2>/dev/null; then")
             sb.appendLine("      printf 'extracted_patch=OK %s\\n' \"\$__marker\"")
             sb.appendLine("    else")
             sb.appendLine("      printf 'extracted_patch=WARN missing-marker %s\\n' \"\$__marker\"")

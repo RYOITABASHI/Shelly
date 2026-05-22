@@ -295,7 +295,7 @@ if (!globalThis.Bun.JSONL) {
   };
 }
 (function shellyPatchClaudeChildProcessShell() {
-  const SHELLY_CLAUDE_SHELL_PATCH_VERSION = 2;
+  const SHELLY_CLAUDE_SHELL_PATCH_VERSION = 3;
   const childProcess = require('child_process');
   const shellyDiag = process.env.SHELLY_CLAUDE_DIAG === '1';
   const shellyDiagValue = function(value) {
@@ -582,6 +582,22 @@ if (!globalThis.Bun.JSONL) {
     shellyPatchTrace('nestedArgs entry argCount=' + args.length + ' stringArgCount=' + stringArgCount + ' markerCount=' + markerCount);
     return args.map(function(arg) { return shellyPatchNestedEnvString(arg, 'argv'); });
   };
+  const shellyPatchShellArgv = function(cmd, args) {
+    if (!Array.isArray(args) || args.length < 3) return args;
+    const kind = shellyTraceCommandKind(cmd);
+    if (kind !== 'bash' && kind !== 'sh' && kind !== 'shelly_shell') return args;
+    if (args[0] !== '-c' || args[1] !== '-l') return args;
+    shellyPatchTrace('shellArgv repaired -c -l to -lc cmdKind=' + kind + ' argCount=' + args.length);
+    return ['-lc', args[2]].concat(args.slice(3));
+  };
+  const shellyPatchAsyncShellExec = function(name, args) {
+    if (name !== 'spawn' && name !== 'execFile') return;
+    if (!Array.isArray(args) || !Array.isArray(args[1])) return;
+    if (!shellyShellPathCandidates().includes(String(args[0]))) return;
+    shellyPatchTrace('shellExec routed through linker name=' + name + ' argCount=' + args[1].length);
+    args[1] = [String(args[0])].concat(args[1]);
+    args[0] = '/system/bin/linker64';
+  };
   const normalizeOptions = function(options, forceShell) {
     const out = (!options || typeof options !== 'object') ? {} : Object.assign({}, options);
     if (forceShell || out.shell !== undefined) out.shell = shellyShellValue(out.shell);
@@ -624,6 +640,10 @@ if (!globalThis.Bun.JSONL) {
       if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && shellyCommandValue(args[0]) === shellyShellPath() && Array.isArray(args[1])) {
         args[1] = shellyPatchNestedEnvArgs(args[1]);
       }
+      if ((name === 'spawn' || name === 'spawnSync' || name === 'execFile' || name === 'execFileSync') && Array.isArray(args[1])) {
+        args[1] = shellyPatchShellArgv(args[0], args[1]);
+      }
+      shellyPatchAsyncShellExec(name, args);
       const afterOptions = args.length >= 3 && args[2] && typeof args[2] === 'object' && !Array.isArray(args[2]) && typeof args[2] !== 'function'
         ? args[2]
         : (args.length >= 2 && args[1] && typeof args[1] === 'object' && !Array.isArray(args[1]) && typeof args[1] !== 'function' ? args[1] : null);
