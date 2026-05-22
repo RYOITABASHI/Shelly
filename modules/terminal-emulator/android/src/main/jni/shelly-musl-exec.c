@@ -76,6 +76,23 @@ static int phdr_prot(uint32_t flags) {
   return prot;
 }
 
+static bool file_range_within(uint64_t offset, uint64_t size, uint64_t file_size) {
+  return offset <= file_size && size <= file_size - offset;
+}
+
+static bool vaddr_range_within(uint64_t start, uint64_t size,
+                               uint64_t container_start, uint64_t container_size) {
+  return start >= container_start &&
+         start - container_start <= container_size &&
+         size <= container_size - (start - container_start);
+}
+
+static bool can_page_align_up(uintptr_t value, long page_size) {
+  if (page_size <= 0) return false;
+  uintptr_t add = (uintptr_t)page_size - 1;
+  return value <= UINTPTR_MAX - add;
+}
+
 static void zero_range_with_prot(uintptr_t start, uintptr_t end, int prot, long page_size) {
   if (end <= start) return;
   uintptr_t page_start = PAGE_ALIGN_DOWN(start, page_size);
@@ -119,7 +136,9 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size,
     die_msg("unexpected e_phentsize=%u (expected %zu)", eh->e_phentsize, sizeof(Elf64_Phdr));
   }
 
-  if (eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr) > (uint64_t)st.st_size) {
+  uint64_t file_size = (uint64_t)st.st_size;
+  uint64_t phdr_table_size = (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr);
+  if (!file_range_within(eh->e_phoff, phdr_table_size, file_size)) {
     die_msg("program headers out of range in %s", path);
   }
 
@@ -130,9 +149,10 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size,
   uintptr_t min_vaddr = UINTPTR_MAX;
   uintptr_t max_vaddr = 0;
   bool saw_load = false;
+  bool phdr_in_load = false;
   for (uint16_t i = 0; i < eh->e_phnum; i++) {
     if (ph[i].p_type == PT_INTERP && ph[i].p_filesz > 0 &&
-        ph[i].p_offset + ph[i].p_filesz <= (uint64_t)st.st_size) {
+        file_range_within(ph[i].p_offset, ph[i].p_filesz, file_size)) {
       const char *interp = (const char *)file_map + ph[i].p_offset;
       if (memchr(interp, '\0', ph[i].p_filesz) != NULL &&
           strcmp(interp, "/lib/ld-musl-aarch64.so.1") == 0) {
@@ -143,11 +163,23 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size,
       phdr_addr = (uintptr_t)ph[i].p_vaddr;
     }
     if (ph[i].p_type != PT_LOAD) continue;
+    if (!file_range_within(ph[i].p_offset, ph[i].p_filesz, file_size)) {
+      die_msg("PT_LOAD file range out of range in %s", path);
+    }
+    if (ph[i].p_filesz > ph[i].p_memsz) {
+      die_msg("PT_LOAD filesz exceeds memsz in %s", path);
+    }
     if (ph[i].p_memsz == 0) continue;
     if (phdr_addr == 0 &&
-        eh->e_phoff >= ph[i].p_offset &&
-        eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr) <= ph[i].p_offset + ph[i].p_filesz) {
+        vaddr_range_within(eh->e_phoff, phdr_table_size, ph[i].p_offset, ph[i].p_filesz)) {
       phdr_addr = (uintptr_t)ph[i].p_vaddr + (uintptr_t)(eh->e_phoff - ph[i].p_offset);
+    }
+    if (ph[i].p_vaddr > UINTPTR_MAX ||
+        ph[i].p_memsz > UINTPTR_MAX - (uintptr_t)ph[i].p_vaddr) {
+      die_msg("PT_LOAD virtual range overflows in %s", path);
+    }
+    if (!can_page_align_up((uintptr_t)ph[i].p_vaddr + (uintptr_t)ph[i].p_memsz, page_size)) {
+      die_msg("PT_LOAD aligned virtual range overflows in %s", path);
     }
     uintptr_t seg_start = PAGE_ALIGN_DOWN((uintptr_t)ph[i].p_vaddr, page_size);
     uintptr_t seg_end = PAGE_ALIGN_UP((uintptr_t)ph[i].p_vaddr + (uintptr_t)ph[i].p_memsz, page_size);
@@ -157,6 +189,14 @@ static struct loaded_elf map_elf_load_segments(const char *path, long page_size,
   }
   if (!saw_load || min_vaddr >= max_vaddr) die_msg("no valid PT_LOAD segments in %s", path);
   if (phdr_addr == 0) die_msg("could not locate in-memory program headers in %s", path);
+  for (uint16_t i = 0; i < eh->e_phnum; i++) {
+    if (ph[i].p_type != PT_LOAD || ph[i].p_memsz == 0) continue;
+    if (vaddr_range_within(phdr_addr, phdr_table_size, ph[i].p_vaddr, ph[i].p_memsz)) {
+      phdr_in_load = true;
+      break;
+    }
+  }
+  if (!phdr_in_load) die_msg("program headers are not inside a PT_LOAD segment in %s", path);
 
   size_t total_map_len = (size_t)(max_vaddr - min_vaddr);
   void *reserved = mmap(NULL, total_map_len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -239,11 +279,12 @@ static bool is_musl_dyn_executable(const char *path) {
       eh->e_machine == EM_AARCH64 &&
       eh->e_type == ET_DYN &&
       eh->e_phentsize == sizeof(Elf64_Phdr) &&
-      eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr) <= (uint64_t)st.st_size) {
+      file_range_within(eh->e_phoff, (uint64_t)eh->e_phnum * sizeof(Elf64_Phdr),
+                        (uint64_t)st.st_size)) {
     const Elf64_Phdr *ph = (const Elf64_Phdr *)((const uint8_t *)file_map + eh->e_phoff);
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
       if (ph[i].p_type == PT_INTERP && ph[i].p_filesz > 0 &&
-          ph[i].p_offset + ph[i].p_filesz <= (uint64_t)st.st_size) {
+          file_range_within(ph[i].p_offset, ph[i].p_filesz, (uint64_t)st.st_size)) {
         const char *interp = (const char *)file_map + ph[i].p_offset;
         ok = memchr(interp, '\0', ph[i].p_filesz) != NULL &&
              strcmp(interp, "/lib/ld-musl-aarch64.so.1") == 0;
