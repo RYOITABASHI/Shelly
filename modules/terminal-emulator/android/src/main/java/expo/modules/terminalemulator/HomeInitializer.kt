@@ -1122,7 +1122,13 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      `bash -c -l <script>`, and route async app-private shell launches
     //      through Android's linker64 instead of relying on native preload
     //      interception in the spawned child.
-    private const val BASHRC_VERSION = 187
+    // 188: Stop honoring the stale SHELLY_CLAUDE_NATIVE_TUI escape hatch for
+    //      ordinary Claude foreground launches. Native Claude still remains
+    //      available through SHELLY_PREFER_NATIVE_CLAUDE or
+    //      SHELLY_FORCE_NATIVE_CLAUDE, but default/Quick Launch sessions stay
+    //      on the extracted Node tier that carries the Bash-tool shell repair
+    //      from v187.
+    private const val BASHRC_VERSION = 188
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -3180,7 +3186,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // --version smoke. Keep foreground native opt-in only and let the
             // extracted/legacy cli.js tiers handle ordinary bare TUI launches.
             sb.appendLine("  local __claude_foreground_native=0")
-            sb.appendLine("  if { [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] || [ \"\${SHELLY_CLAUDE_NATIVE_TUI:-0}\" = \"1\" ] || [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ]; } && [ \"\${SHELLY_DISABLE_NATIVE_CLAUDE:-0}\" != \"1\" ]; then")
+            sb.appendLine("  if { [ \"\${SHELLY_PREFER_NATIVE_CLAUDE:-0}\" = \"1\" ] || [ \"\${SHELLY_FORCE_NATIVE_CLAUDE:-0}\" = \"1\" ]; } && [ \"\${SHELLY_DISABLE_NATIVE_CLAUDE:-0}\" != \"1\" ]; then")
             sb.appendLine("    __claude_foreground_native=1")
             sb.appendLine("  fi")
             sb.appendLine("  if [ \"\$__claude_foreground_native\" -eq 1 ] && [ \"\${SHELLY_FORCE_LEGACY_CLAUDE:-0}\" != \"1\" ] && [ -x \"\$__trampoline\" ] && [ -x \"\$__musl_ld\" ] && [ -f \"\$__musl_exec_wrapper\" ]; then")
