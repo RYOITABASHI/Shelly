@@ -1128,7 +1128,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      SHELLY_FORCE_NATIVE_CLAUDE, but default/Quick Launch sessions stay
     //      on the extracted Node tier that carries the Bash-tool shell repair
     //      from v187.
-    private const val BASHRC_VERSION = 188
+    // 189: Reset Claude Bash shell snapshots on every `claude` launch instead
+    //      of only once per BASHRC_VERSION. Real-device TUI Bash tool failures
+    //      can leave stale snapshot-bash-* files that continue returning
+    //      exit-1/no-output even after the launcher/preload route is fixed.
+    private const val BASHRC_VERSION = 189
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1718,14 +1722,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("__shelly_claude_reset_shell_snapshots() {")
             sb.appendLine("  local __dir=\"\$HOME/.claude/shell-snapshots\"")
             sb.appendLine("  local __stamp=\"\$__dir/.shelly-bashrc-version\"")
-            sb.appendLine("  local __seen=\"\"")
             sb.appendLine("  [ -d \"\$__dir\" ] || __shelly_mkdir -p \"\$__dir\" 2>/dev/null || return 0")
-            sb.appendLine("  if [ -r \"\$__stamp\" ]; then IFS= read -r __seen < \"\$__stamp\" || true; fi")
-            sb.appendLine("  if [ \"\$__seen\" != \"\$BASHRC_VERSION\" ]; then")
-            sb.appendLine("    if __shelly_rm -f \"\$__dir\"/snapshot-bash-* 2>/dev/null; then")
-            sb.appendLine("      printf '%s\\n' \"\$BASHRC_VERSION\" > \"\$__stamp\" 2>/dev/null || true")
-            sb.appendLine("      [ -z \"\${SHELLY_VERBOSE_CLI_TIER:-}\" ] || echo \"[shelly] claude: reset shell snapshots for bashrc \$BASHRC_VERSION\" >&2")
-            sb.appendLine("    fi")
+            sb.appendLine("  if __shelly_rm -f \"\$__dir\"/snapshot-bash-* 2>/dev/null; then")
+            sb.appendLine("    printf '%s\\n' \"\$BASHRC_VERSION\" > \"\$__stamp\" 2>/dev/null || true")
+            sb.appendLine("    [ -z \"\${SHELLY_VERBOSE_CLI_TIER:-}\" ] || echo \"[shelly] claude: reset shell snapshots for bashrc \$BASHRC_VERSION\" >&2")
             sb.appendLine("  fi")
             sb.appendLine("}")
             sb.appendLine("__shelly_run_node_clean() {")
