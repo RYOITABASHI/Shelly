@@ -1136,7 +1136,12 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      Real-device tracing showed direct exec of the libbash.so symlink is
     //      denied by Android, while Node spawnSync works when the launcher
     //      performs linker64 + LD_PRELOAD repair.
-    private const val BASHRC_VERSION = 190
+    // 191: Revert $HOME/bin/bash to the libbash.so symlink and route sync
+    //      child_process shell launches through linker64 in the Claude Node
+    //      preload. v190 proved the shelly_shell symlink still hits Android
+    //      direct-exec denial and can SIGSEGV under Node spawnSync; the viable
+    //      path is to avoid direct exec from JS child process calls entirely.
+    private const val BASHRC_VERSION = 191
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1993,18 +1998,18 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine()
 
             // Tool functions
-            sb.appendLine("# v190: PATH-visible bash name backed by the executable shelly_shell launcher")
-            sb.appendLine("__shelly_bash_target=\"\$SHELLY_LIB_DIR/shelly_shell\"")
+            sb.appendLine("# v191: PATH-visible bash name backed by libbash.so; JS child_process routes through linker64")
+            sb.appendLine("__shelly_bash_target=\"\$SHELLY_LIB_DIR/libbash.so\"")
             sb.appendLine("if [ ! -e \"\$HOME/bin/bash\" ] || [ \"\$(__shelly_readlink \"\$HOME/bin/bash\" 2>/dev/null)\" != \"\$__shelly_bash_target\" ]; then")
             sb.appendLine("  __shelly_rm -f \"\$HOME/bin/bash\" 2>/dev/null")
             sb.appendLine("  __shelly_ln -s \"\$__shelly_bash_target\" \"\$HOME/bin/bash\" 2>/dev/null || true")
             sb.appendLine("fi")
             sb.appendLine("unset __shelly_bash_target")
-            // v52/v190: re-point $SHELL at $HOME/bin/bash so tools that validate
+            // v52/v191: re-point $SHELL at $HOME/bin/bash so tools that validate
             // basename($SHELL) against {sh,bash,zsh,...} (e.g. Claude Code
-            // CLI's Bash tool) accept it. The symlink target is the executable
-            // shelly_shell launcher, which performs linker64 + LD_PRELOAD repair
-            // before entering libbash.so.
+            // CLI's Bash tool) accept it. Android rejects direct app-private
+            // exec of this symlink, so Claude's Node child_process preload
+            // routes shell launches through /system/bin/linker64.
             sb.appendLine("export SHELL=\"\$HOME/bin/bash\"")
             sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("if [ ! -e \"\$HOME/bin/sh\" ] || [ \"\$(__shelly_readlink \"\$HOME/bin/sh\" 2>/dev/null)\" != \"/system/bin/sh\" ]; then")
@@ -2612,7 +2617,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    return ['-lc', args[2]].concat(args.slice(3));")
             sb.appendLine("  };")
             sb.appendLine("  const shellyPatchAsyncShellExec = function(name, args) {")
-            sb.appendLine("    if (name !== 'spawn' && name !== 'execFile') return;")
+            sb.appendLine("    if (name !== 'spawn' && name !== 'spawnSync' && name !== 'execFile' && name !== 'execFileSync') return;")
             sb.appendLine("    if (!Array.isArray(args) || !Array.isArray(args[1])) return;")
             sb.appendLine("    if (!shellyShellPathCandidates().includes(String(args[0]))) return;")
             sb.appendLine("    shellyPatchTrace('shellExec routed through linker name=' + name + ' argCount=' + args[1].length);")
@@ -3878,13 +3883,16 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-bash-tool-trace() {")
-            sb.appendLine("  echo \"=== T1: direct bash -lc ===\"")
+            sb.appendLine("  echo \"=== T1: direct bash -lc (documents Android direct-exec denial) ===\"")
             sb.appendLine("  local __out __rc __nonce __cli __node_options")
             sb.appendLine("  __out=\$(\"\$HOME/bin/bash\" -lc 'printf HELLO_T1' 2>&1); __rc=\$?; printf 'T1 out=%q rc=%d\\n' \"\$__out\" \"\$__rc\"")
             sb.appendLine("  echo \"=== T2: env -i + LD_PRELOAD + bash -lc ===\"")
             sb.appendLine("  __out=\$(/system/bin/env -i HOME=\"\$HOME\" PATH=\"\$PATH\" SHELL=\"\$HOME/bin/bash\" BASH=\"\$HOME/bin/bash\" SHELLY_LIB_DIR=\"$libDir\" LD_LIBRARY_PATH=\"$libDir\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" \"\$HOME/bin/bash\" -lc 'printf HELLO_T2' 2>&1); __rc=\$?; printf 'T2 out=%q rc=%d\\n' \"\$__out\" \"\$__rc\"")
             sb.appendLine("  echo \"=== T3: node spawnSync bash -lc with pipe stdio ===\"")
             sb.appendLine("  SHELL=\"\$HOME/bin/bash\" BASH=\"\$HOME/bin/bash\" SHELLY_LIB_DIR=\"$libDir\" LD_LIBRARY_PATH=\"$libDir\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" /system/bin/linker64 $libDir/node -e 'const cp=require(\"child_process\"); const r=cp.spawnSync(process.env.HOME+\"/bin/bash\",[\"-lc\",\"printf HELLO_T3\"],{stdio:[\"ignore\",\"pipe\",\"pipe\"],env:process.env}); console.log(JSON.stringify({status:r.status,signal:r.signal,stdout:r.stdout&&r.stdout.toString(),stderr:r.stderr&&r.stderr.toString(),error:r.error&&r.error.message}));'")
+            sb.appendLine("  echo \"=== T3b: node spawnSync bash -lc with Claude JS preload ===\"")
+            sb.appendLine("  __node_options=\"--require=\$__shelly_node_compat_preload --require=\$__shelly_claude_node_preload\"")
+            sb.appendLine("  NODE_OPTIONS=\"\$__node_options\" SHELL=\"\$HOME/bin/bash\" BASH=\"\$HOME/bin/bash\" SHELLY_LIB_DIR=\"$libDir\" LD_LIBRARY_PATH=\"$libDir\" LD_PRELOAD=\"$libDir/libexec_wrapper.so\" /system/bin/linker64 $libDir/node -e 'const cp=require(\"child_process\"); const r=cp.spawnSync(process.env.HOME+\"/bin/bash\",[\"-lc\",\"printf HELLO_T3B\"],{stdio:[\"ignore\",\"pipe\",\"pipe\"],env:process.env}); console.log(JSON.stringify({status:r.status,signal:r.signal,stdout:r.stdout&&r.stdout.toString(),stderr:r.stderr&&r.stderr.toString(),error:r.error&&r.error.message}));'")
             sb.appendLine("  echo \"=== T4: claude --print without Bash tool ===\"")
             sb.appendLine("  __nonce=\"SHELLY_T4_\$(date +%s)_\$\$\"")
             sb.appendLine("  __cli=\"\$HOME/.shelly-runtime/claude-extracted/current/node_modules/@anthropic-ai/claude-code-extracted/cli.js\"")
