@@ -190,6 +190,7 @@ const REAL_LLAMA_SERVER_BIN_INIT = [
   `fi`,
   `REAL_LLAMA_SERVER_DIR="\${REAL_LLAMA_SERVER_BIN%/*}"`,
   `LLAMA_LIB_PATH="$(find "$HOME/.local/llama.cpp" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':')"`,
+  `export LLAMA_LIB_PATH`,
 ].join('\n');
 
 const HEALTH_CHECK_CMD = [
