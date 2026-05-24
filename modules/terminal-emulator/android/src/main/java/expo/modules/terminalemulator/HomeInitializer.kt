@@ -1150,7 +1150,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 194: Add a linker64-launched /bin/sh probe. v193 reached proot but
     //      direct guest exec of Termux dash reported ENOENT, consistent with
     //      dynamic-loader resolution rather than a tmp-dir failure.
-    private const val BASHRC_VERSION = 194
+    // 195: Add system/apex/linker file-bind probes. v194 showed
+    //      /system/bin/linker64 is also ENOENT inside the guest, so verify
+    //      Android bind visibility and try binding linker64 to guest /bin.
+    private const val BASHRC_VERSION = 195
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2067,7 +2070,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  strace -ff -o \"\$__prefix\" \"\$@\"")
             sb.appendLine("}")
             sb.appendLine("shelly-proot-smoke() {")
-            sb.appendLine("  local __dir __stamp __log __root __ptmp __rc1 __rc2 __rc3")
+            sb.appendLine("  local __dir __stamp __log __root __ptmp __rc0 __rc1 __rc2 __rc3 __rc4")
             sb.appendLine("  __dir=\"\$(__shelly_debug_dir)\" || return 1")
             sb.appendLine("  __stamp=\"\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s 2>/dev/null || echo now)\"")
             sb.appendLine("  __log=\"\$__dir/proot-smoke-\$__stamp.log\"")
@@ -2089,20 +2092,28 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    echo \"[proot-smoke] root=\$__root\"")
             sb.appendLine("    echo \"[proot-smoke] host proot version:\"")
             sb.appendLine("    _run \"\$SHELLY_LIB_DIR/proot\" --version || true")
-            sb.appendLine("    echo \"[proot-smoke] T1 default seccomp\"")
-            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK default; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-default'")
+            sb.appendLine("    echo \"[proot-smoke] T0 Android /system toybox visibility\"")
+            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system:/system -b /apex:/apex -b /vendor:/vendor -b \"\$HOME:/workspace\" -w / /system/bin/toybox echo PROOT_OK system-toybox")
+            sb.appendLine("    __rc0=\$?")
+            sb.appendLine("    echo \"[proot-smoke] T0 rc=\$__rc0\"")
+            sb.appendLine("    echo \"[proot-smoke] T1 default seccomp direct /bin/sh\"")
+            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system:/system -b /apex:/apex -b /vendor:/vendor -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK default; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-default'")
             sb.appendLine("    __rc1=\$?")
             sb.appendLine("    echo \"[proot-smoke] T1 rc=\$__rc1\"")
-            sb.appendLine("    echo \"[proot-smoke] T2 default seccomp via linker64\"")
-            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$HOME:/workspace\" -w / /system/bin/linker64 /bin/sh -c 'echo PROOT_OK linker; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-linker'")
+            sb.appendLine("    echo \"[proot-smoke] T2 default seccomp via bound linker64\"")
+            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system:/system -b /apex:/apex -b /vendor:/vendor -b /system/bin/linker64:/bin/ld-android.so -b \"\$HOME:/workspace\" -w / /bin/ld-android.so /bin/sh -c 'echo PROOT_OK bound-linker; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-bound-linker'")
             sb.appendLine("    __rc2=\$?")
             sb.appendLine("    echo \"[proot-smoke] T2 rc=\$__rc2\"")
-            sb.appendLine("    echo \"[proot-smoke] T3 PROOT_NO_SECCOMP=1\"")
-            sb.appendLine("    PROOT_NO_SECCOMP=1 PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK noseccomp; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-noseccomp'")
+            sb.appendLine("    echo \"[proot-smoke] T3 default seccomp via apex linker64\"")
+            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system:/system -b /apex:/apex -b /vendor:/vendor -b \"\$HOME:/workspace\" -w / /apex/com.android.runtime/bin/linker64 /bin/sh -c 'echo PROOT_OK apex-linker; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-apex-linker'")
             sb.appendLine("    __rc3=\$?")
             sb.appendLine("    echo \"[proot-smoke] T3 rc=\$__rc3\"")
-            sb.appendLine("    echo \"[proot-smoke] result default=\$__rc1 linker=\$__rc2 noseccomp=\$__rc3\"")
-            sb.appendLine("    [ \"\$__rc1\" -eq 0 ] || [ \"\$__rc2\" -eq 0 ] || [ \"\$__rc3\" -eq 0 ]")
+            sb.appendLine("    echo \"[proot-smoke] T4 PROOT_NO_SECCOMP=1\"")
+            sb.appendLine("    PROOT_NO_SECCOMP=1 PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system:/system -b /apex:/apex -b /vendor:/vendor -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK noseccomp; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-noseccomp'")
+            sb.appendLine("    __rc4=\$?")
+            sb.appendLine("    echo \"[proot-smoke] T4 rc=\$__rc4\"")
+            sb.appendLine("    echo \"[proot-smoke] result system=\$__rc0 default=\$__rc1 bound_linker=\$__rc2 apex_linker=\$__rc3 noseccomp=\$__rc4\"")
+            sb.appendLine("    [ \"\$__rc1\" -eq 0 ] || [ \"\$__rc2\" -eq 0 ] || [ \"\$__rc3\" -eq 0 ] || [ \"\$__rc4\" -eq 0 ]")
             sb.appendLine("  } 2>&1 | /system/bin/toybox tee \"\$__log\"")
             sb.appendLine("  local __proot_rc=\"\${PIPESTATUS[0]:-1}\"")
             sb.appendLine("  echo \"[proot-smoke] rc=\$__proot_rc log=\$__log\"")
