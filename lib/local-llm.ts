@@ -575,6 +575,17 @@ function xhrStream(
     xhr.onload = () => {
       if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
       if (xhr.status < 200 || xhr.status >= 300) {
+        if (xhr.status === 503 && !_retried && baseUrl && !(externalSignal?.aborted)) {
+          waitForLocalLlmReady(baseUrl, Math.min(timeoutMs, 120000), externalSignal).then((ready) => {
+            if (ready) {
+              xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true)
+                .then(finish);
+            } else {
+              finish({ success: false, error: 'HTTP 503: local LLM is still loading or failed to load the model' });
+            }
+          });
+          return;
+        }
         finish({ success: false, error: `HTTP ${xhr.status}` });
         return;
       }
@@ -610,6 +621,21 @@ function xhrStream(
 
     xhr.send(body);
   });
+}
+
+async function waitForLocalLlmReady(
+  baseUrl: string,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (externalSignal?.aborted) return false;
+    const check = await checkOllamaConnection(baseUrl);
+    if (check.available) return true;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return false;
 }
 
 // ─── AI Orchestrator ──────────────────────────────────────────────────────────
