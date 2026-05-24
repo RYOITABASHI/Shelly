@@ -1144,7 +1144,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 192: Add diagnostic-only shelly-proot-smoke. It does not alter normal
     //      Claude/Codex/Gemini runtime paths; it only tests whether bundled
     //      proot can run a tiny /bin/sh root on this Android kernel.
-    private const val BASHRC_VERSION = 192
+    // 193: Point Termux proot at Shelly's writable tmp. Its compiled default
+    //      is /data/data/com.termux/files/usr/tmp, which does not exist in
+    //      Shelly and prevents glue rootfs creation before the real smoke.
+    private const val BASHRC_VERSION = 193
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2061,31 +2064,34 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  strace -ff -o \"\$__prefix\" \"\$@\"")
             sb.appendLine("}")
             sb.appendLine("shelly-proot-smoke() {")
-            sb.appendLine("  local __dir __stamp __log __root __rc1 __rc2")
+            sb.appendLine("  local __dir __stamp __log __root __ptmp __rc1 __rc2")
             sb.appendLine("  __dir=\"\$(__shelly_debug_dir)\" || return 1")
             sb.appendLine("  __stamp=\"\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s 2>/dev/null || echo now)\"")
             sb.appendLine("  __log=\"\$__dir/proot-smoke-\$__stamp.log\"")
             sb.appendLine("  __root=\"\$HOME/.shelly-proot-smoke/root\"")
+            sb.appendLine("  __ptmp=\"\$HOME/tmp/proot\"")
             sb.appendLine("  {")
             sb.appendLine("    echo \"[proot-smoke] date=\$__stamp\"")
             sb.appendLine("    echo \"[proot-smoke] bashrc=\$BASHRC_VERSION\"")
             sb.appendLine("    echo \"[proot-smoke] log=\$__log\"")
             sb.appendLine("    echo \"[proot-smoke] libdir=\$SHELLY_LIB_DIR\"")
+            sb.appendLine("    echo \"[proot-smoke] tmp=\$__ptmp\"")
             sb.appendLine("    if [ ! -x \"\$SHELLY_LIB_DIR/proot\" ]; then echo \"[proot-smoke] missing proot\"; exit 127; fi")
             sb.appendLine("    if [ ! -x \"\$SHELLY_LIB_DIR/sh-proot-smoke\" ]; then echo \"[proot-smoke] missing sh-proot-smoke\"; exit 127; fi")
             sb.appendLine("    __shelly_rm -rf \"\$__root\" 2>/dev/null || true")
             sb.appendLine("    __shelly_mkdir -p \"\$__root/bin\" \"\$__root/tmp\" 2>/dev/null || exit 1")
+            sb.appendLine("    __shelly_mkdir -p \"\$__ptmp\" 2>/dev/null || exit 1")
             sb.appendLine("    /system/bin/toybox cp \"\$SHELLY_LIB_DIR/sh-proot-smoke\" \"\$__root/bin/sh\" 2>/dev/null || exit 1")
             sb.appendLine("    __shelly_chmod 755 \"\$__root/bin/sh\" 2>/dev/null || true")
             sb.appendLine("    echo \"[proot-smoke] root=\$__root\"")
             sb.appendLine("    echo \"[proot-smoke] host proot version:\"")
             sb.appendLine("    _run \"\$SHELLY_LIB_DIR/proot\" --version || true")
             sb.appendLine("    echo \"[proot-smoke] T1 default seccomp\"")
-            sb.appendLine("    _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$SHELLY_LIB_DIR:\$SHELLY_LIB_DIR\" -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK default; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-default'")
+            sb.appendLine("    PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK default; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-default'")
             sb.appendLine("    __rc1=\$?")
             sb.appendLine("    echo \"[proot-smoke] T1 rc=\$__rc1\"")
             sb.appendLine("    echo \"[proot-smoke] T2 PROOT_NO_SECCOMP=1\"")
-            sb.appendLine("    PROOT_NO_SECCOMP=1 _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$SHELLY_LIB_DIR:\$SHELLY_LIB_DIR\" -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK noseccomp; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-noseccomp'")
+            sb.appendLine("    PROOT_NO_SECCOMP=1 PROOT_TMP_DIR=\"\$__ptmp\" TMPDIR=\"\$__ptmp\" _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK noseccomp; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-noseccomp'")
             sb.appendLine("    __rc2=\$?")
             sb.appendLine("    echo \"[proot-smoke] T2 rc=\$__rc2\"")
             sb.appendLine("    echo \"[proot-smoke] result default=\$__rc1 noseccomp=\$__rc2\"")
