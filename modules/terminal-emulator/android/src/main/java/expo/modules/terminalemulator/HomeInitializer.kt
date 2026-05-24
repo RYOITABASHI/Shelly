@@ -1117,7 +1117,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 196: Add a focused Codex native smoke command and intentionally jump past
     //      the abandoned v185-v195 PRoot diagnostic builds so devices that
     //      installed those APKs regenerate .bashrc.
-    private const val BASHRC_VERSION = 196
+    // 197: Add a bounded Codex exec canary that verifies the native exec
+    //      binary can complete one authenticated model turn.
+    private const val BASHRC_VERSION = 197
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -3785,6 +3787,46 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  echo \"[codex-smoke] rc=\$__smoke_rc log=\$__log\"")
             sb.appendLine("  return \"\$__smoke_rc\"")
             sb.appendLine("}")
+            sb.appendLine("shelly-codex-canary() {")
+            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __prompt __out __rc __matched")
+            sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
+            sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
+            sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
+            sb.appendLine("  __log=\"\$__dir/codex-canary-\$__stamp.log\"")
+            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
+            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
+            sb.appendLine("  __chosen_exec=\"\$__exec\"")
+            sb.appendLine("  [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  __nonce=\"SHELLY_CODEX_CANARY_\$(date +%s)_\$\$\"")
+            sb.appendLine("  __prompt=\"Reply with exactly this token and nothing else: \$__nonce\"")
+            sb.appendLine("  {")
+            sb.appendLine("    echo \"[codex-canary] date=\$__stamp\"")
+            sb.appendLine("    echo \"[codex-canary] bashrc=\$BASHRC_VERSION\"")
+            sb.appendLine("    echo \"[codex-canary] log=\$__log\"")
+            sb.appendLine("    echo \"[codex-canary] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-canary] nonce=\$__nonce\"")
+            sb.appendLine("    echo \"[codex-canary] auth=\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
+            sb.appendLine("    if [ ! -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("      echo \"[codex-canary] missing executable\"")
+            sb.appendLine("      return 127")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ ! -s \"\${CODEX_HOME:-\$HOME/.codex}/auth.json\" ]; then")
+            sb.appendLine("      echo \"[codex-canary] auth missing; run codex-login --open first\"")
+            sb.appendLine("      return 2")
+            sb.appendLine("    fi")
+            sb.appendLine("    echo \"[codex-canary] running codex exec canary\"")
+            sb.appendLine("    __out=\$(HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 120 /system/bin/env LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __rc=\$?")
+            sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,120p'")
+            sb.appendLine("    __matched=0")
+            sb.appendLine("    case \"\$__out\" in *\"\$__nonce\"*) __matched=1 ;; esac")
+            sb.appendLine("    echo \"[codex-canary] result rc=\$__rc matched=\$__matched\"")
+            sb.appendLine("    [ \"\$__rc\" -eq 0 ] && [ \"\$__matched\" -eq 1 ]")
+            sb.appendLine("  } 2>&1 | tee \"\$__log\"")
+            sb.appendLine("  local __canary_rc=\${PIPESTATUS[0]:-1}")
+            sb.appendLine("  echo \"[codex-canary] rc=\$__canary_rc log=\$__log\"")
+            sb.appendLine("  return \"\$__canary_rc\"")
+            sb.appendLine("}")
             // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
             // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
             // bundled bionic node. See HomeInitializer.initialize() where the
@@ -3796,7 +3838,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   cs               (every subsequent time — opens default in
             //                     Browser Pane, claude pre-installed there)
             sb.appendLine("cs() { shelly-cs \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-cs cs")
+            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-codex-canary shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
