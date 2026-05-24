@@ -348,6 +348,7 @@ export async function ollamaChatStream(
   timeoutMs = 120000,
   externalSignal?: AbortSignal,
   _retried = false,
+  maxTokens = 1024,
 ): Promise<{ success: boolean; content?: string; error?: string }> {
   const apiType = detectApiType(config.baseUrl);
   const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
@@ -362,7 +363,7 @@ export async function ollamaChatStream(
       messages,
       stream: true,
       temperature: 0.7,
-      max_tokens: 2048,
+      max_tokens: maxTokens,
     };
     body = JSON.stringify(req);
   } else {
@@ -371,14 +372,14 @@ export async function ollamaChatStream(
       model: config.model,
       messages,
       stream: true,
-      options: { temperature: 0.7, num_predict: 2048 },
+      options: { temperature: 0.7, num_predict: maxTokens },
     };
     body = JSON.stringify(req);
   }
 
   // React Native: XMLHttpRequest でストリーミング
   if (isReactNative) {
-    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried);
+    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried, maxTokens);
   }
 
   // Web: fetch + ReadableStream
@@ -465,7 +466,7 @@ export async function ollamaChatStream(
     if (!_retried) {
       const check = await checkOllamaConnection(config.baseUrl);
       if (check.available) {
-        return ollamaChatStream(config, messages, onChunk, timeoutMs, externalSignal, true);
+        return ollamaChatStream(config, messages, onChunk, timeoutMs, externalSignal, true, maxTokens);
       }
     }
 
@@ -516,6 +517,7 @@ function xhrStream(
   externalSignal?: AbortSignal,
   baseUrl?: string,
   _retried = false,
+  maxTokens = 1024,
 ): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
@@ -578,7 +580,7 @@ function xhrStream(
         if (xhr.status === 503 && !_retried && baseUrl && !(externalSignal?.aborted)) {
           waitForLocalLlmReady(baseUrl, Math.min(timeoutMs, 120000), externalSignal).then((ready) => {
             if (ready) {
-              xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true)
+              xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true, maxTokens)
                 .then(finish);
             } else {
               finish({ success: false, error: 'HTTP 503: local LLM is still loading or failed to load the model' });
@@ -600,7 +602,7 @@ function xhrStream(
       if (!_retried && baseUrl && !(externalSignal?.aborted)) {
         checkOllamaConnection(baseUrl).then((check) => {
           if (check.available) {
-            xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true)
+            xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true, maxTokens)
               .then(finish);
           } else {
             finish({ success: false, error: 'XHR network error' });

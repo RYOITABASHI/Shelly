@@ -430,8 +430,10 @@ export function buildRecommendedStartCommand(
   const config: LlamaCppServerConfig = {
     port: 8080,
     modelPath,
-    // ctx-sizeを小さくすると起動時間・メモリ・推論速度が大幅改善する
-    contextSize: model.useCase === 'chat' ? 2048 : 4096,
+    // Z Fold6 local use prioritizes responsiveness. Qwen3-8B stays the
+    // default quality model, but a 4096 context is too costly for quick
+    // AI-pane turns on mobile CPU.
+    contextSize: 2048,
     // Snapdragon 8 Gen3: 性能コアは6スレッドまで有効
     threads: 6,
     gpuLayers: 0, // Adreno GPU offloadは現状不安定なためCPU only
