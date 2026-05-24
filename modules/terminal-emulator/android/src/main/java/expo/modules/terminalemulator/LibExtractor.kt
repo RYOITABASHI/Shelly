@@ -159,6 +159,13 @@ object LibExtractor {
         // APK packaging only accepts lib*.so names, so CI ships the binary
         // as libstrace.so and LibExtractor restores the PATH-visible name.
         "lib/arm64-v8a/libstrace.so" to "strace",
+        // PRoot smoke prototype. Diagnostic-only: HomeInitializer exposes
+        // shelly-proot-smoke to decide whether this device/kernel can run
+        // ptrace/seccomp-based rootfs translation before any Linux runtime
+        // is wired into the product.
+        "lib/arm64-v8a/libproot.so" to "proot",
+        "lib/arm64-v8a/libtalloc_so_2.so" to "libtalloc.so.2",
+        "lib/arm64-v8a/libproot_sh.so" to "sh-proot-smoke",
         // bug #102 / #115 phase 1: native xdg-open replacement that fires
         // the shelly://browser deep link via `am start`. Direct execve
         // target (no #! shim) so it sidesteps Android binfmt_script's
@@ -197,6 +204,9 @@ object LibExtractor {
         // CI-provisioned native diagnostic tool; refresh like the other
         // generated native payloads so APK rebuilds update existing homes.
         "strace",
+        "proot",
+        "libtalloc.so.2",
+        "sh-proot-smoke",
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.
         "shelly_xdg_open"

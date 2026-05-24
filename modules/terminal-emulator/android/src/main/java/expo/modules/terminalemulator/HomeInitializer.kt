@@ -1141,7 +1141,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      preload. v190 proved the shelly_shell symlink still hits Android
     //      direct-exec denial and can SIGSEGV under Node spawnSync; the viable
     //      path is to avoid direct exec from JS child process calls entirely.
-    private const val BASHRC_VERSION = 191
+    // 192: Add diagnostic-only shelly-proot-smoke. It does not alter normal
+    //      Claude/Codex/Gemini runtime paths; it only tests whether bundled
+    //      proot can run a tiny /bin/sh root on this Android kernel.
+    private const val BASHRC_VERSION = 192
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2056,6 +2059,41 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  local __prefix=\"\$__dir/\$__name.\$__stamp.t.log\"")
             sb.appendLine("  printf 'strace_log=%s\\n' \"\$__prefix\"")
             sb.appendLine("  strace -ff -o \"\$__prefix\" \"\$@\"")
+            sb.appendLine("}")
+            sb.appendLine("shelly-proot-smoke() {")
+            sb.appendLine("  local __dir __stamp __log __root __rc1 __rc2")
+            sb.appendLine("  __dir=\"\$(__shelly_debug_dir)\" || return 1")
+            sb.appendLine("  __stamp=\"\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s 2>/dev/null || echo now)\"")
+            sb.appendLine("  __log=\"\$__dir/proot-smoke-\$__stamp.log\"")
+            sb.appendLine("  __root=\"\$HOME/.shelly-proot-smoke/root\"")
+            sb.appendLine("  {")
+            sb.appendLine("    echo \"[proot-smoke] date=\$__stamp\"")
+            sb.appendLine("    echo \"[proot-smoke] bashrc=\$BASHRC_VERSION\"")
+            sb.appendLine("    echo \"[proot-smoke] log=\$__log\"")
+            sb.appendLine("    echo \"[proot-smoke] libdir=\$SHELLY_LIB_DIR\"")
+            sb.appendLine("    if [ ! -x \"\$SHELLY_LIB_DIR/proot\" ]; then echo \"[proot-smoke] missing proot\"; exit 127; fi")
+            sb.appendLine("    if [ ! -x \"\$SHELLY_LIB_DIR/sh-proot-smoke\" ]; then echo \"[proot-smoke] missing sh-proot-smoke\"; exit 127; fi")
+            sb.appendLine("    __shelly_rm -rf \"\$__root\" 2>/dev/null || true")
+            sb.appendLine("    __shelly_mkdir -p \"\$__root/bin\" \"\$__root/tmp\" 2>/dev/null || exit 1")
+            sb.appendLine("    /system/bin/toybox cp \"\$SHELLY_LIB_DIR/sh-proot-smoke\" \"\$__root/bin/sh\" 2>/dev/null || exit 1")
+            sb.appendLine("    __shelly_chmod 755 \"\$__root/bin/sh\" 2>/dev/null || true")
+            sb.appendLine("    echo \"[proot-smoke] root=\$__root\"")
+            sb.appendLine("    echo \"[proot-smoke] host proot version:\"")
+            sb.appendLine("    _run \"\$SHELLY_LIB_DIR/proot\" --version || true")
+            sb.appendLine("    echo \"[proot-smoke] T1 default seccomp\"")
+            sb.appendLine("    _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$SHELLY_LIB_DIR:\$SHELLY_LIB_DIR\" -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK default; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-default'")
+            sb.appendLine("    __rc1=\$?")
+            sb.appendLine("    echo \"[proot-smoke] T1 rc=\$__rc1\"")
+            sb.appendLine("    echo \"[proot-smoke] T2 PROOT_NO_SECCOMP=1\"")
+            sb.appendLine("    PROOT_NO_SECCOMP=1 _run \"\$SHELLY_LIB_DIR/proot\" -0 -r \"\$__root\" -b /dev -b /proc -b /sys -b /system -b /apex -b /vendor -b \"\$SHELLY_LIB_DIR:\$SHELLY_LIB_DIR\" -b \"\$HOME:/workspace\" -w / /bin/sh -c 'echo PROOT_OK noseccomp; pwd; /system/bin/toybox uname -a; /system/bin/toybox touch /workspace/.shelly-proot-smoke-noseccomp'")
+            sb.appendLine("    __rc2=\$?")
+            sb.appendLine("    echo \"[proot-smoke] T2 rc=\$__rc2\"")
+            sb.appendLine("    echo \"[proot-smoke] result default=\$__rc1 noseccomp=\$__rc2\"")
+            sb.appendLine("    [ \"\$__rc1\" -eq 0 ] || [ \"\$__rc2\" -eq 0 ]")
+            sb.appendLine("  } 2>&1 | /system/bin/toybox tee \"\$__log\"")
+            sb.appendLine("  local __proot_rc=\"\${PIPESTATUS[0]:-1}\"")
+            sb.appendLine("  echo \"[proot-smoke] rc=\$__proot_rc log=\$__log\"")
+            sb.appendLine("  return \"\$__proot_rc\"")
             sb.appendLine("}")
             // bug #100: seed default identity for auto-savepoint. Runs now
             // (AFTER git() is defined) so bare `git config` resolves to the

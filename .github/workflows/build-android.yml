@@ -79,6 +79,9 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libstrace.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libproot.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libtalloc_so_2.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libproot_sh.so
             modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
           key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/gemini-cli.txt', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
@@ -438,6 +441,13 @@ jobs:
           libassuan:lib/libassuan.so:libassuan.so
           libksba:lib/libksba.so:libksba.so
           libnpth:lib/libnpth.so:libnpth.so
+          # PRoot smoke prototype (2026-05-24): diagnostic-only. These are
+          # not wired into normal runtime paths. shelly-proot-smoke uses
+          # proot + dash (/bin/sh) to answer whether this OneUI device can
+          # run ptrace/seccomp-based rootfs translation at all.
+          proot:bin/proot:libproot.so
+          libtalloc:lib/libtalloc.so.2:libtalloc_so_2.so
+          dash:bin/dash:libproot_sh.so
           EOF
 
           # Verify the critical landings (T1 graceful — WARN not FATAL).
@@ -450,11 +460,18 @@ jobs:
                    libgh.so libgpg.so libgpg_agent.so libnano.so libunzip.so \
                    libgit_credential_store.so libgit_credential_cache.so \
                    libbz2_1.so \
-                   libgcrypt.so libgpg_error.so libassuan.so libksba.so libnpth.so; do
+                   libgcrypt.so libgpg_error.so libassuan.so libksba.so libnpth.so \
+                   libproot.so libtalloc_so_2.so libproot_sh.so; do
             if [ -f "${GITHUB_WORKSPACE}/${JNILIBS}/$f" ]; then
               ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/$f"
             else
               echo "  MISSING: $f"
+              case "$f" in
+                libproot.so|libtalloc_so_2.so|libproot_sh.so)
+                  echo "FATAL: PRoot smoke payload missing: $f" >&2
+                  exit 1
+                  ;;
+              esac
             fi
           done
 
