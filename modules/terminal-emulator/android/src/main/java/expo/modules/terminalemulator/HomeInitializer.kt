@@ -1114,7 +1114,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 184: Keep LD_LIBRARY_PATH only for the linker64 -> libbash.so PTY exec,
     //      then rely on .bashrc to immediately unset it before any interactive
     //      system command or restored shell fragment can run.
-    private const val BASHRC_VERSION = 184
+    // 196: Add a focused Codex native smoke command and intentionally jump past
+    //      the abandoned v185-v195 PRoot diagnostic builds so devices that
+    //      installed those APKs regenerate .bashrc.
+    private const val BASHRC_VERSION = 196
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -3724,6 +3727,64 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             // verification URL via the shelly://browser deep link instead
             // of requiring the user to switch apps manually.
             sb.appendLine("codex-login() { _run $libDir/node \"\$HOME/.shelly-codex-auth.js\" \"\$@\"; }")
+            sb.appendLine("shelly-codex-smoke() {")
+            sb.appendLine("  local __stamp __dir __log __exec __tui __runtime_exec __runtime_tui __chosen_exec __chosen_tui")
+            sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
+            sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
+            sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
+            sb.appendLine("  __log=\"\$__dir/codex-smoke-\$__stamp.log\"")
+            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
+            sb.appendLine("  __tui=\"$libDir/codex_tui\"")
+            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
+            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __chosen_exec=\"\$__exec\"")
+            sb.appendLine("  __chosen_tui=\"\$__tui\"")
+            sb.appendLine("  [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  [ -x \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("  {")
+            sb.appendLine("    echo \"[codex-smoke] date=\$__stamp\"")
+            sb.appendLine("    echo \"[codex-smoke] bashrc=\$BASHRC_VERSION\"")
+            sb.appendLine("    echo \"[codex-smoke] log=\$__log\"")
+            sb.appendLine("    echo \"[codex-smoke] libdir=$libDir\"")
+            sb.appendLine("    echo \"[codex-smoke] codex_home=\${CODEX_HOME:-\$HOME/.codex}\"")
+            sb.appendLine("    echo \"[codex-smoke] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-smoke] tui=\$__chosen_tui\"")
+            sb.appendLine("    echo \"[codex-smoke] binaries\"")
+            sb.appendLine("    /system/bin/toybox ls -l \"$libDir/codex_exec\" \"$libDir/codex_tui\" \"$libDir/libc++_shared.so\" \"$libDir/node\" 2>&1 || true")
+            sb.appendLine("    echo \"[codex-smoke] T0 wrapper codex --version\"")
+            sb.appendLine("    codex --version")
+            sb.appendLine("    local __rc0=\$?")
+            sb.appendLine("    echo \"[codex-smoke] T0 rc=\$__rc0\"")
+            sb.appendLine("    echo \"[codex-smoke] T1 direct codex_exec --version\"")
+            sb.appendLine("    _run \"\$__chosen_exec\" --version")
+            sb.appendLine("    local __rc1=\$?")
+            sb.appendLine("    echo \"[codex-smoke] T1 rc=\$__rc1\"")
+            sb.appendLine("    echo \"[codex-smoke] T2 direct codex_tui --version\"")
+            sb.appendLine("    _run \"\$__chosen_tui\" --version")
+            sb.appendLine("    local __rc2=\$?")
+            sb.appendLine("    echo \"[codex-smoke] T2 rc=\$__rc2\"")
+            sb.appendLine("    echo \"[codex-smoke] T3 direct codex_exec --help\"")
+            sb.appendLine("    _run \"\$__chosen_exec\" --help | sed -n '1,40p'")
+            sb.appendLine("    local __rc3=\${PIPESTATUS[0]:-1}")
+            sb.appendLine("    echo \"[codex-smoke] T3 rc=\$__rc3\"")
+            sb.appendLine("    echo \"[codex-smoke] T4 auth file check\"")
+            sb.appendLine("    local __auth=\"\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
+            sb.appendLine("    if [ -s \"\$__auth\" ]; then")
+            sb.appendLine("      _run $libDir/node -e 'const fs=require(\"fs\");try{const a=JSON.parse(fs.readFileSync(process.argv[1],\"utf8\"));console.log(JSON.stringify({auth_mode:a.auth_mode||null,has_refresh:!!(a.tokens&&a.tokens.refresh_token)}));process.exit(0)}catch(e){console.error(e&&e.message||e);process.exit(1)}' \"\$__auth\"")
+            sb.appendLine("      local __rc4=\$?")
+            sb.appendLine("    else")
+            sb.appendLine("      echo \"[codex-smoke] auth=missing\"")
+            sb.appendLine("      local __rc4=2")
+            sb.appendLine("    fi")
+            sb.appendLine("    echo \"[codex-smoke] T4 rc=\$__rc4\"")
+            sb.appendLine("    echo \"[codex-smoke] result wrapper=\$__rc0 exec_version=\$__rc1 tui_version=\$__rc2 exec_help=\$__rc3 auth=\$__rc4\"")
+            sb.appendLine("    if [ \"\$__rc0\" -eq 0 ] || [ \"\$__rc1\" -eq 0 ] || [ \"\$__rc2\" -eq 0 ]; then return 0; fi")
+            sb.appendLine("    return 1")
+            sb.appendLine("  } 2>&1 | tee \"\$__log\"")
+            sb.appendLine("  local __smoke_rc=\${PIPESTATUS[0]:-1}")
+            sb.appendLine("  echo \"[codex-smoke] rc=\$__smoke_rc log=\$__log\"")
+            sb.appendLine("  return \"\$__smoke_rc\"")
+            sb.appendLine("}")
             // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
             // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
             // bundled bionic node. See HomeInitializer.initialize() where the
@@ -3735,7 +3796,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   cs               (every subsequent time — opens default in
             //                     Browser Pane, claude pre-installed there)
             sb.appendLine("cs() { shelly-cs \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex codex-login shelly-cs cs")
+            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
