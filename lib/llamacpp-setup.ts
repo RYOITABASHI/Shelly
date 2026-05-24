@@ -430,12 +430,11 @@ export function buildRecommendedStartCommand(
   const config: LlamaCppServerConfig = {
     port: 8080,
     modelPath,
-    // Z Fold6 local use prioritizes responsiveness. Qwen3-8B stays the
-    // default quality model, but a 4096 context is too costly for quick
-    // AI-pane turns on mobile CPU.
-    contextSize: 2048,
-    // Snapdragon 8 Gen3: 性能コアは6スレッドまで有効
-    threads: 6,
+    // Z Fold6 local use prioritizes app stability. Qwen3-8B stays the
+    // selected quality model, but large context windows and too many CPU
+    // threads can push Android into low-memory kills while Shelly is active.
+    contextSize: 1024,
+    threads: 4,
     gpuLayers: 0, // Adreno GPU offloadは現状不安定なためCPU only
   };
   return buildServerStartCommand(config);

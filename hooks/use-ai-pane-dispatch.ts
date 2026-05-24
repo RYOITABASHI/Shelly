@@ -87,8 +87,8 @@ function compactForLocalLlm(text: string, maxChars: number): string {
 
 function compactTerminalContextForLocalLlm(context: string | null): string | null {
   if (!context) return null;
-  const lines = context.split('\n').slice(-12).join('\n');
-  return compactForLocalLlm(lines, 1200);
+  const lines = context.split('\n').slice(-6).join('\n');
+  return compactForLocalLlm(lines, 600);
 }
 
 // ─── Throttled update ─────────────────────────────────────────────────────────
@@ -412,10 +412,10 @@ export function useAIPaneDispatch(paneId: string) {
         // Exclude the streaming placeholder we just added
         const history = toOpenAIHistory(
           conv.messages.filter((m) => m.id !== assistantId),
-          agent === 'local' ? 2 : 8,
+          agent === 'local' ? 1 : 8,
         ).map((m) => ({
           role: m.role,
-          content: agent === 'local' ? compactForLocalLlm(m.content, 900) : m.content,
+          content: agent === 'local' ? compactForLocalLlm(m.content, 500) : m.content,
         }));
 
         if (agent === 'local') {
@@ -457,7 +457,7 @@ export function useAIPaneDispatch(paneId: string) {
             120000,
             signal,
             false,
-            384,
+            256,
           );
 
           if (signal.aborted) {
