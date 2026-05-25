@@ -1123,7 +1123,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      can write inside a Shelly workspace, not just return text.
     // 199: Add a Codex repo canary for a slightly more realistic multi-file
     //      project edit without depending on git being present.
-    private const val BASHRC_VERSION = 199
+    // 200: Add a Codex apply_patch diagnostic canary to isolate fs-helper
+    //      failures from ordinary shell/edit success.
+    private const val BASHRC_VERSION = 200
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -3941,6 +3943,55 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  echo \"[codex-repo-canary] rc=\$__canary_rc log=\$__log\"")
             sb.appendLine("  return \"\$__canary_rc\"")
             sb.appendLine("}")
+            sb.appendLine("shelly-codex-patch-canary() {")
+            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __work __prompt __out __rc __readme_rc __helper_error")
+            sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
+            sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
+            sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
+            sb.appendLine("  __log=\"\$__dir/codex-patch-canary-\$__stamp.log\"")
+            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
+            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
+            sb.appendLine("  __chosen_exec=\"\$__exec\"")
+            sb.appendLine("  [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  __nonce=\"SHELLY_CODEX_PATCH_CANARY_\$(date +%s)_\$\$\"")
+            sb.appendLine("  __work=\"\$HOME/shelly-codex-patch-canary-\$__stamp\"")
+            sb.appendLine("  __prompt=\"This is a diagnostic for the apply_patch path. In the current working directory, edit README.md by appending one new line containing exactly the token between <token> and </token>, excluding the tags: <token>\$__nonce</token>. Use apply_patch if it is available. If apply_patch fails, continue by any available method so the file still changes. Then reply with exactly DONE.\"")
+            sb.appendLine("  {")
+            sb.appendLine("    echo \"[codex-patch-canary] date=\$__stamp\"")
+            sb.appendLine("    echo \"[codex-patch-canary] bashrc=\$BASHRC_VERSION\"")
+            sb.appendLine("    echo \"[codex-patch-canary] log=\$__log\"")
+            sb.appendLine("    echo \"[codex-patch-canary] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-patch-canary] work=\$__work\"")
+            sb.appendLine("    echo \"[codex-patch-canary] nonce=\$__nonce\"")
+            sb.appendLine("    echo \"[codex-patch-canary] auth=\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
+            sb.appendLine("    if [ ! -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("      echo \"[codex-patch-canary] missing executable\"")
+            sb.appendLine("      return 127")
+            sb.appendLine("    fi")
+            sb.appendLine("    if [ ! -s \"\${CODEX_HOME:-\$HOME/.codex}/auth.json\" ]; then")
+            sb.appendLine("      echo \"[codex-patch-canary] auth missing; run codex-login --open first\"")
+            sb.appendLine("      return 2")
+            sb.appendLine("    fi")
+            sb.appendLine("    rm -rf \"\$__work\"")
+            sb.appendLine("    mkdir -p \"\$__work\" || return 3")
+            sb.appendLine("    printf '%s\\n' '# Shelly Codex Patch Canary' '' 'Initial project file.' > \"\$__work/README.md\"")
+            sb.appendLine("    echo \"[codex-patch-canary] running codex exec patch canary\"")
+            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __rc=\$?")
+            sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,220p'")
+            sb.appendLine("    echo \"[codex-patch-canary] README.md\"")
+            sb.appendLine("    /system/bin/toybox cat \"\$__work/README.md\" 2>&1 || true")
+            sb.appendLine("    /system/bin/toybox grep -F -x \"\$__nonce\" \"\$__work/README.md\" >/dev/null 2>&1")
+            sb.appendLine("    __readme_rc=\$?")
+            sb.appendLine("    __helper_error=0")
+            sb.appendLine("    case \"\$__out\" in *\"--codex-run-as-fs-helper\"*|*\"apply_patch verification failed\"*) __helper_error=1 ;; esac")
+            sb.appendLine("    echo \"[codex-patch-canary] result rc=\$__rc readme=\$__readme_rc helper_error=\$__helper_error\"")
+            sb.appendLine("    [ \"\$__rc\" -eq 0 ] && [ \"\$__readme_rc\" -eq 0 ]")
+            sb.appendLine("  } 2>&1 | tee \"\$__log\"")
+            sb.appendLine("  local __canary_rc=\${PIPESTATUS[0]:-1}")
+            sb.appendLine("  echo \"[codex-patch-canary] rc=\$__canary_rc log=\$__log\"")
+            sb.appendLine("  return \"\$__canary_rc\"")
+            sb.appendLine("}")
             // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
             // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
             // bundled bionic node. See HomeInitializer.initialize() where the
@@ -3952,7 +4003,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   cs               (every subsequent time — opens default in
             //                     Browser Pane, claude pre-installed there)
             sb.appendLine("cs() { shelly-cs \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-codex-canary shelly-codex-edit-canary shelly-codex-repo-canary shelly-cs cs")
+            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-codex-canary shelly-codex-edit-canary shelly-codex-repo-canary shelly-codex-patch-canary shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet
