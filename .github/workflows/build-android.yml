@@ -964,7 +964,7 @@ jobs:
           test "${environ_reloc_count}" = "1" || { echo "FATAL: expected exactly one environ GLOB_DAT relocation, got ${environ_reloc_count}"; exit 1; }
           readelf -d /tmp/libexec_wrapper.so | grep -q INIT_ARRAY || { echo "FATAL: libexec_wrapper.so constructor INIT_ARRAY missing"; exit 1; }
           grep -qaF 'SHELLY_CODEX_PROC_EXE_OPEN_SHIM' /tmp/libexec_wrapper.so || { echo "FATAL: Codex proc-exe open shim gate missing from libexec_wrapper.so"; exit 1; }
-          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v206:bypass-libc-plt'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v207:scrub-helper-and-execvp-env'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'

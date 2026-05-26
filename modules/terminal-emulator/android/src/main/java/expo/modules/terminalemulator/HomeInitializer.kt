@@ -1147,7 +1147,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 206: Bypass libc PLT in exec-wrapper hot paths: use raw getpid/open/
     //      readlink syscalls, avoid errno writes in proc-exe readlink shim,
     //      and keep execvp/execvpe off the exported execve jump slot.
-    private const val BASHRC_VERSION = 206
+    // 207: Launch Codex fs-helper through linker64 but scrub LD_PRELOAD and
+    //      Codex proc-exe shim env so apply_patch helper subprocesses do not
+    //      recursively inherit exec-wrapper. Keep execvp off inherited environ
+    //      in the crash-prone Codex fallback path.
+    private const val BASHRC_VERSION = 207
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }

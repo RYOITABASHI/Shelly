@@ -21,12 +21,15 @@
 #define PATH_BUF_SIZE 4096
 #define SHELLY_ENOENT 2
 #define SHELLY_ENOSYS 38
+#define DEFAULT_HOME "/data/user/0/dev.shelly.terminal/files/home"
+#define DEFAULT_LIB_DIR "/data/user/0/dev.shelly.terminal/files/termux-libs"
+#define DEFAULT_PATH DEFAULT_HOME "/bin:" DEFAULT_LIB_DIR ":/system/bin:/vendor/bin:/apex/com.android.runtime/bin"
 
 /* used+retain keeps this CI freshness marker past compiler dead-strip and
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v206:bypass-libc-plt";
+    "shelly-exec-wrapper:v207:scrub-helper-and-execvp-env";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -85,6 +88,15 @@ static const char *const trace_env_keys[] = {
 #endif
 
 extern char **environ;
+static char default_path_env[] = "PATH=" DEFAULT_PATH;
+static char default_home_env[] = "HOME=" DEFAULT_HOME;
+static char default_tmpdir_env[] = "TMPDIR=" DEFAULT_HOME "/tmp";
+static char *const minimal_envp[] = {
+    default_path_env,
+    default_home_env,
+    default_tmpdir_env,
+    NULL
+};
 
 static long raw_syscall1(long nr, long a0) {
     register long x8 asm("x8") = nr;
@@ -127,7 +139,7 @@ static int raw_getpid_call(void) {
 }
 
 static int raw_execve_call(const char *path, char *const argv[], char *const envp[]) {
-    return finish_syscall(raw_syscall3(__NR_execve, (long)path, (long)argv, (long)envp));
+    return finish_syscall(raw_syscall3(__NR_execve, (long)path, (long)argv, (long)(envp ? envp : minimal_envp)));
 }
 
 static int raw_open_readonly(const char *path) {
@@ -256,9 +268,7 @@ static const char *env_value_direct(char *const env[], const char *name_eq) {
 }
 
 static const char *env_value(char *const envp[], const char *name_eq) {
-    const char *v = env_value_direct(envp, name_eq);
-    if (v) return v;
-    return envp ? NULL : env_value_direct(environ, name_eq);
+    return env_value_direct(envp, name_eq);
 }
 
 static const char *env_value_parent_fallback(char *const envp[], const char *name_eq) {
@@ -340,8 +350,10 @@ static void trace_exec_event(const char *stage, const char *pathname, const char
                              char *const argv[], char *const envp[], int linker_exec) {
     char line[4096];
     size_t n = 0;
-    int raw = trace_flag_enabled(envp, "SHELLY_CLAUDE_PATCH_RAW=");
+    int raw;
     unsigned int argc = 0;
+    if (!envp) return;
+    raw = trace_flag_enabled(envp, "SHELLY_CLAUDE_PATCH_RAW=");
     if (!native_trace_enabled(envp)) return;
     if (argv) {
         while (argc < MAX_ARGC && argv[argc]) argc++;
@@ -478,8 +490,8 @@ static int resolve_path_search(const char *file, char *const envp[], char *out, 
     const char *path;
     const char *start;
     if (!file || !file[0] || contains_char(file, '/')) return -1;
-    path = env_value_parent_fallback(envp, "PATH=");
-    if (!path || !path[0]) path = "/system/bin:/vendor/bin:/apex/com.android.runtime/bin";
+    path = env_value_direct(envp, "PATH=");
+    if (!path || !path[0]) path = DEFAULT_PATH;
     start = path;
     for (const char *p = path;; p++) {
         if (*p == ':' || *p == '\0') {
@@ -521,10 +533,13 @@ static int should_scrub_system_env(const char *pathname) {
 }
 
 static int scrub_system_envp(char *const envp[], char **out) {
-    char *const *source = envp ? envp : environ;
+    char *const *source = envp;
     int n = 0;
     if (!source) {
-        out[0] = NULL;
+        out[n++] = default_path_env;
+        out[n++] = default_home_env;
+        out[n++] = default_tmpdir_env;
+        out[n] = NULL;
         return 0;
     }
     for (int i = 0; i < MAX_ENVP && source[i]; i++) {
@@ -542,6 +557,7 @@ static int scrub_system_envp(char *const envp[], char **out) {
 }
 
 static int codex_mode_enabled(char *const envp[]) {
+    if (!envp) return 0;
     return env_value_parent_fallback(envp, "SHELLY_CODEX_EXEC_PATH=") != NULL;
 }
 
@@ -609,7 +625,7 @@ static const char *codex_proc_exe_open_target(const char *path, int flags) {
 }
 
 static int scrub_codex_child_envp(char *const envp[], char **out) {
-    char *const *source = envp ? envp : environ;
+    char *const *source = envp;
     int n = 0;
     if (!source) {
         out[0] = NULL;
@@ -632,7 +648,9 @@ static int scrub_codex_child_envp(char *const envp[], char **out) {
 }
 
 static int is_codex_fs_helper_self_exec(const char *pathname, char *const argv[], char *const envp[]) {
-    const char *codex_self = env_value_parent_fallback(envp, "SHELLY_CODEX_EXEC_PATH=");
+    const char *codex_self;
+    if (!envp) return 0;
+    codex_self = env_value_parent_fallback(envp, "SHELLY_CODEX_EXEC_PATH=");
     return trusted_codex_path(codex_self) &&
            streq(pathname, codex_self) &&
            argv &&
@@ -641,8 +659,8 @@ static int is_codex_fs_helper_self_exec(const char *pathname, char *const argv[]
 }
 
 static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, size_t ld_buf_size) {
-    char *const *source = envp ? envp : environ;
-    const char *lib_dir = env_value(envp, "SHELLY_LIB_DIR=");
+    char *const *source = envp ? envp : minimal_envp;
+    const char *lib_dir = envp ? env_value(envp, "SHELLY_LIB_DIR=") : DEFAULT_LIB_DIR;
     size_t nbuf = 0;
     int n = 0;
 
@@ -683,27 +701,35 @@ static int build_linker_argv(const char *pathname, char *const argv[], char **ou
     return 0;
 }
 
-static int is_codex_fs_helper_linker_exec(const char *pathname, char *const argv[]) {
-    return streq(pathname, LINKER64) &&
-           argv &&
-           argv[1] &&
-           streq(argv[1], CODEX_FS_HELPER_ARG1);
+static int is_codex_fs_helper_linker_exec(const char *pathname, char *const argv[], char *const envp[]) {
+    const char *codex_self;
+    if (!envp) return 0;
+    codex_self = env_value_parent_fallback(envp, "SHELLY_CODEX_EXEC_PATH=");
+    if (!streq(pathname, LINKER64) || !trusted_codex_path(codex_self) || !argv) return 0;
+    if (argv[1] && streq(argv[1], CODEX_FS_HELPER_ARG1)) return 1;
+    return argv[1] && streq(argv[1], codex_self) &&
+           argv[2] &&
+           streq(argv[2], CODEX_FS_HELPER_ARG1);
 }
 
 static int build_codex_fs_helper_argv(char *const argv[], char *const envp[], char **out) {
     const char *codex_self = env_value_parent_fallback(envp, "SHELLY_CODEX_EXEC_PATH=");
     int argc = 0;
+    int first_arg = 1;
     int j = 0;
 
-    if (!codex_self || codex_self[0] != '/' || !out) return -1;
+    if (!trusted_codex_path(codex_self) || !out) return -1;
     if (argv) {
         while (argc < MAX_ARGC && argv[argc]) argc++;
         if (argc >= MAX_ARGC) return -1;
+        if (argc > 2 && streq(argv[1], codex_self) && streq(argv[2], CODEX_FS_HELPER_ARG1)) {
+            first_arg = 2;
+        }
     }
 
     out[j++] = (char *)LINKER64;
     out[j++] = (char *)codex_self;
-    for (int i = 1; i < argc && j < MAX_ARGC + 1; i++) {
+    for (int i = first_arg; i < argc && j < MAX_ARGC + 1; i++) {
         out[j++] = argv[i];
     }
     out[j] = NULL;
@@ -711,7 +737,7 @@ static int build_codex_fs_helper_argv(char *const argv[], char *const envp[], ch
 }
 
 static int add_codex_helper_envp(char *const envp[], char **out, char *ld_buf, size_t ld_buf_size) {
-    char *const *source = envp ? envp : environ;
+    char *const *source = envp;
     const char *lib_dir = env_value_parent_fallback(envp, "SHELLY_LIB_DIR=");
     size_t nbuf = 0;
     int n = 0;
@@ -722,7 +748,11 @@ static int add_codex_helper_envp(char *const envp[], char **out, char *ld_buf, s
 
     if (source) {
         for (int i = 0; i < MAX_ENVP && source[i]; i++) {
-            if (starts_with(source[i], "LD_LIBRARY_PATH=")) {
+            if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
+                starts_with(source[i], "LD_PRELOAD=") ||
+                starts_with(source[i], "SHELLY_CODEX_EXEC_PATH=") ||
+                starts_with(source[i], "SHELLY_CODEX_PROC_EXE_SHIM=") ||
+                starts_with(source[i], "SHELLY_CODEX_PROC_EXE_OPEN_SHIM=")) {
                 continue;
             }
             if (n >= MAX_ENVP - 2) return -1;
@@ -741,12 +771,12 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     char *codex_child_env[MAX_ENVP];
     int linker_exec;
     if (!rewritten) {
-        trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
+        if (envp) trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
         return -1;
     }
     linker_exec = should_linker_exec(rewritten);
-    trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
-    if (is_codex_fs_helper_linker_exec(rewritten, argv)) {
+    if (envp) trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
+    if (is_codex_fs_helper_linker_exec(rewritten, argv, envp)) {
         char *codex_argv[MAX_ARGC + 2];
         if (build_codex_fs_helper_argv(argv, envp, codex_argv) == 0) {
             char *codex_env[MAX_ENVP];
@@ -785,7 +815,7 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
 
     char *new_argv[MAX_ARGC + 2];
     if (build_linker_argv(rewritten, argv, new_argv) != 0) {
-        trace_exec_event("linker-argv-failed", pathname, rewritten, argv, envp, 0);
+        if (envp) trace_exec_event("linker-argv-failed", pathname, rewritten, argv, envp, 0);
         return raw_execve_call(rewritten, argv, envp);
     }
     if (!env_value(envp, "LD_LIBRARY_PATH=")) {
@@ -866,7 +896,7 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     trace_exec_event(search_path ? "posix_spawnp" : "posix_spawn",
                      spawn_path, rewritten, argv, envp, linker_exec);
 
-    if (is_codex_fs_helper_linker_exec(rewritten, argv)) {
+    if (is_codex_fs_helper_linker_exec(rewritten, argv, envp)) {
         char *codex_argv[MAX_ARGC + 2];
         if (build_codex_fs_helper_argv(argv, envp, codex_argv) == 0) {
             char *codex_env[MAX_ENVP];
@@ -934,7 +964,12 @@ int posix_spawnp(pid_t *pid, const char *file,
 }
 
 int execvp(const char *file, char *const argv[]) {
-    return shelly_execve_internal(file, argv, environ);
+    char resolved_buf[PATH_BUF_SIZE];
+    const char *path = file;
+    if (resolve_path_search(file, NULL, resolved_buf, sizeof(resolved_buf), 1) == 0) {
+        path = resolved_buf;
+    }
+    return shelly_execve_internal(path, argv, NULL);
 }
 
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
