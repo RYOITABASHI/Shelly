@@ -14,3 +14,4 @@ target_link_libraries(shelly-exec log)
 # on Android 10+ where SELinux blocks direct execution from app_data_file
 add_library(exec_wrapper SHARED src/main/jni/exec-wrapper.c)
 target_compile_options(exec_wrapper PRIVATE -fno-builtin -fno-stack-protector)
+target_link_libraries(exec_wrapper dl)

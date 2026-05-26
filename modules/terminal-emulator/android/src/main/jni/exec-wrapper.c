@@ -1,10 +1,12 @@
 /*
  * exec-wrapper.c -- LD_PRELOAD library for Android app-data binary execution.
  *
- * Keep this shim independent of libdl/liblog/libc I/O. It can run very early
- * during startup, before other DSOs' PLT state is worth depending on.
+ * Keep the execve path independent of liblog/libc I/O. The posix_spawn path
+ * resolves libc's real symbols lazily because Rust CLIs may surface ENOSYS
+ * directly instead of falling back through execve.
  */
 #define _GNU_SOURCE
+#include <dlfcn.h>
 #include <errno.h>
 #include <spawn.h>
 #include <stddef.h>
@@ -20,7 +22,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v201:codex-fs-helper";
+    "shelly-exec-wrapper:v202:codex-spawn-pass-through";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -188,6 +190,14 @@ static int starts_with(const char *s, const char *prefix) {
         if (*s++ != *prefix++) return 0;
     }
     return 1;
+}
+
+static int contains_char(const char *s, char needle) {
+    if (!s) return 0;
+    while (*s) {
+        if (*s++ == needle) return 1;
+    }
+    return 0;
 }
 
 static const char *env_value_direct(char *const env[], const char *name_eq) {
@@ -371,6 +381,22 @@ static int copy_rewrite(char *out, size_t out_size, const char *prefix, const ch
     return 0;
 }
 
+static int copy_path_join(char *out, size_t out_size, const char *dir_start, size_t dir_len, const char *file) {
+    size_t n = 0;
+    if (!out || !file || out_size == 0) return -1;
+    if (dir_len == 0) {
+        if (append_char(out, out_size, &n, '.') != 0) return -1;
+    } else {
+        for (size_t i = 0; i < dir_len; i++) {
+            if (append_char(out, out_size, &n, dir_start[i]) != 0) return -1;
+        }
+    }
+    if (n > 0 && out[n - 1] != '/') {
+        if (append_char(out, out_size, &n, '/') != 0) return -1;
+    }
+    return append_str(out, out_size, &n, file);
+}
+
 static int trusted_shell_path(const char *path) {
     return path && path[0] == '/' &&
            (starts_with(path, "/data/user/0/dev.shelly.terminal/") ||
@@ -410,6 +436,36 @@ static const char *rewrite_path(const char *pathname, char *const envp[], char *
     return pathname;
 }
 
+static int resolve_path_search(const char *file, char *const envp[], char *out, size_t out_size,
+                               int absolute_dirs_only) {
+    const char *path;
+    const char *start;
+    if (!file || !file[0] || contains_char(file, '/')) return -1;
+    path = env_value_parent_fallback(envp, "PATH=");
+    if (!path || !path[0]) path = "/system/bin:/vendor/bin:/apex/com.android.runtime/bin";
+    start = path;
+    for (const char *p = path;; p++) {
+        if (*p == ':' || *p == '\0') {
+            size_t len = (size_t)(p - start);
+            if (absolute_dirs_only && (len == 0 || start[0] != '/')) {
+                if (*p == '\0') break;
+                start = p + 1;
+                continue;
+            }
+            if (copy_path_join(out, out_size, start, len, file) == 0) {
+                int fd = raw_open_readonly(out);
+                if (fd >= 0) {
+                    raw_close_call(fd);
+                    return 0;
+                }
+            }
+            if (*p == '\0') break;
+            start = p + 1;
+        }
+    }
+    return -1;
+}
+
 static int should_linker_exec(const char *pathname) {
     return pathname &&
            !streq(pathname, LINKER64) &&
@@ -428,20 +484,45 @@ static int should_scrub_system_env(const char *pathname) {
 }
 
 static int scrub_system_envp(char *const envp[], char **out) {
+    char *const *source = envp ? envp : environ;
     int n = 0;
-    if (!envp) {
+    if (!source) {
         out[0] = NULL;
         return 0;
     }
-    for (int i = 0; i < MAX_ENVP && envp[i]; i++) {
-        if (starts_with(envp[i], "LD_LIBRARY_PATH=") ||
-            starts_with(envp[i], "LD_PRELOAD=")) {
+    for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+        if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
+            starts_with(source[i], "LD_PRELOAD=")) {
             continue;
         }
         if (n >= MAX_ENVP - 1) {
             return -1;
         }
-        out[n++] = envp[i];
+        out[n++] = source[i];
+    }
+    out[n] = NULL;
+    return 0;
+}
+
+static int codex_mode_enabled(char *const envp[]) {
+    return env_value_parent_fallback(envp, "SHELLY_CODEX_EXEC_PATH=") != NULL;
+}
+
+static int scrub_codex_child_envp(char *const envp[], char **out) {
+    char *const *source = envp ? envp : environ;
+    int n = 0;
+    if (!source) {
+        out[0] = NULL;
+        return 0;
+    }
+    for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+        if (starts_with(source[i], "LD_PRELOAD=")) {
+            continue;
+        }
+        if (n >= MAX_ENVP - 1) {
+            return -1;
+        }
+        out[n++] = source[i];
     }
     out[n] = NULL;
     return 0;
@@ -529,8 +610,7 @@ static int add_codex_helper_envp(char *const envp[], char **out, char *ld_buf, s
 
     if (source) {
         for (int i = 0; i < MAX_ENVP && source[i]; i++) {
-            if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
-                starts_with(source[i], "LD_PRELOAD=")) {
+            if (starts_with(source[i], "LD_LIBRARY_PATH=")) {
                 continue;
             }
             if (n >= MAX_ENVP - 2) return -1;
@@ -545,6 +625,7 @@ static int add_codex_helper_envp(char *const envp[], char **out, char *ld_buf, s
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
     char rewrite_buf[PATH_BUF_SIZE];
     const char *rewritten = rewrite_path(pathname, envp, rewrite_buf, sizeof(rewrite_buf));
+    char *codex_child_env[MAX_ENVP];
     int linker_exec;
     if (!rewritten) {
         trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
@@ -563,6 +644,10 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
             }
             return raw_execve_call(LINKER64, codex_argv, envp);
         }
+    }
+    if (codex_mode_enabled(envp) &&
+        scrub_codex_child_envp(envp, codex_child_env) == 0) {
+        envp = codex_child_env;
     }
     if (!linker_exec) {
         char *scrubbed_env[MAX_ENVP];
@@ -588,33 +673,123 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     return raw_execve_call(LINKER64, new_argv, envp);
 }
 
+typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
+                                  const posix_spawn_file_actions_t *,
+                                  const posix_spawnattr_t *,
+                                  char *const[], char *const[]);
+
+static posix_spawn_impl_t real_posix_spawn_impl(void) {
+    static posix_spawn_impl_t fn;
+    if (!fn) {
+        fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawn");
+    }
+    return fn;
+}
+
+static posix_spawn_impl_t real_posix_spawnp_impl(void) {
+    static posix_spawn_impl_t fn;
+    if (!fn) {
+        fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    }
+    return fn;
+}
+
+static int call_real_posix_spawn(int search_path, pid_t *pid, const char *path,
+                                 const posix_spawn_file_actions_t *file_actions,
+                                 const posix_spawnattr_t *attrp,
+                                 char *const argv[], char *const envp[]) {
+    posix_spawn_impl_t fn = search_path ? real_posix_spawnp_impl() : real_posix_spawn_impl();
+    if (!fn) return ENOSYS;
+    return fn(pid, path, file_actions, attrp, argv, envp);
+}
+
+static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *path,
+                                     const posix_spawn_file_actions_t *file_actions,
+                                     const posix_spawnattr_t *attrp,
+                                     char *const argv[], char *const envp[]) {
+    char resolved_buf[PATH_BUF_SIZE];
+    char rewrite_buf[PATH_BUF_SIZE];
+    const char *spawn_path = path;
+    const char *rewritten;
+    int linker_exec;
+
+    if (search_path && resolve_path_search(path, envp, resolved_buf, sizeof(resolved_buf),
+                                           file_actions != NULL) == 0) {
+        spawn_path = resolved_buf;
+        search_path = 0;
+    } else if (file_actions && path && path[0] != '/') {
+        char *codex_child_env[MAX_ENVP];
+        if (codex_mode_enabled(envp) &&
+            scrub_codex_child_envp(envp, codex_child_env) == 0) {
+            envp = codex_child_env;
+        }
+        return call_real_posix_spawn(search_path, pid, path, file_actions, attrp, argv, envp);
+    }
+    rewritten = rewrite_path(spawn_path, envp, rewrite_buf, sizeof(rewrite_buf));
+
+    if (!rewritten) {
+        trace_exec_event(search_path ? "posix_spawnp-rewrite-null" : "posix_spawn-rewrite-null",
+                         spawn_path, NULL, argv, envp, 0);
+        return ENOENT;
+    }
+    linker_exec = should_linker_exec(rewritten);
+    trace_exec_event(search_path ? "posix_spawnp" : "posix_spawn",
+                     spawn_path, rewritten, argv, envp, linker_exec);
+
+    if (is_codex_fs_helper_linker_exec(rewritten, argv)) {
+        char *codex_argv[MAX_ARGC + 2];
+        if (build_codex_fs_helper_argv(argv, envp, codex_argv) == 0) {
+            char *codex_env[MAX_ENVP];
+            char ld_buf[PATH_BUF_SIZE + 32];
+            if (add_codex_helper_envp(envp, codex_env, ld_buf, sizeof(ld_buf)) == 0) {
+                return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, codex_argv, codex_env);
+            }
+            return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, codex_argv, envp);
+        }
+    }
+
+    if (codex_mode_enabled(envp)) {
+        char *codex_child_env[MAX_ENVP];
+        if (scrub_codex_child_envp(envp, codex_child_env) == 0) {
+            envp = codex_child_env;
+        }
+    }
+
+    if (!linker_exec) {
+        char *scrubbed_env[MAX_ENVP];
+        if (should_scrub_system_env(rewritten) &&
+            scrub_system_envp(envp, scrubbed_env) == 0) {
+            return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, scrubbed_env);
+        }
+        return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, envp);
+    }
+
+    char *new_argv[MAX_ARGC + 2];
+    if (build_linker_argv(rewritten, argv, new_argv) != 0) {
+        return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, envp);
+    }
+    if (!env_value(envp, "LD_LIBRARY_PATH=")) {
+        char *app_env[MAX_ENVP];
+        char ld_buf[PATH_BUF_SIZE + 32];
+        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf)) == 0) {
+            return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, app_env);
+        }
+    }
+    return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, envp);
+}
+
 int posix_spawn(pid_t *pid, const char *path,
                 const posix_spawn_file_actions_t *file_actions,
                 const posix_spawnattr_t *attrp,
                 char *const argv[], char *const envp[]) {
-    (void)pid;
-    (void)file_actions;
-    (void)attrp;
-    trace_exec_event("posix_spawn-enosys", path, NULL, argv, envp, 0);
-    /*
-     * Do not emulate posix_spawn here. The previous fast path used
-     * clone(SIGCHLD, NULL stack, ...), which is not a valid fork substitute on
-     * Android/aarch64 and can crash callers that pass NULL actions/attrs.
-     * Returning ENOSYS lets bionic/libuv use its normal fork+exec fallback,
-     * where the execve hook above still performs the linker64 redirection.
-     */
-    return ENOSYS;
+    return shelly_posix_spawn_common(0, pid, path, file_actions, attrp, argv, envp);
 }
 
 int posix_spawnp(pid_t *pid, const char *file,
                  const posix_spawn_file_actions_t *file_actions,
                  const posix_spawnattr_t *attrp,
                  char *const argv[], char *const envp[]) {
-    (void)pid;
-    (void)file_actions;
-    (void)attrp;
-    trace_exec_event("posix_spawnp-enosys", file, NULL, argv, envp, 0);
-    return ENOSYS;
+    return shelly_posix_spawn_common(1, pid, file, file_actions, attrp, argv, envp);
 }
 
 int execvp(const char *file, char *const argv[]) {

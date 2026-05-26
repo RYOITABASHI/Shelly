@@ -1132,7 +1132,11 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      codex_exec/codex_tui path so the wrapper can rewrite
     //      `linker64 --codex-run-as-fs-helper` to
     //      `linker64 <codex binary> --codex-run-as-fs-helper`.
-    private const val BASHRC_VERSION = 201
+    // 202: Keep the fs-helper rewrite, but let Codex/Rust posix_spawn calls
+    //      pass through the real bionic implementation after Shelly path/env
+    //      rewriting. Normal Codex child processes also drop LD_PRELOAD so the
+    //      wrapper does not leak into shell/apply_patch subprocesses.
+    private const val BASHRC_VERSION = 202
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
