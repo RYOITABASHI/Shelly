@@ -1141,7 +1141,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      exec wrapper. This fixes fs-helper setup before helper spawn.
     // 204: Also redirect Codex-scoped open/openat of /proc/self/exe to the
     //      selected codex binary so ELF self-inspection does not mmap linker64.
-    private const val BASHRC_VERSION = 204
+    // 205: Resolve exec-wrapper libc interposer targets in a constructor and
+    //      drop private FORTIFY __open_2/__openat_2 overrides to avoid
+    //      threaded lazy dlsym/PAC crashes in Codex worker threads.
+    private const val BASHRC_VERSION = 205
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }

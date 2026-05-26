@@ -2,8 +2,9 @@
  * exec-wrapper.c -- LD_PRELOAD library for Android app-data binary execution.
  *
  * Keep the execve path independent of liblog/libc I/O. The posix_spawn path
- * resolves libc's real symbols lazily because Rust CLIs may surface ENOSYS
- * directly instead of falling back through execve.
+ * resolves libc's real symbols at load time because Rust CLIs may surface
+ * ENOSYS directly instead of falling back through execve, and worker threads
+ * can race lazy symbol caches.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -24,7 +25,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v204:codex-proc-exe-open";
+    "shelly-exec-wrapper:v205:codex-resolve-real-impls";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -789,74 +790,49 @@ typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
                                   const posix_spawnattr_t *,
                                   char *const[], char *const[]);
 typedef int (*open_impl_t)(const char *, int, ...);
-typedef int (*open2_impl_t)(const char *, int);
 typedef int (*openat_impl_t)(int, const char *, int, ...);
-typedef int (*openat2_impl_t)(int, const char *, int);
 typedef ssize_t (*readlink_impl_t)(const char *, char *, size_t);
 typedef ssize_t (*readlinkat_impl_t)(int, const char *, char *, size_t);
 
+static posix_spawn_impl_t g_posix_spawn_fn;
+static posix_spawn_impl_t g_posix_spawnp_fn;
+static open_impl_t g_open_fn;
+static openat_impl_t g_openat_fn;
+static readlink_impl_t g_readlink_fn;
+static readlinkat_impl_t g_readlinkat_fn;
+
+__attribute__((constructor))
+static void shelly_resolve_real_impls(void) {
+    g_posix_spawn_fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawn");
+    g_posix_spawnp_fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    g_open_fn = (open_impl_t)dlsym(RTLD_NEXT, "open");
+    g_openat_fn = (openat_impl_t)dlsym(RTLD_NEXT, "openat");
+    g_readlink_fn = (readlink_impl_t)dlsym(RTLD_NEXT, "readlink");
+    g_readlinkat_fn = (readlinkat_impl_t)dlsym(RTLD_NEXT, "readlinkat");
+}
+
 static posix_spawn_impl_t real_posix_spawn_impl(void) {
-    static posix_spawn_impl_t fn;
-    if (!fn) {
-        fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawn");
-    }
-    return fn;
+    return g_posix_spawn_fn;
 }
 
 static posix_spawn_impl_t real_posix_spawnp_impl(void) {
-    static posix_spawn_impl_t fn;
-    if (!fn) {
-        fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawnp");
-    }
-    return fn;
+    return g_posix_spawnp_fn;
 }
 
 static open_impl_t real_open_impl(void) {
-    static open_impl_t fn;
-    if (!fn) {
-        fn = (open_impl_t)dlsym(RTLD_NEXT, "open");
-    }
-    return fn;
-}
-
-static open2_impl_t real_open2_impl(void) {
-    static open2_impl_t fn;
-    if (!fn) {
-        fn = (open2_impl_t)dlsym(RTLD_NEXT, "__open_2");
-    }
-    return fn;
+    return g_open_fn;
 }
 
 static openat_impl_t real_openat_impl(void) {
-    static openat_impl_t fn;
-    if (!fn) {
-        fn = (openat_impl_t)dlsym(RTLD_NEXT, "openat");
-    }
-    return fn;
-}
-
-static openat2_impl_t real_openat2_impl(void) {
-    static openat2_impl_t fn;
-    if (!fn) {
-        fn = (openat2_impl_t)dlsym(RTLD_NEXT, "__openat_2");
-    }
-    return fn;
+    return g_openat_fn;
 }
 
 static readlink_impl_t real_readlink_impl(void) {
-    static readlink_impl_t fn;
-    if (!fn) {
-        fn = (readlink_impl_t)dlsym(RTLD_NEXT, "readlink");
-    }
-    return fn;
+    return g_readlink_fn;
 }
 
 static readlinkat_impl_t real_readlinkat_impl(void) {
-    static readlinkat_impl_t fn;
-    if (!fn) {
-        fn = (readlinkat_impl_t)dlsym(RTLD_NEXT, "readlinkat");
-    }
-    return fn;
+    return g_readlinkat_fn;
 }
 
 static int call_real_posix_spawn(int search_path, pid_t *pid, const char *path,
@@ -992,13 +968,6 @@ int open(const char *path, int flags, ...) {
     return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, 0));
 }
 
-int __open_2(const char *path, int flags) {
-    const char *target = codex_proc_exe_open_target(path, flags);
-    open2_impl_t fn = real_open2_impl();
-    if (fn) return fn(target ? target : path, flags);
-    return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, 0));
-}
-
 int openat(int dirfd, const char *path, int flags, ...) {
     const char *target = codex_proc_exe_open_target(path, flags);
     openat_impl_t fn = real_openat_impl();
@@ -1012,14 +981,6 @@ int openat(int dirfd, const char *path, int flags, ...) {
         if (fn) return fn(dirfd, target ? target : path, flags, mode);
         return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, mode));
     }
-    if (fn) return fn(dirfd, target ? target : path, flags);
-    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, 0));
-}
-
-int __openat_2(int dirfd, const char *path, int flags) {
-    const char *target = codex_proc_exe_open_target(path, flags);
-    openat2_impl_t fn = real_openat2_impl();
-    if (target) dirfd = AT_FDCWD;
     if (fn) return fn(dirfd, target ? target : path, flags);
     return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, 0));
 }

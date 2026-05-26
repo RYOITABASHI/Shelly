@@ -939,14 +939,13 @@ jobs:
           openat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="openat"{print $3; exit}')"
           test -n "${openat_size}" || { echo "FATAL: openat symbol missing from libexec_wrapper.so"; exit 1; }
           echo "libexec_wrapper.so openat size=${openat_size}"
-          open2_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__open_2"{print $3; exit}')"
-          test -n "${open2_size}" || { echo "FATAL: __open_2 symbol missing from libexec_wrapper.so"; exit 1; }
-          echo "libexec_wrapper.so __open_2 size=${open2_size}"
-          openat2_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__openat_2"{print $3; exit}')"
-          test -n "${openat2_size}" || { echo "FATAL: __openat_2 symbol missing from libexec_wrapper.so"; exit 1; }
-          echo "libexec_wrapper.so __openat_2 size=${openat2_size}"
+          if readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__open_2" || $8=="__openat_2"{found=1} END{exit found ? 0 : 1}'; then
+            echo "FATAL: private FORTIFY open symbols must not be exported from libexec_wrapper.so"
+            exit 1
+          fi
+          readelf -d /tmp/libexec_wrapper.so | grep -q INIT_ARRAY || { echo "FATAL: libexec_wrapper.so constructor INIT_ARRAY missing"; exit 1; }
           grep -qaF 'SHELLY_CODEX_PROC_EXE_OPEN_SHIM' /tmp/libexec_wrapper.so || { echo "FATAL: Codex proc-exe open shim gate missing from libexec_wrapper.so"; exit 1; }
-          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v204:codex-proc-exe-open'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v205:codex-resolve-real-impls'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
