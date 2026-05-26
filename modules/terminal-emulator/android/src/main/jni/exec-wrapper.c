@@ -23,13 +23,15 @@
 #define SHELLY_ENOSYS 38
 #define DEFAULT_HOME "/data/user/0/dev.shelly.terminal/files/home"
 #define DEFAULT_LIB_DIR "/data/user/0/dev.shelly.terminal/files/termux-libs"
+#define DEFAULT_BASH DEFAULT_HOME "/bin/bash"
+#define DEFAULT_EXEC_WRAPPER DEFAULT_LIB_DIR "/libexec_wrapper.so"
 #define DEFAULT_PATH DEFAULT_HOME "/bin:" DEFAULT_LIB_DIR ":/system/bin:/vendor/bin:/apex/com.android.runtime/bin"
 
 /* used+retain keeps this CI freshness marker past compiler dead-strip and
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v207:scrub-helper-and-execvp-env";
+    "shelly-exec-wrapper:v208:restore-wrapper-for-null-env-shell";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -91,10 +93,29 @@ extern char **environ;
 static char default_path_env[] = "PATH=" DEFAULT_PATH;
 static char default_home_env[] = "HOME=" DEFAULT_HOME;
 static char default_tmpdir_env[] = "TMPDIR=" DEFAULT_HOME "/tmp";
+static char default_shell_env[] = "SHELL=" DEFAULT_BASH;
+static char default_bash_env[] = "BASH=" DEFAULT_BASH;
+static char default_shelly_lib_dir_env[] = "SHELLY_LIB_DIR=" DEFAULT_LIB_DIR;
+static char default_ld_library_path_env[] = "LD_LIBRARY_PATH=" DEFAULT_LIB_DIR;
+static char default_ld_preload_env[] = "LD_PRELOAD=" DEFAULT_EXEC_WRAPPER;
 static char *const minimal_envp[] = {
     default_path_env,
     default_home_env,
     default_tmpdir_env,
+    default_shell_env,
+    default_bash_env,
+    default_shelly_lib_dir_env,
+    NULL
+};
+static char *const minimal_wrapper_envp[] = {
+    default_path_env,
+    default_home_env,
+    default_tmpdir_env,
+    default_shell_env,
+    default_bash_env,
+    default_shelly_lib_dir_env,
+    default_ld_library_path_env,
+    default_ld_preload_env,
     NULL
 };
 
@@ -453,6 +474,15 @@ static int trusted_shell_path(const char *path) {
             starts_with(path, "/system/bin/"));
 }
 
+static int should_restore_wrapper_for_null_env(const char *path) {
+    const char *base = base_name(path);
+    return trusted_shell_path(path) &&
+           (streq(path, DEFAULT_BASH) ||
+            streq(base, "bash") ||
+            streq(base, "libbash.so") ||
+            streq(base, "sh"));
+}
+
 static int is_elf(const char *path) {
     unsigned char magic[4];
     int fd = raw_open_readonly(path);
@@ -539,6 +569,9 @@ static int scrub_system_envp(char *const envp[], char **out) {
         out[n++] = default_path_env;
         out[n++] = default_home_env;
         out[n++] = default_tmpdir_env;
+        out[n++] = default_shell_env;
+        out[n++] = default_bash_env;
+        out[n++] = default_shelly_lib_dir_env;
         out[n] = NULL;
         return 0;
     }
@@ -658,7 +691,8 @@ static int is_codex_fs_helper_self_exec(const char *pathname, char *const argv[]
            streq(argv[1], CODEX_FS_HELPER_ARG1);
 }
 
-static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, size_t ld_buf_size) {
+static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, size_t ld_buf_size,
+                               int include_wrapper) {
     char *const *source = envp ? envp : minimal_envp;
     const char *lib_dir = envp ? env_value(envp, "SHELLY_LIB_DIR=") : DEFAULT_LIB_DIR;
     size_t nbuf = 0;
@@ -675,6 +709,10 @@ static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, siz
         }
     }
     out[n++] = ld_buf;
+    if (include_wrapper) {
+        if (n >= MAX_ENVP - 1) return -1;
+        out[n++] = default_ld_preload_env;
+    }
     out[n] = NULL;
     return 0;
 }
@@ -806,6 +844,9 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     }
     if (!linker_exec) {
         char *scrubbed_env[MAX_ENVP];
+        if (!envp && should_restore_wrapper_for_null_env(rewritten)) {
+            return raw_execve_call(rewritten, argv, minimal_wrapper_envp);
+        }
         if (should_scrub_system_env(rewritten) &&
             scrub_system_envp(envp, scrubbed_env) == 0) {
             return raw_execve_call(rewritten, argv, scrubbed_env);
@@ -821,7 +862,8 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     if (!env_value(envp, "LD_LIBRARY_PATH=")) {
         char *app_env[MAX_ENVP];
         char ld_buf[PATH_BUF_SIZE + 32];
-        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf)) == 0) {
+        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
+                                !envp && should_restore_wrapper_for_null_env(rewritten)) == 0) {
             return raw_execve_call(LINKER64, new_argv, app_env);
         }
     }
@@ -928,6 +970,9 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
 
     if (!linker_exec) {
         char *scrubbed_env[MAX_ENVP];
+        if (!envp && should_restore_wrapper_for_null_env(rewritten)) {
+            return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, minimal_wrapper_envp);
+        }
         if (should_scrub_system_env(rewritten) &&
             scrub_system_envp(envp, scrubbed_env) == 0) {
             return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, scrubbed_env);
@@ -942,7 +987,8 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     if (!env_value(envp, "LD_LIBRARY_PATH=")) {
         char *app_env[MAX_ENVP];
         char ld_buf[PATH_BUF_SIZE + 32];
-        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf)) == 0) {
+        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
+                                !envp && should_restore_wrapper_for_null_env(rewritten)) == 0) {
             return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, app_env);
         }
     }

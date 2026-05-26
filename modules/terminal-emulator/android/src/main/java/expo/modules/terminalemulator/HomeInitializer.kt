@@ -1151,7 +1151,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      Codex proc-exe shim env so apply_patch helper subprocesses do not
     //      recursively inherit exec-wrapper. Keep execvp off inherited environ
     //      in the crash-prone Codex fallback path.
-    private const val BASHRC_VERSION = 207
+    // 208: Keep the null-env execvp fallback crash-safe, but restore a minimal
+    //      Shelly LD_PRELOAD/loader environment so Codex TUI shell commands can
+    //      execute app-data bash through libexec_wrapper.so.
+    private const val BASHRC_VERSION = 208
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
