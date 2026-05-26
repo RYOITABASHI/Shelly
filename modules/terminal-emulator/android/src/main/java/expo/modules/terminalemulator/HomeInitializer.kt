@@ -1139,7 +1139,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 203: Make Codex current_exe() see the real selected codex_exec/codex_tui
     //      path by overriding /proc/self/exe readlink in the Codex-scoped
     //      exec wrapper. This fixes fs-helper setup before helper spawn.
-    private const val BASHRC_VERSION = 203
+    // 204: Also redirect Codex-scoped open/openat of /proc/self/exe to the
+    //      selected codex binary so ELF self-inspection does not mmap linker64.
+    private const val BASHRC_VERSION = 204
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1532,7 +1534,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    [ -x \"\$__runtime_exec\" ] && __exec=\"\$__runtime_exec\"")
             sb.appendLine("    if [ -x \"\$__exec\" ]; then")
             sb.appendLine("      shift")
-            sb.appendLine("      SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$__exec\" \"\$@\"")
+            sb.appendLine("      SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$__exec\" \"\$@\"")
             sb.appendLine("    fi")
             sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
             sb.appendLine("    exit 127")
@@ -1540,7 +1542,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  resume|review|help)")
             sb.appendLine("    [ -x \"\$__runtime_exec\" ] && __exec=\"\$__runtime_exec\"")
             sb.appendLine("    if [ -x \"\$__exec\" ]; then")
-            sb.appendLine("      SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$__exec\" \"\$@\"")
+            sb.appendLine("      SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$__exec\" \"\$@\"")
             sb.appendLine("    fi")
             sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
             sb.appendLine("    exit 127")
@@ -1548,7 +1550,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("esac")
             sb.appendLine("[ -x \"\$__runtime_tui\" ] && __tui=\"\$__runtime_tui\"")
             sb.appendLine("if [ -x \"\$__tui\" ]; then")
-            sb.appendLine("  SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$__tui\" \"\$@\"")
+            sb.appendLine("  SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$__tui\" \"\$@\"")
             sb.appendLine("fi")
             sb.appendLine("echo \"codex: codex_tui binary missing at \$__tui\" >&2")
             sb.appendLine("exit 127")
@@ -3703,7 +3705,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("          __exec_args+=(\"\$__arg\")")
             sb.appendLine("        done")
             sb.appendLine("        __shelly_paste_tui_begin")
-            sb.appendLine("        SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__chosen_exec\" \"\${__exec_args[@]}\"")
+            sb.appendLine("        SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__chosen_exec\" \"\${__exec_args[@]}\"")
             sb.appendLine("        local __codex_exec_rc=\$?")
             sb.appendLine("        __shelly_paste_tui_end")
             sb.appendLine("        return \$__codex_exec_rc")
@@ -3717,7 +3719,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
             sb.appendLine("      if [ -x \"\$__chosen_exec\" ]; then")
             sb.appendLine("        __shelly_paste_tui_begin")
-            sb.appendLine("        SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__chosen_exec\" \"\$@\"")
+            sb.appendLine("        SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__chosen_exec\" \"\$@\"")
             sb.appendLine("        local __codex_exec_rc=\$?")
             sb.appendLine("        __shelly_paste_tui_end")
             sb.appendLine("        return \$__codex_exec_rc")
@@ -3732,7 +3734,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  [ -x \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  if [ -x \"\$__chosen_tui\" ]; then")
             sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__chosen_tui\" \"\$@\"")
+            sb.appendLine("    SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__chosen_tui\" \"\$@\"")
             sb.appendLine("    local __codex_tui_rc=\$?")
             sb.appendLine("    __shelly_paste_tui_end")
             sb.appendLine("    return \$__codex_tui_rc")
@@ -3835,7 +3837,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("      return 2")
             sb.appendLine("    fi")
             sb.appendLine("    echo \"[codex-canary] running codex exec canary\"")
-            sb.appendLine("    __out=\$(HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 120 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 120 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,120p'")
             sb.appendLine("    __matched=0")
@@ -3879,7 +3881,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    rm -rf \"\$__work\"")
             sb.appendLine("    mkdir -p \"\$__work\" || return 3")
             sb.appendLine("    echo \"[codex-edit-canary] running codex exec edit canary\"")
-            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 180 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 180 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,160p'")
             sb.appendLine("    echo \"[codex-edit-canary] files\"")
@@ -3937,7 +3939,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    printf '%s\\n' '# Shelly Codex Repo Canary' '' 'Initial project file.' > \"\$__work/README.md\"")
             sb.appendLine("    printf '%s\\n' 'console.log(\"hello from Shelly\");' > \"\$__work/src/app.js\"")
             sb.appendLine("    echo \"[codex-repo-canary] running codex exec repo canary\"")
-            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,180p'")
             sb.appendLine("    echo \"[codex-repo-canary] files\"")
@@ -3990,7 +3992,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    mkdir -p \"\$__work\" || return 3")
             sb.appendLine("    printf '%s\\n' '# Shelly Codex Patch Canary' '' 'Initial project file.' > \"\$__work/README.md\"")
             sb.appendLine("    echo \"[codex-patch-canary] running codex exec patch canary\"")
-            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,220p'")
             sb.appendLine("    echo \"[codex-patch-canary] README.md\"")

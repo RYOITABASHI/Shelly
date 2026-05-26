@@ -933,7 +933,20 @@ jobs:
           readlinkat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="readlinkat"{print $3; exit}')"
           test -n "${readlinkat_size}" || { echo "FATAL: readlinkat symbol missing from libexec_wrapper.so"; exit 1; }
           echo "libexec_wrapper.so readlinkat size=${readlinkat_size}"
-          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v203:codex-current-exe'
+          open_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="open"{print $3; exit}')"
+          test -n "${open_size}" || { echo "FATAL: open symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so open size=${open_size}"
+          openat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="openat"{print $3; exit}')"
+          test -n "${openat_size}" || { echo "FATAL: openat symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so openat size=${openat_size}"
+          open2_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__open_2"{print $3; exit}')"
+          test -n "${open2_size}" || { echo "FATAL: __open_2 symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so __open_2 size=${open2_size}"
+          openat2_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__openat_2"{print $3; exit}')"
+          test -n "${openat2_size}" || { echo "FATAL: __openat_2 symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so __openat_2 size=${openat2_size}"
+          grep -qaF 'SHELLY_CODEX_PROC_EXE_OPEN_SHIM' /tmp/libexec_wrapper.so || { echo "FATAL: Codex proc-exe open shim gate missing from libexec_wrapper.so"; exit 1; }
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v204:codex-proc-exe-open'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'

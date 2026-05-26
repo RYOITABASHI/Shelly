@@ -10,6 +10,8 @@
 #include <errno.h>
 #include <spawn.h>
 #include <stddef.h>
+#include <stdarg.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #define LINKER64 "/system/bin/linker64"
@@ -22,7 +24,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v203:codex-current-exe";
+    "shelly-exec-wrapper:v204:codex-proc-exe-open";
 
 #ifndef AT_FDCWD
 #define AT_FDCWD (-100)
@@ -33,8 +35,17 @@ static const char shelly_exec_wrapper_build_marker[] =
 #ifndef O_WRONLY
 #define O_WRONLY 1
 #endif
+#ifndef O_RDWR
+#define O_RDWR 2
+#endif
+#ifndef O_ACCMODE
+#define O_ACCMODE 3
+#endif
 #ifndef O_CREAT
 #define O_CREAT 0100
+#endif
+#ifndef O_TRUNC
+#define O_TRUNC 01000
 #endif
 #ifndef O_APPEND
 #define O_APPEND 02000
@@ -521,10 +532,30 @@ static int trusted_codex_path(const char *path) {
             starts_with(path, "/data/data/dev.shelly.terminal/"));
 }
 
+static int proc_exe_path_matches_pid(const char *path) {
+    unsigned int pid = 0;
+    unsigned int self = (unsigned int)getpid();
+    const char *p;
+    if (!starts_with(path, "/proc/")) return 0;
+    p = path + 6;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') {
+        pid = pid * 10U + (unsigned int)(*p - '0');
+        p++;
+    }
+    return pid == self && streq(p, "/exe");
+}
+
+static int proc_exe_path(const char *path) {
+    return streq(path, "/proc/self/exe") ||
+           streq(path, "/proc/thread-self/exe") ||
+           proc_exe_path_matches_pid(path);
+}
+
 static ssize_t readlink_codex_self(const char *path, char *buf, size_t bufsiz) {
     const char *codex_self;
     size_t len;
-    if (!streq(path, "/proc/self/exe")) return -2;
+    if (!proc_exe_path(path)) return -2;
     if (!trace_flag_enabled(NULL, "SHELLY_CODEX_PROC_EXE_SHIM=")) return -2;
     codex_self = env_value_direct(environ, "SHELLY_CODEX_EXEC_PATH=");
     if (!trusted_codex_path(codex_self)) return -2;
@@ -546,6 +577,20 @@ static ssize_t readlink_codex_self(const char *path, char *buf, size_t bufsiz) {
     return (ssize_t)(len < bufsiz ? len : bufsiz);
 }
 
+static int read_only_open_flags(int flags) {
+    return (flags & O_ACCMODE) == O_RDONLY &&
+           (flags & (O_CREAT | O_TRUNC | O_APPEND | O_WRONLY | O_RDWR)) == 0;
+}
+
+static const char *codex_proc_exe_open_target(const char *path, int flags) {
+    const char *codex_self;
+    if (!proc_exe_path(path)) return NULL;
+    if (!read_only_open_flags(flags)) return NULL;
+    if (!trace_flag_enabled(NULL, "SHELLY_CODEX_PROC_EXE_OPEN_SHIM=")) return NULL;
+    codex_self = env_value_direct(environ, "SHELLY_CODEX_EXEC_PATH=");
+    return trusted_codex_path(codex_self) ? codex_self : NULL;
+}
+
 static int scrub_codex_child_envp(char *const envp[], char **out) {
     char *const *source = envp ? envp : environ;
     int n = 0;
@@ -554,7 +599,10 @@ static int scrub_codex_child_envp(char *const envp[], char **out) {
         return 0;
     }
     for (int i = 0; i < MAX_ENVP && source[i]; i++) {
-        if (starts_with(source[i], "LD_PRELOAD=")) {
+        if (starts_with(source[i], "LD_PRELOAD=") ||
+            starts_with(source[i], "SHELLY_CODEX_EXEC_PATH=") ||
+            starts_with(source[i], "SHELLY_CODEX_PROC_EXE_SHIM=") ||
+            starts_with(source[i], "SHELLY_CODEX_PROC_EXE_OPEN_SHIM=")) {
             continue;
         }
         if (n >= MAX_ENVP - 1) {
@@ -736,6 +784,10 @@ typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
                                   const posix_spawn_file_actions_t *,
                                   const posix_spawnattr_t *,
                                   char *const[], char *const[]);
+typedef int (*open_impl_t)(const char *, int, ...);
+typedef int (*open2_impl_t)(const char *, int);
+typedef int (*openat_impl_t)(int, const char *, int, ...);
+typedef int (*openat2_impl_t)(int, const char *, int);
 typedef ssize_t (*readlink_impl_t)(const char *, char *, size_t);
 typedef ssize_t (*readlinkat_impl_t)(int, const char *, char *, size_t);
 
@@ -751,6 +803,38 @@ static posix_spawn_impl_t real_posix_spawnp_impl(void) {
     static posix_spawn_impl_t fn;
     if (!fn) {
         fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    }
+    return fn;
+}
+
+static open_impl_t real_open_impl(void) {
+    static open_impl_t fn;
+    if (!fn) {
+        fn = (open_impl_t)dlsym(RTLD_NEXT, "open");
+    }
+    return fn;
+}
+
+static open2_impl_t real_open2_impl(void) {
+    static open2_impl_t fn;
+    if (!fn) {
+        fn = (open2_impl_t)dlsym(RTLD_NEXT, "__open_2");
+    }
+    return fn;
+}
+
+static openat_impl_t real_openat_impl(void) {
+    static openat_impl_t fn;
+    if (!fn) {
+        fn = (openat_impl_t)dlsym(RTLD_NEXT, "openat");
+    }
+    return fn;
+}
+
+static openat2_impl_t real_openat2_impl(void) {
+    static openat2_impl_t fn;
+    if (!fn) {
+        fn = (openat2_impl_t)dlsym(RTLD_NEXT, "__openat_2");
     }
     return fn;
 }
@@ -886,6 +970,54 @@ int execvp(const char *file, char *const argv[]) {
 
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
     return execve(file, argv, envp);
+}
+
+int open(const char *path, int flags, ...) {
+    const char *target = codex_proc_exe_open_target(path, flags);
+    open_impl_t fn = real_open_impl();
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        if (fn) return fn(target ? target : path, flags, mode);
+        return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, mode));
+    }
+    if (fn) return fn(target ? target : path, flags);
+    return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, 0));
+}
+
+int __open_2(const char *path, int flags) {
+    const char *target = codex_proc_exe_open_target(path, flags);
+    open2_impl_t fn = real_open2_impl();
+    if (fn) return fn(target ? target : path, flags);
+    return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, 0));
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    const char *target = codex_proc_exe_open_target(path, flags);
+    openat_impl_t fn = real_openat_impl();
+    mode_t mode = 0;
+    if (target) dirfd = AT_FDCWD;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        if (fn) return fn(dirfd, target ? target : path, flags, mode);
+        return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, mode));
+    }
+    if (fn) return fn(dirfd, target ? target : path, flags);
+    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, 0));
+}
+
+int __openat_2(int dirfd, const char *path, int flags) {
+    const char *target = codex_proc_exe_open_target(path, flags);
+    openat2_impl_t fn = real_openat2_impl();
+    if (target) dirfd = AT_FDCWD;
+    if (fn) return fn(dirfd, target ? target : path, flags);
+    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, 0));
 }
 
 ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
