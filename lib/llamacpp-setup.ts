@@ -61,9 +61,40 @@ export type SetupPhase =
  */
 export const MODEL_CATALOG: LlamaCppModel[] = [
   {
+    id: 'qwen3.5-4b-q4-k-m',
+    name: 'Qwen3.5-4B Q4_K_M',
+    description: '推奨・高品質。スマホ上のAIペインで常用しやすい速度と賢さのバランスが良いモデル。',
+    sizeGb: 2.5,
+    ramRequiredGb: 5.0,
+    language: 'ja',
+    useCase: 'balanced',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'unsloth/Qwen3.5-4B-GGUF',
+    filename: 'Qwen3.5-4B-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
+    recommended: true,
+    badge: '推奨',
+  },
+  {
+    id: 'qwen3.5-9b-q4-k-m',
+    name: 'Qwen3.5-9B Q4_K_M',
+    description: 'Qwen3.5小型系列の高品質枠。Z Fold6では品質優先時向け、長文では発熱と待ち時間に注意。',
+    sizeGb: 5.2,
+    ramRequiredGb: 6.8,
+    language: 'ja',
+    useCase: 'balanced',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'unsloth/Qwen3.5-9B-GGUF',
+    filename: 'Qwen3.5-9B-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
+    badge: '高品質',
+  },
+  {
     id: 'qwen3-8b-q4-k-m',
     name: 'Qwen3-8B Q4_K_M',
-    description: '推奨・高品質。日本語、コード、クロスペイン補助のバランスが最も良いZ Fold6向けモデル。',
+    description: '旧推奨・互換用。Qwen3.5の8B公式小型モデルはないため、既存8Bモデルを残す。',
     sizeGb: 4.7,
     ramRequiredGb: 6.0,
     language: 'ja',
@@ -73,8 +104,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'Qwen3-8B-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
-    recommended: true,
-    badge: '推奨・高品質',
+    badge: 'Legacy 8B',
   },
   {
     id: 'gemma3-4b-q4',
@@ -447,9 +477,8 @@ export function buildRecommendedStartCommand(
   const config: LlamaCppServerConfig = {
     port: 8080,
     modelPath,
-    // Z Fold6 local use prioritizes system responsiveness. Qwen3-8B stays the
-    // selected quality model, but more CPU threads can make Android thermally
-    // throttle and lag while Shelly and the AI pane are active.
+    // Z Fold6 local use prioritizes system responsiveness. Keep threads low so
+    // Shelly and the AI pane stay responsive while Qwen3.5 is running locally.
     contextSize: 1024,
     threads: 2,
     gpuLayers: 0, // Adreno GPU offloadは現状不安定なためCPU only

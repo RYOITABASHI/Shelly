@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   highContrastOutput: true,
   localLlmEnabled: false,
   localLlmUrl: 'http://127.0.0.1:8080',
-  localLlmModel: 'Qwen3-8B-Q4_K_M',
+  localLlmModel: 'Qwen3.5-4B-Q4_K_M',
   groqModel: 'llama-3.3-70b-versatile',
   perplexityApiKey: '',
   teamMembers: {
