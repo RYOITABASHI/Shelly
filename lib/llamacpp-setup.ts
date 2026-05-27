@@ -400,6 +400,7 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
   const url = shellQuote(model.downloadUrl);
   const name = shellQuote(model.name);
   return [
+    `set -e`,
     `echo "Downloading ${model.name} (${model.sizeGb}GB)..."`,
     `mkdir -p ${MODELS_DIR}`,
     `df -h ${MODELS_DIR} 2>/dev/null || true`,
@@ -415,7 +416,7 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
     `fi`,
     `test -s "$MODEL_DEST"`,
     `echo "Download complete: ${dest}"`,
-  ].join(' && ');
+  ].join('\n');
 }
 
 /**
