@@ -351,7 +351,7 @@ export type AppSettings = {
   localLlmEnabled: boolean;
   /** Ollama API base URL (default: http://127.0.0.1:11434) */
   localLlmUrl: string;
-  /** Model name to use (default: Qwen3-8B-Q4_K_M) */
+  /** Model name to use (default: Qwen3.5-4B-Q4_K_M) */
   localLlmModel: string;
   // ─── Perplexity Sonar API ────────────────────────────────────────────────────────
   /** Perplexity Sonar API キー (https://www.perplexity.ai/settings/api) */
