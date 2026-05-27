@@ -194,9 +194,9 @@ const REAL_LLAMA_SERVER_BIN_INIT = [
 ].join('\n');
 
 const HEALTH_CHECK_CMD = [
-  `mkdir -p "$HOME/.shelly-ssl" && : > "$HOME/.shelly-ssl/openssl.cnf" && OPENSSL_CONF="$HOME/.shelly-ssl/openssl.cnf" node -e 'const http=require("http");const req=http.get("http://127.0.0.1:8080/v1/models",res=>{process.exit(res.statusCode>=200&&res.statusCode<300?0:1)});req.on("error",()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});' >/dev/null 2>&1`,
-  `curl -fsS --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
-  `wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
+  `command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
+  `command -v wget >/dev/null 2>&1 && wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
+  `command -v toybox >/dev/null 2>&1 && printf 'GET /v1/models HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' | toybox nc -w 2 127.0.0.1 8080 2>/dev/null | grep -q 'HTTP/1\\.[01] 200'`,
 ].join(' || ');
 
 function shellQuote(value: string): string {
