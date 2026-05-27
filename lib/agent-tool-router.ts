@@ -98,7 +98,12 @@ export async function checkToolAvailability(
   // Check local LLM
   try {
     const output = await runCommand(
-      'node -e "const http=require(\'http\'); const req=http.get(\'http://127.0.0.1:8080/health\', res=>{process.stdout.write(\'found\'); res.resume();}); req.setTimeout(2000,()=>req.destroy()); req.on(\'error\',()=>process.stdout.write(\'notfound\'));" 2>/dev/null || echo "notfound"'
+      [
+        `(command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo found)`,
+        `(command -v wget >/dev/null 2>&1 && wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo found)`,
+        `(command -v toybox >/dev/null 2>&1 && printf 'GET /v1/models HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' | toybox nc -w 2 127.0.0.1 8080 2>/dev/null | grep -q 'HTTP/1\\.[01] 200' && echo found)`,
+        `echo notfound`,
+      ].join(' || ')
     );
     results['local'] = !output.includes('notfound');
   } catch {

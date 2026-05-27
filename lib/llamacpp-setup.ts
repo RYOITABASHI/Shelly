@@ -203,171 +203,137 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-const INSTALL_LLAMA_SERVER_CMD = `mkdir -p "$HOME/.cache/shelly" "$HOME/.shelly-ssl" && : > "$HOME/.shelly-ssl/openssl.cnf" && cat > "$HOME/.cache/shelly/shelly-install-llama-server.js" <<'NODE'
-const fs = require('fs');
-const http = require('http');
-const https = require('https');
-const { spawnSync } = require('child_process');
+const INSTALL_LLAMA_SERVER_CMD = `set -e
+INSTALL_DIR="$HOME/.local/llama.cpp"
+TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
+TMP_INSTALL_DIR="$HOME/.local/llama.cpp.tmp"
+OUT_DIR="$HOME/.local/bin"
+RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 
-const home = process.env.HOME;
-const tmpDir = home + '/.cache/shelly/llama-server-install';
-const outDir = home + '/.local/bin';
-const installDir = home + '/.local/llama.cpp';
-const tmpInstallDir = home + '/.local/llama.cpp.tmp';
-const releaseApi = 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest';
+mkdir -p "$TMP_ROOT" "$OUT_DIR"
 
-function writeWrapper(finalBinary) {
-  const binaryDir = finalBinary.slice(0, finalBinary.lastIndexOf('/'));
-  const libPath = [...collectSoDirs(installDir), binaryDir, installDir, installDir + '/lib'].join(':');
-  const wrapper = '#!/bin/sh\\ncd "' + binaryDir + '" || exit 1\\nexport LD_LIBRARY_PATH="' + libPath + ':\${LD_LIBRARY_PATH:-}"\\nunset LD_PRELOAD\\nif [ -x /system/bin/linker64 ]; then\\n  exec /system/bin/linker64 "' + finalBinary + '" "$@"\\nfi\\nexec "' + finalBinary + '" "$@"\\n';
-  fs.writeFileSync(outDir + '/llama-server', wrapper, { mode: 0o755 });
-  fs.chmodSync(outDir + '/llama-server', 0o755);
+fetch_text() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 --retry-delay 2 "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O - "$1"
+  else
+    echo "curl or wget is required to install llama.cpp" >&2
+    return 127
+  fi
 }
 
-function requestText(urlText, redirects = 5) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlText);
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url, { headers: { 'User-Agent': 'Shelly-local-llm-installer/1' } }, (res) => {
-      if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
-        res.resume();
-        if (redirects <= 0) reject(new Error('too many redirects'));
-        else resolve(requestText(new URL(res.headers.location, url).toString(), redirects - 1));
-        return;
-      }
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => body += chunk);
-      res.on('end', () => {
-        if (!res.statusCode || res.statusCode >= 400) reject(new Error('HTTP ' + res.statusCode + ' from ' + urlText));
-        else resolve(body);
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => req.destroy(new Error('request timed out')));
-  });
+download_file() {
+  url="$1"
+  out_file="$2"
+  tmp_file="$out_file.part"
+  rm -f "$tmp_file"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$tmp_file" "$url"
+  else
+    echo "curl or wget is required to install llama.cpp" >&2
+    return 127
+  fi
+  mv "$tmp_file" "$out_file"
 }
 
-function download(urlText, outFile, redirects = 5) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlText);
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url, { headers: { 'User-Agent': 'Shelly-local-llm-installer/1' } }, (res) => {
-      if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
-        res.resume();
-        if (redirects <= 0) reject(new Error('too many redirects'));
-        else resolve(download(new URL(res.headers.location, url).toString(), outFile, redirects - 1));
-        return;
-      }
-      if (!res.statusCode || res.statusCode >= 400) {
-        res.resume();
-        reject(new Error('download failed: HTTP ' + res.statusCode));
-        return;
-      }
-      const tmp = outFile + '.part';
-      const file = fs.createWriteStream(tmp);
-      res.pipe(file);
-      file.on('finish', () => file.close(() => {
-        fs.renameSync(tmp, outFile);
-        resolve();
-      }));
-      file.on('error', (err) => {
-        try { fs.unlinkSync(tmp); } catch (_) {}
-        reject(err);
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(120000, () => req.destroy(new Error('download timed out')));
-  });
+find_llama_server() {
+  find "$1" -type f -name llama-server 2>/dev/null | head -n 1
 }
 
-function run(cmd, args) {
-  const r = spawnSync(cmd, args, { stdio: 'inherit' });
-  if (r.error) throw r.error;
-  if (r.status !== 0) throw new Error(cmd + ' failed with exit ' + r.status);
+find_common_lib() {
+  find "$1" -type f -name libllama-common.so 2>/dev/null | head -n 1
 }
 
-function findFile(dir, name) {
-  const stack = [dir];
-  while (stack.length) {
-    const cur = stack.pop();
-    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
-      const path = cur + '/' + entry.name;
-      if (entry.isDirectory()) stack.push(path);
-      else if (entry.isFile() && entry.name === name) return path;
-    }
-  }
-  return null;
+collect_so_dirs() {
+  find "$INSTALL_DIR" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':'
 }
 
-function collectSoDirs(dir) {
-  const dirs = new Set();
-  const stack = [dir];
-  while (stack.length) {
-    const cur = stack.pop();
-    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
-      const path = cur + '/' + entry.name;
-      if (entry.isDirectory()) stack.push(path);
-      else if (entry.isFile() && entry.name.includes('.so')) dirs.add(cur);
-    }
-  }
-  return Array.from(dirs);
+write_wrapper() {
+  FINAL_BINARY="$1"
+  BINARY_DIR="$(dirname "$FINAL_BINARY")"
+  LIB_PATH="$(collect_so_dirs)$BINARY_DIR:$INSTALL_DIR:$INSTALL_DIR/lib"
+  cat > "$OUT_DIR/llama-server" <<WRAPPER_EOF
+#!/system/bin/sh
+cd "$BINARY_DIR" || exit 1
+export LD_LIBRARY_PATH="$LIB_PATH:\\$LD_LIBRARY_PATH"
+unset LD_PRELOAD
+if [ -x /system/bin/linker64 ]; then
+  exec /system/bin/linker64 "$FINAL_BINARY" "\\$@"
+fi
+exec "$FINAL_BINARY" "\\$@"
+WRAPPER_EOF
+  chmod 755 "$OUT_DIR/llama-server" "$FINAL_BINARY"
 }
 
-(async () => {
-  if (!home) throw new Error('HOME is not set');
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  fs.mkdirSync(tmpDir, { recursive: true });
-  fs.mkdirSync(outDir, { recursive: true });
+EXISTING_BINARY=""
+if [ -d "$INSTALL_DIR" ]; then
+  EXISTING_BINARY="$(find_llama_server "$INSTALL_DIR")"
+fi
+if [ -n "$EXISTING_BINARY" ] && [ -n "$(find_common_lib "$INSTALL_DIR")" ]; then
+  chmod 755 "$EXISTING_BINARY"
+  write_wrapper "$EXISTING_BINARY"
+  echo "Repaired: $OUT_DIR/llama-server"
+  exit 0
+fi
+if [ -n "$EXISTING_BINARY" ]; then
+  echo "Existing llama-server install is incomplete; reinstalling..."
+fi
 
-  const existingBinary = fs.existsSync(installDir) ? findFile(installDir, 'llama-server') : null;
-  if (existingBinary) {
-    fs.chmodSync(existingBinary, 0o755);
-    writeWrapper(existingBinary);
-    console.log('Repaired: ' + outDir + '/llama-server');
-    return;
-  }
+RELEASE_JSON="$TMP_ROOT/release.json"
+fetch_text "$RELEASE_API" > "$RELEASE_JSON"
+ASSET_URL="$(grep -o 'https://[^"]*bin-android-arm64[^"]*' "$RELEASE_JSON" | grep -E '\\.(tar\\.gz|tgz|zip)$' | head -n 1)"
+if [ -z "$ASSET_URL" ]; then
+  echo "android arm64 llama.cpp asset not found in latest release" >&2
+  grep -o '"name":[^,]*' "$RELEASE_JSON" | head -n 20 >&2 || true
+  exit 1
+fi
 
-  const release = JSON.parse(await requestText(releaseApi));
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const asset = assets.find((a) => {
-    const name = (a.name || '').toLowerCase();
-    return name.includes('bin-android-arm64') &&
-      (name.endsWith('.tar.gz') || name.endsWith('.tgz') || name.endsWith('.zip'));
-  });
-  if (!asset || !asset.browser_download_url) {
-    throw new Error('android arm64 llama.cpp asset not found. assets: ' + assets.map((a) => a.name).join(', '));
-  }
+ASSET_NAME="$(basename "$ASSET_URL")"
+ARCHIVE="$TMP_ROOT/$ASSET_NAME"
+EXTRACT_DIR="$TMP_ROOT/extract"
+rm -rf "$EXTRACT_DIR" "$TMP_INSTALL_DIR" "$ARCHIVE" "$ARCHIVE.part"
+mkdir -p "$EXTRACT_DIR" "$TMP_INSTALL_DIR"
 
-  const archive = tmpDir + '/' + asset.name;
-  console.log('Downloading ' + asset.name);
-  await download(asset.browser_download_url, archive);
+echo "Downloading $ASSET_NAME"
+download_file "$ASSET_URL" "$ARCHIVE"
 
-  const extractDir = tmpDir + '/extract';
-  fs.mkdirSync(extractDir, { recursive: true });
-  if (asset.name.toLowerCase().endsWith('.zip')) run('unzip', ['-o', archive, '-d', extractDir]);
-  else run('tar', ['-xzf', archive, '-C', extractDir]);
+case "$ARCHIVE" in
+  *.zip)
+    command -v unzip >/dev/null 2>&1 || { echo "unzip is required to extract $ASSET_NAME" >&2; exit 1; }
+    unzip -oq "$ARCHIVE" -d "$EXTRACT_DIR"
+    ;;
+  *)
+    command -v tar >/dev/null 2>&1 || { echo "tar is required to extract $ASSET_NAME" >&2; exit 1; }
+    tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR"
+    ;;
+esac
 
-  const binary = findFile(extractDir, 'llama-server');
-  if (!binary) throw new Error('llama-server binary not found inside archive');
+BINARY="$(find_llama_server "$EXTRACT_DIR")"
+if [ -z "$BINARY" ]; then
+  echo "llama-server binary not found inside $ASSET_NAME" >&2
+  exit 1
+fi
+if [ -z "$(find_common_lib "$EXTRACT_DIR")" ]; then
+  echo "libllama-common.so not found inside $ASSET_NAME" >&2
+  exit 1
+fi
 
-  fs.rmSync(tmpInstallDir, { recursive: true, force: true });
-  fs.mkdirSync(tmpInstallDir, { recursive: true });
-  fs.cpSync(extractDir, tmpInstallDir, { recursive: true });
-  const installedBinary = findFile(tmpInstallDir, 'llama-server');
-  fs.chmodSync(installedBinary, 0o755);
-  fs.rmSync(installDir, { recursive: true, force: true });
-  fs.renameSync(tmpInstallDir, installDir);
+cp -R "$EXTRACT_DIR"/. "$TMP_INSTALL_DIR"/
+INSTALLED_BINARY="$(find_llama_server "$TMP_INSTALL_DIR")"
+if [ -z "$INSTALLED_BINARY" ]; then
+  echo "llama-server binary disappeared during install copy" >&2
+  exit 1
+fi
+chmod 755 "$INSTALLED_BINARY"
+rm -rf "$INSTALL_DIR"
+mv "$TMP_INSTALL_DIR" "$INSTALL_DIR"
 
-  const finalBinary = findFile(installDir, 'llama-server');
-  writeWrapper(finalBinary);
-  console.log('Installed: ' + outDir + '/llama-server');
-})().catch((err) => {
-  console.error(err && err.message ? err.message : String(err));
-  process.exit(1);
-});
-NODE
-OPENSSL_CONF="$HOME/.shelly-ssl/openssl.cnf" node "$HOME/.cache/shelly/shelly-install-llama-server.js"`;
+FINAL_BINARY="$(find_llama_server "$INSTALL_DIR")"
+write_wrapper "$FINAL_BINARY"
+echo "Installed: $OUT_DIR/llama-server"`;
 
 /**
  * llama.cppのセットアップステップ一覧を生成する。
@@ -412,7 +378,8 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
     `elif command -v wget >/dev/null 2>&1; then`,
     `  wget -c -O "$MODEL_DEST" "$MODEL_URL"`,
     `else`,
-    `  mkdir -p "$HOME/.shelly-ssl" && : > "$HOME/.shelly-ssl/openssl.cnf" && OPENSSL_CONF="$HOME/.shelly-ssl/openssl.cnf" node -e 'const fs=require("fs"),http=require("http"),https=require("https");const url=process.env.MODEL_URL,dest=process.env.MODEL_DEST;function go(u,n){const x=new URL(u),c=x.protocol==="https:"?https:http,r=c.get(x,{headers:{"User-Agent":"Shelly-model-downloader/1"}},res=>{if([301,302,303,307,308].includes(res.statusCode)&&res.headers.location){res.resume();if(n<=0)throw Error("too many redirects");return go(new URL(res.headers.location,x).toString(),n-1)}if(!res.statusCode||res.statusCode>=400){res.resume();throw Error("HTTP "+res.statusCode)}res.pipe(fs.createWriteStream(dest)).on("finish",()=>{})});r.on("error",e=>{console.error(e.message);process.exit(1)});r.setTimeout(30000,()=>r.destroy(Error("download timed out")))}go(url,5);'`,
+    `  echo "Download failed: curl or wget is required." >&2`,
+    `  exit 1`,
     `fi`,
     `test -s "$MODEL_DEST"`,
     `echo "Download complete: ${dest}"`,
