@@ -1163,7 +1163,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 211: Pass explicit Codex workspace roots (`-C` plus the Android
     //      /data/user/0 <-> /data/data alias via --add-dir) so apply_patch
     //      sandbox checks do not reject files inside the current project.
-    private const val BASHRC_VERSION = 211
+    // 212: Make the patch canary request an explicit apply_patch diff and
+    //      fail if Codex falls back to shell editing.
+    private const val BASHRC_VERSION = 212
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -4055,7 +4057,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  return \"\$__canary_rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-codex-patch-canary() {")
-            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __work __work_alias __prompt __out __rc __readme_rc __helper_error __patch_rejected")
+            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __work __work_alias __prompt __out __rc __readme_rc __helper_error __patch_rejected __edit_tool __shell_tool")
             sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
             sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
@@ -4066,7 +4068,19 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  [ -x \"\$__runtime_exec\" ] && __chosen_exec=\"\$__runtime_exec\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_PATCH_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-patch-canary-\$__stamp\"")
-            sb.appendLine("  __prompt=\"This is a diagnostic for the apply_patch path. In the current working directory, edit README.md by appending one new line containing exactly the token between <token> and </token>, excluding the tags: <token>\$__nonce</token>. You must use apply_patch for the edit. Do not use shell redirection, sed, perl, python, tee, or any fallback editing method. If apply_patch is unavailable or fails, do not modify files; reply exactly APPLY_PATCH_FAILED. If apply_patch succeeds, reply exactly DONE.\"")
+            sb.appendLine("  __prompt=\"\$(cat <<EOF")
+            sb.appendLine("Use the apply_patch tool exactly once with the patch below, then reply exactly DONE.")
+            sb.appendLine("Do not run shell commands. Do not inspect or read files before editing.")
+            sb.appendLine("If apply_patch is unavailable or rejected, do not modify files and reply exactly APPLY_PATCH_FAILED.")
+            sb.appendLine("")
+            sb.appendLine("*** Begin Patch")
+            sb.appendLine("*** Update File: README.md")
+            sb.appendLine("@@")
+            sb.appendLine(" Initial project file.")
+            sb.appendLine("+\$__nonce")
+            sb.appendLine("*** End Patch")
+            sb.appendLine("EOF")
+            sb.appendLine(")\"")
             sb.appendLine("  {")
             sb.appendLine("    echo \"[codex-patch-canary] date=\$__stamp\"")
             sb.appendLine("    echo \"[codex-patch-canary] bashrc=\$BASHRC_VERSION\"")
@@ -4102,10 +4116,14 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    __readme_rc=\$?")
             sb.appendLine("    __helper_error=0")
             sb.appendLine("    __patch_rejected=0")
+            sb.appendLine("    __edit_tool=0")
+            sb.appendLine("    __shell_tool=0")
             sb.appendLine("    case \"\$__out\" in *\"--codex-run-as-fs-helper\"*|*\"apply_patch verification failed\"*) __helper_error=1 ;; esac")
             sb.appendLine("    case \"\$__out\" in *\"patch rejected:\"*|*\"falling back\"*) __patch_rejected=1 ;; esac")
-            sb.appendLine("    echo \"[codex-patch-canary] result rc=\$__rc readme=\$__readme_rc helper_error=\$__helper_error patch_rejected=\$__patch_rejected\"")
-            sb.appendLine("    [ \"\$__rc\" -eq 0 ] && [ \"\$__readme_rc\" -eq 0 ] && [ \"\$__helper_error\" -eq 0 ] && [ \"\$__patch_rejected\" -eq 0 ]")
+            sb.appendLine("    case \"\$__out\" in *\"Edited README.md\"*|*\"apply_patch\"*) __edit_tool=1 ;; esac")
+            sb.appendLine("    case \"\$__out\" in *\"/bin/sh -lc\"*|*\"/system/bin/sh -lc\"*) __shell_tool=1 ;; esac")
+            sb.appendLine("    echo \"[codex-patch-canary] result rc=\$__rc readme=\$__readme_rc helper_error=\$__helper_error patch_rejected=\$__patch_rejected edit_tool=\$__edit_tool shell_tool=\$__shell_tool\"")
+            sb.appendLine("    [ \"\$__rc\" -eq 0 ] && [ \"\$__readme_rc\" -eq 0 ] && [ \"\$__helper_error\" -eq 0 ] && [ \"\$__patch_rejected\" -eq 0 ] && [ \"\$__edit_tool\" -eq 1 ] && [ \"\$__shell_tool\" -eq 0 ]")
             sb.appendLine("  } 2>&1 | tee \"\$__log\"")
             sb.appendLine("  local __canary_rc=\${PIPESTATUS[0]:-1}")
             sb.appendLine("  echo \"[codex-patch-canary] rc=\$__canary_rc log=\$__log\"")
