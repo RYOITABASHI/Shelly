@@ -18,11 +18,18 @@ import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 
-type Cli = 'claude' | 'codex';
+type QuickLaunchCommand = 'claude' | 'codex' | 'diag';
 
-const CLI_LABEL: Record<Cli, string> = {
+const COMMAND_LABEL: Record<QuickLaunchCommand, string> = {
   claude: 'Claude',
   codex: 'Codex',
+  diag: 'Diag',
+};
+
+const COMMAND_TEXT: Record<QuickLaunchCommand, string> = {
+  claude: 'claude',
+  codex: 'codex',
+  diag: 'shelly-codex-diagnose',
 };
 
 type Props = {
@@ -35,15 +42,14 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
   const addPane = useAddPane();
 
   const launch = useCallback(
-    (cli: Cli) => {
+    (command: QuickLaunchCommand) => {
       const result = addPane('terminal');
       if (result !== null) return; // useAddPane already alerted
       const sessionId = useTerminalStore.getState().activeSessionId;
-      // The shell function name on the user's $PATH matches the cli token
-      // (claude/codex are bashrc-defined functions in HomeInitializer.kt).
+      // The command tokens are bashrc-defined functions in HomeInitializer.kt.
       // Trailing newline so bash auto-runs it the
       // moment the new pane's TerminalPane effect picks the command up.
-      useTerminalStore.getState().insertCommand(`${cli}\n`, sessionId);
+      useTerminalStore.getState().insertCommand(`${COMMAND_TEXT[command]}\n`, sessionId);
     },
     [addPane],
   );
@@ -57,20 +63,20 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
       iconsOnly={iconsOnly}
     >
       <View style={styles.row}>
-        {(['claude', 'codex'] as const).map((cli) => (
+        {(['claude', 'codex', 'diag'] as const).map((command) => (
           <Pressable
-            key={cli}
+            key={command}
             style={[
               styles.chip,
               { borderColor: C.accent, backgroundColor: withAlpha(C.accent, 0.08) },
             ]}
-            onPress={() => launch(cli)}
+            onPress={() => launch(command)}
             hitSlop={4}
             accessibilityRole="button"
-            accessibilityLabel={`Launch ${CLI_LABEL[cli]} in a new terminal pane`}
+            accessibilityLabel={`Launch ${COMMAND_LABEL[command]} in a new terminal pane`}
           >
             <Text style={[styles.chipLabel, { color: C.accent }]}>
-              {CLI_LABEL[cli]}
+              {COMMAND_LABEL[command]}
             </Text>
           </Pressable>
         ))}
@@ -88,6 +94,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   chip: {
+    flex: 1,
     flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',

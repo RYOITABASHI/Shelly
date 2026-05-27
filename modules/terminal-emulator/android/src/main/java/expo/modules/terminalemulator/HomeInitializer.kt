@@ -1158,7 +1158,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      fs-helper recursion by scrubbing LD_PRELOAD, but Codex TUI then
     //      spawned /system/bin/sh without the wrapper and direct `bash`
     //      execs hit Android app-data Permission denied.
-    private const val BASHRC_VERSION = 209
+    // 210: Add a one-command Codex diagnostic harness so the sidebar can run
+    //      smoke/edit/patch checks without hand-typing each canary on device.
+    private const val BASHRC_VERSION = 210
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -4025,6 +4027,27 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  echo \"[codex-patch-canary] rc=\$__canary_rc log=\$__log\"")
             sb.appendLine("  return \"\$__canary_rc\"")
             sb.appendLine("}")
+            sb.appendLine("shelly-codex-diagnose() {")
+            sb.appendLine("  local __rc_version=0 __rc_smoke=0 __rc_canary=0 __rc_edit=0 __rc_patch=0")
+            sb.appendLine("  echo \"[codex-diagnose] bashrc=\$BASHRC_VERSION\"")
+            sb.appendLine("  echo \"[codex-diagnose] bash --version\"")
+            sb.appendLine("  bash --version | sed -n '1,2p'")
+            sb.appendLine("  __rc_version=\${PIPESTATUS[0]:-1}")
+            sb.appendLine("  echo \"[codex-diagnose] codex smoke\"")
+            sb.appendLine("  shelly-codex-smoke")
+            sb.appendLine("  __rc_smoke=\$?")
+            sb.appendLine("  echo \"[codex-diagnose] codex canary\"")
+            sb.appendLine("  shelly-codex-canary")
+            sb.appendLine("  __rc_canary=\$?")
+            sb.appendLine("  echo \"[codex-diagnose] codex edit canary\"")
+            sb.appendLine("  shelly-codex-edit-canary")
+            sb.appendLine("  __rc_edit=\$?")
+            sb.appendLine("  echo \"[codex-diagnose] codex patch canary\"")
+            sb.appendLine("  shelly-codex-patch-canary")
+            sb.appendLine("  __rc_patch=\$?")
+            sb.appendLine("  echo \"[codex-diagnose] result bash=\$__rc_version smoke=\$__rc_smoke canary=\$__rc_canary edit=\$__rc_edit patch=\$__rc_patch\"")
+            sb.appendLine("  [ \"\$__rc_version\" -eq 0 ] && [ \"\$__rc_smoke\" -eq 0 ] && [ \"\$__rc_canary\" -eq 0 ] && [ \"\$__rc_edit\" -eq 0 ] && [ \"\$__rc_patch\" -eq 0 ]")
+            sb.appendLine("}")
             // v34: shelly-cs — GitHub Codespaces helper CLI (pure Node, REST API).
             // Invokes the extracted script at ~/.shelly-cs/shelly-cs.js via the
             // bundled bionic node. See HomeInitializer.initialize() where the
@@ -4036,7 +4059,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             //   cs               (every subsequent time — opens default in
             //                     Browser Pane, claude pre-installed there)
             sb.appendLine("cs() { shelly-cs \"\$@\"; }")
-            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-codex-canary shelly-codex-edit-canary shelly-codex-repo-canary shelly-codex-patch-canary shelly-cs cs")
+            sb.appendLine("export -f bash claude gemini codex codex-login shelly-codex-smoke shelly-codex-canary shelly-codex-edit-canary shelly-codex-repo-canary shelly-codex-patch-canary shelly-codex-diagnose shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet

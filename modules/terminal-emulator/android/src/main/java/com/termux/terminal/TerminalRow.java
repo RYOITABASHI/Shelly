@@ -97,7 +97,14 @@ public final class TerminalRow {
                 sourceX1 += latestNonCombiningWidth;
                 latestNonCombiningWidth = w;
             }
-            setChar(destinationX, codePoint, line.getStyle(sourceX1));
+            // Some TUIs issue reverse-index / block-copy sequences exactly at
+            // the right edge while the source row contains wide or combining
+            // characters. The copied glyph range is already clamped by
+            // TerminalBuffer.blockCopy(), but sourceX1 can advance to the
+            // exclusive end column for the last Java char. Reuse the last
+            // visible cell style instead of crashing the terminal thread.
+            int styleColumn = Math.max(0, Math.min(sourceX1, line.mColumns - 1));
+            setChar(destinationX, codePoint, line.getStyle(styleColumn));
         }
     }
 
