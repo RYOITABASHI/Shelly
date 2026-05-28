@@ -19,8 +19,9 @@ class ScouterWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         val store = ScouterStateStore(context)
         val snapshots = if (store.isEnabled()) store.all() else emptyList()
+        val load = ScouterSystemSampler(context).sample()
         ids.forEach { id ->
-            manager.updateAppWidget(id, render(context, snapshots))
+            manager.updateAppWidget(id, render(context, snapshots, load))
         }
     }
 
@@ -32,12 +33,13 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             if (ids.isEmpty()) return
             val store = ScouterStateStore(context)
             val snapshots = if (store.isEnabled()) store.all() else emptyList()
+            val load = ScouterSystemSampler(context).sample()
             ids.forEach { id ->
-                manager.updateAppWidget(id, render(context, snapshots))
+                manager.updateAppWidget(id, render(context, snapshots, load))
             }
         }
 
-        private fun render(context: Context, snapshots: List<SessionSnapshot>): RemoteViews {
+        private fun render(context: Context, snapshots: List<SessionSnapshot>, load: ScouterSystemLoad): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
 
@@ -72,7 +74,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val latestAt = listOfNotNull(codex?.lastEventAt, local?.lastEventAt).maxOrNull()
             views.setTextViewText(
                 R.id.scouter_footer,
-                latestAt?.let { "updated ${formatTime(it)}" } ?: "updated --:--:--"
+                "${loadLine(load)} · ${latestAt?.let { "updated ${formatTime(it)}" } ?: "updated --:--:--"}"
             )
             return views
         }
@@ -211,6 +213,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             return parts.takeIf { it.isNotEmpty() }?.joinToString(" / ")?.let { "PERF $it" } ?: ""
         }
 
+        private fun loadLine(load: ScouterSystemLoad): String {
+            val cpu = load.cpuPercent?.let { String.format(Locale.US, "%.0f%%", it) } ?: "--%"
+            val memory = load.ramAvailableMb?.let { "RAM ${formatMegabytes(it)} free" }
+            return listOfNotNull("LOAD CPU $cpu", memory).joinToString(" · ")
+        }
+
         private fun contextGauge(snapshot: SessionSnapshot): String {
             val remaining = snapshot.contextPercentRemaining
             if (remaining != null) {
@@ -269,6 +277,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun formatTokens(tokens: Long): String {
             return if (tokens >= 1000) String.format(Locale.US, "%.1fK", tokens / 1000.0) else tokens.toString()
+        }
+
+        private fun formatMegabytes(value: Long): String {
+            return if (value >= 1024L) String.format(Locale.US, "%.1fG", value / 1024.0) else "${value}M"
         }
 
         private fun shortSessionId(sessionId: String): String {

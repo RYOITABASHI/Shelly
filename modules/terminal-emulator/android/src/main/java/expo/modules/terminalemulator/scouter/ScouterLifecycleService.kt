@@ -50,6 +50,7 @@ class ScouterLifecycleService private constructor(private val context: Context) 
 
     fun debugJson(): JSONObject {
         val base = store.debugJson()
+        base.put("systemLoad", ScouterSystemSampler(appContext).sample().toJson())
         base.put("serverRunning", server != null)
         base.put("jsonlWatcherRunning", watcher != null)
         base.put("hookTokenPreview", store.getSessionToken().take(6) + "…")

@@ -165,7 +165,7 @@ The Medium widget now shows two dense lanes: the latest Codex session and the lo
 - Local LLM lane: readiness, backend, endpoint, queue size, tokens/sec when exposed by metrics, and probe latency.
 - Badge: compact source code, `CX` or `LL`.
 - Status line: human-readable state, for example `Running Bash in demo`, `Thinking in hw`, `Waiting in home`, `Completed in demo`, or `Error in demo`.
-- Footer: optional cost/tokens/context, followed by `Last event HH:mm:ss`.
+- Footer: lightweight system load, for example `LOAD CPU 37% · RAM 5.8G free`, followed by the latest update time.
 
 Long Android private paths are shortened for readability. For example, the Shelly terminal home path is displayed as `home` instead of the full app-private directory.
 
@@ -180,6 +180,7 @@ The monitor is the inspection layer for Phase 1A+:
 - Service status: Scouter ON/OFF, hook server port, JSONL watcher, token preview.
 - Latest session: source, project, status, last event, duration, token/cache/reasoning hints, and last error.
 - Session list: latest Codex and Local LLM snapshots from stored Scouter state.
+- System load: OS-level CPU delta from `/proc/stat`, Shelly process CPU/PSS/heap, and available RAM.
 - Hook URLs: current Codex hook base URL and local LLM probe endpoints.
 - Copy hooks: copies runtime hook templates with the full token.
 

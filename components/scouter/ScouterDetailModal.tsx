@@ -47,6 +47,17 @@ type ScouterSession = {
   latencyMs?: number | null;
 };
 
+type ScouterSystemLoad = {
+  sampledAt?: number;
+  cpuPercent?: number | null;
+  appCpuPercent?: number | null;
+  appPssMb?: number | null;
+  appHeapUsedMb?: number;
+  appHeapMaxMb?: number;
+  ramAvailableMb?: number | null;
+  ramTotalMb?: number | null;
+};
+
 type ScouterDebugInfo = {
   enabled?: boolean;
   port?: number;
@@ -56,6 +67,7 @@ type ScouterDebugInfo = {
   codexHookUrl?: string;
   localHookUrl?: string;
   localLlmEndpoints?: string;
+  systemLoad?: ScouterSystemLoad;
   sessions?: ScouterSession[];
 };
 
@@ -124,6 +136,7 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
               <StatusPill label="HOOK" value={info?.serverRunning ? `:${info?.port}` : 'STOPPED'} tone={info?.serverRunning ? 'good' : 'bad'} />
               <StatusPill label="JSONL" value={info?.jsonlWatcherRunning ? 'WATCHING' : 'OFF'} tone={info?.jsonlWatcherRunning ? 'good' : 'muted'} />
               <StatusPill label="LOCAL" value={localPillValue(sessions)} tone={localPillTone(sessions)} />
+              <StatusPill label="LOAD" value={loadPillValue(info?.systemLoad)} tone={loadPillTone(info?.systemLoad)} />
             </View>
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -138,6 +151,10 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
               ) : (
                 sessions.map((session) => <SessionCard key={sessionKey(session)} session={session} />)
               )}
+            </Section>
+
+            <Section title="SYSTEM">
+              <Text style={styles.codeLine}>{systemLoadLine(info?.systemLoad)}</Text>
             </Section>
 
             <Section title="HOOKS">
@@ -350,6 +367,29 @@ function localPillTone(sessions: ScouterSession[]): 'good' | 'bad' | 'muted' {
   return 'good';
 }
 
+function loadPillValue(load?: ScouterSystemLoad): string {
+  if (typeof load?.cpuPercent === 'number') return `CPU ${Math.round(load.cpuPercent)}%`;
+  return 'CPU --%';
+}
+
+function loadPillTone(load?: ScouterSystemLoad): 'good' | 'bad' | 'muted' {
+  if (typeof load?.cpuPercent !== 'number') return 'muted';
+  if (load.cpuPercent >= 85) return 'bad';
+  if (load.cpuPercent >= 65) return 'muted';
+  return 'good';
+}
+
+function systemLoadLine(load?: ScouterSystemLoad): string {
+  if (!load) return 'CPU --% · APP --MB · RAM --';
+  const cpu = typeof load.cpuPercent === 'number' ? `${Math.round(load.cpuPercent)}%` : '--%';
+  const appCpu = typeof load.appCpuPercent === 'number' ? `${Math.max(0, Math.round(load.appCpuPercent))}%` : '--%';
+  const app = typeof load.appPssMb === 'number' ? `${load.appPssMb}MB` : `${load.appHeapUsedMb || 0}/${load.appHeapMaxMb || 0}MB heap`;
+  const ram = typeof load.ramAvailableMb === 'number'
+    ? `${formatMegabytes(load.ramAvailableMb)} free${typeof load.ramTotalMb === 'number' ? ` / ${formatMegabytes(load.ramTotalMb)}` : ''}`
+    : '--';
+  return `CPU ${cpu} · APP CPU ${appCpu} · APP ${app} · RAM ${ram} · ${formatTime(load.sampledAt)}`;
+}
+
 function shortModelName(model: string): string {
   return model
     .replace(/^claude-/, '')
@@ -467,6 +507,10 @@ function formatDuration(start?: number, end?: number): string {
 
 function formatTokens(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}K` : String(tokens);
+}
+
+function formatMegabytes(value: number): string {
+  return value >= 1024 ? `${(value / 1024).toFixed(1)}G` : `${Math.round(value)}M`;
 }
 
 const styles = StyleSheet.create({

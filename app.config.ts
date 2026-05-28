@@ -85,6 +85,7 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-terminal-service",
     "./plugins/with-apk-installer",
     "./plugins/with-saved-instance-state",
+    "./plugins/with-configuration-change-guard",
     [
       "expo-audio",
       {
