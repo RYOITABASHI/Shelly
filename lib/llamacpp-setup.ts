@@ -171,26 +171,23 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
 const MODELS_DIR = '$HOME/models';
 // Resolved inside generated shell scripts. Native exec does not always source
 // interactive shell rc files, so do not rely on $HOME/.local/bin being on PATH.
-const SERVER_BIN =
-  `/system/bin/sh -c 'cd "$1" || exit 1; shift; exec /system/bin/env -u LD_PRELOAD HOME="$HOME" ANDROID_ROOT="\${ANDROID_ROOT:-/system}" ANDROID_DATA="\${ANDROID_DATA:-/data}" LD_LIBRARY_PATH="\${LLAMA_LIB_PATH}\${SHELLY_LD_LIBRARY_PATH:+:$SHELLY_LD_LIBRARY_PATH}\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /system/bin/linker64 "$@"' sh "$REAL_LLAMA_SERVER_DIR" "$REAL_LLAMA_SERVER_BIN"`;
+const SERVER_BIN = '"${LLAMA_SERVER_BIN:-$HOME/.local/bin/llama-server}"';
 
 const LLAMA_SERVER_BIN_INIT =
-  'LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-$(command -v llama-server 2>/dev/null || printf \'%s\' "$HOME/.local/bin/llama-server")}"';
+  'LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-$HOME/.local/bin/llama-server}"';
 
 const REAL_LLAMA_SERVER_BIN_INIT = [
-  `REAL_LLAMA_SERVER_BIN="$(find "$HOME/.local/llama.cpp" -type f -name llama-server 2>/dev/null | head -n 1)"`,
-  `if [ -z "$REAL_LLAMA_SERVER_BIN" ]; then`,
-  `  echo "llama-server binary not found under $HOME/.local/llama.cpp"`,
+  `if [ ! -x "$LLAMA_SERVER_BIN" ]; then`,
+  `  echo "llama-server launcher not found or not executable: $LLAMA_SERVER_BIN"`,
   `  echo "Run llama.cpp setup first."`,
   `  exit 1`,
   `fi`,
-  `if [ ! -x "$REAL_LLAMA_SERVER_BIN" ]; then`,
-  `  echo "llama-server binary is not executable: $REAL_LLAMA_SERVER_BIN"`,
-  `  exit 1`,
+  `REAL_LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN"`,
+  `REALPATH_FILE="$HOME/.local/bin/llama-server.realpath"`,
+  `if [ -s "$REALPATH_FILE" ]; then`,
+  `  REAL_LLAMA_SERVER_BIN="$(cat "$REALPATH_FILE" 2>/dev/null || printf '%s' "$LLAMA_SERVER_BIN")"`,
   `fi`,
   `REAL_LLAMA_SERVER_DIR="\${REAL_LLAMA_SERVER_BIN%/*}"`,
-  `LLAMA_LIB_PATH="$(find "$HOME/.local/llama.cpp" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':')"`,
-  `export LLAMA_LIB_PATH`,
 ].join('\n');
 
 const HEALTH_CHECK_CMD = [
@@ -209,6 +206,7 @@ TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
 TMP_INSTALL_DIR="$HOME/.local/llama.cpp.tmp"
 OUT_DIR="$HOME/.local/bin"
 RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+INSTALL_MARKER="$INSTALL_DIR/.shelly-install-ok"
 
 mkdir -p "$TMP_ROOT" "$OUT_DIR"
 
@@ -265,21 +263,35 @@ if [ -x /system/bin/linker64 ]; then
 fi
 exec "$FINAL_BINARY" "\\$@"
 WRAPPER_EOF
+  printf '%s\\n' "$FINAL_BINARY" > "$OUT_DIR/llama-server.realpath"
   chmod 755 "$OUT_DIR/llama-server" "$FINAL_BINARY"
+}
+
+smoke_test_wrapper() {
+  "$OUT_DIR/llama-server" --version >/dev/null 2>&1 || "$OUT_DIR/llama-server" --help >/dev/null 2>&1
 }
 
 EXISTING_BINARY=""
 if [ -d "$INSTALL_DIR" ]; then
   EXISTING_BINARY="$(find_llama_server "$INSTALL_DIR")"
 fi
-if [ -n "$EXISTING_BINARY" ] && [ -n "$(find_common_lib "$INSTALL_DIR")" ]; then
+if [ -n "$EXISTING_BINARY" ] && [ -n "$(find_common_lib "$INSTALL_DIR")" ] && [ -f "$INSTALL_MARKER" ]; then
   chmod 755 "$EXISTING_BINARY"
   write_wrapper "$EXISTING_BINARY"
-  echo "Repaired: $OUT_DIR/llama-server"
-  exit 0
-fi
-if [ -n "$EXISTING_BINARY" ]; then
-  echo "Existing llama-server install is incomplete; reinstalling..."
+  if smoke_test_wrapper; then
+    printf 'ok\\n' > "$INSTALL_MARKER"
+    echo "Repaired: $OUT_DIR/llama-server"
+    exit 0
+  fi
+  echo "Existing llama-server failed smoke test; reinstalling..."
+elif [ -n "$EXISTING_BINARY" ]; then
+  chmod 755 "$EXISTING_BINARY" 2>/dev/null || true
+  write_wrapper "$EXISTING_BINARY"
+  if smoke_test_wrapper; then
+    echo "Existing llama-server install is from an older Shelly setup; reinstalling to refresh launcher metadata..."
+  else
+    echo "Existing llama-server install is incomplete; reinstalling..."
+  fi
 fi
 
 RELEASE_JSON="$TMP_ROOT/release.json"
@@ -333,6 +345,12 @@ mv "$TMP_INSTALL_DIR" "$INSTALL_DIR"
 
 FINAL_BINARY="$(find_llama_server "$INSTALL_DIR")"
 write_wrapper "$FINAL_BINARY"
+if ! smoke_test_wrapper; then
+  echo "Installed llama-server failed smoke test" >&2
+  "$OUT_DIR/llama-server" --version 2>&1 | head -n 20 >&2 || true
+  exit 1
+fi
+printf 'ok\\n' > "$INSTALL_MARKER"
 echo "Installed: $OUT_DIR/llama-server"`;
 
 /**
@@ -443,6 +461,7 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
     `  echo "model not found or empty: $MODEL_PATH"`,
     `  exit 1`,
     `fi`,
+    `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
     `echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"`,
     `echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"`,
     `echo "model: $MODEL_PATH"`,
@@ -462,6 +481,7 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
     `  kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null || true`,
     `fi`,
     `sleep 1`,
+    `echo "launching llama-server..."`,
     `nohup /system/bin/nice -n 10 ${startCmd} > "${logFile}" 2>&1 &`,
     `echo $! > "${pidFile}"`,
     `echo "llama-server started (PID: $(cat ${pidFile}))"`,
@@ -615,6 +635,7 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     `  echo "model not found or empty: $MODEL_PATH"`,
     `  exit 1`,
     `fi`,
+    `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
     `echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"`,
     `echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"`,
     `echo "model: $MODEL_PATH"`,
@@ -639,6 +660,7 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     ``,
     `# 2. llama-serverをバックグラウンドで起動`,
     `echo "llama-serverを起動中..."`,
+    `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
     `nohup /system/bin/nice -n 10 ${startCmd} > "${logFile}" 2>&1 &`,
     `echo $! > "${pidFile}"`,
     `echo "llama-server started (PID: $(cat ${pidFile}))"`,
