@@ -1179,7 +1179,10 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     //      workspace-write. For non-interactive exec paths, use Codex's
     //      danger-full-access permission profile and rely on Android's app
     //      sandbox as the actual OS boundary. TUI remains unchanged.
-    private const val BASHRC_VERSION = 216
+    // 217: Build libexec_wrapper.so with BTI landing pads. Android 16 can
+    //      indirect-branch into the preloaded open/openat interposers from
+    //      Codex reqwest worker threads before apply_patch starts.
+    private const val BASHRC_VERSION = 217
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
