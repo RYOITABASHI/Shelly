@@ -159,8 +159,17 @@ export function LlamaCppSection({
     }
     setLoadingModelId(model.id);
     const cmd = buildDownloadCommand(model);
-    const result = await onRunCommand(cmd, `${model.name} download`);
-    setLoadingModelId(null);
+    let result: { success: boolean; output?: string };
+    try {
+      result = await onRunCommand(cmd, `${model.name} download`);
+    } catch (error) {
+      result = {
+        success: false,
+        output: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      setLoadingModelId(null);
+    }
     if (result.success) {
       Alert.alert('Done', `${model.name}  download complete.`);
     } else {
@@ -235,6 +244,7 @@ export function LlamaCppSection({
 
   const installedModels = MODEL_CATALOG.filter((m) => installedModelIds.has(m.id));
   const notInstalledModels = MODEL_CATALOG.filter((m) => !installedModelIds.has(m.id));
+  const operationInProgress = isSettingUp || loadingModelId !== null;
 
   return (
     <View>
@@ -243,7 +253,7 @@ export function LlamaCppSection({
         <TouchableOpacity
           style={[styles.setupBtn, !isConnected && styles.setupBtnDisabled]}
           onPress={handleSetup}
-          disabled={isSettingUp}
+          disabled={operationInProgress}
         >
           {isSettingUp
             ? <ActivityIndicator size="small" color="#00D4AA" />
@@ -295,7 +305,10 @@ export function LlamaCppSection({
           <Text style={styles.catalogLabel}>Installed</Text>
           {installedModels.map((model) => {
             const isActive = activeModelId === model.id;
-            const canStart = serverStatus !== 'starting' && (serverStatus !== 'running' || !isActive);
+            const canStart =
+              !operationInProgress &&
+              serverStatus !== 'starting' &&
+              (serverStatus !== 'running' || !isActive);
             return (
               <View key={model.id} style={[styles.modelCard, isActive && styles.modelCardActive]}>
                 <View style={styles.installedRow}>
@@ -318,6 +331,7 @@ export function LlamaCppSection({
                     <TouchableOpacity
                       style={[styles.actionBtn, styles.actionBtnDanger]}
                       onPress={() => handleDeleteModel(model)}
+                      disabled={operationInProgress}
                     >
                       <MaterialIcons name="delete-outline" size={14} color="#F87171" />
                     </TouchableOpacity>
@@ -360,7 +374,7 @@ export function LlamaCppSection({
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.actionBtnPrimary]}
                     onPress={() => handleDownload(model)}
-                    disabled={isLoading}
+                    disabled={operationInProgress}
                   >
                     {isLoading
                       ? <ActivityIndicator size="small" color="#0A0A0A" />

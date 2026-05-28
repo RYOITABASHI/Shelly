@@ -59,7 +59,7 @@ async function fetchActiveServerModelId(endpoint: string): Promise<string | null
     const res = await fetch(url, { signal: ctrl.signal });
     clearTimeout(timeout);
     if (!res.ok) return null;
-    const json = await res.json() as { data?: Array<{ id?: string }> };
+    const json = await res.json() as { data?: { id?: string }[] };
     const first = json.data?.[0]?.id;
     return typeof first === 'string' && first.length > 0 ? first : null;
   } catch {
@@ -217,9 +217,14 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
   }, [refreshInstalled]);
 
   const handleRun = useCallback(
-    async (command: string, _label: string) => {
-      // llama.cpp setup commands can be long — bump timeout to 10 min.
-      const r = await execCommand(command, 600_000);
+    async (command: string, label: string) => {
+      const timeout =
+        label.toLowerCase().includes('download') || command.includes('MODEL_URL=')
+          ? 3_600_000
+          : command.includes('RELEASE_API=')
+            ? 1_200_000
+            : 600_000;
+      const r = await execCommand(command, timeout);
       const ok = r.exitCode === 0;
       if (ok) {
         // Any successful command may have mutated $HOME/models, refresh.
