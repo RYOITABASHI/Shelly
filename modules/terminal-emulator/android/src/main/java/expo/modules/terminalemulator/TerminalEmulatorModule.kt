@@ -724,18 +724,48 @@ class TerminalEmulatorModule : Module() {
             val homeDir = HomeInitializer.getHomeDir(context)
             val bashPath = LibExtractor.getBashPath(context)
             val libPath = libDir.absolutePath
+            val homePath = homeDir.absolutePath
+            val sslDir = "$homePath/.shelly-ssl"
+            val caBundle = "$sslDir/ca-certificates.crt"
+            val opensslConf = "$sslDir/openssl.cnf"
+            try {
+                val sslDirFile = java.io.File(sslDir)
+                sslDirFile.mkdirs()
+                val caBundleFile = java.io.File(caBundle)
+                if (!caBundleFile.exists() || caBundleFile.length() == 0L) {
+                    context.assets.open("ca-certificates.crt").use { input ->
+                        caBundleFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+                val opensslConfFile = java.io.File(opensslConf)
+                if (!opensslConfFile.exists()) opensslConfFile.writeText("")
+            } catch (e: Exception) {
+                Log.w("TerminalEmulator", "execCommand TLS env seed failed: ${e.message}")
+            }
 
-            // Prepend PATH export so bundled tools (node, npm, git, etc.) are found
-            val wrappedCommand = "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && export LD_LIBRARY_PATH='$libPath' && export HOME='${homeDir.absolutePath}' && $command"
+            // Non-interactive Settings commands do not source ~/.bashrc, so mirror
+            // the TLS environment that HomeInitializer writes for bundled tools.
+            val wrappedCommand =
+                "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && " +
+                "export LD_LIBRARY_PATH='$libPath' && " +
+                "export HOME='$homePath' && " +
+                "export SSL_CERT_FILE='$caBundle' && " +
+                "export SSL_CERT_DIR='$sslDir' && " +
+                "export CURL_CA_BUNDLE='$caBundle' && " +
+                "export NODE_EXTRA_CA_CERTS='$caBundle' && " +
+                "export GIT_SSL_CAINFO='$caBundle' && " +
+                "export REQUESTS_CA_BUNDLE='$caBundle' && " +
+                "export OPENSSL_CONF='$opensslConf' && " +
+                "$command"
 
-            Log.i("TerminalEmulator", "execCommand: bash=$bashPath lib=$libPath home=${homeDir.absolutePath}")
+            Log.i("TerminalEmulator", "execCommand: bash=$bashPath lib=$libPath home=$homePath")
             Log.i("TerminalEmulator", "execCommand: bash exists=${java.io.File(bashPath).exists()} lib exists=${libDir.exists()} files=${libDir.list()?.size ?: 0}")
 
             val result = ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
                 bashPath,
                 libPath,
-                homeDir.absolutePath,
+                homePath,
                 wrappedCommand,
                 timeout
             )

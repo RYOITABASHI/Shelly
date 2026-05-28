@@ -200,6 +200,31 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+const TLS_ENV_PRELUDE = [
+  'SHELLY_CA="$HOME/.shelly-ssl/ca-certificates.crt"',
+  'SHELLY_OPENSSL_CONF="$HOME/.shelly-ssl/openssl.cnf"',
+  'if [ -s "$SHELLY_CA" ]; then',
+  '  export SSL_CERT_FILE="$SHELLY_CA"',
+  '  export CURL_CA_BUNDLE="$SHELLY_CA"',
+  '  export REQUESTS_CA_BUNDLE="$SHELLY_CA"',
+  '  export GIT_SSL_CAINFO="$SHELLY_CA"',
+  '  export NODE_EXTRA_CA_CERTS="$SHELLY_CA"',
+  '  export SSL_CERT_DIR="$HOME/.shelly-ssl"',
+  'else',
+  '  [ -n "${SSL_CERT_FILE:-}" ] && [ ! -r "$SSL_CERT_FILE" ] && unset SSL_CERT_FILE',
+  '  [ -n "${CURL_CA_BUNDLE:-}" ] && [ ! -r "$CURL_CA_BUNDLE" ] && unset CURL_CA_BUNDLE',
+  '  [ -n "${REQUESTS_CA_BUNDLE:-}" ] && [ ! -r "$REQUESTS_CA_BUNDLE" ] && unset REQUESTS_CA_BUNDLE',
+  '  [ -n "${GIT_SSL_CAINFO:-}" ] && [ ! -r "$GIT_SSL_CAINFO" ] && unset GIT_SSL_CAINFO',
+  '  [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && [ ! -r "$NODE_EXTRA_CA_CERTS" ] && unset NODE_EXTRA_CA_CERTS',
+  '  [ -n "${SSL_CERT_DIR:-}" ] && [ ! -d "$SSL_CERT_DIR" ] && unset SSL_CERT_DIR',
+  'fi',
+  'if [ -e "$SHELLY_OPENSSL_CONF" ]; then',
+  '  export OPENSSL_CONF="$SHELLY_OPENSSL_CONF"',
+  'elif [ -n "${OPENSSL_CONF:-}" ] && [ ! -r "$OPENSSL_CONF" ]; then',
+  '  unset OPENSSL_CONF',
+  'fi',
+].join('\n');
+
 const INSTALL_LLAMA_SERVER_CMD = `set -e
 INSTALL_DIR="$HOME/.local/llama.cpp"
 TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
@@ -209,6 +234,7 @@ RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 INSTALL_MARKER="$INSTALL_DIR/.shelly-install-ok"
 
 mkdir -p "$TMP_ROOT" "$OUT_DIR"
+${TLS_ENV_PRELUDE}
 
 fetch_text() {
   if command -v curl >/dev/null 2>&1; then
@@ -385,6 +411,7 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
   const name = shellQuote(model.name);
   return [
     `set -e`,
+    TLS_ENV_PRELUDE,
     `echo "Downloading ${model.name} (${model.sizeGb}GB)..."`,
     `mkdir -p ${MODELS_DIR}`,
     `df -h ${MODELS_DIR} 2>/dev/null || true`,
@@ -482,7 +509,9 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
     `fi`,
     `sleep 1`,
     `echo "launching llama-server..."`,
-    `nohup /system/bin/nice -n 10 ${startCmd} > "${logFile}" 2>&1 &`,
+    `/system/bin/linker64 --list-needed "$REAL_LLAMA_SERVER_BIN" > "${logFile}" 2>&1 || true`,
+    `echo "--- starting llama-server ---" >> "${logFile}"`,
+    `nohup /system/bin/nice -n 10 ${startCmd} >> "${logFile}" 2>&1 &`,
     `echo $! > "${pidFile}"`,
     `echo "llama-server started (PID: $(cat ${pidFile}))"`,
     `echo "API: http://127.0.0.1:8080/v1/chat/completions"`,
@@ -661,7 +690,9 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     `# 2. llama-serverをバックグラウンドで起動`,
     `echo "llama-serverを起動中..."`,
     `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
-    `nohup /system/bin/nice -n 10 ${startCmd} > "${logFile}" 2>&1 &`,
+    `/system/bin/linker64 --list-needed "$REAL_LLAMA_SERVER_BIN" > "${logFile}" 2>&1 || true`,
+    `echo "--- starting llama-server ---" >> "${logFile}"`,
+    `nohup /system/bin/nice -n 10 ${startCmd} >> "${logFile}" 2>&1 &`,
     `echo $! > "${pidFile}"`,
     `echo "llama-server started (PID: $(cat ${pidFile}))"`,
     ``,
