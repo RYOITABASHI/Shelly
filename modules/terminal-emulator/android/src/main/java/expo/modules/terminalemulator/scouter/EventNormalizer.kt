@@ -67,11 +67,17 @@ object EventNormalizer {
             tokensUsed = extractLong(payload, "tokensUsed", "tokens_used", "total_tokens"),
             inputTokens = extractLong(payload, "inputTokens", "input_tokens"),
             outputTokens = extractLong(payload, "outputTokens", "output_tokens"),
+            reasoningOutputTokens = extractLong(payload, "reasoningOutputTokens", "reasoning_output_tokens"),
             cacheCreationInputTokens = extractLong(payload, "cacheCreationInputTokens", "cache_creation_input_tokens"),
             cacheReadInputTokens = extractLong(payload, "cacheReadInputTokens", "cache_read_input_tokens", "cached_input_tokens"),
             totalCostUsd = extractDouble(payload, "totalCostUsd", "total_cost_usd", "cost_usd"),
             contextPercentRemaining = extractNullableDouble(payload, "contextPercentRemaining", "context_percent_remaining"),
-            lastMessage = safeText(payload.opt("message"))?.redactForScouter()?.take(240)
+            lastMessage = safeText(payload.opt("message"))?.redactForScouter()?.take(240),
+            localBackend = firstNonBlank(payload.optString("localBackend"), payload.optString("local_backend"), payload.optString("backend")),
+            localEndpoint = firstNonBlank(payload.optString("localEndpoint"), payload.optString("local_endpoint"), payload.optString("endpoint")),
+            tokensPerSecond = extractNullableDouble(payload, "tokensPerSecond", "tokens_per_second", "tps"),
+            queueSize = extractNullableInt(payload, "queueSize", "queue_size", "queue"),
+            latencyMs = extractNullableLong(payload, "latencyMs", "latency_ms")
         )
     }
 
@@ -101,10 +107,16 @@ object EventNormalizer {
             tokensUsed = extractLong(json, "tokensUsed", "tokens_used", "total_tokens"),
             inputTokens = extractLong(json, "inputTokens", "input_tokens"),
             outputTokens = extractLong(json, "outputTokens", "output_tokens"),
+            reasoningOutputTokens = extractLong(json, "reasoningOutputTokens", "reasoning_output_tokens"),
             cacheCreationInputTokens = extractLong(json, "cacheCreationInputTokens", "cache_creation_input_tokens"),
             cacheReadInputTokens = extractLong(json, "cacheReadInputTokens", "cache_read_input_tokens", "cached_input_tokens"),
             totalCostUsd = extractDouble(json, "totalCostUsd", "total_cost_usd", "cost_usd"),
-            lastMessage = safeText(json.opt("message"))?.redactForScouter()?.take(240)
+            lastMessage = safeText(json.opt("message"))?.redactForScouter()?.take(240),
+            localBackend = firstNonBlank(json.optString("localBackend"), json.optString("local_backend"), json.optString("backend")),
+            localEndpoint = firstNonBlank(json.optString("localEndpoint"), json.optString("local_endpoint"), json.optString("endpoint")),
+            tokensPerSecond = extractNullableDouble(json, "tokensPerSecond", "tokens_per_second", "tps"),
+            queueSize = extractNullableInt(json, "queueSize", "queue_size", "queue"),
+            latencyMs = extractNullableLong(json, "latencyMs", "latency_ms")
         )
     }
 
@@ -153,6 +165,16 @@ object EventNormalizer {
 
     private fun extractNullableDouble(json: JSONObject, vararg keys: String): Double? {
         for (key in keys) if (json.has(key) && !json.isNull(key)) return json.optDouble(key)
+        return null
+    }
+
+    private fun extractNullableLong(json: JSONObject, vararg keys: String): Long? {
+        for (key in keys) if (json.has(key) && !json.isNull(key)) return json.optLong(key)
+        return null
+    }
+
+    private fun extractNullableInt(json: JSONObject, vararg keys: String): Int? {
+        for (key in keys) if (json.has(key) && !json.isNull(key)) return json.optInt(key)
         return null
     }
 

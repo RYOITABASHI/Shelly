@@ -100,6 +100,7 @@ class HookHttpServer(
             val eventName = path.removePrefix("/hook/").trim('/')
             val source = when {
                 eventName.startsWith("codex/") -> ScouterSource.CODEX
+                eventName.startsWith("local/") || eventName.startsWith("llm/") -> ScouterSource.LOCAL_LLM
                 eventName.startsWith("cc/") || eventName.startsWith("claude/") -> ScouterSource.CLAUDE_CODE
                 else -> null
             }

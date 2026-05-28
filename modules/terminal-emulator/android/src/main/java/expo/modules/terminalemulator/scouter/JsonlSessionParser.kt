@@ -11,8 +11,10 @@ class JsonlSessionParser(
 ) {
     private var inputTokens: Long = 0
     private var outputTokens: Long = 0
+    private var reasoningOutputTokens: Long = 0
     private var cacheCreationInputTokens: Long = 0
     private var cacheReadInputTokens: Long = 0
+    private var totalTokensObserved: Long = 0
     private var totalCostUsd: Double = 0.0
     private var modelName: String? = null
     private val seenClaudeUsageKeys = mutableSetOf<String>()
@@ -24,6 +26,7 @@ class JsonlSessionParser(
         return when (source) {
             ScouterSource.CLAUDE_CODE -> parseClaude(json)
             ScouterSource.CODEX -> parseCodex(json)
+            ScouterSource.LOCAL_LLM -> EventNormalizer.fromJsonl(source, file, line)
             ScouterSource.SHELLY -> EventNormalizer.fromJsonl(source, file, line)
         }
     }
@@ -104,6 +107,7 @@ class JsonlSessionParser(
             tokensUsed = inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens,
             inputTokens = inputTokens,
             outputTokens = outputTokens,
+            reasoningOutputTokens = reasoningOutputTokens,
             cacheCreationInputTokens = cacheCreationInputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
@@ -119,19 +123,25 @@ class JsonlSessionParser(
             codexCwd = extractCodexCwd(json, payload) ?: codexCwd
             return null
         }
-        if (entryType != "event_msg" || payload?.optString("type") != "token_count") {
+        if (entryType != "event_msg") {
             return EventNormalizer.fromJsonl(source, file, json.toString())
+        }
+        if (payload?.optString("type") != "token_count") {
+            return payload?.let { codexEventFromPayload(json, it) }
+                ?: EventNormalizer.fromJsonl(source, file, json.toString())
         }
 
         val info = payload.optJSONObject("info")
         codexCwd = extractCodexCwd(json, payload, info) ?: codexCwd
-        val totalUsage = normalizeCodexUsage(info?.optJSONObject("total_token_usage"))
+        val totalUsage = normalizeCodexUsage(info?.optJSONObject("total_token_usage") ?: info?.optJSONObject("totalTokenUsage"))
         val raw = if (totalUsage != null) {
             val delta = totalUsage.minus(previousCodexTotal)
             previousCodexTotal = totalUsage
             delta
         } else {
-            normalizeCodexUsage(info?.optJSONObject("last_token_usage")) ?: return null
+            val lastUsage = normalizeCodexUsage(info?.optJSONObject("last_token_usage") ?: info?.optJSONObject("lastTokenUsage")) ?: return null
+            previousCodexTotal = (previousCodexTotal ?: CodexUsage.ZERO).plus(lastUsage)
+            lastUsage
         }
         if (raw.totalTokens <= 0L) return null
 
@@ -139,6 +149,8 @@ class JsonlSessionParser(
         inputTokens += raw.inputTokens
         outputTokens += raw.outputTokens
         cacheReadInputTokens += raw.cachedInputTokens
+        reasoningOutputTokens += raw.reasoningOutputTokens
+        totalTokensObserved += raw.totalTokens
         val cwd = codexCwd ?: file.parentFile?.absolutePath.orEmpty()
 
         return ScouterEvent(
@@ -151,11 +163,71 @@ class JsonlSessionParser(
             eventType = ScouterEventType.SNAPSHOT,
             derivedStatus = ScouterStatus.THINKING,
             modelName = modelName,
-            tokensUsed = inputTokens + outputTokens,
+            tokensUsed = totalTokensObserved.takeIf { it > 0L } ?: (inputTokens + outputTokens + reasoningOutputTokens),
             inputTokens = inputTokens,
             outputTokens = outputTokens,
+            reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
-            totalCostUsd = totalCostUsd
+            totalCostUsd = totalCostUsd,
+            lastMessage = "Codex tokens updated"
+        )
+    }
+
+    private fun codexEventFromPayload(json: JSONObject, payload: JSONObject): ScouterEvent? {
+        val payloadType = payload.optString("type").lowercase()
+        if (payloadType.isBlank()) return null
+        codexCwd = extractCodexCwd(json, payload) ?: codexCwd
+        modelName = extractCodexModel(payload) ?: modelName
+        val cwd = codexCwd ?: file.parentFile?.absolutePath.orEmpty()
+        val toolName = firstNonBlank(
+            payload.optString("toolName"),
+            payload.optString("tool_name"),
+            payload.optString("name"),
+            inferCodexToolName(payloadType)
+        )
+        val message = firstNonBlank(
+            payload.optString("message"),
+            payload.optString("text"),
+            payload.optString("content"),
+            payload.optString("error"),
+            payload.optString("stderr"),
+            payload.optString("command")
+        )
+        val hasErrorValue = payload.hasNonBlankValue("error")
+        val status = when {
+            "error" in payloadType || hasErrorValue -> ScouterStatus.ERROR
+            "exec_command_begin" in payloadType || "tool_call" in payloadType || "apply_patch_begin" in payloadType -> ScouterStatus.TOOL_RUNNING
+            "exec_command" in payloadType && "end" !in payloadType -> ScouterStatus.TOOL_RUNNING
+            "tool_result" in payloadType || "exec_command_end" in payloadType || "apply_patch_end" in payloadType -> ScouterStatus.THINKING
+            "agent_message" in payloadType || "assistant_message" in payloadType || payloadType == "message" -> ScouterStatus.IDLE
+            else -> ScouterStatus.THINKING
+        }
+        val eventType = when (status) {
+            ScouterStatus.ERROR -> ScouterEventType.POST_TOOL_USE_FAILURE
+            ScouterStatus.TOOL_RUNNING -> ScouterEventType.PRE_TOOL_USE
+            ScouterStatus.IDLE -> ScouterEventType.SNAPSHOT
+            else -> ScouterEventType.POST_TOOL_USE
+        }
+        return ScouterEvent(
+            source = ScouterSource.CODEX,
+            sourceVersion = "jsonl",
+            timestamp = parseTimestamp(json.optString("timestamp")),
+            sessionId = file.nameWithoutExtension,
+            projectName = projectNameFromCwd(cwd),
+            cwd = cwd.redactForScouter(),
+            eventType = eventType,
+            derivedStatus = status,
+            toolName = toolName,
+            commandSummary = firstNonBlank(payload.optString("command"), message)?.redactForScouter()?.take(160),
+            errorMessage = if (status == ScouterStatus.ERROR) message?.redactForScouter() else null,
+            modelName = modelName,
+            tokensUsed = totalTokensObserved.takeIf { it > 0L } ?: (inputTokens + outputTokens + reasoningOutputTokens),
+            inputTokens = inputTokens,
+            outputTokens = outputTokens,
+            reasoningOutputTokens = reasoningOutputTokens,
+            cacheReadInputTokens = cacheReadInputTokens,
+            totalCostUsd = totalCostUsd,
+            lastMessage = message?.redactForScouter()?.take(240)
         )
     }
 
@@ -228,8 +300,10 @@ class JsonlSessionParser(
         return firstNonBlank(
             json.optString("model"),
             json.optString("model_name"),
+            json.optString("modelName"),
             info?.optString("model"),
             info?.optString("model_name"),
+            info?.optString("modelName"),
             metadata?.optString("model")
         )
     }
@@ -240,6 +314,7 @@ class JsonlSessionParser(
             val cwd = firstNonBlank(
                 json.optString("cwd"),
                 json.optString("current_working_directory"),
+                json.optString("currentWorkingDirectory"),
                 json.optString("project_path")
             )
             if (cwd != null) return cwd
@@ -247,6 +322,7 @@ class JsonlSessionParser(
             val nested = firstNonBlank(
                 payload?.optString("cwd"),
                 payload?.optString("current_working_directory"),
+                payload?.optString("currentWorkingDirectory"),
                 payload?.optString("project_path")
             )
             if (nested != null) return nested
@@ -256,14 +332,21 @@ class JsonlSessionParser(
 
     private fun normalizeCodexUsage(json: JSONObject?): CodexUsage? {
         if (json == null) return null
-        val input = json.optLongOrZero("input_tokens")
-        val cached = json.optLongOrZero("cached_input_tokens").takeIf { it > 0L }
-            ?: json.optLongOrZero("cache_read_input_tokens")
-        val output = json.optLongOrZero("output_tokens")
-        val reasoning = json.optLongOrZero("reasoning_output_tokens")
-        val total = json.optLongOrZero("total_tokens").takeIf { it > 0L } ?: (input + output)
+        val input = json.optLongAny("input_tokens", "inputTokens")
+        val cached = json.optLongAny("cached_input_tokens", "cachedInputTokens").takeIf { it > 0L }
+            ?: json.optLongAny("cache_read_input_tokens", "cacheReadInputTokens")
+        val output = json.optLongAny("output_tokens", "outputTokens")
+        val reasoning = json.optLongAny("reasoning_output_tokens", "reasoningOutputTokens")
+        val total = json.optLongAny("total_tokens", "totalTokens").takeIf { it > 0L } ?: (input + output + reasoning)
         if (input + cached + output + reasoning + total <= 0L) return null
         return CodexUsage(input, cached.coerceAtMost(input), output, reasoning, total)
+    }
+
+    private fun inferCodexToolName(payloadType: String): String? = when {
+        "apply_patch" in payloadType || "patch" in payloadType -> "apply_patch"
+        "exec" in payloadType || "bash" in payloadType || "command" in payloadType -> "exec"
+        "tool" in payloadType -> "tool"
+        else -> null
     }
 
     private data class ContentSummary(
@@ -281,6 +364,16 @@ class JsonlSessionParser(
         val reasoningOutputTokens: Long,
         val totalTokens: Long
     ) {
+        fun plus(other: CodexUsage): CodexUsage {
+            return CodexUsage(
+                inputTokens = inputTokens + other.inputTokens,
+                cachedInputTokens = cachedInputTokens + other.cachedInputTokens,
+                outputTokens = outputTokens + other.outputTokens,
+                reasoningOutputTokens = reasoningOutputTokens + other.reasoningOutputTokens,
+                totalTokens = totalTokens + other.totalTokens
+            )
+        }
+
         fun minus(previous: CodexUsage?): CodexUsage {
             if (previous == null) return this
             return CodexUsage(
@@ -291,6 +384,10 @@ class JsonlSessionParser(
                 totalTokens = (totalTokens - previous.totalTokens).coerceAtLeast(0)
             )
         }
+
+        companion object {
+            val ZERO = CodexUsage(0L, 0L, 0L, 0L, 0L)
+        }
     }
 
     companion object {
@@ -298,8 +395,23 @@ class JsonlSessionParser(
             return this?.takeIf { it.has(key) }?.optLong(key, 0L) ?: 0L
         }
 
+        private fun JSONObject?.optLongAny(vararg keys: String): Long {
+            if (this == null) return 0L
+            for (key in keys) {
+                if (has(key) && !isNull(key)) return optLong(key, 0L)
+            }
+            return 0L
+        }
+
         private fun JSONObject?.optDoubleOrZero(key: String): Double {
             return this?.takeIf { it.has(key) }?.optDouble(key, 0.0) ?: 0.0
+        }
+
+        private fun JSONObject.hasNonBlankValue(key: String): Boolean {
+            if (!has(key) || isNull(key)) return false
+            val value = opt(key) ?: return false
+            if (value is Boolean) return value
+            return value.toString().isNotBlank()
         }
 
         private fun firstNonBlank(vararg values: String?): String? {

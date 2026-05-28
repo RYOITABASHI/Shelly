@@ -34,11 +34,17 @@ type ScouterSession = {
   tokensUsed?: number;
   inputTokens?: number;
   outputTokens?: number;
+  reasoningOutputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
   contextPercentRemaining?: number | null;
   lastError?: string | null;
   lastMessage?: string | null;
+  localBackend?: string | null;
+  localEndpoint?: string | null;
+  tokensPerSecond?: number | null;
+  queueSize?: number | null;
+  latencyMs?: number | null;
 };
 
 type ScouterDebugInfo = {
@@ -47,8 +53,9 @@ type ScouterDebugInfo = {
   serverRunning?: boolean;
   jsonlWatcherRunning?: boolean;
   hookTokenPreview?: string;
-  claudeHookUrl?: string;
   codexHookUrl?: string;
+  localHookUrl?: string;
+  localLlmEndpoints?: string;
   sessions?: ScouterSession[];
 };
 
@@ -86,11 +93,9 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
 
   const copyHooks = useCallback(async () => {
     try {
-      const [cc, codex] = await Promise.all([
-        TerminalEmulator.getScouterHookTemplate('cc'),
-        TerminalEmulator.getScouterHookTemplate('codex'),
-      ]);
-      await Clipboard.setStringAsync(`Claude Code:\n${cc}\n\nCodex:\n${codex}`);
+      const codex = await TerminalEmulator.getScouterHookTemplate('codex');
+      const local = await TerminalEmulator.getScouterHookTemplate('local');
+      await Clipboard.setStringAsync(`Codex:\n${codex}\n\nLocal LLM:\n${local}`);
     } catch (e: any) {
       setError(String(e?.message || e));
       logError('ScouterDetailModal', 'Failed to copy hook templates', e);
@@ -118,7 +123,7 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
               <StatusPill label="SERVICE" value={info?.enabled ? 'ON' : 'OFF'} tone={info?.enabled ? 'good' : 'muted'} />
               <StatusPill label="HOOK" value={info?.serverRunning ? `:${info?.port}` : 'STOPPED'} tone={info?.serverRunning ? 'good' : 'bad'} />
               <StatusPill label="JSONL" value={info?.jsonlWatcherRunning ? 'WATCHING' : 'OFF'} tone={info?.jsonlWatcherRunning ? 'good' : 'muted'} />
-              <StatusPill label="TOKEN" value={info?.hookTokenPreview || 'NONE'} tone={info?.hookTokenPreview ? 'good' : 'muted'} />
+              <StatusPill label="LOCAL" value={localPillValue(sessions)} tone={localPillTone(sessions)} />
             </View>
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -129,15 +134,16 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
 
             <Section title={`SESSIONS (${sessions.length})`}>
               {sessions.length === 0 ? (
-                <Text style={styles.empty}>Open Claude Code or Codex, or send a hook event.</Text>
+                <Text style={styles.empty}>Open Codex, start a local LLM, or send a hook event.</Text>
               ) : (
                 sessions.map((session) => <SessionCard key={sessionKey(session)} session={session} />)
               )}
             </Section>
 
             <Section title="HOOKS">
-              <Text style={styles.codeLine}>Claude: {info?.claudeHookUrl || 'disabled'}</Text>
-              <Text style={styles.codeLine}>Codex:  {info?.codexHookUrl || 'disabled'}</Text>
+              <Text style={styles.codeLine}>Codex: {info?.codexHookUrl || 'disabled'}</Text>
+              <Text style={styles.codeLine}>Local hook: {info?.localHookUrl || 'disabled'}</Text>
+              <Text style={styles.codeLine}>Local probe: {info?.localLlmEndpoints || '127.0.0.1:8080, 11434'}</Text>
               <Pressable style={styles.copyButton} onPress={copyHooks} accessibilityRole="button" accessibilityLabel="Copy Scouter hook templates">
                 <MaterialIcons name="content-copy" size={14} color="#001200" />
                 <Text style={styles.copyText}>COPY HOOKS</Text>
@@ -179,7 +185,7 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
     <View style={[styles.sessionCard, primary && styles.sessionCardPrimary, stale && styles.sessionCardStale]}>
       <View style={styles.sessionTop}>
         <View style={[styles.dot, { backgroundColor: dotColor(session.currentStatus, stale) }]} />
-        <Text style={styles.sessionTitle} numberOfLines={1}>{source} · {project}</Text>
+        <Text style={styles.sessionTitle} numberOfLines={1}>{sessionTitle(session, source, project)}</Text>
         <Text style={styles.badge}>{session.sourceBadge || source.slice(0, 2).toUpperCase()}</Text>
       </View>
       <Text style={styles.sessionStatus} numberOfLines={1}>{stale ? `Stale · ${status}` : status}</Text>
@@ -210,7 +216,7 @@ function SessionCard({ session, primary = false }: { session: ScouterSession; pr
 
 function dedupeSessions(sessions: ScouterSession[]): ScouterSession[] {
   const byKey = new Map<string, ScouterSession>();
-  for (const session of sessions) {
+  for (const session of sessions.filter((item) => item.source === 'CODEX' || item.source === 'LOCAL_LLM')) {
     const key = sessionKey(session);
     const previous = byKey.get(key);
     if (!previous || (session.lastEventAt || 0) >= (previous.lastEventAt || 0)) {
@@ -229,7 +235,14 @@ function sessionKey(session: ScouterSession): string {
 function sourceName(source?: string): string {
   if (source === 'CLAUDE_CODE') return 'Claude Code';
   if (source === 'CODEX') return 'Codex';
+  if (source === 'LOCAL_LLM') return 'Local LLM';
   return 'Shelly';
+}
+
+function sessionTitle(session: ScouterSession, source: string, project: string): string {
+  if (session.source === 'LOCAL_LLM') return `MODEL  ${session.modelName || session.localBackend || project}`;
+  if (session.source === 'CODEX') return `AGENT  ${source}@${project.toUpperCase()}`;
+  return `${project} · ${source}`;
 }
 
 function projectName(raw?: string): string {
@@ -244,35 +257,97 @@ function projectName(raw?: string): string {
 function statusText(session: ScouterSession): string {
   const project = projectName(session.projectName);
   const tool = session.currentTool;
+  if (session.source === 'LOCAL_LLM') {
+    if (session.localBackend === 'offline') return 'HEALTH offline · no endpoint';
+    if (session.currentStatus === 'TOOL_RUNNING') return `HEALTH busy · ${session.localBackend || session.modelName || 'local'}`;
+    return `HEALTH ready · ${session.localBackend || session.modelName || 'local'}`;
+  }
   switch (session.currentStatus) {
-    case 'TOOL_RUNNING': return tool ? `Running ${tool} in ${project}` : `Running tool in ${project}`;
-    case 'THINKING': return `Thinking in ${project}`;
-    case 'WAITING_PERMISSION': return `Waiting for permission in ${project}`;
-    case 'COMPLETED': return `Completed in ${project}`;
-    case 'ERROR': return `Error in ${project}`;
+    case 'TOOL_RUNNING': return tool ? `STATE running ${tool} in ${project}` : `STATE running tool in ${project}`;
+    case 'THINKING': return `STATE thinking in ${project}`;
+    case 'WAITING_PERMISSION': return `STATE waiting for permission in ${project}`;
+    case 'COMPLETED': return `STATE completed in ${project}`;
+    case 'ERROR': return `STATE error in ${project}`;
     case 'IDLE':
-    default: return `Waiting in ${project}`;
+    default: return `STATE waiting in ${project}`;
   }
 }
 
 function metrics(session: ScouterSession): string {
   const parts: string[] = [];
-  if (session.modelName) parts.push(shortModelName(session.modelName));
-  if (session.currentTool) parts.push(`tool ${session.currentTool}`);
-  if ((session.tokensUsed || 0) > 0) parts.push(`${formatTokens(session.tokensUsed || 0)} tokens`);
+  if (session.source === 'LOCAL_LLM') {
+    if (typeof session.tokensPerSecond === 'number' && session.tokensPerSecond > 0) {
+      parts.push(`WAVE ${sparkline(session.tokensPerSecond, 80)}`);
+    }
+    const perf = localPerf(session);
+    if (perf) parts.push(perf);
+    if (session.localEndpoint) parts.push(`END ${session.localEndpoint}`);
+    if (typeof session.queueSize === 'number') parts.push(`QUEUE ${session.queueSize}`);
+    if (session.modelName) parts.push(shortModelName(session.modelName));
+    return parts.length ? parts.join(' · ') : shortSessionId(session.sessionId);
+  }
+  parts.push(contextGauge(session));
+  if (session.modelName) parts.push(`MODEL ${shortModelName(session.modelName)}`);
+  if (session.currentTool) parts.push(`TOOL ${session.currentTool}`);
+  if ((session.tokensUsed || 0) > 0) parts.push(`TOK ${formatTokens(session.tokensUsed || 0)}`);
   if ((session.totalCostUsd || 0) > 0) parts.push(`$${(session.totalCostUsd || 0).toFixed(2)}`);
-  if (typeof session.contextPercentRemaining === 'number') parts.push(`${session.contextPercentRemaining.toFixed(0)}% context`);
   if (session.gitBranch) parts.push(session.gitBranch);
-  return parts.length ? parts.join(' · ') : shortSessionId(session.sessionId);
+  return parts.filter(Boolean).length ? parts.filter(Boolean).join(' · ') : shortSessionId(session.sessionId);
+}
+
+function localPerf(session: ScouterSession): string | null {
+  const parts: string[] = [];
+  if (typeof session.tokensPerSecond === 'number' && session.tokensPerSecond > 0) {
+    parts.push(`TPS ${session.tokensPerSecond.toFixed(1)}`);
+  }
+  if (typeof session.latencyMs === 'number') parts.push(`PING ${session.latencyMs}ms`);
+  return parts.length ? `PERF ${parts.join(' / ')}` : null;
 }
 
 function usageDetails(session: ScouterSession): string | null {
   const parts: string[] = [];
-  if ((session.inputTokens || 0) > 0) parts.push(`in ${formatTokens(session.inputTokens || 0)}`);
-  if ((session.outputTokens || 0) > 0) parts.push(`out ${formatTokens(session.outputTokens || 0)}`);
-  if ((session.cacheCreationInputTokens || 0) > 0) parts.push(`cache+ ${formatTokens(session.cacheCreationInputTokens || 0)}`);
-  if ((session.cacheReadInputTokens || 0) > 0) parts.push(`cache ${formatTokens(session.cacheReadInputTokens || 0)}`);
+  if ((session.inputTokens || 0) > 0 || (session.outputTokens || 0) > 0) {
+    parts.push(`FLOW in ${formatTokens(session.inputTokens || 0)} / out ${formatTokens(session.outputTokens || 0)}`);
+  }
+  if ((session.reasoningOutputTokens || 0) > 0) parts.push(`REASON ${formatTokens(session.reasoningOutputTokens || 0)}`);
+  const cacheTokens = (session.cacheCreationInputTokens || 0) + (session.cacheReadInputTokens || 0);
+  if (cacheTokens > 0) parts.push(`CACHE ${formatTokens(cacheTokens)}`);
   return parts.length ? parts.join(' · ') : null;
+}
+
+function contextGauge(session: ScouterSession): string {
+  if (typeof session.contextPercentRemaining === 'number') {
+    const used = Math.max(0, Math.min(100, 100 - session.contextPercentRemaining));
+    return `CTX ${bar(used)} ${Math.round(used)}%`;
+  }
+  return (session.tokensUsed || 0) > 0 ? `TOK ${formatTokens(session.tokensUsed || 0)}` : '';
+}
+
+function bar(percent: number): string {
+  const filled = Math.max(0, Math.min(10, Math.floor(percent / 10)));
+  return `[${'#'.repeat(filled)}${'.'.repeat(10 - filled)}]`;
+}
+
+function sparkline(value: number, max: number): string {
+  const levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+  const base = Math.max(0, Math.min(levels.length - 1, Math.floor((Math.min(value, max) / max) * (levels.length - 1))));
+  return [-3, -1, 1, 3, 2, 0, -2, 0, 2, 3, 1, -1]
+    .map((offset) => levels[Math.max(0, Math.min(levels.length - 1, base + offset))])
+    .join('');
+}
+
+function localPillValue(sessions: ScouterSession[]): string {
+  const local = sessions.find((session) => session.source === 'LOCAL_LLM');
+  if (!local) return 'PROBING';
+  if (local.localBackend === 'offline') return 'OFFLINE';
+  if (local.currentStatus === 'TOOL_RUNNING') return 'BUSY';
+  return 'READY';
+}
+
+function localPillTone(sessions: ScouterSession[]): 'good' | 'bad' | 'muted' {
+  const local = sessions.find((session) => session.source === 'LOCAL_LLM');
+  if (!local || local.localBackend === 'offline') return 'muted';
+  return 'good';
 }
 
 function shortModelName(model: string): string {

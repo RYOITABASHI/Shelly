@@ -675,9 +675,9 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         (async () => {
           try {
             const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
-            const cc = await TerminalEmulator.getScouterHookTemplate('cc');
             const codex = await TerminalEmulator.getScouterHookTemplate('codex');
-            Alert.alert('Scouter Hooks', `Claude Code:\n${cc}\n\nCodex:\n${codex}`.slice(0, 3500));
+            const local = await TerminalEmulator.getScouterHookTemplate('local');
+            Alert.alert('Scouter Hooks', `Codex:\n${codex}\n\nLocal LLM:\n${local}`.slice(0, 3500));
           } catch (e: any) {
             Alert.alert('Scouter Hooks failed', String(e?.message || e));
           }

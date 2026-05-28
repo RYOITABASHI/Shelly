@@ -7,11 +7,13 @@ import java.util.UUID
 enum class ScouterSource {
     CLAUDE_CODE,
     CODEX,
+    LOCAL_LLM,
     SHELLY;
 
     fun badge(): String = when (this) {
         CLAUDE_CODE -> "CC"
         CODEX -> "CX"
+        LOCAL_LLM -> "LL"
         SHELLY -> "SH"
     }
 }
@@ -59,11 +61,17 @@ data class ScouterEvent(
     val tokensUsed: Long = 0,
     val inputTokens: Long = 0,
     val outputTokens: Long = 0,
+    val reasoningOutputTokens: Long = 0,
     val cacheCreationInputTokens: Long = 0,
     val cacheReadInputTokens: Long = 0,
     val totalCostUsd: Double = 0.0,
     val contextPercentRemaining: Double? = null,
-    val lastMessage: String? = null
+    val lastMessage: String? = null,
+    val localBackend: String? = null,
+    val localEndpoint: String? = null,
+    val tokensPerSecond: Double? = null,
+    val queueSize: Int? = null,
+    val latencyMs: Long? = null
 ) {
     fun toSnapshot(previous: SessionSnapshot? = null): SessionSnapshot {
         val isTerminalState = derivedStatus == ScouterStatus.COMPLETED ||
@@ -84,11 +92,17 @@ data class ScouterEvent(
             tokensUsed = if (tokensUsed > 0L) tokensUsed else previous?.tokensUsed ?: 0L,
             inputTokens = if (inputTokens > 0L) inputTokens else previous?.inputTokens ?: 0L,
             outputTokens = if (outputTokens > 0L) outputTokens else previous?.outputTokens ?: 0L,
+            reasoningOutputTokens = if (reasoningOutputTokens > 0L) reasoningOutputTokens else previous?.reasoningOutputTokens ?: 0L,
             cacheCreationInputTokens = if (cacheCreationInputTokens > 0L) cacheCreationInputTokens else previous?.cacheCreationInputTokens ?: 0L,
             cacheReadInputTokens = if (cacheReadInputTokens > 0L) cacheReadInputTokens else previous?.cacheReadInputTokens ?: 0L,
             contextPercentRemaining = contextPercentRemaining ?: previous?.contextPercentRemaining,
             lastError = errorMessage ?: previous?.lastError,
-            lastMessage = lastMessage ?: previous?.lastMessage
+            lastMessage = lastMessage ?: previous?.lastMessage,
+            localBackend = localBackend ?: previous?.localBackend,
+            localEndpoint = localEndpoint ?: previous?.localEndpoint,
+            tokensPerSecond = tokensPerSecond ?: previous?.tokensPerSecond,
+            queueSize = queueSize ?: previous?.queueSize,
+            latencyMs = latencyMs ?: previous?.latencyMs
         )
     }
 }
@@ -108,11 +122,17 @@ data class SessionSnapshot(
     val tokensUsed: Long,
     val inputTokens: Long,
     val outputTokens: Long,
+    val reasoningOutputTokens: Long,
     val cacheCreationInputTokens: Long,
     val cacheReadInputTokens: Long,
     val contextPercentRemaining: Double?,
     val lastError: String?,
-    val lastMessage: String?
+    val lastMessage: String?,
+    val localBackend: String?,
+    val localEndpoint: String?,
+    val tokensPerSecond: Double?,
+    val queueSize: Int?,
+    val latencyMs: Long?
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("sessionId", sessionId)
@@ -130,11 +150,17 @@ data class SessionSnapshot(
         put("tokensUsed", tokensUsed)
         put("inputTokens", inputTokens)
         put("outputTokens", outputTokens)
+        put("reasoningOutputTokens", reasoningOutputTokens)
         put("cacheCreationInputTokens", cacheCreationInputTokens)
         put("cacheReadInputTokens", cacheReadInputTokens)
         put("contextPercentRemaining", contextPercentRemaining)
         put("lastError", lastError)
         put("lastMessage", lastMessage)
+        put("localBackend", localBackend)
+        put("localEndpoint", localEndpoint)
+        put("tokensPerSecond", tokensPerSecond)
+        put("queueSize", queueSize)
+        put("latencyMs", latencyMs)
     }
 
     companion object {
@@ -154,13 +180,25 @@ data class SessionSnapshot(
                 tokensUsed = json.optLong("tokensUsed", 0L),
                 inputTokens = json.optLong("inputTokens", 0L),
                 outputTokens = json.optLong("outputTokens", 0L),
+                reasoningOutputTokens = json.optLong("reasoningOutputTokens", 0L),
                 cacheCreationInputTokens = json.optLong("cacheCreationInputTokens", 0L),
                 cacheReadInputTokens = json.optLong("cacheReadInputTokens", 0L),
                 contextPercentRemaining = if (json.has("contextPercentRemaining") && !json.isNull("contextPercentRemaining")) {
                     json.optDouble("contextPercentRemaining")
                 } else null,
                 lastError = json.optString("lastError").ifBlank { null },
-                lastMessage = json.optString("lastMessage").ifBlank { null }
+                lastMessage = json.optString("lastMessage").ifBlank { null },
+                localBackend = json.optString("localBackend").ifBlank { null },
+                localEndpoint = json.optString("localEndpoint").ifBlank { null },
+                tokensPerSecond = if (json.has("tokensPerSecond") && !json.isNull("tokensPerSecond")) {
+                    json.optDouble("tokensPerSecond")
+                } else null,
+                queueSize = if (json.has("queueSize") && !json.isNull("queueSize")) {
+                    json.optInt("queueSize")
+                } else null,
+                latencyMs = if (json.has("latencyMs") && !json.isNull("latencyMs")) {
+                    json.optLong("latencyMs")
+                } else null
             )
         }
     }
@@ -188,6 +226,7 @@ fun inferSource(raw: String?): ScouterSource {
     val value = raw.orEmpty().lowercase(Locale.US)
     return when {
         "codex" in value -> ScouterSource.CODEX
+        "local" in value || "llm" in value || "llama" in value || "ollama" in value -> ScouterSource.LOCAL_LLM
         "claude" in value || value == "cc" -> ScouterSource.CLAUDE_CODE
         else -> ScouterSource.SHELLY
     }

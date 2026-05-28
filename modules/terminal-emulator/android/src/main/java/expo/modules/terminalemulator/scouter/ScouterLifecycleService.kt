@@ -53,13 +53,18 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         base.put("serverRunning", server != null)
         base.put("jsonlWatcherRunning", watcher != null)
         base.put("hookTokenPreview", store.getSessionToken().take(6) + "…")
-        base.put("claudeHookUrl", hookUrl("cc"))
         base.put("codexHookUrl", hookUrl("codex"))
+        base.put("localHookUrl", hookUrl("local"))
+        base.put("localLlmEndpoints", "http://127.0.0.1:8080, http://127.0.0.1:11434")
         return base
     }
 
     fun hookTemplate(source: String): JSONObject {
-        val prefix = if (source == "codex") "codex" else "cc"
+        val prefix = when (source.lowercase()) {
+            "codex" -> "codex"
+            "local", "llm", "local_llm" -> "local"
+            else -> "codex"
+        }
         return JSONObject().apply {
             put("tokenHeader", "X-Scouter-Token")
             put("token", store.getSessionToken())

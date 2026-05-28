@@ -200,9 +200,9 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
         return;
       }
       const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
-      const cc = await TerminalEmulator.getScouterHookTemplate('cc');
       const codex = await TerminalEmulator.getScouterHookTemplate('codex');
-      const text = `Claude Code:\n${cc}\n\nCodex:\n${codex}`;
+      const local = await TerminalEmulator.getScouterHookTemplate('local');
+      const text = `Codex:\n${codex}\n\nLocal LLM:\n${local}`;
       await Clipboard.setStringAsync(text);
       Alert.alert('Scouter Hooks', `${text.slice(0, 2500)}\n\nCopied to clipboard.`);
     } catch (e: any) {

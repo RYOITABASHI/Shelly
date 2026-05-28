@@ -1182,7 +1182,7 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
     // 217: Build libexec_wrapper.so with BTI landing pads. Android 16 can
     //      indirect-branch into the preloaded open/openat interposers from
     //      Codex reqwest worker threads before apply_patch starts.
-    private const val BASHRC_VERSION = 217
+    private const val BASHRC_VERSION = 218
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1506,8 +1506,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("    port: state.port,")
             sb.appendLine("    sessions: state.sessions,")
             sb.appendLine("    hookTokenPreview: state.hookTokenPreview,")
-            sb.appendLine("    claudeHookUrl: state.port > 0 ? 'http://127.0.0.1:' + state.port + '/hook/cc' : '',")
             sb.appendLine("    codexHookUrl: state.port > 0 ? 'http://127.0.0.1:' + state.port + '/hook/codex' : '',")
+            sb.appendLine("    localHookUrl: state.port > 0 ? 'http://127.0.0.1:' + state.port + '/hook/local' : '',")
+            sb.appendLine("    localLlmEndpoints: ['http://127.0.0.1:8080', 'http://127.0.0.1:11434'],")
             sb.appendLine("    note: 'Cached state from ~/.scouter-state.json. Gear-menu debug is authoritative for live service state.'")
             sb.appendLine("  };")
             sb.appendLine("  console.log(JSON.stringify(out, null, 2));")
@@ -1521,8 +1522,9 @@ else { console.error("usage: node shelly-patcher.js codex <libDir> [<nm>] | gemi
             sb.appendLine("  console.log(JSON.stringify({")
             sb.appendLine("    tokenHeader: 'X-Scouter-Token',")
             sb.appendLine("    token: state.hookToken,")
-            sb.appendLine("    claudeBaseUrl: 'http://127.0.0.1:' + state.port + '/hook/cc',")
-            sb.appendLine("    codexBaseUrl: 'http://127.0.0.1:' + state.port + '/hook/codex'")
+            sb.appendLine("    codexBaseUrl: 'http://127.0.0.1:' + state.port + '/hook/codex',")
+            sb.appendLine("    localBaseUrl: 'http://127.0.0.1:' + state.port + '/hook/local',")
+            sb.appendLine("    localLlmEndpoints: ['http://127.0.0.1:8080', 'http://127.0.0.1:11434']")
             sb.appendLine("  }, null, 2));")
             sb.appendLine("  process.exit(0);")
             sb.appendLine("}")

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scouter Widget Preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --crt: #38d048;
+      --crt-soft: #9bc49b;
+      --crt-dim: #6f8d6f;
+      --panel: rgba(0, 12, 0, 0.62);
+      --line: rgba(51, 143, 51, 0.28);
+      --text: #f4fff4;
+      --warn: #ff9aaa;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(rgba(0, 0, 0, 0.26), rgba(0, 0, 0, 0.26)),
+        url("https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1600&q=80");
+      background-position: center;
+      background-size: cover;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      letter-spacing: 0;
+    }
+
+    .phone {
+      width: min(920px, calc(100vw - 32px));
+      padding: 32px 20px 120px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .widget {
+      width: min(760px, 100%);
+      min-height: 168px;
+      padding: 11px 12px 10px;
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 10px;
+      box-shadow:
+        0 0 0 1px rgba(56, 208, 72, 0.10) inset,
+        0 0 24px rgba(56, 208, 72, 0.12);
+      text-shadow: 0 0 8px rgba(56, 208, 72, 0.16);
+      overflow: hidden;
+    }
+
+    .lane {
+      min-width: 0;
+    }
+
+    .lane + .lane {
+      margin-top: 10px;
+      padding-top: 9px;
+      border-top: 1px solid var(--line);
+    }
+
+    .head {
+      display: grid;
+      grid-template-columns: 13px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      background: var(--crt-soft);
+      box-shadow: 0 0 8px rgba(155, 196, 155, 0.45);
+    }
+
+    .dot.busy {
+      background: var(--crt);
+      box-shadow: 0 0 10px rgba(56, 208, 72, 0.65);
+    }
+
+    .title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .badge {
+      padding: 3px 7px;
+      background: var(--crt);
+      color: #001200;
+      font-size: 13px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .status {
+      margin-top: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #7ddb7d;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .metrics {
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--crt-soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .metrics .strong {
+      color: var(--text);
+    }
+
+    .metrics .hot {
+      color: var(--crt);
+      text-shadow: 0 0 12px rgba(56, 208, 72, 0.35);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    .footer {
+      margin-top: 7px;
+      color: var(--crt-dim);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .notes {
+      width: min(760px, 100%);
+      margin-top: 18px;
+      padding: 14px 16px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #d7ecd7;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 520px) {
+      .phone {
+        padding-inline: 12px;
+      }
+
+      .widget {
+        min-height: 150px;
+        padding: 9px 10px;
+      }
+
+      .title {
+        font-size: 15px;
+      }
+
+      .status {
+        font-size: 13px;
+      }
+
+      .metrics {
+        font-size: 11px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="phone">
+    <section class="widget" aria-label="Scouter widget preview">
+      <div class="lane">
+        <div class="head">
+          <span class="dot busy" aria-hidden="true"></span>
+          <div class="title">AGENT  CODEX@SHELLY</div>
+          <div class="badge">CX</div>
+        </div>
+        <div class="status">STATE  ● running exec in terminal-emulator</div>
+        <div class="metrics"><span class="hot">CTX [######....] 64%</span> · MODEL gpt-5.2 · FLOW in 92.1K / out 8.3K · REASON 21.6K · <span class="hot">CACHE 61.8K</span></div>
+      </div>
+
+      <div class="lane">
+        <div class="head">
+          <span class="dot" aria-hidden="true"></span>
+          <div class="title">MODEL  qwen3-8b-q4</div>
+          <div class="badge">LL</div>
+        </div>
+        <div class="status">HEALTH ● ready · llama.cpp</div>
+        <div class="metrics"><span class="hot">WAVE ▁▃▅█▇▄▂▄▇█▅▃</span> · <span class="hot">PERF TPS 42.7 / PING 21ms</span> · END 127.0.0.1:8080 · QUEUE 0</div>
+      </div>
+
+      <div class="footer">updated 18:24:16</div>
+    </section>
+
+    <section class="notes">
+      This preview mirrors the current Medium 4x2 direction: no outer outline, two dense lanes, Codex usage from JSONL, and Local LLM probe state.
+      Labels are deliberately terse: STATE is agent activity, CTX is context pressure, FLOW is token direction, CACHE is reuse, HEALTH is local model liveness, TPS is generation throughput, and PING is endpoint probe latency rather than TTFT.
+      Android RemoteViews may render font metrics and clipping slightly differently, so final sizing still needs an actual launcher screenshot.
+    </section>
+  </main>
+</body>
+</html>
