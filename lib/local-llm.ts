@@ -69,6 +69,9 @@ export interface OpenAIChatRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  chat_template_kwargs?: {
+    enable_thinking?: boolean;
+  };
 }
 
 export interface OpenAIChatResponse {
@@ -110,6 +113,21 @@ export interface LocalLlmConfig {
   baseUrl: string;   // e.g. "http://127.0.0.1:11434"
   model: string;     // e.g. "llama3.2:3b"
   enabled: boolean;
+}
+
+function shouldDisableThinking(model: string): boolean {
+  return /qwen\s*3|qwen3|qwen3\.5/i.test(model);
+}
+
+function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatRequest {
+  if (!shouldDisableThinking(req.model)) return req;
+  return {
+    ...req,
+    chat_template_kwargs: {
+      ...req.chat_template_kwargs,
+      enable_thinking: false,
+    },
+  };
 }
 
 export interface OrchestrationResult {
@@ -263,13 +281,13 @@ export async function ollamaChat(
     if (apiType === 'openai') {
       // llama-server: OpenAI互換 /v1/chat/completions
       url = `${config.baseUrl}/v1/chat/completions`;
-      const req: OpenAIChatRequest = {
+      const req = withOpenAIChatTemplateOptions({
         model: config.model,
         messages,
         stream: false,
         temperature: 0.7,
         max_tokens: maxTokens,
-      };
+      });
       body = JSON.stringify(req);
     } else {
       // Ollama: /api/chat
@@ -357,13 +375,13 @@ export async function ollamaChatStream(
 
   if (apiType === 'openai') {
     url = `${config.baseUrl}/v1/chat/completions`;
-    const req: OpenAIChatRequest = {
+    const req = withOpenAIChatTemplateOptions({
       model: config.model,
       messages,
       stream: true,
       temperature: 0.7,
       max_tokens: maxTokens,
-    };
+    });
     body = JSON.stringify(req);
   } else {
     url = `${config.baseUrl}/api/chat`;

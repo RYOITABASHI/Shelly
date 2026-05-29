@@ -489,7 +489,7 @@ export function useAIPaneDispatch(paneId: string) {
             120000,
             signal,
             false,
-            128,
+            256,
           );
 
           if (signal.aborted) {
