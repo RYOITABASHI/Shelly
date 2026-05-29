@@ -32,6 +32,7 @@ export interface OllamaChatRequest {
   model: string;
   messages: OllamaMessage[];
   stream?: boolean;
+  think?: boolean;
   options?: {
     temperature?: number;
     num_ctx?: number;
@@ -49,7 +50,7 @@ export interface OllamaChatResponse {
 
 export interface OllamaStreamChunk {
   model: string;
-  message: { role: string; content: string };
+  message?: { role?: string; content?: string; thinking?: string };
   done: boolean;
 }
 
@@ -90,7 +91,7 @@ export interface OpenAIStreamChunk {
   object: string;
   choices: Array<{
     index: number;
-    delta: { role?: string; content?: string };
+    delta: { role?: string; content?: string | null; reasoning_content?: string | null };
     finish_reason: string | null;
   }>;
 }
@@ -116,7 +117,9 @@ export interface LocalLlmConfig {
 }
 
 function shouldDisableThinking(model: string): boolean {
-  return /qwen\s*3|qwen3|qwen3\.5/i.test(model);
+  const normalized = model.trim().toLowerCase();
+  if (!normalized || normalized === 'default' || normalized === 'local') return true;
+  return /qwen[\s._-]*3/i.test(normalized);
 }
 
 function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatRequest {
@@ -128,6 +131,26 @@ function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatReques
       enable_thinking: false,
     },
   };
+}
+
+function withOllamaThinkingOptions(req: OllamaChatRequest): OllamaChatRequest {
+  if (!shouldDisableThinking(req.model)) return req;
+  return {
+    ...req,
+    think: false,
+  };
+}
+
+function safeEmitChunk(
+  onChunk: (text: string, done: boolean) => void,
+  text: string,
+  done: boolean,
+): void {
+  try {
+    onChunk(text, done);
+  } catch {
+    // Keep provider stream parsing from taking down the app UI.
+  }
 }
 
 export interface OrchestrationResult {
@@ -292,12 +315,12 @@ export async function ollamaChat(
     } else {
       // Ollama: /api/chat
       url = `${config.baseUrl}/api/chat`;
-      const req: OllamaChatRequest = {
+      const req = withOllamaThinkingOptions({
         model: config.model,
         messages,
         stream: false,
         options: { temperature: 0.7, num_predict: maxTokens },
-      };
+      });
       body = JSON.stringify(req);
     }
 
@@ -385,12 +408,12 @@ export async function ollamaChatStream(
     body = JSON.stringify(req);
   } else {
     url = `${config.baseUrl}/api/chat`;
-    const req: OllamaChatRequest = {
+    const req = withOllamaThinkingOptions({
       model: config.model,
       messages,
       stream: true,
       options: { temperature: 0.7, num_predict: maxTokens },
-    };
+    });
     body = JSON.stringify(req);
   }
 
@@ -437,7 +460,7 @@ export async function ollamaChatStream(
         } catch {}
       }
       if (fullContent) {
-        onChunk(fullContent, true);
+        safeEmitChunk(onChunk, fullContent, true);
         return { success: true, content: fullContent };
       }
       return { success: false, error: 'ReadableStream not supported and fallback parse failed' };
@@ -446,28 +469,46 @@ export async function ollamaChatStream(
     const decoder = new TextDecoder();
     let buffer = '';
     const MAX_BUFFER_SIZE = 102400;
+    let emittedChunks = 0;
+    let emittedDone = false;
+    const handleChunk = (text: string, done: boolean) => {
+      if (text) emittedChunks += 1;
+      if (done) emittedDone = true;
+      safeEmitChunk(onChunk, text, done);
+    };
 
     try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      if (buffer.length > MAX_BUFFER_SIZE) {
-        const lastNewline = buffer.lastIndexOf('\n');
-        buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 1) : '';
-      }
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > MAX_BUFFER_SIZE) {
+          const lastNewline = buffer.lastIndexOf('\n');
+          buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 1) : '';
+        }
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
 
-      for (const line of lines) {
-        parseSSELine(line, apiType, onChunk);
+        for (const line of lines) {
+          parseSSELine(line, apiType, handleChunk);
+        }
       }
-    }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        parseSSELine(buffer, apiType, handleChunk);
+      }
     } finally {
       clearTimeout(timer);
     }
 
+    if (emittedChunks === 0) {
+      return {
+        success: false,
+        error: 'Local LLM returned an empty response. The model may have crashed or returned an unexpected stream format.',
+      };
+    }
+    if (!emittedDone) safeEmitChunk(onChunk, '', true);
     return { success: true };
   } catch (err) {
     clearTimeout(timer);
@@ -516,7 +557,10 @@ function parseSSELine(
   } else {
     try {
       const chunk = JSON.parse(trimmed) as OllamaStreamChunk;
-      onChunk(chunk.message.content, chunk.done);
+      const content = chunk.message?.content ?? '';
+      const isDone = chunk.done === true;
+      if (content) onChunk(content, isDone);
+      else if (isDone) onChunk('', true);
     } catch { /* skip */ }
   }
 }
@@ -545,7 +589,7 @@ function xhrStream(
 
     const handleChunk = (text: string, done: boolean) => {
       if (text) emittedChunks += 1;
-      onChunk(text, done);
+      safeEmitChunk(onChunk, text, done);
     };
 
     const finish = (result: { success: boolean; error?: string }) => {
@@ -569,7 +613,7 @@ function xhrStream(
       const text = xhr.responseText;
       if (!text || text.length <= lastIndex) {
         if (flush && lineBuffer) {
-          parseSSELine(lineBuffer, apiType, onChunk);
+          parseSSELine(lineBuffer, apiType, handleChunk);
           lineBuffer = '';
         }
         return;
@@ -623,7 +667,7 @@ function xhrStream(
         });
         return;
       }
-      onChunk('', true);
+      handleChunk('', true);
       finish({ success: true });
     };
 
@@ -786,6 +830,10 @@ export async function orchestrateChatStream(
   externalSignal?: AbortSignal,
   forceLocal?: boolean,
 ): Promise<OrchestrationResult> {
+  const emitChunk = (text: string, done: boolean) => {
+    safeEmitChunk(onChunk, text, done);
+  };
+
   // ローカルモデル（127.0.0.1/localhost）またはforceLocal指定の場合はルーティングをスキップ
   // → double-inference（ルーティング用LLM呼び出し + 実際の応答用LLM呼び出し）を防止
   const isLocalEndpoint = config.baseUrl?.includes('127.0.0.1') || config.baseUrl?.includes('localhost');
@@ -797,17 +845,17 @@ export async function orchestrateChatStream(
       { role: 'user', content: userInput },
     ];
     // ストリーミング（RN: XHR, Web: ReadableStream）
-    const result = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
+    const result = await ollamaChatStream(config, messages, emitChunk, 120000, externalSignal);
     if (result.success) {
       return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Local model — routing skipped' };
     }
     // ストリーミング失敗時は非ストリーミングにフォールバック
     const fallback = await ollamaChat(config, messages, 60000, externalSignal);
     if (fallback.success && fallback.content) {
-      onChunk(fallback.content, true);
+      emitChunk(fallback.content, true);
       return { category: 'chat', handledBy: 'local_llm', response: fallback.content, reasoning: 'Local model — routing skipped' };
     }
-    onChunk('Could not connect to local LLM. Make sure llama-server is running.', true);
+    emitChunk('Could not connect to local LLM. Make sure llama-server is running.', true);
     return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Connection failed' };
   }
 
@@ -827,7 +875,7 @@ export async function orchestrateChatStream(
     const result = await orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext, toolStatuses, defaultAgent);
     // orchestrateTaskがlocal_llmで応答を返した場合はonChunk経由で渡す
     if (result.handledBy === 'local_llm' && result.response) {
-      onChunk(result.response, true);
+      emitChunk(result.response, true);
       return result;
     }
     return result;
@@ -847,7 +895,7 @@ export async function orchestrateChatStream(
   ];
 
   // ストリーミング（RN: XHR, Web: ReadableStream）
-  const streamResult = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
+  const streamResult = await ollamaChatStream(config, messages, emitChunk, 120000, externalSignal);
   if (streamResult.success) {
     return {
       category: 'chat',
@@ -859,7 +907,7 @@ export async function orchestrateChatStream(
   // ストリーミング失敗時は非ストリーミングにフォールバック
   const fallback = await ollamaChat(config, messages, 60000, externalSignal);
   if (fallback.success && fallback.content) {
-    onChunk(fallback.content, true);
+    emitChunk(fallback.content, true);
     return {
       category: 'chat',
       handledBy: 'local_llm',
