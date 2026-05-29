@@ -6,9 +6,9 @@
 
 <h3 align="center">
   <code>Terminal + AI + Browser + Markdown + Preview</code><br>
-  <sub>A full Android terminal IDE built around real interactive Claude Code and Codex CLIs, with API-backed Gemini, Groq, Cerebras, Perplexity, local models, Git, Bash, Python, and editors bundled in the APK.<br>
-  No Termux install, no distro bootstrap, no separate package manager setup.<br>
-  Open the app, authenticate your own AI accounts, and start working in local multi-pane terminals on Android.</sub>
+  <sub>A native Android terminal IDE for running the real Codex CLI in an app-owned PTY, with API-backed AI agents — Gemini, Cerebras, Groq, Perplexity, and local models — plus Git, Bash, Python, and editors bundled in the APK.<br>
+  No Termux install, no distro bootstrap, no separate package manager setup. No WebView terminal, no remote IDE bridge.<br>
+  Open the app, authenticate your own AI accounts, and work in local multi-pane terminals on Android.</sub>
 </h3>
 
 <p align="center">
@@ -22,13 +22,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="Shelly running Claude Code natively on Android with slash-command autocomplete" width="800">
+  <img src="docs/images/hero.jpg" alt="Shelly running an AI coding CLI natively on Android with slash-command autocomplete" width="800">
 </p>
 
 <p align="center">
   <a href="#see-it-run"><b>Demo</b></a> &nbsp;&middot;&nbsp;
   <a href="#quick-start"><b>Quick Start</b></a> &nbsp;&middot;&nbsp;
-  <a href="#the-copy-paste-problem"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
+  <a href="#why-shelly"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
   <a href="#architecture"><b>Architecture</b></a> &nbsp;&middot;&nbsp;
   <a href="#status"><b>Status</b></a> &nbsp;&middot;&nbsp;
@@ -43,7 +43,7 @@
 
 ## See it run
 
-**Claude Code running natively on Android with slash-command autocomplete**
+**An AI coding CLI running natively on Android with slash-command autocomplete**
 
 https://github.com/user-attachments/assets/dce5e69d-c8f0-456b-b011-82908dd72c5c
 
@@ -51,15 +51,23 @@ https://github.com/user-attachments/assets/dce5e69d-c8f0-456b-b011-82908dd72c5c
 
 https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
 
-No Termux. No root. No remote dev server. Real Anthropic Claude Code and OpenAI Codex CLIs invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
+No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI Codex — invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
+
+> The clip above is from an earlier build. The supported foreground CLI in the current release is **Codex**; see [Status](#status).
 
 <br>
 
 ---
 
-## The Copy-Paste Problem
+## Why Shelly?
 
-You're running an AI coding tool in a terminal — Claude Code, Codex, or any other CLI. It throws an error. You copy it. You switch to ChatGPT. You paste. You ask "what went wrong?" You read the answer. You copy the fix. You switch back. You paste. You run it.
+Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but no terminal. Replit runs in the cloud. Desktop AI coding CLIs are desktop-first.
+
+Shelly exists for the gap between those tools: local terminal work, app-owned native PTYs, Codex CLI, AI panes, browser/docs, previews, and background API agents on the Android device you already carry.
+
+### The copy-paste problem
+
+You're running an AI coding tool in a terminal — Codex, or any other AI CLI. It throws an error. You copy it. You switch to ChatGPT. You paste. You ask "what went wrong?" You read the answer. You copy the fix. You switch back. You paste. You run it.
 
 **Seven steps. Every single time.**
 
@@ -79,13 +87,13 @@ No copy. No paste. No tab switching. Zero friction.
 
 ---
 
-## Why this APK is big, and what you're agreeing to
+## Important Android Notes
 
 - **APK is ~420 MB** because Shelly bundles real tools, not shims. bash,
   Node.js, Python 3, git, curl, ripgrep, jq, tmux, vim, less, sqlite3,
-  make, ssh — plus the Anthropic / OpenAI / Google AI CLI bundles — ship
-  inside the APK. No Termux, no repository server, no package manager
-  bootstrap. First launch extracts the binaries into app-private data.
+  make, ssh — plus the OpenAI Codex CLI runtime — ship inside the APK.
+  No Termux, no repository server, no package manager bootstrap. First
+  launch extracts the binaries into app-private data.
 - **All files access** is requested on first launch so `/sdcard` works
   the way a desktop terminal expects (`cd /sdcard/Download`, editing
   files there, etc.). Scoped Storage without this permission silently
@@ -105,67 +113,79 @@ No copy. No paste. No tab switching. Zero friction.
 
 ## Quick Start
 
-Download the latest APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases), or build from source:
+### Install
+
+Download the latest APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases).
+
+### Build from source
 
 ```bash
 git clone https://github.com/RYOITABASHI/Shelly.git && cd Shelly
 pnpm install && pnpm android
 ```
 
-> **Requirements:** Android device. For building from source: Node.js 22+, pnpm, Android NDK r27+. Expo Go is not supported — Shelly uses native Kotlin/C modules.
->
-> Termux is not required. Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and ripgrep. For tools beyond the bundled set, Termux can be used alongside Shelly.
+**Requirements:**
 
-On first launch Shelly asks for **All files access** so the terminal can read scripts in `/sdcard/Download` and anywhere else on your phone. Tap **Allow** and you're done — `source /sdcard/Download/foo.sh` just works. (Shelly is distributed via GitHub Releases and F-Droid, not Google Play, so this permission is fine here.)
+- Android device
+- Node.js 22+
+- pnpm
+- Android NDK r27+
 
-After that, open **Settings → API Keys** (or run `shelly config` from the terminal pane) to paste API keys for Gemini, Cerebras, Groq, Perplexity, OpenAI-compatible local servers, or other explicit API providers. Keys are stored in `expo-secure-store` and never written to logs. Claude Code subscription access is used only through the interactive `claude` CLI that you control in a terminal pane; Shelly does not drive Claude Code as a hidden background worker.
+Expo Go is not supported — Shelly uses native Kotlin/C modules.
 
-### Sign in to the AI CLIs
+Termux is not required. Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and ripgrep. For tools beyond the bundled set, Termux can be used alongside Shelly.
 
-Each CLI has a different login path on Shelly today. The TL;DR:
+### First launch
 
-| CLI | How to sign in | Notes |
+On first launch Shelly asks for **All files access** so the terminal can read scripts in `/sdcard/Download` and anywhere else on your phone. Tap **Allow** and you're done — `source /sdcard/Download/foo.sh` just works. Shelly is distributed through GitHub Releases for now; Play Store / F-Droid submission is still future work.
+
+### Configure AI
+
+After that, open **Settings → API Keys** (or run `shelly config` from the terminal pane) to paste API keys for Gemini, Cerebras, Groq, Perplexity, OpenAI-compatible local servers, or other explicit API providers. Keys are stored in `expo-secure-store` and never written to logs.
+
+### Sign in
+
+Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you configure with a key.
+
+| Surface | How to sign in | Notes |
 |---|---|---|
-| **Claude Code** | Run `claude` in any terminal pane | Supported flagship CLI. Shelly uses the official Claude Code browser sign-in flow, seeds the home trust/onboarding state, opens auth URLs through the in-app Browser Pane when the CLI asks for sign-in, and keeps credentials under Shelly's app-private `$HOME` with private file modes. No already-logged-in donor account files are required for the normal path. |
-| **Codex** (ChatGPT subscription) | Run `codex`, or `codex-login --open` directly | Supported flagship CLI. If `~/.codex/auth.json` is missing or invalid, the `codex` wrapper starts Shelly's device-code login, opens `auth.openai.com/codex/device` in the Browser Pane, writes `~/.codex/auth.json` (mode `0600`) on success, then launches the normal Codex TUI. |
-| **Gemini CLI** | Experimental only | `gemini --version` and authenticated accounts are available for testing, but the interactive Gemini CLI has shown upstream Android/musl PTY instability. It is hidden from Worktrees and Quick Launch and is not part of Shelly's guaranteed launch surface. Use the Gemini API route in the AI Pane for production work. |
+| **Codex CLI** (ChatGPT subscription) | Run `codex`, or `codex-login --open` directly | The supported foreground CLI. If `~/.codex/auth.json` is missing or invalid, the `codex` wrapper starts Shelly's device-code login, opens `auth.openai.com/codex/device` in the in-app Browser Pane, writes `~/.codex/auth.json` (mode `0600`) on success, then launches the normal Codex TUI. No OpenAI API key required — this rides your ChatGPT subscription. |
+| **API providers** (Gemini, Cerebras, Groq, Perplexity, local) | **Settings → API Keys** or `shelly config` | Paste a key per provider for AI-Pane / `@mention` / `@team` / background-agent use. Keys live in `expo-secure-store`. Local/OpenAI-compatible servers need only a base URL. |
 
 > **Codex login note.** `codex /login` inside the REPL is not the supported path on Shelly. Use bare `codex` and let Shelly's wrapper launch device-code auth, or run `codex-login --open` from bash.
 
-Credential transplant is still documented below as a recovery path for power users, but the release path is now: Claude Code and Codex as supported terminal CLIs; Gemini through API-backed AI features, with Gemini CLI marked Experimental.
-
 ---
 
-## Flagship Runtime
+## Runtime model
 
-Shelly's headline advantage is simple: it makes Claude Code and Codex usable as first-class interactive CLIs on Android, inside the same native shell as your files.
+Shelly's headline advantage is the runtime itself: a native PTY and a managed Codex CLI running in the same on-device shell as your files, with API-backed agents layered on top — not a WebView terminal, not a remote IDE client.
 
-If Claude Code stopped working in Termux, proot, or another Android terminal setup, Shelly gives you a maintained on-device environment designed around the constraints of real Android devices.
+If your AI coding CLI workflow stalled in Termux, proot, or another Android terminal setup, Shelly gives you a maintained on-device environment built around the constraints of real Android devices (bionic libc, `linker64` exec rules, SELinux on `app_data_file`).
 
 No fragile terminal stack. No WebView terminal crashes. No copy-paste-driven workflow.
 
-- **Managed latest, not blind latest** — Shelly stages CLI candidates, verifies them, smoke-tests them on-device, promotes only passing builds, and keeps a last-known-good route when an upstream release breaks on Android.
-- **Real execution path** — the CLIs run through Shelly's native terminal stack, not a remote bridge.
+- **Native execution path** — Codex runs through Shelly's app-owned native PTY (JNI `forkpty`), not a remote bridge or socket terminal.
+- **Managed latest, not blind latest** — Shelly stages the Codex runtime, verifies it, smoke-tests it on-device, promotes only passing builds, and keeps a last-known-good route when an upstream release breaks on Android.
 - **Visible state** — the app can show recent terminal logs, so version drift and startup failures are easier to debug on the device itself.
-- **Compliance boundary** — Claude Code is a foreground, user-controlled terminal CLI. AI Pane/background automation uses explicit API providers; it does not silently reuse a Claude Code subscription or run Claude Code as a hidden service.
+- **Compliance boundary** — Codex is a foreground, user-controlled terminal CLI. AI-Pane / background automation uses explicit API providers; it does not run a hidden subscription worker.
 
-This is the part that makes Shelly more than a terminal skin. It is the reason the app can ship fast-moving CLI tools on Android without turning the user into the update mechanism.
+This is the part that makes Shelly more than a terminal skin. It is the reason the app can ship a fast-moving CLI on Android without turning the user into the update mechanism.
 
-### Release surface, May 2026
+### Release surface
 
 | Surface | Status | What that means |
 |---|---|---|
-| **Claude Code CLI** | Supported | Primary experience. Runs interactively in Terminal panes with Shelly-managed runtime selection, workspace trust seeding, account credentials in app-private storage, and crash-aware fallback tiers. |
-| **Codex CLI** | Supported | Bare `codex` launches the normal Codex TUI after Shelly verifies or creates `~/.codex/auth.json` through in-app device-code auth. Current device validation shows `codex-exec 0.130.0` and GPT-5.5. |
-| **AI Pane / background agents** | Supported through APIs | Uses configured providers such as Gemini API, Cerebras, Groq, Perplexity, local OpenAI-compatible servers, and explicit API routes. Claude Code subscription automation is intentionally disabled here. |
-| **Gemini API** | Supported where configured | Available for AI Pane, voice/helper flows, and multimodal/API-backed tasks when a Gemini API key is configured. |
-| **Gemini CLI** | Experimental | Bundled and patched for investigation, but upstream 0.42.x has shown blank TUI, slow PTY rendering, and shell-tool SIGSEGV behavior on Android/musl. It is not shown in Worktrees or Quick Launch for this release. |
+| **Codex CLI** | Supported | The foreground CLI. Bare `codex` launches the normal Codex TUI after Shelly verifies or creates `~/.codex/auth.json` through in-app device-code auth, running over the native PTY. |
+| **AI Pane / background agents** | Supported through APIs | Uses configured providers: Gemini API, Cerebras, Groq, Perplexity, and local OpenAI-compatible servers. Provider-key based, no hidden subscription reuse. |
+| **Gemini API** | Supported where configured | Available for the AI Pane, `@gemini` routing, `@team`, multimodal/API-backed tasks, and background agents when a Gemini API key is set. (This is the API provider — there is no bundled Gemini CLI.) |
 
 ---
 
-## How is Shelly different?
+## What Shelly is not
 
-Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but no terminal. Replit runs in the cloud. Claude Code on desktop is desktop-first. To our knowledge, Shelly is the only tool that puts a native terminal and multi-agent AI side by side on your phone — with a browser pane, markdown viewer, code preview, sidebar, and agent bar all in one screen — and runs real Claude Code and Codex CLIs on-device so they operate in the same shell as your files.
+Shelly is not a Termux skin, a WebView terminal, or a remote IDE client. It owns the Android terminal stack inside the app, runs Codex on-device in the same shell as your files, and layers API-backed agents next to that terminal instead of forcing you through copy/paste or a cloud workspace.
+
+No Termux install. No proot. No ttyd. No remote bridge.
 
 ---
 
@@ -179,14 +199,13 @@ Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but
 |---|---|
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
-| **Native PTY (JNI forkpty)** | Kotlin + C, same-process, zero IPC. The only React Native app we know of with an embedded native terminal. |
+| **Native PTY (JNI forkpty)** | Kotlin + C, direct PTY fd, no TCP/socket bridge — an embedded native terminal, not a WebView terminal. |
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **5 pane types** | Terminal, AI, Browser (+ background audio), Markdown, Preview. Split up to 4 live panes freely. |
-| **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus foreground Claude Code and Codex terminal CLIs. Auto-routed or `@mention` where supported. |
-| **Claude Code + Codex on Android** | Shelly keeps the supported CLIs on managed latest paths without trusting upstream blindly. Claude Code uses staged runtime tiers with crash-aware cooldown and last-known-good fallback. Codex uses the smoke-tested `codex-exec` runtime and a Shelly-owned device-code login wrapper. Gemini CLI is bundled as Experimental, but release UX centers on Claude Code and Codex. No proot, no root. |
-| **Shelly theme preset** | Mock-faithful teal-on-black palette with Silkscreen pixel font. Runtime swap — your shell survives the switch. |
-| **Voice input** | Speak your commands or AI prompts. VoiceChain ties speech to the same input router the keyboard uses. |
-| **CRT mode** | Scanlines + phosphor green + vignette. Retro 8-bit sounds. Pixel fonts. Just for fun. |
+| **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
+| **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: it stages the runtime, smoke-tests it on-device, promotes only passing builds, and keeps a last-known-good fallback. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
+| **EVA unit themes** | 零号機 / 初号機 / 二号機 palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
+| **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
 
 <details>
 <summary><strong>Layout System</strong></summary>
@@ -239,7 +258,7 @@ Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but
 - **SmartKeyBar** — 5 context-adaptive key sets (Default / Vim / Git / REPL / Navigate), swipe to switch
 - **Immortal sessions** — tmux keeps your shell alive when the app is backgrounded; resume any session by name
 - **Japanese input in terminal** — compose CJK characters directly in the terminal pane
-- **Silkscreen-rendered glyphs** — native Kotlin terminal view renders the PTY grid in the same Silkscreen font as the rest of the UI
+- **Readable terminal glyphs** — the native Kotlin terminal view renders the PTY grid with JetBrains Mono so lowercase, columns, and code output stay legible
 - **Atomic paste** — all paste paths converge on `TerminalEmulator.paste()`, which wraps payloads in bracketed-paste markers (`\e[200~..\e[201~`) unconditionally. IME multi-line or ≥16-char commits, middle-click mouse paste, and the CommandKeyBar **Paste** key all reach the same normalizer; multi-line and complex one-liners arrive as one event so readline executes only the trailing newline.
 
 </details>
@@ -248,11 +267,10 @@ Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but
 <summary><strong>AI Pane</strong></summary>
 
 - **Multi-agent routing** — the router picks the best AI for the task; override with `@mention`
-- **@mention** — `@gemini`, `@cerebras`, `@groq`, `@perplexity`, `@local`, `@team`, `@plan`, `@arena`, `@actions`; Claude Code and Codex remain available as foreground terminal CLIs instead of hidden background subscription workers
+- **@mention** — direct AI Pane targets are `@gemini`, `@cerebras`, `@groq`, `@perplexity`, and `@local`; `@team` fans out to enabled providers, and `@agent` manages background agents. There is no `@claude` — Claude Code is not a current provider. Codex remains available as the foreground terminal CLI.
 - **Terminal context injection** — the AI always has access to the current terminal transcript without you pasting anything
 - **InlineDiff with per-hunk write-back** — see above
-- **Voice input** — long-press the mic in the terminal action bar to open VoiceChat; speech → transcription → AI → TTS response
-- **Arena Mode** — same prompt, two AIs, blind comparison; vote, then reveal
+- **Voice input** — long-press the mic in the terminal action bar to open VoiceChat; speech → Groq transcription → AI → TTS response
 - **Local LLM support** — use the built-in GGUF catalog and llama.cpp / llama-server controls, then route via `@local` for fully on-device inference. The high-end recommendation is Qwen3.5-4B Q4_K_M; Qwen3.5-9B is available for quality-focused runs, and Qwen 2.5 1.5B remains the low-memory fallback.
 
 </details>
@@ -275,7 +293,7 @@ Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but
 - **Active-repo file list** — `ls -1pa` listing for the current working directory with per-extension icon coloring (`.tsx` sky, `.ts` blue, `.json` amber, `README.md` red, …)
 - **Search** — incremental filter over the current directory
 - **Open actions** — tap a Markdown file to open the Markdown pane, tap anything else to open the Preview pane's Code tab
-- **Create / Rename / Delete** — `+` file and `+` folder buttons next to the search field; long-press a row for `Rename / Copy path / Delete`; modals use Silkscreen and the Shelly palette
+- **Create / Rename / Delete** — `+` file and `+` folder buttons next to the search field; long-press a row for `Rename / Copy path / Delete`; modals use the active app palette
 - **Breadcrumb** — tap the `..` row to go up
 
 </details>
@@ -298,7 +316,7 @@ Termux gives you a terminal but no AI-native workspace. ChatGPT gives you AI but
 - **File Tree** — see above; embedded as a section so it flexes with the sidebar height
 - **Tasks** — recent background-agent runs with duration and status
 - **Device** — quick-access folders (`~`, `/sdcard/Download`, …) that re-bind the file tree in one tap
-- **Ports** — every 15 seconds Shelly reads `/proc/net/tcp` and `/proc/net/tcp6` directly in-process (JNI fopen) and lists each loopback / wildcard listener; tap a row to open `http://localhost:<port>` in the Browser pane. Well-known ports get friendly labels (`:3000 NEXT.JS`, `:5173 VITE`, `:8081 EXPO`, `:8888 JUPYTER`, …).
+- **Ports** — designed to list loopback / wildcard listeners and open `http://localhost:<port>` in the Browser pane. Android 10+ SELinux currently blocks the `/proc/net/tcp{,6}` reads for normal apps, so this remains tracked as a platform limitation in [Status](#status).
 - **Profiles** — saved SSH connections. Tap to insert `ssh -i KEY user@host -p PORT` into the active terminal pane; long-press to edit or delete; `Import from ~/.ssh/config` bulk-adds hosts. Key-file auth only — no passwords or passphrases are persisted.
 
 > **Cloud storage?** Shelly deliberately doesn't ship a Google Drive / Dropbox / OneDrive UI. A terminal app should lean on the tools that already solve this — install [`rclone`](https://rclone.org) from your package manager, run `rclone config` once, and mount or sync any of 40+ cloud backends from the terminal pane.
@@ -312,13 +330,13 @@ Opens from the search icon in the top bar (or from the AgentBar's git badge). Fu
 
 Currently registered:
 
-- **Tabs** — Projects / Chat / Terminal / Settings
+- **Settings** — open the terminal-style Settings TUI
 - **Terminal** — Clear / New session / Restore tmux / Tmux attach
 - **Git** — Status / Diff / Log / Add all / Commit / Push / Pull --rebase *(routed through the active terminal pane's `pendingCommand` channel)*
 - **Panes** — Add Terminal / AI / Browser / Markdown / Preview
 - **Layouts** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple
-- **Font presets** — Shelly / Silk / 8bit / Mono
-- **Cosmetics** — CRT toggle
+- **Theme presets** — 零号機 / 二号機 / 初号機
+- **Font presets** — Silk / 8bit / Mono and legacy editor palettes
 - **Voice** — Open dialogue (VoiceChat modal)
 - **Snippets** — first 20 entries from your snippet store, each dispatches to the terminal
 - **Package Manager** — bundled tools status
@@ -328,13 +346,12 @@ Currently registered:
 <details>
 <summary><strong>Theme &amp; Fonts</strong></summary>
 
-- **"Shelly" preset** — new default. Mock-faithful palette with 8 neon accents (teal / green / blue / sky / purple / pink / amber / red) on a `#0A0A0A` background. Paired with Silkscreen.
-- **Other presets** — Silkscreen (previous greener palette), 8bit (PressStart2P), Mono (system monospace), plus eleven classic editor palettes: **Dracula**, **Nord**, **Gruvbox**, **Tokyo Night**, **Catppuccin Mocha**, **Rose Pine**, **Kanagawa**, **Everforest**, **One Dark**, **Blackline** (pure black, low-distraction), and **Modal** (high-contrast modal ui theme). Switch from Settings → Display → Theme or the Command Palette.
+- **EVA unit presets** — 零号機 / UNIT-00 is the default blue test-unit palette, 初号機 / UNIT-01 is purple with neon green sync accents, and 二号機 / UNIT-02 is red-orange production-unit chrome.
+- **Visible presets** — Settings and the Command Palette expose the three EVA unit themes. Legacy and editor palette IDs remain accepted for old saved settings but are no longer the primary UI surface.
 - **Runtime swap** — presets are swapped by mutating the live `colors` object in place (identity preserved) and bumping a theme-version store that key-remounts the shell layout. PTY sessions survive the switch — your vim stays open.
-- **Single-weight rendering** — every Text is forced through Silkscreen Regular regardless of its `fontWeight`. A two-weight mix (bold section headers against regular inline buttons) read as visibly inconsistent, so Shelly commits to one pixel weight everywhere.
+- **Single-family rendering** — every Text is forced through JetBrains Mono regardless of its `fontWeight`, keeping UI and terminal typography consistent.
 - **Text.render monkey-patch** — `Text.defaultProps.style` is replaced (not merged) when a child passes its own `style`, which would otherwise let 100+ call sites escape the theme font. The patch prepends `{ fontFamily }` to every Text's style array so the preset font reaches every call site without touching them.
 - **Neon glow** — eight per-color `textShadow` styles (teal / blue / sky / purple / pink / green / red / amber) for the mock's "reading terminal" vibe
-- **CRT overlay** — scanlines + phosphor tint + vignette, backed by the cosmetic store
 - **Haptic toggle** — per-interaction feedback on/off
 
 </details>
@@ -356,19 +373,17 @@ Currently registered:
 - **Settings TUI** — full settings also accessible via a terminal-style text UI
 - **Command safety** — regex-based 5-level risk assessment (seatbelt, not firewall — see [Security](#security))
 - **Workspace isolation** — per-project cwd / env / AI context
-- **Background agents** — `@agent` schedule + AlarmManager-triggered runs under tmux through explicit API providers. Claude Code subscription/CLI background automation is intentionally disabled.
-- **Managed CLI runtime updater** — `shelly-update-clis` downloads verified Claude extracted-runtime bundles and native Codex builds, verifies integrity, smoke-tests on-device, then hot-swaps `~/.shelly-runtime/<cli>/current` / `~/.shelly-cli` without an APK update. Gemini CLI candidates are still staged for Experimental testing, but are not promoted into the supported Worktree/Quick Launch surface. Runtime updates are serialized with `~/.shelly-runtime/.update.lock` so multi-pane launches cannot start duplicate downloads.
-- **`shelly doctor`** — diagnostic command that checks PTY health, CLI binary presence, musl loader, resolv.conf, and credential state; run it when something feels broken
+- **Background agents** — `@agent` schedule + AlarmManager-triggered runs under tmux through explicit API providers (Gemini API / Cerebras / Groq / Perplexity / local).
+- **Managed Codex runtime updater** — `shelly-update-clis` downloads verified native Codex builds, verifies integrity, smoke-tests on-device, then hot-swaps `~/.shelly-runtime/codex/current` without an APK update. Updates are serialized with `~/.shelly-runtime/.update.lock` so multi-pane launches cannot start duplicate downloads.
+- **`shelly doctor`** — diagnostic command that checks PTY health and bundled-binary presence (including whether `~/.codex/auth.json` is present); run it when something feels broken
 
 </details>
 
-### Claude Runtime Tiers
+### Codex Runtime
 
-- **Default:** extracted Node tier — Shelly extracts Claude Code's `cli.js`, runs it through the APK-bundled Node runtime, and applies the small Bun compatibility shims Claude currently expects.
-- **Experimental:** native musl Bun SEA tier — set `SHELLY_PREFER_NATIVE_CLAUDE=1` to try the staged linux-arm64 musl Bun binary. If that version has recently crashed on the device, Shelly skips it and keeps the extracted Node route.
-- **Debug escape hatch:** `SHELLY_FORCE_NATIVE_CLAUDE=1` bypasses the cooldown and forces the native tier for investigation only.
-- **Runtime learning:** foreground native crashes are recorded, converted into a 24-hour cooldown, and combined with updater-side `--version` smoke checks before any new native candidate is promoted.
-- **Overrides:** `SHELLY_FAILED_VERSION_COOLDOWN` controls cooldown seconds (default `86400`), `SHELLY_NATIVE_VERSION_SMOKE_RUNS` controls native `--version` smoke count (default `3`), and `SHELLY_STAGING_GC_AGE_S` controls stale staging GC age (default `86400`).
+- **Native runtime** — `@openai/codex` ships native binaries Android cannot execute directly. Shelly stages the dispatcher, applies its bionic/`linker64` compatibility hook, and runs the smoke-tested `codex-exec` / `codex-tui` runtime under `~/.shelly-runtime/codex/current`.
+- **Managed promotion** — a new candidate is promoted only after an updater-side `--version` smoke check passes on-device; a failing build is held back and the last-known-good runtime stays live.
+- **Overrides:** `SHELLY_FAILED_VERSION_COOLDOWN` controls failed-version cooldown seconds (default `86400`), `SHELLY_NATIVE_VERSION_SMOKE_RUNS` controls the `--version` smoke count (default `3`), and `SHELLY_STAGING_GC_AGE_S` controls stale-staging GC age (default `86400`).
 
 ---
 
@@ -384,9 +399,9 @@ Currently registered:
 | `execSubprocess` JNI read loop (EAGAIN vs EOF distinction) | ✅ shipping (bug #70) |
 | AI Edit golden path (stage → diff → per-hunk accept → disk writeback) | ✅ shipping, fuzzy re-anchor for successive hunks |
 | FileTree CRUD (create / rename / delete / copy path) | ✅ shipping |
-| Command Palette — tabs, terminal, git, panes, layouts, font, CRT, voice | ✅ shipping |
+| Command Palette — settings, terminal, git, panes, layouts, theme, font, voice | ✅ shipping |
 | Browser fullscreen, desktop UA toggle, link capture, bookmarks | ✅ shipping |
-| Theme presets — Shelly / Silkscreen / 8-bit / Mono + Dracula / Nord / Gruvbox / Tokyo Night / Catppuccin Mocha / Rose Pine / Kanagawa / Everforest / One Dark / Blackline / Modal (runtime swap, single-weight Text monkey-patch) | ✅ shipping |
+| Theme presets — 零号機 / 初号機 / 二号機, with legacy preset IDs accepted for saved settings (runtime swap, Text monkey-patch) | ✅ shipping |
 | AgentBar + Sidebar git dirty badge (single-writer poll) | ✅ shipping |
 | Sidebar Add Repository existence check + Alert on ghost path | ✅ shipping (bug #73) |
 | AI pane Local LLM routing (URL-driven, no enable toggle) | ✅ shipping (bug #68) |
@@ -394,15 +409,14 @@ Currently registered:
 | Immortal sessions (tmux keep-alive) | ✅ implemented, device smoke-test pending |
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
-| Claude Code and Codex CLI launch/auth | ✅ supported; Claude Code runs as a user-controlled terminal CLI, Codex uses Shelly device-code auth before TUI launch |
-| Claude Code extracted Node tier with Bun compatibility shims + experimental updater-managed musl Bun SEA tiers behind `SHELLY_PREFER_NATIVE_CLAUDE=1` / `SHELLY_FORCE_NATIVE_CLAUDE=1` + native crash cooldown + raw-syscall LD_PRELOAD wrappers + legacy npm fallback + Codex CLI verified native runtime | ✅ managed latest with rollback; current device validation covers Claude Code 2.1.14x and Codex 0.130.0 |
-| Gemini API in AI Pane / helpers | ✅ available when configured |
-| Gemini CLI interactive TUI | ⚠ Experimental only; bundled for testing, hidden from Worktrees / Quick Launch due to upstream Android PTY instability |
+| Codex CLI launch/auth | ✅ supported; bare `codex` runs over the native PTY, using Shelly device-code auth before TUI launch |
+| Codex managed native runtime (`codex-exec` / `codex-tui` staged under `~/.shelly-runtime/codex/current`, `--version` smoke-tested, last-known-good rollback) | ✅ managed latest with rollback |
+| Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
 | Arena mode | ✅ wired, under-used — let us know how it feels |
 | Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
-| Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Claude Code and Codex; Gemini removed from this surface for the release |
+| Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Codex |
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |
 | Distribution channels (Play Store / F-Droid) | 🟡 GitHub Releases only for now |
@@ -447,10 +461,10 @@ Every feature in Shelly started as a frustration I had with existing tools:
 
 - The cross-pane system comes from *"Why do I have to copy an error from one window and paste it into another?"*
 - The native terminal comes from *"Why does the terminal die every time I switch apps?"*
-- The approval proxy comes from *"Claude is asking me to approve something in English. I don't know what it means."*
+- The approval proxy comes from *"An AI CLI is asking me to approve something in English. I don't know what it means."*
 - The VoiceChain comes from *"I can't type on a phone keyboard fast enough to keep up with my ideas."*
 - The layout system comes from *"Why can't I have a browser, a terminal, and an AI all on the same screen at the same time?"*
-- The Shelly theme preset comes from *"Why do I have to choose between a usable UI and an aesthetically interesting one?"*
+- The EVA unit theme presets come from *"Why do I have to choose between a usable UI and an aesthetically interesting one?"*
 
 Every limitation became an innovation that engineers need just as much.
 
@@ -458,14 +472,14 @@ Every limitation became an innovation that engineers need just as much.
 
 Early versions used ttyd and a WebView. WebSocket connections dropped. Android's Phantom Process Killer terminated background processes. Every time you switched apps, the terminal was dead.
 
-So I directed the AI to throw it all away and go native. Shelly now embeds a native terminal emulator — Kotlin code derived from Termux's own `terminal-emulator` library — connected via a JNI C layer that calls `forkpty()` in the same process. No TCP. No IPC boundary. No socket drops.
+So I directed the AI to throw it all away and go native. Shelly now embeds a native terminal emulator — Kotlin code derived from Termux's own `terminal-emulator` library — connected to an app-owned PTY through a JNI C layer. No TCP terminal server. No WebSocket boundary. No ttyd process to drop.
 
-As far as we know, this is the **only React Native app in the world** with an embedded native terminal emulator running in-process via JNI.
+For a React Native app this is an unusual architecture: an embedded native terminal emulator backed by an app-owned PTY via JNI `forkpty`, rather than a WebView or a socket bridge to an external terminal server.
 
 ### Who is this for?
 
 - **Vibe Coders** — Lovable / Bolt / Replit Agent, but on your phone with a real terminal underneath
-- **Mobile-first developers** — Claude Code and Codex CLI users who want a proper multi-pane IDE around real local terminals
+- **Mobile-first developers** — Codex CLI users (and anyone who lived in an AI coding CLI) who want a proper multi-pane IDE around real local terminals
 - **Non-engineers with ideas** — Shelly translates everything. Dangerous operations are blocked until you understand them
 
 ---
@@ -538,13 +552,13 @@ flowchart TB
   KT -- "JNI" --> PTY["shelly-pty.c (forkpty)"]
   KT -- "JNI" --> EXEC["shelly-exec.c (fork+exec+pipe)"]
   PTY -- "ptmx / setsid" --> SH["shell process\nbash / zsh / sh"]
-  PTY -- "read/write fd" --> TV["ShellyTerminalView.kt\nKotlin Canvas renderer"]
-  TV --> GPU["Android SurfaceView\nGPU composited"]
+  PTY -- "read/write fd" --> TV["ShellyTerminalView.kt\nKotlin renderer"]
+  TV --> VIEW["Android View\nCanvas path / optional GLSurfaceView path"]
 ```
 
 Two JNI entry points for two different needs. **`shelly-pty.c`** owns interactive shells: it opens `/dev/ptmx`, calls `forkpty`-equivalent logic (`grantpt` + `unlockpt` + `setsid` + `execve` via `/system/bin/linker64`), and hands the master fd back to Kotlin for the terminal view to read. **`shelly-exec.c`** owns programmatic one-shots (`git status`, `ls`, file I/O, AI dispatch helpers): it does a vanilla `fork` + `exec` + `pipe` and returns `{exitCode, stdout, stderr}` synchronously, with an EAGAIN-aware read loop that distinguishes spurious select wakes from genuine EOF (bug #70 fix).
 
-No TCP. No sockets. No separate process. Shells run as children of the app process, and the PTY fd is read directly from Kotlin via JNI.
+No TCP. No socket terminal server. No separate PTY helper daemon. Shells still run as normal forked child processes, while the PTY master fd is owned by the app and read directly from Kotlin via JNI.
 
 ### Runtime Theme Swap
 
@@ -574,8 +588,8 @@ The `colors` object is mutable and keeps the same identity, so every `import { c
 | UI | NativeWind (TailwindCSS 3) |
 | State | Zustand |
 | Navigation | expo-router v6 |
-| Terminal | Native emulator (Kotlin, Termux-derived) + JNI forkpty (C, same-process) |
-| Fonts | Silkscreen (single weight, via `@expo-google-fonts/silkscreen`) + PressStart2P + system monospace |
+| Terminal | Native emulator (Kotlin, Termux-derived) + JNI forkpty (C, app-owned PTY) |
+| Fonts | JetBrains Mono for app/terminal readability, with bundled legacy pixel fonts retained for compatibility |
 | i18n | expo-localization + Zustand (900+ keys, EN/JA) |
 
 ---
@@ -665,85 +679,13 @@ Shelly v5.3.1 is pre-release Android software. Here's what we know isn't perfect
 - **`busybox` is not bundled** — `busybox httpd`, `busybox nc`, and other applets return `command not found`. Use the standalone equivalents where available (`curl`, `nc` from the bundle, `python3 -m http.server`), or bundle `busybox-static` yourself. Tracked as bug #35.
 - **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once; a cost warning is shown before execution.
 - **Multi-hunk Accept against a partially-edited file** — per-hunk Accept uses fuzzy re-anchoring so successive hunks land, but if the AI's diff references context that has already been edited to something else, the hunk will be rejected with a toast asking you to regenerate.
-- **Silkscreen is not monospaced** — `ls -la` columns may drift slightly; switch to the `Mono` font preset from the Command Palette if you need strict columns.
-- **Codex CLI runs through Shelly-managed runtime routing** — `@openai/codex` can ship native binaries Android cannot execute directly. Shelly stages the npm dispatcher, applies the compatibility hook, and prefers the smoke-tested `codex-exec` runtime under `~/.shelly-runtime/codex/current`. Current device validation shows `codex-exec 0.130.0` and the Codex TUI starting on GPT-5.5. If `codex --version` fails, run `shelly doctor` or check `~/.shelly-cli/install.log` / `~/.shelly-runtime/update.log`.
-- **Codex login uses an in-app device-code OAuth flow** — run bare `codex` or `codex-login --open` from any terminal pane. Shelly validates `~/.codex/auth.json`; if it is missing or invalid, Shelly drives device auth against `auth.openai.com`, opens the verification page in the in-app Browser Pane via the file-queue deep-link bridge, writes `~/.codex/auth.json` (mode `0600`) on success, then launches the normal Codex TUI. No OpenAI API key is required; this rides your ChatGPT Plus/Pro/Business/Enterprise subscription. The flow has a 15-minute device-code timeout — re-run if it expires. Verify with `shelly doctor` (look for the `codex auth:` line). Implemented in `modules/terminal-emulator/android/src/main/assets/shelly-codex-auth.js`.
+- **Terminal font mismatch** — if a saved legacy theme looks wrong after upgrading, switch Settings → Display → Theme to one of the three EVA unit presets.
+- **Codex CLI runs through Shelly-managed runtime routing** — `@openai/codex` can ship native binaries Android cannot execute directly. Shelly stages the npm dispatcher, applies the compatibility hook, and prefers the smoke-tested `codex-exec` runtime under `~/.shelly-runtime/codex/current`. The promoted runtime is whatever last passed the on-device `--version` smoke check. If `codex --version` fails, run `shelly doctor` or check `~/.shelly-cli/install.log` / `~/.shelly-runtime/update.log`.
+- **Codex login uses an in-app device-code OAuth flow** — run bare `codex` or `codex-login --open` from any terminal pane. Shelly validates `~/.codex/auth.json`; if it is missing or invalid, Shelly drives device auth against `auth.openai.com`, opens the verification page in the in-app Browser Pane via the file-queue deep-link bridge, writes `~/.codex/auth.json` (mode `0600`) on success, then launches the normal Codex TUI. No OpenAI API key is required; this rides your ChatGPT Plus/Pro/Business/Enterprise subscription. The flow has a 15-minute device-code timeout — re-run if it expires. Verify with `shelly doctor` (it reports whether `~/.codex/auth.json` is present). Implemented in `modules/terminal-emulator/android/src/main/assets/shelly-codex-auth.js`.
 - **`/sdcard` access requires MANAGE_EXTERNAL_STORAGE** — Android 11+ Scoped Storage blocks direct `open(2)` on `/sdcard` paths without this permission. Shelly asks for it on first launch; if you deny it, `source /sdcard/Download/foo.sh` will fail with `Permission denied`. Re-grant from system Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files.
-- **Claude Code login and workspace trust** — Shelly has passed device validation for interactive Claude Code startup through the official browser sign-in flow, with app-private credentials and home trust seeded (`trust=true`, hooks enabled, onboarding complete). You do not need to import an already-logged-in account for the normal path. If Anthropic changes the CLI login flow, `shelly-doctor` and the Recent Logs view are the first places to check.
-- **Gemini CLI is experimental** — Gemini API support remains in the AI Pane, but the interactive `gemini` CLI is not a supported launch promise. Recent 0.42.x testing on Android showed intermittent blank TUI startup, very slow responses, and shell-tool commands terminating with signal 11. The bundle and patcher stay in the APK for investigation; Worktrees and Quick Launch do not expose Gemini for this release.
+- **Gemini is API-only** — Gemini is available as an API provider (AI Pane, `@gemini`, `@team`, background agents) with a configured key. There is no bundled Gemini CLI and no interactive `gemini` login flow in this release.
 - **Very large or binary pastes** — the paste path is a one-shot write into the PTY. Multi-megabyte clipboard payloads will take noticeable time and may stall the UI briefly; binary content (non-UTF-8 bytes, null characters) is not a supported transport mechanism and may corrupt the shell buffer. Use `curl -O` / `scp` / `/sdcard/Download/` drop-point for binary transfer.
 - **Fold/rotate/split-screen during an active CLI session** — Shelly survives layout changes, but terminal state is not always persisted across an Android Activity recreate. Save or commit work before aggressive multitasking (fold ↔ unfold rapidly, split-screen drag while a foreground job is running). AI CLI streams specifically are best completed or interrupted (Ctrl-C) before rotating.
-
-### Bring your own credentials
-
-Shelly's normal release path is in-app authentication for Claude Code and Codex. Credential transplant remains useful when you have already authenticated elsewhere and want to mirror the same credentials onto the phone, or when an upstream OAuth change temporarily breaks the in-app flow. Finish authentication on a machine where it works (Termux, PC, Codespaces), then copy the resulting credential files onto the phone via `/sdcard/Download/` and unpack them into Shelly's home directory.
-
-#### Claude Code
-
-Claude Code stores its authentication in two files on whatever machine you ran `/login` on:
-
-- `~/.claude.json` — account + onboarding completion state (~32 KB)
-- `~/.claude/.credentials.json` — OAuth access + refresh tokens (~500 B)
-
-Both need to land in the corresponding paths inside Shelly's home directory. The shortest route is `/sdcard` as a shared drop point:
-
-**On the working machine** (Termux, laptop, Codespaces, …) after a successful `/login`:
-
-```bash
-# Drop both files onto shared storage. On desktop, use scp/rsync/adb push
-# to put them under /sdcard/Download/ on the phone instead.
-cp ~/.claude.json                /sdcard/Download/shelly-claude-root.json
-tar cf  /sdcard/Download/termux-claude-dir.tar -C ~/.claude .
-# If your tar defaults to gzip, use `tar cf` (no `z`) — Shelly's bundled
-# tar cannot exec /bin/zcat and will fail on tar.gz.
-```
-
-**On Shelly**, in a terminal pane:
-
-```bash
-cp /sdcard/Download/shelly-claude-root.json ~/.claude.json
-chmod 600 ~/.claude.json
-cd ~/.claude && tar xf /sdcard/Download/termux-claude-dir.tar
-claude              # "Welcome back <you>" means success; an onboarding picker means a file is missing
-```
-
-Caveats:
-
-- Access tokens are short-lived (~9 hours). When the refresh token eventually rotates or Cloudflare's WAF rejects an Android-origin refresh, Shelly's `claude` will stop authenticating and you'll need to repeat the copy from a working environment. The community has reported refresh failures in [anthropics/claude-code#47754](https://github.com/anthropics/claude-code/issues/47754); we have not yet seen it in Shelly testing, but it is the expected long-tail failure mode.
-- The donor machine's `claude` version does not matter for credential transplants — **any version** of claude-code produces compatible `~/.claude.json` and `.credentials.json` files. Shelly's default Claude route now runs the latest extracted Bun `cli.js` with bundled Node, with the musl SEA and legacy `cli.js` tiers kept as fallbacks, so no pinning is needed on either side.
-- These files are highly sensitive (anyone holding them can talk to Anthropic as you). Treat the `/sdcard/Download/` copies as single-use — delete them after the transplant lands.
-
-#### Gemini CLI
-
-Gemini CLI is experimental in this release. Gemini API is the supported Gemini path for AI Pane/background use. If you still want to test the interactive CLI, Gemini stores everything under a single directory — no `$HOME`-level file like Claude's `~/.claude.json`. Size is small (~110 KB tarred) so the transplant is trivial.
-
-**On the working machine** (after `/auth` completes):
-
-```bash
-tar cf /sdcard/Download/termux-gemini-dir.tar -C ~/.gemini .
-```
-
-**On Shelly**:
-
-```bash
-mkdir -p ~/.gemini
-cd ~/.gemini && tar xf /sdcard/Download/termux-gemini-dir.tar
-gemini              # "Signed in with Google" → interactive prompt, no trust picker
-```
-
-Key files inside `~/.gemini/`:
-
-- `oauth_creds.json` — Google OAuth access + refresh tokens
-- `google_accounts.json` — account linkage
-- `trustedFolders.json` — skips the first-run trust picker once your workspace path is listed
-- `settings.json`, `state.json`, `projects.json` — preferences and history
-
-Caveats:
-
-- Keep the donor environment on a working `@google/gemini-cli`. Upstream 0.42.x has shown Android/musl PTY issues during Shelly validation, so treat this as a debugging path, not the release promise.
-- Same single-use security reminder as above — `~/.gemini/oauth_creds.json` is a bearer credential. Delete the `/sdcard/Download/` copy after importing.
-
----
 
 ## Permissions
 
@@ -757,7 +699,7 @@ Shelly is a terminal app that runs shell commands, edits files, calls AI APIs, a
 | **FOREGROUND_SERVICE** | Keeps the terminal alive when the app is backgrounded. | Shell processes may be killed by the OS when you switch apps. | — |
 | **RECORD_AUDIO** | Voice input (VoiceChat + VoiceChain). | Voice features are disabled. Typing works normally. | — |
 
-Shelly is distributed via GitHub Releases and F-Droid, not Google Play. The `MANAGE_EXTERNAL_STORAGE` permission would require a Play Store all-files-access audit, which is why Play Store distribution is deferred until a SAF-based import path is available as a fallback.
+Shelly is distributed via GitHub Releases for now, not Google Play or F-Droid yet. The `MANAGE_EXTERNAL_STORAGE` permission would require a Play Store all-files-access audit, which is why Play Store distribution is deferred until a SAF-based import path is available as a fallback.
 
 ---
 
@@ -768,10 +710,9 @@ Shelly runs commands on your device. The safety system is a best-effort layer, n
 - **Security model** — Shelly is a normal Android app sandbox, not a hardened VM. Terminal commands and approved AI-agent actions run as the app uid and can read/write whatever the app can access.
 - **Command safety is regex-based** — The 5-level risk assessment uses pattern matching. It catches common dangerous patterns (`rm -rf /`, `dd if=`, etc.) but is not a sandbox. Treat it as a seatbelt, not a firewall.
 - **APK distribution is unsigned** — Release APKs from GitHub Actions are not code-signed. For verified builds, clone the repo and build locally with your own keystore. See [Building from source](#quick-start).
-- **Autonomous agents require explicit approval per action** — AI Pane and background actions use explicit API providers and command approval. Claude Code is not used as a hidden background subscription worker; it remains a foreground terminal CLI controlled by the user.
+- **Autonomous agents require explicit approval per action** — AI Pane and background actions run through explicit API providers with per-action command approval. There is no hidden subscription worker.
 - **API keys are stored in SecureStore** — Keys are never written to logs or debug output. SecureStore uses Android Keystore encryption on supported devices.
-- **Credential import is explicit** — Settings → Import CLI Credentials imports credentials created elsewhere only when you choose that recovery path. `/sdcard/Download` is only a temporary handoff location; delete the copied archives after import.
-- **Doctor security checks** — `shelly-doctor` warns when credential handoff files remain in `/sdcard/Download`, when credential files are not private (`0600`-style), or when API keys are present as process environment variables.
+- **`shelly doctor`** — reports PTY health, bundled-binary presence, and whether `~/.codex/auth.json` exists. Run it when something feels broken.
 - **Log redaction** — Shelly redacts common API key and token patterns before writing app debug logs. This is a guardrail, not permission to paste secrets into prompts or terminal output.
 - **Convenience ≠ security** — Shelly combines shell execution, AI dispatch, file editing, API key storage, and broad storage access in a single app. This is powerful but means a compromise of any one layer could affect the others. Review the source, build from your own keystore, and treat Shelly as a development tool — not as a production server environment.
 

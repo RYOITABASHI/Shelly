@@ -451,15 +451,10 @@ export function useAIPaneDispatch(paneId: string) {
             const connection = await checkOllamaConnection(settings.localLlmUrl, 2000);
             if (signal.aborted) return;
             if (!connection.available) {
-              store.updateMessage(paneId, assistantId, {
-                content:
-                  `Local LLM is not responding at ${settings.localLlmUrl}. ` +
-                  `Open Settings → Local LLM and start llama.cpp again. ` +
-                  `If Android stopped it due to low memory, try a smaller model.\n\n${connection.error ?? ''}`.trim(),
-                streamingText: undefined,
-                isStreaming: false,
-              });
-              return;
+              logInfo(
+                'AIPaneDispatch',
+                `Local LLM preflight failed; attempting stream anyway: ${connection.error ?? 'unknown'}`,
+              );
             }
           }
 

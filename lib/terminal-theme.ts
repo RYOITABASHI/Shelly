@@ -19,31 +19,31 @@ export type TerminalTheme = {
 
 export const TERMINAL_THEMES: Record<string, TerminalTheme> = {
   blue: {
-    name: 'blue', label: 'Blue',
-    background: '#000000', foreground: '#E8EEF8', cursor: '#4DA3FF',
-    black: '#101317', red: '#FF6B6B', green: '#22C55E', yellow: '#EAB308',
-    blue: '#4DA3FF', magenta: '#C084FC', cyan: '#22D3EE', white: '#E8EEF8',
-    brightBlack: '#526070', brightRed: '#FF8A8A', brightGreen: '#4ADE80',
-    brightYellow: '#FACC15', brightBlue: '#78BAFF', brightMagenta: '#D8B4FE',
-    brightCyan: '#67E8F9', brightWhite: '#FFFFFF',
+    name: 'blue', label: '零号機 / UNIT-00',
+    background: '#000000', foreground: '#D6ECF7', cursor: '#1CA9E0',
+    black: '#050A0D', red: '#FF5A3C', green: '#2BD9C4', yellow: '#F2B705',
+    blue: '#1CA9E0', magenta: '#6FA8D8', cyan: '#5CC8F0', white: '#D6ECF7',
+    brightBlack: '#3E5A70', brightRed: '#FF7A60', brightGreen: '#5FF2DF',
+    brightYellow: '#FFD84A', brightBlue: '#5CC8F0', brightMagenta: '#9AC7F0',
+    brightCyan: '#8BE8FF', brightWhite: '#FFFFFF',
   },
   orange: {
-    name: 'orange', label: 'Orange',
-    background: '#000000', foreground: '#F4EEE8', cursor: '#FF4B35',
-    black: '#17100D', red: '#FF5A3D', green: '#22C55E', yellow: '#FBBF24',
-    blue: '#60A5FA', magenta: '#C084FC', cyan: '#2DD4BF', white: '#F4EEE8',
-    brightBlack: '#6F5E54', brightRed: '#FF8A70', brightGreen: '#4ADE80',
-    brightYellow: '#FDE047', brightBlue: '#93C5FD', brightMagenta: '#D8B4FE',
-    brightCyan: '#5EEAD4', brightWhite: '#FFFFFF',
+    name: 'orange', label: '二号機 / UNIT-02',
+    background: '#000000', foreground: '#F7DCD6', cursor: '#FF8A00',
+    black: '#1A0807', red: '#FF2E1F', green: '#FFB020', yellow: '#FFB800',
+    blue: '#FF6A3C', magenta: '#E6504A', cyan: '#FFA060', white: '#F7DCD6',
+    brightBlack: '#70504A', brightRed: '#FF5A4A', brightGreen: '#FFD060',
+    brightYellow: '#FFD24A', brightBlue: '#FF8A60', brightMagenta: '#FF6A72',
+    brightCyan: '#FFC090', brightWhite: '#FFFFFF',
   },
   purple: {
-    name: 'purple', label: 'Purple',
-    background: '#000000', foreground: '#F2EAFE', cursor: '#9B5CFF',
-    black: '#15101C', red: '#FB7185', green: '#34D399', yellow: '#FACC15',
-    blue: '#60A5FA', magenta: '#A78BFA', cyan: '#22D3EE', white: '#F2EAFE',
-    brightBlack: '#66557E', brightRed: '#FDA4AF', brightGreen: '#6EE7B7',
-    brightYellow: '#FDE047', brightBlue: '#93C5FD', brightMagenta: '#C4B5FD',
-    brightCyan: '#67E8F9', brightWhite: '#FFFFFF',
+    name: 'purple', label: '初号機 / UNIT-01',
+    background: '#000000', foreground: '#E8DCF7', cursor: '#39FF14',
+    black: '#160B26', red: '#FF3C5A', green: '#39FF14', yellow: '#C8FF3C',
+    blue: '#5C6FFF', magenta: '#D24FFF', cyan: '#A06FE0', white: '#E8DCF7',
+    brightBlack: '#5A4A70', brightRed: '#FF6A7E', brightGreen: '#75FF5A',
+    brightYellow: '#DAFF70', brightBlue: '#8490FF', brightMagenta: '#E38AFF',
+    brightCyan: '#C19AFF', brightWhite: '#FFFFFF',
   },
   shelly: {
     name: 'shelly', label: 'Shelly',
@@ -119,8 +119,20 @@ export const TERMINAL_THEMES: Record<string, TerminalTheme> = {
   },
 };
 
+const TERMINAL_THEME_ALIASES: Record<string, string> = {
+  // Legacy UI preset ids retained in settings should land on the new
+  // EVA unit ANSI palettes instead of the old standalone terminal colors.
+  shelly: 'purple',
+  modal: 'purple',
+  blackline: 'blue',
+  silkscreen: 'blue',
+  pixel: 'blue',
+  mono: 'blue',
+};
+
 export function getTerminalTheme(name: string): TerminalTheme {
-  return TERMINAL_THEMES[name] ?? TERMINAL_THEMES.shelly;
+  const normalized = TERMINAL_THEME_ALIASES[name] ?? name;
+  return TERMINAL_THEMES[normalized] ?? TERMINAL_THEMES.blue;
 }
 
 export const TERMINAL_THEME_NAMES = Object.keys(TERMINAL_THEMES);

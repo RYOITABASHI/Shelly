@@ -13,7 +13,6 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore, type PaletteAction } from '@/hooks/use-command-palette';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useSettingsStore } from '@/store/settings-store';
-import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useFocusStore } from '@/store/focus-store';
@@ -147,21 +146,13 @@ export function CommandPalette() {
       { id: 'pane-add-preview', label: 'Pane: Add Preview', hint: 'split current layout', icon: 'preview', category: 'pane',
         onExecute: () => { addPane('preview'); close(); } },
 
-      // Theme presets — maintained as terminal colorways.
-      { id: 'theme-blue', label: 'Theme: Blue', hint: 'cool terminal chrome', icon: 'palette', category: 'action',
+      // Theme presets — existing ids, rebranded as EVA unit colorways.
+      { id: 'theme-blue', label: 'Theme: 零号機 / UNIT-00', hint: 'blue test-unit chrome', icon: 'palette', category: 'action',
         onExecute: () => { applyPalette('blue'); close(); } },
-      { id: 'theme-orange', label: 'Theme: Orange', hint: 'warm terminal chrome', icon: 'palette', category: 'action',
+      { id: 'theme-orange', label: 'Theme: 二号機 / UNIT-02', hint: 'red production-unit chrome', icon: 'palette', category: 'action',
         onExecute: () => { applyPalette('orange'); close(); } },
-      { id: 'theme-purple', label: 'Theme: Purple', hint: 'violet editor chrome', icon: 'palette', category: 'action',
+      { id: 'theme-purple', label: 'Theme: 初号機 / UNIT-01', hint: 'purple test-type chrome', icon: 'palette', category: 'action',
         onExecute: () => { applyPalette('purple'); close(); } },
-
-      // CRT toggle
-      { id: 'crt-toggle', label: 'CRT: Toggle', hint: 'scanline + bloom overlay', icon: 'tv', category: 'action',
-        onExecute: () => {
-          const cs = useCosmeticStore.getState();
-          cs.setCrt(!cs.crtEnabled);
-          close();
-        } },
 
       // Voice dialogue
       { id: 'voice-open', label: 'Voice: Open Dialogue', hint: 'mic long-press shortcut', icon: 'mic', category: 'action',

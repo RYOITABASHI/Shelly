@@ -18,9 +18,8 @@ export type FontFamily = 'jetbrains-mono' | 'fira-code' | 'source-code-pro' | 'i
  *   when supported; lower API levels fall back to a dimmed tint.
  * - `blurIntensity` maps 0-100 → expo-blur `intensity`.
  *
- * CRT conflict: the scanline overlay reads weirdly over a user photo,
- * so we expose both toggles independently but Settings warns when the
- * user tries to enable CRT while a wallpaper is set.
+ * Legacy CRT fields remain in persisted state for migration compatibility,
+ * but the overlay and user-facing controls have been removed.
  */
 interface CosmeticState {
   crtEnabled: boolean;
@@ -55,12 +54,8 @@ interface CosmeticState {
 const clamp = (n: number) => Math.max(0, Math.min(100, n));
 
 export const useCosmeticStore = create<CosmeticState>((set, get) => ({
-  // Phase C (2026-04-20): CRT defaults to OFF. Scanlines + phosphor
-  // tint are opt-in now — users who want the retro look toggle from
-  // Settings. Keeps the default install looking modern and stops
-  // surprising users who later switch to Tokyo Night / Catppuccin.
-  // Intensity seeded at a visible 35 (old 11 was nearly invisible) so
-  // when users DO flip the switch they see an immediate effect.
+  // Legacy CRT values are still loaded/saved so old persisted settings
+  // do not break, but no mounted overlay consumes them.
   crtEnabled: false,
   crtIntensity: 35,
   soundProfile: 'modern',

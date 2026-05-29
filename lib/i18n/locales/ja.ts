@@ -1056,8 +1056,6 @@ const ja: Record<string, string> = {
   'motd.login_prompt': 'お持ちのアカウントでログインしてください:',
 
   // ── UI Overhaul (Step 3) ──────────────────────────────────────────
-  'agentbar.crt_on': 'CRT: ON',
-  'agentbar.crt_off': 'CRT: OFF',
   'agentbar.add_agent': 'エージェント追加',
   'agentbar.all_agents_enabled': '全エージェント有効済み',
   'agentbar.enable': '有効化',

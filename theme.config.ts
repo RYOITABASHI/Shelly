@@ -15,63 +15,63 @@
 // of theme.config.ts (column 8 parse error, regardless of `import
 // type` vs `import {}`). So keep this file import-free. Mutable
 // palette object is seeded inline here; lib/theme-presets.ts holds the
-// matching bluePalette for runtime preset swaps via Object.assign.
+// matching Unit-00 bluePalette for runtime preset swaps via Object.assign.
 export const colors = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#243040',
+  border:     '#143A52',
 
-  accent:        '#4DA3FF',
-  accentGreen:   '#4DA3FF',
-  accentBlue:    '#4DA3FF',
-  accentSky:     '#4DA3FF',
-  accentPurple:  '#4DA3FF',
-  accentPink:    '#4DA3FF',
-  accentAmber:   '#4DA3FF',
-  accentCode:    '#4DA3FF',
-  warning:       '#4DA3FF',
+  accent:        '#1CA9E0',
+  accentGreen:   '#2BD9C4',
+  accentBlue:    '#1CA9E0',
+  accentSky:     '#5CC8F0',
+  accentPurple:  '#6FA8D8',
+  accentPink:    '#4FD0E0',
+  accentAmber:   '#F2B705',
+  accentCode:    '#5CC8F0',
+  warning:       '#F2B705',
 
-  text1:      '#E8EEF8',
-  text2:      '#97A6BA',
-  text3:      '#526070',
+  text1:      '#D6ECF7',
+  text2:      '#7FA8C4',
+  text3:      '#3E5A70',
 
   // Semantic
-  errorText:  '#4DA3FF',
-  errorBg:    'rgba(77,163,255,0.12)',
-  addText:    '#4DA3FF',
-  addBg:      'rgba(77,163,255,0.12)',
+  errorText:  '#FF5A3C',
+  errorBg:    'rgba(255,90,60,0.14)',
+  addText:    '#2BD9C4',
+  addBg:      'rgba(43,217,196,0.14)',
 
   // Buttons
-  btnPrimaryBg:     '#4DA3FF',
+  btnPrimaryBg:     '#1CA9E0',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#000000',
-  btnSecondaryText: '#E8EEF8',
+  btnSecondaryBg:   '#0A1620',
+  btnSecondaryText: '#D6ECF7',
 
   // Badges
-  badgeRunningBg:   'rgba(77,163,255,0.14)',
-  badgeRunningText: '#4DA3FF',
-  badgeLinkedBg:    'rgba(77,163,255,0.14)',
-  badgeLinkedText:  '#4DA3FF',
+  badgeRunningBg:   'rgba(242,183,5,0.18)',
+  badgeRunningText: '#F2B705',
+  badgeLinkedBg:    'rgba(43,217,196,0.18)',
+  badgeLinkedText:  '#2BD9C4',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#526070',
+  badgeConnectText: '#3E5A70',
 
   // Layout buttons
-  layoutActiveBg:     '#4DA3FF',
+  layoutActiveBg:     '#1CA9E0',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#526070',
+  layoutInactiveText: '#3E5A70',
 
   // CRT badge
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#4DA3FF',
+  crtBadgeText: '#1CA9E0',
 
   // Auto-save
   autoSaveBg: '#000000',
 
   // Diff
-  diffAddBorder:    '#4DA3FF',
-  diffRemoveBorder: '#4DA3FF',
+  diffAddBorder:    '#2BD9C4',
+  diffRemoveBorder: '#FF5A3C',
 };
 
 // ─── Fonts ──────────────────────────────────────────────────────────────────
@@ -146,8 +146,8 @@ export const icons = {
 
 export const decorations = {
   diffBorderWidth: 2,
-  cursorColor: '#00D4AA',
-  promptChar: '#00D4AA',
+  cursorColor: '#1CA9E0',
+  promptChar: '#1CA9E0',
 } as const;
 
 // ─── Legacy compat — themeColors used by theme-engine.ts ────────────────────

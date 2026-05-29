@@ -454,7 +454,6 @@ export async function executeCommand(
         // shelly config list → print all settings as key=value
         if (configSub === 'list') {
           const { settings } = useSettingsStore.getState();
-          const cosmetics = useCosmeticStore.getState();
           const configMap: Record<string, unknown> = {
             fontSize:                settings.fontSize,
             cursorShape:             settings.cursorShape,
@@ -464,10 +463,8 @@ export async function executeCommand(
             localLlmEnabled:         settings.localLlmEnabled,
             localLlmUrl:             settings.localLlmUrl,
             localLlmModel:           settings.localLlmModel,
-            crtEnabled:              cosmetics.crtEnabled,
-            crtIntensity:            cosmetics.crtIntensity,
-            soundProfile:            cosmetics.soundProfile,
-            fontFamily:              cosmetics.fontFamily,
+            soundProfile:            useCosmeticStore.getState().soundProfile,
+            fontFamily:              useCosmeticStore.getState().fontFamily,
             autocomplete:            (settings as Record<string, unknown>)['autocomplete'] ?? false,
             syntaxHighlight:         (settings as Record<string, unknown>)['syntaxHighlight'] ?? false,
             highContrastOutput:      settings.highContrastOutput,
@@ -495,8 +492,6 @@ export async function executeCommand(
           const cosmetics = useCosmeticStore.getState();
           const combined: Record<string, unknown> = {
             ...(settings as Record<string, unknown>),
-            crtEnabled: cosmetics.crtEnabled,
-            crtIntensity: cosmetics.crtIntensity,
             soundProfile: cosmetics.soundProfile,
             fontFamily: cosmetics.fontFamily,
           };
@@ -526,8 +521,6 @@ export async function executeCommand(
 
           // Cosmetic keys
           const COSMETIC_KEYS: Record<string, (v: string) => void> = {
-            crtEnabled:   (v) => useCosmeticStore.getState().setCrt(v === 'true' || v === '1'),
-            crtIntensity: (v) => useCosmeticStore.getState().setCrtIntensity(Number(v)),
             soundProfile: (v) => useCosmeticStore.getState().setSoundProfile(v as import('@/store/cosmetic-store').SoundProfile),
             fontFamily:   (v) => useCosmeticStore.getState().setFontFamily(v as import('@/store/cosmetic-store').FontFamily),
           };

@@ -1,7 +1,7 @@
 // components/layout/SettingsDropdown.tsx
 //
 // Drop-down settings panel anchored to the gear button in AgentBar.
-// Consolidates Display (CRT/Font), Language, AI Agents, and API Keys
+// Consolidates Display (Font/Theme), Language, AI Agents, and API Keys
 // that were previously scattered across the top bar.
 
 import React, { useRef, useState, useEffect } from 'react';
@@ -369,10 +369,6 @@ function RecoverySection() {
 // eviction and OS cleanup; the source URI under /data/user/0/.../cache would
 // eventually be purged and leave the wallpaper blank.
 //
-// CRT + wallpaper both enabled reads poorly (scanlines over a photo =
-// visual mud), so we warn on toggle but do not hard-block — some users
-// might actually want that retro-monitor-over-poster look.
-
 function WallpaperSection() {
   const wallpaperUri = useCosmeticStore((s) => s.wallpaperUri);
   const wallpaperOpacity = useCosmeticStore((s) => s.wallpaperOpacity);
@@ -380,7 +376,6 @@ function WallpaperSection() {
   const setWallpaper = useCosmeticStore((s) => s.setWallpaper);
   const setWallpaperOpacity = useCosmeticStore((s) => s.setWallpaperOpacity);
   const setPanelOpacity = useCosmeticStore((s) => s.setPanelOpacity);
-  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
   // Note: blurEnabled / blurIntensity still live in cosmetic-store but no
   // UI toggle renders today — there is no chrome BlurView consumer yet,
   // so exposing a toggle would be a dead switch. Store fields stay so the
@@ -418,16 +413,6 @@ function WallpaperSection() {
         FileSystem.deleteAsync(wallpaperUri, { idempotent: true }).catch(() => {});
       }
       setWallpaper(dest);
-      if (crtEnabled) {
-        Alert.alert(
-          'CRT + Wallpaper',
-          'CRT scanlines tend to read as visual noise over a photo. Disable CRT?',
-          [
-            { text: 'Keep both', style: 'cancel' },
-            { text: 'Disable CRT', onPress: () => useCosmeticStore.getState().setCrt(false) },
-          ],
-        );
-      }
     } catch (e) {
       Alert.alert('Pick failed', String((e as Error)?.message ?? e));
     }
@@ -484,8 +469,8 @@ function WallpaperSection() {
 
 /**
  * Small reusable 0-100 slider row. Extracted so WallpaperSection can
- * reuse the same geometry as DisplaySection's CRT Intensity control
- * without copy-pasting the PanResponder boilerplate.
+ * keep opacity controls consistent without copy-pasting the PanResponder
+ * boilerplate.
  */
 function SliderRow({
   label,
@@ -530,60 +515,11 @@ function SliderRow({
 // ─── Display ─────────────────────────────────────────────────────────────────
 
 function DisplaySection() {
-  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
-  const crtIntensity = useCosmeticStore((s) => s.crtIntensity);
-  const setCrt = useCosmeticStore((s) => s.setCrt);
-  const setCrtIntensity = useCosmeticStore((s) => s.setCrtIntensity);
-
   const fontSize = useSettingsStore((s) => s.settings.fontSize);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
-  const trackWidth = 140;
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const x = e.nativeEvent.locationX;
-        setCrtIntensity(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
-      },
-      onPanResponderMove: (e) => {
-        const x = e.nativeEvent.locationX;
-        setCrtIntensity(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
-      },
-    })
-  ).current;
-
-  const fillWidth = (crtIntensity / 100) * trackWidth;
-
   return (
     <Section title="DISPLAY">
-      {/* CRT Effect toggle */}
-      <Row label="CRT Effect">
-        <Pressable
-          style={[styles.switchTrack, crtEnabled && styles.switchTrackOn]}
-          onPress={() => setCrt(!crtEnabled)}
-          hitSlop={4}
-        >
-          <View style={[styles.switchThumb, crtEnabled && styles.switchThumbOn]} />
-        </Pressable>
-      </Row>
-
-      {/* Intensity slider (only when CRT enabled) */}
-      {crtEnabled && (
-        <Row label="Intensity">
-          <View style={styles.sliderGroup}>
-            <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
-              <View style={styles.sliderTrack}>
-                <View style={[styles.sliderFill, { width: fillWidth }]} />
-                <View style={[styles.sliderThumb, { left: fillWidth - 5 }]} />
-              </View>
-            </View>
-            <Text style={styles.sliderPercent}>{crtIntensity}%</Text>
-          </View>
-        </Row>
-      )}
-
       {/* Font size preset */}
       <Row label="Font Size">
         <View style={styles.segGroup}>
@@ -639,9 +575,9 @@ function ThemeRow() {
         : rawUiFont;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const options: { value: UiFontId; label: string; swatch: string }[] = [
-    { value: 'blue',   label: 'Blue',   swatch: themePresets.blue.colors.accent },
-    { value: 'orange', label: 'Orange', swatch: themePresets.orange.colors.accent },
-    { value: 'purple', label: 'Purple', swatch: themePresets.purple.colors.accent },
+    { value: 'blue',   label: '零号機 / UNIT-00', swatch: themePresets.blue.colors.accent },
+    { value: 'orange', label: '二号機 / UNIT-02', swatch: themePresets.orange.colors.accent },
+    { value: 'purple', label: '初号機 / UNIT-01', swatch: themePresets.purple.colors.accent },
   ];
   return (
     <Row label="Theme">
