@@ -106,7 +106,7 @@ export const FirstMateOverlay = memo(function FirstMateOverlay({ visible, onClos
         setInstalling(false);
       }, 2000);
     }
-  }, [runCommand, onClose]);
+  }, [runCommand, onClose, t]);
 
   const handleSkip = useCallback(async () => {
     await AsyncStorage.setItem(STORAGE_KEY, 'true');

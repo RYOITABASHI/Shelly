@@ -9,17 +9,13 @@ import {
   AppState,
   findNodeHandle,
   Keyboard,
-  Linking,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { NativeTerminalView } from '@/modules/terminal-view/src';
@@ -27,19 +23,15 @@ import TerminalViewModule from '@/modules/terminal-view/src/TerminalViewModule';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalOutput } from '@/hooks/use-terminal-output';
 import { useTheme } from '@/hooks/use-theme';
-import { withAlpha } from '@/lib/theme-utils';
-import { useTranslation, t } from '@/lib/i18n';
-import { useExecutionLogStore } from '@/store/execution-log-store';
+import { useTranslation } from '@/lib/i18n';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
-import { useUsageStore } from '@/store/usage-store';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { usePanelBackground } from '@/hooks/use-panel-background';
-import type { ReadFileFn, ListFilesFn } from '@/lib/usage-parser';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -48,9 +40,9 @@ import { PreviewBanner } from '@/components/terminal/PreviewBanner';
 import { PreviewTabs } from '@/components/preview/PreviewTabs';
 import { usePreviewStore } from '@/store/preview-store';
 import { ProcessGuardModal } from '@/components/terminal/ProcessGuardModal';
-import { FirstMateOverlay, shouldShowFirstMate } from '@/components/terminal/FirstMateOverlay';
+import { FirstMateOverlay } from '@/components/terminal/FirstMateOverlay';
 import { isProcessKill } from '@/lib/process-guard';
-import { getTerminalTheme, type TerminalTheme } from '@/lib/terminal-theme';
+import { getTerminalTheme } from '@/lib/terminal-theme';
 import type { TabSession, SessionStatus } from '@/store/types';
 import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
@@ -58,7 +50,6 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { parseInput } from '@/lib/input-router';
 import { parseAgentCommand, createAgent, installAgent, runAgentNow, stopAgent } from '@/lib/agent-manager';
 import { suggestTool } from '@/lib/agent-tool-router';
-import { getHomePath } from '@/lib/home-path';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import { colors as C } from '@/theme.config';
@@ -109,7 +100,6 @@ export default function TerminalScreen() {
   // its own slice — `sessions` array reference only flips on
   // add/remove/edit, not on every byte append.
   const sessions = useTerminalStore((s) => s.sessions);
-  const removeSession = useTerminalStore((s) => s.removeSession);
   const settings = useTerminalStore((s) => s.settings);
   // Phase B: when a wallpaper is set, ask the native TerminalView to drop
   // its opaque background + padding fill so the wallpaper shows through.
@@ -119,26 +109,7 @@ export default function TerminalScreen() {
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;
-  const { refresh: refreshUsage } = useUsageStore();
-
-  // Usage adapters — read/list via TerminalEmulator (no bridge needed)
-  const readFileAdapter: ReadFileFn = React.useCallback(async (path: string) => {
-    try {
-      const content = await FileSystem.readAsStringAsync(path, { encoding: FileSystem.EncodingType.UTF8 });
-      return content;
-    } catch {
-      return null;
-    }
-  }, []);
-  const listFilesAdapter: ListFilesFn = React.useCallback(async (dir: string) => {
-    try {
-      const entries = await FileSystem.readDirectoryAsync(dir);
-      return entries.map((name: string) => ({ name, mtime: 0 }));
-    } catch {
-      return [];
-    }
-  }, []);
-
+  const activeNativeSessionId = activeSession?.nativeSessionId;
   const isMultiPane = useMultiPaneStore((s) => s.isMultiPane);
   // Detect if this instance is rendered inside MultiPaneContainer (via PaneSlot context)
   // vs. rendered by the Tabs navigator (hidden underneath the overlay)
@@ -150,8 +121,6 @@ export default function TerminalScreen() {
 
   // Even if hidden behind multi-pane, always ensure sessions exist
   // so the terminal is ready when the user switches to single-pane mode
-  const skipSessionCreation = false;
-
   // Bridge terminal output events to execution-log-store
   useTerminalOutput();
 
@@ -169,7 +138,6 @@ export default function TerminalScreen() {
 
   // FirstMate: first-time onboarding overlay
   const [showFirstMate, setShowFirstMate] = useState(false);
-  const firstMateChecked = useRef(false);
 
   // Block History panel toggle
   const [showBlockHistory, setShowBlockHistory] = useState(false);
@@ -181,7 +149,7 @@ export default function TerminalScreen() {
   const terminalViewRef = useRef<any>(null);
 
   // Keyboard height tracking for terminal resize (same pattern as Chat screen)
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [, setKeyboardHeight] = useState(0);
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
@@ -243,7 +211,7 @@ export default function TerminalScreen() {
       }
 
       // Destroy any stale session
-      try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch (_) {}
+      try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
 
       // Create session via JNI forkpty. If a live session with the same id
       // already exists in the Service-owned registry (Case B — the foreground
@@ -261,7 +229,7 @@ export default function TerminalScreen() {
       }
 
       // Start foreground service to prevent task-kill (may fail if Service class missing)
-      try { await TerminalEmulator.startSessionService(); } catch (_) {}
+      try { await TerminalEmulator.startSessionService(); } catch {}
 
       // Update session status
       useTerminalStore.setState((state) => ({
@@ -275,7 +243,7 @@ export default function TerminalScreen() {
       // the previous transcript snapshot into the fresh emulator so the user
       // sees their last-session history on startup. Visual-only; the shell
       // itself is new. When resumedLive is true the real interactive state
-      // (vim, claude --continue, REPLs) is still alive and replay would only
+      // (vim, agent CLIs, REPLs) is still alive and replay would only
       // double-print history, so we skip it.
       if (!resumedLive && session.transcriptSnapshot && session.transcriptSnapshot.length > 0) {
         try {
@@ -452,11 +420,6 @@ export default function TerminalScreen() {
     })();
   }, []);
 
-  // Refresh usage on mount
-  useEffect(() => {
-    refreshUsage(readFileAdapter, listFilesAdapter);
-  }, []);
-
   // Battery optimization exemption — prompt once per app launch on
   // unexpected disconnect. Earlier revisions fired this on every
   // onSessionExit, including intentional tab closes and `exit` commands,
@@ -605,11 +568,11 @@ export default function TerminalScreen() {
 
   // Send text to terminal via native PTY
   const sendToTerminal = useCallback((text: string) => {
-    if (!activeSession || !text) return;
-    TerminalEmulator.writeToSession(activeSession.nativeSessionId, text).catch((err) => {
+    if (!activeNativeSessionId || !text) return;
+    TerminalEmulator.writeToSession(activeNativeSessionId, text).catch((err) => {
       console.warn('[Terminal] writeToSession failed:', err);
     });
-  }, [activeSession?.nativeSessionId]);
+  }, [activeNativeSessionId]);
 
   // bug #81: Paste path for clipboard contents. Goes through the emulator's
   // paste() which normalizes CR/LF and wraps the payload in bracketed-paste
@@ -617,19 +580,19 @@ export default function TerminalScreen() {
   // raw write path clipped the first byte of multi-line clipboard payloads
   // because bash's prompt echo raced the PTY write.
   const pasteToTerminal = useCallback((text: string) => {
-    if (!activeSession || !text) return;
-    TerminalEmulator.pasteToSession(activeSession.nativeSessionId, text).catch((err) => {
+    if (!activeNativeSessionId || !text) return;
+    TerminalEmulator.pasteToSession(activeNativeSessionId, text).catch((err) => {
       console.warn('[Terminal] pasteToSession failed:', err);
     });
-  }, [activeSession?.nativeSessionId]);
+  }, [activeNativeSessionId]);
 
   const pasteClipboardToTerminal = useCallback(() => {
-    if (!activeSession) return;
-    return TerminalEmulator.pasteClipboardToSession(activeSession.nativeSessionId).catch((err) => {
+    if (!activeNativeSessionId) return;
+    return TerminalEmulator.pasteClipboardToSession(activeNativeSessionId).catch((err) => {
       console.warn('[Terminal] pasteClipboardToSession failed:', err);
       throw err;
     });
-  }, [activeSession?.nativeSessionId]);
+  }, [activeNativeSessionId]);
 
   // bug #44: Voice input routing.
   //
@@ -670,17 +633,16 @@ export default function TerminalScreen() {
 
   // Send raw key code to terminal
   const sendKey = useCallback((keyCode: string) => {
-    if (!activeSession) return;
-    TerminalEmulator.writeToSession(activeSession.nativeSessionId, keyCode).catch((err) => {
+    if (!activeNativeSessionId) return;
+    TerminalEmulator.writeToSession(activeNativeSessionId, keyCode).catch((err) => {
       console.warn('[Terminal] sendKey failed:', err);
     });
-  }, [activeSession?.nativeSessionId]);
+  }, [activeNativeSessionId]);
 
   // Copy file from device to terminal cwd
   const copyFileToCwd = useCallback(async (sourceUri: string, fileName: string) => {
     try {
       const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const cwd = activeSession?.currentDir || getHomePath();
       const tempPath = `${FileSystem.cacheDirectory}${safeName}`;
       await FileSystem.copyAsync({ from: sourceUri, to: tempPath });
       // Use terminal to copy file to cwd
@@ -688,7 +650,7 @@ export default function TerminalScreen() {
     } catch (e) {
       console.warn('[Terminal] file copy failed:', e);
     }
-  }, [activeSession?.currentDir, sendToTerminal]);
+  }, [sendToTerminal]);
 
 
   const handleReload = useCallback(() => {
@@ -696,15 +658,6 @@ export default function TerminalScreen() {
       recoverSession(activeSession);
     }
   }, [activeSession, recoverSession]);
-
-  // Handle session removal with native session cleanup
-  const handleRemoveSession = useCallback(async (sessionId: string) => {
-    const session = sessions.find((s) => s.id === sessionId);
-    if (session) {
-      try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
-    }
-    removeSession(sessionId);
-  }, [sessions, removeSession]);
 
   // bug (post-v0.1.0): in a 3-pane split layout the per-pane paddingBottom:
   // keyboardHeight double/triple-counted, so each terminal reserved the full
@@ -728,6 +681,7 @@ export default function TerminalScreen() {
           {/* Native Terminal View */}
           <NativeTerminalView
             ref={terminalViewRef}
+            testID="native-terminal-view"
             sessionId={activeSession.nativeSessionId}
             // Terminal font is deliberately NOT Silkscreen. Silkscreen's
             // glyph design has all letters drawn in uppercase shapes —
@@ -785,7 +739,7 @@ export default function TerminalScreen() {
               if (command && command.trim()) {
                 const trimmedCmd = command.trim();
 
-                // bug #59: Intercept @mention commands (@agent / @claude / ...)
+                // bug #59: Intercept @mention commands (@agent / ...)
                 // Bash naturally rejects them ("@agent: command not found") so
                 // we swallow that error and route through Shelly's own layer.
                 // Typing goes straight through the native PTY, so the earliest

@@ -250,7 +250,6 @@ function sessionKey(session: ScouterSession): string {
 }
 
 function sourceName(source?: string): string {
-  if (source === 'CLAUDE_CODE') return 'Claude Code';
   if (source === 'CODEX') return 'Codex';
   if (source === 'LOCAL_LLM') return 'Local LLM';
   return 'Shelly';
@@ -392,7 +391,6 @@ function systemLoadLine(load?: ScouterSystemLoad): string {
 
 function shortModelName(model: string): string {
   return model
-    .replace(/^claude-/, '')
     .replace(/^gpt-/, '')
     .replace(/-20\d{6}$/, '')
     .slice(0, 24);

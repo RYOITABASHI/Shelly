@@ -1,162 +1,50 @@
 # Shelly E2E Tests with Maestro
 
-このディレクトリには、ShellyアプリのE2E（End-to-End）テストフローが含まれています。
+This directory contains Maestro flows for the current Shelly Android app
+package: `dev.shelly.terminal`.
 
-## テストフロー一覧
+## Core Flows
 
-### 日本語版（推奨）
-アプリのデフォルトが日本語モードのため、以下の日本語版テストを使用してください。
+- `01_setup_wizard_ja.yaml` / `01_setup_wizard.yaml` - setup flow entry smoke test through the native terminal.
+- `02_chat_tab_ja.yaml` / `02_chat_tab.yaml` - chat pane smoke test.
+- `03_terminal_tab_ja.yaml` / `03_terminal_tab.yaml` - native PTY regression: launch terminal, run `bash -c`, assert output, exit.
+- `04_settings_tab_ja.yaml` / `05_settings_tab.yaml` - settings smoke test.
+- `05_native_pty_recovery_ja.yaml` / `04_native_pty_recovery.yaml` - native PTY restart smoke test.
 
-1. **01_setup_wizard_ja.yaml** - セットアップウィザードの完全フロー
-   - ようこそ → アプリインストール → 初期化 → 仕上げ → 完了
+## Prerequisites
 
-2. **02_chat_tab_ja.yaml** - チャットタブの機能テスト
-   - テキスト入力
-   - コマンド実行
-   - タブ切り替え
+- Maestro CLI 2.3.0 or newer.
+- Android Debug Bridge (`adb`) on `PATH`.
+- Shelly installed on the target Android device.
+- First-run setup completed for the strict terminal smoke tests.
 
-3. **03_terminal_tab_ja.yaml** - ターミナルタブのテスト
-   - ttyd接続確認
-   - 日本語入力
-
-4. **04_settings_tab_ja.yaml** - 設定タブの表示テスト
-   - 各セクションの表示確認
-   - 上級設定トグル
-
-5. **05_bridge_recovery_ja.yaml** - ブリッジ切断時の復帰UIテスト
-   - バナー表示確認
-   - 再接続ボタン
-
-### 英語版（参考）
-
-1. **01_setup_wizard.yaml** - SetupWizardの完全フロー
-2. **02_chat_tab.yaml** - Chatタブの機能テスト
-3. **03_terminal_tab.yaml** - Terminalタブのテスト
-4. **04_bridge_recovery_banner.yaml** - Bridge切断時の復帰UIテスト
-5. **05_settings_tab.yaml** - Settingsタブの表示テスト
-
-## 前提条件
-
-- Maestro CLI 2.3.0以上がインストール済み
-- Android Debug Bridge (adb) がパスに通っている
-- Z Fold6がUSBデバッグモードで接続済み
-- Shellyアプリがインストール済み
-
-## テスト実行方法
-
-### 環境変数設定（オプション）
+## Run
 
 ```bash
-# Maestro CLI パスを通す（初回のみ）
-export PATH="$PATH:~/maestro/bin"
+maestro test .maestro/03_terminal_tab_ja.yaml
 ```
 
-### adbパスを通す（オプション）
+Windows helper:
+
+```bat
+.maestro\run-test.bat terminal
+.maestro\run-test.bat pty
+```
+
+To reset app data before setup-flow testing:
 
 ```bash
-export PATH="$PATH:/c/android-sdk/platform-tools"
+adb shell pm clear dev.shelly.terminal
 ```
 
-### 単一テストの実行
+## Native PTY Smoke Contract
 
-```bash
-# チャットタブのテストを実行（日本語版）
-cd ~/maestro/bin
-./maestro.bat test ~/Shelly/.maestro/02_chat_tab_ja.yaml
-```
+The terminal regression flow verifies:
 
-### セットアップウィザードのテスト
+1. The native terminal view mounts.
+2. A command is sent through the PTY.
+3. `bash -c 'echo SHELLY_PTY_SMOKE_OK'` produces visible output.
+4. The shell accepts `exit`.
 
-```bash
-# セットアップウィザードのテストを実行
-# 注意: アプリデータをクリアして初期状態にしてから実行してください
-cd ~/maestro/bin
-./maestro.bat test ~/Shelly/.maestro/01_setup_wizard_ja.yaml
-```
-
-### 全テストの実行（日本語版のみ）
-
-```bash
-# 日本語版テストのみを実行
-cd ~/maestro/bin
-./maestro.bat test ~/Shelly/.maestro/*_ja.yaml
-```
-
-### デバイス確認
-
-```bash
-# 接続されているデバイスを確認
-adb devices
-```
-
-## 注意事項
-
-### セットアップウィザードテスト (01_setup_wizard_ja.yaml)
-
-- **アプリデータをクリアして初期状態にしてから実行してください**
-  ```bash
-  adb shell pm clear space.manus.shelly.terminal.t20260224103125
-  ```
-- Termuxがインストール済みでないと、アプリインストール画面で停止します
-- 実際のセットアップには数分かかる場合があります（初回は特に時間がかかります）
-
-### チャットタブテスト (02_chat_tab_ja.yaml)
-
-- Termux Bridgeが接続されていない場合、デモモードで動作します
-- コマンド実行結果の確認は、接続状態に依存します
-
-### Terminal タブテスト (03_terminal_tab.yaml)
-
-- ttydがTermuxで起動している必要があります
-- 接続できない場合、エラー画面が表示されますが、テストは継続します（optional要素を使用）
-
-### Bridge Recovery バナーテスト (04_bridge_recovery_banner.yaml)
-
-- Bridgeが切断されている場合のみバナーが表示されます
-- 全ての要素が `optional: true` なので、接続済みでもテストは成功します
-
-### Settings タブテスト (05_settings_tab.yaml)
-
-- 全てのUI要素の表示確認のみ
-- 設定値の変更はテストしません
-
-## トラブルシューティング
-
-### デバイスが認識されない
-
-```bash
-adb kill-server
-adb start-server
-adb devices
-```
-
-### テストが失敗する
-
-- アプリの状態を確認（セットアップ完了しているか？）
-- Termux Bridgeが起動しているか確認
-- Maestroのログを確認（`--verbose` オプション）
-
-```bash
-./maestro.bat test --verbose ~/Shelly/.maestro/02_chat_tab.yaml
-```
-
-### タイムアウトエラー
-
-- `timeout` 値を増やす（特に初回セットアップ時）
-- ネットワーク接続を確認（API呼び出しがある場合）
-
-## Maestro Studioでの実行（GUI）
-
-1. Maestro Studio (MaestroStudio.exe) を起動
-2. デバイスを選択（RFCX71399SK）
-3. YAMLファイルを開く
-4. "Run" ボタンをクリック
-
-## カスタマイズ
-
-各YAMLファイルは編集可能です：
-- `timeout` 値の調整
-- `optional: true` で柔軟な検証
-- `continueIf` で条件付き実行
-
-詳細は[Maestro公式ドキュメント](https://maestro.mobile.dev/)を参照してください。
+The native terminal view exposes `testID: native-terminal-view` so Maestro can
+focus the actual PTY surface instead of relying on legacy tab labels.

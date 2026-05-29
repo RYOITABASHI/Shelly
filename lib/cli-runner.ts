@@ -1,7 +1,7 @@
 /**
  * lib/cli-runner.ts — v2.5
  *
- * CLI Runner: Claude Code / Gemini CLI をJNI直接実行でアプリ内実行する。
+ * CLI Runner: Codex CLI / custom commands をJNI直接実行でアプリ内実行する。
  *
  * 設計方針:
  * - 対話型UIを前提にしない（1回実行で完結する形を優先）
@@ -14,13 +14,13 @@ import { execCommand } from '@/hooks/use-native-exec';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type CliTool = 'claude' | 'gemini' | 'codex' | 'cody' | 'custom';
+export type CliTool = 'codex' | 'cody' | 'custom';
 
 export interface CliToolConfig {
   id: CliTool;
   label: string;
   description: string;
-    checkCommand: string;       // claude / gemini / codex --version
+  checkCommand: string;       // codex --version
   installGuide: string;       // 自然言語インストール案内
   setupCommands: string[];    // セットアップコマンド列（確認後実行）
   isInteractive: boolean;     // 対話型UIが必要か
@@ -65,32 +65,6 @@ export interface CliRunResult {
 // ─── Tool Configs ─────────────────────────────────────────────────────────────
 
 export const CLI_TOOLS: Record<CliTool, CliToolConfig> = {
-  claude: {
-    id: 'claude',
-    label: 'Claude Code',
-    description: 'Anthropicが作ったAIコーディングアシスタント',
-    checkCommand: 'claude --version 2>/dev/null',
-    installGuide:
-      'Claude Codeがインストールされていないよ。\n' +
-      'ターミナルで以下を実行してインストールしてね：\n' +
-      'npm install -g @anthropic-ai/claude-code',
-    setupCommands: ['npm install -g @anthropic-ai/claude-code'],
-    isInteractive: true,
-    nonInteractiveFlag: '--print',
-  },
-  gemini: {
-    id: 'gemini',
-    label: 'Gemini CLI',
-    description: 'GoogleのAI CLIツール',
-    checkCommand: 'gemini --version 2>/dev/null',
-    installGuide:
-      'Gemini CLIがインストールされていないよ。\n' +
-      'ターミナルで以下を実行してインストールしてね：\n' +
-      'npm install -g @google/gemini-cli',
-    setupCommands: ['npm install -g @google/gemini-cli'],
-    isInteractive: true,
-    nonInteractiveFlag: '-p',
-  },
   codex: {
     id: 'codex',
     label: 'Codex CLI',
@@ -129,11 +103,11 @@ export const CLI_TOOLS: Record<CliTool, CliToolConfig> = {
 
 /**
  * ログ出力からAPIキーらしき文字列をマスクする。
- * パターン: sk-*, ANTHROPIC_API_KEY=*, GEMINI_API_KEY=*, Bearer *, AIza*
+ * パターン: sk-*, API_KEY=*, Bearer *, AIza*
  */
 export function maskSecrets(text: string): string {
   return text
-    // sk-ant-... / sk-proj-... (Anthropic)
+    // sk-* style API keys
     .replace(/sk-[a-zA-Z0-9\-_]{20,}/g, 'sk-****')
     // AIza... (Google)
     .replace(/AIza[a-zA-Z0-9\-_]{30,}/g, 'AIza****')
@@ -176,31 +150,17 @@ export function buildCliCommand(req: CliRunRequest): CliRunPlan {
   // Build the prompt for the CLI
   const prompt = buildPromptFromInput(req.userInput, req.targetPath);
 
-  // Claude Code: use --print for non-interactive
   let command: string;
   let isInteractiveFallback = false;
   let fallbackSuggestion: string | undefined;
 
-  if (req.tool === 'claude') {
-    // claude --print "<prompt>" in the target directory
-    command = `cd "${req.targetPath}" && echo "" | claude --print ${escapeShellArg(prompt)}`;
-
-    // Claude Code may still require interactive mode for complex tasks
-    if (req.userInput.length > 200 || req.userInput.includes('プロジェクト全体')) {
-      isInteractiveFallback = true;
-      fallbackSuggestion =
-        'この操作はClaude Codeの対話型モードが必要かもしれないよ。\n' +
-        'ターミナルで直接 `claude` を実行するか、もっとシンプルな指示で試してみて。';
-    }
-  } else if (req.tool === 'gemini') {
-    // gemini -p "<prompt>" in the target directory. The Shelly shell wrapper
-    // adds a stable default model unless the user explicitly supplies one.
-    command = `cd "${req.targetPath}" && gemini -p ${escapeShellArg(prompt)}`;
+  if (req.tool === 'codex') {
+    command = `cd "${req.targetPath}" && codex ${escapeShellArg(prompt)}`;
     if (req.userInput.length > 300) {
       isInteractiveFallback = true;
       fallbackSuggestion =
-        'この操作はGemini CLIの対話型モードが必要かもしれないよ。\n' +
-        'ターミナルで直接 `gemini` を実行するか、もっとシンプルな指示で試してみて。';
+        'この操作はCodexの対話型モードが向いているかもしれないよ。\n' +
+        'ターミナルで直接 `codex` を実行するか、もっとシンプルな指示で試してみて。';
     }
   } else {
     command = req.userInput;
@@ -263,21 +223,18 @@ export function interpretCheckResult(
   }
 
   // Check for auth-related errors in stdout/stderr
-  const authKeywords = ['not logged in', 'authentication', 'api key', 'unauthorized', 'login required', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'];
+  const authKeywords = ['not logged in', 'authentication', 'api key', 'unauthorized', 'login required', 'OPENAI_API_KEY'];
   const needsAuth = authKeywords.some((k) => stdout.toLowerCase().includes(k.toLowerCase()));
 
   if (needsAuth) {
-    const authGuide = tool === 'claude'
-      ? 'Claude Codeの認証が必要だよ。\nターミナルで `claude` を起動して `/login` を実行するか、\n環境変数 ANTHROPIC_API_KEY を設定してね。\n（APIキーはShellyには保存しないよ。ターミナル側で管理してね。）'
-      : 'Gemini CLIの認証が必要だよ。\nターミナルで `gemini auth login` を実行するか、\n環境変数 GEMINI_API_KEY を設定してね。\n（APIキーはShellyには保存しないよ。ターミナル側で管理してね。）';
-
     return {
       available: true,
       needsAuth: true,
-      message: authGuide,
-      setupCommands: tool === 'claude'
-        ? ['claude']
-        : ['gemini auth login'],
+      message:
+        'Codex CLIの認証が必要だよ。\n' +
+        'ターミナルで `codex` を起動してログインするか、環境変数 OPENAI_API_KEY を設定してね。\n' +
+        'APIキーはShellyには保存しないよ。ターミナル側で管理してね。',
+      setupCommands: ['codex'],
     };
   }
 

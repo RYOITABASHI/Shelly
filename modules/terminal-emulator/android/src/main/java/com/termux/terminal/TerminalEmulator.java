@@ -2104,7 +2104,7 @@ public final class TerminalEmulator {
                             String colorSpec = textParameter.substring(lastSemiIndex, charIndex);
                             if ("?".equals(colorSpec)) {
                                 if (specialIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
-                                    // Gemini CLI queries OSC 11 while restarting after trust
+                                    // Some TUIs query OSC 11 while restarting after trust
                                     // changes. On Android PTYs that reply can race with the
                                     // child process exit and get echoed visibly by the shell as
                                     // "^[]11;rgb:...". Shelly owns pane backgrounds anyway, so
@@ -2127,7 +2127,7 @@ public final class TerminalEmulator {
                                 if (specialIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
                                     // Shelly keeps pane backgrounds owned by the app theme.
                                     // TUI/CLI apps may send OSC 11 to tint their terminal
-                                    // background (Claude Code currently uses a grey value),
+                                    // background,
                                     // which makes one pane look disabled or unfocused.
                                     // Foreground/cursor OSC changes remain supported.
                                     android.util.Log.d(LOG_TAG, "Ignoring OSC " + value + " default background color change: " + colorSpec);
@@ -2731,7 +2731,7 @@ public final class TerminalEmulator {
         // DECSET 2004 gate: only wrap if the guest has advertised
         // bracketed-paste mode. A readline guest (local bash with our bind,
         // or remote bash over SSH) emits `\e[?2004h` on prompt display.
-        // Full-screen TUIs such as Claude Code normally do understand the
+        // Full-screen TUIs normally do understand the
         // standard bracketed-paste markers and expect to receive `\e[200~`.
         // They often also enable alternate-screen or mouse tracking. In that
         // mode, sending Shelly's readline-only `\C-x\C-b` trigger means the

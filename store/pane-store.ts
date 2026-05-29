@@ -5,9 +5,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /** Agent color mapping for pane top borders */
 export const AGENT_COLORS: Record<string, string> = {
-  claude: '#D4A574',
-  gemini: '#4285F4',
   codex: '#10A37F',
+  gemini: '#60A5FA',
   cerebras: '#FF6B35',
   groq: '#F97316',
   local: '#FFD700',

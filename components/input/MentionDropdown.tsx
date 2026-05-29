@@ -14,9 +14,8 @@ export type MentionOption = {
 };
 
 const MENTION_OPTIONS: MentionOption[] = [
-  { trigger: '@claude',     label: 'Claude Code',  descKey: 'mention.claude_desc',      icon: 'code',           color: '#F59E0B' },
   { trigger: '@codex',      label: 'Codex',        descKey: 'mention.codex_desc',       icon: 'terminal',       color: '#6366F1' },
-  { trigger: '@gemini',     label: 'Gemini',       descKey: 'mention.gemini_desc',      icon: 'travel-explore', color: '#3B82F6' },
+  { trigger: '@gemini',     label: 'Gemini',       descKey: 'mention.gemini_desc',      icon: 'auto-awesome',   color: '#60A5FA' },
   { trigger: '@cerebras',   label: 'Cerebras',     descKey: 'mention.cerebras_desc',    icon: 'auto-awesome',   color: '#A78BFA' },
   { trigger: '@local',      label: 'Local LLM',    descKey: 'mention.local_desc',       icon: 'memory',         color: '#8B5CF6' },
   { trigger: '@perplexity', label: 'Perplexity',   descKey: 'mention.perplexity_desc',  icon: 'search',         color: '#20B2AA' },

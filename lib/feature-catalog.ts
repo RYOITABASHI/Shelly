@@ -20,7 +20,7 @@ export const FEATURE_CATALOG: Feature[] = [
   // AI
   { id: 'ai-pane', name: 'AI Pane', description: 'Streaming AI responses with terminal context', category: 'ai' },
   { id: 'inline-diff', name: 'Inline Diff Preview', description: 'Green/red diff with accept/reject in AI responses', category: 'ai', triggerContext: 'AI suggests code changes' },
-  { id: 'agent-selector', name: 'Agent Selector', description: 'Switch AI agents per pane (Claude, Gemini, Local...)', category: 'ai' },
+  { id: 'agent-selector', name: 'Agent Selector', description: 'Switch AI agents per pane (Codex, Local, cloud APIs...)', category: 'ai' },
   { id: 'terminal-context', name: 'Terminal Context', description: 'AI reads your terminal output automatically', category: 'ai' },
 
   // Browser

@@ -32,10 +32,10 @@ import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWra
 import { BuildsModal } from '@/components/layout/BuildsModal';
 import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
-import { execCommand } from '@/hooks/use-native-exec';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 type Props = {
   visible: boolean;
@@ -87,10 +87,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
-            <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
-            <ClaudeLoginSection onClose={onClose} />
-            <GeminiLoginSection onClose={onClose} />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -149,7 +146,6 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
 
   const load = React.useCallback(async () => {
     try {
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       const info = await TerminalEmulator.getScouterDebugInfo();
       const parsed = JSON.parse(info);
       setEnabled(Boolean(parsed?.enabled));
@@ -167,7 +163,6 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
     const next = !enabled;
     setBusy(true);
     try {
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       await TerminalEmulator.setScouterEnabled(next);
       setEnabled(next);
       await load();
@@ -179,11 +174,10 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
     } finally {
       setBusy(false);
     }
-  }, [enabled]);
+  }, [enabled, load]);
 
   const copyDebug = React.useCallback(async () => {
     try {
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       const info = await TerminalEmulator.getScouterDebugInfo();
       await Clipboard.setStringAsync(info);
       Alert.alert('Scouter Debug', `${info.slice(0, 2500)}\n\nCopied to clipboard.`);
@@ -199,7 +193,6 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
         Alert.alert('Scouter disabled', 'Turn Scouter on first, then copy hook templates.');
         return;
       }
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       const codex = await TerminalEmulator.getScouterHookTemplate('codex');
       const local = await TerminalEmulator.getScouterHookTemplate('local');
       const text = `Codex:\n${codex}\n\nLocal LLM:\n${local}`;
@@ -322,7 +315,6 @@ function RecoverySection() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
               const result = await TerminalEmulator.forceRecoverFromFrozenState();
               const cleanedCount = Array.isArray(result?.cleaned) ? result.cleaned.length : 0;
               const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
@@ -646,7 +638,7 @@ function ThemeRow() {
       : rawUiFont === 'blackline' ? 'blue'
         : rawUiFont;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const options: Array<{ value: UiFontId; label: string; swatch: string }> = [
+  const options: { value: UiFontId; label: string; swatch: string }[] = [
     { value: 'blue',   label: 'Blue',   swatch: themePresets.blue.colors.accent },
     { value: 'orange', label: 'Orange', swatch: themePresets.orange.colors.accent },
     { value: 'purple', label: 'Purple', swatch: themePresets.purple.colors.accent },
@@ -722,12 +714,10 @@ function LanguageSection() {
 
 // ─── AI Agents ───────────────────────────────────────────────────────────────
 
-const DEFAULT_AGENT_OPTIONS: Array<{ value: 'cerebras' | 'groq' | 'gemini-cli' | 'claude-code' | 'codex'; label: string }> = [
+const DEFAULT_AGENT_OPTIONS: { value: 'cerebras' | 'groq' | 'codex'; label: string }[] = [
   { value: 'cerebras',    label: 'Cerebras' },
   { value: 'groq',        label: 'Groq' },
   { value: 'codex',       label: 'Codex' },
-  { value: 'claude-code', label: 'Claude' },
-  { value: 'gemini-cli',  label: 'Gemini CLI Experimental' },
 ];
 
 function AgentsSection() {
@@ -799,7 +789,7 @@ function AgentsSection() {
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
-type ApiKeyFieldKey = 'cerebrasApiKey' | 'groqApiKey' | 'geminiApiKey' | 'perplexityApiKey';
+type ApiKeyFieldKey = 'geminiApiKey' | 'cerebrasApiKey' | 'groqApiKey' | 'perplexityApiKey';
 
 type ApiKeyField = {
   key: ApiKeyFieldKey;
@@ -808,9 +798,9 @@ type ApiKeyField = {
 };
 
 const API_KEY_FIELDS: ApiKeyField[] = [
+  { key: 'geminiApiKey',     label: 'Gemini',     hint: 'aistudio.google.com/app/apikey' },
   { key: 'cerebrasApiKey',   label: 'Cerebras',   hint: 'cloud.cerebras.ai' },
   { key: 'groqApiKey',       label: 'Groq',       hint: 'console.groq.com' },
-  { key: 'geminiApiKey',     label: 'Gemini',     hint: 'aistudio.google.com/apikey' },
   { key: 'perplexityApiKey', label: 'Perplexity', hint: 'perplexity.ai/settings/api' },
 ];
 
@@ -955,171 +945,6 @@ function ApiKeysSection() {
   );
 }
 
-// ─── CLI Credential Import ──────────────────────────────────────────────────
-
-const README_CREDENTIALS_URL =
-  'https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials';
-
-const CLAUDE_IMPORT_CMD = String.raw`set -eu
-ROOT_JSON="/sdcard/Download/shelly-claude-root.json"
-CLAUDE_TAR="/sdcard/Download/termux-claude-dir.tar"
-if [ ! -f "$ROOT_JSON" ]; then
-  echo "Missing $ROOT_JSON"
-  echo "Prepare the files first using the README Bring your own credentials steps:"
-  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
-  exit 2
-fi
-if [ ! -f "$CLAUDE_TAR" ]; then
-  echo "Missing $CLAUDE_TAR"
-  echo "Prepare the files first using the README Bring your own credentials steps:"
-  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
-  exit 2
-fi
-mkdir -p "$HOME/.claude"
-cp "$ROOT_JSON" "$HOME/.claude.json"
-chmod 600 "$HOME/.claude.json"
-tar xf "$CLAUDE_TAR" -C "$HOME/.claude"
-if [ ! -f "$HOME/.claude/.credentials.json" ]; then
-  echo "Import finished, but ~/.claude/.credentials.json is still missing."
-  echo "The tar file must contain the donor ~/.claude directory contents."
-  exit 3
-fi
-chmod 700 "$HOME/.claude" 2>/dev/null || true
-chmod 600 "$HOME/.claude/.credentials.json"
-echo "== claude --version =="
-claude --version
-echo
-echo "== credential files =="
-ls -l "$HOME/.claude.json" "$HOME/.claude/.credentials.json"
-echo
-if command -v shelly-doctor >/dev/null 2>&1; then
-  echo "== shelly-doctor =="
-  shelly-doctor
-else
-  echo "== shelly-doctor =="
-  echo "shelly-doctor is not available in this shell; credential file checks above passed."
-fi`;
-
-const GEMINI_IMPORT_CMD = String.raw`set -eu
-GEMINI_TAR="/sdcard/Download/termux-gemini-dir.tar"
-if [ ! -f "$GEMINI_TAR" ]; then
-  echo "Missing $GEMINI_TAR"
-  echo "Prepare the file first using the README Bring your own credentials steps:"
-  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
-  exit 2
-fi
-mkdir -p "$HOME/.gemini"
-tar xf "$GEMINI_TAR" -C "$HOME/.gemini"
-if [ ! -f "$HOME/.gemini/oauth_creds.json" ]; then
-  echo "Import finished, but ~/.gemini/oauth_creds.json is still missing."
-  echo "The tar file must contain the donor ~/.gemini directory contents."
-  exit 3
-fi
-chmod 700 "$HOME/.gemini" 2>/dev/null || true
-chmod 600 "$HOME/.gemini/oauth_creds.json"
-echo "== gemini --version =="
-gemini --version
-echo
-echo "== credential files =="
-ls -l "$HOME/.gemini/oauth_creds.json"
-echo
-if command -v shelly-doctor >/dev/null 2>&1; then
-  echo "== shelly-doctor =="
-  shelly-doctor
-else
-  echo "== shelly-doctor =="
-  echo "shelly-doctor is not available in this shell; credential file checks above passed."
-fi`;
-
-function CredentialImportSection() {
-  const [busy, setBusy] = useState<'claude' | 'gemini' | null>(null);
-
-  const runImport = React.useCallback(async (kind: 'claude' | 'gemini') => {
-    const label = kind === 'claude' ? 'Claude' : 'Gemini';
-    const command = kind === 'claude' ? CLAUDE_IMPORT_CMD : GEMINI_IMPORT_CMD;
-    setBusy(kind);
-    try {
-      const result = await execCommand(command, 120_000);
-      const output = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
-      if (result.exitCode !== 0) {
-        Alert.alert(
-          `${label} import failed`,
-          `${output || `exit code ${result.exitCode}`}\n\nPrepare the files first using the README steps:\n${README_CREDENTIALS_URL}`,
-        );
-        logError('SettingsDropdown', `${label} credential import failed`, output || result.exitCode);
-        return;
-      }
-      Alert.alert(
-        `${label} credentials imported`,
-        `${output}\n\nSecurity reminder: delete the copied credential file(s) from /sdcard/Download after you confirm ${label} works.`,
-      );
-      logInfo('SettingsDropdown', `${label} credential import ok`);
-    } catch (e: any) {
-      Alert.alert(
-        `${label} import failed`,
-        `${String(e?.message || e)}\n\nPrepare the files first using the README steps:\n${README_CREDENTIALS_URL}`,
-      );
-      logError('SettingsDropdown', `${label} credential import threw`, e);
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
-  const confirmImport = React.useCallback((kind: 'claude' | 'gemini') => {
-    const label = kind === 'claude' ? 'Claude' : 'Gemini';
-    const expected =
-      kind === 'claude'
-        ? '/sdcard/Download/shelly-claude-root.json\n/sdcard/Download/termux-claude-dir.tar'
-        : '/sdcard/Download/termux-gemini-dir.tar';
-    Alert.alert(
-      `Import ${label} credentials?`,
-      `Shelly will copy sensitive OAuth credential files from:\n\n${expected}\n\nThis does not delete the /sdcard/Download copies. Delete them manually after import.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Import', onPress: () => void runImport(kind) },
-      ],
-    );
-  }, [runImport]);
-
-  return (
-    <Section title="IMPORT CLI CREDENTIALS">
-      <Text style={styles.credentialHint}>
-        OAuth does not complete inside Shelly for Claude/Gemini yet. Import
-        credentials created in Termux, desktop, or Codespaces.
-      </Text>
-      <Pressable
-        style={[styles.integrationRow, busy === 'claude' && styles.integrationRowDisabled]}
-        onPress={() => confirmImport('claude')}
-        disabled={busy !== null}
-        accessibilityRole="button"
-        accessibilityLabel="Import Claude credentials"
-      >
-        <MaterialIcons name="vpn-key" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>
-          {busy === 'claude' ? 'Importing Claude...' : 'Import Claude credentials'}
-        </Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-      <View style={styles.credentialGap} />
-      <Pressable
-        style={[styles.integrationRow, busy === 'gemini' && styles.integrationRowDisabled]}
-        onPress={() => confirmImport('gemini')}
-        disabled={busy !== null}
-        accessibilityRole="button"
-        accessibilityLabel="Import Gemini credentials"
-      >
-        <MaterialIcons name="vpn-key" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>
-          {busy === 'gemini' ? 'Importing Gemini...' : 'Import Gemini credentials'}
-        </Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-    </Section>
-  );
-}
-
 // ─── Codex login (ChatGPT subscription device-auth) ─────────────────────────
 // Minimal trigger for the existing `codex-login --open` flow defined in
 // HomeInitializer.kt:1493 and implemented in assets/shelly-codex-auth.js.
@@ -1128,9 +953,6 @@ function CredentialImportSection() {
 // pane opens via the shelly://browser deep link, and ~/.codex/auth.json
 // (mode 0600) is written on success. Verification is delegated to
 // shelly-doctor (which already reports `codex auth: <exists|missing>`).
-// Kept distinct from CredentialImportSection per project policy: Codex
-// authenticates in-app via OAuth, while Claude/Gemini still need
-// credential transplant.
 
 function CodexLoginSection({ onClose }: { onClose: () => void }) {
   const addPane = useAddPane();
@@ -1160,7 +982,7 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
     <Section title="CODEX LOGIN">
       <Text style={styles.credentialHint}>
         Sign in with your ChatGPT subscription via device-code OAuth. Runs in a
-        new terminal pane and opens the verification page in Shelly's Browser
+        new terminal pane and opens the verification page in Shelly&apos;s Browser
         Pane.
       </Text>
       <Pressable
@@ -1171,121 +993,6 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
       >
         <MaterialIcons name="login" size={13} color={C.text2} />
         <Text style={styles.integrationLabel}>Sign in with ChatGPT</Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-    </Section>
-  );
-}
-
-// ─── Claude / Gemini login (loopback OAuth via xdg-open shim) ───────────────
-// Phase 1 of bug #102 / #115: Bionic Android has no native xdg-open, so
-// Claude Code's `/login` (i3 opener) and Gemini CLI's `auth login`
-// both fail silently with ENOENT and fall through to manual paste —
-// except the user has nowhere to actually open the URL without leaving Shelly.
-// HomeInitializer.kt now installs a `$HOME/bin/xdg-open` shim that
-// fires the `shelly://browser?url=…` deep link, so the auth URL opens
-// in Shelly's Browser Pane. The user signs in there, copies the
-// `code#state` token from the success page, and pastes it back into
-// the CLI's manual-paste UI.
-//
-// These buttons are pure UX shortcuts — they spawn a fresh terminal
-// pane and queue the actual auth command (`claude` -> then /login,
-// `gemini auth login`).
-// No new auth logic, no token exchange. Loopback automation (the
-// callback intercept inside Browser Pane) is intentionally deferred
-// to Phase 2 once we've verified Phase 1 on hardware.
-
-// We deliberately spawn the bare REPL (`claude\n` / `gemini\n`) instead
-// `claude` still needs the REPL prompt and a manual `/login`, but
-// Gemini CLI exposes a real `auth login` subcommand that we can launch
-// directly. The Alert spells this out so the user knows the next move.
-
-function ClaudeLoginSection({ onClose }: { onClose: () => void }) {
-  const addPane = useAddPane();
-
-  const start = React.useCallback(() => {
-    Alert.alert(
-      'Start Claude sign-in?',
-      'Spawns a fresh terminal pane with the Claude REPL. After the prompt appears, type /login to begin sign-in. The auth URL will open in Shelly\'s Browser Pane via the xdg-open shim.\n\nIf the flow fails on-device, fall back to credential transplant (see README).',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start',
-          onPress: () => {
-            const result = addPane('terminal');
-            if (result !== null) return; // useAddPane already alerted
-            const sessionId = useTerminalStore.getState().activeSessionId;
-            useTerminalStore.getState().insertCommand('claude\n', sessionId);
-            logInfo('SettingsDropdown', 'claude REPL launched for /login');
-            onClose();
-          },
-        },
-      ],
-    );
-  }, [addPane, onClose]);
-
-  return (
-    <Section title="CLAUDE LOGIN (BETA)">
-      <Text style={styles.credentialHint}>
-        Browser-launch assist for Claude Code's `/login`. Beta — full OAuth
-        completion is under hardware verification. Falls back to credential
-        transplant if the in-app flow can't finish (see README).
-      </Text>
-      <Pressable
-        style={styles.integrationRow}
-        onPress={start}
-        accessibilityRole="button"
-        accessibilityLabel="Start Claude sign-in"
-      >
-        <MaterialIcons name="login" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Start Claude sign-in</Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-    </Section>
-  );
-}
-
-function GeminiLoginSection({ onClose }: { onClose: () => void }) {
-  const addPane = useAddPane();
-
-  const start = React.useCallback(() => {
-    Alert.alert(
-      'Start Gemini sign-in?',
-      'Spawns a fresh terminal pane and runs Gemini CLI\'s auth subcommand. Shelly opens the verification URL in the Browser Pane via the xdg-open shim and the CLI finishes the loopback flow on-device.\n\nIf the flow fails, fall back to credential transplant (see README).',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start',
-          onPress: () => {
-            const result = addPane('terminal');
-            if (result !== null) return; // useAddPane already alerted
-            const sessionId = useTerminalStore.getState().activeSessionId;
-            useTerminalStore.getState().insertCommand('gemini auth login\n', sessionId);
-            logInfo('SettingsDropdown', 'gemini auth login launched');
-            onClose();
-          },
-        },
-      ],
-    );
-  }, [addPane, onClose]);
-
-  return (
-    <Section title="GEMINI LOGIN (BETA)">
-      <Text style={styles.credentialHint}>
-        Browser-launch assist for Gemini CLI's `/auth`. Beta — full OAuth
-        completion is under hardware verification. Falls back to credential
-        transplant if the in-app flow can't finish (see README).
-      </Text>
-      <Pressable
-        style={styles.integrationRow}
-        onPress={start}
-        accessibilityRole="button"
-        accessibilityLabel="Start Gemini sign-in"
-      >
-        <MaterialIcons name="login" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Start Gemini sign-in</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>

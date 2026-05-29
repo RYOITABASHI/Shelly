@@ -1,4 +1,4 @@
-appId: space.manus.shelly.terminal.t20260224103125
+appId: dev.shelly.terminal
 ---
 # Chat Tab E2E Test Flow
 # Tests the main chat interface functionality
@@ -50,21 +50,21 @@ appId: space.manus.shelly.terminal.t20260224103125
 # Test @mention routing
 - tapOn:
     text: "Ask anything..."
-- inputText: "@gemini what is the weather today?"
+- inputText: "@local summarize the terminal state"
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 5000
 
-# Verify Gemini response (may be demo mode)
+# Verify local AI response (may be demo mode)
 - scrollUntilVisible:
     element:
-      text: "Gemini"
+      text: "Local"
     direction: UP
     timeout: 5000
     visibilityPercentage: 50
   continueIf:
     visible:
-      text: "Gemini"
+      text: "Local"
 
 # Test scrolling through messages
 - scroll

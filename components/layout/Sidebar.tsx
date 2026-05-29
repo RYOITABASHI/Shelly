@@ -21,11 +21,7 @@ import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
 import { useAgentStore } from '@/store/agent-store';
-import { useTerminalStore } from '@/store/terminal-store';
 import { deleteAgent, runAgentNow, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
-import { useSettingsStore } from '@/store/settings-store';
-import { usePaneStore } from '@/store/pane-store';
-import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
@@ -118,8 +114,6 @@ export function Sidebar() {
     useFocusStore.getState().requestTerminalRefocus();
   };
 
-  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
-  const setLeafTab = useMultiPaneStore((s) => s.setLeafTab);
   const openUrl = useBrowserStore((s) => s.openUrl);
   const portsSectionOpen = useSidebarStore((s) => s.openSections.ports);
   const portsPollingDisabled = usePortsStore((s) => s.pollingDisabled);
@@ -194,7 +188,7 @@ export function Sidebar() {
 
   // Git dirty-count polling removed 2026-04-21. The count was run against
   // `$HOME` which is not a sane repo context — CLI bg updates, install
-  // logs, npm caches, and .claude state all counted as "dirty", surfacing
+  // logs, npm caches, and agent state all counted as "dirty", surfacing
   // alarming 3-digit numbers that did not track any real work in progress.
   // If this returns it should be scoped to a real repo path (a row in
   // REPOSITORIES) and use git's own per-file metadata rather than a
@@ -280,7 +274,7 @@ export function Sidebar() {
           return next;
         });
       }, 30_000);
-    } catch (error) {
+    } catch {
       setPendingAgentIds((prev) => {
         const next = new Set(prev);
         next.delete(agentId);
@@ -451,7 +445,7 @@ export function Sidebar() {
           )}
         </SidebarSection>
 
-        {/* QUICK LAUNCH — v76 one-tap CLI shortcuts (claude/codex/gemini)
+        {/* QUICK LAUNCH — one-tap CLI shortcuts
             into a fresh Terminal pane. Sits between TASKS and REPOSITORIES
             so the most-used "I just want a REPL right now" affordance is
             top of the sidebar, mirroring Apple Superset's CLI launch row. */}

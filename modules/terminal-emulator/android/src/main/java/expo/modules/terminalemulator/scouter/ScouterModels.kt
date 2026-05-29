@@ -5,13 +5,11 @@ import java.util.Locale
 import java.util.UUID
 
 enum class ScouterSource {
-    CLAUDE_CODE,
     CODEX,
     LOCAL_LLM,
     SHELLY;
 
     fun badge(): String = when (this) {
-        CLAUDE_CODE -> "CC"
         CODEX -> "CX"
         LOCAL_LLM -> "LL"
         SHELLY -> "SH"
@@ -227,7 +225,6 @@ fun inferSource(raw: String?): ScouterSource {
     return when {
         "codex" in value -> ScouterSource.CODEX
         "local" in value || "llm" in value || "llama" in value || "ollama" in value -> ScouterSource.LOCAL_LLM
-        "claude" in value || value == "cc" -> ScouterSource.CLAUDE_CODE
         else -> ScouterSource.SHELLY
     }
 }

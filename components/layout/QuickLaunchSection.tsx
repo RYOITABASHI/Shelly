@@ -18,16 +18,14 @@ import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 
-type QuickLaunchCommand = 'claude' | 'codex' | 'diag';
+type QuickLaunchCommand = 'codex' | 'diag';
 
 const COMMAND_LABEL: Record<QuickLaunchCommand, string> = {
-  claude: 'Claude',
   codex: 'Codex',
   diag: 'Diag',
 };
 
 const COMMAND_TEXT: Record<QuickLaunchCommand, string> = {
-  claude: 'claude',
   codex: 'codex',
   diag: 'shelly-codex-diagnose',
 };
@@ -63,7 +61,7 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
       iconsOnly={iconsOnly}
     >
       <View style={styles.row}>
-        {(['claude', 'codex', 'diag'] as const).map((command) => (
+        {(['codex', 'diag'] as const).map((command) => (
           <Pressable
             key={command}
             style={[

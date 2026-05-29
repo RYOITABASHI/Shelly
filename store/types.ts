@@ -74,7 +74,7 @@ export type AiBlock = {
   /** 元のユーザー入力 */
   input: string;
   /** ルーティング先 */
-  target: 'claude' | 'gemini' | 'local' | 'shell' | 'suggest' | 'perplexity' | 'groq' | 'team' | 'browser' | 'git' | 'agent';
+  target: 'local' | 'shell' | 'suggest' | 'gemini' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena' | 'actions';
   /** 入力レイヤー */
   layer: 'mention' | 'nl_with_tool' | 'natural' | 'command';
   /** 1行サマリー（常時表示） */
@@ -85,7 +85,7 @@ export type AiBlock = {
   response?: string;
   /** ツール提案リスト（layer='natural'の場合） */
   toolSuggestions?: Array<{
-    target: 'claude' | 'gemini' | 'local' | 'perplexity' | 'team';
+    target: 'local' | 'gemini' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'codex';
     label: string;
     reason: string;
     mentionExample: string;
@@ -179,7 +179,7 @@ export type TabSession = {
   commandHistory: string[];
   historyIndex: number;
   /** 現在実行中のCLI（復帰用） */
-  activeCli: 'claude' | 'gemini' | 'codex' | 'cody' | null;
+  activeCli: 'codex' | 'cody' | null;
   /** 対応するtmuxセッション名 */
   tmuxSession: string;
   /** Native terminal session identifier */
@@ -192,7 +192,7 @@ export type TabSession = {
    * Transcript snapshot captured on save. Replayed into the emulator on next
    * launch so users can scroll back through what they saw last time (bug #65
    * / "Immortal Sessions" — Case C pseudo-immortal). This is visual-only —
-   * the underlying shell (cwd, running vim/claude, env) is not restored.
+   * the underlying shell (cwd, running vim/agent CLI, env) is not restored.
    */
   transcriptSnapshot?: string;
 };
@@ -376,7 +376,6 @@ export type AppSettings = {
   // ─── @team Table ────────────────────────────────────────────────────────────
   /** @teamに参加させるエージェントのON/OFF */
   teamMembers: {
-    claude: boolean;
     gemini: boolean;
     codex: boolean;
     cerebras: boolean;
@@ -385,7 +384,7 @@ export type AppSettings = {
     local: boolean;
   };
   /** ファシリテーターの優先順位（先頭が最優先） */
-  teamFacilitatorPriority: Array<'local' | 'claude' | 'gemini' | 'codex' | 'perplexity'>;
+  teamFacilitatorPriority: Array<'local' | 'gemini' | 'cerebras' | 'groq' | 'codex' | 'perplexity'>;
   /** Codex CLIコマンド名 (default: codex) */
   codexCmd?: string;
   // ─── コマンド安全システム ─────────────────────────────────────────────────────────────────────────────────────
@@ -399,11 +398,9 @@ export type AppSettings = {
   /** Chatタブ経由でのCLI自動承認レベル (default: 'safe') */
   autoApproveLevel: 'none' | 'safe' | 'all';
   // ─── Default Agent ─────────────────────────────────────────────────────────
-  /** Default agent for chat / AI pane. Cerebras Qwen3-235B was the
-   *  decision settled in 2ba65f3a (best free quota + frontier model);
-   *  the older CLI options (gemini-cli/claude-code/codex) are kept for
-   *  users who prefer routing chat through their bundled CLI. */
-  defaultAgent: 'cerebras' | 'groq' | 'gemini-cli' | 'claude-code' | 'codex';
+  /** Default agent for chat / AI pane. Legacy removed-agent values
+   * are migrated to codex when old settings are loaded. */
+  defaultAgent: 'cerebras' | 'groq' | 'codex';
   /** リアルタイム翻訳ON/OFF（デフォルト: false） */
   realtimeTranslateEnabled?: boolean;
   /** LLM出力通訳（学習モード）ON/OFF（デフォルト: false） */
@@ -448,7 +445,7 @@ export type AppSettings = {
 // ─── Background Agents ──────────────────────────────────────────────────────
 
 export type ToolChoice =
-  | { type: 'cli'; cli: 'claude' | 'gemini' | 'codex' }
+  | { type: 'cli'; cli: 'codex' }
   | { type: 'gemini-api'; model?: string }
   | { type: 'local'; model?: string }
   | { type: 'perplexity'; model?: string }

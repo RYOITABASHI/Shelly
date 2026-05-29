@@ -1,6 +1,6 @@
 import React, { memo, useCallback } from 'react';
-import { View, Text, StyleSheet, Linking, Pressable } from 'react-native';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { View, Text, StyleSheet, Linking } from 'react-native';
+import { colors as C } from '@/theme.config';
 
 type Props = {
   content: string;
@@ -224,7 +224,6 @@ function MarkdownBlock({ content }: Props) {
 
 const TEXT = '#ECEDEE';
 const CODE_BG = C.border;
-const MUTED = '#666';
 
 const styles = StyleSheet.create({
   container: {

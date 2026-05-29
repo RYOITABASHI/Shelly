@@ -5,8 +5,7 @@ import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { PANE_REGISTRY } from './pane-registry';
 import { PaneSelector } from './PaneSelector';
 import PaneCliTabs from './PaneCliTabs';
-import type { PaneTab } from '@/hooks/use-multi-pane';
-import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore, getAgentColor } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -81,7 +80,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   });
   const teamMembers = useSettingsStore((s) => s.settings.teamMembers);
   const activeRepoPath = useSidebarStore((s) => s.activeRepoPath);
-  const Component = useMemo(() => entry.getComponent(), [tab]);
+  const Component = useMemo(() => entry.getComponent(), [entry]);
   const BrowserComponent = useMemo(() => PANE_REGISTRY['browser'].getComponent(), []);
   const ctxValue = useMemo(() => ({ paneWidth, paneHeight }), [paneWidth, paneHeight]);
 

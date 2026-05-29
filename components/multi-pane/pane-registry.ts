@@ -1,5 +1,4 @@
-import React from 'react';
-import { View, Text } from 'react-native';
+/* eslint-disable @typescript-eslint/no-require-imports -- Pane components are lazy-loaded here to avoid eager pane cycles. */
 import type { ComponentType } from 'react';
 import type { PaneTab } from '@/hooks/use-multi-pane';
 
@@ -8,14 +7,6 @@ type PaneEntry = {
   icon: string;
   getComponent: () => ComponentType;
 };
-
-function StubPane({ label }: { label: string }) {
-  return React.createElement(View, {
-    style: { flex: 1, backgroundColor: 'transparent', justifyContent: 'center', alignItems: 'center' },
-  }, React.createElement(Text, {
-    style: { color: '#666', fontFamily: 'JetBrainsMono_400Regular', fontSize: 12 },
-  }, `${label} — Coming Soon`));
-}
 
 export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
   terminal: {

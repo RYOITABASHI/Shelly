@@ -13,7 +13,6 @@ import {
   TextInput,
   ScrollView,
   StyleSheet,
-  ActivityIndicator,
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -21,7 +20,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import type { SetupBlock as SetupBlockType } from '@/store/types';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C } from '@/theme.config';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -119,7 +118,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
       return;
     }
     if (block.stepId === 'cli-auth') {
-      // Extract tool id from option id (auth-claude-code -> claude-code)
+      // Extract tool id from option id (auth-codex -> codex)
       const toolId = optionId.replace('auth-', '');
       onAction(block.id, `auth-browser-${toolId}`);
       return;

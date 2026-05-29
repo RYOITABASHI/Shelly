@@ -9,7 +9,6 @@ import {
   NativeSyntheticEvent,
   TextInputKeyPressEventData,
   ScrollView,
-  ActivityIndicator,
  Alert } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -73,6 +72,13 @@ export type CommandInputHandle = {
 const MAX_IMAGES = 4;
 const MAX_FILE_SIZE = 100 * 1024; // 100KB
 const SENSITIVE_PATTERNS = /\.(env(\.\w+)?|pem|key|p12|pfx|jks|keystore|credentials|secret|ppk)$|^(id_rsa|id_ed25519|\.htpasswd|\.pgpass|\.netrc|\.npmrc|\.pypirc)$/i;
+const BRACKET_PAIRS: Record<string, string> = {
+  '(': ')',
+  '[': ']',
+  '{': '}',
+  "'": "'",
+  '"': '"',
+};
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -125,7 +131,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
     } else {
       recordingScale.value = withSpring(1, SPRING_CONFIGS.quick);
     }
-  }, [speechState.status]);
+  }, [speechState.status, recordingScale]);
 
   useImperativeHandle(ref, () => ({
     setText: (text: string) => {
@@ -146,8 +152,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
   const detectedMode = useMemo((): { label: string; color: string } | null => {
     const trimmed = inputText.trim();
     if (!trimmed) return null;
-    if (trimmed.startsWith('@claude')) return { label: 'Claude', color: '#F59E0B' };
-    if (trimmed.startsWith('@gemini')) return { label: 'Gemini', color: '#3B82F6' };
+    if (trimmed.startsWith('@gemini')) return { label: 'Gemini', color: '#60A5FA' };
     if (trimmed.startsWith('@local')) return { label: 'Local LLM', color: '#8B5CF6' };
     if (trimmed.startsWith('@perplexity')) return { label: 'Perplexity', color: '#14B8A6' };
     if (trimmed.startsWith('@team')) return { label: 'Team', color: '#EC4899' };
@@ -188,19 +193,10 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
       );
       playSound('mode_switch');
     }
-  }, [isNaturalMode]);
+  }, [isNaturalMode, promptScale]);
 
   // Track cursor position for bracket auto-close
   const selectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
-
-  // Bracket auto-close map
-  const BRACKET_PAIRS: Record<string, string> = {
-    '(': ')',
-    '[': ']',
-    '{': '}',
-    "'": "'",
-    '"': '"',
-  };
 
   const handleChangeText = useCallback((newText: string) => {
     const oldText = inputText;
@@ -414,7 +410,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
       }
       setAttachedFiles((prev) => [...prev, ...newFiles].slice(0, 4));
     } catch { /* ignore */ }
-  }, [attachedFiles.length]);
+  }, [attachedFiles.length, t]);
 
   const removeFile = useCallback((index: number) => {
     setAttachedFiles((prev) => prev.filter((_, i) => i !== index));

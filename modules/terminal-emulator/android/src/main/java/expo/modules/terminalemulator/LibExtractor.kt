@@ -46,8 +46,8 @@ object LibExtractor {
         // _cache keeps in-memory only.
         "lib/arm64-v8a/libgit_credential_store.so" to "git-credential-store",
         "lib/arm64-v8a/libgit_credential_cache.so" to "git-credential-cache",
-        // bug #130 (2026-04-27): Tier-1 dev essentials. Claude Code /
-        // Codex frequently asked for these during Shelly-on-Shelly dev
+        // bug #130 (2026-04-27): Tier-1 dev essentials. Codex frequently
+        // asked for these during Shelly-on-Shelly dev
         // attempts ("gh: command not found", "gpg: not found", etc.).
         // CI extracts them from Termux's stable apt mirror; missing
         // from build = WARN (not fatal) so per-entry shape drift in
@@ -133,26 +133,10 @@ object LibExtractor {
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so",
-        // musl-built variant for claude-code 2.1.113+ Bun SEA. The bionic
-        // wrapper cannot be preloaded into musl, so claude() injects this
-        // library only for the musl launch path.
-        "lib/arm64-v8a/libexec_wrapper_musl.so" to "libexec_wrapper_musl.so",
-        // Shell launcher used as $SHELL for Claude Code's Bash tool.
-        // HomeInitializer symlinks $HOME/bin/bash to this file so Node
-        // children see a bash-like basename while the launcher still routes
-        // through linker64 + Shelly's exec wrapper.
+        // Shell launcher used as $SHELL for hosted Node/Codex helpers.
+        // HomeInitializer symlinks $HOME/bin/bash to libbash.so; this
+        // launcher remains available for explicit native shell routing.
         "lib/arm64-v8a/libshelly_shell.so" to "shelly_shell",
-        // bug #117 Path C-bis: claude-code 2.1.113+ Bun SEA binary + matching
-        // Shelly-patched musl libc loader. claude is ET_EXEC (~220 MB) and
-        // can't be exec'd by bionic's linker64 directly; ld-musl-aarch64.so.1
-        // is ET_DYN so it loads fine via `_run $libDir/ld-musl-aarch64.so.1
-        // $libDir/claude ...`, and the musl loader then mmaps the ET_EXEC
-        // payload. The CI-baked musl libc has its /etc/resolv.conf hardcode
-        // redirected to $HOME/.shelly-ssl/resolv.conf (seeded at shell
-        // launch — see HomeInitializer.kt's claude() wrapper).
-        "lib/arm64-v8a/libshelly_musl_exec.so" to "shelly_musl_exec",
-        "lib/arm64-v8a/libclaude.so" to "claude",
-        "lib/arm64-v8a/libld_musl_shelly.so" to "ld-musl-aarch64.so.1",
         // bug #102 / #115 phase 1: native xdg-open replacement that fires
         // the shelly://browser deep link via `am start`. Direct execve
         // target (no #! shim) so it sidesteps Android binfmt_script's
@@ -165,10 +149,8 @@ object LibExtractor {
 
     // Files that must be re-extracted on every launch even when the version
     // marker matches. The bug #731 incident showed that an APK update can
-    // ship a new libexec_wrapper_musl.so / shelly_musl_exec without bumping
-    // versionCode (e.g. CI-only refactors); the previous gate would have
-    // kept the stale bionic-flavoured trampoline on disk and silently
-    // continued to fail the musl claude launch path.
+    // ship native launcher changes without bumping versionCode (e.g. CI-only
+    // refactors); the previous gate would have kept stale binaries on disk.
     private val ALWAYS_REFRESH = setOf(
         // v76 (2026-05-06): bionic libexec_wrapper.so was missing from
         // ALWAYS_REFRESH. CI-only fixes that don't bump versionCode never
@@ -176,18 +158,7 @@ object LibExtractor {
         // dodges. Codex's raw-syscall rewrite + future bionic-side wrapper
         // fixes both rely on this being force-extracted.
         "libexec_wrapper.so",
-        "libexec_wrapper_musl.so",
-        // v146: this is $SHELL for Claude Code Bash. Force refresh so stale
-        // diagnostic launcher builds cannot keep printing DBG/CKPT logs or
-        // breaking Bash tool executions after an APK upgrade.
         "shelly_shell",
-        "shelly_musl_exec",
-        // v76: byte-patched bundled libclaude.so (audio-capture / image-
-        // processor .node loaders neutered) needs to reach existing
-        // devices on app upgrade. Without ALWAYS_REFRESH the stale
-        // pre-patch binary on disk would mask the fix until forceRefresh
-        // hits via versionCode bump.
-        "claude",
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.
         "shelly_xdg_open"
@@ -269,22 +240,12 @@ object LibExtractor {
         val sitePackages = File(libDir, "python3.13/site-packages")
         extractTarGzAsset(context, "pip.tar.gz", sitePackages, "pip", forceRefresh)
 
-        // Extract bundled AI CLIs (Claude Code, Gemini CLI, Codex)
-        Log.i(TAG, "Attempting CLI tools extraction...")
-        // Experimental Claude Path D (2026-04-29): CI extracts cli.js from
-        // Claude Code's Bun SEA into a separate package. This lets the
-        // shell wrapper run latest Claude through Shelly's bionic Node when
-        // explicitly requested, without touching the default musl SEA route.
-        extractTarGzAsset(context, "claude-extracted.tar.gz", libDir, "node_modules/@anthropic-ai/claude-code-extracted/cli.js", forceRefresh)
-        // bug #139 (2026-04-27): marker switched to gemini-cli because
-        // claude-code was removed from the bundle (the musl SEA at
-        // libclaude.so is the primary Claude path; runtime updater
-        // refreshes it). gemini-cli is the heaviest remaining bundled
-        // package and a reliable "did we extract?" sentinel.
-        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@google/gemini-cli", forceRefresh)
+        // Extract bundled Codex JS dispatcher.
+        Log.i(TAG, "Attempting Codex CLI tools extraction...")
+        extractTarGzAsset(context, "cli-tools.tar.gz", libDir, "node_modules/@openai/codex", forceRefresh)
         Log.i(TAG, "CLI tools extraction done, checking launchers...")
 
-        // Note: CLI launchers (claude, gemini, codex) are defined as bash functions
+        // Note: CLI launchers are defined as bash functions
         // in .bashrc (generated by shelly-pty.c). Shell script launchers don't work
         // on Android 10+ with targetSdk >= 29 because SELinux blocks shebang execution
         // from app_data_file directories. The LD_PRELOAD exec wrapper (libexec_wrapper.so)
@@ -302,7 +263,6 @@ object LibExtractor {
                 buildString {
                     append("vc=").append(packageInfo.longVersionCode)
                     append("|cli=").append(zipEntryFingerprint(zip, "assets/cli-tools.tar", "assets/cli-tools.tar.gz"))
-                    append("|claudeExtracted=").append(zipEntryFingerprint(zip, "assets/claude-extracted.tar", "assets/claude-extracted.tar.gz"))
                     for (entryName in LIBS.keys.sorted()) {
                         append("|").append(entryName).append("=")
                         append(zipEntryFingerprint(zip, entryName))

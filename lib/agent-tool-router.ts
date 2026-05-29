@@ -69,11 +69,12 @@ export function suggestTool(prompt: string): ToolSuggestion {
     };
   }
 
-  // Default: Gemini API (free Google AI Studio quota, no fragile TUI/PTY path)
+  // Default: Gemini API. It keeps background agents on an API path without
+  // reintroducing the removed Gemini CLI/OAuth surface.
   return {
     tool: { type: 'gemini-api' },
     label: 'Gemini API',
-    reason: 'General-purpose — Gemini API uses the free Google quota without relying on the experimental CLI',
+    reason: 'General-purpose — Gemini API uses Google AI Studio quota without relying on the removed CLI path',
   };
 }
 
@@ -83,7 +84,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
 export async function checkToolAvailability(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<Record<string, boolean>> {
-  const tools = ['claude', 'gemini', 'codex'];
+  const tools = ['codex'];
   const results: Record<string, boolean> = {};
 
   for (const tool of tools) {

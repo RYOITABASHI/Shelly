@@ -160,7 +160,7 @@ export const shellyPalette: Palette = {
   accentGreen:   '#39FF14',  // neon lime (+diff, LINKED, branch, prompts)
   accentBlue:    '#0AF0FF',  // electric cyan-blue (YOU, folder/file)
   accentSky:     '#38E1FF',  // lighter cyan (COMPONENTS, :8081 EXPO)
-  accentPurple:  '#B14AFF',  // neon violet (IMPORT/FROM, CLAUDE label)
+  accentPurple:  '#B14AFF',  // neon violet (IMPORT/FROM, agent label)
   accentPink:    '#FF2ED3',  // hot magenta-pink (strings, voice)
   accentAmber:   '#FFE500',  // neon yellow (BASH warning, RUNNING)
   accentCode:    '#0AF0FF',  // alias for accentBlue
@@ -267,7 +267,7 @@ export const bluePalette: Palette = {
   diffRemoveBorder: '#4DA3FF',
 };
 
-// ── Orange palette — Claude Code-inspired warm terminal chrome.
+// ── Orange palette — warm terminal chrome.
 export const orangePalette: Palette = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',

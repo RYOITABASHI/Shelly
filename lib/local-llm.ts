@@ -5,8 +5,8 @@
  *
  * 設計方針:
  * - Ollama互換API（http://127.0.0.1:11434）に直接HTTPリクエスト
- * - タスク分類: 「基本チャット」はLocal LLMで処理、「コード生成」「調査」はClaude/Geminiに委譲
- * - Local LLM無効時はすべてClaude Code / Gemini CLIに送信
+ * - タスク分類: 「基本チャット」はLocal LLMで処理、「コード生成」はCodexに委譲
+ * - Local LLM無効時はCodexに送信
  * - ストリーミングレスポンス対応（Ollama /api/chat）
  */
 
@@ -18,10 +18,10 @@ import { routeIntent, formatRoutingMessage, type RoutingDecision } from './inten
 
 export type TaskCategory =
   | 'chat'          // 基本的な質問・会話 → Local LLM
-  | 'code'          // コード生成・修正 → Claude Code
-  | 'research'      // 調査・情報収集 → Gemini CLI
+  | 'code'          // コード生成・修正 → Codex
+  | 'research'      // 調査・情報収集 → Codex / Local LLM
   | 'file_ops'      // ファイル操作 → シェル直接実行
-  | 'unknown';      // 判定不能 → Claude Code（デフォルト）
+  | 'unknown';      // 判定不能 → Codex / Local LLM
 
 export interface OllamaMessage {
   role: 'user' | 'assistant' | 'system';
@@ -114,9 +114,9 @@ export interface LocalLlmConfig {
 
 export interface OrchestrationResult {
   category: TaskCategory;
-  handledBy: 'local_llm' | 'claude' | 'gemini' | 'codex';
+  handledBy: 'local_llm' | 'codex';
   response?: string;         // Local LLMが直接回答した場合
-  delegatedCommand?: string; // Claude/Geminiに委譲する場合のコマンド
+  delegatedCommand?: string; // Codexに委譲する場合のコマンド
   reasoning: string;         // 判定理由（デバッグ用）
   /** ツール未インストール時のセットアップ案内 */
   setupRequired?: boolean;
@@ -143,14 +143,13 @@ export function classifyTask(userInput: string): TaskCategory {
   ];
   if (fileOpsKeywords.some((k) => input.includes(k))) return 'file_ops';
 
-  // CLI実行キーワード（特定のAIツール名を含む → code扱い）
+  // CLI実行キーワード（Codexを含む → code扱い）
   const cliExecKeywords = [
-    'claude code', 'クロードコード', 'クロード', 'claude',
-    'gemini cli', 'ジェミニ', 'codex', 'コデックス',
+    'codex', 'コデックス',
     '実行して', '起動して', '使って', '動かして', '走らせて', '立ち上げて',
     'run ', 'start ', 'launch ', 'execute ',
   ];
-  const hasCliName = ['claude', 'クロード', 'gemini', 'ジェミニ', 'codex', 'コデックス'].some((k) => input.includes(k));
+  const hasCliName = ['codex', 'コデックス'].some((k) => input.includes(k));
   const hasExecVerb = ['実行', '起動', '使って', '動かして', '走らせ', '立ち上げ', 'run', 'start', 'launch', 'execute'].some((k) => input.includes(k));
   if (hasCliName && hasExecVerb) return 'code';
 
@@ -660,7 +659,7 @@ async function waitForLocalLlmReady(
  *
  * フロー:
  * 1. LLMベースのインテントルーターでユーザー意図を解析
- * 2. 最適なツールを選択（Claude Code / Gemini CLI / Codex / ローカルLLM / Shell）
+ * 2. 最適なツールを選択（Codex / ローカルLLM / Shell）
  * 3. ツール未インストールの場合、セットアップを提案
  * 4. LLM無効時はキーワードベースにフォールバック
  */
@@ -672,7 +671,7 @@ export async function orchestrateTask(
   userProfileSummary?: string,
   customContext?: string,
   toolStatuses?: ToolStatus[],
-  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
+  defaultAgent?: 'codex',
 ): Promise<OrchestrationResult> {
   // LLMベースのインテントルーティング
   const routing = await routeIntent(userInput, config, toolStatuses ?? [], defaultAgent);
@@ -721,32 +720,12 @@ export async function orchestrateTask(
       } else {
         return {
           category: 'chat',
-          handledBy: 'claude',
-          delegatedCommand: buildClaudeCommand(userInput),
-          reasoning: `Local LLM error (${result.error}), falling back to Claude Code`,
+          handledBy: 'codex',
+          delegatedCommand: buildCodexCommand(userInput),
+          reasoning: `Local LLM error (${result.error}), falling back to Codex`,
           routingDecision: routing,
         };
       }
-    }
-
-    case 'claude-code': {
-      return {
-        category: 'code',
-        handledBy: 'claude',
-        delegatedCommand: buildClaudeCommand(userInput),
-        reasoning: routing.reason,
-        routingDecision: routing,
-      };
-    }
-
-    case 'gemini-cli': {
-      return {
-        category: 'research',
-        handledBy: 'gemini',
-        delegatedCommand: buildGeminiCommand(userInput),
-        reasoning: routing.reason,
-        routingDecision: routing,
-      };
     }
 
     case 'codex': {
@@ -762,8 +741,8 @@ export async function orchestrateTask(
     default: {
       return {
         category: 'unknown',
-        handledBy: 'claude',
-        delegatedCommand: buildClaudeCommand(userInput),
+        handledBy: 'codex',
+        delegatedCommand: buildCodexCommand(userInput),
         reasoning: routing.reason,
         routingDecision: routing,
       };
@@ -785,7 +764,7 @@ export async function orchestrateChatStream(
   userProfileSummary?: string,
   customContext?: string,
   toolStatuses?: ToolStatus[],
-  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
+  defaultAgent?: 'codex',
   externalSignal?: AbortSignal,
   forceLocal?: boolean,
 ): Promise<OrchestrationResult> {
@@ -872,23 +851,13 @@ export async function orchestrateChatStream(
 
   return {
     category: 'chat',
-    handledBy: 'claude',
-    delegatedCommand: buildClaudeCommand(userInput),
-    reasoning: `Local LLM error (${fallback.error}), falling back to Claude Code`,
+    handledBy: 'codex',
+    delegatedCommand: buildCodexCommand(userInput),
+    reasoning: `Local LLM error (${fallback.error}), falling back to Codex`,
   };
 }
 
 // ─── Command Builders ─────────────────────────────────────────────────────────
-
-function buildClaudeCommand(userInput: string): string {
-  const escaped = userInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-  return `claude --print "${escaped}"`;
-}
-
-function buildGeminiCommand(userInput: string): string {
-  const escaped = userInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-  return `gemini -p "${escaped}"`;
-}
 
 function buildCodexCommand(userInput: string): string {
   const escaped = userInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
@@ -917,8 +886,6 @@ export function getCategoryLabel(category: TaskCategory): string {
 export function getHandlerLabel(handler: OrchestrationResult['handledBy']): string {
   const labels: Record<OrchestrationResult['handledBy'], string> = {
     local_llm: 'Local LLM',
-    claude: 'Claude Code',
-    gemini: 'Gemini CLI',
     codex: 'Codex CLI',
   };
   return labels[handler];

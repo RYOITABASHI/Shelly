@@ -143,7 +143,6 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun displaySourceName(source: ScouterSource): String = when (source) {
-            ScouterSource.CLAUDE_CODE -> "Claude"
             ScouterSource.CODEX -> "Codex"
             ScouterSource.LOCAL_LLM -> "Local"
             ScouterSource.SHELLY -> "Shelly"

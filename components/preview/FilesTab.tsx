@@ -2,7 +2,6 @@ import React, { memo, useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
-import { withAlpha } from '@/lib/theme-utils';
 import { usePreviewStore } from '@/store/preview-store';
 import { useNativeExec } from '@/hooks/use-native-exec';
 import { readDirEntries } from '@/lib/fs-native';

@@ -3,7 +3,6 @@ import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import { View, Platform, StyleSheet, StatusBar } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useTheme } from '@/lib/theme-engine';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useMultiPaneStore, PRESET_CAPACITY, type PresetId } from '@/hooks/use-multi-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
@@ -37,14 +36,11 @@ function isPresetId(value: string | null): value is PresetId {
 }
 
 export function ShellLayout() {
-  const theme = useTheme();
-  const c = theme.colors;
   const layout = useDeviceLayout();
   const insets = useSafeAreaInsets();
   const { initShell, setMaxPanes } = useMultiPaneStore();
   const currentPreset = useMultiPaneStore((s) => s.preset);
   const multiPaneHydrated = useMultiPaneStore((s) => s._hasHydrated);
-  const { setMode } = useSidebarStore();
   const themeVersion = useThemeVersionStore((s) => s.version);
 
   // Initialize pane system on mount
@@ -56,7 +52,7 @@ export function ShellLayout() {
       const count = useSidebarStore.getState().repoPaths.length;
       logInfo('ShellLayout', 'Repos loaded: ' + count);
     });
-  }, []);
+  }, [initShell]);
 
   // Sidebar starts closed by default and now stays under user control.
   // Swipes / open actions can still expand it, but we no longer force-open
@@ -68,7 +64,7 @@ export function ShellLayout() {
   // Responsive max panes
   useEffect(() => {
     setMaxPanes(layout.isLandscape && layout.isWide ? 4 : layout.isWide ? 2 : 1);
-  }, [layout.isWide, layout.isLandscape]);
+  }, [layout.isWide, layout.isLandscape, setMaxPanes]);
 
   // Z Fold6 auto-switch.
   //

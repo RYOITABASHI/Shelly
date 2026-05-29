@@ -11,12 +11,11 @@ import {
 } from 'react-native';
 import WebView, { WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useTheme } from '@/lib/theme-engine';
 import { useBrowserStore, PRESET_BOOKMARKS } from '@/store/browser-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
@@ -250,8 +249,6 @@ const DESKTOP_UA =
   'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneProps) {
-  const theme = useTheme();
-  const { background, surface, foreground, muted, accent, border } = theme.colors;
   const paneId = useContext(PaneIdContext);
   const paneMetrics = useContext(MultiPaneContext);
   const webviewRef = useRef<WebView>(null);
@@ -369,7 +366,6 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   // Z Fold6 hardware. Per-key selectors only re-fire on the slice
   // actually changing.
   const userBookmarks = useBrowserStore((s) => s.bookmarks);
-  const addBookmark = useBrowserStore((s) => s.addBookmark);
   const removeBookmark = useBrowserStore((s) => s.removeBookmark);
   const loadBookmarks = useBrowserStore((s) => s.loadBookmarks);
   // Presets are always shown first, followed by user-added bookmarks
@@ -421,7 +417,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
 
   useEffect(() => {
     loadBookmarks();
-  }, []);
+  }, [loadBookmarks]);
 
   // Listen for nav actions from PaneSlot header
   const lastSeqRef = useRef(navSignal.seq);
@@ -433,7 +429,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       case 'forward': webviewRef.current?.goForward(); break;
       case 'reload': webviewRef.current?.reload(); break;
     }
-  }, [navSignal.seq]);
+  }, [navSignal.seq, navSignal.action]);
 
   // Listen for external openUrl requests (Sidebar cloud buttons, etc.)
   const lastOpenSeqRef = useRef(openSignal.seq);
@@ -444,7 +440,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       setInputUrl(openSignal.url);
       setCurrentUrl(openSignal.url);
     }
-  }, [openSignal.seq]);
+  }, [openSignal.seq, openSignal.url]);
 
   const handleSubmit = useCallback(() => {
     const url = normalizeUrl(inputUrl);

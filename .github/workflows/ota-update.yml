@@ -24,6 +24,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm check
+
+      - name: Unit tests
+        run: pnpm test -- --runInBand
+
       - name: Setup Expo
         uses: expo/expo-github-action@v8
         with:

@@ -1,10 +1,8 @@
 import "@/global.css";
-import React from "react";
+import React, { useEffect } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
-import { Stack } from "expo-router";
-import { ErrorBoundaryProps } from "expo-router";
+import { Stack, type ErrorBoundaryProps } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
 import { AppState, View, Text, Pressable, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
@@ -322,10 +320,9 @@ export default function RootLayout() {
     // Phase 1.2 (bug #102/#115): each queue line is either a plain URL
     // (legacy format used by shelly-xdg-open.c and shelly-codex-auth.js)
     // or a JSON object describing how the URL should be opened. The JSON
-    // form was added to support Google OAuth (Gemini login), which needs
-    // a real Chrome process via Custom Tabs because Chromium WebView
-    // unconditionally appends an X-Requested-With header that
-    // accounts.google.com uses to gate sign-in. JSON shape (all fields
+    // form supports OAuth flows that need a real browser process via
+    // Custom Tabs because Chromium WebView can append headers that some
+    // providers use to gate sign-in. JSON shape (all fields
     // optional except `url`):
     //
     //   {
@@ -376,9 +373,8 @@ export default function RootLayout() {
       } catch (e) {
         logError('DeepLinkQueue', `Linking.openURL also failed (provider=${providerTag}); collapsing to in-app: ${e}`);
       }
-      // Last resort: open in-app. For Google OAuth the user will see
-      // the WebView block message, but a visible failure is better than
-      // a silent hang.
+      // Last resort: open in-app. A visible failure is better than a
+      // silent hang.
       try {
         const slots = useMultiPaneStore.getState().slots;
         const hasBrowser = slots.some((s) => s?.tab === 'browser');
@@ -414,7 +410,7 @@ export default function RootLayout() {
 
     // Codex review (PR #50, Phase 1.2 Stage 1): the original
     // read-then-delete flow lost any line a concurrent emitter
-    // (shelly-xdg-open.c, shelly-codex-auth.js, future Gemini wrapper)
+    // (shelly-xdg-open.c, shelly-codex-auth.js, or another CLI bridge)
     // appended between the read and the delete. Append-mode atomic
     // writes survive a missing-file gap, so move-to-spool first then
     // consume the spool — anything written after the move lands in a
@@ -441,7 +437,7 @@ export default function RootLayout() {
         const spoolPath = `${queuePath}.${Date.now()}.${Math.random().toString(16).slice(2, 10)}.spool`;
         try {
           await FileSystem.moveAsync({ from: queuePath, to: spoolPath });
-        } catch (e) {
+        } catch {
           // The queue file may have been consumed by a sibling drain
           // between getInfoAsync and moveAsync. Not an error.
           return;
@@ -459,7 +455,7 @@ export default function RootLayout() {
             let parsed: any;
             try {
               parsed = JSON.parse(line);
-            } catch (e) {
+            } catch {
               logError('DeepLinkQueue', `rejected malformed JSON line: ${line.slice(0, 96)}`);
               continue;
             }
@@ -510,7 +506,7 @@ export default function RootLayout() {
       clearInterval(queueInterval);
       clearInterval(agentLogInterval);
     };
-  }, []);
+  }, [loadSettings]);
 
   // bug #62 (regression restore): Wave E added `<Stack key={locale}>` as the
   // emergency fix for "i18n language switch doesn't update UI strings" —

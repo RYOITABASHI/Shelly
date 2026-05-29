@@ -440,8 +440,8 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         // Terminal cap — 3 terminals max. Android 12+ phantom process killer
         // caps app-owned subprocess count at ~32; each idle terminal occupies
-        // ~1 subprocess (bash), bumped to 5-10 once a CLI (claude/codex/
-        // gemini) starts its node helper and spawns tools. 3 panes × ~10 peak
+        // ~1 subprocess (bash), bumped to 5-10 once a CLI starts its node
+        // helper and spawns tools. 3 panes × ~10 peak
         // = 30 processes fits comfortably under 32 on Samsung (the strictest
         // OEM we support). Bumping above 3 needs a Foreground Service
         // (bug #65 Case B) to keep children out of the phantom pool. This

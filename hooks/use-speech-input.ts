@@ -1,15 +1,14 @@
 /**
- * use-speech-input.ts — 録音 + Gemini API 文字起こしフック
+ * use-speech-input.ts — 録音 + Groq Whisper 文字起こしフック
  *
  * - expo-audio で音声録音
- * - Gemini 2.0 Flash API に inline_data (audio/m4a) として送信
+ * - Groq Whisper API に audio/m4a として送信
  * - 書き起こしテキストを返す
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
-import { GEMINI_API_BASE } from '@/lib/gemini';
 import { groqTranscribe } from '@/lib/groq';
 import { useTranslation } from '@/lib/i18n';
 
@@ -168,72 +167,19 @@ export function useSpeechInput() {
         return;
       }
 
-      // Read file as base64
-      const FileSystem = await import('expo-file-system/legacy');
-      const base64Audio = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      // Transcription priority: Groq Whisper > Gemini API
+      // Transcription: Groq Whisper.
       const settings = useTerminalStore.getState().settings;
       const groqKey = settings.groqApiKey;
-      const geminiKey = settings.geminiApiKey;
 
       let text = '';
 
       if (groqKey && groqKey.trim().length >= 10) {
-        // Use Groq Whisper (faster, dedicated STT)
         const result = await groqTranscribe(groqKey, uri);
         if (!result.success) {
           setState({ status: 'idle', transcribedText: '', error: result.error });
           return;
         }
         text = result.content ?? '';
-      } else if (geminiKey && geminiKey.trim().length >= 10) {
-        // Fallback to Gemini multimodal transcription
-        const url = `${GEMINI_API_BASE}/models/gemini-2.0-flash:generateContent`;
-
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': geminiKey,
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  {
-                    inline_data: {
-                      mime_type: 'audio/m4a',
-                      data: base64Audio,
-                    },
-                  },
-                  {
-                    text: t('speech.transcription_prompt'),
-                  },
-                ],
-              },
-            ],
-            generationConfig: {
-              maxOutputTokens: 1024,
-              temperature: 0.1,
-            },
-          }),
-        });
-
-        if (!res.ok) {
-          setState({
-            status: 'idle',
-            transcribedText: '',
-            error: t('speech.transcription_http_error', { status: String(res.status) }),
-          });
-          return;
-        }
-
-        const json = await res.json();
-        text = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
       } else {
         setState({
           status: 'idle',

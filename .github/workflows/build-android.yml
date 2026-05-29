@@ -4,15 +4,42 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # Nightly rebuild to pick up @anthropic-ai/claude-code-linux-arm64-musl@latest
-  # releases (bug #117 Path C-bis auto-follow). If Anthropic ships a new
-  # version between 00:00 UTC runs, the next push or manual dispatch also
-  # picks it up.
+  # Nightly rebuild to pick up Codex native/JS dispatcher updates.
+  # If upstream ships a new version between 00:00 UTC runs, the next push
+  # or manual dispatch also picks it up.
   schedule:
     - cron: '0 0 * * *'
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm check
+
+      - name: Unit tests
+        run: pnpm test -- --runInBand
+
   build:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,9 +70,7 @@ jobs:
       - name: Resolve CLI versions for payload cache
         run: |
           mkdir -p .ci-versions
-          npm view @google/gemini-cli version > .ci-versions/gemini-cli.txt
           npm view @openai/codex version > .ci-versions/codex.txt
-          printf 'gemini-cli: '; cat .ci-versions/gemini-cli.txt
           printf 'codex: '; cat .ci-versions/codex.txt
 
       - name: Restore generated Android payload cache
@@ -53,8 +78,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libld_musl_shelly.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libexec_wrapper_musl.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_https.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_http.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libssh_keygen.so
@@ -71,101 +94,15 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libassuan.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libksba.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libclaude.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_musl_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
-            modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
-          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/gemini-cli.txt', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
             android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
-
-      - name: Set up QEMU (for Alpine aarch64 musl build)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build patched musl libc for claude-code 2.1.113+ (bug #117 Path C-bis)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        # Natively compile musl v1.2.4 inside an aarch64 Alpine container
-        # (emulated via qemu-user-static) with the hardcoded
-        # /etc/resolv.conf path rewritten to Shelly's app-writable home.
-        # bionic has no /etc/resolv.conf (it uses net.dns* properties),
-        # and LD_PRELOAD can't intercept musl's inline syscalls — so we
-        # bake the path in at build time. Alpine 3.19 ships musl 1.2.4;
-        # pinning the source tag keeps ABI compatibility with the
-        # claude-code-linux-arm64-musl prebuilt.
-        #
-        # A cross-compile via musl.cc used to live here, but musl.cc was
-        # unreachable from GitHub-hosted runners (connect timeout) in
-        # initial CI trials. Native-in-qemu is ~3× slower (~5 min vs
-        # ~90 s) but removes the third-party hosting dependency.
-        #
-        # Proof-of-concept verified on Termux/Galaxy Z Fold6 (2026-04-21):
-        # `./ld-musl-aarch64.so.1 ./claude --print ...` round-trips
-        # api.anthropic.com successfully. See DEFERRED.md bug #117.
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          RESOLV_CONF_PATH="/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf"
-
-          mkdir -p /tmp/musl-out
-          curl -fsSL --retry 3 --retry-delay 5 \
-            https://github.com/ifduyue/musl/archive/refs/tags/v1.2.4.tar.gz \
-            -o /tmp/musl-v1.2.4.tar.gz
-          CID="$(docker create --platform linux/arm64 \
-            -v /tmp/musl-out:/out \
-            -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
-            alpine:3.19 sh -euxc '
-              apk add --no-progress build-base
-              cd /tmp
-              mkdir musl
-              tar xzf /tmp/musl-v1.2.4.tar.gz -C musl --strip-components=1
-              cd musl
-              # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC —
-              # does not survive the shell→make→shell round-trip because
-              # make re-invokes /bin/sh which strips the quoted literal.
-              # Direct sed of the string literal in src/network/resolvconf.c
-              # is foolproof.
-              sed -i "s|\"/etc/resolv.conf\"|\"${RESOLV_CONF_PATH}\"|g" src/network/resolvconf.c
-              grep -q "${RESOLV_CONF_PATH}" src/network/resolvconf.c
-              ./configure --prefix=/tmp/musl-out >/tmp/configure.log 2>&1 || { tail -30 /tmp/configure.log; exit 1; }
-              make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
-              make install >/tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
-              strip --strip-unneeded lib/libc.so
-              cp lib/libc.so /out/libld_musl_shelly.so
-              # This container itself is Alpine/aarch64, so system gcc is
-              # already a musl 1.2.4 compiler. The wrapper does not need
-              # Shelly patched resolver path, only musl ABI compatibility
-              # with the loader used for Claude Code.
-              gcc -shared -fPIC -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror \
-                /tmp/exec-wrapper-musl.c \
-                -o /out/libexec_wrapper_musl.so
-              strip --strip-unneeded /out/libexec_wrapper_musl.so
-              # Sanity checks inside the container — readelf/strings are
-              # the Alpine aarch64 natives, no cross-tool needed.
-              readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
-              strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
-              readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
-              readelf -d /out/libexec_wrapper_musl.so | grep -E "Shared library: \\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"
-            ')"
-          trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
-          docker cp /tmp/musl-v1.2.4.tar.gz "${CID}:/tmp/musl-v1.2.4.tar.gz"
-          docker cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c" "${CID}:/tmp/exec-wrapper-musl.c"
-          docker start -a "${CID}"
-          docker rm "${CID}" >/dev/null
-          trap - EXIT
-          cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
       - name: Install aarch64 cross-binutils (for strip --strip-unneeded)
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
@@ -316,9 +253,9 @@ jobs:
           echo "[termux-extras] bundled ssh-keygen → $(basename "$dst") ($(stat -c %s "$dst") bytes)"
 
           # bug #130 (2026-04-27): Tier-1 dev essentials. Same Termux apt
-          # mirror, same extract pattern. These are the binaries Claude
-          # Code / Codex routinely complain about ("gh: command not
-          # found", "gpg: not found", "unzip: not found") during
+          # mirror, same extract pattern. These are the binaries Codex
+          # routinely complains about ("gh: command not found",
+          # "gpg: not found", "unzip: not found") during
           # Shelly-on-Shelly dev. git-credential-* come from the git
           # package we already extracted in step 1.
           #
@@ -416,220 +353,6 @@ jobs:
               echo "  MISSING: $f"
             fi
           done
-
-      - name: Bundle claude-code musl binary (bug #117 Path C-bis)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
-        # Application) — a statically linked ~220 MB ET_EXEC binary that
-        # can't be exec'd directly on Android bionic (unexpected e_type: 2
-        # from /system/bin/linker64). We pair it with the Shelly-patched
-        # ld-musl-aarch64.so.1 from the previous step so bionic can exec
-        # the DYN loader, which in turn mmaps and runs the ET_EXEC claude.
-        #
-        # @latest is intentional — CI runs per-commit and nightly
-        # (scheduled below), so Shelly users get the newest claude-code
-        # within 24 h of an Anthropic release without any runtime download.
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          cd /tmp
-          npm pack @anthropic-ai/claude-code-linux-arm64-musl@latest
-          tar xzf anthropic-ai-claude-code-linux-arm64-musl-*.tgz
-          test -f package/claude || { echo "claude binary missing from tarball"; ls -la package; exit 1; }
-          CLAUDE_VERSION=$(node -p "require('/tmp/package/package.json').version")
-          echo "[claude] bundling @anthropic-ai/claude-code-linux-arm64-musl@${CLAUDE_VERSION}"
-          python3 - package/claude <<'PY'
-          import sys
-
-          path = sys.argv[1]
-          data = bytearray(open(path, "rb").read())
-          patches = [
-              (
-                  b"try{return A28=GFK(),A28}catch{}",
-                  b"try{return A28=null,A28 }catch{}",
-              ),
-              (
-                  b"try{pc8=DFK()}catch{pc8=null}",
-                  b"try{pc8=null }catch{pc8=null}",
-              ),
-          ]
-          for label, (src, dst) in zip(("audio", "image"), patches):
-              if len(src) != len(dst):
-                  raise SystemExit(f"FATAL: {label} patch length mismatch")
-              count = data.count(src)
-              data = data.replace(src, dst)
-              print(f"[claude] native addon loader patch {label}: {count}")
-          open(path, "wb").write(data)
-          PY
-          cp package/claude "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so" | head -1
-
-          # Experimental Path D (2026-04-29): extract Claude Code's bundled
-          # cli.js from the Bun SEA and run it with Shelly's bionic Node.
-          # This avoids the musl SEA loader path entirely, which is where
-          # Shelly currently hits __errno_location / Bash-tool breakage.
-          # Keep libclaude.so above as the default route until this path
-          # passes on-device smoke tests.
-          EXTRACT_ROOT="/tmp/claude-extracted-root"
-          EXTRACT_PKG="${EXTRACT_ROOT}/node_modules/@anthropic-ai/claude-code-extracted"
-          EXTRACT_POLYFILL="/tmp/claude-extracted-polyfill.js"
-          rm -rf "${EXTRACT_ROOT}"
-          mkdir -p "${EXTRACT_PKG}"
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-          const runtimeUpdate = path.join(
-            process.env.GITHUB_WORKSPACE,
-            'modules/terminal-emulator/android/src/main/assets/shelly-runtime-update.js',
-          );
-          const src = fs.readFileSync(runtimeUpdate, 'utf8');
-          const polyStart = 'const CLAUDE_BUN_NODE_POLYFILL = `\n';
-          const polyEnd = '\n`;\n\nfunction log';
-          const start = src.indexOf(polyStart);
-          const end = src.indexOf(polyEnd, start + polyStart.length);
-          if (start < 0 || end < 0) {
-            throw new Error('Claude Bun/Node polyfill block not found');
-          }
-          const raw = src.slice(start + polyStart.length, end);
-          const polyfill = Function('return `\n' + raw + '\n`;')().replace(/^\n|\n$/g, '');
-          if (!polyfill.includes('shellyPatchClaudeChildProcessShell')) {
-            throw new Error('extracted Claude polyfill missing child_process shell patch');
-          }
-          fs.writeFileSync('/tmp/claude-extracted-polyfill.js', polyfill);
-          NODE
-          aarch64-linux-gnu-objcopy -O binary --only-section=.bun package/claude /tmp/claude.bun.section
-          python3 - /tmp/claude.bun.section "${EXTRACT_PKG}/cli.js" "${EXTRACT_POLYFILL}" <<'PY'
-          import re
-          import sys
-
-          section_path, out_path, polyfill_path = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(section_path, "rb") as f:
-              data = f.read()
-
-          marker = b"file:///$bunfs/root/src/entrypoints/cli.js"
-          i = data.find(marker)
-          if i < 0:
-              sys.exit("FATAL: cli.js marker not found in Claude .bun section")
-          start = data.find(b"// @bun", i)
-          if start < 0:
-              sys.exit("FATAL: cli.js bundle start not found after marker")
-
-          # Claude Code 2.1.133 dropped the 4-byte LE size prefix that used to
-          # sit at data[start-4:start] (those bytes are now just the trailing
-          # ".js\0" of the marker string above). The wrapper itself is still
-          # the same Bun CJS shape ending in "})\n", just no longer length-
-          # prefixed. Scan forward through the ASCII JS body until we hit a
-          # non-text byte (the bunfs payload that follows is binary), then
-          # trim back to the last "})\n" close — that's the wrapper's true
-          # end. This works for both pre-2.1.133 (where the size-bound read
-          # landed on the same close) and post-2.1.133 (where there's no
-          # size to read in the first place). Validates head + tail markers
-          # afterwards so a more aggressive shape change still fails loud.
-          def _is_text(b):
-              return 9 <= b <= 13 or 32 <= b <= 126
-
-          end = start
-          n = len(data)
-          while end < n and _is_text(data[end]):
-              end += 1
-          src = data[start:end].decode("utf-8")
-          head = "// @bun @bytecode @bun-cjs\n(function(exports, require, module, __filename, __dirname) {"
-          tail = "})\n"
-          if not src.startswith(head):
-              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper head: "
-                       + repr(src[:120]))
-          last_close = src.rfind(tail)
-          if last_close < 0:
-              sys.exit("FATAL: Claude cli.js wrapper close `})` not found "
-                       "in text region (length=" + str(len(src)) + ")")
-          src = src[:last_close + len(tail)]
-          if not src.endswith(tail):
-              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper tail: "
-                       + repr(src[-60:]))
-          print("[claude-extract] cli.js wrapper bytes: head=ok tail=ok "
-                "length=" + str(len(src)))
-
-          body = src[len(head):-len(tail)]
-
-          # Termux/Shelly have no writable /tmp. Keep the patches narrow and
-          # fail loud if upstream minification changes the matched shapes.
-          tmp_literal = '"/tmp/claude","/private/tmp/claude"'
-          tmp_replacement = (
-              '(process.env.CLAUDE_TMPDIR||"/tmp/claude"),'
-              '(process.env.CLAUDE_TMPDIR||"/private/tmp/claude")'
-          )
-          n = body.count(tmp_literal)
-          if n == 0:
-              if 'process.env.CLAUDE_TMPDIR||"/tmp/claude"' in body:
-                  print("[claude-extract] sandbox tmp allowlist already patched")
-              else:
-                  sys.exit("FATAL: Claude tmp allowlist patch target not found")
-          elif n == 1:
-              body = body.replace(tmp_literal, tmp_replacement)
-              print("[claude-extract] patched sandbox tmp allowlist")
-          else:
-              sys.exit(f"FATAL: Claude tmp allowlist target matched {n} times")
-
-          bridge_pat = re.compile(r'`/tmp/claude-mcp-browser-bridge-\$\{([A-Za-z_$][\w$]*)\(\)\}`')
-          matches = bridge_pat.findall(body)
-          bridge_done_marker = 'process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"'
-          if not matches:
-              if "claude-mcp-browser-bridge-" in body and bridge_done_marker in body:
-                  print("[claude-extract] browser bridge tmpdir already patched")
-              else:
-                  sys.exit("FATAL: Claude browser bridge tmpdir patch target not found")
-          elif len(set(matches)) == 1 and len(matches) == 1:
-              fn = matches[0]
-              body = bridge_pat.sub(
-                  '`${process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"}'
-                  '/claude-mcp-browser-bridge-${' + fn + '()}`',
-                  body,
-              )
-              print(f"[claude-extract] patched browser bridge tmpdir (fn={fn})")
-          else:
-              sys.exit(f"FATAL: ambiguous Claude browser bridge matches: {matches}")
-
-          # Claude's Bun bundle can use TC39 explicit resource management
-          # syntax (`using` / `await using`) before Shelly's bundled Node can
-          # parse it. The declarations are used for short-lived telemetry /
-          # file-handle helpers; lowering the declaration keyword to `const`
-          # preserves runtime behavior well enough for the CLI route and is
-          # verified below by `node cli.js --version` in CI.
-          body, using_await_count = re.subn(r"(?<![\w$])await\s+using\s+", "const ", body)
-          body, using_count = re.subn(r"(?<![\w$])using\s+", "const ", body)
-          print(f"[claude-extract] lowered using declarations: await={using_await_count} sync={using_count}")
-
-          polyfill = open(polyfill_path, "r", encoding="utf-8").read()
-          if "shellyPatchClaudeChildProcessShell" not in polyfill:
-              sys.exit("FATAL: extracted Claude polyfill missing child_process shell patch")
-
-          out = "#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n" + polyfill + "\n" + body
-          with open(out_path, "w", encoding="utf-8") as f:
-              f.write(out)
-          print(f"[claude-extract] wrote {out_path} ({len(out)} bytes)")
-          PY
-          chmod +x "${EXTRACT_PKG}/cli.js"
-          cat > "${EXTRACT_PKG}/package.json" <<'PKG'
-          {
-            "name": "claude-code-extracted",
-            "version": "0.0.0",
-            "private": true,
-            "dependencies": {
-              "ajv": "^8",
-              "ajv-formats": "^3",
-              "node-fetch": "^2",
-              "undici": "^6",
-              "ws": "^8",
-              "yaml": "^2"
-            }
-          }
-          PKG
-          (cd "${EXTRACT_PKG}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
-          node "${EXTRACT_PKG}/cli.js" --version
-          (cd "${EXTRACT_ROOT}" && tar czf "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz" node_modules)
-          ls -lh "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz"
-          sha256sum "${EXTRACT_PKG}/cli.js" | awk '{print "[claude-extract] cli.js sha256: "$1}'
 
       - name: Download codex-termux Android binaries (exec + TUI)
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
@@ -736,66 +459,12 @@ jobs:
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
 
-      - name: Bundle AI CLIs (Gemini CLI + Codex JS dispatcher)
+      - name: Bundle Codex JS dispatcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p cli-bundle
-          # bug #139 (2026-04-27): dropped @anthropic-ai/claude-code@2.1.112
-          # from the bundle. The musl SEA at libclaude.so is the primary
-          # Claude path now (claude() bash function in HomeInitializer.kt
-          # prefers it over cli.js — line 1184). The bundled cli.js was
-          # only reached when both runtime SEA and APK SEA failed, an
-          # extremely rare path on a working device. Saves ~250-300 MB
-          # APK. If a user truly hits the rare offline+SEA-broken path,
-          # __shelly_bg_cli_update can pull cli.js fresh from npm on
-          # next network event into ~/.shelly-cli.
-          #
-          # Gemini stays — pure JS, ~30 MB compressed, genuinely needed
-          # for offline first-launch.
-          # Codex JS dispatcher stays — small (~5 MB) and required to
-          # patch into the codex-termux native binary at install time.
           npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
-            @google/gemini-cli@latest \
             @openai/codex@latest
-          # Patch clipboardy: remove Termux guard so Gemini CLI starts without Termux
-          # The check may be in clipboardy hoisted to various locations or bundled in chunks
-          find cli-bundle/lib -name "*.js" -exec grep -l "TERMUX_VERSION" {} \; | while read f; do
-            sed -i "s|process.env.TERMUX_VERSION===void 0|false|g" "$f"
-            sed -i "s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
-            echo "Patched TERMUX_VERSION in: $f"
-          done
-          node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-          const bundleDir = path.join('cli-bundle', 'lib', 'node_modules', '@google', 'gemini-cli', 'bundle');
-          if (!fs.existsSync(bundleDir)) {
-            console.log(`[gemini] bundle dir missing at ${bundleDir}`);
-            process.exit(0);
-          }
-          const files = fs.readdirSync(bundleDir).filter((f) => (f.startsWith('chunk-') || f.startsWith('gemini-')) && f.endsWith('.js'));
-          let termuxPatched = 0;
-          let shellPatched = 0;
-          let commandExistsPatched = 0;
-          for (const file of files) {
-            const filePath = path.join(bundleDir, file);
-            const before = fs.readFileSync(filePath, 'utf8');
-            let after = before;
-            after = after.replace(/throw new Error\("You need to install Termux[^"]*"\)/g, 'undefined');
-            after = after.replace(/shell:\s*true([,}])/g, 'shell:"/system/bin/sh"$1');
-            after = after.replace(
-              /execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/g,
-              'execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})'
-            );
-            if (after !== before) {
-              if (/throw new Error\("You need to install Termux[^"]*"\)/.test(before)) termuxPatched++;
-              if (/shell:\s*true[,}]/.test(before)) shellPatched++;
-              if (/execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/.test(before)) commandExistsPatched++;
-              fs.writeFileSync(filePath, after);
-            }
-          }
-          console.log(`[gemini] patched termux=${termuxPatched} shellTrue=${shellPatched} commandExists=${commandExistsPatched} files=${files.length}`);
-          NODE
-          # Tar them up for APK assets (LibExtractor will extract on first launch)
           cd cli-bundle/lib
           tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
           cd ../..
@@ -815,48 +484,6 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Build shelly-musl trampoline loader (bug #117)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          SRC="modules/terminal-emulator/android/src/main/jni/shelly-musl-exec.c"
-          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_musl_exec.so"
-          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-
-          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
-          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
-            "${SRC}" -o "${OUT}"
-          chmod 755 "${OUT}"
-          ls -lh "${OUT}"
-          file "${OUT}"
-
-      - name: Build musl exec wrapper for Claude SEA (bug #117/#731)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        # Compile the musl-native exec wrapper (exec-wrapper-musl.c) inside
-        # an Alpine arm64 container so the resulting .so depends ONLY on
-        # libc.musl-aarch64.so.1. The previous Path C-bis step compiled
-        # exec-wrapper.c (bionic source) under Alpine which produced a
-        # binary referencing __register_atfork / __open_2 / __errno —
-        # symbols musl ld-musl cannot resolve, surfaced on-device as
-        # "Error relocating libexec_wrapper.so" when claude() routed the
-        # bionic preload into the musl loader. This step overwrites the
-        # earlier output with the correct musl-native build.
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          SRC="/work/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c"
-          OUT="/work/${JNILIBS}/libexec_wrapper_musl.so"
-
-          docker run --rm --platform linux/arm64 \
-            -v "${GITHUB_WORKSPACE}:/work" \
-            alpine:3.19 sh -euxc "
-              apk add --no-progress build-base file
-              cc -shared -fPIC -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror '${SRC}' -o '${OUT}'
-              strip --strip-unneeded '${OUT}'
-              chmod 755 '${OUT}'
-              ls -lh '${OUT}'
-              file '${OUT}'
-            "
 
       - name: Build Shelly shell launcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'

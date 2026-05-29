@@ -141,7 +141,8 @@ function createThrottledUpdate(updateFn: UpdateFn) {
  *
  * Routing:
  * - `local` agent → streams from local LLM (OpenAI-compatible)
- * - other agents  → shows a configure-API-key stub (full routing TODO)
+ * - cloud/API agents → Cerebras, Groq, Perplexity
+ * - foreground terminal CLIs stay outside the AI Pane
  */
 export function useAIPaneDispatch(paneId: string) {
   const abortRef = useRef<AbortController | null>(null);
@@ -160,18 +161,24 @@ export function useAIPaneDispatch(paneId: string) {
 
       const store = useAIPaneStore.getState();
       const { settings } = useSettingsStore.getState();
+      const parsed = parseInput(userText);
+      const requestedAgent = parsed.layer === 'mention' && isAiPaneAgent(parsed.target)
+        ? parsed.target
+        : null;
+      const promptText = requestedAgent ? parsed.prompt.trim() : userText.trim();
       const rawAgent = usePaneStore.getState().paneAgents[paneId];
-      const agent = isAiPaneAgent(rawAgent)
+      const agent = requestedAgent ?? (isAiPaneAgent(rawAgent)
         ? rawAgent
-        : pickDefaultAiPaneAgent(settings);
+        : pickDefaultAiPaneAgent(settings));
       if (agent !== rawAgent) {
         usePaneStore.getState().bindAgent(paneId, agent);
       }
       logInfo('AIPaneDispatch', 'Dispatching to agent: ' + agent);
 
       // ── Add user message ──
+      const userMessageId = generateId();
       const userMsg: ChatMessage = {
-        id: generateId(),
+        id: userMessageId,
         role: 'user',
         content: userText,
         timestamp: Date.now(),
@@ -179,13 +186,23 @@ export function useAIPaneDispatch(paneId: string) {
       };
       store.addMessage(paneId, userMsg);
 
+      if (requestedAgent && !promptText) {
+        store.addMessage(paneId, {
+          id: generateId(),
+          role: 'assistant',
+          content: `Usage: @${requestedAgent} <message>`,
+          timestamp: Date.now(),
+          agent: agent as ChatMessage['agent'],
+        });
+        return;
+      }
+
       // bug: @agent used to only be wired into TerminalPane.onBlockCompleted,
       // so typing `@agent status` in the AI pane fell through to the LLM
       // (which has no idea what it means). The AI pane is the natural home
       // for @mention commands — intercept here and run the agent-manager
       // handler inline, appending a synthetic assistant message with the
       // result so the UX matches every other chat response.
-      const parsed = parseInput(userText);
       if (parsed.layer === 'mention' && parsed.target === 'agent') {
         let resultMessage: string;
         try {
@@ -264,22 +281,23 @@ export function useAIPaneDispatch(paneId: string) {
             execCommand(cmd, 180_000).then((r) => r.stdout || r.stderr || '');
 
           // Only invite members the user has actually configured. Gemini
-          // runs through API here; Gemini CLI stays Terminal-only/experimental.
-          // Claude Code is also Terminal-only for AI Pane/background flows.
+          // runs through API here; removed CLI agents remain Terminal-only.
           const dyn = {
             ...DEFAULT_TEAM_SETTINGS,
-            perplexityEnabled: !!settings.perplexityApiKey && DEFAULT_TEAM_SETTINGS.perplexityEnabled,
-            cerebrasEnabled:   !!settings.cerebrasApiKey   && DEFAULT_TEAM_SETTINGS.cerebrasEnabled,
-            groqEnabled:       !!settings.groqApiKey       && DEFAULT_TEAM_SETTINGS.groqEnabled,
-            geminiEnabled:     !!settings.geminiApiKey && DEFAULT_TEAM_SETTINGS.geminiEnabled,
-            localEnabled:      !!settings.localLlmUrl      && DEFAULT_TEAM_SETTINGS.localEnabled,
-            claudeEnabled: false,
+            codexEnabled:      settings.teamMembers?.codex !== false && DEFAULT_TEAM_SETTINGS.codexEnabled,
+            geminiEnabled:     settings.teamMembers?.gemini !== false && !!settings.geminiApiKey && DEFAULT_TEAM_SETTINGS.geminiEnabled,
+            perplexityEnabled: settings.teamMembers?.perplexity !== false && !!settings.perplexityApiKey && DEFAULT_TEAM_SETTINGS.perplexityEnabled,
+            cerebrasEnabled:   settings.teamMembers?.cerebras !== false && !!settings.cerebrasApiKey && DEFAULT_TEAM_SETTINGS.cerebrasEnabled,
+            groqEnabled:       settings.teamMembers?.groq !== false && !!settings.groqApiKey && DEFAULT_TEAM_SETTINGS.groqEnabled,
+            localEnabled:      settings.teamMembers?.local !== false && !!settings.localLlmUrl && DEFAULT_TEAM_SETTINGS.localEnabled,
+            codexCmd:          settings.codexCmd ?? DEFAULT_TEAM_SETTINGS.codexCmd,
           };
 
           const result = await runTeamRoundtable(teamPrompt, dyn, {
             runCommand: runner,
             perplexityApiKey: settings.perplexityApiKey,
             geminiApiKey: settings.geminiApiKey,
+            geminiModel: settings.geminiModel,
             localLlmUrl: settings.localLlmUrl,
             cerebrasApiKey: settings.cerebrasApiKey,
             groqApiKey: settings.groqApiKey,
@@ -410,9 +428,10 @@ export function useAIPaneDispatch(paneId: string) {
           agent === 'local' ? null : stagedFile,
         );
         const conv = store.getOrCreate(paneId);
-        // Exclude the streaming placeholder we just added
+        // Exclude the streaming placeholder and the current user message;
+        // the active prompt is passed separately to each provider below.
         const history = toOpenAIHistory(
-          conv.messages.filter((m) => m.id !== assistantId),
+          conv.messages.filter((m) => m.id !== assistantId && m.id !== userMessageId),
           agent === 'local' ? 1 : 8,
         ).map((m) => ({
           role: m.role,
@@ -453,7 +472,7 @@ export function useAIPaneDispatch(paneId: string) {
           const messages: OllamaMessage[] = [
             { role: 'system', content: systemPrompt },
             ...history.map((m) => ({ role: m.role, content: m.content })),
-            { role: 'user', content: userText },
+            { role: 'user', content: promptText },
           ];
 
           const result = await ollamaChatStream(
@@ -533,7 +552,7 @@ export function useAIPaneDispatch(paneId: string) {
 
             const result = await cerebrasChatStream(
               apiKey,
-              userText,
+              promptText,
               (chunk, done) => {
                 if (signal.aborted) return;
                 if (!done && chunk) {
@@ -593,7 +612,7 @@ export function useAIPaneDispatch(paneId: string) {
 
             const result = await groqChatStream(
               apiKey,
-              userText,
+              promptText,
               (chunk, done) => {
                 if (signal.aborted) return;
                 if (!done && chunk) {
@@ -650,7 +669,7 @@ export function useAIPaneDispatch(paneId: string) {
 
             const result = await geminiChatStream(
               apiKey,
-              userText,
+              promptText,
               (chunk, done) => {
                 if (signal.aborted) return;
                 if (!done && chunk) {
@@ -704,7 +723,7 @@ export function useAIPaneDispatch(paneId: string) {
 
             const result = await perplexitySearchStream(
               apiKey,
-              userText,
+              promptText,
               (chunk, done, citations) => {
                 if (signal.aborted) return;
                 if (!done && chunk) {

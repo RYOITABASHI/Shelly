@@ -1,0 +1,19 @@
+appId: dev.shelly.terminal
+---
+# ネイティブPTY再起動スモークテスト。
+
+- launchApp
+
+- assertVisible:
+    id: "native-terminal-view"
+  timeout: 20000
+
+- tapOn:
+    id: "native-terminal-view"
+
+- inputText: "bash -c 'echo SHELLY_PTY_RESTART_OK'"
+- pressKey: Enter
+
+- assertVisible:
+    text: "SHELLY_PTY_RESTART_OK"
+  timeout: 10000

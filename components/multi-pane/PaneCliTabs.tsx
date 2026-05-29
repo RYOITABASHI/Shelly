@@ -27,6 +27,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useFocusStore } from '@/store/focus-store';
+import { usePaneStore } from '@/store/pane-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -133,7 +134,6 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
     setActiveSession(newId);
     if (leafId) {
       try {
-        const { usePaneStore } = require('@/store/pane-store');
         usePaneStore.getState().setFocusedPane(leafId);
         const mps = useMultiPaneStore.getState();
         const slotIdx = mps.slots.findIndex((s) => s?.id === leafId);

@@ -5,7 +5,6 @@
  */
 
 import { useTerminalStore } from '@/store/terminal-store';
-import { GEMINI_API_BASE } from '@/lib/gemini';
 
 /**
  * Summarize terminal output for voice reading.
@@ -32,30 +31,6 @@ export async function summarizeForSpeech(output: string): Promise<string> {
         [],
       );
       if (res.success && result) return result;
-    } catch {}
-  }
-
-  // Fallback: Gemini
-  const geminiKey = settings.geminiApiKey;
-  if (geminiKey && geminiKey.trim().length >= 10) {
-    try {
-      const url = `${GEMINI_API_BASE}/models/gemini-2.0-flash:generateContent`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [{ text: `Summarize this terminal output for voice reading. Natural spoken language, 2 sentences max. If context is Japanese, respond in Japanese:\n\n${output.slice(0, 2000)}` }],
-          }],
-          generationConfig: { maxOutputTokens: 256, temperature: 0.3 },
-        }),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (text) return text;
-      }
     } catch {}
   }
 

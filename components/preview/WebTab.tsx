@@ -23,21 +23,7 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   const [editMode, setEditMode] = useState(false);
   const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
 
-  // Empty state when no URL
-  if (!url) {
-    return (
-      <View style={[styles.container, { backgroundColor: c.background }]}>
-        <View style={styles.placeholder}>
-          <MaterialIcons name="language" size={32} color={c.muted} />
-          <Text style={[styles.placeholderText, { color: c.muted }]}>
-            Start a dev server or open an HTML file
-          </Text>
-        </View>
-      </View>
-    );
-  }
-
-  const shortUrl = url.replace(/^https?:\/\//, '');
+  const shortUrl = url ? url.replace(/^https?:\/\//, '') : '';
 
   const handleReload = useCallback(() => {
     setError(false);
@@ -46,7 +32,7 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   }, []);
 
   const handleOpenExternal = useCallback(() => {
-    Linking.openURL(url);
+    if (url) void Linking.openURL(url);
   }, [url]);
 
   const toggleEditMode = useCallback(() => {
@@ -81,6 +67,20 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   const handleEditClose = useCallback(() => {
     setSelectedElement(null);
   }, []);
+
+  // Empty state when no URL
+  if (!url) {
+    return (
+      <View style={[styles.container, { backgroundColor: c.background }]}>
+        <View style={styles.placeholder}>
+          <MaterialIcons name="language" size={32} color={c.muted} />
+          <Text style={[styles.placeholderText, { color: c.muted }]}>
+            Start a dev server or open an HTML file
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>

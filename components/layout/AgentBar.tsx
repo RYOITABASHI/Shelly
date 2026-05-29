@@ -3,9 +3,8 @@
 // Global top bar: single "+" (opens the unified LayoutAddSheet) • search •
 // settings. The old split "layout preset / add pane" buttons collapsed into
 // one sheet with ADD / LAYOUT tabs (mobile-optimised Superset model).
-// The old CLI tab strip (CLAUDE/GEMINI/CODEX/OPENCODE/COPILOT) moved into
-// each TerminalPane header as a per-pane tab bar (Superset-style), so this
-// bar no longer carries CLI tabs at all.
+// CLI tabs moved into each TerminalPane header as a per-pane tab bar
+// (Superset-style), so this bar no longer carries CLI tabs at all.
 import React, { useEffect, useState } from 'react';
 import { View, Pressable, StyleSheet, Text } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -15,7 +14,6 @@ import { BuildsModal, buildStatusColor, fetchBuildRuns, statusFromRun, type Buil
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
-import { useSettingsStore } from '@/store/settings-store';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
@@ -28,7 +26,6 @@ export function AgentBar() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [buildsOpen, setBuildsOpen] = useState(false);
   const [buildStatus, setBuildStatus] = useState<BuildStatus>('unknown');
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
   const barBg = usePanelBackground(C.bgSidebar);
   // bug #112: on Android edge-to-edge a dismissed Modal leaves the activity
   // with mCurrentFocus=null, so the keyboard stays visible but commitText
@@ -42,21 +39,19 @@ export function AgentBar() {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
     const refresh = async () => {
       try {
         const runs = await fetchBuildRuns();
-        if (cancelled) return;
-        setBuildStatus(statusFromRun(runs[0]));
+        if (!cancelled) setBuildStatus(statusFromRun(runs[0]));
       } catch {
         if (!cancelled) setBuildStatus('unknown');
       }
     };
     void refresh();
-    timer = setInterval(refresh, 60_000);
+    const timer = setInterval(refresh, 60_000);
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      clearInterval(timer);
     };
   }, []);
 
@@ -86,7 +81,7 @@ export function AgentBar() {
           The git-dirty badge was removed 2026-04-21 — it was counting
           `git status --porcelain` in `$HOME` which is not a sane repo
           context (BASHRC_VERSION writes, CLI install logs, npm caches and
-          .claude state files all registered as "dirty"), so users saw
+          agent state files all registered as "dirty"), so users saw
           alarming 3-digit numbers that did not correspond to any work in
           progress. The underlying git-status-store was deleted alongside
           this UI. If a per-repo dirty count returns later it should read

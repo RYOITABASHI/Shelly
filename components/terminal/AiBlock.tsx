@@ -47,7 +47,7 @@ function StreamingCursor({ color }: { color: string }) {
       -1,
       false,
     );
-  }, []);
+  }, [opacity]);
 
   const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 

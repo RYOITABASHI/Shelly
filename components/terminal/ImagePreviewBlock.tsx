@@ -1,14 +1,13 @@
 import React, { memo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Image } from 'expo-image';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C } from '@/theme.config';
 
 type Props = {
   output: string;
   cwd: string;
 };
 
-const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp)$/i;
 const URL_PATTERN = /^https?:\/\//i;
 
 function extractImagePaths(output: string): string[] {

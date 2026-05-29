@@ -63,7 +63,7 @@ export const neonBorderGlow: ViewStyle = {
 };
 
 // ── Per-color glows ────────────────────────────────────────────────
-// Match the mock's color-coded neon text (CLAUDE purple, YOU blue,
+// Match the mock's color-coded neon text (agent purple, YOU blue,
 // strings pink, etc). Radius trimmed on narrower hues so Silkscreen
 // pixels don't smear when the accent is a softer pastel in
 // low-saturation themes (Rose Pine / Everforest).

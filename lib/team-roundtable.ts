@@ -7,8 +7,8 @@
  * 同じプロンプトを並列投げし、ファシリテーターAIが統合サマリーを生成する。
  *
  * 設計方針:
- * - CLI経由（Codex、明示時のみClaude）: Terminal向けCLIを活用
- * - API経由（Gemini/Perplexity）: free quota と安定したbackground実行
+ * - CLI経由（Codex）: Terminal向けCLIを活用
+ * - API経由（Gemini/Perplexity/Cerebras/Groq）: 安定したbackground実行
  * - Local LLM: ファシリ優先候補、オフライン動作
  * - ファシリ自動選択: Gemini API → Cerebras/Groq → Codex → Perplexity → Local
  * - 各回答が返ってきた順にコールバックで通知（ストリーミング的UI）
@@ -17,7 +17,6 @@
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TeamMemberId =
-  | 'claude'
   | 'gemini'
   | 'codex'
   | 'perplexity'
@@ -57,7 +56,6 @@ export interface TeamRoundtableResult {
 
 export interface TeamSettings {
   /** 参加メンバーのON/OFF */
-  claudeEnabled: boolean;
   geminiEnabled: boolean;
   codexEnabled: boolean;
   perplexityEnabled: boolean;
@@ -68,24 +66,17 @@ export interface TeamSettings {
   facilitatorPriority: TeamMemberId[];
   /** Codex CLIのコマンド名（デフォルト: 'codex'） */
   codexCmd: string;
-  /** Claude CLIのコマンド名（デフォルト: 'claude'） */
-  claudeCmd: string;
-  /** Gemini CLIのコマンド名（デフォルト: 'gemini'） */
-  geminiCmd: string;
 }
 
 export const DEFAULT_TEAM_SETTINGS: TeamSettings = {
-  claudeEnabled: false,
   geminiEnabled: true,
   codexEnabled: true,
   perplexityEnabled: true,
   localEnabled: true,
   cerebrasEnabled: true,
   groqEnabled: true,
-  facilitatorPriority: ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local', 'claude'],
+  facilitatorPriority: ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'],
   codexCmd: 'codex',
-  claudeCmd: 'claude',
-  geminiCmd: 'gemini',
 };
 
 export type TeamMemberCallback = (result: TeamMemberResult) => void;
@@ -97,17 +88,9 @@ export type FacilitatorChunkCallback = (chunk: string) => void;
 export function buildTeamMembers(settings: TeamSettings): TeamMemberConfig[] {
   return [
     {
-      id: 'claude',
-      label: 'Claude',
-      color: '#F59E0B',
-      emoji: '🟡',
-      mode: 'cli',
-      enabled: settings.claudeEnabled,
-    },
-    {
       id: 'gemini',
       label: 'Gemini',
-      color: '#3B82F6',
+      color: '#60A5FA',
       emoji: '🔵',
       mode: 'api',
       enabled: settings.geminiEnabled,
@@ -185,10 +168,10 @@ export async function runTeamMember(
   prompt: string,
   opts: {
     runCommand: (cmd: string) => Promise<string>;
-    perplexityApiKey?: string;
-    perplexityModel?: string;
     geminiApiKey?: string;
     geminiModel?: string;
+    perplexityApiKey?: string;
+    perplexityModel?: string;
     localLlmUrl?: string;
     localLlmModel?: string;
     cerebrasApiKey?: string;
@@ -204,17 +187,11 @@ export async function runTeamMember(
     let response = '';
 
     if (member.mode === 'cli') {
-      // CLI経由: codex コマンドを実行。Claude は明示設定時だけ使う。
-      const cmdMap: Record<string, string> = {
-        claude: opts.teamSettings.claudeCmd,
-        codex: opts.teamSettings.codexCmd,
-      };
-      const cmd = cmdMap[member.id] ?? member.id;
+      // CLI経由: codex コマンドだけを実行する。
+      const cmd = opts.teamSettings.codexCmd;
       // プロンプトをシングルクォートでエスケープ
       const escapedPrompt = prompt.replace(/'/g, "'\\''");
-      const fullCmd = member.id === 'codex'
-        ? `${cmd} exec '${escapedPrompt}' 2>&1 | head -200`
-        : `${cmd} -p '${escapedPrompt}' 2>&1 | head -200`;
+      const fullCmd = `${cmd} exec '${escapedPrompt}' 2>&1 | head -200`;
       response = await opts.runCommand(fullCmd);
     } else if (member.id === 'gemini') {
       if (!opts.geminiApiKey) {
@@ -316,10 +293,10 @@ export async function runFacilitatorSummary(
   memberResults: TeamMemberResult[],
   opts: {
     runCommand: (cmd: string) => Promise<string>;
-    perplexityApiKey?: string;
-    perplexityModel?: string;
     geminiApiKey?: string;
     geminiModel?: string;
+    perplexityApiKey?: string;
+    perplexityModel?: string;
     localLlmUrl?: string;
     localLlmModel?: string;
     cerebrasApiKey?: string;
@@ -394,15 +371,9 @@ Reply in English.`;
       );
       return accumulated;
     } else if (facilitator.mode === 'cli') {
-      const cmdMap: Record<string, string> = {
-        claude: opts.teamSettings.claudeCmd,
-        codex: opts.teamSettings.codexCmd,
-      };
-      const cmd = cmdMap[facilitator.id] ?? facilitator.id;
+      const cmd = opts.teamSettings.codexCmd;
       const escapedPrompt = facilitatorPrompt.replace(/'/g, "'\\''");
-      const fullCmd = facilitator.id === 'codex'
-        ? `${cmd} exec '${escapedPrompt}' 2>&1 | head -300`
-        : `${cmd} -p '${escapedPrompt}' 2>&1 | head -300`;
+      const fullCmd = `${cmd} exec '${escapedPrompt}' 2>&1 | head -300`;
       const result = await opts.runCommand(fullCmd);
       opts.onChunk?.(result);
       return result;
@@ -475,10 +446,10 @@ export async function runTeamRoundtable(
   settings: TeamSettings,
   opts: {
     runCommand: (cmd: string) => Promise<string>;
-    perplexityApiKey?: string;
-    perplexityModel?: string;
     geminiApiKey?: string;
     geminiModel?: string;
+    perplexityApiKey?: string;
+    perplexityModel?: string;
     localLlmUrl?: string;
     localLlmModel?: string;
     cerebrasApiKey?: string;
@@ -512,10 +483,10 @@ export async function runTeamRoundtable(
   const participantPromises = enabledMembers.map((member) =>
     runTeamMember(member, prompt, {
       runCommand: opts.runCommand,
-      perplexityApiKey: opts.perplexityApiKey,
-      perplexityModel: opts.perplexityModel,
       geminiApiKey: opts.geminiApiKey,
       geminiModel: opts.geminiModel,
+      perplexityApiKey: opts.perplexityApiKey,
+      perplexityModel: opts.perplexityModel,
       localLlmUrl: opts.localLlmUrl,
       localLlmModel: opts.localLlmModel,
       cerebrasApiKey: opts.cerebrasApiKey,
@@ -544,10 +515,10 @@ export async function runTeamRoundtable(
       memberResults,
       {
         runCommand: opts.runCommand,
-        perplexityApiKey: opts.perplexityApiKey,
-        perplexityModel: opts.perplexityModel,
         geminiApiKey: opts.geminiApiKey,
         geminiModel: opts.geminiModel,
+        perplexityApiKey: opts.perplexityApiKey,
+        perplexityModel: opts.perplexityModel,
         localLlmUrl: opts.localLlmUrl,
         localLlmModel: opts.localLlmModel,
         cerebrasApiKey: opts.cerebrasApiKey,

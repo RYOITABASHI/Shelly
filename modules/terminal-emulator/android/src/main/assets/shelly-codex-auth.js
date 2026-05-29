@@ -262,7 +262,7 @@ function saveAuth(tok) {
 // store from main thread — which IS in activity context and CAN
 // open Browser Pane navigation. Same bridge `shelly-xdg-open.c`
 // (the native xdg-open replacement) uses, so a single drain loop
-// covers both Codex login and Claude/Gemini OAuth.
+// covers CLI/browser OAuth handoffs.
 // ─────────────────────────────────────────────────────────────
 
 function openViaDeepLink(url) {

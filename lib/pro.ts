@@ -4,7 +4,7 @@
  * Build-time: SHELLY_PRO env var → app.config.ts extra.shellyPro
  * Runtime: AsyncStorage override (future: license key, GitHub Sponsors)
  *
- * Pro features: API integrations (Groq, Perplexity, Gemini API),
+ * Pro features: API integrations (Groq, Perplexity),
  * Local LLM, MCP, @team Table, Obsidian, System Prompt
  */
 

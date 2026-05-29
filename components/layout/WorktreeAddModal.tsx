@@ -28,17 +28,16 @@ type Props = {
   onClose: () => void;
 };
 
-const AGENTS: Array<{ id: WorktreeAgent; label: string; emoji: string; color: string }> = [
-  { id: 'claude', label: 'Claude', emoji: '🟣', color: '#A78BFA' },
-  { id: 'codex',  label: 'Codex',  emoji: '🟢', color: '#22C55E' },
-  { id: 'none',   label: 'None',   emoji: '⚪', color: '#9CA3AF' },
+const AGENTS: { id: WorktreeAgent; label: string; color: string }[] = [
+  { id: 'codex', label: 'Codex', color: '#22C55E' },
+  { id: 'none', label: 'None', color: '#9CA3AF' },
 ];
 
 function supportedInitialAgent(agent: WorktreeAgent): WorktreeAgent {
-  return agent === 'gemini' ? 'none' : agent;
+  return agent === 'codex' || agent === 'none' ? agent : 'codex';
 }
 
-export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', onClose }: Props) {
+export function WorktreeAddModal({ visible, repoPath, initialAgent = 'codex', onClose }: Props) {
   const addWorktree = useWorktreeStore((s) => s.addWorktree);
   const [agent, setAgent] = useState<WorktreeAgent>(supportedInitialAgent(initialAgent));
   const [branch, setBranch] = useState('');
@@ -94,7 +93,6 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
                 onPress={() => setAgent(a.id)}
                 style={[styles.agentChip, agent === a.id && { borderColor: a.color, backgroundColor: withAlpha(C.accent, 0.06) }]}
               >
-                <Text style={[styles.agentEmoji]}>{a.emoji}</Text>
                 <Text style={[styles.agentLabel, agent === a.id && { color: a.color }]}>
                   {a.label}
                 </Text>
@@ -208,9 +206,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 5,
-  },
-  agentEmoji: {
-    fontSize: 10,
   },
   agentLabel: {
     fontSize: 10,

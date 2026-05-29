@@ -24,8 +24,6 @@ const CLI_TOOLS: Array<{
   color: string;
   free?: boolean;
 }> = [
-  { id: 'claude-code', name: 'Claude Code', npm: '@anthropic-ai/claude-code', bin: 'claude', color: '#D4A574' },
-  { id: 'gemini-cli', name: 'Gemini CLI', npm: '@google/gemini-cli', bin: 'gemini', color: '#4285F4', free: true },
   { id: 'codex', name: 'Codex CLI', npm: '@openai/codex', bin: 'codex', color: '#10A37F' },
 ];
 

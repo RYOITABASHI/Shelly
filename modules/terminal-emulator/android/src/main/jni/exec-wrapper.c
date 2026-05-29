@@ -39,7 +39,7 @@ static const char shelly_codex_proc_exe_open_gate_marker[] =
     "SHELLY_CODEX_PROC_EXE_OPEN_SHIM";
 
 static const char *const trace_env_keys[] = {
-    "PATH=", "SHELL=", "BASH=", "HOME=", "TMPDIR=", "CLAUDE_CODE_TMPDIR=",
+    "PATH=", "SHELL=", "BASH=", "HOME=", "TMPDIR=",
     "SHELLY_LIB_DIR=", "LD_LIBRARY_PATH=", "LD_PRELOAD=", NULL
 };
 
@@ -367,16 +367,10 @@ static const char *trace_home_value(char *const envp[]) {
 
 static int native_trace_enabled(char *const envp[]) {
     /*
-     * Keep native exec tracing off the normal hot path. It is enabled only by
-     * Shelly's explicit Claude Bash canary so regular terminals, Codex, Gemini,
-     * and Claude TUI sessions never inherit diagnostic I/O.
-     *
-     * Require three gates so stale user env such as SHELLY_CLAUDE_NATIVE_TRACE=1
-     * cannot accidentally turn this back on.
+     * Keep native exec tracing off the normal hot path. Enable it explicitly
+     * only while diagnosing subprocess launch issues.
      */
-    return trace_flag_enabled(envp, "SHELLY_CLAUDE_PATCH_TRACE=") &&
-           trace_flag_enabled(envp, "SHELLY_CLAUDE_NATIVE_TRACE=") &&
-           trace_flag_enabled(envp, "SHELLY_CLAUDE_CANARY_TRACE=");
+    return trace_flag_enabled(envp, "SHELLY_EXEC_WRAPPER_TRACE=");
 }
 
 static const char *base_name(const char *path) {
@@ -395,7 +389,6 @@ static const char *path_kind(const char *path) {
     if (streq(base, "sh")) return "sh";
     if (streq(base, "env")) return "env";
     if (streq(base, "node")) return "node";
-    if (streq(base, "claude")) return "claude";
     if (streq(base, "npm")) return "npm";
     if (streq(base, "timeout")) return "timeout";
     if (streq(base, "linker64")) return "linker64";
@@ -406,7 +399,7 @@ static int append_log_path(char *out, size_t out_size, const char *home) {
     size_t n = 0;
     if (!home || !home[0]) return -1;
     if (append_str(out, out_size, &n, home) != 0) return -1;
-    if (append_str(out, out_size, &n, "/.shelly-claude-patch.log") != 0) return -1;
+    if (append_str(out, out_size, &n, "/.shelly-exec-wrapper.log") != 0) return -1;
     return 0;
 }
 
@@ -430,7 +423,7 @@ static void trace_exec_event(const char *stage, const char *pathname, const char
     int raw;
     unsigned int argc = 0;
     if (!envp) return;
-    raw = trace_flag_enabled(envp, "SHELLY_CLAUDE_PATCH_RAW=");
+    raw = trace_flag_enabled(envp, "SHELLY_EXEC_WRAPPER_TRACE_RAW=");
     if (!native_trace_enabled(envp)) return;
     if (argv) {
         while (argc < MAX_ARGC && argv[argc]) argc++;

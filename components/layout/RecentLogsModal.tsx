@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -28,8 +28,11 @@ export function RecentLogsModal({ visible, onClose }: Props) {
   const [copyBusy, setCopyBusy] = useState(false);
   const sessionBuffer = useExecutionLogStore((s) => s.sessionBuffer);
   const terminalSessions = useTerminalStore((s) => s.sessions);
+  // Keep subscriptions active so the generated export text refreshes on log/session changes.
+  void sessionBuffer;
+  void terminalSessions;
 
-  const text = useMemo(() => buildRecentTerminalLogsText(500), [sessionBuffer, terminalSessions]);
+  const text = buildRecentTerminalLogsText(500);
   const hasLogs = text.trim().length > 0 && text.trim() !== 'No terminal output to export.';
 
   const handleCopy = async () => {

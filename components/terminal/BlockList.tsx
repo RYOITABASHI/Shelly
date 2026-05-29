@@ -25,6 +25,7 @@ import { useTranslation } from '@/lib/i18n';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { SPRING_CONFIGS, TIMING_CONFIGS } from '@/hooks/use-motion';
+import { SetupFlow } from '@/lib/setup-flow';
 
 type Props = {
   blocks: CommandBlock[];
@@ -57,7 +58,7 @@ function BlinkingCursor({ color, size = 14 }: { color: string; size?: number }) 
       -1,
       false,
     );
-  }, []);
+  }, [opacity]);
 
   const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
@@ -105,7 +106,7 @@ function ScrollToBottomButton({ onPress }: { onPress: () => void }) {
   useEffect(() => {
     scale.value = withSpring(1, SPRING_CONFIGS.bouncy);
     btnOpacity.value = withTiming(1, TIMING_CONFIGS.fast);
-  }, []);
+  }, [btnOpacity, scale]);
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -176,7 +177,6 @@ export function BlockList({ blocks, entries, currentDir, onRerun, onCancel, onSe
   const setupFlowRef = useRef<any>(null);
   const getSetupFlow = useCallback(() => {
     if (!setupFlowRef.current) {
-      const { SetupFlow } = require('@/lib/setup-flow');
       const store = useTerminalStore.getState();
       const session = store.sessions.find((s: any) => s.id === store.activeSessionId);
       setupFlowRef.current = new SetupFlow(

@@ -4,7 +4,7 @@
  * MCP (Model Context Protocol) サーバーの状態管理 Zustand Store。
  * - 有効/無効の切り替え
  * - サーバーステータス監視
- * - Claude Code settings.json への自動反映
+ * - MCPクライアント設定JSONの生成
  * - AsyncStorage永続化
  */
 
@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   McpServerStatus,
   MCP_CATALOG,
-  buildClaudeSettingsMcpBlock,
+  buildMcpServersBlock,
 } from '@/lib/mcp-manager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ interface McpStore {
   markInstalled: (id: string) => void;
   enableRecommended: () => void;
   getEnabledIds: () => string[];
-  generateClaudeConfig: () => Record<string, any>;
+  generateClientConfig: () => Record<string, any>;
 }
 
 const STORAGE_KEY = '@shelly/mcp-servers';
@@ -121,8 +121,8 @@ export const useMcpStore = create<McpStore>((set, get) => ({
       .map(([id]) => id);
   },
 
-  generateClaudeConfig: () => {
-    return buildClaudeSettingsMcpBlock(get().getEnabledIds());
+  generateClientConfig: () => {
+    return buildMcpServersBlock(get().getEnabledIds());
   },
 }));
 

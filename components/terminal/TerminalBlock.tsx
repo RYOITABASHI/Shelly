@@ -34,15 +34,14 @@ import { DiffViewer } from '@/components/terminal/DiffViewer';
 import { detectContentType, type ContentType } from '@/lib/content-block-detector';
 import MarkdownBlock from '@/components/terminal/MarkdownBlock';
 import JsonTreeBlock from '@/components/terminal/JsonTreeBlock';
-import ImagePreviewBlock from '@/components/terminal/ImagePreviewBlock';
-import TableBlock from '@/components/terminal/TableBlock';
-import { useRouter } from 'expo-router';
+import { ImagePreviewBlock } from '@/components/terminal/ImagePreviewBlock';
+import { TableBlock } from '@/components/terminal/TableBlock';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { SPRING_CONFIGS, TIMING_CONFIGS } from '@/hooks/use-motion';
 import { playSound } from '@/lib/sounds';
 import { parseAnsi, hasAnsiCodes } from '@/lib/ansi-parser';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C, fonts as F } from '@/theme.config';
 
 export { getOutputColor };
 
@@ -95,7 +94,7 @@ function RunningDots({ color }: { color: string }) {
         -1, false,
       );
     }, 200);
-  }, []);
+  }, [dot1, dot2, dot3]);
 
   const s1 = useAnimatedStyle(() => ({ opacity: dot1.value }));
   const s2 = useAnimatedStyle(() => ({ opacity: dot2.value }));
@@ -201,8 +200,6 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
   const highContrastSetting = useTerminalStore((s) => s.settings.highContrastOutput);
   const llmInterpreterEnabled = useTerminalStore((s) => s.settings.llmInterpreterEnabled ?? false);
   const { addSnippet: saveSnippet, findByCommand, updateSnippet } = useSnippetStore();
-  const router = useRouter();
-
   // Exit code badge animation
   const exitScale = useSharedValue(0);
   const exitAnimStyle = useAnimatedStyle(() => ({
@@ -219,10 +216,6 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
 
   // Collapse icon rotation
   const collapseRotation = useSharedValue(0);
-  const _collapseAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${collapseRotation.value}deg` }],
-  }));
-
   // Play sound and animate on exit code change
   useEffect(() => {
     if (!block.isRunning && block.exitCode !== null) {
@@ -233,7 +226,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
         playSound('error');
       }
     }
-  }, [block.isRunning, block.exitCode]);
+  }, [block.isRunning, block.exitCode, exitScale]);
 
   const handleLinkPress = useCallback((linkText: string, linkType: 'url' | 'filepath') => {
     if (linkType === 'url') {
@@ -242,7 +235,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
     } else {
       if (onRerun) onRerun(`cat ${linkText}`);
     }
-  }, [router, onRerun]);
+  }, [onRerun]);
 
   const [menuVisible, setMenuVisible] = useState(false);
   const [linkMenuVisible, setLinkMenuVisible] = useState(false);

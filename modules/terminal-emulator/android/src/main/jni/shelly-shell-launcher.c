@@ -2,8 +2,8 @@
  * shelly-shell-launcher.c
  *
  * Small executable launcher used as $SHELL for tools that spawn their own
- * shell outside Shelly's interactive bash functions, notably Claude Code's
- * Bash tool. It lives in the APK nativeLibraryDir, which Android allows to
+ * shell outside Shelly's interactive bash functions, notably agent CLI
+ * shell tools. It lives in the APK nativeLibraryDir, which Android allows to
  * execute directly, then jumps through linker64 to the extracted bash binary
  * in app files and injects Shelly's bionic exec wrapper for bash children.
  */

@@ -131,8 +131,6 @@ export function Divider(props: DividerProps) {
         width: w,
       };
 
-  if ((isVertical && h <= 0) || (!isVertical && w <= 0)) return null;
-
   const lineAnimStyle = useAnimatedStyle(() => ({
     // Line lights up from a faint 0.18 opacity teal wash to a full
     // neon teal during drag. Thickness also grows 1 → 2px for a
@@ -155,6 +153,8 @@ export function Divider(props: DividerProps) {
     // Inner bar fades the dots out and in a single capsule highlight.
     opacity: 0.6 + 0.4 * active.value,
   }));
+
+  if ((isVertical && h <= 0) || (!isVertical && w <= 0)) return null;
 
   return (
     <GestureDetector gesture={composed}>

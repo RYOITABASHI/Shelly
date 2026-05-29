@@ -1,6 +1,5 @@
 package expo.modules.terminalemulator.scouter
 
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
@@ -17,102 +16,16 @@ class JsonlSessionParser(
     private var totalTokensObserved: Long = 0
     private var totalCostUsd: Double = 0.0
     private var modelName: String? = null
-    private val seenClaudeUsageKeys = mutableSetOf<String>()
     private var previousCodexTotal: CodexUsage? = null
     private var codexCwd: String? = null
 
     fun parse(line: String): ScouterEvent? {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return null
         return when (source) {
-            ScouterSource.CLAUDE_CODE -> parseClaude(json)
             ScouterSource.CODEX -> parseCodex(json)
             ScouterSource.LOCAL_LLM -> EventNormalizer.fromJsonl(source, file, line)
             ScouterSource.SHELLY -> EventNormalizer.fromJsonl(source, file, line)
         }
-    }
-
-    private fun parseClaude(json: JSONObject): ScouterEvent? {
-        val message = json.optJSONObject("message")
-        val usage = message?.optJSONObject("usage") ?: json.optJSONObject("usage")
-        val lineInputTokens = usage.optLongOrZero("input_tokens")
-        val lineOutputTokens = usage.optLongOrZero("output_tokens")
-        val lineCacheCreationTokens = usage.optLongOrZero("cache_creation_input_tokens")
-        val lineCacheReadTokens = usage.optLongOrZero("cache_read_input_tokens")
-        val lineTotalTokens = lineInputTokens + lineOutputTokens + lineCacheCreationTokens + lineCacheReadTokens
-        val isResultLine = json.optString("type").equals("result", ignoreCase = true)
-        if (lineTotalTokens > 0L && !isResultLine && rememberClaudeUsage(json, message)) {
-            inputTokens += lineInputTokens
-            outputTokens += lineOutputTokens
-            cacheCreationInputTokens += lineCacheCreationTokens
-            cacheReadInputTokens += lineCacheReadTokens
-            totalCostUsd += json.optDoubleOrZero("costUSD")
-        }
-        if (isResultLine && lineTotalTokens > 0L) {
-            inputTokens = inputTokens.coerceAtLeast(lineInputTokens)
-            outputTokens = outputTokens.coerceAtLeast(lineOutputTokens)
-            cacheCreationInputTokens = cacheCreationInputTokens.coerceAtLeast(lineCacheCreationTokens)
-            cacheReadInputTokens = cacheReadInputTokens.coerceAtLeast(lineCacheReadTokens)
-        }
-        totalCostUsd = totalCostUsd.coerceAtLeast(json.optDoubleOrZero("total_cost_usd"))
-
-        val lineModel = firstNonBlank(
-            json.optString("model"),
-            message?.optString("model"),
-            json.optJSONObject("model_usage")?.keys()?.asSequence()?.firstOrNull()
-        )
-        if (lineModel != null) modelName = lineModel
-
-        val contentSummary = summarizeClaudeContent(message?.opt("content") ?: json.opt("message"))
-        val toolName = contentSummary.toolName
-        val type = json.optString("type")
-        val subtype = json.optString("subtype")
-        val status = when {
-            toolName != null -> ScouterStatus.TOOL_RUNNING
-            contentSummary.hasToolResult -> ScouterStatus.THINKING
-            type.equals("result", ignoreCase = true) && subtype.equals("error", ignoreCase = true) -> ScouterStatus.ERROR
-            type.equals("result", ignoreCase = true) -> ScouterStatus.COMPLETED
-            type.equals("assistant", ignoreCase = true) -> ScouterStatus.IDLE
-            type.equals("user", ignoreCase = true) -> ScouterStatus.THINKING
-            else -> ScouterStatus.IDLE
-        }
-        val eventType = when {
-            toolName != null -> ScouterEventType.PRE_TOOL_USE
-            contentSummary.hasToolResult -> ScouterEventType.POST_TOOL_USE
-            type.equals("result", ignoreCase = true) -> ScouterEventType.STOP
-            type.equals("user", ignoreCase = true) -> ScouterEventType.USER_PROMPT
-            else -> ScouterEventType.SNAPSHOT
-        }
-        val cwd = firstNonBlank(json.optString("cwd"), json.optString("project_path")) ?: file.parentFile?.absolutePath.orEmpty()
-        val lastMessage = firstNonBlank(
-            contentSummary.text,
-            contentSummary.commandSummary?.let { "${contentSummary.toolName ?: "tool"}: $it" },
-            if (isResultLine) firstNonBlank(json.optString("result"), json.optString("error")) else null
-        )
-
-        return ScouterEvent(
-            source = ScouterSource.CLAUDE_CODE,
-            sourceVersion = firstNonBlank(json.optString("version"), json.optString("sourceVersion")) ?: "jsonl",
-            timestamp = parseTimestamp(json.optString("timestamp")),
-            sessionId = firstNonBlank(json.optString("sessionId"), json.optString("session_id")) ?: file.nameWithoutExtension,
-            projectName = projectNameFromCwd(cwd),
-            cwd = cwd.redactForScouter(),
-            eventType = eventType,
-            derivedStatus = status,
-            toolName = toolName,
-            targetFile = contentSummary.targetFile?.redactForScouter(),
-            commandSummary = contentSummary.commandSummary?.redactForScouter()?.take(160)
-                ?: contentSummary.text?.redactForScouter()?.take(160),
-            errorMessage = if (status == ScouterStatus.ERROR) firstNonBlank(json.optString("error"), json.optString("result"))?.redactForScouter() else null,
-            modelName = modelName,
-            tokensUsed = inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens,
-            inputTokens = inputTokens,
-            outputTokens = outputTokens,
-            reasoningOutputTokens = reasoningOutputTokens,
-            cacheCreationInputTokens = cacheCreationInputTokens,
-            cacheReadInputTokens = cacheReadInputTokens,
-            totalCostUsd = totalCostUsd,
-            lastMessage = lastMessage?.redactForScouter()?.take(240)
-        )
     }
 
     private fun parseCodex(json: JSONObject): ScouterEvent? {
@@ -231,68 +144,6 @@ class JsonlSessionParser(
         )
     }
 
-    private fun summarizeClaudeContent(content: Any?): ContentSummary {
-        return when (content) {
-            is String -> ContentSummary(text = content)
-            is JSONArray -> {
-                var text: String? = null
-                var tool: String? = null
-                var targetFile: String? = null
-                var command: String? = null
-                var hasToolResult = false
-                for (i in 0 until content.length()) {
-                    val item = content.optJSONObject(i) ?: continue
-                    when (item.optString("type")) {
-                        "text" -> if (text == null) {
-                            text = item.optString("text").ifBlank { null }
-                        }
-                        "tool_use" -> {
-                            if (tool == null) tool = item.optString("name").ifBlank { null }
-                            val input = item.optJSONObject("input")
-                            if (targetFile == null) {
-                                targetFile = firstNonBlank(
-                                    input?.optString("file_path"),
-                                    input?.optString("path"),
-                                    input?.optString("notebook_path")
-                                )
-                            }
-                            if (command == null) {
-                                command = firstNonBlank(
-                                    input?.optString("command"),
-                                    input?.optString("pattern"),
-                                    input?.optString("query"),
-                                    input?.optString("prompt")
-                                )
-                            }
-                        }
-                        "tool_result" -> {
-                            hasToolResult = true
-                            if (text == null) text = item.optString("content").ifBlank { null }
-                        }
-                    }
-                }
-                ContentSummary(
-                    text = text,
-                    toolName = tool,
-                    targetFile = targetFile,
-                    commandSummary = command,
-                    hasToolResult = hasToolResult
-                )
-            }
-            else -> ContentSummary()
-        }
-    }
-
-    private fun rememberClaudeUsage(json: JSONObject, message: JSONObject?): Boolean {
-        val key = firstNonBlank(
-            json.optString("requestId"),
-            json.optString("request_id"),
-            message?.optString("id"),
-            json.optString("uuid")
-        ) ?: return true
-        return seenClaudeUsageKeys.add(key)
-    }
-
     private fun extractCodexModel(json: JSONObject?): String? {
         if (json == null) return null
         val info = json.optJSONObject("info")
@@ -349,14 +200,6 @@ class JsonlSessionParser(
         else -> null
     }
 
-    private data class ContentSummary(
-        val text: String? = null,
-        val toolName: String? = null,
-        val targetFile: String? = null,
-        val commandSummary: String? = null,
-        val hasToolResult: Boolean = false
-    )
-
     private data class CodexUsage(
         val inputTokens: Long,
         val cachedInputTokens: Long,
@@ -391,20 +234,12 @@ class JsonlSessionParser(
     }
 
     companion object {
-        private fun JSONObject?.optLongOrZero(key: String): Long {
-            return this?.takeIf { it.has(key) }?.optLong(key, 0L) ?: 0L
-        }
-
         private fun JSONObject?.optLongAny(vararg keys: String): Long {
             if (this == null) return 0L
             for (key in keys) {
                 if (has(key) && !isNull(key)) return optLong(key, 0L)
             }
             return 0L
-        }
-
-        private fun JSONObject?.optDoubleOrZero(key: String): Double {
-            return this?.takeIf { it.has(key) }?.optDouble(key, 0.0) ?: 0.0
         }
 
         private fun JSONObject.hasNonBlankValue(key: String): Boolean {

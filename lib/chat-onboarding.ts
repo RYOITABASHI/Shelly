@@ -19,13 +19,22 @@ const ONBOARDING_DONE_KEY = '@shelly/chat_onboarding_done';
 
 export type OnboardingStep =
   | 'welcome'             // 歓迎 + 「ファイル一覧」を試すよう促す
-  | 'after_first_cmd'     // コマンド実行後 → Gemini CLIブリッジステップへ
-  | 'gemini_cli_bridge'   // Gemini CLI案内 → Cerebrasセットアップへ
+  | 'after_first_cmd'     // コマンド実行後 → Cerebrasセットアップへ
   | 'cerebras_setup'      // Cerebras APIキー入力待ち
   | 'cerebras_done'       // Cerebras設定完了 → Groq促す
   | 'groq_setup'          // Groq APIキー入力待ち
   | 'complete'            // 全完了
   | 'skipped';            // スキップ済み
+
+const ONBOARDING_STEPS = new Set<string>([
+  'welcome',
+  'after_first_cmd',
+  'cerebras_setup',
+  'cerebras_done',
+  'groq_setup',
+  'complete',
+  'skipped',
+]);
 
 /**
  * オンボーディングが完了済みかチェック
@@ -42,6 +51,7 @@ export async function getOnboardingStep(): Promise<OnboardingStep> {
   const done = await isOnboardingDone();
   if (done) return 'complete';
   const step = await AsyncStorage.getItem(ONBOARDING_KEY).catch(() => null);
+  if (step && !ONBOARDING_STEPS.has(step)) return 'cerebras_setup';
   return (step as OnboardingStep) || 'welcome';
 }
 

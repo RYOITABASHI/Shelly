@@ -6,8 +6,7 @@
  * フォールバック順:
  *   1. Cerebras API（高速推論）
  *   2. Groq API（高速推論）
- *   3. Gemini CLI（`gemini -p`、Google OAuth認証済み）
- *   4. ローカルLLM（Ollama / llama-server）
+ *   3. ローカルLLM（Ollama / llama-server）
  *
  * 機能:
  * 1. コマンド完了後の出力をLLMで解説（成功/エラー）
@@ -25,7 +24,7 @@ export type InterpretResult = {
   text: string;
   suggestedCommand?: string;
   /** どのプロバイダで通訳したか */
-  provider?: 'cerebras' | 'groq' | 'gemini-cli' | 'local';
+  provider?: 'cerebras' | 'groq' | 'local';
 };
 
 export type StreamingCallback = (chunk: string) => void;
@@ -43,9 +42,6 @@ export type FallbackConfig = {
   cerebrasModel?: string;
   groqApiKey?: string;
   groqModel?: string;
-  geminiCliAvailable?: boolean;
-  /** Gemini CLIがターミナルで対話実行中かどうか（trueならスキップ） */
-  geminiCliInUse?: boolean;
   localLlm: LlmConfig;
 };
 
@@ -102,7 +98,7 @@ export function resetTranslateBuffer(): void {
 
 /**
  * フォールバックチェーンでLLM通訳を実行する。
- * Cerebras → Groq → Gemini CLI → ローカルLLM の順に試行。
+ * Cerebras → Groq → ローカルLLM の順に試行。
  */
 async function interpretWithFallback(
   systemPrompt: string,
@@ -140,15 +136,7 @@ async function interpretWithFallback(
     } catch { /* fallthrough */ }
   }
 
-  // 3. Gemini CLI（`gemini -p`）
-  if (fallback.geminiCliAvailable && !fallback.geminiCliInUse) {
-    try {
-      const text = await callGeminiCli(systemPrompt, userContent, onChunk);
-      if (text) return { text, provider: 'gemini-cli' };
-    } catch { /* fallthrough */ }
-  }
-
-  // 4. ローカルLLM
+  // 3. ローカルLLM
   if (fallback.localLlm.enabled && fallback.localLlm.baseUrl) {
     try {
       const text = await callOpenAICompatible(
@@ -209,19 +197,6 @@ async function callOpenAICompatible(
     clearTimeout(timer);
     return '';
   }
-}
-
-/** Gemini CLI（`gemini -p`）で通訳 */
-async function callGeminiCli(
-  systemPrompt: string,
-  userContent: string,
-  onChunk: StreamingCallback,
-): Promise<string> {
-  // React Native環境ではchild_processが使えないため、
-  // execCommand(JNI)経由でgeminiコマンドを実行する必要がある。
-  // llm-interpreterはpure関数なので呼び出し側からrunner相当を渡す設計。
-  // 現時点ではスキップしてフォールバック。
-  return '';
 }
 
 /** SSEストリームを読み取ってテキストを返す */
@@ -294,7 +269,6 @@ export async function interpretShellOutput(
 
   const anyEnabled = fallbackConfig.cerebrasApiKey
     || fallbackConfig.groqApiKey
-    || fallbackConfig.geminiCliAvailable
     || (fallbackConfig.localLlm.enabled && fallbackConfig.localLlm.baseUrl);
 
   if (!anyEnabled) {

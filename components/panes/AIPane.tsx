@@ -283,8 +283,8 @@ export default function AIPane() {
     useAIPaneStore.getState().getOrCreate(paneId);
     const currentAgent = usePaneStore.getState().paneAgents[paneId];
     if (!isAiPaneAgent(currentAgent)) {
-      // AI Pane/background uses API providers only. Claude Code and Codex
-      // remain foreground Terminal CLIs with their own official auth flows.
+      // AI Pane/background uses API providers only. Codex remains a
+      // foreground Terminal CLI with its own official auth flow.
       const s = useSettingsStore.getState().settings;
       usePaneStore.getState().bindAgent(paneId, pickDefaultAiPaneAgent(s));
     }

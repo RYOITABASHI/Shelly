@@ -13,7 +13,7 @@ type Props = {
   onEditSubmit?: (prompt: string) => void;
 };
 
-const TABS: Array<{ id: PreviewTabId; label: string; icon: string }> = [
+const TABS: { id: PreviewTabId; label: string; icon: string }[] = [
   { id: 'web', label: 'Web', icon: 'language' },
   { id: 'code', label: 'Code', icon: 'code' },
   { id: 'files', label: 'Files', icon: 'folder' },

@@ -13,7 +13,7 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LayoutPicker } from './LayoutPicker';
-import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
+import type { PaneTab } from '@/hooks/use-multi-pane';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';

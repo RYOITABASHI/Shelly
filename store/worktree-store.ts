@@ -23,7 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { execCommand } from '@/hooks/use-native-exec';
 import { logInfo, logError } from '@/lib/debug-logger';
 
-export type WorktreeAgent = 'claude' | 'gemini' | 'codex' | 'none';
+export type WorktreeAgent = 'codex' | 'none';
 
 export type Worktree = {
   /** Stable uuid — never rewritten so Sidebar rows can key by this. */

@@ -205,8 +205,6 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
     }
   }, [onVoice, isRecording, startRecording, stopRecording, settings.hapticFeedback]);
 
-  const currentSet = KEY_SETS[activeSet];
-
   const handleKeyPress = useCallback((key: KeyConfig) => {
     if (settings.hapticFeedback) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -255,7 +253,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
     if (settings.hapticFeedback) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-  }, [settings.hapticFeedback, barWidth]);
+  }, [settings.hapticFeedback, barWidth, SET_ORDER]);
   const onBarLayout = useCallback((e: LayoutChangeEvent) => {
     setBarWidth(e.nativeEvent.layout.width);
   }, []);
@@ -268,7 +266,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     }
-  }, [activeSet, settings.hapticFeedback]);
+  }, [activeSet, settings.hapticFeedback, SET_ORDER]);
 
   // Render a single key set page
   const renderKeySet = useCallback((setId: KeySetId) => {

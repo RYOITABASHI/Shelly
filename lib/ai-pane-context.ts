@@ -67,7 +67,7 @@ export function getTerminalSnapshot(maxLines = 50): string | null {
  * model toward unified-diff responses so InlineDiff can parse + apply them.
  *
  * @param terminalContext Output of getTerminalSnapshot(), or null.
- * @param agentName       Agent bound to the current pane (e.g. "claude"), or null.
+ * @param agentName       Agent bound to the current pane (e.g. "codex"), or null.
  * @param stagedFile      File primed for editing (from auto-stage / stageAiEdit).
  * @returns Full system prompt string.
  */

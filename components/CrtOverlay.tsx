@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { View, StyleSheet, Dimensions } from 'react-native';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 
 // ── CRT constants ────────────────────────────────────────────────────────────
 // Scanline / phosphor / vignette caps. The `intensity` slider (0..1) blends
@@ -28,7 +29,6 @@ const VIGNETTE_OPACITY_MIN = 0.05;
 // (top-right bright, bottom-left dark). Capping the ceiling at 0.22 keeps
 // the vignette readable as a CRT cue without amplifying panel mura.
 const VIGNETTE_OPACITY_MAX = 0.22;
-import { useCosmeticStore } from '@/store/cosmetic-store';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 

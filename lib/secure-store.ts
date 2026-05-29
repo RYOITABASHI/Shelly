@@ -15,11 +15,14 @@ export const API_KEY_NAMES = [
   'perplexityApiKey',
   'groqApiKey',
   'cerebrasApiKey',
-  'claudeAuthToken',
-  'geminiAuthToken',
   'codexAuthToken',
 ] as const;
 export type ApiKeyName = typeof API_KEY_NAMES[number];
+
+const LEGACY_SECRET_NAMES = [
+  'claudeAuthToken',
+  'geminiAuthToken',
+] as const;
 
 /**
  * Save an API key to secure storage.
@@ -52,6 +55,21 @@ export async function deleteApiKey(name: ApiKeyName): Promise<void> {
     await SecureStore.deleteItemAsync(`${KEY_PREFIX}${name}`);
   } catch (e) {
     console.warn('[SecureStore] Failed to delete key:', name, e);
+  }
+}
+
+/**
+ * Remove no-longer-used OAuth credentials from older Shelly builds.
+ * These keys are intentionally excluded from API_KEY_NAMES so they cannot be
+ * loaded back into settings, but old installs may still have them encrypted.
+ */
+export async function deleteLegacySecrets(): Promise<void> {
+  for (const name of LEGACY_SECRET_NAMES) {
+    try {
+      await SecureStore.deleteItemAsync(`${KEY_PREFIX}${name}`);
+    } catch (e) {
+      console.warn('[SecureStore] Failed to delete legacy key:', name, e);
+    }
   }
 }
 

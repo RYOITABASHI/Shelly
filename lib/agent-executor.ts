@@ -865,11 +865,7 @@ function generateToolCommand(tool: ToolChoice, escapedPrompt: string, rawPrompt:
   const resultVar = '"$RESULT_FILE"';
   switch (tool.type) {
     case 'cli':
-      if (tool.cli === 'claude') {
-        return `echo 'Claude Code is available in Terminal only. Background Claude execution is disabled.' > ${resultVar}`;
-      }
-      if (tool.cli === 'codex') {
-        return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 if command -v codex >/dev/null 2>&1; then
   timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
@@ -877,8 +873,6 @@ else
   echo 'Codex CLI is not installed or not on PATH. Run shelly-runtime-update codex, then codex-login.' > ${resultVar}
 fi
 rm -f "$PROMPT_FILE"`;
-      }
-      return `echo 'Gemini CLI is experimental in Shelly. Use Gemini API for background agents.' > ${resultVar}`;
     case 'gemini-api':
       return geminiApiCommand(escapedPrompt, resultVar, tool.model);
     case 'local':
@@ -939,7 +933,7 @@ elif command -v codex >/dev/null 2>&1; then
   timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
   rm -f "$PROMPT_FILE"
 else
-  echo 'No background agent backend is configured. Add a Gemini API key or use Codex in Terminal.' > ${resultVar}
+  echo 'No background agent backend is configured. Add a Gemini API key, install Codex, or choose Local LLM/Perplexity explicitly.' > ${resultVar}
 fi`;
   }
 }

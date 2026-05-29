@@ -147,10 +147,10 @@ export function CommandPalette() {
       { id: 'pane-add-preview', label: 'Pane: Add Preview', hint: 'split current layout', icon: 'preview', category: 'pane',
         onExecute: () => { addPane('preview'); close(); } },
 
-      // Theme presets — maintained as the three Claude Code colorways.
+      // Theme presets — maintained as terminal colorways.
       { id: 'theme-blue', label: 'Theme: Blue', hint: 'cool terminal chrome', icon: 'palette', category: 'action',
         onExecute: () => { applyPalette('blue'); close(); } },
-      { id: 'theme-orange', label: 'Theme: Orange', hint: 'Claude Code warm chrome', icon: 'palette', category: 'action',
+      { id: 'theme-orange', label: 'Theme: Orange', hint: 'warm terminal chrome', icon: 'palette', category: 'action',
         onExecute: () => { applyPalette('orange'); close(); } },
       { id: 'theme-purple', label: 'Theme: Purple', hint: 'violet editor chrome', icon: 'palette', category: 'action',
         onExecute: () => { applyPalette('purple'); close(); } },

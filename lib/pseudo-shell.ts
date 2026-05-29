@@ -418,7 +418,7 @@ export async function executeCommand(
           const codex = await TerminalEmulator.getScouterHookTemplate('codex');
           return {
             lines: out(
-              'Claude Code:',
+              'Hook endpoint:',
               cc,
               '',
               'Codex:',
