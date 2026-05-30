@@ -48,10 +48,8 @@ export function AgentBar() {
       }
     };
     void refresh();
-    const timer = setInterval(refresh, 60_000);
     return () => {
       cancelled = true;
-      clearInterval(timer);
     };
   }, []);
 

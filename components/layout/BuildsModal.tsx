@@ -92,14 +92,6 @@ function mapApiRuns(payload: any): BuildRun[] {
 }
 
 export async function fetchBuildRuns(): Promise<BuildRun[]> {
-  const command =
-    `gh run list -R ${sq(REPO)} --workflow ${sq(WORKFLOW)} --limit 5 ` +
-    `--json databaseId,number,status,conclusion,displayTitle,headSha,createdAt,startedAt,updatedAt,url`;
-  const r = await execCommand(command, 30_000);
-  if (r.exitCode === 0) {
-    return JSON.parse(r.stdout || '[]') as BuildRun[];
-  }
-
   // Public workflow status should not require `gh auth login`. Use React
   // Native's network stack instead of shelling out to curl: user shells can
   // carry Termux-specific CURL_CA_BUNDLE / SSL_CERT_FILE paths that do not
@@ -113,7 +105,7 @@ export async function fetchBuildRuns(): Promise<BuildRun[]> {
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(body || r.stderr || r.stdout || `GitHub API HTTP ${response.status}`);
+    throw new Error(body || `GitHub API HTTP ${response.status}`);
   }
   return mapApiRuns(await response.json());
 }

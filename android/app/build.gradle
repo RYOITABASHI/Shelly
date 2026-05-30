@@ -5,6 +5,23 @@ apply plugin: "com.facebook.react"
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 def hostArch = System.getProperty("os.arch", "").toLowerCase()
 def useSourceBundleHermesForHost = (findProperty('shelly.useSourceBundleHermes') ?: (hostArch == "aarch64" || hostArch == "arm64").toString()).toBoolean()
+def lastManualAndroidVersionCode = 532
+def fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1
+def resolveShellyAndroidVersionCode = {
+    def envVersionCode = System.getenv("SHELLY_ANDROID_VERSION_CODE")
+    if (envVersionCode != null && envVersionCode.isInteger()) {
+        return Math.max(envVersionCode.toInteger(), fallbackAndroidVersionCode)
+    }
+    try {
+        def gitCount = ["git", "rev-list", "--count", "HEAD"].execute(null, rootDir).text.trim()
+        if (gitCount.isInteger()) {
+            return Math.max(gitCount.toInteger(), fallbackAndroidVersionCode)
+        }
+    } catch (Exception ignored) {
+        // Keep direct Gradle builds usable outside a full git checkout.
+    }
+    return fallbackAndroidVersionCode
+}()
 
 /**
  * This is the configuration block to customize your React Native Android app.
@@ -233,7 +250,7 @@ android {
         applicationId 'dev.shelly.terminal'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 532
+        versionCode resolveShellyAndroidVersionCode
         versionName "5.3.1"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""

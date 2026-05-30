@@ -1,7 +1,31 @@
 import type { ExpoConfig } from "expo/config";
+import { execSync } from "node:child_process";
 
 const bundleId = "dev.shelly.terminal";
 const schemeFromBundleId = "shelly";
+const lastManualAndroidVersionCode = 532;
+const fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1;
+
+function androidVersionCode(): number {
+  const envVersionCode = Number.parseInt(process.env.SHELLY_ANDROID_VERSION_CODE || "", 10);
+  if (Number.isInteger(envVersionCode) && envVersionCode >= fallbackAndroidVersionCode) {
+    return envVersionCode;
+  }
+
+  try {
+    const gitCount = Number.parseInt(
+      execSync("git rev-list --count HEAD", { encoding: "utf8" }).trim(),
+      10,
+    );
+    if (Number.isInteger(gitCount) && gitCount > 0) {
+      return Math.max(gitCount, fallbackAndroidVersionCode);
+    }
+  } catch {
+    // Keep local config evaluation working outside a full git checkout.
+  }
+
+  return fallbackAndroidVersionCode;
+}
 
 const env = {
   // App branding - update these values directly (do not use env vars)
@@ -51,7 +75,7 @@ const config: ExpoConfig & { android?: any } = {
     // We request it at first run via Environment.isExternalStorageManager().
     // Shelly is distributed via GitHub Releases / F-Droid (not Play Store),
     // so the all-files-access restriction does not apply.
-    versionCode: 532,
+    versionCode: androidVersionCode(),
     permissions: [
       "POST_NOTIFICATIONS",
       "FOREGROUND_SERVICE",

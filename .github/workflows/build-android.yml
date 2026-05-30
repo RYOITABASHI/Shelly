@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -43,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -470,11 +474,53 @@ jobs:
           cd ../..
           ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
 
+      - name: Validate Android config version code
+        run: |
+          GIT_VERSION_CODE="$(git rev-list --count HEAD)"
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "FATAL: checkout is shallow; versionCode would not be monotonic" >&2
+            exit 1
+          fi
+          EXPECTED_VERSION_CODE="$(npx expo config --json | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) {
+                process.exit(1);
+              }
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          if [ -n "${SHELLY_ANDROID_VERSION_CODE:-}" ]; then
+            if [ "${EXPECTED_VERSION_CODE}" != "${SHELLY_ANDROID_VERSION_CODE}" ]; then
+              echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match SHELLY_ANDROID_VERSION_CODE ${SHELLY_ANDROID_VERSION_CODE}" >&2
+              exit 1
+            fi
+            if [ "${EXPECTED_VERSION_CODE}" -lt "${GIT_VERSION_CODE}" ]; then
+              echo "FATAL: SHELLY_ANDROID_VERSION_CODE ${EXPECTED_VERSION_CODE} is lower than git commit count ${GIT_VERSION_CODE}" >&2
+              exit 1
+            fi
+          elif [ "${EXPECTED_VERSION_CODE}" != "${GIT_VERSION_CODE}" ]; then
+            echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match git commit count ${GIT_VERSION_CODE}" >&2
+            exit 1
+          fi
+          if [ "${EXPECTED_VERSION_CODE}" -le 532 ]; then
+            echo "FATAL: android versionCode ${EXPECTED_VERSION_CODE} must be greater than the last shipped manual code 532" >&2
+            exit 1
+          fi
+
       - name: Prebuild Android
         run: npx expo prebuild --platform android
 
-      - name: Validate Android version code
+      - name: Validate prebuilt Android version code
         run: |
+          GIT_VERSION_CODE="$(git rev-list --count HEAD)"
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "FATAL: checkout is shallow; versionCode would not be monotonic" >&2
+            exit 1
+          fi
           EXPECTED_VERSION_CODE="$(npx expo config --json | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
@@ -488,6 +534,23 @@ jobs:
             });
           ')"
           ACTUAL_VERSION_CODE="$(awk '/versionCode / { print $2; exit }' android/app/build.gradle)"
+          if [ -n "${SHELLY_ANDROID_VERSION_CODE:-}" ]; then
+            if [ "${EXPECTED_VERSION_CODE}" != "${SHELLY_ANDROID_VERSION_CODE}" ]; then
+              echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match SHELLY_ANDROID_VERSION_CODE ${SHELLY_ANDROID_VERSION_CODE}" >&2
+              exit 1
+            fi
+            if [ "${EXPECTED_VERSION_CODE}" -lt "${GIT_VERSION_CODE}" ]; then
+              echo "FATAL: SHELLY_ANDROID_VERSION_CODE ${EXPECTED_VERSION_CODE} is lower than git commit count ${GIT_VERSION_CODE}" >&2
+              exit 1
+            fi
+          elif [ "${EXPECTED_VERSION_CODE}" != "${GIT_VERSION_CODE}" ]; then
+            echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match git commit count ${GIT_VERSION_CODE}" >&2
+            exit 1
+          fi
+          if [ "${EXPECTED_VERSION_CODE}" -le 532 ]; then
+            echo "FATAL: android versionCode ${EXPECTED_VERSION_CODE} must be greater than the last shipped manual code 532" >&2
+            exit 1
+          fi
           if [ "${ACTUAL_VERSION_CODE}" != "${EXPECTED_VERSION_CODE}" ]; then
             echo "FATAL: android/app/build.gradle versionCode ${ACTUAL_VERSION_CODE} does not match app.config.ts ${EXPECTED_VERSION_CODE}" >&2
             exit 1
