@@ -37,6 +37,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readDir(path: string): Promise<string>;
   queryListenSockets(family: number): Promise<string>;
   getHomeDir(): Promise<string>;
+  getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
   installApk(apkPath: string): Promise<void>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
   pasteClipboardToSession(sessionId: string): Promise<void>;

@@ -1,8 +1,8 @@
 // components/layout/BuildsModal.tsx
 //
 // Mobile self-update surface for the Shelly-on-Shelly loop. It reads the
-// latest GitHub Actions APK runs, downloads a selected artifact to
-// /sdcard/Download, then hands the APK to Android's package installer.
+// latest GitHub Actions APK runs, installs the latest public release APK from
+// GitHub Releases, then hands the APK to Android's package installer.
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -24,6 +24,10 @@ import { withAlpha } from '@/lib/theme-utils';
 
 const REPO = 'RYOITABASHI/Shelly';
 const WORKFLOW = 'build-android.yml';
+const UPDATE_TAG = 'android-latest';
+const UPDATE_MANIFEST_ASSET = 'latest.json';
+const APK_NAME_RE = /^[A-Za-z0-9._-]+\.apk$/;
+const SHA256_RE = /^[a-f0-9]{64}$/i;
 
 export type BuildStatus = 'unknown' | 'in_progress' | 'success' | 'failure';
 
@@ -38,6 +42,26 @@ export type BuildRun = {
   startedAt?: string;
   updatedAt?: string;
   url: string;
+};
+
+type AndroidUpdateManifest = {
+  schemaVersion: number;
+  channel?: string;
+  versionCode: number;
+  versionName: string;
+  gitSha: string;
+  runId?: number;
+  runNumber?: number;
+  createdAt?: string;
+  apkAssetName: string;
+  apkUrl: string;
+  sha256: string;
+};
+
+type AppVersionInfo = {
+  packageName: string;
+  versionName: string;
+  versionCode: number;
 };
 
 function sq(value: string): string {
@@ -110,24 +134,91 @@ export async function fetchBuildRuns(): Promise<BuildRun[]> {
   return mapApiRuns(await response.json());
 }
 
-async function downloadBuildApk(runId: number): Promise<string> {
-  const outDir = `/sdcard/Download/shelly-build-${runId}`;
+async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null> {
+  const releaseUrl = `https://api.github.com/repos/${REPO}/releases/tags/${UPDATE_TAG}`;
+  const releaseResponse = await fetch(releaseUrl, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'Shelly',
+    },
+  });
+  if (releaseResponse.status === 404) return null;
+  if (!releaseResponse.ok) {
+    const body = await releaseResponse.text().catch(() => '');
+    throw new Error(body || `GitHub release API HTTP ${releaseResponse.status}`);
+  }
+
+  const release = await releaseResponse.json();
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const manifestAsset = assets.find((asset: any) => asset?.name === UPDATE_MANIFEST_ASSET);
+  if (!manifestAsset?.browser_download_url) {
+    throw new Error(`Release ${UPDATE_TAG} has no ${UPDATE_MANIFEST_ASSET} asset.`);
+  }
+
+  const manifestResponse = await fetch(String(manifestAsset.browser_download_url), {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'Shelly',
+    },
+  });
+  if (!manifestResponse.ok) {
+    const body = await manifestResponse.text().catch(() => '');
+    throw new Error(body || `GitHub release manifest HTTP ${manifestResponse.status}`);
+  }
+
+  const raw = await manifestResponse.json();
+  const versionCode = Number(raw?.versionCode);
+  const apkAssetName = String(raw?.apkAssetName || '');
+  const sha256 = String(raw?.sha256 || '').toLowerCase();
+  const apkAsset = assets.find((asset: any) => asset?.name === apkAssetName);
+  if (!Number.isInteger(versionCode) || versionCode < 1) {
+    throw new Error('Release manifest has an invalid versionCode.');
+  }
+  if (!APK_NAME_RE.test(apkAssetName)) {
+    throw new Error('Release manifest has an invalid APK asset name.');
+  }
+  if (!SHA256_RE.test(sha256)) {
+    throw new Error('Release manifest has an invalid sha256.');
+  }
+  if (!apkAsset?.browser_download_url) {
+    throw new Error(`Release ${UPDATE_TAG} has no APK asset named ${apkAssetName}.`);
+  }
+
+  return {
+    schemaVersion: Number(raw?.schemaVersion || 1),
+    channel: raw?.channel ? String(raw.channel) : undefined,
+    versionCode,
+    versionName: String(raw?.versionName || ''),
+    gitSha: String(raw?.gitSha || ''),
+    runId: Number.isInteger(Number(raw?.runId)) ? Number(raw.runId) : undefined,
+    runNumber: Number.isInteger(Number(raw?.runNumber)) ? Number(raw.runNumber) : undefined,
+    createdAt: raw?.createdAt ? String(raw.createdAt) : undefined,
+    apkAssetName,
+    apkUrl: String(apkAsset.browser_download_url),
+    sha256,
+  };
+}
+
+async function downloadReleaseApk(update: AndroidUpdateManifest): Promise<string> {
+  const outDir = `/sdcard/Download/shelly-update-${update.versionCode}`;
+  const apkPath = `${outDir}/${update.apkAssetName}`;
   const command = [
-    `gh auth status >/dev/null 2>&1 || { echo 'GitHub artifact downloads require GitHub CLI auth. Run: gh auth login' >&2; exit 64; }`,
     `rm -rf ${sq(outDir)}`,
     `mkdir -p ${sq(outDir)}`,
-    `gh run download ${runId} -R ${sq(REPO)} --name shelly-apk -D ${sq(outDir)}`,
-    `find ${sq(outDir)} -type f -name '*.apk' | head -n 1`,
+    `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)}`,
+    `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
+    `if [ "$actual" != ${sq(update.sha256)} ]; then echo "sha256 mismatch: expected ${update.sha256}, got $actual" >&2; exit 65; fi`,
+    `printf '%s\\n' ${sq(apkPath)}`,
   ].join(' && ');
-  const r = await execCommand(command, 180_000);
+  const r = await execCommand(command, 1_800_000);
   if (r.exitCode !== 0) {
-    throw new Error((r.stderr || r.stdout || `gh exited ${r.exitCode}`).trim());
+    throw new Error((r.stderr || r.stdout || `download exited ${r.exitCode}`).trim());
   }
-  const apkPath = r.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-  if (!apkPath.endsWith('.apk')) {
-    throw new Error(`APK artifact was not found under ${outDir}`);
+  const downloadedPath = r.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+  if (!downloadedPath.endsWith('.apk')) {
+    throw new Error(`APK was not found under ${outDir}`);
   }
-  return apkPath;
+  return downloadedPath;
 }
 
 async function fetchFailedLog(runId: number): Promise<string> {
@@ -147,8 +238,10 @@ type Props = {
 
 export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [runs, setRuns] = useState<BuildRun[]>([]);
+  const [latestUpdate, setLatestUpdate] = useState<AndroidUpdateManifest | null>(null);
+  const [installedVersion, setInstalledVersion] = useState<AppVersionInfo | null>(null);
   const [loading, setLoading] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<number | null>(null);
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false);
   const [logLoadingId, setLogLoadingId] = useState<number | null>(null);
   const [logTitle, setLogTitle] = useState<string | null>(null);
   const [logText, setLogText] = useState<string>('');
@@ -158,9 +251,39 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const next = await fetchBuildRuns();
-      setRuns(next);
-      onStatusChange?.(statusFromRun(next[0]), next[0] ?? null);
+      const [runsResult, updateResult, versionResult] = await Promise.allSettled([
+        fetchBuildRuns(),
+        fetchLatestAndroidUpdate(),
+        TerminalEmulator.getAppVersionInfo(),
+      ]);
+      let nextRuns: BuildRun[] = [];
+      const errors: string[] = [];
+
+      if (runsResult.status === 'fulfilled') {
+        nextRuns = runsResult.value;
+        setRuns(nextRuns);
+        onStatusChange?.(statusFromRun(nextRuns[0]), nextRuns[0] ?? null);
+      } else {
+        setRuns([]);
+        errors.push(String(runsResult.reason?.message || runsResult.reason));
+        onStatusChange?.('unknown', null);
+      }
+
+      if (updateResult.status === 'fulfilled') {
+        setLatestUpdate(updateResult.value);
+      } else {
+        setLatestUpdate(null);
+        errors.push(String(updateResult.reason?.message || updateResult.reason));
+      }
+
+      if (versionResult.status === 'fulfilled') {
+        setInstalledVersion(versionResult.value);
+      } else {
+        setInstalledVersion(null);
+        errors.push(String(versionResult.reason?.message || versionResult.reason));
+      }
+
+      if (errors.length > 0) setError(errors.join('\n'));
     } catch (e: any) {
       const msg = String(e?.message || e);
       setError(msg);
@@ -174,14 +297,27 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     if (visible) void refresh();
   }, [refresh, visible]);
 
-  const installRun = useCallback(async (run: BuildRun) => {
-    if (run.status !== 'completed' || run.conclusion !== 'success') {
-      Alert.alert('Build is not installable', 'Only successful completed APK builds can be installed.');
+  const installLatestUpdate = useCallback(async () => {
+    const update = latestUpdate;
+    if (!update) {
+      Alert.alert('No public APK release', `The ${UPDATE_TAG} release is not available yet.`);
       return;
     }
-    setDownloadingId(run.databaseId);
+    setDownloadingUpdate(true);
     try {
-      const apkPath = await downloadBuildApk(run.databaseId);
+      const current = await TerminalEmulator.getAppVersionInfo().catch(() => installedVersion);
+      if (!current) {
+        Alert.alert('Cannot verify installed version', 'Shelly could not read the current Android versionCode, so the update was not downloaded.');
+        return;
+      }
+      if (update.versionCode <= current.versionCode) {
+        Alert.alert(
+          'Up to date',
+          `Installed versionCode ${current.versionCode} is already newer than or equal to available ${update.versionCode}.`,
+        );
+        return;
+      }
+      const apkPath = await downloadReleaseApk(update);
       Alert.alert(
         'APK downloaded',
         `${apkPath}\n\nAndroid will ask you to confirm installation.`,
@@ -200,9 +336,9 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     } catch (e: any) {
       Alert.alert('Download failed', String(e?.message || e));
     } finally {
-      setDownloadingId(null);
+      setDownloadingUpdate(false);
     }
-  }, []);
+  }, [installedVersion, latestUpdate]);
 
   const showFailedLog = useCallback(async (run: BuildRun) => {
     setLogLoadingId(run.databaseId);
@@ -238,11 +374,50 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
             </View>
           )}
           <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
+            {latestUpdate && (
+              <View style={styles.updateBox}>
+                <View style={styles.updateHead}>
+                  <View style={styles.updateCopy}>
+                    <Text style={styles.updateTitle}>
+                      Android update · v{latestUpdate.versionName || 'unknown'} ({latestUpdate.versionCode})
+                    </Text>
+                    <Text style={styles.updateMeta}>
+                      Installed {installedVersion ? `${installedVersion.versionName || 'unknown'} (${installedVersion.versionCode})` : 'unknown'}
+                      {latestUpdate.runNumber ? ` · run #${latestUpdate.runNumber}` : ''}
+                    </Text>
+                  </View>
+                  {(() => {
+                    const updateIsNewer = Boolean(installedVersion && latestUpdate.versionCode > installedVersion.versionCode);
+                    const installable = updateIsNewer && !downloadingUpdate;
+                    return (
+                      <Pressable
+                        style={[styles.actionBtn, !installable && styles.actionBtnDisabled]}
+                        onPress={() => void installLatestUpdate()}
+                        disabled={!installable}
+                      >
+                        {downloadingUpdate ? (
+                          <ActivityIndicator size="small" color={C.bgDeep} />
+                        ) : (
+                          <MaterialIcons name="system-update-alt" size={13} color={installable ? C.bgDeep : C.text3} />
+                        )}
+                        <Text style={[styles.actionText, !installable && styles.actionTextDisabled]}>
+                          {downloadingUpdate ? 'Downloading...' : updateIsNewer ? 'Install APK' : installedVersion ? 'Up to date' : 'Version unknown'}
+                        </Text>
+                      </Pressable>
+                    );
+                  })()}
+                </View>
+              </View>
+            )}
             {runs.map((run) => {
               const status = statusFromRun(run);
-              const installable = status === 'success';
+              const releaseMatchesRun = Boolean(
+                latestUpdate && (
+                  (latestUpdate.runId && latestUpdate.runId === run.databaseId) ||
+                  (!latestUpdate.runId && latestUpdate.gitSha && latestUpdate.gitSha === run.headSha)
+                ),
+              );
               const failed = run.status === 'completed' && status === 'failure';
-              const busy = downloadingId === run.databaseId;
               const logBusy = logLoadingId === run.databaseId;
               return (
                 <View key={run.databaseId} style={styles.runCard}>
@@ -271,20 +446,12 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                         </Text>
                       </Pressable>
                     )}
-                    <Pressable
-                      style={[styles.actionBtn, !installable && styles.actionBtnDisabled]}
-                      onPress={() => void installRun(run)}
-                      disabled={!installable || busy}
-                    >
-                      {busy ? (
-                        <ActivityIndicator size="small" color={C.bgDeep} />
-                      ) : (
-                        <MaterialIcons name="system-update-alt" size={13} color={installable ? C.bgDeep : C.text3} />
-                      )}
-                      <Text style={[styles.actionText, !installable && styles.actionTextDisabled]}>
-                        {busy ? 'Downloading...' : 'Install APK'}
-                      </Text>
-                    </Pressable>
+                    {releaseMatchesRun && (
+                      <View style={styles.releaseBadge}>
+                        <MaterialIcons name="verified" size={12} color={C.accent} />
+                        <Text style={styles.releaseBadgeText}>Release source</Text>
+                      </View>
+                    )}
                   </View>
                 </View>
               );
@@ -363,6 +530,34 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 10,
   },
+  updateBox: {
+    borderWidth: 1,
+    borderColor: withAlpha(C.accent, 0.45),
+    borderRadius: R.badge,
+    backgroundColor: withAlpha(C.accent, 0.08),
+    padding: 10,
+    gap: 4,
+  },
+  updateHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  updateCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  updateTitle: {
+    color: C.text1,
+    fontFamily: F.family,
+    fontSize: F.sidebarItem.size,
+    fontWeight: '700',
+  },
+  updateMeta: {
+    color: C.text2,
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+  },
   runCard: {
     borderWidth: 1,
     borderColor: C.border,
@@ -429,6 +624,23 @@ const styles = StyleSheet.create({
   },
   logText: {
     color: C.accent,
+  },
+  releaseBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: R.badge,
+    borderWidth: 1,
+    borderColor: withAlpha(C.accent, 0.45),
+    backgroundColor: C.bgDeep,
+  },
+  releaseBadgeText: {
+    color: C.accent,
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+    fontWeight: '700',
   },
   logContent: {
     padding: 12,

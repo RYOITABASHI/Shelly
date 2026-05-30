@@ -10,6 +10,14 @@ on:
   schedule:
     - cron: '0 0 * * *'
 
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -43,6 +51,9 @@ jobs:
   build:
     needs: quality
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -684,6 +695,95 @@ jobs:
         with:
           name: shelly-apk
           path: android/app/build/outputs/apk/release/*.apk
+
+      - name: Publish Android update release
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_TAG: android-latest
+          UPDATE_APK_NAME: Shelly-android-latest.apk
+          UPDATE_MANIFEST_NAME: latest.json
+        run: |
+          set -euo pipefail
+          apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
+          test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
+          release_apk="${RUNNER_TEMP}/${UPDATE_APK_NAME}"
+          cp "${apk}" "${release_apk}"
+
+          config_json="$(npx expo config --json)"
+          version_code="$(printf '%s' "${config_json}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) process.exit(1);
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          version_name="$(printf '%s' "${config_json}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              process.stdout.write(String(config.version || ""));
+            });
+          ')"
+          sha256="$(sha256sum "${apk}" | awk '{print $1}')"
+          created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${UPDATE_APK_NAME}"
+
+          VERSION_CODE="${version_code}" \
+          VERSION_NAME="${version_name}" \
+          SHA256="${sha256}" \
+          APK_URL="${apk_url}" \
+          APK_ASSET_NAME="${UPDATE_APK_NAME}" \
+          CREATED_AT="${created_at}" \
+          node <<'NODE' > "${UPDATE_MANIFEST_NAME}"
+          const manifest = {
+            schemaVersion: 1,
+            channel: "android-latest",
+            versionCode: Number(process.env.VERSION_CODE),
+            versionName: process.env.VERSION_NAME,
+            gitSha: process.env.GITHUB_SHA,
+            runId: Number(process.env.GITHUB_RUN_ID),
+            runNumber: Number(process.env.GITHUB_RUN_NUMBER),
+            createdAt: process.env.CREATED_AT,
+            apkAssetName: process.env.APK_ASSET_NAME,
+            apkUrl: process.env.APK_URL,
+            sha256: process.env.SHA256,
+          };
+          process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");
+          NODE
+
+          cat > /tmp/shelly-android-update-release.md <<EOF
+          Rolling Android update build.
+
+          - versionName: ${version_name}
+          - versionCode: ${version_code}
+          - commit: ${GITHUB_SHA}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - sha256: ${sha256}
+          EOF
+
+          if gh release view "${UPDATE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${UPDATE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Shelly Android latest" \
+              --notes-file /tmp/shelly-android-update-release.md
+          else
+            gh release create "${UPDATE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly Android latest" \
+              --notes-file /tmp/shelly-android-update-release.md \
+              --latest=false
+          fi
+          gh release upload "${UPDATE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${release_apk}" \
+            "${UPDATE_MANIFEST_NAME}" \
+            --clobber
 
       - name: Publish EAS Update (OTA)
         # Expo Updates are disabled in app.config.ts for the v5.1.x release
