@@ -33,6 +33,7 @@ import { VoiceChat } from '@/components/VoiceChat';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { logError } from '@/lib/debug-logger';
 import {
   getAiPaneAgentMeta,
   isAiPaneAgent,
@@ -248,8 +249,30 @@ export default function AIPane() {
   const { dispatch, cancelStreaming, isStreaming: dispatchStreaming } = useAIPaneDispatch(paneId);
 
   const handleSubmit = useCallback(
-    (text: string) => { dispatch(text); },
-    [dispatch],
+    (text: string) => {
+      void dispatch(text).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        try {
+          logError('AIPane', 'dispatch rejected', err);
+        } catch {}
+        try {
+          const store = useAIPaneStore.getState();
+          store.setStreaming(paneId, false);
+          store.addMessage(paneId, {
+            id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            role: 'assistant',
+            content: `Error: ${message}`,
+            timestamp: Date.now(),
+            error: message,
+          });
+        } catch (recoveryErr) {
+          try {
+            logError('AIPane', 'failed to surface dispatch rejection', recoveryErr);
+          } catch {}
+        }
+      });
+    },
+    [dispatch, paneId],
   );
 
   const { startRecording, stopRecording, isRecording, isTranscribing } =

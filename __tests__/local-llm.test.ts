@@ -219,4 +219,86 @@ describe('local LLM request compatibility', () => {
       chat_template_kwargs: { enable_thinking: false },
     });
   });
+
+  it('returns a controlled error when RN XHR responseText throws during progress', async () => {
+    class ThrowingXHR {
+      status = 200;
+      timeout = 0;
+      responseReads = 0;
+      onprogress: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      ontimeout: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+
+      get responseText() {
+        this.responseReads += 1;
+        if (this.responseReads === 1) {
+          throw new Error('responseText unavailable');
+        }
+        return 'data: {"choices":[{"index":0,"delta":{"content":"LATE"},"finish_reason":null}]}';
+      }
+
+      open() {}
+      setRequestHeader() {}
+      abort() {
+        this.onabort?.();
+      }
+      send() {
+        this.onprogress?.();
+        setTimeout(() => this.onload?.(), 120);
+      }
+    }
+
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { product: 'ReactNative' },
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, 'XMLHttpRequest', {
+      value: ThrowingXHR,
+      configurable: true,
+    });
+
+    const chunks: string[] = [];
+    const result = await ollamaChatStream(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'default', enabled: true },
+      messages,
+      (chunk) => chunks.push(chunk),
+      1000,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error: 'responseText unavailable',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(chunks).toEqual([]);
+  });
+
+  it('returns a controlled error when RN XHR construction fails', async () => {
+    class ThrowingConstructorXHR {
+      constructor() {
+        throw new Error('xhr unavailable');
+      }
+    }
+
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { product: 'ReactNative' },
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, 'XMLHttpRequest', {
+      value: ThrowingConstructorXHR,
+      configurable: true,
+    });
+
+    await expect(ollamaChatStream(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'default', enabled: true },
+      messages,
+      () => {},
+      1000,
+    )).resolves.toMatchObject({
+      success: false,
+      error: 'xhr unavailable',
+    });
+  });
 });

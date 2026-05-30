@@ -122,6 +122,10 @@ function shouldDisableThinking(model: string): boolean {
   return /qwen[\s._-]*3/i.test(normalized);
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatRequest {
   if (!shouldDisableThinking(req.model)) return req;
   return {
@@ -581,35 +585,73 @@ function xhrStream(
   maxTokens = 1024,
 ): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
     let lastIndex = 0;
     let lineBuffer = '';
     let settled = false;
     let emittedChunks = 0;
+    let progressTimer: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | null = null;
 
     const handleChunk = (text: string, done: boolean) => {
+      if (settled) return;
       if (text) emittedChunks += 1;
       safeEmitChunk(onChunk, text, done);
     };
 
     const finish = (result: { success: boolean; error?: string }) => {
       if (settled) return;
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+        progressTimer = null;
+      }
+      if (abortHandler && externalSignal) {
+        externalSignal.removeEventListener('abort', abortHandler);
+        abortHandler = null;
+      }
       settled = true;
       resolve(result);
     };
 
-    xhr.open('POST', url);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.timeout = timeoutMs;
+    let xhr: XMLHttpRequest;
+    try {
+      xhr = new XMLHttpRequest();
+    } catch (err) {
+      finish({ success: false, error: errorMessage(err) });
+      return;
+    }
+
+    const failFromException = (err: unknown) => {
+      if (settled) return;
+      finish({ success: false, error: errorMessage(err) });
+      try {
+        xhr.abort();
+      } catch {}
+    };
+
+    try {
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.timeout = timeoutMs;
+    } catch (err) {
+      failFromException(err);
+      return;
+    }
 
     if (externalSignal) {
       if (externalSignal.aborted) { finish({ success: false, error: 'Aborted' }); return; }
-      externalSignal.addEventListener('abort', () => { xhr.abort(); }, { once: true });
+      abortHandler = () => {
+        if (settled) return;
+        try {
+          xhr.abort();
+        } catch (err) {
+          failFromException(err);
+        }
+      };
+      externalSignal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    // Throttle onprogress to prevent UI thread saturation
-    let progressTimer: ReturnType<typeof setTimeout> | null = null;
     const processNewData = (flush = false) => {
+      if (settled) return;
       const text = xhr.responseText;
       if (!text || text.length <= lastIndex) {
         if (flush && lineBuffer) {
@@ -632,34 +674,48 @@ function xhrStream(
         parseSSELine(line, apiType, handleChunk);
       }
     };
+    const processNewDataSafely = (flush = false): boolean => {
+      try {
+        processNewData(flush);
+        return true;
+      } catch (err) {
+        failFromException(err);
+        return false;
+      }
+    };
 
+    // Throttle onprogress to prevent UI thread saturation
     xhr.onprogress = () => {
+      if (settled) return;
       if (progressTimer) return; // Already scheduled
       progressTimer = setTimeout(() => {
         progressTimer = null;
-        processNewData();
+        if (settled) return;
+        processNewDataSafely();
       }, 80);
     };
 
     xhr.onload = () => {
+      if (settled) return;
       if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
       if (xhr.status < 200 || xhr.status >= 300) {
         if (xhr.status === 503 && !_retried && baseUrl && !(externalSignal?.aborted)) {
           waitForLocalLlmReady(baseUrl, Math.min(timeoutMs, 120000), externalSignal).then((ready) => {
+            if (settled) return;
             if (ready) {
               xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true, maxTokens)
-                .then(finish);
+                .then(finish, failFromException);
             } else {
               finish({ success: false, error: 'HTTP 503: local LLM is still loading or failed to load the model' });
             }
-          });
+          }, failFromException);
           return;
         }
         finish({ success: false, error: `HTTP ${xhr.status}` });
         return;
       }
       // Process any remaining data
-      processNewData(true);
+      if (!processNewDataSafely(true)) return;
       if (emittedChunks === 0) {
         finish({
           success: false,
@@ -672,30 +728,38 @@ function xhrStream(
     };
 
     xhr.onerror = () => {
+      if (settled) return;
       // Connection-level error — retry once if server is still alive (and not already retried)
       if (!_retried && baseUrl && !(externalSignal?.aborted)) {
         checkOllamaConnection(baseUrl).then((check) => {
+          if (settled) return;
           if (check.available) {
             xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true, maxTokens)
-              .then(finish);
+              .then(finish, failFromException);
           } else {
             finish({ success: false, error: 'XHR network error' });
           }
-        });
+        }, failFromException);
       } else {
         finish({ success: false, error: 'XHR network error' });
       }
     };
 
     xhr.ontimeout = () => {
+      if (settled) return;
       finish({ success: false, error: 'Timeout. The model may be too large.' });
     };
 
     xhr.onabort = () => {
+      if (settled) return;
       finish({ success: false, error: 'Aborted' });
     };
 
-    xhr.send(body);
+    try {
+      xhr.send(body);
+    } catch (err) {
+      failFromException(err);
+    }
   });
 }
 

@@ -3,6 +3,8 @@ apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
+def hostArch = System.getProperty("os.arch", "").toLowerCase()
+def useSourceBundleHermesForHost = (findProperty('shelly.useSourceBundleHermes') ?: (hostArch == "aarch64" || hostArch == "arm64").toString()).toBoolean()
 
 /**
  * This is the configuration block to customize your React Native Android app.
@@ -11,7 +13,14 @@ def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 react {
     entryFile = file(["node", "-e", "require('expo/scripts/resolveAppEntry')", projectRoot, "android", "absolute"].execute(null, rootDir).text.trim())
     reactNativeDir = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
-    hermesCommand = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsolutePath() + "/sdks/hermesc/linux64-bin/hermesc"
+    if (useSourceBundleHermesForHost) {
+        // React Native ships hermesc as an x86_64 Linux binary. Device-local
+        // arm64 builds still need Hermes packaged, so emit a source bundle.
+        hermesCommand = file("$projectRoot/scripts/hermesc-copy-bundle.sh").absolutePath
+        hermesFlags = []
+    } else {
+        hermesCommand = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsolutePath() + "/sdks/hermesc/linux64-bin/hermesc"
+    }
     codegenDir = new File(["node", "--print", "require.resolve('@react-native/codegen/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
 
     enableBundleCompression = (findProperty('android.enableBundleCompression') ?: false).toBoolean()
@@ -61,6 +70,138 @@ react {
 
     /* Autolinking */
     autolinkLibrariesWithApp()
+}
+
+// Expo autolinking emits expo-notifications modules, but its channel provider
+// is still registered through the legacy Package list.
+def expoLegacyPackages = [
+    "new expo.modules.constants.ConstantsPackage()",
+    "new expo.modules.filesystem.legacy.FileSystemPackage()",
+    "new expo.modules.keepawake.KeepAwakePackage()",
+    "new expo.modules.linking.ExpoLinkingPackage()",
+    "new expo.modules.localization.LocalizationPackage()",
+    "new expo.modules.navigationbar.NavigationBarPackage()",
+    "new expo.modules.notifications.NotificationsPackage()",
+    "new expo.modules.systemui.SystemUIPackage()",
+    "new expo.modules.updates.UpdatesPackage()",
+]
+
+def patchExpoLegacyPackageList = {
+    def expoProject = rootProject.findProject(":expo")
+    if (expoProject == null) {
+        return
+    }
+
+    def packageListFile = expoProject.file("build/generated/expo/src/main/java/expo/modules/ExpoModulesPackageList.java")
+    if (!packageListFile.exists()) {
+        throw new GradleException("Expo package list was not generated at ${packageListFile}")
+    }
+
+    def source = packageListFile.getText("UTF-8")
+    def missingPackages = expoLegacyPackages.findAll { !source.contains(it) }
+    if (missingPackages.isEmpty()) {
+        return
+    }
+
+    def marker = "static final List<Package> packagesList = Arrays.<Package>asList("
+    def start = source.indexOf(marker)
+    def end = start >= 0 ? source.indexOf("\n    );", start) : -1
+    if (start < 0 || end < 0) {
+        throw new GradleException("Could not patch Expo legacy packages in ${packageListFile}")
+    }
+
+    def bodyStart = start + marker.length()
+    def existingBody = source.substring(bodyStart, end)
+    def packageBlock = missingPackages.join(",\n      ")
+    def patchedBody = existingBody.trim().isEmpty() ?
+        "\n      ${packageBlock}" :
+        "${existingBody.stripTrailing()},\n      ${packageBlock}"
+
+    packageListFile.setText(source.substring(0, bodyStart) + patchedBody + source.substring(end), "UTF-8")
+}
+
+gradle.projectsEvaluated {
+    def expoProject = rootProject.findProject(":expo")
+    if (expoProject == null) {
+        return
+    }
+
+    def patchTask = expoProject.tasks.register("patchShellyExpoLegacyPackageList") {
+        dependsOn(expoProject.tasks.named("generatePackagesList"))
+        outputs.upToDateWhen { false }
+        doLast {
+            patchExpoLegacyPackageList()
+        }
+    }
+
+    expoProject.tasks.matching { it.name.endsWith("JavaWithJavac") }.configureEach {
+        dependsOn(patchTask)
+        outputs.upToDateWhen { false }
+    }
+}
+
+def reactAndroidReleaseAarProvider = providers.provider {
+    def candidates = fileTree("${gradle.gradleUserHomeDir}/caches/modules-2/files-2.1/com.facebook.react/react-android/0.81.5") {
+        include "**/react-android-0.81.5-release.aar"
+    }.files.toList()
+    candidates.isEmpty() ? null : candidates.sort { it.absolutePath }.last()
+}
+def repairReactAndroidPrefabLinks = {
+    def transformsDir = file("${gradle.gradleUserHomeDir}/caches/${gradle.gradleVersion}/transforms")
+    def reactAndroidReleaseAar = reactAndroidReleaseAarProvider.getOrNull()
+    if (!transformsDir.exists()) {
+        return
+    }
+    if (reactAndroidReleaseAar == null || !reactAndroidReleaseAar.exists()) {
+        throw new GradleException("Could not find react-android 0.81.5 release AAR in Gradle cache")
+    }
+
+    def restored = 0
+    def stream = java.nio.file.Files.walk(transformsDir.toPath())
+    try {
+        stream.each { link ->
+            def normalized = link.toString()
+            def prefabRoot = "/react-android-0.81.5-release/"
+            if (!normalized.endsWith(".so") ||
+                !normalized.contains("${prefabRoot}prefab/modules/")) {
+                return
+            }
+            if (!java.nio.file.Files.isSymbolicLink(link) || java.nio.file.Files.exists(link)) {
+                return
+            }
+
+            def target = java.nio.file.Files.readSymbolicLink(link)
+            if (!target.isAbsolute()) {
+                target = link.parent.resolve(target)
+            }
+
+            def zipPath = normalized.substring(normalized.indexOf(prefabRoot) + prefabRoot.length())
+            def entry = zipTree(reactAndroidReleaseAar).matching { include zipPath }.singleFile
+            java.nio.file.Files.createDirectories(target.parent)
+            java.nio.file.Files.copy(entry.toPath(), target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            restored++
+        }
+    } finally {
+        stream.close()
+    }
+    if (restored > 0) {
+        logger.lifecycle("Restored ${restored} React Android prefab symlink target(s) for proot link2symlink builds.")
+    }
+}
+
+gradle.projectsEvaluated {
+    def repairTask = rootProject.tasks.register("repairShellyReactAndroidPrefabLinks") {
+        outputs.upToDateWhen { false }
+        doLast {
+            repairReactAndroidPrefabLinks()
+        }
+    }
+
+    allprojects {
+        tasks.matching { it.name.startsWith("buildCMake") || it.name.startsWith("configureCMake") }.configureEach {
+            dependsOn(repairTask)
+        }
+    }
 }
 
 /**
@@ -156,6 +297,14 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation(project(":expo"))
     implementation(project(":expo-modules-core"))
+    implementation(project(":react-native-async-storage_async-storage"))
+    implementation(project(":react-native-gesture-handler"))
+    implementation(project(":react-native-reanimated"))
+    implementation(project(":react-native-safe-area-context"))
+    implementation(project(":react-native-screens"))
+    implementation(project(":react-native-svg"))
+    implementation(project(":react-native-webview"))
+    implementation(project(":react-native-worklets"))
     implementation("androidx.core:core-splashscreen:1.0.1")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
