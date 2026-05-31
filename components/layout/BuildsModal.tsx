@@ -4,7 +4,7 @@
 // latest GitHub Actions APK runs, installs the latest public release APK from
 // GitHub Releases, then hands the APK to Android's package installer.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -90,6 +90,14 @@ type CodexVersionInfo = {
   source: 'runtime' | 'bundled' | 'runtime_broken' | 'unknown';
   runtimePresent: boolean;
   runtimeHealthy: boolean;
+};
+
+type DownloadApkStep = 'prepare' | 'download' | 'verify' | 'ready';
+
+type DownloadLogEntry = {
+  id: string;
+  label: string;
+  status: 'active' | 'done' | 'error';
 };
 
 function sq(value: string): string {
@@ -367,26 +375,71 @@ export async function fetchUpdateAvailabilityStatus(): Promise<BuildStatus> {
   }
 }
 
-async function downloadReleaseApk(update: AndroidUpdateManifest): Promise<string> {
-  const outDir = `/sdcard/Download/shelly-update-${update.versionCode}`;
-  const apkPath = `${outDir}/${update.apkAssetName}`;
-  const command = [
-    `rm -rf ${sq(outDir)}`,
-    `mkdir -p ${sq(outDir)}`,
+async function downloadReleaseApk(
+  update: AndroidUpdateManifest,
+  onProgress?: (step: DownloadApkStep) => void,
+): Promise<string> {
+  const outDir = releaseApkDir(update);
+  const apkPath = releaseApkPath(update);
+
+  const run = async (command: string, timeoutMs: number, label: string): Promise<string> => {
+    const r = await execCommand(command, timeoutMs);
+    if (r.exitCode !== 0) {
+      throw new Error((r.stderr || r.stdout || `${label} exited ${r.exitCode}`).trim());
+    }
+    return r.stdout;
+  };
+
+  onProgress?.('prepare');
+  await run(
+    [`rm -rf ${sq(outDir)}`, `mkdir -p ${sq(outDir)}`].join(' && '),
+    60_000,
+    'prepare download directory',
+  );
+
+  onProgress?.('download');
+  await run(
     `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)}`,
-    `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
-    `if [ "$actual" != ${sq(update.sha256)} ]; then echo "sha256 mismatch: expected ${update.sha256}, got $actual" >&2; exit 65; fi`,
-    `printf '%s\\n' ${sq(apkPath)}`,
-  ].join(' && ');
-  const r = await execCommand(command, 1_800_000);
-  if (r.exitCode !== 0) {
-    throw new Error((r.stderr || r.stdout || `download exited ${r.exitCode}`).trim());
-  }
-  const downloadedPath = r.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+    1_800_000,
+    'download',
+  );
+
+  onProgress?.('verify');
+  const verifyOutput = await run(
+    [
+      `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
+      `if [ "$actual" != ${sq(update.sha256)} ]; then echo "sha256 mismatch: expected ${update.sha256}, got $actual" >&2; exit 65; fi`,
+      `printf '%s\\n' ${sq(apkPath)}`,
+    ].join(' && '),
+    60_000,
+    'verify APK',
+  );
+
+  const downloadedPath = verifyOutput.trim().split('\n').filter(Boolean).pop() ?? '';
   if (!downloadedPath.endsWith('.apk')) {
     throw new Error(`APK was not found under ${outDir}`);
   }
+  onProgress?.('ready');
   return downloadedPath;
+}
+
+function releaseApkDir(update: AndroidUpdateManifest): string {
+  return `/sdcard/Download/shelly-update-${update.versionCode}`;
+}
+
+function releaseApkPath(update: AndroidUpdateManifest): string {
+  return `${releaseApkDir(update)}/${update.apkAssetName}`;
+}
+
+async function verifyReleaseApkFile(update: AndroidUpdateManifest, apkPath: string): Promise<boolean> {
+  if (apkPath !== releaseApkPath(update)) return false;
+  const command = [
+    `test -f ${sq(apkPath)}`,
+    `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
+    `[ "$actual" = ${sq(update.sha256)} ]`,
+  ].join(' && ');
+  const r = await execCommand(command, 120_000);
+  return r.exitCode === 0;
 }
 
 async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string> {
@@ -450,6 +503,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [installedVersion, setInstalledVersion] = useState<AppVersionInfo | null>(null);
   const [installedCodexInfo, setInstalledCodexInfo] = useState<CodexVersionInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [preparingUpdateInstall, setPreparingUpdateInstall] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
   const [installingCodexRuntime, setInstallingCodexRuntime] = useState(false);
   const [resettingCodexRuntime, setResettingCodexRuntime] = useState(false);
@@ -457,7 +511,15 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [logLoadingId, setLogLoadingId] = useState<number | null>(null);
   const [logTitle, setLogTitle] = useState<string | null>(null);
   const [logText, setLogText] = useState<string>('');
+  const [downloadedApk, setDownloadedApk] = useState<{ versionCode: number; path: string } | null>(null);
+  const [downloadLog, setDownloadLog] = useState<DownloadLogEntry[]>([]);
+  const [downloadStartedAt, setDownloadStartedAt] = useState<number | null>(null);
+  const [downloadTick, setDownloadTick] = useState(0);
+  const [codexInstallLog, setCodexInstallLog] = useState<DownloadLogEntry[]>([]);
+  const [codexInstallStartedAt, setCodexInstallStartedAt] = useState<number | null>(null);
+  const [codexInstallTick, setCodexInstallTick] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const updateInstallInFlight = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -528,13 +590,103 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     if (visible) void refresh();
   }, [refresh, visible]);
 
+  useEffect(() => {
+    if (!downloadingUpdate) return undefined;
+    const timer = setInterval(() => {
+      setDownloadTick((n) => n + 1);
+    }, 750);
+    return () => clearInterval(timer);
+  }, [downloadingUpdate]);
+
+  useEffect(() => {
+    if (!installingCodexRuntime) return undefined;
+    const timer = setInterval(() => {
+      setCodexInstallTick((n) => n + 1);
+    }, 750);
+    return () => clearInterval(timer);
+  }, [installingCodexRuntime]);
+
+  const pushDownloadLog = useCallback((id: string, label: string, status: DownloadLogEntry['status'] = 'active') => {
+    setDownloadLog((prev) => {
+      const settled = prev.map((entry) => (
+        entry.status === 'active' ? { ...entry, status: 'done' as const } : entry
+      ));
+      const index = settled.findIndex((entry) => entry.id === id);
+      if (index >= 0) {
+        return settled.map((entry, i) => (i === index ? { ...entry, label, status } : entry));
+      }
+      return [...settled, { id, label, status }];
+    });
+  }, []);
+
+  const markDownloadFailed = useCallback(() => {
+    setDownloadLog((prev) => {
+      const settled = prev.map((entry) => (
+        entry.status === 'active' ? { ...entry, status: 'error' as const } : entry
+      ));
+      if (settled.some((entry) => entry.id === 'error')) return settled;
+      return [...settled, { id: 'error', label: t('updates.download_log_error'), status: 'error' }];
+    });
+  }, [t]);
+
+  const pushCodexInstallLog = useCallback((id: string, label: string, status: DownloadLogEntry['status'] = 'active') => {
+    setCodexInstallLog((prev) => {
+      const settled = prev.map((entry) => (
+        entry.status === 'active' ? { ...entry, status: 'done' as const } : entry
+      ));
+      const index = settled.findIndex((entry) => entry.id === id);
+      if (index >= 0) {
+        return settled.map((entry, i) => (i === index ? { ...entry, label, status } : entry));
+      }
+      return [...settled, { id, label, status }];
+    });
+  }, []);
+
+  const markCodexInstallFailed = useCallback(() => {
+    setCodexInstallLog((prev) => {
+      const settled = prev.map((entry) => (
+        entry.status === 'active' ? { ...entry, status: 'error' as const } : entry
+      ));
+      if (settled.some((entry) => entry.id === 'error')) return settled;
+      return [...settled, { id: 'error', label: t('updates.codex_log_error'), status: 'error' }];
+    });
+  }, [t]);
+
+  const openApkInstaller = useCallback((apkPath: string) => {
+    TerminalEmulator.installApk(apkPath).catch((e: any) => {
+      Alert.alert(t('updates.install_failed_title'), String(e?.message || e));
+    });
+  }, [t]);
+
+  const clearDownloadedApk = useCallback(() => {
+    setDownloadedApk(null);
+    setDownloadLog((prev) => prev.filter((entry) => entry.id !== 'ready'));
+  }, []);
+
+  const openVerifiedApkInstaller = useCallback(async (update: AndroidUpdateManifest, apkPath: string) => {
+    setPreparingUpdateInstall(true);
+    try {
+      const valid = await verifyReleaseApkFile(update, apkPath);
+      if (!valid) {
+        clearDownloadedApk();
+        Alert.alert(t('updates.download_missing_title'), t('updates.download_missing_body'));
+        return;
+      }
+      openApkInstaller(apkPath);
+    } finally {
+      setPreparingUpdateInstall(false);
+    }
+  }, [clearDownloadedApk, openApkInstaller, t]);
+
   const installLatestUpdate = useCallback(async () => {
+    if (updateInstallInFlight.current) return;
     const update = latestUpdate;
     if (!update) {
       Alert.alert(t('updates.no_release_title'), t('updates.no_release_body'));
       return;
     }
-    setDownloadingUpdate(true);
+    updateInstallInFlight.current = true;
+    setPreparingUpdateInstall(true);
     try {
       const current = await TerminalEmulator.getAppVersionInfo().catch(() => installedVersion);
       if (!current) {
@@ -542,6 +694,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         return;
       }
       if (update.versionCode <= current.versionCode) {
+        clearDownloadedApk();
         Alert.alert(
           t('updates.up_to_date_title'),
           t('updates.up_to_date_body', {
@@ -551,28 +704,62 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         );
         return;
       }
-      const apkPath = await downloadReleaseApk(update);
+      if (downloadedApk?.versionCode === update.versionCode) {
+        await openVerifiedApkInstaller(update, downloadedApk.path);
+        return;
+      }
+      setDownloadedApk(null);
+      setDownloadLog([]);
+      setDownloadStartedAt(Date.now());
+      setDownloadTick(0);
+      setPreparingUpdateInstall(false);
+      setDownloadingUpdate(true);
+      const apkPath = await downloadReleaseApk(update, (step) => {
+        switch (step) {
+          case 'prepare':
+            pushDownloadLog('prepare', t('updates.download_log_prepare'));
+            break;
+          case 'download':
+            pushDownloadLog('download', t('updates.download_log_download', { name: update.apkAssetName }));
+            break;
+          case 'verify':
+            pushDownloadLog('verify', t('updates.download_log_verify'));
+            break;
+          case 'ready':
+            pushDownloadLog('ready', t('updates.download_log_ready'), 'done');
+            break;
+        }
+      });
+      setDownloadedApk({ versionCode: update.versionCode, path: apkPath });
       Alert.alert(
         t('updates.ready_title'),
-        t('updates.android_confirm'),
+        t('updates.download_install_alert_body'),
         [
           { text: t('updates.later'), style: 'cancel' },
           {
             text: t('updates.install'),
-            onPress: () => {
-              TerminalEmulator.installApk(apkPath).catch((e: any) => {
-                Alert.alert(t('updates.install_failed_title'), String(e?.message || e));
-              });
-            },
+            onPress: () => void openVerifiedApkInstaller(update, apkPath),
           },
         ],
       );
     } catch (e: any) {
+      markDownloadFailed();
       Alert.alert(t('updates.download_failed_title'), String(e?.message || e));
     } finally {
+      updateInstallInFlight.current = false;
+      setPreparingUpdateInstall(false);
       setDownloadingUpdate(false);
     }
-  }, [installedVersion, latestUpdate, t]);
+  }, [
+    clearDownloadedApk,
+    downloadedApk,
+    installedVersion,
+    latestUpdate,
+    markDownloadFailed,
+    openVerifiedApkInstaller,
+    pushDownloadLog,
+    t,
+  ]);
 
   const installLatestCodexRuntime = useCallback(async () => {
     const update = latestCodexRuntime;
@@ -580,17 +767,24 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       Alert.alert(t('updates.codex_unavailable_title'), t('updates.codex_unavailable_body'));
       return;
     }
+    setCodexInstallLog([]);
+    setCodexInstallStartedAt(Date.now());
+    setCodexInstallTick(0);
     setInstallingCodexRuntime(true);
     try {
+      pushCodexInstallLog('prepare', t('updates.codex_log_prepare'));
+      pushCodexInstallLog('install', t('updates.codex_log_installing', { version: update.version }));
       await installCodexRuntime(update);
+      pushCodexInstallLog('ready', t('updates.codex_log_ready'), 'done');
       Alert.alert(t('updates.codex_ready_title'), t('updates.codex_ready_body'));
       await refresh();
     } catch (e: any) {
+      markCodexInstallFailed();
       Alert.alert(t('updates.codex_install_failed_title'), String(e?.message || e));
     } finally {
       setInstallingCodexRuntime(false);
     }
-  }, [latestCodexRuntime, refresh, t]);
+  }, [latestCodexRuntime, markCodexInstallFailed, pushCodexInstallLog, refresh, t]);
 
   const resetInstalledCodexRuntime = useCallback(async () => {
     setResettingCodexRuntime(true);
@@ -620,7 +814,21 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const updateIsNewer = Boolean(
     installedVersion && latestUpdate && latestUpdate.versionCode > installedVersion.versionCode,
   );
-  const canInstallUpdate = updateIsNewer && !downloadingUpdate;
+  const readyToInstallUpdate = Boolean(
+    updateIsNewer &&
+    latestUpdate &&
+    downloadedApk?.versionCode === latestUpdate.versionCode &&
+    downloadedApk.path,
+  );
+  const downloadDots = '.'.repeat((downloadTick % 3) + 1);
+  const downloadElapsedSec = downloadStartedAt
+    ? Math.max(0, Math.floor((Date.now() - downloadStartedAt) / 1000))
+    : 0;
+  const codexInstallDots = '.'.repeat((codexInstallTick % 3) + 1);
+  const codexInstallElapsedSec = codexInstallStartedAt
+    ? Math.max(0, Math.floor((Date.now() - codexInstallStartedAt) / 1000))
+    : 0;
+  const canInstallUpdate = updateIsNewer && !preparingUpdateInstall && !downloadingUpdate;
   const currentVersionText = installedVersion
     ? t('updates.current_version', {
       versionName: installedVersion.versionName || t('updates.unknown'),
@@ -680,6 +888,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         : 'check-circle';
   const updateActionLabel = downloadingUpdate
     ? t('updates.downloading')
+    : preparingUpdateInstall
+      ? t('updates.checking_short')
+    : readyToInstallUpdate
+      ? t('updates.install')
     : updateIsNewer
       ? t('updates.update')
       : loading
@@ -720,6 +932,59 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
           : t('updates.unavailable');
   const hasCodexRuntimeToReset = Boolean(installedCodexInfo?.runtimePresent);
   const canResetCodexRuntime = hasCodexRuntimeToReset && !installingCodexRuntime && !resettingCodexRuntime;
+  const renderProgressLog = (
+    title: string,
+    active: boolean,
+    elapsedSec: number,
+    entries: DownloadLogEntry[],
+    dots: string,
+  ) => {
+    if (!active && entries.length === 0) return null;
+    return (
+      <View style={styles.downloadLogBox}>
+        <View style={styles.downloadLogHead}>
+          {active ? (
+            <ActivityIndicator size="small" color={C.accent} />
+          ) : (
+            <MaterialIcons name="article" size={13} color={C.accent} />
+          )}
+          <Text style={styles.downloadLogTitle}>{title}</Text>
+          {active && (
+            <Text style={styles.downloadLogElapsed}>
+              {t('updates.download_log_elapsed', { seconds: elapsedSec })}
+            </Text>
+          )}
+        </View>
+        {entries.map((entry) => {
+          const rowActive = entry.status === 'active';
+          const failed = entry.status === 'error';
+          return (
+            <View key={entry.id} style={styles.downloadLogRow}>
+              {rowActive ? (
+                <ActivityIndicator size="small" color={C.accent} />
+              ) : (
+                <MaterialIcons
+                  name={failed ? 'error-outline' : 'check-circle'}
+                  size={12}
+                  color={failed ? '#FCA5A5' : C.accent}
+                />
+              )}
+              <Text
+                style={[
+                  styles.downloadLogText,
+                  rowActive && styles.downloadLogTextActive,
+                  failed && styles.downloadLogTextError,
+                ]}
+                numberOfLines={2}
+              >
+                {rowActive ? `${entry.label}${dots}` : entry.label}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    );
+  };
 
   return (
     <>
@@ -762,8 +1027,14 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                 >
                   {downloadingUpdate ? (
                     <ActivityIndicator size="small" color={C.bgDeep} />
+                  ) : preparingUpdateInstall ? (
+                    <ActivityIndicator size="small" color={C.bgDeep} />
                   ) : (
-                    <MaterialIcons name="system-update-alt" size={13} color={canInstallUpdate ? C.bgDeep : C.text3} />
+                    <MaterialIcons
+                      name={readyToInstallUpdate ? 'install-mobile' : 'system-update-alt'}
+                      size={13}
+                      color={canInstallUpdate ? C.bgDeep : C.text3}
+                    />
                   )}
                   <Text style={[styles.actionText, !canInstallUpdate && styles.actionTextDisabled]}>
                     {updateActionLabel}
@@ -772,6 +1043,16 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
               </View>
               {updateIsNewer && (
                 <Text style={styles.updateHint}>{t('updates.android_confirm')}</Text>
+              )}
+              {readyToInstallUpdate && !downloadingUpdate && (
+                <Text style={styles.updateHint}>{t('updates.download_install_ready_hint')}</Text>
+              )}
+              {renderProgressLog(
+                t('updates.download_log_title'),
+                downloadingUpdate,
+                downloadElapsedSec,
+                downloadLog,
+                downloadDots,
               )}
             </View>
 
@@ -822,6 +1103,13 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                   )}
                 </View>
               </View>
+              {renderProgressLog(
+                t('updates.codex_log_title'),
+                installingCodexRuntime,
+                codexInstallElapsedSec,
+                codexInstallLog,
+                codexInstallDots,
+              )}
             </View>
 
             {advancedOpen && (
@@ -1006,6 +1294,51 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: F.badge.size,
     marginTop: 4,
+  },
+  downloadLogBox: {
+    marginTop: 8,
+    padding: 9,
+    gap: 7,
+    borderWidth: 1,
+    borderColor: withAlpha(C.accent, 0.3),
+    borderRadius: R.badge,
+    backgroundColor: withAlpha(C.bgDeep, 0.7),
+  },
+  downloadLogHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  downloadLogTitle: {
+    flex: 1,
+    color: C.text1,
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+    fontWeight: '700',
+  },
+  downloadLogElapsed: {
+    color: C.text3,
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+  },
+  downloadLogRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    minHeight: 16,
+  },
+  downloadLogText: {
+    flex: 1,
+    color: C.text2,
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+    lineHeight: 16,
+  },
+  downloadLogTextActive: {
+    color: C.text1,
+  },
+  downloadLogTextError: {
+    color: '#FCA5A5',
   },
   advancedSection: {
     gap: 10,
