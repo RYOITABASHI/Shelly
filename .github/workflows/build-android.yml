@@ -83,10 +83,28 @@ jobs:
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve CLI versions for payload cache
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p .ci-versions
           npm view @openai/codex version > .ci-versions/codex.txt
+          CODEX_TERMUX_VERSION=""
+          for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
+            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
+            npm_version="${candidate#v}"
+            if printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$" ||
+               printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
+              CODEX_TERMUX_VERSION="$candidate"
+              break
+            fi
+          done
+          if [ -z "$CODEX_TERMUX_VERSION" ]; then
+            echo "FATAL: none of the 5 most recent codex-termux releases have a supported asset pattern" >&2
+            exit 1
+          fi
+          printf '%s\n' "$CODEX_TERMUX_VERSION" > .ci-versions/codex-termux.txt
           printf 'codex: '; cat .ci-versions/codex.txt
+          printf 'codex-termux: '; cat .ci-versions/codex-termux.txt
 
       - name: Restore generated Android payload cache
         id: android-payload-cache
@@ -115,7 +133,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
-          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
             android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
 
