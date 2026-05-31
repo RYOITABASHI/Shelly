@@ -698,14 +698,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           UPDATE_TAG: android-latest
-          UPDATE_APK_NAME: Shelly-android-latest.apk
           UPDATE_MANIFEST_NAME: latest.json
         run: |
           set -euo pipefail
           apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
           test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
-          release_apk="${RUNNER_TEMP}/${UPDATE_APK_NAME}"
-          cp "${apk}" "${release_apk}"
 
           config_json="$(npx expo config --json)"
           version_code="$(printf '%s' "${config_json}" | node -e '
@@ -730,7 +727,12 @@ jobs:
           codex_version="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
           codex_termux_version="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
           created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${UPDATE_APK_NAME}"
+          short_sha="${GITHUB_SHA:0:12}"
+          run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
+          update_apk_name="Shelly-android-v${version_name}-${version_code}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.apk"
+          release_apk="${RUNNER_TEMP}/${update_apk_name}"
+          cp "${apk}" "${release_apk}"
+          apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${update_apk_name}"
 
           VERSION_CODE="${version_code}" \
           VERSION_NAME="${version_name}" \
@@ -738,7 +740,7 @@ jobs:
           CODEX_VERSION="${codex_version}" \
           CODEX_TERMUX_VERSION="${codex_termux_version}" \
           APK_URL="${apk_url}" \
-          APK_ASSET_NAME="${UPDATE_APK_NAME}" \
+          APK_ASSET_NAME="${update_apk_name}" \
           CREATED_AT="${created_at}" \
           node <<'NODE' > "${UPDATE_MANIFEST_NAME}"
           const manifest = {
@@ -774,6 +776,7 @@ jobs:
           if gh release view "${UPDATE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${UPDATE_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
               --title "Shelly Android latest" \
               --notes-file /tmp/shelly-android-update-release.md
           else
@@ -784,9 +787,31 @@ jobs:
               --notes-file /tmp/shelly-android-update-release.md \
               --latest=false
           fi
+
           gh release upload "${UPDATE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            "${release_apk}" \
+            "${release_apk}"
+
+          uploaded_asset="$(gh release view "${UPDATE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets \
+            --jq ".assets[] | select(.name == \"${update_apk_name}\")")"
+          test -n "${uploaded_asset}" || { echo "FATAL: uploaded APK asset not visible in release" >&2; exit 1; }
+          uploaded_digest="$(printf '%s' "${uploaded_asset}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const asset = JSON.parse(input);
+              process.stdout.write(String(asset.digest || ""));
+            });
+          ')"
+          if [ -n "${uploaded_digest}" ] && [ "${uploaded_digest}" != "sha256:${sha256}" ]; then
+            echo "FATAL: release APK digest mismatch: ${uploaded_digest}" >&2
+            exit 1
+          fi
+
+          gh release upload "${UPDATE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
             "${UPDATE_MANIFEST_NAME}" \
             --clobber
 
