@@ -35,7 +35,7 @@ import com.termux.view.TerminalView
  * hit-testable + focusable + attached, just not visible) rather than
  * INVISIBLE/GONE, which would break focus/IMM eligibility.
  */
-class TerminalImeHostView private constructor(context: Context) : View(context) {
+class TerminalImeHostView private constructor(private val ownerActivity: Activity) : View(ownerActivity) {
 
     private var activeTerminal: TerminalView? = null
 
@@ -105,7 +105,9 @@ class TerminalImeHostView private constructor(context: Context) : View(context) 
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
-        return activeTerminal?.createDelegatingInputConnection(outAttrs)
+        val terminal = activeTerminal ?: return null
+        if (!terminal.isAttachedToWindow) return null
+        return terminal.createDelegatingInputConnection(outAttrs)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -141,12 +143,18 @@ class TerminalImeHostView private constructor(context: Context) : View(context) 
          * focus from React Native's view hierarchy during attach.
          */
         fun ensureAttached(context: Context): TerminalImeHostView? {
-            instance?.let { return it }
+            val activity = resolveActivity(context) ?: run {
+                Log.w(TAG, "ensureAttached: context has no Activity; IME host disabled")
+                return null
+            }
+            instance?.let {
+                if (it.ownerActivity === activity && it.isAttachedToWindow) return it
+                detachStaleInstance(it)
+            }
             synchronized(this) {
-                instance?.let { return it }
-                val activity = resolveActivity(context) ?: run {
-                    Log.w(TAG, "ensureAttached: context has no Activity; IME host disabled")
-                    return null
+                instance?.let {
+                    if (it.ownerActivity === activity && it.isAttachedToWindow) return it
+                    detachStaleInstance(it)
                 }
                 val contentRoot = activity.findViewById<ViewGroup>(android.R.id.content)
                     ?: run {
@@ -173,6 +181,16 @@ class TerminalImeHostView private constructor(context: Context) : View(context) 
                 return
             }
             host.bindToTerminal(tv)
+        }
+
+        fun isActiveTerminal(tv: TerminalView): Boolean {
+            return instance?.activeTerminal === tv
+        }
+
+        private fun detachStaleInstance(host: TerminalImeHostView) {
+            runCatching { (host.parent as? ViewGroup)?.removeView(host) }
+                .onFailure { Log.w(TAG, "failed to detach stale IME host", it) }
+            if (instance === host) instance = null
         }
 
         /** Force-show the soft keyboard via the host. */

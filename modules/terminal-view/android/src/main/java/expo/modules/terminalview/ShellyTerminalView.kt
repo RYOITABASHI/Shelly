@@ -27,6 +27,8 @@ import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import expo.modules.terminalemulator.ShellyTerminalSession
+import java.util.Collections
+import java.util.WeakHashMap
 
 /**
  * ShellyTerminalView — Direct Child Architecture
@@ -63,6 +65,31 @@ class ShellyTerminalView(
         // mServedView" design, which never worked on OneUI. The final
         // architecture hands IMM ownership to TerminalImeHostView so
         // no sibling-reference bookkeeping is needed.
+        private val fallbackEditorViews: MutableSet<TerminalView> =
+            Collections.newSetFromMap(WeakHashMap<TerminalView, Boolean>())
+
+        private fun rememberFallbackEditor(tv: TerminalView) {
+            synchronized(fallbackEditorViews) {
+                fallbackEditorViews.add(tv)
+            }
+        }
+
+        private fun forgetFallbackEditor(tv: TerminalView) {
+            synchronized(fallbackEditorViews) {
+                fallbackEditorViews.remove(tv)
+            }
+        }
+
+        private fun clearFallbackEditorsExcept(keep: TerminalView? = null) {
+            synchronized(fallbackEditorViews) {
+                fallbackEditorViews.toList().forEach { tv ->
+                    if (tv !== keep) {
+                        tv.setImeEditorEnabled(false)
+                        fallbackEditorViews.remove(tv)
+                    }
+                }
+            }
+        }
     }
 
     // Yoga layout gives correct full-width sizing from React Native.
@@ -81,6 +108,7 @@ class ShellyTerminalView(
     // object. SystemClock.uptimeMillis() is monotonic and not affected
     // by wall-clock changes.
     private var lastShowKeyboardAtMs = 0L
+    private var keyboardRequestGeneration = 0L
 
     // Track last synced size to avoid redundant resize calls
     private var lastSyncedCols = -1
@@ -148,7 +176,14 @@ class ShellyTerminalView(
         // Attach the host view to the Activity's content root on first
         // construction. Idempotent — the host is a process-wide
         // singleton keyed by Activity.
-        TerminalImeHostView.ensureAttached(context)
+        val imeHostAttached = TerminalImeHostView.ensureAttached(context) != null
+        terminalView.setImeEditorEnabled(!imeHostAttached)
+        if (imeHostAttached) {
+            clearFallbackEditorsExcept(null)
+            forgetFallbackEditor(terminalView)
+        } else {
+            rememberFallbackEditor(terminalView)
+        }
         terminalView.setScrollStateListener { isScrolledUp ->
             onScrollStateChanged(mapOf("isScrolledUp" to isScrolledUp))
         }
@@ -489,6 +524,9 @@ class ShellyTerminalView(
         blockDetector.destroy()
         inputHandler.resetModifiers()
         detachCurrentSession()
+        keyboardRequestGeneration++
+        forgetFallbackEditor(terminalView)
+        terminalView.setImeEditorEnabled(false)
         // bug #116 final architecture: ensure the IME host un-binds
         // from this terminal so subsequent pane-tab switches don't
         // land on a destroyed reference. The host is shared across
@@ -582,11 +620,13 @@ class ShellyTerminalView(
         // PaneSlot focus handler + onFocusRequested event) into one
         // IMM rebind per gesture.
         val nowMs = android.os.SystemClock.uptimeMillis()
-        if (nowMs - lastShowKeyboardAtMs < SHOW_KEYBOARD_DEBOUNCE_MS) {
+        if (
+            TerminalImeHostView.isActiveTerminal(terminalView) &&
+            nowMs - lastShowKeyboardAtMs < SHOW_KEYBOARD_DEBOUNCE_MS
+        ) {
             Log.i(TAG, "$reason.showKeyboard.debounced deltaMs=${nowMs - lastShowKeyboardAtMs}")
             return
         }
-        lastShowKeyboardAtMs = nowMs
 
         // bug #116 final architecture: point the single imeHost at
         // this pane's terminal and ask IMM to rebuild the input
@@ -594,9 +634,73 @@ class ShellyTerminalView(
         // in the window, mServedView never migrates between siblings
         // and the OneUI stuck-sibling bug can't trigger. The old
         // 80 ms hide+show retry ladder is no longer needed.
-        TerminalImeHostView.bindToTerminal(terminalView)
-        val shown = TerminalImeHostView.showKeyboard(reason)
-        Log.i(TAG, "$reason.showKeyboard shown=$shown viewHash=${System.identityHashCode(terminalView)}")
+        val requestGeneration = ++keyboardRequestGeneration
+        val host = TerminalImeHostView.ensureAttached(context)
+        if (host != null) {
+            clearFallbackEditorsExcept(null)
+            forgetFallbackEditor(terminalView)
+            terminalView.setImeEditorEnabled(false)
+            TerminalImeHostView.bindToTerminal(terminalView)
+            val shown = TerminalImeHostView.showKeyboard(reason)
+            lastShowKeyboardAtMs = android.os.SystemClock.uptimeMillis()
+            Log.i(TAG, "$reason.showKeyboard host shown=$shown viewHash=${System.identityHashCode(terminalView)}")
+            if (shown) return
+            terminalView.postDelayed({
+                if (requestGeneration != keyboardRequestGeneration) {
+                    Log.i(TAG, "$reason.showKeyboard hostRetry stale generation")
+                    return@postDelayed
+                }
+                if (!TerminalImeHostView.isActiveTerminal(terminalView)) {
+                    Log.i(TAG, "$reason.showKeyboard hostRetry stale activeTerminal")
+                    return@postDelayed
+                }
+                TerminalImeHostView.bindToTerminal(terminalView)
+                val retryShown = TerminalImeHostView.showKeyboard("$reason.retry")
+                Log.i(TAG, "$reason.showKeyboard hostRetry shown=$retryShown")
+                if (!retryShown) showKeyboardFallback(reason, requestGeneration)
+            }, 80)
+            return
+        }
+
+        showKeyboardFallback(reason, requestGeneration)
+    }
+
+    private fun showKeyboardFallback(reason: String, requestGeneration: Long) {
+        if (requestGeneration != keyboardRequestGeneration) {
+            Log.i(TAG, "$reason.showKeyboard fallback stale generation")
+            return
+        }
+        // Fallback: if the shared host is stale or IMM refuses it after
+        // install/activity recreation, keep this pane as a normal text
+        // editor so there is always at least one valid InputConnection.
+        clearFallbackEditorsExcept(terminalView)
+        rememberFallbackEditor(terminalView)
+        terminalView.setImeEditorEnabled(true)
+        terminalView.requestFocusFromTouch()
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.restartInput(terminalView)
+        val fallbackShown = imm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
+        if (!fallbackShown) {
+            terminalView.postDelayed({
+                if (requestGeneration != keyboardRequestGeneration) {
+                    Log.i(TAG, "$reason.showKeyboard fallbackRetry stale generation")
+                    return@postDelayed
+                }
+                if (!terminalView.hasFocus() && !TerminalImeHostView.isActiveTerminal(terminalView)) {
+                    Log.i(TAG, "$reason.showKeyboard fallbackRetry stale focus")
+                    return@postDelayed
+                }
+                clearFallbackEditorsExcept(terminalView)
+                rememberFallbackEditor(terminalView)
+                terminalView.requestFocusFromTouch()
+                val retryImm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                retryImm?.restartInput(terminalView)
+                val retryShown = retryImm?.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT) ?: false
+                Log.i(TAG, "$reason.showKeyboard fallbackRetry shown=$retryShown")
+            }, 80)
+        }
+        lastShowKeyboardAtMs = android.os.SystemClock.uptimeMillis()
+        Log.i(TAG, "$reason.showKeyboard fallback shown=$fallbackShown viewHash=${System.identityHashCode(terminalView)}")
     }
 
     fun scrollToRowCommand(row: Int) {
@@ -655,7 +759,8 @@ class ShellyTerminalView(
     // because the IME does not compose them.
     override fun shouldEnforceCharBasedInput(): Boolean = false
     override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
-    override fun isTerminalViewSelected(): Boolean = terminalView.hasFocus()
+    override fun isTerminalViewSelected(): Boolean =
+        terminalView.hasFocus() || TerminalImeHostView.isActiveTerminal(terminalView)
 
     override fun copyModeChanged(copyMode: Boolean) {
         if (copyMode) {

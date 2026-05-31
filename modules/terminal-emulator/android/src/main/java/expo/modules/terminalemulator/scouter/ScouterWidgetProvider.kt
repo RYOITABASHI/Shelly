@@ -15,32 +15,118 @@ import expo.modules.terminalemulator.R
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ScouterWidgetProvider : AppWidgetProvider() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.action) {
+            AppWidgetManager.ACTION_APPWIDGET_UPDATE -> {
+                val ids = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS)
+                val pending = goAsync()
+                enqueueUpdate(context, ids, pending::finish)
+            }
+            AppWidgetManager.ACTION_APPWIDGET_OPTIONS_CHANGED -> {
+                val id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+                val ids = if (id != AppWidgetManager.INVALID_APPWIDGET_ID) intArrayOf(id) else null
+                val pending = goAsync()
+                enqueueUpdate(context, ids, pending::finish)
+            }
+            else -> super.onReceive(context, intent)
+        }
+    }
+
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        runCatching { updateWidgets(context, manager, ids) }
-            .onFailure { Log.w(TAG, "Scouter widget update failed", it) }
+        enqueueUpdate(context, ids)
     }
 
     companion object {
-        fun updateAll(context: Context) {
-            runCatching {
-                val manager = AppWidgetManager.getInstance(context)
-                val component = ComponentName(context, ScouterWidgetProvider::class.java)
-                val ids = manager.getAppWidgetIds(component)
-                if (ids.isEmpty()) return
-                updateWidgets(context, manager, ids)
-            }.onFailure { Log.w(TAG, "Scouter widget updateAll failed", it) }
+        fun updateAll(context: Context, force: Boolean = false) {
+            enqueueUpdate(context, null, force = force)
+        }
+
+        private val widgetExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ScouterWidgetUpdate").apply { isDaemon = true }
+        }
+        private val coalescedUpdateRunning = AtomicBoolean(false)
+        private val coalescedUpdatePending = AtomicBoolean(false)
+
+        private fun enqueueUpdate(
+            context: Context,
+            ids: IntArray?,
+            onDone: (() -> Unit)? = null,
+            force: Boolean = false
+        ) {
+            val appContext = context.applicationContext
+            val coalescible = ids == null && onDone == null
+            if (coalescible && !force) {
+                coalescedUpdatePending.set(true)
+                if (!coalescedUpdateRunning.compareAndSet(false, true)) return
+                widgetExecutor.execute { drainCoalescedUpdates(appContext) }
+                return
+            }
+
+            widgetExecutor.execute {
+                try {
+                    performUpdate(appContext, ids)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Scouter widget async update failed", error)
+                } finally {
+                    onDone?.invoke()
+                }
+            }
+        }
+
+        private fun drainCoalescedUpdates(context: Context) {
+            try {
+                while (coalescedUpdatePending.getAndSet(false)) {
+                    try {
+                        performUpdate(context, null)
+                    } catch (error: Throwable) {
+                        Log.w(TAG, "Scouter widget async update failed", error)
+                    }
+                }
+            } finally {
+                coalescedUpdateRunning.set(false)
+                if (
+                    coalescedUpdatePending.get() &&
+                    coalescedUpdateRunning.compareAndSet(false, true)
+                ) {
+                    widgetExecutor.execute { drainCoalescedUpdates(context) }
+                }
+            }
+        }
+
+        private fun performUpdate(context: Context, ids: IntArray?) {
+            val manager = AppWidgetManager.getInstance(context)
+            val targetIds = ids?.takeIf { it.isNotEmpty() }
+                ?: manager.getAppWidgetIds(ComponentName(context, ScouterWidgetProvider::class.java))
+            if (targetIds.isEmpty()) return
+            updateWidgets(context, manager, targetIds)
         }
 
         private fun updateWidgets(context: Context, manager: AppWidgetManager, ids: IntArray) {
             val store = ScouterStateStore(context)
             val snapshots = if (store.isEnabled()) store.all() else emptyList()
-            val load = ScouterSystemSampler(context).sample()
+            val load = lightweightLoad()
             ids.forEach { id ->
                 runCatching { manager.updateAppWidget(id, render(context, snapshots, load)) }
                     .onFailure { Log.w(TAG, "Scouter widget update failed for id=$id", it) }
             }
+        }
+
+        private fun lightweightLoad(): ScouterSystemLoad {
+            val runtime = Runtime.getRuntime()
+            return ScouterSystemLoad(
+                sampledAt = System.currentTimeMillis(),
+                cpuPercent = null,
+                appCpuPercent = null,
+                appPssMb = null,
+                appHeapUsedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L),
+                appHeapMaxMb = runtime.maxMemory() / (1024L * 1024L),
+                ramAvailableMb = null,
+                ramTotalMb = null
+            )
         }
 
         private fun render(context: Context, snapshots: List<SessionSnapshot>, load: ScouterSystemLoad): RemoteViews {
@@ -130,10 +216,9 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun launchPendingIntent(context: Context): PendingIntent? {
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                action = Intent.ACTION_VIEW
-                data = Uri.parse("shelly://scouter")
-            } ?: return null
+            val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("shelly://scouter"))
+                .setPackage(context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             return PendingIntent.getActivity(
                 context,
                 9100,
