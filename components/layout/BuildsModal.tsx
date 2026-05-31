@@ -50,6 +50,8 @@ type AndroidUpdateManifest = {
   channel?: string;
   versionCode: number;
   versionName: string;
+  codexVersion?: string;
+  codexTermuxVersion?: string;
   gitSha: string;
   runId?: number;
   runNumber?: number;
@@ -103,6 +105,26 @@ function formatDuration(seconds: number | null): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function parseCodexVersion(output: string): string | null {
+  const match = output.match(/\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+  return match?.[1] ?? null;
+}
+
+function codexVersionFromUpdate(update?: AndroidUpdateManifest | null): string | null {
+  const version = update?.codexTermuxVersion || update?.codexVersion;
+  return version ? version.replace(/^v/, '') : null;
+}
+
+async function fetchInstalledCodexVersion(): Promise<string | null> {
+  const command = [
+    'lib="${LD_LIBRARY_PATH%%:*}"',
+    'if [ -x "$lib/codex_tui" ]; then /system/bin/linker64 "$lib/codex_tui" --version; elif [ -x "$lib/codex_exec" ]; then /system/bin/linker64 "$lib/codex_exec" --version; else exit 127; fi',
+  ].join('; ');
+  const r = await execCommand(command, 15_000);
+  if (r.exitCode !== 0) return null;
+  return parseCodexVersion(`${r.stdout}\n${r.stderr}`);
 }
 
 function mapApiRuns(payload: any): BuildRun[] {
@@ -195,6 +217,8 @@ async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null>
     channel: raw?.channel ? String(raw.channel) : undefined,
     versionCode,
     versionName: String(raw?.versionName || ''),
+    codexVersion: raw?.codexVersion ? String(raw.codexVersion) : undefined,
+    codexTermuxVersion: raw?.codexTermuxVersion ? String(raw.codexTermuxVersion) : undefined,
     gitSha: String(raw?.gitSha || ''),
     runId: Number.isInteger(Number(raw?.runId)) ? Number(raw.runId) : undefined,
     runNumber: Number.isInteger(Number(raw?.runNumber)) ? Number(raw.runNumber) : undefined,
@@ -259,6 +283,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [runs, setRuns] = useState<BuildRun[]>([]);
   const [latestUpdate, setLatestUpdate] = useState<AndroidUpdateManifest | null>(null);
   const [installedVersion, setInstalledVersion] = useState<AppVersionInfo | null>(null);
+  const [installedCodexVersion, setInstalledCodexVersion] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -271,14 +296,16 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [runsResult, updateResult, versionResult] = await Promise.allSettled([
+      const [runsResult, updateResult, versionResult, codexResult] = await Promise.allSettled([
         fetchBuildRuns(),
         fetchLatestAndroidUpdate(),
         TerminalEmulator.getAppVersionInfo(),
+        fetchInstalledCodexVersion(),
       ]);
       let nextRuns: BuildRun[] = [];
       let nextUpdate: AndroidUpdateManifest | null = null;
       let nextInstalled: AppVersionInfo | null = null;
+      let nextInstalledCodex: string | null = null;
       const errors: string[] = [];
 
       if (runsResult.status === 'fulfilled') {
@@ -303,6 +330,13 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       } else {
         setInstalledVersion(null);
         errors.push(String(versionResult.reason?.message || versionResult.reason));
+      }
+
+      if (codexResult.status === 'fulfilled') {
+        nextInstalledCodex = codexResult.value;
+        setInstalledCodexVersion(nextInstalledCodex);
+      } else {
+        setInstalledCodexVersion(null);
       }
 
       onStatusChange?.(statusFromUpdate(nextUpdate, nextInstalled), nextRuns[0] ?? null);
@@ -395,6 +429,13 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       versionCode: latestUpdate.versionCode,
     })
     : t('updates.details_unavailable');
+  const availableCodexVersion = codexVersionFromUpdate(latestUpdate);
+  const currentCodexText = installedCodexVersion
+    ? t('updates.current_codex_version', { version: installedCodexVersion })
+    : t('updates.current_codex_unavailable');
+  const availableCodexText = availableCodexVersion
+    ? t('updates.available_codex_version', { version: availableCodexVersion })
+    : null;
   const updateStatusText = loading
     ? t('updates.checking')
     : !latestUpdate
@@ -454,6 +495,8 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                   <Text style={styles.updateTitle}>{updateStatusText}</Text>
                   <Text style={styles.updateMeta}>{currentVersionText}</Text>
                   {latestUpdate && <Text style={styles.updateMeta}>{availableVersionText}</Text>}
+                  <Text style={styles.updateMeta}>{currentCodexText}</Text>
+                  {availableCodexText && <Text style={styles.updateMeta}>{availableCodexText}</Text>}
                 </View>
                 <Pressable
                   style={[styles.actionBtn, !canInstallUpdate && styles.actionBtnDisabled]}

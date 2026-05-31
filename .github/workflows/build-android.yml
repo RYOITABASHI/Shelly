@@ -4,14 +4,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # Nightly rebuild to pick up Codex native/JS dispatcher updates.
-  # If upstream ships a new version between 00:00 UTC runs, the next push
-  # or manual dispatch also picks it up.
-  schedule:
-    - cron: '0 0 * * *'
 
 concurrency:
-  group: android-apk
+  group: android-apk-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -83,28 +78,19 @@ jobs:
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve CLI versions for payload cache
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p .ci-versions
-          npm view @openai/codex version > .ci-versions/codex.txt
-          CODEX_TERMUX_VERSION=""
-          for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
-            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
-            npm_version="${candidate#v}"
-            if printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$" ||
-               printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
-              CODEX_TERMUX_VERSION="$candidate"
-              break
-            fi
-          done
-          if [ -z "$CODEX_TERMUX_VERSION" ]; then
-            echo "FATAL: none of the 5 most recent codex-termux releases have a supported asset pattern" >&2
+          set -euo pipefail
+          test -s .ci-versions/codex.txt || { echo "FATAL: .ci-versions/codex.txt is missing" >&2; exit 1; }
+          test -s .ci-versions/codex-termux.txt || { echo "FATAL: .ci-versions/codex-termux.txt is missing" >&2; exit 1; }
+          test -s .ci-versions/codex-termux.integrity || { echo "FATAL: .ci-versions/codex-termux.integrity is missing" >&2; exit 1; }
+          CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+          CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          if [ "${CODEX_VERSION}" != "${CODEX_TERMUX_VERSION#v}" ]; then
+            echo "FATAL: @openai/codex ${CODEX_VERSION} must match codex-termux ${CODEX_TERMUX_VERSION}" >&2
             exit 1
           fi
-          printf '%s\n' "$CODEX_TERMUX_VERSION" > .ci-versions/codex-termux.txt
-          printf 'codex: '; cat .ci-versions/codex.txt
-          printf 'codex-termux: '; cat .ci-versions/codex-termux.txt
+          printf 'codex: %s\n' "${CODEX_VERSION}"
+          printf 'codex-termux: %s\n' "${CODEX_TERMUX_VERSION}"
 
       - name: Restore generated Android payload cache
         id: android-payload-cache
@@ -133,7 +119,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
-          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux.txt', '.ci-versions/codex-termux.integrity', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
             android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
 
@@ -392,34 +378,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           # DioNanos/codex-termux has used two release asset layouts:
           #   1. legacy: codex-termux-android-arm64-<tag>.tar.gz + .sha256
           #   2. npm-pack: mmmbuto-codex-cli-termux-<version>.tgz
-          # Prefer the newest release that has either known layout. The npm-pack
-          # layout is verified against npm dist.integrity before extraction.
-          CODEX_TERMUX_VERSION=""
+          # Release builds are pinned by .ci-versions so a source commit maps to
+          # one Codex runtime. The separate bump workflow updates these pins.
+          CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          CODEX_TERMUX_INTEGRITY="$(tr -d '[:space:]' < .ci-versions/codex-termux.integrity)"
           CODEX_TERMUX_FORMAT=""
-          for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
-            echo "[codex] probing $candidate for supported asset pattern"
-            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
-            npm_version="${candidate#v}"
-            if printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$"; then
-              CODEX_TERMUX_VERSION="$candidate"
-              CODEX_TERMUX_FORMAT="legacy"
-              echo "[codex] selected $candidate (legacy assets)"
-              break
-            fi
-            if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
-              CODEX_TERMUX_VERSION="$candidate"
-              CODEX_TERMUX_FORMAT="npm-pack"
-              echo "[codex] selected $candidate (npm-pack asset)"
-              break
-            fi
-            echo "[codex] $candidate skipped (no supported assets)"
-          done
-          if [ -z "$CODEX_TERMUX_VERSION" ]; then
-            echo "FATAL: none of the 5 most recent codex-termux releases have a supported asset pattern" >&2
+          assets="$(gh release view "$CODEX_TERMUX_VERSION" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
+          CODEX_NPM_VERSION="${CODEX_TERMUX_VERSION#v}"
+          if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}\.tgz$" &&
+             printf '%s\n' "$CODEX_TERMUX_INTEGRITY" | grep -q '^sha512-'; then
+            CODEX_TERMUX_FORMAT="npm-pack"
+          elif printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${CODEX_TERMUX_VERSION}\.tar\.gz$" &&
+               printf '%s\n' "$CODEX_TERMUX_INTEGRITY" | grep -q '^sha256-'; then
+            CODEX_TERMUX_FORMAT="legacy"
+          else
+            echo "FATAL: pinned codex-termux ${CODEX_TERMUX_VERSION} has no asset matching pinned integrity format" >&2
             exit 1
           fi
           echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION} (${CODEX_TERMUX_FORMAT})"
@@ -434,7 +412,7 @@ jobs:
             # DioNanos/codex-termux .sha256 files contain a bare hex digest
             # (no filename suffix), so sha256sum -c rejects them with
             # "no properly formatted checksum lines found". Read and compare manually.
-            EXPECTED_HASH="$(tr -d '[:space:]' < "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256")"
+            EXPECTED_HASH="${CODEX_TERMUX_INTEGRITY#sha256-}"
             ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
             if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
               echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
@@ -445,14 +423,13 @@ jobs:
             echo "[codex] sha256 OK: ${ACTUAL_HASH}"
             mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
           else
-            CODEX_NPM_VERSION="${CODEX_TERMUX_VERSION#v}"
             gh release download "${CODEX_TERMUX_VERSION}" \
               --repo DioNanos/codex-termux \
               --pattern "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" \
               --dir /tmp \
               --clobber
             mv "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" /tmp/codex-termux.tar.gz
-            EXPECTED_INTEGRITY="$(npm view "@mmmbuto/codex-cli-termux@${CODEX_NPM_VERSION}" dist.integrity)"
+            EXPECTED_INTEGRITY="${CODEX_TERMUX_INTEGRITY}"
             ACTUAL_INTEGRITY="$(node -e 'const fs=require("fs"),crypto=require("crypto"); process.stdout.write("sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' /tmp/codex-termux.tar.gz)"
             if [ "${EXPECTED_INTEGRITY}" != "${ACTUAL_INTEGRITY}" ]; then
               echo "FATAL: npm integrity mismatch for codex-termux tarball" >&2
@@ -495,9 +472,11 @@ jobs:
       - name: Bundle Codex JS dispatcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
+          CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
           mkdir -p cli-bundle
           npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
-            @openai/codex@latest
+            "@openai/codex@${CODEX_VERSION}"
           cd cli-bundle/lib
           tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
           cd ../..
@@ -748,12 +727,16 @@ jobs:
             });
           ')"
           sha256="$(sha256sum "${apk}" | awk '{print $1}')"
+          codex_version="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+          codex_termux_version="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
           created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${UPDATE_APK_NAME}"
 
           VERSION_CODE="${version_code}" \
           VERSION_NAME="${version_name}" \
           SHA256="${sha256}" \
+          CODEX_VERSION="${codex_version}" \
+          CODEX_TERMUX_VERSION="${codex_termux_version}" \
           APK_URL="${apk_url}" \
           APK_ASSET_NAME="${UPDATE_APK_NAME}" \
           CREATED_AT="${created_at}" \
@@ -767,6 +750,8 @@ jobs:
             runId: Number(process.env.GITHUB_RUN_ID),
             runNumber: Number(process.env.GITHUB_RUN_NUMBER),
             createdAt: process.env.CREATED_AT,
+            codexVersion: process.env.CODEX_VERSION,
+            codexTermuxVersion: process.env.CODEX_TERMUX_VERSION,
             apkAssetName: process.env.APK_ASSET_NAME,
             apkUrl: process.env.APK_URL,
             sha256: process.env.SHA256,
@@ -779,6 +764,8 @@ jobs:
 
           - versionName: ${version_name}
           - versionCode: ${version_code}
+          - codex: ${codex_version}
+          - codex-termux: ${codex_termux_version}
           - commit: ${GITHUB_SHA}
           - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           - sha256: ${sha256}
