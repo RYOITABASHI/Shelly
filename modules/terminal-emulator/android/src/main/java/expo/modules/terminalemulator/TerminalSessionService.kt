@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Foreground service that keeps the Shelly process alive when the user
@@ -47,6 +48,7 @@ class TerminalSessionService : Service() {
          * resets too and callers fall back to Case C (transcript replay).
          */
         val sessionRegistry = mutableMapOf<String, ShellyTerminalSession>()
+        private val activeAgentRuns = AtomicInteger(0)
     }
 
     override fun onCreate() {
@@ -82,6 +84,13 @@ class TerminalSessionService : Service() {
         }
 
         // Default: start/restart with base notification
+        if (!hasProtectedWork()) {
+            Log.i(TAG, "Default start with no sessions — not keeping empty service sticky")
+            startForegroundWithNotification(null)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         startForegroundWithNotification(null)
         return START_STICKY
     }
@@ -90,7 +99,11 @@ class TerminalSessionService : Service() {
         // This is the key method — called when user swipes app from recents.
         // Re-assert foreground status so Android doesn't kill the process.
         Log.i(TAG, "onTaskRemoved — re-asserting foreground service")
-        startForegroundWithNotification(null)
+        if (!hasProtectedWork()) {
+            stopSelf()
+        } else {
+            startForegroundWithNotification(null)
+        }
         super.onTaskRemoved(rootIntent)
     }
 
@@ -194,6 +207,7 @@ class TerminalSessionService : Service() {
     }
 
     private fun runAgentInBackground(agentId: String) {
+        activeAgentRuns.incrementAndGet()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
             val result = try {
@@ -211,7 +225,8 @@ class TerminalSessionService : Service() {
                 else -> "Agent failed: $agentId (${result.exitCode})"
             }
             updateNotification(info)
-            if (sessionRegistry.isEmpty()) {
+            val remainingAgents = activeAgentRuns.decrementAndGet()
+            if (sessionRegistry.isEmpty() && remainingAgents <= 0) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -221,6 +236,9 @@ class TerminalSessionService : Service() {
             start()
         }
     }
+
+    private fun hasProtectedWork(): Boolean =
+        sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0
 
     private fun acquireAgentWakeLock(agentId: String): PowerManager.WakeLock? {
         return try {

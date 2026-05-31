@@ -180,9 +180,7 @@ async function materializeAgent(
     ...generateInstallCommands(agent),
   ];
 
-  for (const command of commands) {
-    await runCommand(command);
-  }
+  await runCommand(`set -e\n${commands.join('\n')}`);
   if (installAlarm) {
     await installSchedule(agent);
   }
@@ -285,18 +283,33 @@ export async function loadAgentsFromDisk(
         : agent;
     });
 
-    for (const agent of agentsWithStatus) {
-      try {
-        await materializeAgent(agent, runCommand, Boolean(agent.enabled && agent.schedule));
-      } catch (error) {
-        console.warn('Failed to materialize agent from disk', agent.id, error);
-      }
-    }
     useAgentStore.getState().setRunHistory(runHistory);
     useAgentStore.getState().setAgents(agentsWithStatus);
+    scheduleAgentStartupRepair(agentsWithStatus, runCommand);
   } catch {
     useAgentStore.getState().setAgents([]);
   }
+}
+
+function scheduleAgentStartupRepair(
+  agents: Agent[],
+  runCommand: (cmd: string) => Promise<string>
+): void {
+  const scheduledAgents = agents.filter((agent) => agent.enabled && agent.schedule);
+  if (scheduledAgents.length === 0) return;
+
+  setTimeout(() => {
+    void (async () => {
+      for (const agent of scheduledAgents) {
+        try {
+          await materializeAgent(agent, runCommand, true);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        } catch (error) {
+          console.warn('Failed to repair scheduled agent on startup', agent.id, error);
+        }
+      }
+    })();
+  }, 5_000);
 }
 
 export async function syncAgentRunLogsFromDisk(
@@ -329,8 +342,8 @@ async function readAgentRunLogs(
 ): Promise<Record<string, AgentRunLog[]>> {
   const logsRoot = `${agentsDir()}/logs`;
   const command = agentId
-    ? `for f in ${shellQuote(`${logsRoot}/${agentId}`)}/*.json; do [ -f "$f" ] || continue; cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done 2>/dev/null`
-    : `for d in ${shellQuote(logsRoot)}/*; do [ -d "$d" ] || continue; for f in "$d"/*.json; do [ -f "$f" ] || continue; cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done; done 2>/dev/null`;
+    ? `find ${shellQuote(`${logsRoot}/${agentId}`)} -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort | tail -n 30 | while IFS= read -r f; do cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done`
+    : `for d in ${shellQuote(logsRoot)}/*; do [ -d "$d" ] || continue; find "$d" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort | tail -n 30 | while IFS= read -r f; do cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done; done 2>/dev/null`;
   const output = await runCommand(command);
   const logs: AgentRunLog[] = [];
   for (const chunk of output.split('---SHELLY_AGENT_LOG---')) {
