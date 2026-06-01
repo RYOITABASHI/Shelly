@@ -772,10 +772,12 @@ jobs:
           release_apk="${RUNNER_TEMP}/${update_apk_name}"
           cp "${apk}" "${release_apk}"
           apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${update_apk_name}"
+          apk_size_bytes="$(wc -c < "${release_apk}" | tr -d '[:space:]')"
 
           VERSION_CODE="${version_code}" \
           VERSION_NAME="${version_name}" \
           SHA256="${sha256}" \
+          APK_SIZE_BYTES="${apk_size_bytes}" \
           CODEX_VERSION="${codex_version}" \
           CODEX_TERMUX_VERSION="${codex_termux_version}" \
           APK_URL="${apk_url}" \
@@ -795,6 +797,7 @@ jobs:
             codexTermuxVersion: process.env.CODEX_TERMUX_VERSION,
             apkAssetName: process.env.APK_ASSET_NAME,
             apkUrl: process.env.APK_URL,
+            apkSizeBytes: Number(process.env.APK_SIZE_BYTES),
             sha256: process.env.SHA256,
           };
           process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");

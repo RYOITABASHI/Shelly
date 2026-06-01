@@ -61,6 +61,7 @@ type AndroidUpdateManifest = {
   createdAt?: string;
   apkAssetName: string;
   apkUrl: string;
+  apkSizeBytes?: number;
   sha256: string;
 };
 
@@ -93,6 +94,13 @@ type CodexVersionInfo = {
 };
 
 type DownloadApkStep = 'prepare' | 'download' | 'verify' | 'ready';
+
+type DownloadApkProgress = {
+  step: DownloadApkStep;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  speedBytesPerSec?: number;
+};
 
 type DownloadLogEntry = {
   id: string;
@@ -138,6 +146,40 @@ function formatDuration(seconds: number | null): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function formatBytes(bytes?: number | null): string {
+  if (!Number.isFinite(bytes ?? NaN) || !bytes || bytes < 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const decimals = unit >= 2 ? 1 : 0;
+  return `${value.toFixed(decimals)} ${units[unit]}`;
+}
+
+function formatDownloadProgress(
+  downloadedBytes?: number,
+  totalBytes?: number,
+  speedBytesPerSec?: number,
+): string {
+  const downloaded = Number.isFinite(downloadedBytes ?? NaN) ? Math.max(0, downloadedBytes ?? 0) : 0;
+  const total = Number.isFinite(totalBytes ?? NaN) && (totalBytes ?? 0) > 0 ? totalBytes : undefined;
+  const speed = Number.isFinite(speedBytesPerSec ?? NaN) && (speedBytesPerSec ?? 0) > 0
+    ? `, ${formatBytes(speedBytesPerSec)}/s`
+    : '';
+  if (total) {
+    const percent = Math.min(100, Math.max(0, (downloaded / total) * 100));
+    return `${formatBytes(downloaded)} / ${formatBytes(total)} (${percent.toFixed(0)}%${speed})`;
+  }
+  return `${formatBytes(downloaded)}${speed}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseCodexVersion(output: string): string | null {
@@ -267,6 +309,13 @@ async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null>
   const apkAssetName = String(raw?.apkAssetName || '');
   const sha256 = String(raw?.sha256 || '').toLowerCase();
   const apkAsset = assets.find((asset: any) => asset?.name === apkAssetName);
+  const rawApkSizeBytes = Number(raw?.apkSizeBytes);
+  const assetSizeBytes = Number(apkAsset?.size);
+  const apkSizeBytes = Number.isInteger(rawApkSizeBytes) && rawApkSizeBytes > 0
+    ? rawApkSizeBytes
+    : Number.isInteger(assetSizeBytes) && assetSizeBytes > 0
+      ? assetSizeBytes
+      : undefined;
   if (!Number.isInteger(versionCode) || versionCode < 1) {
     throw new Error('Release manifest has an invalid versionCode.');
   }
@@ -293,6 +342,7 @@ async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null>
     createdAt: raw?.createdAt ? String(raw.createdAt) : undefined,
     apkAssetName,
     apkUrl: String(apkAsset.browser_download_url),
+    apkSizeBytes,
     sha256,
   };
 }
@@ -377,10 +427,12 @@ export async function fetchUpdateAvailabilityStatus(): Promise<BuildStatus> {
 
 async function downloadReleaseApk(
   update: AndroidUpdateManifest,
-  onProgress?: (step: DownloadApkStep) => void,
+  onProgress?: (progress: DownloadApkProgress) => void,
 ): Promise<string> {
   const outDir = releaseApkDir(update);
   const apkPath = releaseApkPath(update);
+  const statusPath = `${outDir}/.download.status`;
+  const logPath = `${outDir}/.download.log`;
 
   const run = async (command: string, timeoutMs: number, label: string): Promise<string> => {
     const r = await execCommand(command, timeoutMs);
@@ -390,25 +442,97 @@ async function downloadReleaseApk(
     return r.stdout;
   };
 
-  onProgress?.('prepare');
+  onProgress?.({ step: 'prepare' });
   await run(
-    [`rm -rf ${sq(outDir)}`, `mkdir -p ${sq(outDir)}`].join(' && '),
+    [
+      `rm -rf ${sq(outDir)}`,
+      `mkdir -p ${sq(outDir)}`,
+      `rm -f ${sq(statusPath)} ${sq(logPath)}`,
+    ].join(' && '),
     60_000,
     'prepare download directory',
   );
 
-  onProgress?.('download');
-  await run(
-    `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)}`,
-    1_800_000,
-    'download',
+  onProgress?.({
+    step: 'download',
+    downloadedBytes: 0,
+    totalBytes: update.apkSizeBytes,
+  });
+  // Detach the whole background subshell from execCommand pipes; otherwise the
+  // native pipe reader waits for EOF and can kill the download on timeout.
+  const pidOutput = await run(
+    [
+      '(',
+      `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)} > ${sq(logPath)} 2>&1;`,
+      'rc=$?;',
+      `printf '%s\\n' "$rc" > ${sq(statusPath)}`,
+      ') >/dev/null 2>/dev/null < /dev/null &',
+      'printf \'%s\\n\' "$!"',
+    ].join(' '),
+    10_000,
+    'start download',
   );
+  const pid = Number(pidOutput.trim().split('\n').filter(Boolean).pop());
+  if (!Number.isInteger(pid) || pid < 1) {
+    throw new Error('Could not start APK download.');
+  }
 
-  onProgress?.('verify');
+  const startedAt = Date.now();
+  let lastBytes = 0;
+  let lastAt = startedAt;
+  while (true) {
+    await sleep(1000);
+    const poll = await run(
+      [
+        'size=0',
+        `[ -f ${sq(apkPath)} ] && size=$(wc -c < ${sq(apkPath)} | tr -d '[:space:]')`,
+        'status=',
+        `[ -f ${sq(statusPath)} ] && status=$(cat ${sq(statusPath)} | tr -d '[:space:]')`,
+        'alive=0',
+        `kill -0 ${pid} 2>/dev/null && alive=1`,
+        'printf "%s\\t%s\\t%s\\n" "$size" "$status" "$alive"',
+      ].join('; '),
+      10_000,
+      'poll download',
+    );
+    const [sizeRaw, statusRaw, aliveRaw] = poll.trim().split('\t');
+    const downloadedBytes = Number(sizeRaw) || 0;
+    const now = Date.now();
+    const elapsedSinceLast = Math.max(1, now - lastAt) / 1000;
+    const speedBytesPerSec = Math.max(0, downloadedBytes - lastBytes) / elapsedSinceLast;
+    lastBytes = downloadedBytes;
+    lastAt = now;
+    onProgress?.({
+      step: 'download',
+      downloadedBytes,
+      totalBytes: update.apkSizeBytes,
+      speedBytesPerSec,
+    });
+
+    if (statusRaw) {
+      if (statusRaw !== '0') {
+        const log = await execCommand(`cat ${sq(logPath)} 2>/dev/null | tail -20`, 10_000)
+          .catch(() => ({ stdout: '', stderr: '', exitCode: 1 }));
+        throw new Error((log.stdout || log.stderr || `curl exited ${statusRaw}`).trim());
+      }
+      break;
+    }
+    if (aliveRaw !== '1') {
+      const log = await execCommand(`cat ${sq(logPath)} 2>/dev/null | tail -20`, 10_000)
+        .catch(() => ({ stdout: '', stderr: '', exitCode: 1 }));
+      throw new Error((log.stdout || log.stderr || 'APK download stopped before completion.').trim());
+    }
+    if (Date.now() - startedAt > 1_800_000) {
+      throw new Error('APK download timed out.');
+    }
+  }
+
+  onProgress?.({ step: 'verify' });
   const verifyOutput = await run(
     [
       `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
       `if [ "$actual" != ${sq(update.sha256)} ]; then echo "sha256 mismatch: expected ${update.sha256}, got $actual" >&2; exit 65; fi`,
+      `rm -f ${sq(statusPath)} ${sq(logPath)}`,
       `printf '%s\\n' ${sq(apkPath)}`,
     ].join(' && '),
     60_000,
@@ -419,7 +543,7 @@ async function downloadReleaseApk(
   if (!downloadedPath.endsWith('.apk')) {
     throw new Error(`APK was not found under ${outDir}`);
   }
-  onProgress?.('ready');
+  onProgress?.({ step: 'ready' });
   return downloadedPath;
 }
 
@@ -714,13 +838,20 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       setDownloadTick(0);
       setPreparingUpdateInstall(false);
       setDownloadingUpdate(true);
-      const apkPath = await downloadReleaseApk(update, (step) => {
-        switch (step) {
+      const apkPath = await downloadReleaseApk(update, (progress) => {
+        switch (progress.step) {
           case 'prepare':
             pushDownloadLog('prepare', t('updates.download_log_prepare'));
             break;
           case 'download':
-            pushDownloadLog('download', t('updates.download_log_download', { name: update.apkAssetName }));
+            pushDownloadLog('download', t('updates.download_log_download_progress', {
+              name: update.apkAssetName,
+              progress: formatDownloadProgress(
+                progress.downloadedBytes,
+                progress.totalBytes,
+                progress.speedBytesPerSec,
+              ),
+            }));
             break;
           case 'verify':
             pushDownloadLog('verify', t('updates.download_log_verify'));

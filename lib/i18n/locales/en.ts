@@ -1338,6 +1338,7 @@ const en: Record<string, string> = {
   'updates.download_log_elapsed': '{{seconds}}s elapsed',
   'updates.download_log_prepare': 'Preparing download folder',
   'updates.download_log_download': 'Downloading {{name}}',
+  'updates.download_log_download_progress': 'Downloading {{name}} - {{progress}}',
   'updates.download_log_verify': 'Verifying SHA-256',
   'updates.download_log_ready': 'APK is ready',
   'updates.download_log_error': 'Download failed',
