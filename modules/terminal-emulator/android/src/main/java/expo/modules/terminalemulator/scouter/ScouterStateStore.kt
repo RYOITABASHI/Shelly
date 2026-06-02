@@ -39,6 +39,7 @@ class ScouterStateStore(context: Context) {
             val previous = all[event.sessionId]
             val snapshot = event.toSnapshot(previous)
             all[event.sessionId] = snapshot
+            appendRecentEventLocked(event)
             writeAll(all)
             writeHelperStateLocked(all)
             return snapshot
@@ -59,7 +60,10 @@ class ScouterStateStore(context: Context) {
 
     fun clearSnapshots() {
         synchronized(lock) {
-            prefs.edit().putString(KEY_SNAPSHOTS, "[]").commit()
+            prefs.edit()
+                .putString(KEY_SNAPSHOTS, "[]")
+                .putString(KEY_RECENT_EVENTS, "[]")
+                .commit()
             writeHelperStateLocked(emptyMap())
         }
     }
@@ -69,6 +73,9 @@ class ScouterStateStore(context: Context) {
         put("port", getRuntimePort())
         put("sessions", JSONArray().also { arr ->
             all().forEach { arr.put(it.toJson()) }
+        })
+        put("recentEvents", JSONArray().also { arr ->
+            readRecentEventJsons().forEach { arr.put(it) }
         })
     }
 
@@ -92,6 +99,57 @@ class ScouterStateStore(context: Context) {
         prefs.edit().putString(KEY_SNAPSHOTS, arr.toString()).commit()
     }
 
+    private fun appendRecentEventLocked(event: ScouterEvent) {
+        if (!shouldKeepRecentEvent(event)) return
+        val events = readRecentEventJsons()
+        events.add(event.toJson())
+        writeRecentEventsLocked(events)
+    }
+
+    private fun readRecentEventJsons(): MutableList<JSONObject> {
+        val raw = prefs.getString(KEY_RECENT_EVENTS, "[]") ?: "[]"
+        val arr = runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
+        val out = mutableListOf<JSONObject>()
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let(out::add)
+        }
+        return out
+    }
+
+    private fun writeRecentEventsLocked(events: List<JSONObject>) {
+        val byEventId = LinkedHashMap<String, JSONObject>()
+        events
+            .sortedBy { it.optLong("timestamp", 0L) }
+            .forEach { event ->
+                val id = event.optString("eventId").ifBlank {
+                    listOf(
+                        event.optString("sessionId"),
+                        event.optString("eventType"),
+                        event.optLong("timestamp", 0L).toString(),
+                        event.optString("lastMessage"),
+                        event.optString("toolName")
+                    ).joinToString("|")
+                }
+                byEventId[id] = event
+            }
+        val arr = JSONArray()
+        byEventId.values
+            .sortedBy { it.optLong("timestamp", 0L) }
+            .takeLast(MAX_RECENT_EVENTS)
+            .forEach { arr.put(it) }
+        prefs.edit().putString(KEY_RECENT_EVENTS, arr.toString()).commit()
+    }
+
+    private fun shouldKeepRecentEvent(event: ScouterEvent): Boolean {
+        if (event.source != ScouterSource.CODEX) return false
+        if (event.eventType == ScouterEventType.USER_PROMPT && !event.lastMessage.isNullOrBlank()) return true
+        if (event.derivedStatus == ScouterStatus.IDLE && !event.lastMessage.isNullOrBlank()) return true
+        if (event.eventType == ScouterEventType.PRE_TOOL_USE && !event.toolName.isNullOrBlank()) return true
+        if (event.eventType == ScouterEventType.POST_TOOL_USE_FAILURE) return true
+        if (event.derivedStatus == ScouterStatus.ERROR) return true
+        return false
+    }
+
     private fun writeHelperState() {
         synchronized(lock) {
             writeHelperStateLocked(readAllMutable())
@@ -108,6 +166,9 @@ class ScouterStateStore(context: Context) {
             put("sessions", JSONArray().also { arr ->
                 values.values.sortedByDescending { it.lastEventAt }.take(20).forEach { arr.put(it.toJson()) }
             })
+            put("recentEvents", JSONArray().also { arr ->
+                readRecentEventJsons().forEach { arr.put(it) }
+            })
         }
         helperStateFile.parentFile?.mkdirs()
         val tmp = File(helperStateFile.parentFile, helperStateFile.name + ".tmp")
@@ -123,5 +184,7 @@ class ScouterStateStore(context: Context) {
         private const val KEY_TOKEN = "session_token"
         private const val KEY_PORT = "runtime_port"
         private const val KEY_SNAPSHOTS = "snapshots"
+        private const val KEY_RECENT_EVENTS = "recent_events"
+        private const val MAX_RECENT_EVENTS = 120
     }
 }

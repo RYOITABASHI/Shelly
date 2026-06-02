@@ -59,10 +59,27 @@ type ScouterSession = {
   lastMessage?: string | null;
 };
 
+type ScouterRecentEvent = {
+  eventId?: string;
+  source?: string;
+  sessionId?: string;
+  projectName?: string;
+  timestamp?: number;
+  eventType?: string;
+  derivedStatus?: string;
+  toolName?: string | null;
+  commandSummary?: string | null;
+  errorMessage?: string | null;
+  lastMessage?: string | null;
+  modelName?: string | null;
+  tokensUsed?: number;
+};
+
 type ScouterDebugInfo = {
   enabled?: boolean;
   jsonlWatcherRunning?: boolean;
   sessions?: ScouterSession[];
+  recentEvents?: ScouterRecentEvent[];
 };
 
 type AgentChatState = {
@@ -101,8 +118,10 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       const parsed = JSON.parse(raw) as ScouterDebugInfo;
       const codexSessions = dedupeCodexSessions(parsed.sessions ?? []);
       const sessions = codexSessions.map(toAgentChatSession);
-      const newEvents = codexSessions
-        .flatMap(sessionToEvents)
+      const newEvents = [
+        ...codexSessions.flatMap(sessionToEvents),
+        ...(parsed.recentEvents ?? []).flatMap(scouterRecentEventToAgentChatEvent),
+      ]
         .sort((a, b) => a.timestamp - b.timestamp);
       const events = mergeEvents(get().events, newEvents, sessions);
 
@@ -237,6 +256,76 @@ function sessionToEvents(session: ScouterSession): AgentChatEvent[] {
   return events;
 }
 
+function scouterRecentEventToAgentChatEvent(event: ScouterRecentEvent): AgentChatEvent[] {
+  if (event.source !== 'CODEX') return [];
+  const codexSessionId = event.sessionId?.trim();
+  if (!codexSessionId) return [];
+
+  const eventType = (event.eventType ?? '').toUpperCase();
+  const derivedStatus = (event.derivedStatus ?? '').toUpperCase();
+  const timestamp = event.timestamp ?? Date.now();
+  const status = mapStatus(event.derivedStatus);
+  const base = {
+    id: event.eventId?.trim() ? `agent-chat-scouter-${event.eventId}` : '',
+    source: 'codex' as const,
+    codexSessionId,
+    status,
+    timestamp,
+    rawEvent: event,
+  };
+
+  const lastMessage = cleanScouterMessage(event.lastMessage);
+  const toolName = event.toolName?.trim();
+  const commandSummary = event.commandSummary?.trim();
+  const errorMessage = cleanScouterMessage(event.errorMessage) ?? lastMessage;
+
+  if (eventType === 'USER_PROMPT' && lastMessage) {
+    return [{
+      ...base,
+      id: base.id || eventId(codexSessionId, 'user_message', timestamp, lastMessage),
+      role: 'user',
+      kind: 'user_message',
+      text: lastMessage,
+    }];
+  }
+
+  if ((eventType === 'SNAPSHOT' || derivedStatus === 'IDLE' || derivedStatus === 'COMPLETED') && lastMessage) {
+    return [{
+      ...base,
+      id: base.id || eventId(codexSessionId, 'assistant_message', timestamp, lastMessage),
+      role: 'assistant',
+      kind: 'assistant_message',
+      text: lastMessage,
+    }];
+  }
+
+  if (eventType === 'PRE_TOOL_USE' && (toolName || commandSummary)) {
+    const text = toolName || commandSummary || 'tool';
+    return [{
+      ...base,
+      id: base.id || eventId(codexSessionId, 'tool_start', timestamp, text),
+      role: 'tool',
+      kind: 'tool_start',
+      text,
+      status: 'tool_running',
+      toolName: toolName || text,
+    }];
+  }
+
+  if ((eventType === 'POST_TOOL_USE_FAILURE' || derivedStatus === 'ERROR') && errorMessage) {
+    return [{
+      ...base,
+      id: base.id || eventId(codexSessionId, 'error', timestamp, errorMessage),
+      role: 'system',
+      kind: 'error',
+      text: errorMessage,
+      status: 'error',
+    }];
+  }
+
+  return [];
+}
+
 function mergeEvents(
   existing: AgentChatEvent[],
   incoming: AgentChatEvent[],
@@ -247,27 +336,71 @@ function mergeEvents(
   const activeSessionIds = new Set(sessions.map((session) => session.codexSessionId));
   const byId = new Map<string, AgentChatEvent>();
   const contentKeys = new Set<string>();
+  const snapshotContentIds = new Map<string, Set<string>>();
   for (const event of existing) {
     if (activeSessionIds.has(event.codexSessionId)) {
       byId.set(event.id, event);
-      const key = stableContentKey(event);
-      if (key) contentKeys.add(key);
+      const key = messageContentKey(event);
+      if (key) {
+        contentKeys.add(key);
+        if (!hasStableRawEventId(event.rawEvent)) addSnapshotContentId(snapshotContentIds, key, event.id);
+      }
     }
   }
   for (const event of incoming) {
-    const key = stableContentKey(event);
-    if (key && contentKeys.has(key)) continue;
+    if (!activeSessionIds.has(event.codexSessionId)) continue;
+    const key = messageContentKey(event);
+    const hasStableId = hasStableRawEventId(event.rawEvent);
+    if (key) {
+      if (hasStableId) {
+        const snapshotIds = snapshotContentIds.get(key);
+        snapshotIds?.forEach((id) => byId.delete(id));
+        snapshotContentIds.delete(key);
+      } else if (contentKeys.has(key)) {
+        continue;
+      }
+    }
     byId.set(event.id, event);
-    if (key) contentKeys.add(key);
+    if (key) {
+      contentKeys.add(key);
+      if (!hasStableId) addSnapshotContentId(snapshotContentIds, key, event.id);
+    }
   }
   return Array.from(byId.values())
     .sort((a, b) => a.timestamp - b.timestamp)
     .slice(-MAX_EVENTS);
 }
 
-function stableContentKey(event: AgentChatEvent): string | null {
-  if (event.kind !== 'assistant_message' && event.kind !== 'error') return null;
+function addSnapshotContentId(map: Map<string, Set<string>>, key: string, id: string): void {
+  const existing = map.get(key);
+  if (existing) {
+    existing.add(id);
+    return;
+  }
+  map.set(key, new Set([id]));
+}
+
+function messageContentKey(event: AgentChatEvent): string | null {
+  if (
+    event.kind !== 'user_message'
+    && event.kind !== 'assistant_message'
+    && event.kind !== 'tool_start'
+    && event.kind !== 'error'
+  ) return null;
   return `${event.codexSessionId}:${event.kind}:${hashText(event.text.trim())}`;
+}
+
+function hasStableRawEventId(rawEvent: unknown): boolean {
+  if (!rawEvent || typeof rawEvent !== 'object') return false;
+  return typeof (rawEvent as { eventId?: unknown }).eventId === 'string'
+    && Boolean((rawEvent as { eventId?: string }).eventId?.trim());
+}
+
+function cleanScouterMessage(message?: string | null): string | null {
+  const value = message?.trim();
+  if (!value) return null;
+  if (value === 'Codex tokens updated') return null;
+  return value;
 }
 
 function mapStatus(status?: string): AgentChatStatus {

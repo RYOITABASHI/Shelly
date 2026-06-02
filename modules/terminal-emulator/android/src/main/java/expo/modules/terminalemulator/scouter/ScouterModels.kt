@@ -76,6 +76,46 @@ data class ScouterEvent(
     val rateLimitResetAt: Long? = null,
     val retryAfterSeconds: Long? = null
 ) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("schemaVersion", schemaVersion)
+        put("eventId", eventId)
+        put("timestamp", timestamp)
+        put("source", source.name)
+        put("sourceBadge", source.badge())
+        put("sourceVersion", sourceVersion)
+        put("sessionId", sessionId)
+        put("projectName", projectName)
+        put("gitBranch", gitBranch)
+        put("cwd", cwd)
+        put("eventType", eventType.name)
+        put("derivedStatus", derivedStatus.name)
+        put("toolName", toolName)
+        put("targetFile", targetFile)
+        put("commandSummary", commandSummary)
+        put("errorMessage", errorMessage)
+        put("notificationMessage", notificationMessage)
+        put("modelName", modelName)
+        put("tokensUsed", tokensUsed)
+        put("inputTokens", inputTokens)
+        put("outputTokens", outputTokens)
+        put("reasoningOutputTokens", reasoningOutputTokens)
+        put("cacheCreationInputTokens", cacheCreationInputTokens)
+        put("cacheReadInputTokens", cacheReadInputTokens)
+        put("totalCostUsd", totalCostUsd)
+        put("contextPercentRemaining", contextPercentRemaining)
+        put("lastMessage", lastMessage)
+        put("localBackend", localBackend)
+        put("localEndpoint", localEndpoint)
+        put("tokensPerSecond", tokensPerSecond)
+        put("queueSize", queueSize)
+        put("latencyMs", latencyMs)
+        put("rateLimitStatus", rateLimitStatus?.name)
+        put("rateLimitRemainingRequests", rateLimitRemainingRequests)
+        put("rateLimitRemainingTokens", rateLimitRemainingTokens)
+        put("rateLimitResetAt", rateLimitResetAt)
+        put("retryAfterSeconds", retryAfterSeconds)
+    }
+
     fun toSnapshot(previous: SessionSnapshot? = null): SessionSnapshot {
         val isTerminalState = derivedStatus == ScouterStatus.COMPLETED ||
             derivedStatus == ScouterStatus.IDLE ||

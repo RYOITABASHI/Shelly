@@ -2,6 +2,7 @@ package expo.modules.terminalemulator.scouter
 
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.time.Instant
 
 class JsonlSessionParser(
@@ -22,13 +23,13 @@ class JsonlSessionParser(
     fun parse(line: String): ScouterEvent? {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return null
         return when (source) {
-            ScouterSource.CODEX -> parseCodex(json)
+            ScouterSource.CODEX -> parseCodex(json, line)
             ScouterSource.LOCAL_LLM -> EventNormalizer.fromJsonl(source, file, line)
             ScouterSource.SHELLY -> EventNormalizer.fromJsonl(source, file, line)
         }
     }
 
-    private fun parseCodex(json: JSONObject): ScouterEvent? {
+    private fun parseCodex(json: JSONObject, line: String): ScouterEvent? {
         val entryType = json.optString("type")
         val payload = json.optJSONObject("payload")
         if (entryType == "turn_context") {
@@ -40,7 +41,7 @@ class JsonlSessionParser(
             return EventNormalizer.fromJsonl(source, file, json.toString())
         }
         if (payload?.optString("type") != "token_count") {
-            return payload?.let { codexEventFromPayload(json, it) }
+            return payload?.let { codexEventFromPayload(json, it, line) }
                 ?: EventNormalizer.fromJsonl(source, file, json.toString())
         }
 
@@ -68,6 +69,7 @@ class JsonlSessionParser(
         val cwd = codexCwd ?: file.parentFile?.absolutePath.orEmpty()
 
         return ScouterEvent(
+            eventId = stableJsonlEventId(line),
             source = ScouterSource.CODEX,
             sourceVersion = "jsonl",
             timestamp = parseTimestamp(json.optString("timestamp")),
@@ -92,7 +94,7 @@ class JsonlSessionParser(
         )
     }
 
-    private fun codexEventFromPayload(json: JSONObject, payload: JSONObject): ScouterEvent? {
+    private fun codexEventFromPayload(json: JSONObject, payload: JSONObject, line: String): ScouterEvent? {
         val payloadType = payload.optString("type").lowercase()
         if (payloadType.isBlank()) return null
         codexCwd = extractCodexCwd(json, payload) ?: codexCwd
@@ -128,19 +130,22 @@ class JsonlSessionParser(
         val status = when {
             hasExplicitRateLimitError -> ScouterStatus.ERROR
             "error" in payloadType || hasErrorValue -> ScouterStatus.ERROR
+            "user_message" in payloadType -> ScouterStatus.THINKING
             "exec_command_begin" in payloadType || "tool_call" in payloadType || "apply_patch_begin" in payloadType -> ScouterStatus.TOOL_RUNNING
             "exec_command" in payloadType && "end" !in payloadType -> ScouterStatus.TOOL_RUNNING
             "tool_result" in payloadType || "exec_command_end" in payloadType || "apply_patch_end" in payloadType -> ScouterStatus.THINKING
             "agent_message" in payloadType || "assistant_message" in payloadType || payloadType == "message" -> ScouterStatus.IDLE
             else -> ScouterStatus.THINKING
         }
-        val eventType = when (status) {
-            ScouterStatus.ERROR -> ScouterEventType.POST_TOOL_USE_FAILURE
-            ScouterStatus.TOOL_RUNNING -> ScouterEventType.PRE_TOOL_USE
-            ScouterStatus.IDLE -> ScouterEventType.SNAPSHOT
+        val eventType = when {
+            "user_message" in payloadType -> ScouterEventType.USER_PROMPT
+            status == ScouterStatus.ERROR -> ScouterEventType.POST_TOOL_USE_FAILURE
+            status == ScouterStatus.TOOL_RUNNING -> ScouterEventType.PRE_TOOL_USE
+            status == ScouterStatus.IDLE -> ScouterEventType.SNAPSHOT
             else -> ScouterEventType.POST_TOOL_USE
         }
         return ScouterEvent(
+            eventId = stableJsonlEventId(line),
             source = ScouterSource.CODEX,
             sourceVersion = "jsonl",
             timestamp = parseTimestamp(json.optString("timestamp")),
@@ -166,6 +171,13 @@ class JsonlSessionParser(
             rateLimitResetAt = rateLimit.resetAt,
             retryAfterSeconds = rateLimit.retryAfterSeconds
         )
+    }
+
+    private fun stableJsonlEventId(line: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("${file.absolutePath}\n$line".toByteArray(Charsets.UTF_8))
+        val lineHash = digest.take(12).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "codex-jsonl-${file.nameWithoutExtension}-$lineHash"
     }
 
     private fun extractCodexModel(json: JSONObject?): String? {
