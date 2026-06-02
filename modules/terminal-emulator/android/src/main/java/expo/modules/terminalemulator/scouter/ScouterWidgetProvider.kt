@@ -148,7 +148,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 emptyDetail = "STATE  WAIT [..] no Codex session",
                 emptyMetrics = listOf(
                     "CTX [..........] --% · TOK --",
-                    "FLOW in -- / out -- · CACHE --"
+                    "FLOW in -- / out -- · CACHE -- · RATE --"
                 ).joinToString("\n")
             )
             bindRow(
@@ -297,9 +297,53 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 flowParts += "TRACE ${formatTime(snapshot.lastEventAt)}"
                 flowParts += "SID ${shortSessionId(snapshot.sessionId)}"
             }
+            if (!needsDedicatedRateLimitLine(snapshot)) {
+                compactRateLimitLabel(snapshot)?.let { flowParts += it }
+            }
             lines += flowParts.joinToString(" · ")
+            if (needsDedicatedRateLimitLine(snapshot)) lines += rateLimitLine(snapshot)
 
             return lines.filter { it.isNotBlank() }.joinToString("\n")
+        }
+
+        private fun needsDedicatedRateLimitLine(snapshot: SessionSnapshot): Boolean {
+            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
+            return status == ScouterRateLimitStatus.LIMITED ||
+                status == ScouterRateLimitStatus.HOT ||
+                snapshot.rateLimitRemainingRequests != null ||
+                snapshot.rateLimitRemainingTokens != null ||
+                (cooldownSeconds(snapshot) ?: 0L) > 0L
+        }
+
+        private fun compactRateLimitLabel(snapshot: SessionSnapshot): String? {
+            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
+            return when (status) {
+                ScouterRateLimitStatus.OK -> "RATE OK"
+                ScouterRateLimitStatus.UNKNOWN -> "RATE --"
+                null -> null
+                else -> null
+            }
+        }
+
+        private fun rateLimitLine(snapshot: SessionSnapshot): String {
+            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
+            val statusText = when (status) {
+                ScouterRateLimitStatus.LIMITED -> "LIMITED"
+                ScouterRateLimitStatus.HOT -> "HOT"
+                ScouterRateLimitStatus.OK -> "OK"
+                ScouterRateLimitStatus.UNKNOWN -> "--"
+                null -> "--"
+            }
+            val parts = mutableListOf("RATE $statusText")
+            snapshot.rateLimitRemainingRequests?.let { parts += "REQ $it" }
+            snapshot.rateLimitRemainingTokens?.let { parts += "TOKREM ${formatTokens(it)}" }
+            val cooldown = cooldownSeconds(snapshot)
+            when {
+                cooldown != null && cooldown > 0L -> parts += "RESET ${formatDuration(cooldown)}"
+                status == ScouterRateLimitStatus.OK -> parts += "LIMIT no throttle"
+                status == null || status == ScouterRateLimitStatus.UNKNOWN -> parts += "LIMIT unknown"
+            }
+            return parts.joinToString(" · ")
         }
 
         private fun localMetrics(snapshot: SessionSnapshot): String {
@@ -388,7 +432,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun colorForStatus(status: ScouterStatus, stale: Boolean = false): Int = when {
-            stale -> Color.rgb(122, 150, 122)
+            stale -> Color.rgb(184, 165, 90)
             status == ScouterStatus.IDLE -> Color.rgb(155, 196, 155)
             status == ScouterStatus.THINKING -> Color.rgb(125, 219, 125)
             status == ScouterStatus.TOOL_RUNNING -> Color.rgb(47, 175, 47)
@@ -404,6 +448,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun formatMegabytes(value: Long): String {
             return if (value >= 1024L) String.format(Locale.US, "%.1fG", value / 1024.0) else "${value}M"
+        }
+
+        private fun cooldownSeconds(snapshot: SessionSnapshot): Long? {
+            snapshot.rateLimitResetAt?.let { resetAt ->
+                val remaining = ((resetAt - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
+                if (remaining > 0L) return remaining
+            }
+            return snapshot.retryAfterSeconds?.takeIf { it > 0L && snapshot.rateLimitResetAt == null }
+        }
+
+        private fun formatDuration(seconds: Long): String {
+            return if (seconds >= 60L) "${seconds / 60L}m" else "${seconds}s"
         }
 
         private fun shortSessionId(sessionId: String): String {

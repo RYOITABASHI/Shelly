@@ -69,12 +69,18 @@ data class ScouterEvent(
     val localEndpoint: String? = null,
     val tokensPerSecond: Double? = null,
     val queueSize: Int? = null,
-    val latencyMs: Long? = null
+    val latencyMs: Long? = null,
+    val rateLimitStatus: ScouterRateLimitStatus? = null,
+    val rateLimitRemainingRequests: Long? = null,
+    val rateLimitRemainingTokens: Long? = null,
+    val rateLimitResetAt: Long? = null,
+    val retryAfterSeconds: Long? = null
 ) {
     fun toSnapshot(previous: SessionSnapshot? = null): SessionSnapshot {
         val isTerminalState = derivedStatus == ScouterStatus.COMPLETED ||
             derivedStatus == ScouterStatus.IDLE ||
             derivedStatus == ScouterStatus.ERROR
+        val clearsRateLimitDetails = rateLimitStatus == ScouterRateLimitStatus.OK
         return SessionSnapshot(
             sessionId = sessionId,
             source = source,
@@ -100,7 +106,12 @@ data class ScouterEvent(
             localEndpoint = localEndpoint ?: previous?.localEndpoint,
             tokensPerSecond = tokensPerSecond ?: previous?.tokensPerSecond,
             queueSize = queueSize ?: previous?.queueSize,
-            latencyMs = latencyMs ?: previous?.latencyMs
+            latencyMs = latencyMs ?: previous?.latencyMs,
+            rateLimitStatus = rateLimitStatus ?: previous?.rateLimitStatus,
+            rateLimitRemainingRequests = if (clearsRateLimitDetails) rateLimitRemainingRequests else rateLimitRemainingRequests ?: previous?.rateLimitRemainingRequests,
+            rateLimitRemainingTokens = if (clearsRateLimitDetails) rateLimitRemainingTokens else rateLimitRemainingTokens ?: previous?.rateLimitRemainingTokens,
+            rateLimitResetAt = if (clearsRateLimitDetails) rateLimitResetAt else rateLimitResetAt ?: previous?.rateLimitResetAt,
+            retryAfterSeconds = if (clearsRateLimitDetails) retryAfterSeconds else retryAfterSeconds ?: previous?.retryAfterSeconds
         )
     }
 }
@@ -130,7 +141,12 @@ data class SessionSnapshot(
     val localEndpoint: String?,
     val tokensPerSecond: Double?,
     val queueSize: Int?,
-    val latencyMs: Long?
+    val latencyMs: Long?,
+    val rateLimitStatus: ScouterRateLimitStatus?,
+    val rateLimitRemainingRequests: Long?,
+    val rateLimitRemainingTokens: Long?,
+    val rateLimitResetAt: Long?,
+    val retryAfterSeconds: Long?
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("sessionId", sessionId)
@@ -159,6 +175,11 @@ data class SessionSnapshot(
         put("tokensPerSecond", tokensPerSecond)
         put("queueSize", queueSize)
         put("latencyMs", latencyMs)
+        put("rateLimitStatus", rateLimitStatus?.name)
+        put("rateLimitRemainingRequests", rateLimitRemainingRequests)
+        put("rateLimitRemainingTokens", rateLimitRemainingTokens)
+        put("rateLimitResetAt", rateLimitResetAt)
+        put("retryAfterSeconds", retryAfterSeconds)
     }
 
     companion object {
@@ -196,6 +217,19 @@ data class SessionSnapshot(
                 } else null,
                 latencyMs = if (json.has("latencyMs") && !json.isNull("latencyMs")) {
                     json.optLong("latencyMs")
+                } else null,
+                rateLimitStatus = parseScouterRateLimitStatus(json.optString("rateLimitStatus").ifBlank { null }),
+                rateLimitRemainingRequests = if (json.has("rateLimitRemainingRequests") && !json.isNull("rateLimitRemainingRequests")) {
+                    json.optLong("rateLimitRemainingRequests")
+                } else null,
+                rateLimitRemainingTokens = if (json.has("rateLimitRemainingTokens") && !json.isNull("rateLimitRemainingTokens")) {
+                    json.optLong("rateLimitRemainingTokens")
+                } else null,
+                rateLimitResetAt = if (json.has("rateLimitResetAt") && !json.isNull("rateLimitResetAt")) {
+                    json.optLong("rateLimitResetAt")
+                } else null,
+                retryAfterSeconds = if (json.has("retryAfterSeconds") && !json.isNull("retryAfterSeconds")) {
+                    json.optLong("retryAfterSeconds")
                 } else null
             )
         }

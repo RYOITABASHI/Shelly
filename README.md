@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="Shelly running an AI coding CLI natively on Android with slash-command autocomplete" width="800">
+  <img src="docs/images/hero.jpg" alt="Shelly running Codex and a local AI pane side by side on Android" width="800">
 </p>
 
 <p align="center">
@@ -31,6 +31,7 @@
   <a href="#why-shelly"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
   <a href="#architecture"><b>Architecture</b></a> &nbsp;&middot;&nbsp;
+  <a href="#operational-metrics"><b>Metrics</b></a> &nbsp;&middot;&nbsp;
   <a href="#status"><b>Status</b></a> &nbsp;&middot;&nbsp;
   <a href="#contributing"><b>Contributing</b></a> &nbsp;&middot;&nbsp;
   <a href="#support"><b>Support</b></a>
@@ -508,6 +509,66 @@ For a React Native app this is an unusual architecture: an embedded native termi
 
 ## Architecture
 
+### System Architecture
+
+```mermaid
+flowchart TB
+  U["User on Android"] --> UI["Shelly UI\nReact Native panes"]
+
+  subgraph P["Pane runtime"]
+    TP["Terminal pane\nCodex foreground CLI"]
+    AP["AI pane\nAPI and local providers"]
+    BP["Browser pane\nDocs and localhost"]
+    PP["Preview pane\nCode, Markdown, images"]
+  end
+
+  UI --> TP
+  UI --> AP
+  UI --> BP
+  UI --> PP
+
+  subgraph N["Native Android bridge"]
+    KT["Expo Kotlin modules"]
+    JNI["JNI C layer\nforkpty and exec"]
+    TV["Terminal renderer\nTermux-derived emulator"]
+  end
+
+  TP --> KT --> JNI
+  JNI --> SH["App-owned shell\nbash, git, node, python"]
+  JNI --> WR["exec wrapper\nlinker64 and LD_PRELOAD"]
+  SH --> CX["Codex runtime\ncodex_tui and codex_exec"]
+  TP --> TV
+
+  subgraph A["Agent context"]
+    LOG["Terminal transcript"]
+    CTX["Context builder\nredaction and compaction"]
+    ACT["User-approved actions\nrun command or apply diff"]
+  end
+
+  TP --> LOG --> CTX --> AP
+  AP --> ACT --> TP
+
+  subgraph R["Release pipeline"]
+    CI["GitHub Actions\nlint, typecheck, tests, APK build"]
+    APK["android-latest\nAPK and latest.json"]
+    CRT["codex-runtime-latest\nruntime tarball and manifest"]
+  end
+
+  CI --> APK
+  CI --> CRT
+  APK --> UP["Updates UI\nSHA-256 verify, installer handoff"]
+  CRT --> RU["Runtime updater\nverify, smoke-test, promote, reset"]
+  UP --> UI
+  RU --> CX
+```
+
+Shelly's core is the connection between three systems that are usually
+separate: a native Android terminal runtime, a foreground Codex CLI, and
+context-aware AI panes. The terminal is not a WebView or remote bridge; it is
+an app-owned PTY read by Kotlin through JNI. The update system is also split:
+APK releases update the app and native payload, while the Codex runtime lane can
+move faster after SHA-256 verification and smoke tests.
+
 ### Screen Layout
 
 ```mermaid
@@ -598,6 +659,34 @@ flowchart LR
 ```
 
 The `colors` object is mutable and keeps the same identity, so every `import { colors as C }` consumer sees the new values without a code change. The Text monkey-patch handles font changes. The theme-version key-remount forces all rendered Text through the patch. PTY lives outside JS, so it's untouched.
+
+---
+
+## Operational Metrics
+
+Measured on the public **Shelly v5.3.8** Android release artifacts and GitHub
+Actions run [`26743985807`](https://github.com/RYOITABASHI/Shelly/actions/runs/26743985807), unless noted otherwise.
+
+| Metric | Value | Source |
+|---|---:|---|
+| Public APK version | `5.3.8` / `versionCode 1384` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK commit | `d52dbba9d375796508291c7f0a2a6812e84c49ab` | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
+| APK artifact size | `699,829,095` bytes (`699.8 MB`, `667.4 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
+| APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Codex runtime version | `0.135.0` | `.ci-versions/codex.txt` |
+| Codex runtime artifact size | `140,557,745` bytes (`140.6 MB`, `134.0 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
+| Codex runtime manifest size | `613` bytes | [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json) |
+| CI quality job | `53s` | lint, typecheck, unit tests |
+| CI Android build job | `13m 53s` | full release build job |
+| Gradle APK step | `9m 34s` | `:terminal-emulator:externalNativeBuildRelease assembleRelease` |
+| Release update verification | SHA-256 before installer handoff | Updates UI and release manifest |
+| Runtime update verification | SHA-256 plus `codex_tui` / `codex_exec --version` smoke tests | Runtime updater |
+
+These numbers are intentionally operational rather than synthetic. They show
+the cost of shipping a real Android-native toolchain: a large APK, a separate
+managed Codex runtime, and a CI pipeline that checks app code, builds native
+release artifacts, and generates verified release metadata/update manifests
+before users install anything.
 
 ---
 

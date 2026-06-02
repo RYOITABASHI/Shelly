@@ -161,7 +161,7 @@ X-Scouter-Token: <hookToken>
 
 The Medium widget now shows two dense lanes: the latest Codex session and the local LLM probe state.
 
-- Codex lane: status, project, model, token totals, input/output/cache/reasoning token hints, and the latest short message.
+- Codex lane: status, project, model, token totals, input/output/cache/reasoning token hints, and rate-limit state when Codex JSONL or hooks expose it.
 - Local LLM lane: readiness, backend, endpoint, queue size, tokens/sec when exposed by metrics, and probe latency.
 - Badge: compact source code, `CX` or `LL`.
 - Status line: human-readable state, for example `Running Bash in demo`, `Thinking in hw`, `Waiting in home`, `Completed in demo`, or `Error in demo`.
@@ -198,6 +198,7 @@ Codex JSONL support:
 - prefers deltas from `total_token_usage` to avoid duplicate `token_count` rows, and uses `last_token_usage` only when no cumulative total is available
 - tracks `cached_input_tokens` as cache-read tokens without double-counting them
 - tracks `reasoning_output_tokens` separately when present
+- marks successful token updates as rate-limit `OK`, and detects `429`, `rate limit`, `too many requests`, and `retry-after` style Codex errors as a compact `RATE LIMITED` widget hint
 
 Local LLM support:
 

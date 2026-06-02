@@ -190,7 +190,7 @@
         <div class="status">STATE [>>.] Running exec in terminal-emulator</div>
         <div class="metrics">
           <div><span class="hot">CTX [######....] 64%</span> · MODEL 5.5 · TOK 128.4K</div>
-          <div>FLOW in 92.1K / out 8.3K · REASON 21.6K · <span class="hot">CACHE 61.8K</span></div>
+          <div>FLOW in 92.1K / out 8.3K · REASON 21.6K · <span class="hot">CACHE 61.8K</span> · RATE OK</div>
         </div>
       </div>
 
@@ -212,7 +212,7 @@
 
     <section class="notes">
       This preview mirrors the current Medium 4x2 direction: no outer outline, two dense lanes, Codex usage from JSONL, Local LLM probe state, and a lightweight load footer.
-      Labels are deliberately terse: STATE is agent activity, CTX is context pressure, FLOW is token direction, CACHE is reuse, HEALTH is local model liveness, TPS is generation throughput, and PING is endpoint probe latency rather than TTFT.
+      Labels are deliberately terse: STATE is agent activity, CTX is context pressure, FLOW is token direction, CACHE is reuse, RATE is observed Codex throttling state, HEALTH is local model liveness, TPS is generation throughput, and PING is endpoint probe latency rather than TTFT.
       Android RemoteViews may render font metrics and clipping slightly differently, so final sizing still needs an actual launcher screenshot.
     </section>
   </main>

@@ -47,6 +47,7 @@ class JsonlSessionParser(
         val info = payload.optJSONObject("info")
         codexCwd = extractCodexCwd(json, payload, info) ?: codexCwd
         val totalUsage = normalizeCodexUsage(info?.optJSONObject("total_token_usage") ?: info?.optJSONObject("totalTokenUsage"))
+        val rateLimit = extractScouterRateLimit(null, payload, info)
         val raw = if (totalUsage != null) {
             val delta = totalUsage.minus(previousCodexTotal)
             previousCodexTotal = totalUsage
@@ -82,7 +83,12 @@ class JsonlSessionParser(
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
-            lastMessage = "Codex tokens updated"
+            lastMessage = "Codex tokens updated",
+            rateLimitStatus = rateLimit.status ?: ScouterRateLimitStatus.OK,
+            rateLimitRemainingRequests = rateLimit.remainingRequests,
+            rateLimitRemainingTokens = rateLimit.remainingTokens,
+            rateLimitResetAt = rateLimit.resetAt,
+            retryAfterSeconds = rateLimit.retryAfterSeconds
         )
     }
 
@@ -106,8 +112,21 @@ class JsonlSessionParser(
             payload.optString("stderr"),
             payload.optString("command")
         )
+        val rateLimitMessage = firstNonBlank(
+            payload.optString("error"),
+            payload.optString("stderr"),
+            if ("error" in payloadType) message else null
+        )
+        val rateLimit = extractScouterRateLimit(rateLimitMessage, payload)
         val hasErrorValue = payload.hasNonBlankValue("error")
+        val hasExplicitRateLimitError = rateLimit.status == ScouterRateLimitStatus.LIMITED && (
+            "error" in payloadType ||
+                isScouterRateLimitText(payload.optString("error")) ||
+                isScouterRateLimitText(payload.optString("stderr")) ||
+                (hasErrorValue && rateLimitMessage != null)
+            )
         val status = when {
+            hasExplicitRateLimitError -> ScouterStatus.ERROR
             "error" in payloadType || hasErrorValue -> ScouterStatus.ERROR
             "exec_command_begin" in payloadType || "tool_call" in payloadType || "apply_patch_begin" in payloadType -> ScouterStatus.TOOL_RUNNING
             "exec_command" in payloadType && "end" !in payloadType -> ScouterStatus.TOOL_RUNNING
@@ -140,7 +159,12 @@ class JsonlSessionParser(
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
-            lastMessage = message?.redactForScouter()?.take(240)
+            lastMessage = message?.redactForScouter()?.take(240),
+            rateLimitStatus = rateLimit.status,
+            rateLimitRemainingRequests = rateLimit.remainingRequests,
+            rateLimitRemainingTokens = rateLimit.remainingTokens,
+            rateLimitResetAt = rateLimit.resetAt,
+            retryAfterSeconds = rateLimit.retryAfterSeconds
         )
     }
 
