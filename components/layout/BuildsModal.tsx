@@ -15,6 +15,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ModalHeader } from '@/components/settings/ModalHeader';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -32,6 +33,7 @@ const CODEX_RUNTIME_MANIFEST_ASSET = 'codex-runtime.json';
 const APK_NAME_RE = /^[A-Za-z0-9._-]+\.apk$/;
 const TARBALL_NAME_RE = /^[A-Za-z0-9._-]+\.tar\.gz$/;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
+const ANDROID_UPDATE_DOWNLOAD_KEY = 'shelly_android_update_download';
 
 export type BuildStatus = 'unknown' | 'in_progress' | 'success' | 'failure';
 
@@ -100,6 +102,14 @@ type DownloadApkProgress = {
   downloadedBytes?: number;
   totalBytes?: number;
   speedBytesPerSec?: number;
+};
+
+type PendingApkDownload = {
+  versionCode: number;
+  assetName: string;
+  apkPath: string;
+  downloadId: number;
+  createdAt: number;
 };
 
 type DownloadLogEntry = {
@@ -429,80 +439,62 @@ async function downloadReleaseApk(
   update: AndroidUpdateManifest,
   onProgress?: (progress: DownloadApkProgress) => void,
 ): Promise<string> {
-  const outDir = releaseApkDir(update);
   const apkPath = releaseApkPath(update);
-  const statusPath = `${outDir}/.download.status`;
-  const logPath = `${outDir}/.download.log`;
-
-  const run = async (command: string, timeoutMs: number, label: string): Promise<string> => {
-    const r = await execCommand(command, timeoutMs);
-    if (r.exitCode !== 0) {
-      throw new Error((r.stderr || r.stdout || `${label} exited ${r.exitCode}`).trim());
-    }
-    return r.stdout;
-  };
 
   onProgress?.({ step: 'prepare' });
-  await run(
-    [
-      `rm -rf ${sq(outDir)}`,
-      `mkdir -p ${sq(outDir)}`,
-      `rm -f ${sq(statusPath)} ${sq(logPath)}`,
-    ].join(' && '),
-    60_000,
-    'prepare download directory',
-  );
+  const existingValid = await verifyReleaseApkFile(update, apkPath).catch(() => false);
+  if (existingValid) {
+    await clearPendingApkDownload();
+    onProgress?.({ step: 'ready' });
+    return apkPath;
+  }
+
+  const matchingPending = await readPendingApkDownload().then((pending) => {
+    if (!pending) return null;
+    if (pending.versionCode !== update.versionCode) return null;
+    if (pending.assetName !== update.apkAssetName) return null;
+    if (pending.apkPath !== apkPath) return null;
+    return pending;
+  });
+
+  let downloadId = matchingPending?.downloadId;
+  if (!downloadId) {
+    const started = await TerminalEmulator.enqueueApkDownload(
+      update.apkUrl,
+      `shelly-update-${update.versionCode}`,
+      update.apkAssetName,
+    );
+    downloadId = Number(started.downloadId);
+    if (!Number.isFinite(downloadId) || downloadId < 1) {
+      throw new Error('Could not start APK download.');
+    }
+    try {
+      await writePendingApkDownload({
+        versionCode: update.versionCode,
+        assetName: update.apkAssetName,
+        apkPath,
+        downloadId,
+        createdAt: Date.now(),
+      });
+    } catch (e: any) {
+      await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
+      throw new Error(`Could not persist update download state: ${String(e?.message || e)}`);
+    }
+  }
 
   onProgress?.({
     step: 'download',
     downloadedBytes: 0,
     totalBytes: update.apkSizeBytes,
   });
-  const downloadScript = [
-    `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)} > ${sq(logPath)} 2>&1`,
-    'rc=$?',
-    `printf '%s\\n' "$rc" > ${sq(statusPath)}`,
-  ].join('; ');
-  // Fully detach the downloader from execCommand without switching to Android
-  // /system/bin/sh; the bundled curl needs the bash environment that
-  // TerminalEmulator.execCommand already prepared.
-  const pidOutput = await run(
-    [
-      '(',
-      downloadScript,
-      ') >/dev/null 2>&1 < /dev/null &',
-      'pid=$!;',
-      'disown "$pid" 2>/dev/null || true;',
-      'printf \'%s\\n\' "$pid"',
-    ].join(' '),
-    10_000,
-    'start download',
-  );
-  const pid = Number(pidOutput.trim().split('\n').filter(Boolean).pop());
-  if (!Number.isInteger(pid) || pid < 1) {
-    throw new Error('Could not start APK download.');
-  }
-
   const startedAt = Date.now();
   let lastBytes = 0;
   let lastAt = startedAt;
   while (true) {
     await sleep(1000);
-    const poll = await run(
-      [
-        'size=0',
-        `[ -f ${sq(apkPath)} ] && size=$(wc -c < ${sq(apkPath)} | tr -d '[:space:]')`,
-        'status=',
-        `[ -f ${sq(statusPath)} ] && status=$(cat ${sq(statusPath)} | tr -d '[:space:]')`,
-        'alive=0',
-        `kill -0 ${pid} 2>/dev/null && alive=1`,
-        'printf "%s\\t%s\\t%s\\n" "$size" "$status" "$alive"',
-      ].join('; '),
-      10_000,
-      'poll download',
-    );
-    const [sizeRaw, statusRaw, aliveRaw] = poll.trim().split('\t');
-    const downloadedBytes = Number(sizeRaw) || 0;
+    const status = await TerminalEmulator.getApkDownloadStatus(downloadId);
+    const downloadedBytes = Math.max(0, Number(status.downloadedBytes) || 0);
+    const totalBytes = Number(status.totalBytes) > 0 ? Number(status.totalBytes) : update.apkSizeBytes;
     const now = Date.now();
     const elapsedSinceLast = Math.max(1, now - lastAt) / 1000;
     const speedBytesPerSec = Math.max(0, downloadedBytes - lastBytes) / elapsedSinceLast;
@@ -511,46 +503,93 @@ async function downloadReleaseApk(
     onProgress?.({
       step: 'download',
       downloadedBytes,
-      totalBytes: update.apkSizeBytes,
+      totalBytes,
       speedBytesPerSec,
     });
 
-    if (statusRaw) {
-      if (statusRaw !== '0') {
-        const log = await execCommand(`cat ${sq(logPath)} 2>/dev/null | tail -20`, 10_000)
-          .catch(() => ({ stdout: '', stderr: '', exitCode: 1 }));
-        throw new Error((log.stdout || log.stderr || `curl exited ${statusRaw}`).trim());
-      }
+    if (status.status === 'successful') {
       break;
     }
-    if (aliveRaw !== '1') {
-      const log = await execCommand(`cat ${sq(logPath)} 2>/dev/null | tail -20`, 10_000)
-        .catch(() => ({ stdout: '', stderr: '', exitCode: 1 }));
-      throw new Error((log.stdout || log.stderr || 'APK download stopped before completion.').trim());
+    if (status.status === 'failed' || status.status === 'missing' || status.status === 'unknown') {
+      await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
+      await clearPendingApkDownload();
+      throw new Error(downloadManagerFailureMessage(status.status, status.reason));
     }
     if (Date.now() - startedAt > 1_800_000) {
+      await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
+      await clearPendingApkDownload();
       throw new Error('APK download timed out.');
     }
   }
 
   onProgress?.({ step: 'verify' });
-  const verifyOutput = await run(
-    [
-      `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
-      `if [ "$actual" != ${sq(update.sha256)} ]; then echo "sha256 mismatch: expected ${update.sha256}, got $actual" >&2; exit 65; fi`,
-      `rm -f ${sq(statusPath)} ${sq(logPath)}`,
-      `printf '%s\\n' ${sq(apkPath)}`,
-    ].join(' && '),
-    60_000,
-    'verify APK',
-  );
-
-  const downloadedPath = verifyOutput.trim().split('\n').filter(Boolean).pop() ?? '';
-  if (!downloadedPath.endsWith('.apk')) {
-    throw new Error(`APK was not found under ${outDir}`);
+  const verify = await TerminalEmulator.verifyApkFile(apkPath, update.sha256, Math.trunc(update.apkSizeBytes ?? -1));
+  if (!verify.ok) {
+    await clearPendingApkDownload();
+    throw new Error(verify.error || `sha256 mismatch: expected ${update.sha256}, got ${verify.actualSha256}`);
   }
+  await clearPendingApkDownload();
   onProgress?.({ step: 'ready' });
-  return downloadedPath;
+  return apkPath;
+}
+
+async function readPendingApkDownload(): Promise<PendingApkDownload | null> {
+  try {
+    const raw = await AsyncStorage.getItem(ANDROID_UPDATE_DOWNLOAD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingApkDownload>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!Number.isFinite(Number(parsed.downloadId))) return null;
+    if (!Number.isFinite(Number(parsed.versionCode))) return null;
+    if (!parsed.assetName || !parsed.apkPath) return null;
+    return {
+      versionCode: Number(parsed.versionCode),
+      assetName: String(parsed.assetName),
+      apkPath: String(parsed.apkPath),
+      downloadId: Number(parsed.downloadId),
+      createdAt: Number(parsed.createdAt) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writePendingApkDownload(download: PendingApkDownload): Promise<void> {
+  await AsyncStorage.setItem(ANDROID_UPDATE_DOWNLOAD_KEY, JSON.stringify(download));
+}
+
+async function clearPendingApkDownload(): Promise<void> {
+  await AsyncStorage.removeItem(ANDROID_UPDATE_DOWNLOAD_KEY).catch(() => undefined);
+}
+
+function downloadManagerFailureMessage(status: string, reason?: number): string {
+  const code = Number(reason) || 0;
+  const reasonText = (() => {
+    if (status === 'paused') {
+      switch (code) {
+        case 1: return 'waiting to retry';
+        case 2: return 'waiting for network';
+        case 3: return 'queued for Wi-Fi';
+        case 4: return 'paused for an unknown reason';
+        default: return code > 0 ? `pause reason ${code}` : 'paused';
+      }
+    }
+    switch (code) {
+      case 1000: return 'unknown error';
+      case 1001: return 'file error';
+      case 1002: return 'unhandled HTTP code';
+      case 1004: return 'HTTP data error';
+      case 1005: return 'too many redirects';
+      case 1006: return 'insufficient space';
+      case 1007: return 'device not found';
+      case 1008: return 'cannot resume';
+      case 1009: return 'file already exists';
+      default:
+        if (code >= 400 && code <= 599) return `HTTP ${code}`;
+        return code > 0 ? `reason ${code}` : 'no reason reported';
+    }
+  })();
+  return `Android DownloadManager ${status}: ${reasonText}`;
 }
 
 function releaseApkDir(update: AndroidUpdateManifest): string {
@@ -563,13 +602,8 @@ function releaseApkPath(update: AndroidUpdateManifest): string {
 
 async function verifyReleaseApkFile(update: AndroidUpdateManifest, apkPath: string): Promise<boolean> {
   if (apkPath !== releaseApkPath(update)) return false;
-  const command = [
-    `test -f ${sq(apkPath)}`,
-    `actual=$(sha256sum ${sq(apkPath)} | awk '{print $1}')`,
-    `[ "$actual" = ${sq(update.sha256)} ]`,
-  ].join(' && ');
-  const r = await execCommand(command, 120_000);
-  return r.exitCode === 0;
+  const verify = await TerminalEmulator.verifyApkFile(apkPath, update.sha256, Math.trunc(update.apkSizeBytes ?? -1));
+  return verify.ok;
 }
 
 async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string> {

@@ -39,6 +39,22 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   getHomeDir(): Promise<string>;
   getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
   installApk(apkPath: string): Promise<void>;
+  enqueueApkDownload(url: string, downloadSubdir: string, fileName: string): Promise<{ downloadId: number; path: string }>;
+  getApkDownloadStatus(downloadId: number): Promise<{
+    downloadId: number;
+    status: 'pending' | 'running' | 'paused' | 'successful' | 'failed' | 'missing' | 'unknown';
+    reason: number;
+    downloadedBytes: number;
+    totalBytes: number;
+    localUri?: string | null;
+  }>;
+  verifyApkFile(apkPath: string, expectedSha256: string, expectedSizeBytes: number): Promise<{
+    ok: boolean;
+    actualSha256: string;
+    bytes: number;
+    error?: string | null;
+  }>;
+  removeApkDownload(downloadId: number): Promise<void>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
   pasteClipboardToSession(sessionId: string): Promise<void>;
   setScouterEnabled(enabled: boolean): Promise<void>;

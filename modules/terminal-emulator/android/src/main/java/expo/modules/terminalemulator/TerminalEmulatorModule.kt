@@ -1,11 +1,13 @@
 package expo.modules.terminalemulator
 
 import android.app.AlarmManager
+import android.app.DownloadManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -59,6 +61,59 @@ class TerminalEmulatorModule : Module() {
 
     private fun emitEvent(name: String, body: Map<String, Any?>) {
         sendEvent(name, body)
+    }
+
+    private fun requireReactContext(): Context =
+        appContext.reactContext ?: throw IllegalStateException("React context unavailable")
+
+    private fun validateDownloadPath(downloadSubdir: String, fileName: String): java.io.File {
+        val subdirRe = Regex("^[A-Za-z0-9._-]+$")
+        val apkNameRe = Regex("^[A-Za-z0-9._-]+\\.apk$", RegexOption.IGNORE_CASE)
+        require(subdirRe.matches(downloadSubdir)) { "Invalid download directory: $downloadSubdir" }
+        require(apkNameRe.matches(fileName)) { "Invalid APK file name: $fileName" }
+
+        val downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val target = java.io.File(java.io.File(downloadsRoot, downloadSubdir), fileName).canonicalFile
+        val root = downloadsRoot.canonicalFile
+        require(target.path == root.path || target.path.startsWith(root.path + java.io.File.separator)) {
+            "Download path escapes Downloads directory"
+        }
+        return target
+    }
+
+    private fun downloadStatusName(status: Int): String =
+        when (status) {
+            DownloadManager.STATUS_PENDING -> "pending"
+            DownloadManager.STATUS_RUNNING -> "running"
+            DownloadManager.STATUS_PAUSED -> "paused"
+            DownloadManager.STATUS_SUCCESSFUL -> "successful"
+            DownloadManager.STATUS_FAILED -> "failed"
+            else -> "unknown"
+        }
+
+    private fun cursorLong(cursor: Cursor, column: String, fallback: Long = 0L): Long {
+        val index = cursor.getColumnIndex(column)
+        if (index < 0 || cursor.isNull(index)) return fallback
+        return cursor.getLong(index)
+    }
+
+    private fun cursorString(cursor: Cursor, column: String): String? {
+        val index = cursor.getColumnIndex(column)
+        if (index < 0 || cursor.isNull(index)) return null
+        return cursor.getString(index)
+    }
+
+    private fun sha256Hex(file: java.io.File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        file.inputStream().use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun getAgentRequestCode(context: Context, agentId: String): Int {
@@ -475,8 +530,7 @@ class TerminalEmulatorModule : Module() {
         }
 
         AsyncFunction("installApk") { apkPath: String ->
-            val context = appContext.reactContext
-                ?: throw IllegalStateException("React context unavailable")
+            val context = requireReactContext()
             val apk = java.io.File(apkPath)
             if (!apk.exists() || !apk.isFile) {
                 throw IllegalArgumentException("APK not found: $apkPath")
@@ -506,9 +560,107 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        AsyncFunction("enqueueApkDownload") { url: String, downloadSubdir: String, fileName: String ->
+            val context = requireReactContext()
+            val target = validateDownloadPath(downloadSubdir, fileName)
+            target.parentFile?.mkdirs()
+            if (target.exists() && !target.delete()) {
+                throw IllegalStateException("Could not replace existing APK: ${target.absolutePath}")
+            }
+
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                setTitle(fileName)
+                setDescription("Shelly Android update")
+                setMimeType("application/vnd.android.package-archive")
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS,
+                    "$downloadSubdir/$fileName",
+                )
+            }
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val downloadId = manager.enqueue(request)
+            Log.i("TerminalEmulator", "enqueueApkDownload: id=$downloadId target=${target.absolutePath}")
+            mapOf(
+                "downloadId" to downloadId,
+                "path" to target.absolutePath,
+            )
+        }
+
+        AsyncFunction("getApkDownloadStatus") { downloadId: Long ->
+            val context = requireReactContext()
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val query = DownloadManager.Query().setFilterById(downloadId)
+            manager.query(query).use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    return@AsyncFunction mapOf(
+                        "downloadId" to downloadId,
+                        "status" to "missing",
+                        "reason" to 0L,
+                        "downloadedBytes" to 0L,
+                        "totalBytes" to -1L,
+                        "localUri" to null,
+                    )
+                }
+                val status = cursorLong(cursor, DownloadManager.COLUMN_STATUS).toInt()
+                mapOf(
+                    "downloadId" to downloadId,
+                    "status" to downloadStatusName(status),
+                    "reason" to cursorLong(cursor, DownloadManager.COLUMN_REASON),
+                    "downloadedBytes" to cursorLong(cursor, DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
+                    "totalBytes" to cursorLong(cursor, DownloadManager.COLUMN_TOTAL_SIZE_BYTES, -1L),
+                    "localUri" to cursorString(cursor, DownloadManager.COLUMN_LOCAL_URI),
+                )
+            }
+        }
+
+        AsyncFunction("verifyApkFile") { apkPath: String, expectedSha256: String, expectedSizeBytes: Long ->
+            val apk = java.io.File(apkPath)
+            if (!apk.exists() || !apk.isFile) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to 0L,
+                    "error" to "APK not found: $apkPath",
+                )
+            }
+            if (!apk.name.endsWith(".apk", ignoreCase = true)) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to apk.length(),
+                    "error" to "Not an APK file: $apkPath",
+                )
+            }
+            val bytes = apk.length()
+            if (expectedSizeBytes > 0 && bytes != expectedSizeBytes) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to bytes,
+                    "error" to "size mismatch: expected $expectedSizeBytes, got $bytes",
+                )
+            }
+            val actualSha256 = sha256Hex(apk)
+            mapOf(
+                "ok" to actualSha256.equals(expectedSha256, ignoreCase = true),
+                "actualSha256" to actualSha256,
+                "bytes" to bytes,
+                "error" to if (actualSha256.equals(expectedSha256, ignoreCase = true)) null else "sha256 mismatch",
+            )
+        }
+
+        AsyncFunction("removeApkDownload") { downloadId: Long ->
+            val context = requireReactContext()
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            manager.remove(downloadId)
+            null
+        }
+
         AsyncFunction("getAppVersionInfo") {
-            val context = appContext.reactContext
-                ?: throw IllegalStateException("React context unavailable")
+            val context = requireReactContext()
             val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.packageManager.getPackageInfo(
                     context.packageName,
