@@ -267,6 +267,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val backend = snapshot.localBackend?.takeIf { it != "offline" } ?: snapshot.modelName
             return when {
                 snapshot.localBackend == "offline" -> "Offline · no endpoint"
+                snapshot.currentStatus == ScouterStatus.ERROR -> "Error · ${backend ?: "local"}"
                 snapshot.currentStatus == ScouterStatus.TOOL_RUNNING -> "Busy · ${backend ?: "local"}"
                 else -> "Ready · ${backend ?: "local"}"
             }

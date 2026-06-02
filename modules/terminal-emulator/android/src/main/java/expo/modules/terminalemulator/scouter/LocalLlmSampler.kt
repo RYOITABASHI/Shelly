@@ -10,13 +10,16 @@ import kotlin.math.max
 
 class LocalLlmSampler(private val homeDir: File) {
     fun sample(): ScouterEvent {
-        val llama = probeLlama()
-        if (llama != null) return llama
-        val ollama = probeOllama()
-        if (ollama != null) return ollama
+        for (endpoint in configuredEndpoints()) {
+            val event = when (apiType(endpoint)) {
+                ApiType.OLLAMA -> probeOllama(endpoint)
+                ApiType.OPENAI -> probeOpenAi(endpoint)
+            }
+            if (event != null) return event
+        }
         return event(
             backend = "offline",
-            endpoint = "127.0.0.1:8080/11434",
+            endpoint = configuredEndpoints().joinToString(",") { shortEndpoint(it) },
             status = ScouterStatus.IDLE,
             modelName = "local-offline",
             lastMessage = "No local LLM endpoint",
@@ -24,32 +27,32 @@ class LocalLlmSampler(private val homeDir: File) {
         )
     }
 
-    private fun probeLlama(): ScouterEvent? {
-        val health = getText("http://127.0.0.1:8080/health") ?: return null
-        if (health.code !in 200..299) return null
-        val models = getText("http://127.0.0.1:8080/v1/models", maxBytes = JSON_MAX_BYTES)
-        val metrics = getText("http://127.0.0.1:8080/metrics", timeoutMs = 500, maxBytes = METRICS_MAX_BYTES)
+    private fun probeOpenAi(endpoint: String): ScouterEvent? {
+        val health = getText("$endpoint/health")
+        val models = getText("$endpoint/v1/models", maxBytes = JSON_MAX_BYTES)
+        if ((health?.code !in 200..299) && (models?.code !in 200..299)) return null
+        val metrics = getText("$endpoint/metrics", timeoutMs = 500, maxBytes = METRICS_MAX_BYTES)
         val parsedMetrics = parseMetrics(metrics?.body.orEmpty())
         val queue = parsedMetrics.queueSize
         return event(
             backend = "llama.cpp",
-            endpoint = "127.0.0.1:8080",
+            endpoint = displayEndpoint(endpoint),
             status = if ((queue ?: 0) > 0) ScouterStatus.TOOL_RUNNING else ScouterStatus.IDLE,
             modelName = parseOpenAiModel(models?.body) ?: "llama-server",
             lastMessage = if ((queue ?: 0) > 0) "Local generation active" else "Local model ready",
             tokensPerSecond = parsedMetrics.tokensPerSecond,
             queueSize = queue,
-            latencyMs = health.elapsedMs
+            latencyMs = (health ?: models)?.elapsedMs
         )
     }
 
-    private fun probeOllama(): ScouterEvent? {
-        val tags = getText("http://127.0.0.1:11434/api/tags", maxBytes = JSON_MAX_BYTES) ?: return null
+    private fun probeOllama(endpoint: String): ScouterEvent? {
+        val tags = getText("$endpoint/api/tags", maxBytes = JSON_MAX_BYTES) ?: return null
         if (tags.code !in 200..299) return null
         val model = parseOllamaModel(tags.body)
         return event(
             backend = "ollama",
-            endpoint = "127.0.0.1:11434",
+            endpoint = displayEndpoint(endpoint),
             status = ScouterStatus.IDLE,
             modelName = model ?: "ollama",
             lastMessage = model?.let { "Ollama model available" } ?: "Ollama ready",
@@ -174,10 +177,56 @@ class LocalLlmSampler(private val homeDir: File) {
         return LocalMetrics(queueSize, tps)
     }
 
+    private fun configuredEndpoints(): List<String> {
+        val endpoints = linkedSetOf<String>()
+        readEnvLocalEndpoint()?.let { endpoints += it }
+        endpoints += DEFAULT_LLAMA_ENDPOINT
+        endpoints += DEFAULT_OLLAMA_ENDPOINT
+        return endpoints.mapNotNull { normalizeEndpoint(it) }
+    }
+
+    private fun readEnvLocalEndpoint(): String? {
+        val envFile = File(homeDir, ".shelly/agents/.env")
+        if (!envFile.exists()) return null
+        return runCatching {
+            envFile.readLines().firstNotNullOfOrNull { raw ->
+                val line = raw.trim()
+                if (!line.startsWith("LOCAL_LLM_URL=")) return@firstNotNullOfOrNull null
+                line.substringAfter('=').trim().trim('"', '\'').ifBlank { null }
+            }
+        }.getOrNull()
+    }
+
+    private fun normalizeEndpoint(raw: String): String? {
+        var value = raw.trim().trim('"', '\'')
+        if (value.isBlank()) return null
+        if (!value.startsWith("http://") && !value.startsWith("https://")) {
+            value = "http://$value"
+        }
+        value = value.trimEnd('/')
+        if (value.endsWith("/v1")) value = value.removeSuffix("/v1")
+        return value
+    }
+
+    private fun apiType(endpoint: String): ApiType {
+        return if (endpoint.contains(":11434")) ApiType.OLLAMA else ApiType.OPENAI
+    }
+
+    private fun displayEndpoint(endpoint: String): String {
+        return endpoint.removePrefix("http://").removePrefix("https://")
+    }
+
+    private fun shortEndpoint(endpoint: String): String {
+        return displayEndpoint(endpoint).replace("127.0.0.1:", ":")
+    }
+
     private data class HttpResult(val code: Int, val body: String, val elapsedMs: Long)
     private data class LocalMetrics(val queueSize: Int?, val tokensPerSecond: Double?)
+    private enum class ApiType { OPENAI, OLLAMA }
 
     companion object {
+        private const val DEFAULT_LLAMA_ENDPOINT = "http://127.0.0.1:8080"
+        private const val DEFAULT_OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
         private const val JSON_MAX_BYTES = 64 * 1024
         private const val METRICS_MAX_BYTES = 32 * 1024
         private val METRIC_LINE = Regex("^([A-Za-z_:][A-Za-z0-9_:]*)(?:\\{[^}]*})?\\s+([-+0-9.eE]+)")

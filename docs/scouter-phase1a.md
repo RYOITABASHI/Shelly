@@ -20,8 +20,13 @@ Scouter Phase 1A is the local-only Shelly widget MVP from `scouter-spec-v3.1.md`
 - JSONL polling fallback:
   - `~/.codex/sessions/**/*.jsonl`
 - Local LLM sampler:
-  - probes `http://127.0.0.1:8080` for llama.cpp-compatible servers
+  - probes the configured `LOCAL_LLM_URL` first when present in `~/.shelly/agents/.env`
+  - probes `http://127.0.0.1:8080` for llama.cpp/OpenAI-compatible servers
   - probes `http://127.0.0.1:11434` for Ollama-compatible servers
+  - accepts `/v1/models` as a live signal when a server does not expose `/health`
+- AI Pane Local LLM telemetry:
+  - posts start/success/error snapshots to `/hook/local`
+  - uses the actual AI Pane endpoint/model so the widget follows real `@local` usage, not only background probes
 - Shelly state bridge:
   - minimal adapter over native terminal sessions
 - State storage:
@@ -202,8 +207,11 @@ Codex JSONL support:
 
 Local LLM support:
 
-- samples `127.0.0.1:8080/health`, `/v1/models`, and `/metrics` for llama.cpp-style servers
+- samples the configured `LOCAL_LLM_URL` from `~/.shelly/agents/.env` before the default local endpoints
+- samples `127.0.0.1:8080/health`, `/v1/models`, and `/metrics` for llama.cpp/OpenAI-compatible servers
+- treats `/v1/models` success as enough to mark a local OpenAI-compatible server live, even when `/health` is unavailable
 - samples `127.0.0.1:11434/api/tags` for Ollama-style servers
+- receives AI Pane `@local` start/success/error events through `/hook/local`, including endpoint, backend, model, token estimate, TPS, and latency
 - reports offline as a normal idle state, not as an error, because local LLM may be intentionally stopped
 
 The JSONL watcher starts existing Codex files from their current end to avoid replaying old history on every Scouter restart. New or recently modified files are tailed from the first complete line, and incomplete trailing JSONL records are left for the next scan. Legacy Claude Code JSONL parsing remains in the parser for compatibility, but the watcher no longer scans `~/.claude/projects` by default.

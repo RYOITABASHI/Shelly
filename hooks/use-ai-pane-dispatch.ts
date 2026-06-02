@@ -46,6 +46,7 @@ import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
+import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -526,6 +527,11 @@ export function useAIPaneDispatch(paneId: string) {
               'Local LLM server is not configured. Open Settings → Local LLM and start llama.cpp.',
             );
           }
+          const localStartedAt = Date.now();
+          const localInputTokens = estimateTokens(promptText);
+          const terminalState = useTerminalStore.getState();
+          const localCwd = terminalState.sessions.find((s) => s.id === terminalState.activeSessionId)?.currentDir ||
+            '/data/data/dev.shelly.terminal/files/home';
 
           const preflightTtlMs = 30_000;
           if (Date.now() - lastLocalStreamOkAtRef.current > preflightTtlMs) {
@@ -538,6 +544,14 @@ export function useAIPaneDispatch(paneId: string) {
               );
             }
           }
+          await postLocalLlmScouterEvent({
+            phase: 'start',
+            endpoint: settings.localLlmUrl,
+            model: settings.localLlmModel ?? 'default',
+            message: 'Local LLM streaming',
+            cwd: localCwd,
+            inputTokens: localInputTokens,
+          });
 
           let accumulated = '';
           throttledUpdate(paneId, assistantId, {
@@ -574,6 +588,17 @@ export function useAIPaneDispatch(paneId: string) {
           );
 
           if (signal.aborted) {
+            const outputTokens = estimateTokens(accumulated);
+            await postLocalLlmScouterEvent({
+              phase: 'snapshot',
+              endpoint: settings.localLlmUrl,
+              model: settings.localLlmModel ?? 'default',
+              message: 'Local LLM stream cancelled',
+              cwd: localCwd,
+              inputTokens: localInputTokens,
+              outputTokens,
+              latencyMs: Date.now() - localStartedAt,
+            });
             store.updateMessage(paneId, assistantId, {
               content: accumulated,
               streamingText: undefined,
@@ -583,6 +608,15 @@ export function useAIPaneDispatch(paneId: string) {
           } else if (result.success) {
             logInfo('AIPaneDispatch', 'Local LLM response complete');
             if (!accumulated.trim()) {
+              await postLocalLlmScouterEvent({
+                phase: 'error',
+                endpoint: settings.localLlmUrl,
+                model: settings.localLlmModel ?? 'default',
+                message: 'Local LLM returned an empty response',
+                cwd: localCwd,
+                inputTokens: localInputTokens,
+                latencyMs: Date.now() - localStartedAt,
+              });
               store.updateMessage(paneId, assistantId, {
                 content:
                   `Local LLM returned an empty response from ${settings.localLlmUrl}. ` +
@@ -593,6 +627,19 @@ export function useAIPaneDispatch(paneId: string) {
               return;
             }
             lastLocalStreamOkAtRef.current = Date.now();
+            const outputTokens = estimateTokens(accumulated);
+            const elapsedSeconds = Math.max((Date.now() - localStartedAt) / 1000, 0.001);
+            await postLocalLlmScouterEvent({
+              phase: 'snapshot',
+              endpoint: settings.localLlmUrl,
+              model: settings.localLlmModel ?? 'default',
+              message: 'Local LLM response complete',
+              cwd: localCwd,
+              inputTokens: localInputTokens,
+              outputTokens,
+              tokensPerSecond: outputTokens / elapsedSeconds,
+              latencyMs: Date.now() - localStartedAt,
+            });
             store.updateMessage(paneId, assistantId, {
               content: accumulated,
               streamingText: undefined,
@@ -601,6 +648,15 @@ export function useAIPaneDispatch(paneId: string) {
             });
           } else {
             logError('AIPaneDispatch', `Local LLM failed: ${result.error ?? 'unknown'}`);
+            await postLocalLlmScouterEvent({
+              phase: 'error',
+              endpoint: settings.localLlmUrl,
+              model: settings.localLlmModel ?? 'default',
+              message: result.error ?? 'Local LLM failed',
+              cwd: localCwd,
+              inputTokens: localInputTokens,
+              latencyMs: Date.now() - localStartedAt,
+            });
             store.updateMessage(paneId, assistantId, {
               content:
                 `Could not reach the local LLM at ${settings.localLlmUrl}. ` +
