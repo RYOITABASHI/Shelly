@@ -57,6 +57,7 @@ export default function AgentChatPane() {
     if (!sessionId) return [];
     return events.filter((event) => event.codexSessionId === sessionId);
   }, [activeSession?.codexSessionId, events]);
+  const hasTimelineEvents = visibleEvents.some((event) => event.kind !== 'status');
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<AgentChatEvent>) => (
@@ -99,10 +100,18 @@ export default function AgentChatPane() {
         <SessionStrip session={activeSession} lastUpdatedAt={lastUpdatedAt} styles={styles} t={t} />
       </View>
 
-      {visibleEvents.length === 0 ? (
-        <AgentChatEmpty loading={loading} error={error} styles={styles} colors={colors} t={t} />
+      {!hasTimelineEvents ? (
+        <AgentChatEmpty
+          loading={loading}
+          error={error}
+          hasSession={Boolean(activeSession)}
+          styles={styles}
+          colors={colors}
+          t={t}
+        />
       ) : (
         <FlatList
+          style={styles.list}
           data={visibleEvents}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
@@ -176,24 +185,37 @@ function SessionStrip({
 function AgentChatEmpty({
   loading,
   error,
+  hasSession,
   styles,
   colors,
   t,
 }: {
   loading: boolean;
   error: string | null;
+  hasSession: boolean;
   styles: ReturnType<typeof makeStyles>;
   colors: ThemeColorPalette;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  const title = loading
+    ? t('agent_chat.loading')
+    : hasSession
+      ? t('agent_chat.empty_events_title')
+      : t('agent_chat.empty_title');
+  const body = error
+    ? t('agent_chat.error_prefix', { message: error })
+    : hasSession
+      ? t('agent_chat.empty_events_body')
+      : t('agent_chat.empty_body');
+
   return (
     <View style={styles.empty}>
       <MaterialIcons name="forum" size={28} color={colors.muted} />
       <Text style={styles.emptyTitle}>
-        {loading ? t('agent_chat.loading') : t('agent_chat.empty_title')}
+        {title}
       </Text>
       <Text style={styles.emptyBody}>
-        {error ? t('agent_chat.error_prefix', { message: error }) : t('agent_chat.empty_body')}
+        {body}
       </Text>
     </View>
   );
@@ -405,6 +427,9 @@ function makeStyles(colors: ThemeColorPalette) {
       fontFamily: F.family,
       fontSize: 7,
       lineHeight: 12,
+    },
+    list: {
+      flex: 1,
     },
     listContent: {
       paddingHorizontal: 10,

@@ -29,13 +29,32 @@ class JsonlSessionParser(
         }
     }
 
+    fun primeCodexMetadata(line: String) {
+        if (source != ScouterSource.CODEX) return
+        val json = runCatching { JSONObject(line) }.getOrNull() ?: return
+        val payload = json.optJSONObject("payload")
+        when (json.optString("type")) {
+            "session_meta", "turn_context" -> updateCodexMetadata(json, payload)
+            "event_msg" -> {
+                if (payload?.optString("type") != "token_count") return
+                updateCodexMetadata(json, payload, payload.optJSONObject("info"))
+            }
+        }
+    }
+
     private fun parseCodex(json: JSONObject, line: String): ScouterEvent? {
         val entryType = json.optString("type")
         val payload = json.optJSONObject("payload")
         if (entryType == "turn_context") {
-            modelName = extractCodexModel(payload)
-            codexCwd = extractCodexCwd(json, payload) ?: codexCwd
+            updateCodexMetadata(json, payload)
             return null
+        }
+        if (entryType == "session_meta") {
+            updateCodexMetadata(json, payload)
+            return null
+        }
+        if (entryType == "response_item") {
+            return parseCodexResponseItem(json, payload, line)
         }
         if (entryType != "event_msg") {
             return EventNormalizer.fromJsonl(source, file, json.toString())
@@ -46,7 +65,7 @@ class JsonlSessionParser(
         }
 
         val info = payload.optJSONObject("info")
-        codexCwd = extractCodexCwd(json, payload, info) ?: codexCwd
+        updateCodexMetadata(json, payload, info)
         val totalUsage = normalizeCodexUsage(info?.optJSONObject("total_token_usage") ?: info?.optJSONObject("totalTokenUsage"))
         val rateLimit = extractScouterRateLimit(null, payload, info)
         val raw = if (totalUsage != null) {
@@ -85,7 +104,6 @@ class JsonlSessionParser(
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
-            lastMessage = "Codex tokens updated",
             rateLimitStatus = rateLimit.status ?: ScouterRateLimitStatus.OK,
             rateLimitRemainingRequests = rateLimit.remainingRequests,
             rateLimitRemainingTokens = rateLimit.remainingTokens,
@@ -107,6 +125,7 @@ class JsonlSessionParser(
             inferCodexToolName(payloadType)
         )
         val message = firstNonBlank(
+            payload.optString("last_agent_message"),
             payload.optString("message"),
             payload.optString("text"),
             payload.optString("content"),
@@ -131,9 +150,10 @@ class JsonlSessionParser(
             hasExplicitRateLimitError -> ScouterStatus.ERROR
             "error" in payloadType || hasErrorValue -> ScouterStatus.ERROR
             "user_message" in payloadType -> ScouterStatus.THINKING
-            "exec_command_begin" in payloadType || "tool_call" in payloadType || "apply_patch_begin" in payloadType -> ScouterStatus.TOOL_RUNNING
+            "exec_command_begin" in payloadType || "tool_call" in payloadType || "apply_patch_begin" in payloadType || "patch_apply_begin" in payloadType -> ScouterStatus.TOOL_RUNNING
             "exec_command" in payloadType && "end" !in payloadType -> ScouterStatus.TOOL_RUNNING
-            "tool_result" in payloadType || "exec_command_end" in payloadType || "apply_patch_end" in payloadType -> ScouterStatus.THINKING
+            "tool_result" in payloadType || "exec_command_end" in payloadType || "apply_patch_end" in payloadType || "patch_apply_end" in payloadType -> ScouterStatus.THINKING
+            "task_complete" in payloadType || "turn_complete" in payloadType -> ScouterStatus.COMPLETED
             "agent_message" in payloadType || "assistant_message" in payloadType || payloadType == "message" -> ScouterStatus.IDLE
             else -> ScouterStatus.THINKING
         }
@@ -141,8 +161,19 @@ class JsonlSessionParser(
             "user_message" in payloadType -> ScouterEventType.USER_PROMPT
             status == ScouterStatus.ERROR -> ScouterEventType.POST_TOOL_USE_FAILURE
             status == ScouterStatus.TOOL_RUNNING -> ScouterEventType.PRE_TOOL_USE
+            status == ScouterStatus.COMPLETED -> ScouterEventType.STOP
             status == ScouterStatus.IDLE -> ScouterEventType.SNAPSHOT
             else -> ScouterEventType.POST_TOOL_USE
+        }
+        val chatMessage = if (
+            eventType == ScouterEventType.USER_PROMPT ||
+            eventType == ScouterEventType.SNAPSHOT ||
+            eventType == ScouterEventType.STOP ||
+            eventType == ScouterEventType.POST_TOOL_USE_FAILURE
+        ) {
+            message?.redactForScouter()?.take(240)
+        } else {
+            null
         }
         return ScouterEvent(
             eventId = stableJsonlEventId(line),
@@ -164,13 +195,131 @@ class JsonlSessionParser(
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
-            lastMessage = message?.redactForScouter()?.take(240),
+            lastMessage = chatMessage,
             rateLimitStatus = rateLimit.status,
             rateLimitRemainingRequests = rateLimit.remainingRequests,
             rateLimitRemainingTokens = rateLimit.remainingTokens,
             rateLimitResetAt = rateLimit.resetAt,
             retryAfterSeconds = rateLimit.retryAfterSeconds
         )
+    }
+
+    private fun parseCodexResponseItem(json: JSONObject, payload: JSONObject?, line: String): ScouterEvent? {
+        if (payload == null) return null
+        val payloadType = payload.optString("type").lowercase()
+        if (payloadType.isBlank()) return null
+
+        codexCwd = extractCodexCwd(json, payload) ?: codexCwd
+        modelName = extractCodexModel(json) ?: extractCodexModel(payload) ?: modelName
+        val cwd = codexCwd ?: file.parentFile?.absolutePath.orEmpty()
+        val role = payload.optString("role").lowercase()
+        val message = extractCodexContentText(payload)
+
+        if (payloadType == "message") {
+            if (role == "developer" || role == "system") return null
+            val status = when (role) {
+                "user" -> ScouterStatus.THINKING
+                "assistant" -> ScouterStatus.IDLE
+                else -> if (message != null) ScouterStatus.IDLE else return null
+            }
+            val eventType = if (role == "user") ScouterEventType.USER_PROMPT else ScouterEventType.SNAPSHOT
+            return codexJsonlEvent(json, line, cwd, eventType, status, lastMessage = message)
+        }
+
+        val toolName = firstNonBlank(
+            payload.optString("name"),
+            payload.optString("tool_name"),
+            payload.optString("toolName"),
+            inferCodexToolName(payloadType)
+        )
+        val commandSummary = firstNonBlank(
+            payload.optString("command"),
+            payload.optString("arguments"),
+            payload.optString("input"),
+            payload.optString("status"),
+            message,
+            toolName
+        )
+        val status = when {
+            "function_call_output" in payloadType || "tool_call_output" in payloadType || "tool_result" in payloadType -> ScouterStatus.THINKING
+            "web_search_call" in payloadType && payload.optString("status").lowercase() == "completed" -> ScouterStatus.THINKING
+            "function_call" in payloadType || "tool_call" in payloadType || "web_search_call" in payloadType -> ScouterStatus.TOOL_RUNNING
+            else -> return null
+        }
+        val eventType = if (status == ScouterStatus.TOOL_RUNNING) {
+            ScouterEventType.PRE_TOOL_USE
+        } else {
+            ScouterEventType.POST_TOOL_USE
+        }
+        return codexJsonlEvent(
+            json = json,
+            line = line,
+            cwd = cwd,
+            eventType = eventType,
+            status = status,
+            toolName = toolName,
+            commandSummary = commandSummary?.redactForScouter()?.take(160)
+        )
+    }
+
+    private fun codexJsonlEvent(
+        json: JSONObject,
+        line: String,
+        cwd: String,
+        eventType: ScouterEventType,
+        status: ScouterStatus,
+        toolName: String? = null,
+        commandSummary: String? = null,
+        lastMessage: String? = null
+    ): ScouterEvent {
+        return ScouterEvent(
+            eventId = stableJsonlEventId(line),
+            source = ScouterSource.CODEX,
+            sourceVersion = "jsonl",
+            timestamp = parseTimestamp(json.optString("timestamp")),
+            sessionId = file.nameWithoutExtension,
+            projectName = projectNameFromCwd(cwd),
+            cwd = cwd.redactForScouter(),
+            eventType = eventType,
+            derivedStatus = status,
+            toolName = toolName,
+            commandSummary = commandSummary,
+            modelName = modelName,
+            tokensUsed = totalTokensObserved.takeIf { it > 0L } ?: (inputTokens + outputTokens + reasoningOutputTokens),
+            inputTokens = inputTokens,
+            outputTokens = outputTokens,
+            reasoningOutputTokens = reasoningOutputTokens,
+            cacheReadInputTokens = cacheReadInputTokens,
+            totalCostUsd = totalCostUsd,
+            lastMessage = lastMessage?.redactForScouter()?.take(240)
+        )
+    }
+
+    private fun extractCodexContentText(payload: JSONObject): String? {
+        val content = payload.opt("content") ?: return firstNonBlank(
+            payload.optString("text"),
+            payload.optString("message"),
+            payload.optString("output")
+        )
+        if (content is String) return content.ifBlank { null }
+        val arr = payload.optJSONArray("content") ?: return null
+        val parts = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val text = firstNonBlank(
+                item.optString("text"),
+                item.optString("message"),
+                item.optString("content"),
+                item.optString("output")
+            )
+            if (text != null) parts.add(text)
+        }
+        return parts.joinToString("\n").ifBlank { null }
+    }
+
+    private fun updateCodexMetadata(vararg jsonObjects: JSONObject?) {
+        modelName = jsonObjects.asSequence().mapNotNull { extractCodexModel(it) }.firstOrNull() ?: modelName
+        codexCwd = extractCodexCwd(*jsonObjects) ?: codexCwd
     }
 
     private fun stableJsonlEventId(line: String): String {
@@ -230,9 +379,11 @@ class JsonlSessionParser(
     }
 
     private fun inferCodexToolName(payloadType: String): String? = when {
+        "web_search" in payloadType -> "web_search"
         "apply_patch" in payloadType || "patch" in payloadType -> "apply_patch"
         "exec" in payloadType || "bash" in payloadType || "command" in payloadType -> "exec"
         "tool" in payloadType -> "tool"
+        "function" in payloadType -> "function"
         else -> null
     }
 

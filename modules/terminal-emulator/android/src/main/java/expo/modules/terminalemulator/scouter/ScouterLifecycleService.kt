@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import expo.modules.terminalemulator.HomeInitializer
+import java.io.File
 import org.json.JSONObject
 
 class ScouterLifecycleService private constructor(private val context: Context) {
@@ -84,6 +85,10 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         base.put("systemLoad", systemLoad)
         base.put("serverRunning", server != null)
         base.put("jsonlWatcherRunning", watcher != null)
+        base.put("jsonlWatcher", watcher?.debugJson() ?: JSONObject().apply {
+            put("running", false)
+            put("codexSessionsRoot", File(HomeInitializer.getHomeDir(appContext), ".codex/sessions").absolutePath.redactForScouter())
+        })
         base.put("hookTokenPreview", store.getSessionToken().take(6) + "…")
         base.put("codexHookUrl", hookUrl("codex"))
         base.put("localHookUrl", hookUrl("local"))

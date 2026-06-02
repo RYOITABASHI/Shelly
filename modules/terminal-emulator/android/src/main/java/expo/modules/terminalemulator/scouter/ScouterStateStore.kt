@@ -68,15 +68,19 @@ class ScouterStateStore(context: Context) {
         }
     }
 
-    fun debugJson(): JSONObject = JSONObject().apply {
-        put("enabled", isEnabled())
-        put("port", getRuntimePort())
-        put("sessions", JSONArray().also { arr ->
-            all().forEach { arr.put(it.toJson()) }
-        })
-        put("recentEvents", JSONArray().also { arr ->
-            readRecentEventJsons().forEach { arr.put(it) }
-        })
+    fun debugJson(): JSONObject {
+        val recentEvents = readRecentEventJsons()
+        return JSONObject().apply {
+            put("enabled", isEnabled())
+            put("port", getRuntimePort())
+            put("recentEventCount", recentEvents.size)
+            put("sessions", JSONArray().also { arr ->
+                all().forEach { arr.put(it.toJson()) }
+            })
+            put("recentEvents", JSONArray().also { arr ->
+                recentEvents.forEach { arr.put(it) }
+            })
+        }
     }
 
     private fun readAllMutable(): MutableMap<String, SessionSnapshot> {
@@ -144,7 +148,9 @@ class ScouterStateStore(context: Context) {
         if (event.source != ScouterSource.CODEX) return false
         if (event.eventType == ScouterEventType.USER_PROMPT && !event.lastMessage.isNullOrBlank()) return true
         if (event.derivedStatus == ScouterStatus.IDLE && !event.lastMessage.isNullOrBlank()) return true
+        if (event.derivedStatus == ScouterStatus.COMPLETED && !event.lastMessage.isNullOrBlank()) return true
         if (event.eventType == ScouterEventType.PRE_TOOL_USE && !event.toolName.isNullOrBlank()) return true
+        if (event.eventType == ScouterEventType.POST_TOOL_USE && (!event.toolName.isNullOrBlank() || !event.commandSummary.isNullOrBlank())) return true
         if (event.eventType == ScouterEventType.POST_TOOL_USE_FAILURE) return true
         if (event.derivedStatus == ScouterStatus.ERROR) return true
         return false
@@ -163,11 +169,13 @@ class ScouterStateStore(context: Context) {
             put("port", getRuntimePort())
             put("hookTokenPreview", if (token.isNotBlank()) token.take(6) + "…" else "")
             put("hookToken", token)
+            val recentEvents = readRecentEventJsons()
+            put("recentEventCount", recentEvents.size)
             put("sessions", JSONArray().also { arr ->
                 values.values.sortedByDescending { it.lastEventAt }.take(20).forEach { arr.put(it.toJson()) }
             })
             put("recentEvents", JSONArray().also { arr ->
-                readRecentEventJsons().forEach { arr.put(it) }
+                recentEvents.forEach { arr.put(it) }
             })
         }
         helperStateFile.parentFile?.mkdirs()

@@ -1148,6 +1148,8 @@ const en: Record<string, string> = {
   'agent_chat.loading': 'Loading Codex sessions...',
   'agent_chat.empty_title': 'No Codex session observed',
   'agent_chat.empty_body': 'Start Codex in a Terminal pane. Agent Chat will show Scouter and Codex JSONL snapshots here.',
+  'agent_chat.empty_events_title': 'No chat events yet',
+  'agent_chat.empty_events_body': 'Scouter sees this Codex session. New prompts and replies will appear after the JSONL watcher receives message events.',
   'agent_chat.no_session': 'No Codex session is mapped yet.',
   'agent_chat.session_fallback': 'Codex',
   'agent_chat.model': 'Model {{model}}',

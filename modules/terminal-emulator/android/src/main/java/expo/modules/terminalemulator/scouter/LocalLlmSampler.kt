@@ -229,6 +229,6 @@ class LocalLlmSampler(private val homeDir: File) {
         private const val DEFAULT_OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
         private const val JSON_MAX_BYTES = 64 * 1024
         private const val METRICS_MAX_BYTES = 32 * 1024
-        private val METRIC_LINE = Regex("^([A-Za-z_:][A-Za-z0-9_:]*)(?:\\{[^}]*})?\\s+([-+0-9.eE]+)")
+        private val METRIC_LINE = Regex("""^([A-Za-z_:][A-Za-z0-9_:]*)(?:[{][^}]*[}])?\s+([-+0-9.eE]+)""")
     }
 }

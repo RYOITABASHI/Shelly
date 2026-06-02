@@ -167,17 +167,18 @@ function dedupeCodexSessions(sessions: ScouterSession[]): ScouterSession[] {
     if (!sessionId) continue;
     const previous = byId.get(sessionId);
     if (!previous || timestampOf(session) >= timestampOf(previous)) {
-      byId.set(sessionId, session);
+      byId.set(sessionId, { ...session, sessionId });
     }
   }
   return Array.from(byId.values()).sort((a, b) => timestampOf(b) - timestampOf(a));
 }
 
 function toAgentChatSession(session: ScouterSession): AgentChatSession {
+  const codexSessionId = session.sessionId?.trim() ?? '';
   return {
-    codexSessionId: session.sessionId ?? '',
+    codexSessionId,
     projectName: session.projectName?.trim() || 'Codex',
-    currentStatus: session.currentStatus || 'IDLE',
+    currentStatus: session.currentStatus?.trim() || 'IDLE',
     currentTool: session.currentTool ?? null,
     lastEventAt: timestampOf(session),
     sessionStartAt: session.sessionStartAt ?? timestampOf(session),
@@ -308,6 +309,18 @@ function scouterRecentEventToAgentChatEvent(event: ScouterRecentEvent): AgentCha
       kind: 'tool_start',
       text,
       status: 'tool_running',
+      toolName: toolName || text,
+    }];
+  }
+
+  if (eventType === 'POST_TOOL_USE' && (toolName || commandSummary)) {
+    const text = toolName || commandSummary || 'tool';
+    return [{
+      ...base,
+      id: base.id || eventId(codexSessionId, 'tool_result', timestamp, text),
+      role: 'tool',
+      kind: 'tool_result',
+      text,
       toolName: toolName || text,
     }];
   }

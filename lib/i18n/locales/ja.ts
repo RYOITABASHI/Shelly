@@ -1147,6 +1147,8 @@ const ja: Record<string, string> = {
   'agent_chat.loading': 'Codexセッションを読み込み中...',
   'agent_chat.empty_title': 'Codexセッションはまだありません',
   'agent_chat.empty_body': 'ターミナルペインでCodexを起動してください。ScouterとCodex JSONLのスナップショットをここに表示します。',
+  'agent_chat.empty_events_title': 'チャットイベントはまだありません',
+  'agent_chat.empty_events_body': 'ScouterはこのCodexセッションを認識しています。JSONL watcherが新しいプロンプトや返信を受け取るとここに表示します。',
   'agent_chat.no_session': 'Codexセッションはまだ対応付けられていません。',
   'agent_chat.session_fallback': 'Codex',
   'agent_chat.model': 'モデル {{model}}',
