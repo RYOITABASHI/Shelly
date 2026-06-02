@@ -73,8 +73,8 @@ const config: ExpoConfig & { android?: any } = {
     // Scoped Storage (targetSdk 30+) blocks direct open() on /sdcard paths
     // and the "push a script, source it from the shell" workflow is broken.
     // We request it at first run via Environment.isExternalStorageManager().
-    // Shelly is distributed via GitHub Releases / F-Droid (not Play Store),
-    // so the all-files-access restriction does not apply.
+    // Shelly is distributed via GitHub Releases for now (not Play Store),
+    // so the Play Store all-files-access review does not apply yet.
     versionCode: androidVersionCode(),
     permissions: [
       "POST_NOTIFICATIONS",
@@ -138,7 +138,7 @@ const config: ExpoConfig & { android?: any } = {
       {
         android: {
           // bug #139 (2026-04-27): arm64-v8a only. All of Shelly's
-          // bundled native binaries (claude SEA, codex termux fork,
+          // bundled native binaries (codex termux fork,
           // bash/node/git/python/etc.) are arm64-only. Shipping
           // armeabi-v7a was packaging RN/Hermes/Reanimated 32-bit
           // .so files for an architecture nothing else in the APK
@@ -152,7 +152,7 @@ const config: ExpoConfig & { android?: any } = {
       },
     ],
   ],
-  // expo-updates remains disabled for GitHub/F-Droid release APKs. Every
+  // expo-updates remains disabled for GitHub release APKs. Every
   // JS update ships through a new APK so CLI harness fixes and docs stay
   // tied to the binary the user actually installed.
   updates: {
