@@ -554,8 +554,12 @@ public final class TerminalSession extends TerminalOutput {
         public void handleMessage(Message msg) {
             int bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false);
             if (bytesRead > 0) {
-                mEmulator.append(mReceiveBuffer, bytesRead);
-                notifyScreenUpdate();
+                try {
+                    mEmulator.append(mReceiveBuffer, bytesRead);
+                    notifyScreenUpdate();
+                } catch (RuntimeException e) {
+                    Logger.logStackTraceWithMessage(mClient, LOG_TAG, "Terminal emulator append failed; dropping output chunk", e);
+                }
             }
 
             if (msg.what == MSG_PROCESS_EXITED) {
@@ -573,8 +577,12 @@ public final class TerminalSession extends TerminalOutput {
                 exitDescription += " - press Enter]";
 
                 byte[] bytesToWrite = exitDescription.getBytes(StandardCharsets.UTF_8);
-                mEmulator.append(bytesToWrite, bytesToWrite.length);
-                notifyScreenUpdate();
+                try {
+                    mEmulator.append(bytesToWrite, bytesToWrite.length);
+                    notifyScreenUpdate();
+                } catch (RuntimeException e) {
+                    Logger.logStackTraceWithMessage(mClient, LOG_TAG, "Terminal emulator exit banner failed", e);
+                }
 
                 mClient.onSessionFinished(TerminalSession.this);
             }

@@ -494,8 +494,12 @@ export default function RootLayout() {
     };
     const queueInterval = setInterval(drainQueue, 250);
 
-    // Unload sounds when app goes to background
+    // Snapshot terminal state before the bridge can be paused or killed.
     const sub = AppState.addEventListener('change', (state) => {
+      logInfo('RootLayout', `AppState changed: ${state}`);
+      if (state === 'inactive' || state === 'background') {
+        void useTerminalStore.getState().saveSessionState();
+      }
       if (state === 'background') {
         unloadSounds();
       }

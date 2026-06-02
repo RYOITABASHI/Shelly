@@ -66,6 +66,20 @@ class TerminalEmulatorModule : Module() {
     private fun requireReactContext(): Context =
         appContext.reactContext ?: throw IllegalStateException("React context unavailable")
 
+    private fun startTerminalSessionService(context: Context, info: String? = null) {
+        val intent = Intent(context, TerminalSessionService::class.java).apply {
+            if (info != null) {
+                action = TerminalSessionService.ACTION_UPDATE_NOTIFICATION
+                putExtra("session_info", info)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
     private fun validateDownloadPath(downloadSubdir: String, fileName: String): java.io.File {
         val subdirRe = Regex("^[A-Za-z0-9._-]+$")
         val apkNameRe = Regex("^[A-Za-z0-9._-]+\\.apk$", RegexOption.IGNORE_CASE)
@@ -175,6 +189,7 @@ class TerminalEmulatorModule : Module() {
                 ?: throw IllegalArgumentException("sessionId is required")
             val rows = (config["rows"] as? Number)?.toInt() ?: 24
             val cols = (config["cols"] as? Number)?.toInt() ?: 80
+            val context = appContext.reactContext ?: throw IllegalStateException("No React context")
 
             // Case B reattach: live session already exists in the Service
             // registry. Rewire its emitEvent to this Module instance (harmless
@@ -185,6 +200,7 @@ class TerminalEmulatorModule : Module() {
                 existing.emitEvent = ::emitEvent
                 if (existing.isAlive()) {
                     acquireWakeLock()
+                    startTerminalSessionService(context)
                     return@AsyncFunction mapOf(
                         "sessionId" to sessionId,
                         "resumed" to true
@@ -196,8 +212,6 @@ class TerminalEmulatorModule : Module() {
                     sessions.remove(sessionId)
                 }
             }
-
-            val context = appContext.reactContext ?: throw IllegalStateException("No React context")
 
             // Extract bundled libs from APK & initialize home directory
             val libDir = LibExtractor.extractAll(context)
@@ -231,6 +245,7 @@ class TerminalEmulatorModule : Module() {
             )
 
             sessions[sessionId] = session
+            startTerminalSessionService(context)
             acquireWakeLock()
             mapOf(
                 "sessionId" to sessionId,
@@ -413,12 +428,7 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("startSessionService") {
             val context = appContext.reactContext ?: return@AsyncFunction null
-            val intent = Intent(context, TerminalSessionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            startTerminalSessionService(context)
             null
         }
 
@@ -430,15 +440,7 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("updateSessionNotification") { info: String ->
             val context = appContext.reactContext ?: return@AsyncFunction null
-            val intent = Intent(context, TerminalSessionService::class.java).apply {
-                action = TerminalSessionService.ACTION_UPDATE_NOTIFICATION
-                putExtra("session_info", info)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            startTerminalSessionService(context, info)
             null
         }
 

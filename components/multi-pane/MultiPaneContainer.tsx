@@ -7,7 +7,7 @@
 // `getLayout()` function. Divider components are placed over the split
 // boundaries with a 16px hit strip.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -25,12 +25,10 @@ import {
   getLayout,
   PRESET_CAPACITY,
   type PaneTab,
-  type PresetId,
   type Ratios,
   type SlotIndex,
 } from '@/hooks/use-multi-pane';
 import { logInfo } from '@/lib/debug-logger';
-import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
@@ -129,32 +127,6 @@ export function MultiPaneContainer() {
   const splitPane    = useMultiPaneStore((s) => s.splitPane);
   const setRatio     = useMultiPaneStore((s) => s.setRatio);
   const resetRatio   = useMultiPaneStore((s) => s.resetRatio);
-  const setPreset    = useMultiPaneStore((s) => s.setPreset);
-
-  const { isWide } = useDeviceLayout();
-
-  // Auto-reorient horizontally-biased presets when the Z Fold 6 (or any
-  // foldable) closes into the narrow cover screen. 2-cols side-by-side
-  // reads as two very thin slits once the width collapses past ~380dp,
-  // so swap to a top/bottom stack that keeps each pane legible.
-  // Mapping: p2h → p2v, p3l / p3r → p3t. Leave p1 / p2v / p3t / p4 alone
-  // (already vertical-friendly) and don't auto-swap *back* to horizontal
-  // when reopening — the user may have deliberately picked vertical on
-  // the inner screen too.
-  const prevWideRef = useRef(isWide);
-  useEffect(() => {
-    const wasWide = prevWideRef.current;
-    prevWideRef.current = isWide;
-    if (wasWide && !isWide) {
-      const reorient: Partial<Record<PresetId, PresetId>> = {
-        p2h: 'p2v',
-        p3l: 'p3t',
-        p3r: 'p3t',
-      };
-      const next = reorient[preset];
-      if (next && next !== preset) setPreset(next);
-    }
-  }, [isWide, preset, setPreset]);
 
   const [size, setSize] = useState({ W: 0, H: 0 });
 
@@ -227,9 +199,13 @@ export function MultiPaneContainer() {
 
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
-    setSize((prev) =>
-      prev.W === width && prev.H === height ? prev : { W: width, H: height },
-    );
+    setSize((prev) => {
+      if (prev.W === width && prev.H === height) return prev;
+      if (Math.abs(prev.W - width) > 80 || Math.abs(prev.H - height) > 120) {
+        setKeyboardHeight(0);
+      }
+      return { W: width, H: height };
+    });
   }, []);
 
   if (!hasHydrated) {
@@ -308,7 +284,7 @@ export function MultiPaneContainer() {
 
       {size.W > 0 && size.H > 0 && dividers.map((d, idx) => {
         const isVertical = d.kind === 'vertical';
-        const containerSize = isVertical ? size.W : size.H;
+        const containerSize = isVertical ? size.W : gridHeight;
         const currentRatio = ratios[d.ratioKey as keyof Ratios];
         return (
           <Divider

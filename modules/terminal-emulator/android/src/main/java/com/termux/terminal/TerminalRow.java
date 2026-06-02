@@ -77,6 +77,24 @@ public final class TerminalRow {
 
     /** NOTE: The sourceX2 is exclusive. */
     public void copyInterval(TerminalRow line, int sourceX1, int sourceX2, int destinationX) {
+        if (line == null || sourceX2 <= sourceX1) return;
+
+        if (sourceX1 < 0) {
+            destinationX -= sourceX1;
+            sourceX1 = 0;
+        }
+        if (destinationX < 0) {
+            sourceX1 -= destinationX;
+            destinationX = 0;
+        }
+
+        int columnsToCopy = Math.min(
+            sourceX2 - sourceX1,
+            Math.min(line.mColumns - sourceX1, mColumns - destinationX)
+        );
+        if (columnsToCopy <= 0) return;
+        sourceX2 = sourceX1 + columnsToCopy;
+
         mHasNonOneWidthOrSurrogateChars |= line.mHasNonOneWidthOrSurrogateChars;
         final int x1 = line.findStartOfColumn(sourceX1);
         final int x2 = line.findStartOfColumn(sourceX2);
@@ -104,6 +122,8 @@ public final class TerminalRow {
             // exclusive end column for the last Java char. Reuse the last
             // visible cell style instead of crashing the terminal thread.
             int styleColumn = Math.max(0, Math.min(sourceX1, line.mColumns - 1));
+            if (destinationX < 0 || destinationX >= mColumns) break;
+            if (WcWidth.width(codePoint) == 2 && destinationX >= mColumns - 1) codePoint = ' ';
             setChar(destinationX, codePoint, line.getStyle(styleColumn));
         }
     }

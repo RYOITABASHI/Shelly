@@ -428,8 +428,8 @@ public final class TerminalBuffer {
 
     /**
      * Block copy characters from one position in the screen to another. The two positions can overlap. All characters
-     * of the source and destination must be within the bounds of the screen, or else an InvalidParameterException will
-     * be thrown.
+     * of the source and destination are clamped to the current screen bounds. Resize races can otherwise turn a valid
+     * terminal escape sequence into an out-of-range copy while the emulator dimensions are changing.
      *
      * @param sx source X coordinate
      * @param sy source Y coordinate
@@ -439,9 +439,30 @@ public final class TerminalBuffer {
      * @param dy destination Y coordinate
      */
     public void blockCopy(int sx, int sy, int w, int h, int dx, int dy) {
-        if (w == 0) return;
-        if (sx < 0 || sx + w > mColumns || sy < 0 || sy + h > mScreenRows || dx < 0 || dx + w > mColumns || dy < 0 || dy + h > mScreenRows)
-            throw new IllegalArgumentException();
+        if (w <= 0 || h <= 0) return;
+        if (sx < 0) {
+            dx -= sx;
+            w += sx;
+            sx = 0;
+        }
+        if (dx < 0) {
+            sx -= dx;
+            w += dx;
+            dx = 0;
+        }
+        if (sy < 0) {
+            dy -= sy;
+            h += sy;
+            sy = 0;
+        }
+        if (dy < 0) {
+            sy -= dy;
+            h += dy;
+            dy = 0;
+        }
+        w = Math.min(w, Math.min(mColumns - sx, mColumns - dx));
+        h = Math.min(h, Math.min(mScreenRows - sy, mScreenRows - dy));
+        if (w <= 0 || h <= 0) return;
         boolean copyingUp = sy > dy;
         for (int y = 0; y < h; y++) {
             int y2 = copyingUp ? y : (h - (y + 1));

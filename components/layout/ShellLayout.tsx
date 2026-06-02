@@ -28,6 +28,7 @@ import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-acti
 import { ScouterDetailModal } from '@/components/scouter/ScouterDetailModal';
 
 const LAST_UNFOLDED_PRESET_KEY = 'shelly:lastUnfoldedPreset';
+const COVER_PRESET_ACTIVE_KEY = 'shelly:coverPresetActive';
 const FALLBACK_UNFOLDED_PRESET: PresetId = 'p3l';
 
 function isPresetId(value: string | null): value is PresetId {
@@ -73,18 +74,72 @@ export function ShellLayout() {
   // unfolded also avoids racing the cover-screen reorientation effect.
   const prevFoldInnerRef = useRef<boolean | null>(null);
   const lastUnfoldedPresetRef = useRef<PresetId>(FALLBACK_UNFOLDED_PRESET);
+  const coverPresetActiveRef = useRef(false);
   const presetHydratedRef = useRef(false);
   const unfoldDeferredUntilHydrateRef = useRef(false);
   const [presetHydrated, setPresetHydrated] = useState(false);
 
+  const collapseToCoverPreset = useCallback((reason: string) => {
+    const state = useMultiPaneStore.getState();
+    const current = state.preset;
+    const collapsedFromInnerPreset = isPresetId(current) && current !== 'p1';
+    const temporaryCoverPreset = collapsedFromInnerPreset || coverPresetActiveRef.current;
+    const saved = collapsedFromInnerPreset ? current : lastUnfoldedPresetRef.current;
+    lastUnfoldedPresetRef.current = saved;
+    coverPresetActiveRef.current = temporaryCoverPreset;
+    if (presetHydratedRef.current) {
+      AsyncStorage.setItem(LAST_UNFOLDED_PRESET_KEY, saved).catch(() => {});
+      AsyncStorage.setItem(COVER_PRESET_ACTIVE_KEY, temporaryCoverPreset ? 'true' : 'false').catch(() => {});
+    }
+    logInfo(
+      'ShellLayout',
+      `${reason}: folded → Single (saved unfolded preset=${saved}, persist=${presetHydratedRef.current})`,
+    );
+    if (state.preset !== 'p1') {
+      state.setPreset('p1');
+    }
+  }, []);
+
+  const restoreUnfoldedPreset = useCallback((reason: string) => {
+    const target = lastUnfoldedPresetRef.current;
+    coverPresetActiveRef.current = false;
+    if (presetHydratedRef.current) {
+      AsyncStorage.setItem(COVER_PRESET_ACTIVE_KEY, 'false').catch(() => {});
+    }
+    logInfo('ShellLayout', `${reason}: unfolded → restored ${target}`);
+    useMultiPaneStore.getState().setPreset(target);
+  }, []);
+
+  const keepCurrentUnfoldedPreset = useCallback((reason: string) => {
+    const current = useMultiPaneStore.getState().preset;
+    if (isPresetId(current)) {
+      lastUnfoldedPresetRef.current = current;
+      if (presetHydratedRef.current) {
+        AsyncStorage.setItem(LAST_UNFOLDED_PRESET_KEY, current).catch(() => {});
+      }
+    }
+    coverPresetActiveRef.current = false;
+    if (presetHydratedRef.current) {
+      AsyncStorage.setItem(COVER_PRESET_ACTIVE_KEY, 'false').catch(() => {});
+    }
+    logInfo('ShellLayout', `${reason}: unfolded → kept ${current}`);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    AsyncStorage.getItem(LAST_UNFOLDED_PRESET_KEY)
-      .then((stored) => {
+    Promise.all([
+      AsyncStorage.getItem(LAST_UNFOLDED_PRESET_KEY),
+      AsyncStorage.getItem(COVER_PRESET_ACTIVE_KEY),
+    ])
+      .then(([stored, coverPresetActive]) => {
         if (cancelled) return;
         if (isPresetId(stored)) {
           lastUnfoldedPresetRef.current = stored;
           logInfo('ShellLayout', `Hydrated lastUnfoldedPreset=${stored}`);
+        }
+        coverPresetActiveRef.current = coverPresetActive === 'true';
+        if (coverPresetActiveRef.current) {
+          logInfo('ShellLayout', 'Hydrated coverPresetActive=true');
         }
         presetHydratedRef.current = true;
         setPresetHydrated(true);
@@ -109,52 +164,65 @@ export function ShellLayout() {
     if (prevFoldInnerRef.current !== true) return;
     if (!isPresetId(currentPreset)) return;
     lastUnfoldedPresetRef.current = currentPreset;
+    coverPresetActiveRef.current = false;
     AsyncStorage.setItem(LAST_UNFOLDED_PRESET_KEY, currentPreset).catch(() => {});
+    AsyncStorage.setItem(COVER_PRESET_ACTIVE_KEY, 'false').catch(() => {});
     logInfo('ShellLayout', `Fold preset saved while unfolded: ${currentPreset}`);
   }, [layout.isFoldInner, currentPreset, multiPaneHydrated, presetHydrated]);
 
   useEffect(() => {
     const prev = prevFoldInnerRef.current;
     const curr = layout.isFoldInner;
+    if (!multiPaneHydrated) return;
 
     if (presetHydrated && unfoldDeferredUntilHydrateRef.current && curr) {
       unfoldDeferredUntilHydrateRef.current = false;
-      const target = lastUnfoldedPresetRef.current;
-      logInfo('ShellLayout', `Fold transition: unfolded → restored ${target} after hydrate`);
-      useMultiPaneStore.getState().setPreset(target);
+      if (coverPresetActiveRef.current) {
+        restoreUnfoldedPreset('Fold transition after hydrate');
+      } else {
+        keepCurrentUnfoldedPreset('Fold transition after hydrate');
+      }
       prevFoldInnerRef.current = curr;
       return;
     }
 
+    if (!presetHydrated) return;
+
     if (prev === null) {
-      // First observation — skip auto-switch to respect existing layout
+      if (!curr) {
+        // First observation on the cover display must also collapse. Otherwise
+        // a persisted inner-display preset can render as two unusable slits
+        // until a later width transition happens.
+        collapseToCoverPreset('Fold initial observation');
+      } else if (coverPresetActiveRef.current) {
+        // If Shelly was killed or updated while folded, the temporary cover
+        // preset (`p1`) is the persisted store value. Restore the remembered
+        // inner preset on first inner-display observation.
+        restoreUnfoldedPreset('Fold initial observation');
+      }
       prevFoldInnerRef.current = curr;
       return;
     }
     if (prev !== curr) {
       if (curr) {
-        if (presetHydratedRef.current) {
-          const target = lastUnfoldedPresetRef.current;
-          logInfo('ShellLayout', `Fold transition: unfolded → restored ${target}`);
-          useMultiPaneStore.getState().setPreset(target);
+        if (coverPresetActiveRef.current) {
+          restoreUnfoldedPreset('Fold transition');
         } else {
-          unfoldDeferredUntilHydrateRef.current = true;
-          logInfo('ShellLayout', 'Fold transition: unfolded → restore deferred until hydrate');
+          keepCurrentUnfoldedPreset('Fold transition');
         }
       } else {
-        const saved = lastUnfoldedPresetRef.current;
-        if (presetHydratedRef.current) {
-          AsyncStorage.setItem(LAST_UNFOLDED_PRESET_KEY, saved).catch(() => {});
-        }
-        logInfo(
-          'ShellLayout',
-          `Fold transition: folded → Single (saved unfolded preset=${saved}, persist=${presetHydratedRef.current})`,
-        );
-        useMultiPaneStore.getState().setPreset('p1');
+        collapseToCoverPreset('Fold transition');
       }
       prevFoldInnerRef.current = curr;
     }
-  }, [layout.isFoldInner, presetHydrated]);
+  }, [
+    layout.isFoldInner,
+    multiPaneHydrated,
+    presetHydrated,
+    collapseToCoverPreset,
+    keepCurrentUnfoldedPreset,
+    restoreUnfoldedPreset,
+  ]);
 
   // Full-screen voice mode — triggered by `shelly voice` or long-press mic.
   // bug #112: trigger a terminal refocus after any overlay closes so the

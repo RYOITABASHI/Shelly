@@ -53,11 +53,12 @@ class TerminalSessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "Service created")
+        Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand action=${intent?.action ?: "default"} sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "Stop action received — stopping service")
@@ -108,7 +109,7 @@ class TerminalSessionService : Service() {
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "Service destroyed")
+        Log.i(TAG, "Service destroyed sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         super.onDestroy()
     }
 
