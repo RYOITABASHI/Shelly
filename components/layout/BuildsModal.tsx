@@ -458,16 +458,22 @@ async function downloadReleaseApk(
     downloadedBytes: 0,
     totalBytes: update.apkSizeBytes,
   });
-  // Detach the whole background subshell from execCommand pipes; otherwise the
-  // native pipe reader waits for EOF and can kill the download on timeout.
+  const downloadScript = [
+    `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)} > ${sq(logPath)} 2>&1`,
+    'rc=$?',
+    `printf '%s\\n' "$rc" > ${sq(statusPath)}`,
+  ].join('; ');
+  // Fully detach the downloader from execCommand without switching to Android
+  // /system/bin/sh; the bundled curl needs the bash environment that
+  // TerminalEmulator.execCommand already prepared.
   const pidOutput = await run(
     [
       '(',
-      `curl -fL --silent --show-error --retry 3 --retry-delay 2 --connect-timeout 20 -o ${sq(apkPath)} ${sq(update.apkUrl)} > ${sq(logPath)} 2>&1;`,
-      'rc=$?;',
-      `printf '%s\\n' "$rc" > ${sq(statusPath)}`,
-      ') >/dev/null 2>/dev/null < /dev/null &',
-      'printf \'%s\\n\' "$!"',
+      downloadScript,
+      ') >/dev/null 2>&1 < /dev/null &',
+      'pid=$!;',
+      'disown "$pid" 2>/dev/null || true;',
+      'printf \'%s\\n\' "$pid"',
     ].join(' '),
     10_000,
     'start download',

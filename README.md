@@ -44,17 +44,11 @@
 
 ## See it run
 
-**An AI coding CLI running natively on Android with slash-command autocomplete**
-
-https://github.com/user-attachments/assets/dce5e69d-c8f0-456b-b011-82908dd72c5c
-
 **AI reading a runtime error and suggesting the fix in real time**
 
 https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
 
 No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI Codex — invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
-
-> The clip above is from an earlier build. The supported foreground CLI in the current release is **Codex**; see [Status](#status).
 
 <br>
 
