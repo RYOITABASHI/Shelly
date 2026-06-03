@@ -333,6 +333,21 @@ describe('codex session resume', () => {
     expect(mockSetFocusedPane).toHaveBeenCalledWith('pane-agent-chat');
   });
 
+  it('normalizes Codex rollout JSONL filenames to UUIDs when queueing resume', async () => {
+    mockCreateTerminalSessionForFocusedPane.mockReturnValue(undefined);
+    const addTerminalPane = jest.fn();
+
+    const result = await resumeCodexSession(codexSession({
+      codexSessionId: 'rollout-2026-06-03T11-42-51-019e8b5c-bc3f-7582-88f6-e8a26ba24d66',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
+    expect(mockTerminalState.pendingCommand).toEqual({
+      command: "cd '/data/data/dev.shelly.terminal/files/home' && codex resume '019e8b5c-bc3f-7582-88f6-e8a26ba24d66'\n",
+      sessionId: 'terminal-a',
+    });
+  });
+
   it('respects the maximized pane when choosing where to queue resume', async () => {
     mockTerminalState.sessions = [
       terminalSession('terminal-hidden', 'shelly-2'),

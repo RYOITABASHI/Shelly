@@ -42,7 +42,7 @@ export async function resumeCodexSession(
   }
 
   const cwd = session.cwd?.trim();
-  const resumeCommand = `codex resume ${shellQuote(session.codexSessionId)}`;
+  const resumeCommand = `codex resume ${shellQuote(codexResumeSessionId(session.codexSessionId))}`;
   const command = cwd
     ? `cd ${shellQuote(cwd)} && ${resumeCommand}\n`
     : `${resumeCommand}\n`;
@@ -222,4 +222,10 @@ function markTerminalSessionExited(sessionId: string): void {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function codexResumeSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/.exec(trimmed)?.[1]
+    ?? trimmed;
 }

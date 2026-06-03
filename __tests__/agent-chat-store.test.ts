@@ -1,11 +1,25 @@
 const mockGetScouterDebugInfo = jest.fn();
 const mockAddListener = jest.fn();
+const mockAsyncStorageValues = new Map<string, string>();
+const mockAsyncStorageGetItem = jest.fn((key: string) => Promise.resolve(mockAsyncStorageValues.get(key) ?? null));
+const mockAsyncStorageSetItem = jest.fn((key: string, value: string) => {
+  mockAsyncStorageValues.set(key, value);
+  return Promise.resolve();
+});
 
 jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   __esModule: true,
   default: {
     getScouterDebugInfo: mockGetScouterDebugInfo,
     addListener: mockAddListener,
+  },
+}));
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: mockAsyncStorageGetItem,
+    setItem: mockAsyncStorageSetItem,
   },
 }));
 
@@ -23,6 +37,7 @@ function resetAgentChatStore(): void {
     events: [],
     bindings: {},
     codexPtyLaunches: [],
+    dismissedSessionIds: [],
     latestSessionId: null,
     loading: false,
     error: null,
@@ -33,6 +48,7 @@ function resetAgentChatStore(): void {
 describe('agent chat store', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAsyncStorageValues.clear();
     mockAddListener.mockReturnValue({ remove: jest.fn() });
     resetAgentChatStore();
   });
@@ -513,5 +529,142 @@ describe('agent chat store', () => {
       expect.objectContaining({ codexSessionId: 'session-newer', bindingConfidence: 'reliable', ptySessionId: 'shelly-1' }),
       expect.objectContaining({ codexSessionId: 'session-older', bindingConfidence: 'none', ptySessionId: null }),
     ]);
+  });
+
+  it('dismisses Codex sessions and keeps them hidden across refresh and live events', async () => {
+    const baseTime = 1_811_121_000_000;
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: 'session-hide',
+        projectName: 'hidden',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 2_000,
+        sessionStartAt: baseTime,
+      }, {
+        source: 'CODEX',
+        sessionId: 'session-keep',
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 1_000,
+        sessionStartAt: baseTime,
+      }],
+      recentEvents: [{
+        eventId: 'event-hide',
+        source: 'CODEX',
+        sessionId: 'session-hide',
+        timestamp: baseTime + 2_000,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'hide me',
+      }, {
+        eventId: 'event-keep',
+        source: 'CODEX',
+        sessionId: 'session-keep',
+        timestamp: baseTime + 1_000,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'keep me',
+      }],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    useAgentChatStore.getState().dismissSession('session-hide');
+
+    expect(useAgentChatStore.getState().sessions.map((session) => session.codexSessionId)).toEqual(['session-keep']);
+    expect(useAgentChatStore.getState().events.every((event) => event.codexSessionId === 'session-keep')).toBe(true);
+    expect(useAgentChatStore.getState().latestSessionId).toBe('session-keep');
+    expect(mockAsyncStorageSetItem).toHaveBeenCalledWith(
+      'shelly_agent_chat_dismissed_sessions',
+      JSON.stringify(['session-hide']),
+    );
+
+    await useAgentChatStore.getState().refresh();
+    useAgentChatStore.getState().ingestNativeEvent({
+      emittedAt: baseTime + 3_000,
+      snapshotJson: JSON.stringify({
+        source: 'CODEX',
+        sessionId: 'session-hide',
+        projectName: 'hidden',
+        currentStatus: 'THINKING',
+        lastEventAt: baseTime + 3_000,
+        sessionStartAt: baseTime,
+      }),
+      eventJson: JSON.stringify({
+        eventId: 'event-hide-live',
+        source: 'CODEX',
+        sessionId: 'session-hide',
+        timestamp: baseTime + 3_000,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'still hidden',
+      }),
+    });
+
+    expect(useAgentChatStore.getState().sessions.map((session) => session.codexSessionId)).toEqual(['session-keep']);
+    expect(useAgentChatStore.getState().events.every((event) => event.codexSessionId === 'session-keep')).toBe(true);
+  });
+
+  it('keeps rollout filename session dismissals hidden after Scouter normalizes to UUID', async () => {
+    const baseTime = 1_811_122_000_000;
+    const rolloutSessionId = 'rollout-2026-06-03T11-42-51-019e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+    const uuidSessionId = '019e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+    mockGetScouterDebugInfo.mockResolvedValueOnce(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: rolloutSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+      }],
+      recentEvents: [{
+        eventId: 'event-rollout',
+        source: 'CODEX',
+        sessionId: rolloutSessionId,
+        timestamp: baseTime,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'old id',
+      }],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    useAgentChatStore.getState().dismissSession(rolloutSessionId);
+
+    expect(useAgentChatStore.getState().dismissedSessionIds).toEqual([uuidSessionId]);
+    expect(useAgentChatStore.getState().sessions).toEqual([]);
+    expect(useAgentChatStore.getState().events).toEqual([]);
+
+    mockGetScouterDebugInfo.mockResolvedValueOnce(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: uuidSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 1_000,
+        sessionStartAt: baseTime,
+      }],
+      recentEvents: [{
+        eventId: 'event-uuid',
+        source: 'CODEX',
+        sessionId: uuidSessionId,
+        timestamp: baseTime + 1_000,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'new id',
+      }],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+
+    expect(useAgentChatStore.getState().sessions).toEqual([]);
+    expect(useAgentChatStore.getState().events).toEqual([]);
   });
 });

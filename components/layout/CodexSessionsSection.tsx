@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
@@ -22,6 +22,7 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
   const loading = useAgentChatStore((s) => s.loading);
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
+  const dismissSession = useAgentChatStore((s) => s.dismissSession);
 
   useEffect(() => {
     if (!isOpen || iconsOnly) return undefined;
@@ -43,6 +44,22 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
       Alert.alert(t('sidebar.codex_resume_failed_title'), t('sidebar.codex_resume_failed_body'));
     }
   }, [addPane, t]);
+
+  const confirmDismiss = useCallback((session: AgentChatSession) => {
+    const name = session.projectName || session.codexSessionId;
+    Alert.alert(
+      t('agent_chat.dismiss_session_title'),
+      t('agent_chat.dismiss_session_body', { name }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => dismissSession(session.codexSessionId),
+        },
+      ],
+    );
+  }, [dismissSession, t]);
 
   return (
     <SidebarSection
@@ -85,6 +102,20 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
               {formatAge(session.lastEventAt, t)}
             </Text>
             <MaterialIcons name="play-arrow" size={12} color={C.accent} />
+            <Pressable
+              style={styles.deleteButton}
+              onPress={(event: GestureResponderEvent) => {
+                event.stopPropagation();
+                confirmDismiss(session);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={t('agent_chat.dismiss_session_a11y', {
+                name: session.projectName || session.codexSessionId,
+              })}
+              hitSlop={6}
+            >
+              <MaterialIcons name="close" size={11} color={C.text3} />
+            </Pressable>
           </Pressable>
         ))
       )}
@@ -147,6 +178,13 @@ const styles = StyleSheet.create({
     fontWeight: F.sidebarItem.weight,
     color: C.text2,
     letterSpacing: 0.3,
+  },
+  deleteButton: {
+    width: 18,
+    height: 18,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   empty: {
     fontSize: F.sidebarItem.size,

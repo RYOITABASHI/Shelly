@@ -9,6 +9,7 @@ import {
   Text,
   TextInput,
   View,
+  type GestureResponderEvent,
   type ListRenderItemInfo,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -50,6 +51,7 @@ export default function AgentChatPane() {
   const agentChatLastUpdatedAt = useAgentChatStore((s) => s.lastUpdatedAt);
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
+  const dismissSession = useAgentChatStore((s) => s.dismissSession);
   const terminalReadinessSignature = useTerminalStore((s) =>
     s.sessions
       .map((session) => [
@@ -161,6 +163,22 @@ export default function AgentChatPane() {
     }
   }, [activeSession, addPane, t]);
 
+  const confirmDismissSession = useCallback((session: AgentChatSession) => {
+    const name = session.projectName || session.codexSessionId;
+    Alert.alert(
+      t('agent_chat.dismiss_session_title'),
+      t('agent_chat.dismiss_session_body', { name }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => dismissSession(session.codexSessionId),
+        },
+      ],
+    );
+  }, [dismissSession, t]);
+
   const sendReply = useCallback(async () => {
     if (!activeSession || replySending || !draft.trim()) return;
     setReplySending(true);
@@ -223,6 +241,7 @@ export default function AgentChatPane() {
           sessions={sessionTabs}
           selectedSessionId={activeSession?.codexSessionId ?? null}
           onSelect={setSelectedSessionId}
+          onDismiss={confirmDismissSession}
           styles={styles}
           colors={colors}
           t={t}
@@ -392,6 +411,7 @@ function SessionTabs({
   sessions,
   selectedSessionId,
   onSelect,
+  onDismiss,
   styles,
   colors,
   t,
@@ -399,11 +419,12 @@ function SessionTabs({
   sessions: AgentChatSession[];
   selectedSessionId: string | null;
   onSelect: (sessionId: string) => void;
+  onDismiss: (session: AgentChatSession) => void;
   styles: ReturnType<typeof makeStyles>;
   colors: ThemeColorPalette;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
-  if (sessions.length <= 1) return null;
+  if (sessions.length === 0) return null;
   return (
     <ScrollView
       horizontal
@@ -444,6 +465,20 @@ function SessionTabs({
             <Text style={styles.sessionTabAge} numberOfLines={1}>
               {formatAge(session.lastEventAt, t)}
             </Text>
+            <Pressable
+              style={styles.sessionTabDeleteButton}
+              onPress={(event: GestureResponderEvent) => {
+                event.stopPropagation();
+                onDismiss(session);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={t('agent_chat.dismiss_session_a11y', {
+                name: session.projectName || session.codexSessionId,
+              })}
+              hitSlop={6}
+            >
+              <MaterialIcons name="close" size={11} color={selected ? colors.muted : colors.inactive} />
+            </Pressable>
           </Pressable>
         );
       })}
@@ -801,6 +836,13 @@ function makeStyles(colors: ThemeColorPalette) {
       fontFamily: F.family,
       fontSize: 6,
       lineHeight: 9,
+    },
+    sessionTabDeleteButton: {
+      width: 16,
+      height: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 5,
     },
     list: {
       flex: 1,

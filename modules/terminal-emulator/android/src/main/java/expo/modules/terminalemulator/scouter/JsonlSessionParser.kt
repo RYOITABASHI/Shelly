@@ -19,6 +19,8 @@ class JsonlSessionParser(
     private var modelName: String? = null
     private var previousCodexTotal: CodexUsage? = null
     private var codexCwd: String? = null
+    private var codexSessionId: String = extractCodexSessionIdFromFileName(file.nameWithoutExtension)
+        ?: file.nameWithoutExtension
 
     fun parse(line: String): ScouterEvent? {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return null
@@ -92,7 +94,7 @@ class JsonlSessionParser(
             source = ScouterSource.CODEX,
             sourceVersion = "jsonl",
             timestamp = parseTimestamp(json.optString("timestamp")),
-            sessionId = file.nameWithoutExtension,
+            sessionId = codexSessionId,
             projectName = projectNameFromCwd(cwd),
             cwd = cwd.redactForScouter(),
             eventType = ScouterEventType.SNAPSHOT,
@@ -183,7 +185,7 @@ class JsonlSessionParser(
             source = ScouterSource.CODEX,
             sourceVersion = "jsonl",
             timestamp = parseTimestamp(json.optString("timestamp")),
-            sessionId = file.nameWithoutExtension,
+            sessionId = codexSessionId,
             projectName = projectNameFromCwd(cwd),
             cwd = cwd.redactForScouter(),
             eventType = eventType,
@@ -281,7 +283,7 @@ class JsonlSessionParser(
             source = ScouterSource.CODEX,
             sourceVersion = "jsonl",
             timestamp = parseTimestamp(json.optString("timestamp")),
-            sessionId = file.nameWithoutExtension,
+            sessionId = codexSessionId,
             projectName = projectNameFromCwd(cwd),
             cwd = cwd.redactForScouter(),
             eventType = eventType,
@@ -322,6 +324,8 @@ class JsonlSessionParser(
     }
 
     private fun updateCodexMetadata(vararg jsonObjects: JSONObject?) {
+        codexSessionId = jsonObjects.asSequence().mapNotNull { extractCodexSessionId(it) }.firstOrNull()
+            ?: codexSessionId
         modelName = jsonObjects.asSequence().mapNotNull { extractCodexModel(it) }.firstOrNull() ?: modelName
         codexCwd = extractCodexCwd(*jsonObjects) ?: codexCwd
     }
@@ -358,6 +362,40 @@ class JsonlSessionParser(
             info?.optString("modelName"),
             metadata?.optString("model")
         )
+    }
+
+    private fun extractCodexSessionId(json: JSONObject?): String? {
+        if (json == null) return null
+        val payload = json.optJSONObject("payload")
+        return when (json.optString("type")) {
+            "session_meta" -> firstNonBlank(
+                payload?.optString("id"),
+                payload?.optString("session_id"),
+                payload?.optString("sessionId"),
+                json.optString("session_id"),
+                json.optString("sessionId")
+            )
+            "turn_context" -> firstNonBlank(
+                payload?.optString("session_id"),
+                payload?.optString("sessionId"),
+                payload?.optString("conversation_id"),
+                payload?.optString("conversationId"),
+                json.optString("session_id"),
+                json.optString("sessionId"),
+                json.optString("conversation_id"),
+                json.optString("conversationId")
+            )
+            else -> firstNonBlank(
+                json.optString("session_id"),
+                json.optString("sessionId"),
+                json.optString("conversation_id"),
+                json.optString("conversationId"),
+                payload?.optString("session_id"),
+                payload?.optString("sessionId"),
+                payload?.optString("conversation_id"),
+                payload?.optString("conversationId")
+            )
+        }?.let { normalizeCodexSessionId(it) }
     }
 
     private fun extractCodexCwd(vararg jsonObjects: JSONObject?): String? {
@@ -454,6 +492,18 @@ class JsonlSessionParser(
 
         private fun firstNonBlank(vararg values: String?): String? {
             return values.firstOrNull { !it.isNullOrBlank() }
+        }
+
+        private fun normalizeCodexSessionId(value: String): String {
+            val trimmed = value.trim()
+            return extractCodexSessionIdFromFileName(trimmed) ?: trimmed
+        }
+
+        private fun extractCodexSessionIdFromFileName(value: String): String? {
+            return Regex("([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
+                .find(value)
+                ?.groupValues
+                ?.getOrNull(1)
         }
 
         private fun parseTimestamp(value: String?): Long {

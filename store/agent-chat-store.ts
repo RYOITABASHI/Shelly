@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { logError } from '@/lib/debug-logger';
 
@@ -123,12 +124,14 @@ type AgentChatState = {
   events: AgentChatEvent[];
   bindings: Record<string, AgentChatBinding>;
   codexPtyLaunches: CodexPtyLaunch[];
+  dismissedSessionIds: string[];
   latestSessionId: string | null;
   loading: boolean;
   error: string | null;
   lastUpdatedAt: number | null;
   ingestNativeEvent: (payload: NativeScouterEventPayload) => void;
   recordCodexPtyCandidate: (candidate: CodexPtyCandidate) => void;
+  dismissSession: (sessionId: string) => void;
   refresh: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
@@ -141,14 +144,18 @@ type NativeScouterEventPayload = {
 };
 
 const MAX_EVENTS = 200;
+const MAX_DISMISSED_SESSIONS = 200;
 const REFRESH_MS = 5_000;
 const DEDUPE_WINDOW_MS = 2_000;
 const BINDING_MATCH_WINDOW_MS = 15 * 60_000;
 const PTY_LAUNCH_TTL_MS = 2 * 60 * 60_000;
 const MAX_PTY_LAUNCHES = 12;
+const DISMISSED_SESSIONS_STORAGE_KEY = 'shelly_agent_chat_dismissed_sessions';
 let pollingRefCount = 0;
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
 let liveSubscription: { remove(): void } | null = null;
+let dismissedSessionsHydrated = false;
+let dismissedSessionsHydratePromise: Promise<void> | null = null;
 
 export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   enabled: false,
@@ -157,6 +164,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   events: [],
   bindings: {},
   codexPtyLaunches: [],
+  dismissedSessionIds: [],
   latestSessionId: null,
   loading: false,
   error: null,
@@ -164,12 +172,19 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   ingestNativeEvent: (payload) => {
     const parsed = parseNativeScouterPayload(payload);
-    if (!parsed.event && !parsed.session) return;
+    const dismissedIds = new Set(get().dismissedSessionIds);
+    const parsedSession = parsed.session && !isDismissedSessionId(parsed.session.sessionId, dismissedIds)
+      ? parsed.session
+      : null;
+    const parsedEvent = parsed.event && !isDismissedSessionId(parsed.event.sessionId, dismissedIds)
+      ? parsed.event
+      : null;
+    if (!parsedEvent && !parsedSession) return;
 
     const currentSessions = get().sessions.map(agentSessionToScouterSession);
     const incomingSessions = [
-      ...(parsed.session ? [parsed.session] : []),
-      ...(!parsed.session && parsed.event ? [recentEventToScouterSession(parsed.event)] : []),
+      ...(parsedSession ? [parsedSession] : []),
+      ...(!parsedSession && parsedEvent ? [recentEventToScouterSession(parsedEvent)] : []),
     ];
     const sessions = dedupeCodexSessions([
       ...incomingSessions,
@@ -178,16 +193,16 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
     if (sessions.length === 0) return;
 
-    const sessionCwdById = collectRecentEventCwd(parsed.event ? [parsed.event] : []);
+    const sessionCwdById = collectRecentEventCwd(parsedEvent ? [parsedEvent] : []);
     const sessionsWithCwd = applyRecentEventCwd(sessions, sessionCwdById);
     const bindings = reconcileBindings(sessionsWithCwd, get().codexPtyLaunches, get().bindings);
     const boundSessions = applyBindingsToSessions(sessionsWithCwd, bindings);
     const incomingEvents = [
-      ...(parsed.session ? sessionToEvents(parsed.session) : []),
-      ...(parsed.event ? scouterRecentEventToAgentChatEvent(parsed.event) : []),
+      ...(parsedSession ? sessionToEvents(parsedSession) : []),
+      ...(parsedEvent ? scouterRecentEventToAgentChatEvent(parsedEvent) : []),
     ].sort((a, b) => a.timestamp - b.timestamp);
     const events = applyBindingsToEvents(
-      mergeEvents(get().events, incomingEvents, boundSessions),
+      mergeEvents(filterDismissedEvents(get().events, dismissedIds), incomingEvents, boundSessions),
       bindings,
     );
 
@@ -215,13 +230,41 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     });
   },
 
+  dismissSession: (sessionId) => {
+    const normalized = normalizeCodexSessionId(sessionId);
+    if (!normalized) return;
+    const dismissedSessionIds = [
+      normalized,
+      ...get().dismissedSessionIds.filter((id) => id !== normalized),
+    ].slice(0, MAX_DISMISSED_SESSIONS);
+    const dismissedSet = new Set(dismissedSessionIds);
+    const sessions = get().sessions.filter((session) => !isDismissedSessionId(session.codexSessionId, dismissedSet));
+    const events = filterDismissedEvents(get().events, dismissedSet);
+    const bindings = omitDismissedBindings(get().bindings, dismissedSet);
+    set({
+      dismissedSessionIds,
+      sessions,
+      events,
+      bindings,
+      latestSessionId: sessions[0]?.codexSessionId ?? null,
+      lastUpdatedAt: Date.now(),
+    });
+    persistDismissedSessionIds(dismissedSessionIds);
+  },
+
   refresh: async () => {
     set({ loading: true, error: null });
     try {
+      await hydrateDismissedSessionIds(set, get);
+      const dismissedIds = new Set(get().dismissedSessionIds);
       const raw = await TerminalEmulator.getScouterDebugInfo();
       const parsed = JSON.parse(raw) as ScouterDebugInfo;
-      const codexSessions = dedupeCodexSessions(parsed.sessions ?? []);
-      const sessionCwdById = collectRecentEventCwd(parsed.recentEvents ?? []);
+      const codexSessions = filterDismissedScouterSessions(
+        dedupeCodexSessions(parsed.sessions ?? []),
+        dismissedIds,
+      );
+      const recentEvents = filterDismissedRecentEvents(parsed.recentEvents ?? [], dismissedIds);
+      const sessionCwdById = collectRecentEventCwd(recentEvents);
       const sessions = codexSessions.map((session) => {
         const sessionId = session.sessionId?.trim() ?? '';
         return toAgentChatSession(session, sessionCwdById.get(sessionId));
@@ -231,11 +274,11 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       const boundSessions = applyBindingsToSessions(sessions, bindings);
       const newEvents = [
         ...codexSessions.flatMap(sessionToEvents),
-        ...(parsed.recentEvents ?? []).flatMap(scouterRecentEventToAgentChatEvent),
+        ...recentEvents.flatMap(scouterRecentEventToAgentChatEvent),
       ]
         .sort((a, b) => a.timestamp - b.timestamp);
       const events = applyBindingsToEvents(
-        mergeEvents(get().events, newEvents, boundSessions),
+        mergeEvents(filterDismissedEvents(get().events, dismissedIds), newEvents, boundSessions),
         bindings,
       );
 
@@ -260,6 +303,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   startPolling: () => {
     pollingRefCount += 1;
+    void hydrateDismissedSessionIds(set, get);
     startLiveSubscription();
     if (pollingTimer !== null) return;
     void get().refresh();
@@ -300,6 +344,58 @@ function stopLiveSubscription(): void {
   } catch (error) {
     logError('AgentChatStore', 'live event unsubscribe failed', error);
   }
+}
+
+async function hydrateDismissedSessionIds(
+  setState: (partial: Partial<AgentChatState>) => void,
+  getState: () => AgentChatState,
+): Promise<void> {
+  if (dismissedSessionsHydrated) return;
+  if (dismissedSessionsHydratePromise) return dismissedSessionsHydratePromise;
+  dismissedSessionsHydratePromise = AsyncStorage.getItem(DISMISSED_SESSIONS_STORAGE_KEY)
+    .then((raw) => {
+      const parsed = parseJsonObject<unknown>(raw ?? undefined);
+      const stored = Array.isArray(parsed)
+        ? parsed
+          .map((value) => typeof value === 'string' ? normalizeCodexSessionId(value) : '')
+          .filter(Boolean)
+        : [];
+      const merged = [
+        ...getState().dismissedSessionIds,
+        ...stored,
+      ];
+      const dismissedSessionIds = Array.from(new Set(merged))
+        .slice(0, MAX_DISMISSED_SESSIONS);
+      if (dismissedSessionIds.length > 0) {
+        const dismissedSet = new Set(dismissedSessionIds);
+        const sessions = getState().sessions.filter((session) => !isDismissedSessionId(session.codexSessionId, dismissedSet));
+        setState({
+          dismissedSessionIds,
+          sessions,
+          events: filterDismissedEvents(getState().events, dismissedSet),
+          bindings: omitDismissedBindings(getState().bindings, dismissedSet),
+          latestSessionId: sessions[0]?.codexSessionId ?? null,
+        });
+      }
+      dismissedSessionsHydrated = true;
+    })
+    .catch((error) => {
+      dismissedSessionsHydrated = true;
+      logError('AgentChatStore', 'dismissed session hydration failed', error);
+    })
+    .finally(() => {
+      dismissedSessionsHydratePromise = null;
+    });
+  return dismissedSessionsHydratePromise;
+}
+
+function persistDismissedSessionIds(sessionIds: string[]): void {
+  AsyncStorage.setItem(
+    DISMISSED_SESSIONS_STORAGE_KEY,
+    JSON.stringify(sessionIds.slice(0, MAX_DISMISSED_SESSIONS)),
+  ).catch((error) => {
+    logError('AgentChatStore', 'dismissed session persist failed', error);
+  });
 }
 
 function parseNativeScouterPayload(payload: NativeScouterEventPayload): {
@@ -370,6 +466,53 @@ function dedupeCodexSessions(sessions: ScouterSession[]): ScouterSession[] {
     }
   }
   return Array.from(byId.values()).sort((a, b) => timestampOf(b) - timestampOf(a));
+}
+
+function filterDismissedScouterSessions(
+  sessions: ScouterSession[],
+  dismissedIds: Set<string>,
+): ScouterSession[] {
+  if (dismissedIds.size === 0) return sessions;
+  return sessions.filter((session) => !isDismissedSessionId(session.sessionId, dismissedIds));
+}
+
+function filterDismissedRecentEvents(
+  events: ScouterRecentEvent[],
+  dismissedIds: Set<string>,
+): ScouterRecentEvent[] {
+  if (dismissedIds.size === 0) return events;
+  return events.filter((event) => !isDismissedSessionId(event.sessionId, dismissedIds));
+}
+
+function filterDismissedEvents(
+  events: AgentChatEvent[],
+  dismissedIds: Set<string>,
+): AgentChatEvent[] {
+  if (dismissedIds.size === 0) return events;
+  return events.filter((event) => !isDismissedSessionId(event.codexSessionId, dismissedIds));
+}
+
+function omitDismissedBindings(
+  bindings: Record<string, AgentChatBinding>,
+  dismissedIds: Set<string>,
+): Record<string, AgentChatBinding> {
+  if (dismissedIds.size === 0) return bindings;
+  const next: Record<string, AgentChatBinding> = {};
+  for (const [sessionId, binding] of Object.entries(bindings)) {
+    if (!isDismissedSessionId(sessionId, dismissedIds)) next[sessionId] = binding;
+  }
+  return next;
+}
+
+function isDismissedSessionId(sessionId: string | null | undefined, dismissedIds: Set<string>): boolean {
+  const normalized = normalizeCodexSessionId(sessionId);
+  return Boolean(normalized && dismissedIds.has(normalized));
+}
+
+function normalizeCodexSessionId(sessionId: string | null | undefined): string {
+  const trimmed = sessionId?.trim() ?? '';
+  return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/.exec(trimmed)?.[1]
+    ?? trimmed;
 }
 
 function toAgentChatSession(session: ScouterSession, cwdOverride?: string | null): AgentChatSession {
