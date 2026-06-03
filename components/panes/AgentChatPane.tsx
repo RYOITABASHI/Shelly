@@ -7,6 +7,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type ListRenderItemInfo,
 } from 'react-native';
@@ -21,7 +22,9 @@ import {
   type AgentChatStatus,
 } from '@/store/agent-chat-store';
 import { resumeCodexSession } from '@/lib/codex-session-resume';
+import { getCodexReplyReadiness, sendCodexReply } from '@/lib/codex-session-reply';
 import { useTranslation } from '@/lib/i18n';
+import { useTerminalStore } from '@/store/terminal-store';
 import { useTheme } from '@/hooks/use-theme';
 import type { ThemeColorPalette } from '@/lib/theme';
 import { fonts as F } from '@/theme.config';
@@ -44,9 +47,25 @@ export default function AgentChatPane() {
   const sessions = useAgentChatStore((s) => s.sessions);
   const events = useAgentChatStore((s) => s.events);
   const latestSessionId = useAgentChatStore((s) => s.latestSessionId);
+  const agentChatLastUpdatedAt = useAgentChatStore((s) => s.lastUpdatedAt);
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
+  const terminalReadinessSignature = useTerminalStore((s) =>
+    s.sessions
+      .map((session) => [
+        session.id,
+        session.nativeSessionId,
+        session.sessionStatus,
+        session.isAlive ? '1' : '0',
+        session.activeCli ?? '',
+      ].join(':'))
+      .join('|')
+  );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [replyReady, setReplyReady] = useState(false);
+  const [replyChecking, setReplyChecking] = useState(false);
+  const [replySending, setReplySending] = useState(false);
 
   useEffect(() => {
     startPolling();
@@ -86,6 +105,41 @@ export default function AgentChatPane() {
   }, [activeSession?.codexSessionId, events]);
   const hasTimelineEvents = visibleEvents.length > 0;
 
+  useEffect(() => {
+    const session = activeSession;
+    let cancelled = false;
+    setReplyReady(false);
+    if (!session) {
+      setReplyChecking(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    setReplyChecking(true);
+    void getCodexReplyReadiness(session)
+      .then((readiness) => {
+        if (!cancelled) setReplyReady(readiness.ready);
+      })
+      .catch(() => {
+        if (!cancelled) setReplyReady(false);
+      })
+      .finally(() => {
+        if (!cancelled) setReplyChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeSession?.codexSessionId,
+    activeSession?.bindingConfidence,
+    activeSession?.ptySessionId,
+    activeSession?.shellySessionId,
+    activeSession?.currentStatus,
+    activeSession?.lastEventAt,
+    agentChatLastUpdatedAt,
+    terminalReadinessSignature,
+  ]);
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<AgentChatEvent>) => (
       <AgentChatBubble
@@ -107,14 +161,37 @@ export default function AgentChatPane() {
     }
   }, [activeSession, addPane, t]);
 
+  const sendReply = useCallback(async () => {
+    if (!activeSession || replySending || !draft.trim()) return;
+    setReplySending(true);
+    const result = await sendCodexReply(activeSession, draft).catch(() => ({
+      status: 'failed' as const,
+      reason: 'screen_unavailable' as const,
+    }));
+    setReplySending(false);
+    if (result.status === 'sent') {
+      setDraft('');
+      setReplyReady(false);
+      setTimeout(() => void refresh(), 350);
+      return;
+    }
+    setReplyReady(false);
+    const bodyKey = result.status === 'failed'
+      ? 'agent_chat.reply_failed_body'
+      : 'agent_chat.reply_not_ready_body';
+    Alert.alert(t('agent_chat.reply_not_ready_title'), t(bodyKey));
+  }, [activeSession, draft, refresh, replySending, t]);
+
   return (
     <View style={[styles.root, { backgroundColor: paneBg }]}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
           <MaterialIcons name="forum" size={15} color={colors.accent} />
           <Text style={styles.title}>{t('agent_chat.title')}</Text>
-          <View style={styles.readOnlyPill}>
-            <Text style={styles.readOnlyText}>{t('agent_chat.read_only')}</Text>
+          <View style={[styles.readOnlyPill, replyReady && styles.replyReadyPill]}>
+            <Text style={[styles.readOnlyText, replyReady && styles.replyReadyText]}>
+              {t(replyReady ? 'agent_chat.reply_ready' : 'agent_chat.reply_locked')}
+            </Text>
           </View>
           <View style={styles.headerSpacer} />
           <Pressable
@@ -185,8 +262,78 @@ export default function AgentChatPane() {
 
       <View style={styles.footer}>
         <MaterialIcons name="lock-outline" size={13} color={colors.muted} />
-        <Text style={styles.footerText}>{t('agent_chat.phase3_hint')}</Text>
+        <Text style={styles.footerText}>{t('agent_chat.phase4_hint')}</Text>
       </View>
+      <AgentChatReplyComposer
+        draft={draft}
+        onChangeDraft={setDraft}
+        onSend={sendReply}
+        hasSession={Boolean(activeSession)}
+        ready={replyReady}
+        checking={replyChecking}
+        sending={replySending}
+        styles={styles}
+        colors={colors}
+        t={t}
+      />
+    </View>
+  );
+}
+
+function AgentChatReplyComposer({
+  draft,
+  onChangeDraft,
+  onSend,
+  hasSession,
+  ready,
+  checking,
+  sending,
+  styles,
+  colors,
+  t,
+}: {
+  draft: string;
+  onChangeDraft: (value: string) => void;
+  onSend: () => void;
+  hasSession: boolean;
+  ready: boolean;
+  checking: boolean;
+  sending: boolean;
+  styles: ReturnType<typeof makeStyles>;
+  colors: ThemeColorPalette;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const canSend = hasSession && ready && !checking && !sending && draft.trim().length > 0;
+  const placeholder = hasSession
+    ? t(ready ? 'agent_chat.reply_placeholder' : 'agent_chat.reply_locked_placeholder')
+    : t('agent_chat.reply_no_session_placeholder');
+
+  return (
+    <View style={styles.replyBar}>
+      <TextInput
+        style={[styles.replyInput, !hasSession && styles.replyInputDisabled]}
+        value={draft}
+        onChangeText={onChangeDraft}
+        editable={hasSession && !sending}
+        multiline
+        placeholder={placeholder}
+        placeholderTextColor={colors.inactive}
+        accessibilityLabel={t('agent_chat.reply_input_a11y')}
+      />
+      <Pressable
+        style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
+        onPress={onSend}
+        disabled={!canSend}
+        accessibilityRole="button"
+        accessibilityLabel={t('agent_chat.send_reply_a11y')}
+        hitSlop={6}
+      >
+        {sending ? (
+          <ActivityIndicator size="small" color={colors.accent} />
+        ) : (
+          <MaterialIcons name="send" size={15} color={canSend ? colors.accent : colors.inactive} />
+        )}
+      </Pressable>
     </View>
   );
 }
@@ -536,12 +683,19 @@ function makeStyles(colors: ThemeColorPalette) {
       paddingVertical: 2,
       backgroundColor: withAlpha(colors.muted, 0.1),
     },
+    replyReadyPill: {
+      borderColor: withAlpha(colors.success, 0.62),
+      backgroundColor: withAlpha(colors.success, 0.12),
+    },
     readOnlyText: {
       color: colors.muted,
       fontFamily: F.family,
       fontSize: 7,
       fontWeight: '700',
       letterSpacing: 0,
+    },
+    replyReadyText: {
+      color: colors.success,
     },
     headerSpacer: {
       flex: 1,
@@ -830,6 +984,53 @@ function makeStyles(colors: ThemeColorPalette) {
       fontFamily: F.family,
       fontSize: 7,
       lineHeight: 12,
+    },
+    replyBar: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      gap: 7,
+      paddingHorizontal: 10,
+      paddingTop: 7,
+      paddingBottom: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      backgroundColor: withAlpha(colors.background, 0.94),
+    },
+    replyInput: {
+      flex: 1,
+      minHeight: 34,
+      maxHeight: 96,
+      borderRadius: 7,
+      borderWidth: 1,
+      borderColor: withAlpha(colors.accent, 0.44),
+      backgroundColor: withAlpha(colors.surfaceHigh, 0.72),
+      color: colors.foreground,
+      fontFamily: F.family,
+      fontSize: 9,
+      lineHeight: 14,
+      paddingHorizontal: 10,
+      paddingTop: 8,
+      paddingBottom: 8,
+      textAlignVertical: 'top',
+    },
+    replyInputDisabled: {
+      opacity: 0.58,
+      borderColor: withAlpha(colors.border, 0.78),
+    },
+    sendButton: {
+      width: 34,
+      height: 34,
+      borderRadius: 7,
+      borderWidth: 1,
+      borderColor: withAlpha(colors.accent, 0.58),
+      backgroundColor: withAlpha(colors.accent, 0.12),
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    sendButtonDisabled: {
+      borderColor: withAlpha(colors.border, 0.7),
+      backgroundColor: withAlpha(colors.surfaceHigh, 0.52),
+      opacity: 0.62,
     },
   });
 }
