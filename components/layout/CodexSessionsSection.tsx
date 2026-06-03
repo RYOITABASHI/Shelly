@@ -108,67 +108,64 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
             {loading ? t('agent_chat.loading') : t('sidebar.codex_sessions_empty')}
           </Text>
         ) : (
-          codexSessions.map((session) => (
-            <Pressable
-              key={session.codexSessionId}
-              style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-              onPress={() => resume(session)}
-              hitSlop={4}
-              accessibilityRole="button"
-              accessibilityLabel={t('sidebar.codex_resume_a11y', {
-                name: session.projectName || session.codexSessionId,
-              })}
-            >
-              <View style={[
-                styles.dot,
-                { backgroundColor: session.bindingConfidence === 'reliable' ? C.accent : C.text3 },
-              ]} />
-              <View style={styles.info}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {(session.projectName || t('agent_chat.session_fallback')).toUpperCase()}
-                </Text>
-                <View style={styles.metaRow}>
-                  <Text style={styles.meta} numberOfLines={1}>
-                    {session.modelName || shortSessionId(session.codexSessionId)}
+          <View style={styles.list}>
+            {codexSessions.map((session) => (
+              <Pressable
+                key={session.codexSessionId}
+                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                onPress={() => resume(session)}
+                hitSlop={4}
+                accessibilityRole="button"
+                accessibilityLabel={t('sidebar.codex_resume_a11y', {
+                  name: session.projectName || session.codexSessionId,
+                })}
+              >
+                <View style={[
+                  styles.dot,
+                  { backgroundColor: session.bindingConfidence === 'reliable' ? C.accent : C.text3 },
+                ]} />
+                <View style={styles.info}>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {(session.projectName || t('agent_chat.session_fallback')).toUpperCase()}
                   </Text>
-                  <Text style={styles.age} numberOfLines={1}>
-                    {formatAge(session.lastEventAt, t)}
+                  <Text style={styles.meta} numberOfLines={1}>
+                    {sessionSidebarMeta(session, t)}
                   </Text>
                 </View>
-              </View>
-              <View style={styles.actionGroup}>
-                <MaterialIcons name="play-arrow" size={13} color={C.accent} />
-                <Pressable
-                  style={styles.actionButton}
-                  onPress={(event: GestureResponderEvent) => {
-                    event.stopPropagation();
-                    beginRename(session);
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={t('agent_chat.rename_session_a11y', {
-                    name: session.projectName || session.codexSessionId,
-                  })}
-                  hitSlop={6}
-                >
-                  <MaterialIcons name="edit" size={11} color={C.text3} />
-                </Pressable>
-                <Pressable
-                  style={styles.actionButton}
-                  onPress={(event: GestureResponderEvent) => {
-                    event.stopPropagation();
-                    confirmDismiss(session);
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={t('agent_chat.dismiss_session_a11y', {
-                    name: session.projectName || session.codexSessionId,
-                  })}
-                  hitSlop={6}
-                >
-                  <MaterialIcons name="close" size={11} color={C.text3} />
-                </Pressable>
-              </View>
-            </Pressable>
-          ))
+                <View style={styles.actionGroup}>
+                  <MaterialIcons name="play-arrow" size={13} color={C.accent} />
+                  <Pressable
+                    style={styles.actionButton}
+                    onPress={(event: GestureResponderEvent) => {
+                      event.stopPropagation();
+                      beginRename(session);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('agent_chat.rename_session_a11y', {
+                      name: session.projectName || session.codexSessionId,
+                    })}
+                    hitSlop={6}
+                  >
+                    <MaterialIcons name="edit" size={11} color={C.text3} />
+                  </Pressable>
+                  <Pressable
+                    style={styles.actionButton}
+                    onPress={(event: GestureResponderEvent) => {
+                      event.stopPropagation();
+                      confirmDismiss(session);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('agent_chat.dismiss_session_a11y', {
+                      name: session.projectName || session.codexSessionId,
+                    })}
+                    hitSlop={6}
+                  >
+                    <MaterialIcons name="close" size={11} color={C.text3} />
+                  </Pressable>
+                </View>
+              </Pressable>
+            ))}
+          </View>
         )}
       </SidebarSection>
       <Modal
@@ -244,6 +241,13 @@ function formatAge(
   return t('time.days_ago_short', { count: Math.floor(diff / 86400) });
 }
 
+function sessionSidebarMeta(
+  session: AgentChatSession,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  return `${session.modelName || shortSessionId(session.codexSessionId)} · ${formatAge(session.lastEventAt, t)}`;
+}
+
 function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout_full' | 'no_terminal' | undefined): string {
   switch (reason) {
     case 'terminal_cap':
@@ -259,17 +263,26 @@ function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout
 }
 
 const styles = StyleSheet.create({
+  list: {
+    gap: 4,
+    paddingHorizontal: P.sidebarItem.px,
+    paddingVertical: 3,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: P.sidebarItem.px,
-    paddingVertical: 4,
-    minHeight: 34,
-    borderRadius: R.badge,
+    minHeight: 38,
+    borderWidth: 1,
+    borderColor: withAlpha(C.border, 0.75),
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    backgroundColor: withAlpha(C.accent, 0.03),
   },
   rowPressed: {
-    backgroundColor: withAlpha(C.accent, 0.08),
+    borderColor: C.accent,
+    backgroundColor: withAlpha(C.accent, 0.1),
   },
   dot: {
     width: S.agentDotSize,
@@ -286,33 +299,19 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: F.sidebarItem.weight,
     color: C.text1,
-    letterSpacing: 0.3,
+    letterSpacing: 0,
   },
   meta: {
-    flexShrink: 1,
     fontSize: F.badge.size,
     fontFamily: F.family,
     color: C.text3,
-    letterSpacing: 0.2,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    minWidth: 0,
-  },
-  age: {
-    fontSize: F.badge.size,
-    fontFamily: F.family,
-    fontWeight: F.sidebarItem.weight,
-    color: C.text2,
-    letterSpacing: 0.3,
+    letterSpacing: 0,
   },
   actionGroup: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 2,
+    gap: 1,
     flexShrink: 0,
   },
   actionButton: {
