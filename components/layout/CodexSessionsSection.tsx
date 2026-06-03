@@ -127,42 +127,46 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
                 <Text style={styles.name} numberOfLines={1}>
                   {(session.projectName || t('agent_chat.session_fallback')).toUpperCase()}
                 </Text>
-                <Text style={styles.meta} numberOfLines={1}>
-                  {session.modelName || shortSessionId(session.codexSessionId)}
-                </Text>
+                <View style={styles.metaRow}>
+                  <Text style={styles.meta} numberOfLines={1}>
+                    {session.modelName || shortSessionId(session.codexSessionId)}
+                  </Text>
+                  <Text style={styles.age} numberOfLines={1}>
+                    {formatAge(session.lastEventAt, t)}
+                  </Text>
+                </View>
               </View>
-              <Text style={styles.age} numberOfLines={1}>
-                {formatAge(session.lastEventAt, t)}
-              </Text>
-              <MaterialIcons name="play-arrow" size={12} color={C.accent} />
-              <Pressable
-                style={styles.actionButton}
-                onPress={(event: GestureResponderEvent) => {
-                  event.stopPropagation();
-                  beginRename(session);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={t('agent_chat.rename_session_a11y', {
-                  name: session.projectName || session.codexSessionId,
-                })}
-                hitSlop={6}
-              >
-                <MaterialIcons name="edit" size={11} color={C.text3} />
-              </Pressable>
-              <Pressable
-                style={styles.actionButton}
-                onPress={(event: GestureResponderEvent) => {
-                  event.stopPropagation();
-                  confirmDismiss(session);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={t('agent_chat.dismiss_session_a11y', {
-                  name: session.projectName || session.codexSessionId,
-                })}
-                hitSlop={6}
-              >
-                <MaterialIcons name="close" size={11} color={C.text3} />
-              </Pressable>
+              <View style={styles.actionGroup}>
+                <MaterialIcons name="play-arrow" size={13} color={C.accent} />
+                <Pressable
+                  style={styles.actionButton}
+                  onPress={(event: GestureResponderEvent) => {
+                    event.stopPropagation();
+                    beginRename(session);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('agent_chat.rename_session_a11y', {
+                    name: session.projectName || session.codexSessionId,
+                  })}
+                  hitSlop={6}
+                >
+                  <MaterialIcons name="edit" size={11} color={C.text3} />
+                </Pressable>
+                <Pressable
+                  style={styles.actionButton}
+                  onPress={(event: GestureResponderEvent) => {
+                    event.stopPropagation();
+                    confirmDismiss(session);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('agent_chat.dismiss_session_a11y', {
+                    name: session.projectName || session.codexSessionId,
+                  })}
+                  hitSlop={6}
+                >
+                  <MaterialIcons name="close" size={11} color={C.text3} />
+                </Pressable>
+              </View>
             </Pressable>
           ))
         )}
@@ -258,9 +262,10 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
     paddingHorizontal: P.sidebarItem.px,
-    height: S.sidebarItemHeight,
+    paddingVertical: 4,
+    minHeight: 34,
     borderRadius: R.badge,
   },
   rowPressed: {
@@ -274,6 +279,7 @@ const styles = StyleSheet.create({
   info: {
     flex: 1,
     minWidth: 0,
+    gap: 1,
   },
   name: {
     fontSize: F.sidebarItem.size,
@@ -283,10 +289,17 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   meta: {
+    flexShrink: 1,
     fontSize: F.badge.size,
     fontFamily: F.family,
     color: C.text3,
     letterSpacing: 0.2,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
   },
   age: {
     fontSize: F.badge.size,
@@ -295,9 +308,16 @@ const styles = StyleSheet.create({
     color: C.text2,
     letterSpacing: 0.3,
   },
+  actionGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 2,
+    flexShrink: 0,
+  },
   actionButton: {
-    width: 18,
-    height: 18,
+    width: 20,
+    height: 20,
     borderRadius: 5,
     alignItems: 'center',
     justifyContent: 'center',
