@@ -257,7 +257,10 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     try {
       await hydrateDismissedSessionIds(set, get);
       const dismissedIds = new Set(get().dismissedSessionIds);
-      const raw = await TerminalEmulator.getScouterDebugInfo();
+      const raw = await (
+        TerminalEmulator.refreshScouter?.()
+        ?? TerminalEmulator.getScouterDebugInfo()
+      );
       const parsed = JSON.parse(raw) as ScouterDebugInfo;
       const codexSessions = filterDismissedScouterSessions(
         dedupeCodexSessions(parsed.sessions ?? []),

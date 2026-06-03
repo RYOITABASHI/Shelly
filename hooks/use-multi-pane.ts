@@ -471,14 +471,19 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
         const slotId = genId();
+        let newSessionId: string | undefined;
         if (tab === 'terminal') {
           const { useTerminalStore } = require('@/store/terminal-store');
-          const newSessionId = useTerminalStore.getState().addSession();
+          newSessionId = useTerminalStore.getState().addSession();
+          if (!newSessionId) {
+            logInfo('MultiPane', 'addPane terminal ignored — session cap reached');
+            return 'terminal_cap';
+          }
           newSlots[empty] = { id: slotId, tab, sessionId: newSessionId };
         } else {
           newSlots[empty] = { id: slotId, tab };
         }
-        set({ preset, slots: newSlots, focusedSlot: empty });
+        set({ preset, slots: newSlots, focusedSlot: empty, maximizedSlot: null });
 
         // bug #116 follow-up 10 (P1-2): mirror focusedSlot into
         // usePaneStore so the newly-added pane becomes the actual focus

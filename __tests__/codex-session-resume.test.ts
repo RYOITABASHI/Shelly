@@ -267,7 +267,7 @@ describe('codex session resume', () => {
       bindingConfidence: 'none',
     }), { addTerminalPane });
 
-    expect(result).toEqual({ status: 'failed' });
+    expect(result).toEqual(expect.objectContaining({ status: 'failed' }));
     expect(mockTerminalState.pendingCommand).toBeNull();
   });
 
@@ -304,7 +304,97 @@ describe('codex session resume', () => {
 
     const result = await resumeCodexSession(codexSession(), { addTerminalPane });
 
-    expect(result).toEqual({ status: 'failed' });
+    expect(result).toEqual(expect.objectContaining({ status: 'failed' }));
+    expect(mockTerminalState.pendingCommand).toBeNull();
+  });
+
+  it('queues resume into a newly added terminal pane when none is visible', async () => {
+    mockMultiPaneState.preset = 'p2h';
+    mockMultiPaneState.slots = [
+      { id: 'pane-agent-chat', tab: 'agent-chat' },
+      null,
+      null,
+      null,
+    ];
+    mockMultiPaneState.focusedSlot = 0;
+    const addTerminalPane = jest.fn(() => {
+      mockTerminalState.sessions = [
+        ...mockTerminalState.sessions,
+        terminalSession('terminal-new', 'shelly-2', {
+          sessionStatus: 'starting',
+          isAlive: false,
+        }),
+      ];
+      mockTerminalState.activeSessionId = 'terminal-new';
+      mockMultiPaneState.slots[1] = { id: 'pane-terminal-new', tab: 'terminal', sessionId: 'terminal-new' };
+      mockMultiPaneState.focusedSlot = 1;
+      return null;
+    });
+
+    const result = await resumeCodexSession(codexSession({
+      codexSessionId: 'codex-from-agent-pane',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'queued', sessionId: 'terminal-new' });
+    expect(addTerminalPane).toHaveBeenCalledWith('terminal', { silent: true });
+    expect(mockTerminalState.pendingCommand).toEqual({
+      command: "cd '/data/data/dev.shelly.terminal/files/home' && codex resume 'codex-from-agent-pane'\n",
+      sessionId: 'terminal-new',
+    });
+    expect(mockMultiPaneState.focusedSlot).toBe(1);
+  });
+
+  it('keeps a maximized Agent Chat pane from consuming a newly added resume terminal', async () => {
+    mockMultiPaneState.preset = 'p2h';
+    mockMultiPaneState.slots = [
+      { id: 'pane-agent-chat', tab: 'agent-chat' },
+      null,
+      null,
+      null,
+    ];
+    mockMultiPaneState.focusedSlot = 0;
+    mockMultiPaneState.maximizedSlot = 0;
+    const addTerminalPane = jest.fn(() => {
+      mockTerminalState.sessions = [
+        ...mockTerminalState.sessions,
+        terminalSession('terminal-new', 'shelly-2', {
+          sessionStatus: 'starting',
+          isAlive: false,
+        }),
+      ];
+      mockTerminalState.activeSessionId = 'terminal-new';
+      mockMultiPaneState.slots[1] = { id: 'pane-terminal-new', tab: 'terminal', sessionId: 'terminal-new' };
+      mockMultiPaneState.focusedSlot = 1;
+      mockMultiPaneState.maximizedSlot = null;
+      return null;
+    });
+
+    const result = await resumeCodexSession(codexSession({
+      codexSessionId: 'codex-from-maximized-agent-pane',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'queued', sessionId: 'terminal-new' });
+    expect(mockMultiPaneState.slots[0]?.tab).toBe('agent-chat');
+    expect(mockMultiPaneState.slots[1]?.sessionId).toBe('terminal-new');
+    expect(mockMultiPaneState.setSlotTab).not.toHaveBeenCalled();
+    expect(mockMultiPaneState.maximizedSlot).toBeNull();
+  });
+
+  it('reports terminal cap when a resume needs a new terminal but none can be created', async () => {
+    mockTerminalState.sessions = [];
+    mockMultiPaneState.slots = [
+      { id: 'pane-agent-chat', tab: 'agent-chat' },
+      null,
+      null,
+      null,
+    ];
+    const addTerminalPane = jest.fn(() => 'terminal_cap' as const);
+
+    const result = await resumeCodexSession(codexSession({
+      codexSessionId: 'codex-needs-terminal',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'failed', reason: 'terminal_cap' });
     expect(mockTerminalState.pendingCommand).toBeNull();
   });
 

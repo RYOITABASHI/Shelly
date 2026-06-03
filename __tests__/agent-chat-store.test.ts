@@ -1,4 +1,5 @@
 const mockGetScouterDebugInfo = jest.fn();
+const mockRefreshScouter = jest.fn();
 const mockAddListener = jest.fn();
 const mockAsyncStorageValues = new Map<string, string>();
 const mockAsyncStorageGetItem = jest.fn((key: string) => Promise.resolve(mockAsyncStorageValues.get(key) ?? null));
@@ -11,6 +12,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   __esModule: true,
   default: {
     getScouterDebugInfo: mockGetScouterDebugInfo,
+    refreshScouter: mockRefreshScouter,
     addListener: mockAddListener,
   },
 }));
@@ -50,7 +52,23 @@ describe('agent chat store', () => {
     jest.clearAllMocks();
     mockAsyncStorageValues.clear();
     mockAddListener.mockReturnValue({ remove: jest.fn() });
+    mockRefreshScouter.mockImplementation(() => mockGetScouterDebugInfo());
     resetAgentChatStore();
+  });
+
+  it('forces a native Scouter scan when refreshing Agent Chat', async () => {
+    mockRefreshScouter.mockResolvedValueOnce(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [],
+      recentEvents: [],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+
+    expect(mockRefreshScouter).toHaveBeenCalledTimes(1);
+    expect(mockGetScouterDebugInfo).not.toHaveBeenCalled();
+    expect(useAgentChatStore.getState().loading).toBe(false);
   });
 
   it('filters synthetic Codex context and collapses duplicate message events', async () => {

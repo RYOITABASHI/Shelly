@@ -60,6 +60,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   pasteClipboardToSession(sessionId: string): Promise<void>;
   setScouterEnabled(enabled: boolean): Promise<void>;
   getScouterDebugInfo(): Promise<string>;
+  refreshScouter?(): Promise<string>;
   getScouterHookTemplate(source: 'cc' | 'codex' | string): Promise<string>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }

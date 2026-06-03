@@ -101,6 +101,15 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         return base
     }
 
+    @Synchronized
+    fun refreshJson(): JSONObject {
+        if (store.isEnabled()) {
+            if (server == null || watcher == null) start()
+            watcher?.scanNow()
+        }
+        return debugJson()
+    }
+
     fun hookTemplate(source: String): JSONObject {
         val prefix = when (source.lowercase()) {
             "codex" -> "codex"

@@ -16,7 +16,13 @@ type AddTerminalPane = (
 export type CodexSessionResumeResult =
   | { status: 'focused'; sessionId: string }
   | { status: 'queued'; sessionId: string }
-  | { status: 'failed' };
+  | { status: 'failed'; reason: CodexSessionResumeFailureReason };
+
+export type CodexSessionResumeFailureReason =
+  | 'terminal_busy'
+  | 'terminal_cap'
+  | 'layout_full'
+  | 'no_terminal';
 
 export async function resumeCodexSession(
   session: AgentChatSession,
@@ -28,17 +34,28 @@ export async function resumeCodexSession(
   }
 
   let targetSessionId: string | undefined;
+  let failureReason: CodexSessionResumeFailureReason = 'no_terminal';
   const hasTerminalPane = visibleSlotEntries().some(({ slot }) => slot.tab === 'terminal');
 
   if (hasTerminalPane) {
     targetSessionId = createTerminalSessionForFocusedPane();
+    if (!targetSessionId) failureReason = 'terminal_cap';
   } else {
-    options.addTerminalPane('terminal', { silent: true });
+    const beforeIds = new Set(useTerminalStore.getState().sessions.map((terminalSession) => terminalSession.id));
+    const addResult = options.addTerminalPane('terminal', { silent: true });
+    if (addResult) {
+      failureReason = addResult;
+    } else {
+      targetSessionId = findNewTerminalSessionId(beforeIds);
+    }
   }
   targetSessionId = targetSessionId ?? await pickFallbackTerminalSessionId();
 
   if (!targetSessionId) {
-    return { status: 'failed' };
+    return {
+      status: 'failed',
+      reason: reasonForMissingResumeTarget(failureReason),
+    };
   }
 
   const cwd = session.cwd?.trim();
@@ -49,6 +66,20 @@ export async function resumeCodexSession(
   useTerminalStore.getState().insertCommand(command, targetSessionId, { durable: true });
   focusTerminalSession(targetSessionId);
   return { status: 'queued', sessionId: targetSessionId };
+}
+
+function findNewTerminalSessionId(beforeIds: Set<string>): string | undefined {
+  const terminalState = useTerminalStore.getState();
+  const created = terminalState.sessions.find((session) => !beforeIds.has(session.id));
+  if (created) return created.id;
+  return beforeIds.has(terminalState.activeSessionId) ? undefined : terminalState.activeSessionId;
+}
+
+function reasonForMissingResumeTarget(
+  reason: CodexSessionResumeFailureReason,
+): CodexSessionResumeFailureReason {
+  if (reason !== 'no_terminal') return reason;
+  return useTerminalStore.getState().sessions.length > 0 ? 'terminal_busy' : 'no_terminal';
 }
 
 async function findBoundTerminalSessionId(session: AgentChatSession): Promise<string | undefined> {

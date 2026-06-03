@@ -17,6 +17,7 @@ class JsonlWatcher(
     private var startedAt = 0L
     private var lastLocalSampleAt = 0L
     private var lastLocalSampleSignature: String? = null
+    private val scanLock = Any()
     @Volatile private var lastScanError: String? = null
     @Volatile private var lastScanAt = 0L
     @Volatile private var lastBackfillFile: String? = null
@@ -45,17 +46,27 @@ class JsonlWatcher(
         put("lastBackfillFile", lastBackfillFile)
     }
 
+    fun scanNow() {
+        scanSafely()
+    }
+
     private fun loop() {
         while (running.get()) {
-            try {
+            scanSafely()
+            Thread.sleep(3_000L)
+        }
+    }
+
+    private fun scanSafely() {
+        try {
+            synchronized(scanLock) {
                 scanSource(ScouterSource.CODEX, File(homeDir, ".codex/sessions"))
                 maybeSampleLocalLlm()
                 lastScanError = null
-            } catch (e: Throwable) {
-                lastScanError = e.javaClass.simpleName + ": " + (e.message ?: "")
-                Log.w(TAG, "JSONL scan failed", e)
             }
-            Thread.sleep(3_000L)
+        } catch (e: Throwable) {
+            lastScanError = e.javaClass.simpleName + ": " + (e.message ?: "")
+            Log.w(TAG, "JSONL scan failed", e)
         }
     }
 

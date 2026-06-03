@@ -41,7 +41,7 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
   const resume = useCallback(async (session: AgentChatSession) => {
     const result = await resumeCodexSession(session, { addTerminalPane: addPane });
     if (result.status === 'failed') {
-      Alert.alert(t('sidebar.codex_resume_failed_title'), t('sidebar.codex_resume_failed_body'));
+      Alert.alert(t('sidebar.codex_resume_failed_title'), t(resumeFailureBodyKey(result.reason)));
     }
   }, [addPane, t]);
 
@@ -136,6 +136,20 @@ function formatAge(
   if (diff < 3600) return t('time.minutes_ago_short', { count: Math.floor(diff / 60) });
   if (diff < 86400) return t('time.hours_ago_short', { count: Math.floor(diff / 3600) });
   return t('time.days_ago_short', { count: Math.floor(diff / 86400) });
+}
+
+function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout_full' | 'no_terminal' | undefined): string {
+  switch (reason) {
+    case 'terminal_cap':
+      return 'sidebar.codex_resume_failed_terminal_cap_body';
+    case 'layout_full':
+      return 'sidebar.codex_resume_failed_layout_full_body';
+    case 'terminal_busy':
+      return 'sidebar.codex_resume_failed_terminal_busy_body';
+    case 'no_terminal':
+    default:
+      return 'sidebar.codex_resume_failed_body';
+  }
 }
 
 const styles = StyleSheet.create({

@@ -725,6 +725,12 @@ class TerminalEmulatorModule : Module() {
             ScouterLifecycleService.get(context).debugJson().toString(2)
         }
 
+        AsyncFunction("refreshScouter") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterLifecycleService.get(context).refreshJson().toString(2)
+        }
+
         AsyncFunction("getScouterHookTemplate") { source: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

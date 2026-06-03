@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +31,8 @@ import type { ThemeColorPalette } from '@/lib/theme';
 import { fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+
+const MAX_VISIBLE_SESSION_TABS = 4;
 
 export default function AgentChatPane() {
   const { t } = useTranslation();
@@ -75,20 +77,20 @@ export default function AgentChatPane() {
   }, [startPolling, stopPolling]);
 
   const sessionTabs = useMemo(
-    () => [...sessions].sort((a, b) => b.lastEventAt - a.lastEventAt).slice(0, 8),
-    [sessions],
+    () => compactSessionTabs(sessions, MAX_VISIBLE_SESSION_TABS, selectedSessionId),
+    [selectedSessionId, sessions],
   );
 
   useEffect(() => {
-    const fallbackSessionId = latestSessionId ?? sessionTabs[0]?.codexSessionId ?? null;
+    const fallbackSessionId = latestSessionId ?? sessions[0]?.codexSessionId ?? null;
     const selectedExists = selectedSessionId
-      ? sessionTabs.some((session) => session.codexSessionId === selectedSessionId)
+      ? sessions.some((session) => session.codexSessionId === selectedSessionId)
       : false;
     const nextSessionId = selectedExists ? selectedSessionId : fallbackSessionId;
     if (nextSessionId !== selectedSessionId) {
       setSelectedSessionId(nextSessionId);
     }
-  }, [latestSessionId, selectedSessionId, sessionTabs]);
+  }, [latestSessionId, selectedSessionId, sessions]);
 
   const activeSession = useMemo(
     () => (
@@ -159,7 +161,7 @@ export default function AgentChatPane() {
     if (!activeSession) return;
     const result = await resumeCodexSession(activeSession, { addTerminalPane: addPane });
     if (result.status === 'failed') {
-      Alert.alert(t('sidebar.codex_resume_failed_title'), t('sidebar.codex_resume_failed_body'));
+      Alert.alert(t('sidebar.codex_resume_failed_title'), t(resumeFailureBodyKey(result.reason)));
     }
   }, [activeSession, addPane, t]);
 
@@ -424,9 +426,20 @@ function SessionTabs({
   colors: ThemeColorPalette;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  const scrollRef = useRef<ScrollView>(null);
+  const sessionOrderKey = sessions.map((session) => session.codexSessionId).join('|');
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ x: 0, animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [sessionOrderKey]);
+
   if (sessions.length === 0) return null;
   return (
     <ScrollView
+      ref={scrollRef}
       horizontal
       showsHorizontalScrollIndicator={false}
       style={styles.sessionTabsScroll}
@@ -680,6 +693,60 @@ function formatAge(
 
 function shortSessionId(sessionId: string): string {
   return sessionId.slice(0, 8);
+}
+
+function compactSessionTabs(
+  sessions: AgentChatSession[],
+  limit: number,
+  selectedSessionId?: string | null,
+): AgentChatSession[] {
+  const sortedSessions = [...sessions].sort((a, b) => b.lastEventAt - a.lastEventAt);
+  const byWorkspace = new Map<string, AgentChatSession>();
+  const selectedSession = selectedSessionId
+    ? sortedSessions.find((session) => session.codexSessionId === selectedSessionId)
+    : null;
+
+  for (const session of sortedSessions) {
+    const key = sessionTabWorkspaceKey(session);
+    if (!byWorkspace.has(key)) {
+      byWorkspace.set(key, session);
+    }
+    if (byWorkspace.size >= limit) break;
+  }
+
+  if (selectedSession && !Array.from(byWorkspace.values()).some((session) => session.codexSessionId === selectedSessionId)) {
+    const selectedKey = sessionTabWorkspaceKey(selectedSession);
+    if (byWorkspace.has(selectedKey)) {
+      byWorkspace.set(selectedKey, selectedSession);
+    } else {
+      const compacted = Array.from(byWorkspace.entries());
+      if (compacted.length >= limit) compacted.pop();
+      compacted.push([selectedKey, selectedSession]);
+      return compacted.map(([, session]) => session);
+    }
+  }
+  return Array.from(byWorkspace.values());
+}
+
+function sessionTabWorkspaceKey(session: AgentChatSession): string {
+  const workspace = session.cwd?.trim() || session.projectName?.trim();
+  const model = session.modelName?.trim();
+  if (!workspace || !model) return `session:${session.codexSessionId}`;
+  return `${workspace}:${model}`;
+}
+
+function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout_full' | 'no_terminal' | undefined): string {
+  switch (reason) {
+    case 'terminal_cap':
+      return 'sidebar.codex_resume_failed_terminal_cap_body';
+    case 'layout_full':
+      return 'sidebar.codex_resume_failed_layout_full_body';
+    case 'terminal_busy':
+      return 'sidebar.codex_resume_failed_terminal_busy_body';
+    case 'no_terminal':
+    default:
+      return 'sidebar.codex_resume_failed_body';
+  }
 }
 
 function makeStyles(colors: ThemeColorPalette) {
