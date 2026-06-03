@@ -167,7 +167,7 @@ class TerminalEmulatorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
 
-        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize")
+        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize", "onScouterEvent")
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
         // outlived the previous Module instance. Without this, live sessions
@@ -178,7 +178,18 @@ class TerminalEmulatorModule : Module() {
                 session.emitEvent = ::emitEvent
             }
             appContext.reactContext?.let { context ->
-                runCatching { ScouterLifecycleService.get(context).ensureStartedIfEnabled() }
+                val scouter = ScouterLifecycleService.get(context)
+                scouter.setEventSink { event, snapshot ->
+                    emitEvent(
+                        "onScouterEvent",
+                        mapOf(
+                            "eventJson" to event.toJson().toString(),
+                            "snapshotJson" to snapshot.toJson().toString(),
+                            "emittedAt" to System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                runCatching { scouter.ensureStartedIfEnabled() }
                     .onFailure { Log.w("TerminalEmulator", "Scouter autostart skipped after startup failure", it) }
             }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")

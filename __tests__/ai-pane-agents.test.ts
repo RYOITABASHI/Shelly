@@ -45,7 +45,21 @@ describe('ai-pane agent registry', () => {
       cerebrasApiKey: 'cerebras-key',
       groqApiKey: 'groq-key',
       perplexityApiKey: 'pplx-key',
+      teamMembers: {},
+    } as any)).toBe('local');
+
+    expect(pickDefaultAiPaneAgent({
+      cerebrasApiKey: 'cerebras-key',
+      groqApiKey: 'groq-key',
+      perplexityApiKey: 'pplx-key',
       teamMembers: { cerebras: false },
+    } as any)).toBe('local');
+
+    expect(pickDefaultAiPaneAgent({
+      cerebrasApiKey: 'cerebras-key',
+      groqApiKey: 'groq-key',
+      perplexityApiKey: 'pplx-key',
+      teamMembers: { local: false, cerebras: false },
     } as any)).toBe('groq');
 
     expect(pickDefaultAiPaneAgent({

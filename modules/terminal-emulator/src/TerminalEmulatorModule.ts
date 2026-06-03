@@ -60,6 +60,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   setScouterEnabled(enabled: boolean): Promise<void>;
   getScouterDebugInfo(): Promise<string>;
   getScouterHookTemplate(source: 'cc' | 'codex' | string): Promise<string>;
+  addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 
 export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator');

@@ -40,6 +40,7 @@ import {
   pickDefaultAiPaneAgent,
   resolveAiPaneAgent,
 } from '@/lib/ai-pane-agents';
+import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -315,6 +316,12 @@ export default function AIPane() {
   }
 
   const boundAgent = usePaneStore((s) => s.paneAgents[paneId] ?? null);
+  useEffect(() => {
+    if (boundAgent === 'local') {
+      kickLocalLlmAutoStart('ai-pane-open');
+    }
+  }, [boundAgent]);
+
   const prevAgentRef = useRef<string | null>(boundAgent);
   useEffect(() => {
     const prev = prevAgentRef.current;

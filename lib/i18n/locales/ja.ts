@@ -591,6 +591,8 @@ const ja: Record<string, string> = {
   'llm.timeout_large': 'タイムアウト（60秒）。モデルが大きすぎる可能性があります。',
   'llm.timeout': 'タイムアウト。モデルが大きすぎる可能性があります。',
   'llm.connect_failed': 'ローカルLLMに接続できませんでした。llama-serverが起動しているか確認してください。',
+  'llm.model_missing': 'ローカルLLMモデルがインストールされていません。設定でモデルを選択またはダウンロードしてください。',
+  'llm.autostart_failed': 'llama-serverを起動できませんでした。設定のLocal LLMセットアップを確認してください。',
   'llm.category_chat': 'チャット',
   'llm.category_code': 'コード生成',
   'llm.category_research': '調査',

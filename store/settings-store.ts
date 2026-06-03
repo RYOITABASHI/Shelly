@@ -43,6 +43,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   localLlmEnabled: false,
   localLlmUrl: 'http://127.0.0.1:8080',
   localLlmModel: DEFAULT_LOCAL_LLM_MODEL,
+  localLlmModelPath: '',
   groqModel: 'llama-3.3-70b-versatile',
   perplexityApiKey: '',
   teamMembers: {
@@ -195,7 +196,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   updateSettings: (newSettings: Partial<AppSettings>) => {
     logInfo('Settings', 'Updated: ' + Object.keys(newSettings).join(', '));
     set((state) => {
-      const updated = { ...state.settings, ...newSettings };
+      const shouldClearLocalLlmModelPath =
+        'localLlmModel' in newSettings && !('localLlmModelPath' in newSettings);
+      const updated = {
+        ...state.settings,
+        ...newSettings,
+        ...(shouldClearLocalLlmModelPath ? { localLlmModelPath: '' } : {}),
+      };
       // Save API keys to SecureStore, strip them from AsyncStorage
       for (const [key, value] of Object.entries(newSettings)) {
         if (isApiKeyField(key) && typeof value === 'string') {
@@ -218,6 +225,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       if ('localLlmModel' in newSettings && typeof newSettings.localLlmModel === 'string') {
         envUpdates.push(['LOCAL_LLM_MODEL', newSettings.localLlmModel]);
+      }
+      if (shouldClearLocalLlmModelPath) {
+        envUpdates.push(['LOCAL_LLM_MODEL_PATH', '']);
+      } else if ('localLlmModelPath' in newSettings && typeof newSettings.localLlmModelPath === 'string') {
+        envUpdates.push(['LOCAL_LLM_MODEL_PATH', newSettings.localLlmModelPath]);
       }
       if (envUpdates.length > 0) {
         const keys = envUpdates.map(([key]) => key);

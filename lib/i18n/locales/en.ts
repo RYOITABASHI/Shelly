@@ -593,6 +593,8 @@ const en: Record<string, string> = {
   'llm.timeout_large': 'Timeout (60s). The model may be too large.',
   'llm.timeout': 'Timeout. The model may be too large.',
   'llm.connect_failed': 'Could not connect to local LLM. Make sure llama-server is running.',
+  'llm.model_missing': 'Local LLM model is not installed. Select or download a model in Settings.',
+  'llm.autostart_failed': 'Could not start llama-server. Check Local LLM setup in Settings.',
   'llm.category_chat': 'Chat',
   'llm.category_code': 'Code Generation',
   'llm.category_research': 'Research',

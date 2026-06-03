@@ -463,6 +463,7 @@ export async function executeCommand(
             localLlmEnabled:         settings.localLlmEnabled,
             localLlmUrl:             settings.localLlmUrl,
             localLlmModel:           settings.localLlmModel,
+            localLlmModelPath:       settings.localLlmModelPath ?? '',
             soundProfile:            useCosmeticStore.getState().soundProfile,
             fontFamily:              useCosmeticStore.getState().fontFamily,
             autocomplete:            (settings as Record<string, unknown>)['autocomplete'] ?? false,
@@ -552,7 +553,7 @@ export async function executeCommand(
           }
 
           // String settings
-          const STR_KEYS = new Set(['cursorShape', 'localLlmUrl', 'localLlmModel', 'terminalTheme', 'groqModel']);
+          const STR_KEYS = new Set(['cursorShape', 'localLlmUrl', 'localLlmModel', 'localLlmModelPath', 'terminalTheme', 'groqModel']);
           if (STR_KEYS.has(key)) {
             useSettingsStore.getState().updateSettings({ [key]: rawVal });
             return { lines: out(`${key} = ${rawVal}`), newState: {} };

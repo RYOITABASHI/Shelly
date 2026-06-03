@@ -240,9 +240,13 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
     (model: LlamaCppModel) => {
       setActiveModelId(model.id);
       const cfg = getLlamaCppLocalLlmConfig(model);
-      updateSettings({ localLlmUrl: cfg.baseUrl, localLlmModel: cfg.model });
+      updateSettings({
+        localLlmUrl: cfg.baseUrl,
+        localLlmModel: cfg.model,
+        localLlmModelPath: installedModelPaths[model.id] ?? `$HOME/models/${model.filename}`,
+      });
     },
-    [updateSettings],
+    [installedModelPaths, updateSettings],
   );
 
   const handleUpdateLocalLlmUrl = useCallback(

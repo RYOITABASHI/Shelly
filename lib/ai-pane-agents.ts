@@ -56,6 +56,7 @@ export function pickDefaultAiPaneAgent(settings: AppSettings): AiPaneAgentId {
   };
 
   return (
+    firstEnabled('local') ??
     (settings.cerebrasApiKey ? firstEnabled('cerebras') : null) ??
     (settings.groqApiKey ? firstEnabled('groq') : null) ??
     (settings.geminiApiKey ? firstEnabled('gemini') : null) ??

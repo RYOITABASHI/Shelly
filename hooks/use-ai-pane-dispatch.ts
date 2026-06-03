@@ -28,6 +28,7 @@ import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexi
 import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
 import { checkOllamaConnection, ollamaChatStream } from '@/lib/local-llm';
 import type { OllamaMessage } from '@/lib/local-llm';
+import { ensureLocalLlmServerRunning } from '@/lib/local-llm-autostart';
 import { parseInput } from '@/lib/input-router';
 import {
   createAgent,
@@ -48,6 +49,7 @@ import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
+import { t } from '@/lib/i18n';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -531,6 +533,18 @@ export function useAIPaneDispatch(paneId: string) {
           const terminalState = useTerminalStore.getState();
           const localCwd = terminalState.sessions.find((s) => s.id === terminalState.activeSessionId)?.currentDir ||
             '/data/data/dev.shelly.terminal/files/home';
+
+          const autoStart = await ensureLocalLlmServerRunning({
+            waitForReady: true,
+            reason: 'ai-pane-dispatch',
+          });
+          if (signal.aborted) return;
+          if (!autoStart.ok && autoStart.status === 'model_missing') {
+            throw new Error(t('llm.model_missing'));
+          }
+          if (!autoStart.ok && (autoStart.status === 'start_failed' || autoStart.status === 'recent_failure')) {
+            throw new Error(t('llm.autostart_failed'));
+          }
 
           const preflightTtlMs = 30_000;
           if (Date.now() - lastLocalStreamOkAtRef.current > preflightTtlMs) {

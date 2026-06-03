@@ -1,9 +1,11 @@
 const mockGetScouterDebugInfo = jest.fn();
+const mockAddListener = jest.fn();
 
 jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   __esModule: true,
   default: {
     getScouterDebugInfo: mockGetScouterDebugInfo,
+    addListener: mockAddListener,
   },
 }));
 
@@ -29,6 +31,7 @@ function resetAgentChatStore(): void {
 describe('agent chat store', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAddListener.mockReturnValue({ remove: jest.fn() });
     resetAgentChatStore();
   });
 
@@ -185,6 +188,48 @@ describe('agent chat store', () => {
 
     expect(useAgentChatStore.getState().events.filter((event) => event.kind === 'assistant_message')).toEqual([
       expect.objectContaining({ text: quotedContext }),
+    ]);
+  });
+
+  it('ingests native Scouter events without waiting for polling refresh', () => {
+    const baseTime = 1_811_114_000_000;
+
+    useAgentChatStore.getState().ingestNativeEvent({
+      emittedAt: baseTime + 2,
+      snapshotJson: JSON.stringify({
+        source: 'CODEX',
+        sessionId: 'session-live',
+        projectName: 'home',
+        currentStatus: 'THINKING',
+        lastEventAt: baseTime + 2,
+        sessionStartAt: baseTime,
+        modelName: 'gpt-5.5',
+        tokensUsed: 42,
+      }),
+      eventJson: JSON.stringify({
+        eventId: 'event-live-user',
+        source: 'CODEX',
+        sessionId: 'session-live',
+        projectName: 'home',
+        timestamp: baseTime + 1,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'ライブイベント',
+      }),
+    });
+
+    expect(useAgentChatStore.getState().latestSessionId).toBe('session-live');
+    expect(useAgentChatStore.getState().sessions).toEqual([
+      expect.objectContaining({
+        codexSessionId: 'session-live',
+        currentStatus: 'THINKING',
+        modelName: 'gpt-5.5',
+        tokensUsed: 42,
+      }),
+    ]);
+    expect(useAgentChatStore.getState().events).toEqual([
+      expect.objectContaining({ kind: 'user_message', text: 'ライブイベント' }),
+      expect.objectContaining({ kind: 'status', text: 'THINKING' }),
     ]);
   });
 });

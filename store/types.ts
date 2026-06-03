@@ -353,6 +353,8 @@ export type AppSettings = {
   localLlmUrl: string;
   /** Model name to use (default: Qwen3.5-4B-Q4_K_M) */
   localLlmModel: string;
+  /** Optional selected GGUF path for llama-server auto-start */
+  localLlmModelPath?: string;
   // ─── Perplexity Sonar API ────────────────────────────────────────────────────────
   /** Perplexity Sonar API キー (https://www.perplexity.ai/settings/api) */
   perplexityApiKey?: string;

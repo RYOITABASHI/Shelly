@@ -91,9 +91,16 @@ type AgentChatState = {
   loading: boolean;
   error: string | null;
   lastUpdatedAt: number | null;
+  ingestNativeEvent: (payload: NativeScouterEventPayload) => void;
   refresh: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
+};
+
+type NativeScouterEventPayload = {
+  eventJson?: string;
+  snapshotJson?: string;
+  emittedAt?: number;
 };
 
 const MAX_EVENTS = 200;
@@ -101,6 +108,7 @@ const REFRESH_MS = 5_000;
 const DEDUPE_WINDOW_MS = 2_000;
 let pollingRefCount = 0;
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
+let liveSubscription: { remove(): void } | null = null;
 
 export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   enabled: false,
@@ -111,6 +119,38 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   loading: false,
   error: null,
   lastUpdatedAt: null,
+
+  ingestNativeEvent: (payload) => {
+    const parsed = parseNativeScouterPayload(payload);
+    if (!parsed.event && !parsed.session) return;
+
+    const currentSessions = get().sessions.map(agentSessionToScouterSession);
+    const incomingSessions = [
+      ...(parsed.session ? [parsed.session] : []),
+      ...(!parsed.session && parsed.event ? [recentEventToScouterSession(parsed.event)] : []),
+    ];
+    const sessions = dedupeCodexSessions([
+      ...incomingSessions,
+      ...currentSessions,
+    ]).map(toAgentChatSession);
+
+    if (sessions.length === 0) return;
+
+    const incomingEvents = [
+      ...(parsed.session ? sessionToEvents(parsed.session) : []),
+      ...(parsed.event ? scouterRecentEventToAgentChatEvent(parsed.event) : []),
+    ].sort((a, b) => a.timestamp - b.timestamp);
+
+    set({
+      enabled: true,
+      sessions,
+      events: mergeEvents(get().events, incomingEvents, sessions),
+      latestSessionId: sessions[0]?.codexSessionId ?? null,
+      loading: false,
+      error: null,
+      lastUpdatedAt: parsed.emittedAt ?? Date.now(),
+    });
+  },
 
   refresh: async () => {
     set({ loading: true, error: null });
@@ -145,6 +185,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   startPolling: () => {
     pollingRefCount += 1;
+    startLiveSubscription();
     if (pollingTimer !== null) return;
     void get().refresh();
     pollingTimer = setInterval(() => {
@@ -154,11 +195,91 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   stopPolling: () => {
     pollingRefCount = Math.max(0, pollingRefCount - 1);
-    if (pollingRefCount > 0 || pollingTimer === null) return;
-    clearInterval(pollingTimer);
-    pollingTimer = null;
+    if (pollingRefCount > 0) return;
+    if (pollingTimer !== null) {
+      clearInterval(pollingTimer);
+      pollingTimer = null;
+    }
+    stopLiveSubscription();
   },
 }));
+
+function startLiveSubscription(): void {
+  if (liveSubscription !== null) return;
+  try {
+    liveSubscription = TerminalEmulator.addListener('onScouterEvent', (payload: NativeScouterEventPayload) => {
+      useAgentChatStore.getState().ingestNativeEvent(payload);
+    });
+  } catch (error) {
+    liveSubscription = null;
+    logError('AgentChatStore', 'live event subscription failed', error);
+  }
+}
+
+function stopLiveSubscription(): void {
+  const sub = liveSubscription;
+  liveSubscription = null;
+  if (!sub) return;
+  try {
+    sub.remove();
+  } catch (error) {
+    logError('AgentChatStore', 'live event unsubscribe failed', error);
+  }
+}
+
+function parseNativeScouterPayload(payload: NativeScouterEventPayload): {
+  event: ScouterRecentEvent | null;
+  session: ScouterSession | null;
+  emittedAt: number | null;
+} {
+  const event = parseJsonObject<ScouterRecentEvent>(payload.eventJson);
+  const session = parseJsonObject<ScouterSession>(payload.snapshotJson);
+  return {
+    event,
+    session,
+    emittedAt: typeof payload.emittedAt === 'number' ? payload.emittedAt : null,
+  };
+}
+
+function parseJsonObject<T>(value?: string): T | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed as T : null;
+  } catch {
+    return null;
+  }
+}
+
+function agentSessionToScouterSession(session: AgentChatSession): ScouterSession {
+  return {
+    source: 'CODEX',
+    sessionId: session.codexSessionId,
+    projectName: session.projectName,
+    currentStatus: session.currentStatus,
+    currentTool: session.currentTool ?? null,
+    lastEventAt: session.lastEventAt,
+    sessionStartAt: session.sessionStartAt,
+    modelName: session.modelName ?? null,
+    tokensUsed: session.tokensUsed ?? 0,
+  };
+}
+
+function recentEventToScouterSession(event: ScouterRecentEvent): ScouterSession {
+  return {
+    source: event.source,
+    sessionId: event.sessionId,
+    projectName: event.projectName,
+    currentStatus: event.derivedStatus,
+    currentTool: event.toolName ?? null,
+    lastEventAt: event.timestamp,
+    sessionStartAt: event.timestamp,
+    modelName: event.modelName ?? null,
+    tokensUsed: event.tokensUsed ?? 0,
+    lastError: event.errorMessage ?? null,
+    lastMessage: event.lastMessage ?? null,
+  };
+}
 
 function dedupeCodexSessions(sessions: ScouterSession[]): ScouterSession[] {
   const byId = new Map<string, ScouterSession>();

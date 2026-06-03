@@ -17,6 +17,11 @@ class ScouterLifecycleService private constructor(private val context: Context) 
     private val widgetRefreshLock = Any()
     @Volatile private var lastWidgetRefreshAtMs = 0L
     @Volatile private var trailingWidgetRefreshScheduled = false
+    @Volatile private var eventSink: ((ScouterEvent, SessionSnapshot) -> Unit)? = null
+
+    fun setEventSink(sink: ((ScouterEvent, SessionSnapshot) -> Unit)?) {
+        eventSink = sink
+    }
 
     @Synchronized
     fun start() {
@@ -121,6 +126,8 @@ class ScouterLifecycleService private constructor(private val context: Context) 
                 return
             }
         Log.i(TAG, "event source=${event.source} type=${event.eventType} status=${event.derivedStatus} session=${event.sessionId}")
+        runCatching { eventSink?.invoke(event, snapshot) }
+            .onFailure { Log.w(TAG, "JS Scouter event dispatch failed", it) }
         requestWidgetRefresh(force = forceWidgetRefresh, reason = "event")
         runCatching { notificationDispatcher.maybeNotify(event, snapshot) }
             .onFailure { Log.w(TAG, "Notification dispatch failed after Scouter event", it) }
