@@ -24,6 +24,7 @@ import {
 } from '@/store/agent-chat-store';
 import {
   resumeCodexSession,
+  sendTerminalInterruptToCodexSession,
   type CodexSessionResumeFailureReason,
 } from '@/lib/codex-session-resume';
 import {
@@ -46,6 +47,15 @@ type ResumeNotice =
   | { status: 'pending'; sessionId: string }
   | { status: 'focused' | 'queued'; sessionId: string; terminalSessionId: string }
   | { status: 'failed'; sessionId: string; reason: CodexSessionResumeFailureReason };
+
+type InterruptNotice =
+  | { status: 'pending'; sessionId: string }
+  | { status: 'sent'; sessionId: string; terminalSessionId: string }
+  | { status: 'failed'; sessionId: string; reason: CodexSessionResumeFailureReason };
+
+type ReplyNotice =
+  | { status: 'sent'; sessionId: string; text: string; sentAt: number }
+  | { status: 'observed'; sessionId: string; text: string; sentAt: number };
 
 type AgentNotice = {
   icon: string;
@@ -90,8 +100,11 @@ export default function AgentChatPane() {
   const [replyReadiness, setReplyReadiness] = useState<CodexReplyReadiness | null>(null);
   const [replyChecking, setReplyChecking] = useState(false);
   const [replySending, setReplySending] = useState(false);
+  const [replyNotice, setReplyNotice] = useState<ReplyNotice | null>(null);
   const [resumeNotice, setResumeNotice] = useState<ResumeNotice | null>(null);
   const [resumeWorkingSessionId, setResumeWorkingSessionId] = useState<string | null>(null);
+  const [interruptNotice, setInterruptNotice] = useState<InterruptNotice | null>(null);
+  const [interruptWorkingSessionId, setInterruptWorkingSessionId] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -134,10 +147,48 @@ export default function AgentChatPane() {
   const hasTimelineEvents = visibleEvents.length > 0;
   const replyReady = replyReadiness?.ready ?? false;
   const resumeWorking = Boolean(activeSession && resumeWorkingSessionId === activeSession.codexSessionId);
+  const interruptWorking = Boolean(activeSession && interruptWorkingSessionId === activeSession.codexSessionId);
+  const interruptTargetKnown = replyReadiness?.ready === true || replyReadiness?.reason === 'busy';
+  const interruptEnabled = Boolean(
+    activeSession
+    && interruptTargetKnown
+    && !resumeWorking
+    && !interruptWorking,
+  );
 
   useEffect(() => {
     setResumeNotice(null);
+    setInterruptNotice(null);
+    setReplyNotice(null);
   }, [activeSession?.codexSessionId]);
+
+  useEffect(() => {
+    if (!replyNotice || replyNotice.status !== 'sent') return;
+    const observed = visibleEvents.some((event) => (
+      event.role === 'user'
+      && normalizeReplyTextForMatch(event.text) === normalizeReplyTextForMatch(replyNotice.text)
+      && event.timestamp >= replyNotice.sentAt - 30_000
+    ));
+    if (observed) {
+      setReplyNotice({ ...replyNotice, status: 'observed' });
+    }
+  }, [replyNotice, visibleEvents]);
+
+  useEffect(() => {
+    if (!replyNotice) return;
+    const timeout = setTimeout(() => {
+      setReplyNotice((current) => current === replyNotice ? null : current);
+    }, replyNotice.status === 'observed' ? 5_000 : 12_000);
+    return () => clearTimeout(timeout);
+  }, [replyNotice]);
+
+  useEffect(() => {
+    if (!interruptNotice || interruptNotice.status === 'pending') return;
+    const timeout = setTimeout(() => {
+      setInterruptNotice((current) => current === interruptNotice ? null : current);
+    }, 6_000);
+    return () => clearTimeout(timeout);
+  }, [interruptNotice]);
 
   useEffect(() => {
     const session = activeSession;
@@ -231,6 +282,33 @@ export default function AgentChatPane() {
     setTimeout(() => void refresh(), 1_500);
   }, [activeSession, addPane, bindCodexSessionToPty, refresh, t]);
 
+  const interruptSelectedSession = useCallback(async () => {
+    if (!activeSession || interruptWorking) return;
+    const sessionId = activeSession.codexSessionId;
+    setInterruptWorkingSessionId(sessionId);
+    setInterruptNotice({ status: 'pending', sessionId });
+    const result = await sendTerminalInterruptToCodexSession(activeSession)
+      .catch(() => ({ status: 'failed' as const, reason: 'terminal_busy' as const }));
+    if (activeSessionIdRef.current !== sessionId) {
+      setInterruptWorkingSessionId((current) => current === sessionId ? null : current);
+      return;
+    }
+    setInterruptWorkingSessionId(null);
+    if (result.status === 'failed') {
+      setInterruptNotice({ status: 'failed', sessionId, reason: result.reason });
+      Alert.alert(t('agent_chat.interrupt_failed_title'), t(interruptFailureBodyKey(result.reason)));
+      return;
+    }
+    setInterruptNotice({
+      status: 'sent',
+      sessionId,
+      terminalSessionId: result.sessionId,
+    });
+    setReplyReadiness(null);
+    setTimeout(() => void refresh(), 300);
+    setTimeout(() => void refresh(), 1_200);
+  }, [activeSession, interruptWorking, refresh, t]);
+
   const confirmDismissSession = useCallback((session: AgentChatSession) => {
     const name = session.projectName || session.codexSessionId;
     Alert.alert(
@@ -249,6 +327,8 @@ export default function AgentChatPane() {
 
   const sendReply = useCallback(async () => {
     if (!activeSession || replySending || !draft.trim()) return;
+    const sessionId = activeSession.codexSessionId;
+    const sentText = normalizeReplyTextForMatch(draft);
     setReplySending(true);
     const result = await sendCodexReply(activeSession, draft).catch(() => ({
       status: 'failed' as const,
@@ -257,8 +337,15 @@ export default function AgentChatPane() {
     setReplySending(false);
     if (result.status === 'sent') {
       setDraft('');
+      setReplyNotice({
+        status: 'sent',
+        sessionId,
+        text: sentText,
+        sentAt: Date.now(),
+      });
       setReplyReadiness(null);
       setTimeout(() => void refresh(), 350);
+      setTimeout(() => void refresh(), 1_200);
       return;
     }
     setReplyReadiness({ ready: false, reason: result.reason });
@@ -274,10 +361,12 @@ export default function AgentChatPane() {
       sessionId: activeSession?.codexSessionId ?? null,
       replyChecking,
       replyReadiness,
+      interruptNotice,
+      replyNotice,
       resumeNotice,
       t,
     }),
-    [activeSession?.codexSessionId, replyChecking, replyReadiness, resumeNotice, t],
+    [activeSession?.codexSessionId, interruptNotice, replyChecking, replyNotice, replyReadiness, resumeNotice, t],
   );
 
   return (
@@ -304,6 +393,24 @@ export default function AgentChatPane() {
               <ActivityIndicator size="small" color={colors.accent} />
             ) : (
               <MaterialIcons name="play-arrow" size={17} color={activeSession ? colors.accent : colors.inactive} />
+            )}
+          </Pressable>
+          <Pressable
+            style={[styles.iconButton, !interruptEnabled && styles.iconButtonDisabled]}
+            onPress={interruptSelectedSession}
+            disabled={!interruptEnabled}
+            accessibilityRole="button"
+            accessibilityLabel={t('agent_chat.interrupt_selected_a11y')}
+            hitSlop={6}
+          >
+            {interruptWorking ? (
+              <ActivityIndicator size="small" color={colors.warning} />
+            ) : (
+              <MaterialIcons
+                name="stop-circle"
+                size={16}
+                color={interruptEnabled ? colors.warning : colors.inactive}
+              />
             )}
           </Pressable>
           <Pressable
@@ -786,6 +893,10 @@ function shortSessionId(sessionId: string): string {
   return sessionId.slice(0, 8);
 }
 
+function normalizeReplyTextForMatch(value: string): string {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd();
+}
+
 function compactSessionTabs(
   sessions: AgentChatSession[],
   limit: number,
@@ -831,6 +942,8 @@ function buildAgentNotice({
   sessionId,
   replyChecking,
   replyReadiness,
+  interruptNotice,
+  replyNotice,
   resumeNotice,
   t,
 }: {
@@ -838,11 +951,15 @@ function buildAgentNotice({
   sessionId: string | null;
   replyChecking: boolean;
   replyReadiness: CodexReplyReadiness | null;
+  interruptNotice: InterruptNotice | null;
+  replyNotice: ReplyNotice | null;
   resumeNotice: ResumeNotice | null;
   t: (key: string, params?: Record<string, string | number>) => string;
 }): AgentNotice | null {
   if (!hasSession) return null;
   const scopedResumeNotice = resumeNotice?.sessionId === sessionId ? resumeNotice : null;
+  const scopedInterruptNotice = interruptNotice?.sessionId === sessionId ? interruptNotice : null;
+  const scopedReplyNotice = replyNotice?.sessionId === sessionId ? replyNotice : null;
   if (scopedResumeNotice?.status === 'pending') {
     return {
       icon: 'sync',
@@ -850,10 +967,45 @@ function buildAgentNotice({
       tone: 'info',
     };
   }
+  if (scopedInterruptNotice?.status === 'pending') {
+    return {
+      icon: 'stop-circle',
+      text: t('agent_chat.interrupt_notice_pending'),
+      tone: 'warning',
+    };
+  }
   if (replyChecking) {
     return {
       icon: 'sync',
       text: t('agent_chat.reply_status_checking'),
+      tone: 'info',
+    };
+  }
+  if (scopedInterruptNotice?.status === 'sent') {
+    return {
+      icon: 'stop-circle',
+      text: t('agent_chat.interrupt_notice_sent'),
+      tone: 'success',
+    };
+  }
+  if (scopedInterruptNotice?.status === 'failed') {
+    return {
+      icon: 'error-outline',
+      text: t(interruptFailureBodyKey(scopedInterruptNotice.reason)),
+      tone: 'error',
+    };
+  }
+  if (scopedReplyNotice?.status === 'observed') {
+    return {
+      icon: 'check-circle',
+      text: t('agent_chat.reply_notice_observed'),
+      tone: 'success',
+    };
+  }
+  if (scopedReplyNotice?.status === 'sent') {
+    return {
+      icon: 'terminal',
+      text: t('agent_chat.reply_notice_sent'),
       tone: 'info',
     };
   }
@@ -958,6 +1110,18 @@ function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout
     case 'no_terminal':
     default:
       return 'sidebar.codex_resume_failed_body';
+  }
+}
+
+function interruptFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout_full' | 'no_terminal' | undefined): string {
+  switch (reason) {
+    case 'no_terminal':
+      return 'agent_chat.interrupt_status_no_session';
+    case 'terminal_cap':
+    case 'layout_full':
+    case 'terminal_busy':
+    default:
+      return 'agent_chat.interrupt_failed_body';
   }
 }
 

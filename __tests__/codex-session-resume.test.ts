@@ -27,6 +27,8 @@ const mockCreateTerminalSessionForFocusedPane = jest.fn();
 const mockIsSessionAlive = jest.fn();
 const mockGetScreenText = jest.fn();
 const mockWriteToSession = jest.fn();
+const mockPasteToSession = jest.fn();
+const mockInterruptSession = jest.fn();
 
 jest.mock('@/store/terminal-store', () => ({
   useTerminalStore: {
@@ -76,10 +78,12 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
     isSessionAlive: (sessionId: string) => mockIsSessionAlive(sessionId),
     getScreenText: (sessionId: string) => mockGetScreenText(sessionId),
     writeToSession: (sessionId: string, text: string) => mockWriteToSession(sessionId, text),
+    pasteToSession: (sessionId: string, text: string) => mockPasteToSession(sessionId, text),
+    interruptSession: (sessionId: string) => mockInterruptSession(sessionId),
   },
 }));
 
-import { resumeCodexSession } from '@/lib/codex-session-resume';
+import { resumeCodexSession, sendTerminalInterruptToCodexSession } from '@/lib/codex-session-resume';
 
 function terminalSession(
   id: string,
@@ -163,6 +167,16 @@ function resetMocks(): void {
   mockGetScreenText.mockResolvedValue('~$');
   mockWriteToSession.mockReset();
   mockWriteToSession.mockResolvedValue(undefined);
+  mockPasteToSession.mockReset();
+  mockPasteToSession.mockResolvedValue(undefined);
+  mockInterruptSession.mockReset();
+  mockInterruptSession.mockResolvedValue(0);
+}
+
+function expectResumePasted(nativeSessionId: string, command: string): void {
+  expect(mockWriteToSession).toHaveBeenNthCalledWith(1, nativeSessionId, '\u0015');
+  expect(mockPasteToSession).toHaveBeenCalledWith(nativeSessionId, command);
+  expect(mockWriteToSession).toHaveBeenLastCalledWith(nativeSessionId, '\r');
 }
 
 describe('codex session resume', () => {
@@ -213,9 +227,9 @@ describe('codex session resume', () => {
     }), { addTerminalPane });
 
     expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
-    expect(mockWriteToSession).toHaveBeenCalledWith(
+    expectResumePasted(
       'shelly-1',
-      expect.stringContaining("codex resume 'codex-jsonl-session'"),
+      "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-jsonl-session'",
     );
     expect(mockTerminalState.pendingCommand).toBeNull();
     expect(mockTerminalState.insertCommand).not.toHaveBeenCalled();
@@ -253,6 +267,7 @@ describe('codex session resume', () => {
 
     expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
     expect(mockTerminalState.pendingCommand?.command).toContain("codex resume 'codex-jsonl-session'");
+    expect(mockTerminalState.pendingCommand?.command).toContain('clear &&');
     expect(mockWriteToSession).not.toHaveBeenCalled();
   });
 
@@ -294,9 +309,9 @@ describe('codex session resume', () => {
 
     expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
     expect(addTerminalPane).not.toHaveBeenCalled();
-    expect(mockWriteToSession).toHaveBeenCalledWith(
+    expectResumePasted(
       'shelly-1',
-      "cd '/data/data/dev.shelly.terminal/files/home' && codex resume 'codex-old-session'\n",
+      "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-old-session'",
     );
     expect(mockTerminalState.pendingCommand).toBeNull();
     expect(mockTerminalState.insertCommand).not.toHaveBeenCalled();
@@ -345,7 +360,7 @@ describe('codex session resume', () => {
     expect(result).toEqual({ status: 'queued', sessionId: 'terminal-new' });
     expect(addTerminalPane).toHaveBeenCalledWith('terminal', { silent: true });
     expect(mockTerminalState.pendingCommand).toEqual({
-      command: "cd '/data/data/dev.shelly.terminal/files/home' && codex resume 'codex-from-agent-pane'\n",
+      command: "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-from-agent-pane'\r",
       sessionId: 'terminal-new',
     });
     expect(mockMultiPaneState.focusedSlot).toBe(1);
@@ -428,9 +443,9 @@ describe('codex session resume', () => {
     expect(mockMultiPaneState.setSlotSessionId).toHaveBeenCalledWith('pane-agent-chat', 'terminal-hidden');
     expect(mockMultiPaneState.focusedSlot).toBe(0);
     expect(mockSetFocusedPane).toHaveBeenCalledWith('pane-agent-chat');
-    expect(mockWriteToSession).toHaveBeenCalledWith(
+    expectResumePasted(
       'shelly-2',
-      expect.stringContaining("codex resume 'codex-hidden-slot'"),
+      "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-hidden-slot'",
     );
     expect(mockTerminalState.pendingCommand).toBeNull();
   });
@@ -444,9 +459,9 @@ describe('codex session resume', () => {
     }), { addTerminalPane });
 
     expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
-    expect(mockWriteToSession).toHaveBeenCalledWith(
+    expectResumePasted(
       'shelly-1',
-      "cd '/data/data/dev.shelly.terminal/files/home' && codex resume '019e8b5c-bc3f-7582-88f6-e8a26ba24d66'\n",
+      "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume '019e8b5c-bc3f-7582-88f6-e8a26ba24d66'",
     );
     expect(mockTerminalState.pendingCommand).toBeNull();
   });
@@ -474,12 +489,75 @@ describe('codex session resume', () => {
     }), { addTerminalPane });
 
     expect(result).toEqual({ status: 'queued', sessionId: 'terminal-max' });
-    expect(mockWriteToSession).toHaveBeenCalledWith(
+    expectResumePasted(
       'shelly-3',
-      expect.stringContaining("codex resume 'codex-maximized'"),
+      "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-maximized'",
     );
     expect(mockTerminalState.pendingCommand).toBeNull();
     expect(mockMultiPaneState.focusedSlot).toBe(1);
     expect(mockSetFocusedPane).toHaveBeenCalledWith('pane-max-terminal');
+  });
+
+  it('falls back to direct resume write when paste fails', async () => {
+    mockPasteToSession.mockRejectedValueOnce(new Error('paste failed'));
+    const addTerminalPane = jest.fn();
+
+    const result = await resumeCodexSession(codexSession({
+      codexSessionId: 'codex-direct-fallback',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(1, 'shelly-1', '\u0015');
+    expect(mockPasteToSession).toHaveBeenCalledWith(
+      'shelly-1',
+      "cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-direct-fallback'",
+    );
+    expect(mockWriteToSession).toHaveBeenLastCalledWith(
+      'shelly-1',
+      "\u0015cd '/data/data/dev.shelly.terminal/files/home' && clear && codex resume 'codex-direct-fallback'\r",
+    );
+    expect(mockTerminalState.pendingCommand).toBeNull();
+  });
+
+  it('interrupts a reliably bound live Codex terminal', async () => {
+    mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-1', { activeCli: 'codex' })];
+    mockGetScreenText.mockResolvedValue('gpt-5.5 default · /data/data/dev.shelly.terminal/files/home\n');
+
+    const result = await sendTerminalInterruptToCodexSession(codexSession({
+      ptySessionId: 'shelly-1',
+      shellySessionId: 'terminal-a',
+      bindingConfidence: 'reliable',
+    }));
+
+    expect(result).toEqual({ status: 'sent', sessionId: 'terminal-a' });
+    expect(mockInterruptSession).toHaveBeenCalledWith('shelly-1');
+  });
+
+  it('does not interrupt a bound terminal that has returned to the shell', async () => {
+    mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-1', { activeCli: 'codex' })];
+    mockGetScreenText.mockResolvedValue('~$');
+
+    const result = await sendTerminalInterruptToCodexSession(codexSession({
+      ptySessionId: 'shelly-1',
+      shellySessionId: 'terminal-a',
+      bindingConfidence: 'reliable',
+    }));
+
+    expect(result).toEqual({ status: 'failed', reason: 'terminal_busy' });
+    expect(mockInterruptSession).not.toHaveBeenCalled();
+  });
+
+  it('does not interrupt by stale Shelly terminal id when the native PTY changed', async () => {
+    mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-recreated', { activeCli: 'codex' })];
+    mockGetScreenText.mockResolvedValue('gpt-5.5 default · /data/data/dev.shelly.terminal/files/home\n');
+
+    const result = await sendTerminalInterruptToCodexSession(codexSession({
+      ptySessionId: 'shelly-1',
+      shellySessionId: 'terminal-a',
+      bindingConfidence: 'reliable',
+    }));
+
+    expect(result).toEqual({ status: 'failed', reason: 'terminal_busy' });
+    expect(mockInterruptSession).not.toHaveBeenCalled();
   });
 });

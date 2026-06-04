@@ -120,7 +120,7 @@ describe('codex session replies', () => {
       terminalSessionId: 'terminal-a',
       nativeSessionId: 'shelly-1',
     });
-    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-1', 'こんにちは\n');
+    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-1', 'こんにちは\r');
     expect(mockPasteToSession).not.toHaveBeenCalled();
   });
 
@@ -129,7 +129,7 @@ describe('codex session replies', () => {
 
     expect(result.status).toBe('sent');
     expect(mockPasteToSession).toHaveBeenCalledWith('shelly-1', 'first line\nsecond line');
-    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-1', '\n');
+    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-1', '\r');
   });
 
   it('blocks replies when the binding is only a candidate', async () => {
@@ -162,6 +162,21 @@ describe('codex session replies', () => {
 
     expect(result).toEqual({ status: 'blocked', reason: 'busy' });
     expect(mockWriteToSession).not.toHaveBeenCalled();
+  });
+
+  it('checks the terminal screen before treating a busy session as interruptible Codex', async () => {
+    mockGetScreenText.mockResolvedValue('~$');
+
+    const readiness = await getCodexReplyReadiness(codexSession({
+      currentStatus: 'TOOL_RUNNING',
+    }));
+
+    expect(readiness).toEqual({
+      ready: false,
+      reason: 'not_codex_terminal',
+      terminalSessionId: 'terminal-a',
+      nativeSessionId: 'shelly-1',
+    });
   });
 
   it('blocks replies when the bound terminal has returned to the shell', async () => {

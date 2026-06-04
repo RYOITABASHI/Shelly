@@ -18,6 +18,10 @@ export type CodexSessionResumeResult =
   | { status: 'queued'; sessionId: string }
   | { status: 'failed'; reason: CodexSessionResumeFailureReason };
 
+export type CodexSessionInterruptResult =
+  | { status: 'sent'; sessionId: string }
+  | { status: 'failed'; reason: CodexSessionResumeFailureReason };
+
 export type CodexSessionResumeFailureReason =
   | 'terminal_busy'
   | 'terminal_cap'
@@ -62,12 +66,13 @@ export async function resumeCodexSession(
   const cwd = session.cwd?.trim();
   const resumeCommand = `codex resume ${shellQuote(codexResumeSessionId(session.codexSessionId))}`;
   const command = cwd
-    ? `cd ${shellQuote(cwd)} && ${resumeCommand}\n`
-    : `${resumeCommand}\n`;
+    ? `cd ${shellQuote(cwd)} && clear && ${resumeCommand}`
+    : `clear && ${resumeCommand}`;
+  const commandWithEnter = `${command}\r`;
   focusTerminalSession(targetSessionId);
   const wroteDirectly = await writeResumeCommandToTerminal(targetSessionId, command);
   if (!wroteDirectly) {
-    useTerminalStore.getState().insertCommand(command, targetSessionId, { durable: true });
+    useTerminalStore.getState().insertCommand(commandWithEnter, targetSessionId, { durable: true });
   }
   return { status: 'queued', sessionId: targetSessionId };
 }
@@ -250,11 +255,49 @@ async function writeResumeCommandToTerminal(sessionId: string, command: string):
   if (session.sessionStatus !== 'alive' || !session.isAlive) return false;
   if (!await isNativeSessionAlive(session)) return false;
   try {
-    await TerminalEmulator.writeToSession(session.nativeSessionId, command);
+    await TerminalEmulator.writeToSession(session.nativeSessionId, '\u0015');
+    await TerminalEmulator.pasteToSession(session.nativeSessionId, command);
+    await TerminalEmulator.writeToSession(session.nativeSessionId, '\r');
     return true;
   } catch {
-    return false;
+    try {
+      await TerminalEmulator.writeToSession(session.nativeSessionId, `\u0015${command}\r`);
+      return true;
+    } catch {
+      return false;
+    }
   }
+}
+
+export async function sendTerminalInterruptToCodexSession(
+  session: AgentChatSession | null | undefined,
+): Promise<CodexSessionInterruptResult> {
+  if (!session) return { status: 'failed', reason: 'no_terminal' };
+  const terminalSession = await findPreciselyBoundCodexTerminalSession(session);
+  if (!terminalSession || !focusTerminalSession(terminalSession.id)) {
+    return { status: 'failed', reason: 'terminal_busy' };
+  }
+  try {
+    await TerminalEmulator.interruptSession(terminalSession.nativeSessionId);
+    return { status: 'sent', sessionId: terminalSession.id };
+  } catch {
+    return { status: 'failed', reason: 'terminal_busy' };
+  }
+}
+
+async function findPreciselyBoundCodexTerminalSession(session: AgentChatSession): Promise<TabSession | undefined> {
+  if (session.bindingConfidence !== 'reliable') return undefined;
+  const terminalSessions = useTerminalStore.getState().sessions;
+  const ptySessionId = session.ptySessionId?.trim();
+  if (ptySessionId) {
+    const terminalSession = terminalSessions.find((candidate) => candidate.nativeSessionId === ptySessionId);
+    return terminalSession && await isLiveCodexTerminalSession(terminalSession) ? terminalSession : undefined;
+  }
+
+  const shellySessionId = session.shellySessionId?.trim();
+  if (!shellySessionId) return undefined;
+  const terminalSession = terminalSessions.find((candidate) => candidate.id === shellySessionId);
+  return terminalSession && await isLiveCodexTerminalSession(terminalSession) ? terminalSession : undefined;
 }
 
 async function readTerminalScreen(session: TabSession): Promise<string | null> {

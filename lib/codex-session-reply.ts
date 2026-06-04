@@ -76,15 +76,6 @@ export async function getCodexReplyReadiness(
     };
   }
 
-  if (BUSY_CODEX_STATUSES.has((session.currentStatus ?? '').trim().toUpperCase())) {
-    return {
-      ready: false,
-      reason: 'busy',
-      terminalSessionId: terminalSession.id,
-      nativeSessionId: terminalSession.nativeSessionId,
-    };
-  }
-
   const screenText = await TerminalEmulator.getScreenText(terminalSession.nativeSessionId).catch(() => null);
   if (typeof screenText !== 'string') {
     return {
@@ -98,6 +89,15 @@ export async function getCodexReplyReadiness(
     return {
       ready: false,
       reason: 'not_codex_terminal',
+      terminalSessionId: terminalSession.id,
+      nativeSessionId: terminalSession.nativeSessionId,
+    };
+  }
+
+  if (BUSY_CODEX_STATUSES.has((session.currentStatus ?? '').trim().toUpperCase())) {
+    return {
+      ready: false,
+      reason: 'busy',
       terminalSessionId: terminalSession.id,
       nativeSessionId: terminalSession.nativeSessionId,
     };
@@ -126,9 +126,9 @@ export async function sendCodexReply(
   try {
     if (message.includes('\n')) {
       await TerminalEmulator.pasteToSession(readiness.nativeSessionId, message);
-      await TerminalEmulator.writeToSession(readiness.nativeSessionId, '\n');
+      await TerminalEmulator.writeToSession(readiness.nativeSessionId, '\r');
     } else {
-      await TerminalEmulator.writeToSession(readiness.nativeSessionId, `${message}\n`);
+      await TerminalEmulator.writeToSession(readiness.nativeSessionId, `${message}\r`);
     }
     return {
       status: 'sent',
