@@ -177,6 +177,13 @@ function firstFilledIndex(slots: readonly Slot[]): SlotIndex {
   return 0;
 }
 
+export function resolveSinglePaneSlot(
+  slots: readonly Slot[],
+  focusedSlot: SlotIndex,
+): SlotIndex {
+  return slots[focusedSlot] ? focusedSlot : firstFilledIndex(slots);
+}
+
 function firstEmptyIndex(slots: readonly Slot[], capacity: number): SlotIndex | null {
   for (let i = 0; i < capacity; i++) {
     if (!slots[i]) return i as SlotIndex;
@@ -612,7 +619,7 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         // ── New preset actions ──
         // Presets are view layouts, not destructive pane operations.
-        // p4 -> p1 should temporarily show the first pane only, then restore
+        // p4 -> p1 should temporarily show the focused pane only, then restore
         // the hidden panes if the user returns to p2/p3/p4. Older builds
         // trimmed surplus slots here, which made MultiPane feel "dead":
         // one tap on a smaller layout deleted panes and their sessions.
@@ -627,8 +634,12 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
               `setPreset ${preset} — hiding ${used - cap} surplus pane(s) without deleting`,
             );
             const { focusedSlot, maximizedSlot } = get();
-            const safeFocus: SlotIndex = (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
-            const safeMax = maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
+            const safeFocus: SlotIndex = preset === 'p1'
+              ? resolveSinglePaneSlot(compacted, focusedSlot)
+              : (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
+            const safeMax = preset === 'p1'
+              ? null
+              : maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
             set({ preset, slots: compacted, focusedSlot: safeFocus, maximizedSlot: safeMax });
             return;
           }

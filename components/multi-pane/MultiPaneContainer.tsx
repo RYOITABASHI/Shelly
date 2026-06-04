@@ -24,6 +24,7 @@ import {
   useMultiPaneStore,
   getLayout,
   PRESET_CAPACITY,
+  resolveSinglePaneSlot,
   type PaneTab,
   type Ratios,
   type SlotIndex,
@@ -120,6 +121,7 @@ export function MultiPaneContainer() {
   const hasHydrated  = useMultiPaneStore((s) => s._hasHydrated);
   const preset       = useMultiPaneStore((s) => s.preset);
   const slots        = useMultiPaneStore((s) => s.slots);
+  const focusedSlot  = useMultiPaneStore((s) => s.focusedSlot);
   const ratios       = useMultiPaneStore((s) => s.ratios);
   const maximized    = useMultiPaneStore((s) => s.maximizedSlot);
   const setLeafTab   = useMultiPaneStore((s) => s.setLeafTab);
@@ -249,6 +251,7 @@ export function MultiPaneContainer() {
   // ended up collapsing content in split layouts.
   const gridHeight = size.H > 0 ? Math.max(0, size.H - keyboardHeight) : 0;
   const { slotRects, dividers } = getLayout(preset, ratios, size.W, gridHeight);
+  const singlePaneSlot = preset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
 
   return (
     <View
@@ -257,7 +260,10 @@ export function MultiPaneContainer() {
     >
       {slots.map((slot, i) => {
         if (!slot) return null;
-        const rect = slotRects[i as SlotIndex];
+        if (singlePaneSlot !== null && i !== singlePaneSlot) return null;
+        const rect = singlePaneSlot !== null
+          ? { x: 0, y: 0, w: size.W, h: gridHeight }
+          : slotRects[i as SlotIndex];
         // Skip render until we have a real size — first frame would place
         // every slot at (0,0,0,0) which the children don't like.
         if (rect.w <= 0 || rect.h <= 0) return null;

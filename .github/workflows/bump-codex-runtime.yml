@@ -40,8 +40,14 @@ jobs:
           latest_integrity=""
           latest_format=""
           for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
-            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
             npm_version="${candidate#v}"
+            npm_codex="$(npm view "@openai/codex@${npm_version}" version 2>/dev/null || true)"
+            if [ "$npm_codex" != "$npm_version" ]; then
+              echo "Skipping codex-termux ${candidate}: @openai/codex@${npm_version} is not published yet" >&2
+              continue
+            fi
+
+            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
             if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
               latest_termux="$candidate"
               latest_format="npm-pack"
@@ -67,7 +73,6 @@ jobs:
             exit 1
           fi
           latest_codex="${latest_termux#v}"
-          test "$(npm view "@openai/codex@${latest_codex}" version)" = "$latest_codex"
 
           echo "current codex=${current_codex} codex-termux=${current_termux}"
           echo "latest codex=${latest_codex} codex-termux=${latest_termux} (${latest_format})"

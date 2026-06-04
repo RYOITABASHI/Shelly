@@ -1452,6 +1452,7 @@ const ja: Record<string, string> = {
   'agentbar.all_agents_enabled': '全エージェント有効済み',
   'agentbar.enable': '有効化',
   'agentbar.add_or_layout_a11y': 'ペイン追加またはレイアウト変更',
+  'agentbar.switch_pane_a11y': '{{name}} ペインに切り替え',
   'agentbar.show_recent_logs_a11y': '最近のログを表示',
   'sidebar.add_repository': '+ リポジトリ追加',
   'sidebar.add_repo_title': 'リポジトリ追加',

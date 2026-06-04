@@ -5,8 +5,8 @@
 // one sheet with ADD / LAYOUT tabs (mobile-optimised Superset model).
 // CLI tabs moved into each TerminalPane header as a per-pane tab bar
 // (Superset-style), so this bar no longer carries CLI tabs at all.
-import React, { useEffect, useState } from 'react';
-import { View, Pressable, StyleSheet, Text } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, Pressable, StyleSheet, Text, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
@@ -14,12 +14,94 @@ import { BuildsModal, buildStatusColor, fetchUpdateAvailabilityStatus, type Buil
 import { LayoutAddSheet } from '@/components/multi-pane/LayoutAddSheet';
 import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
+import { usePaneStore } from '@/store/pane-store';
+import { useTerminalStore } from '@/store/terminal-store';
+import { useDeviceLayout } from '@/hooks/use-device-layout';
+import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
+import { PANE_REGISTRY, resolvePaneTitle } from '@/components/multi-pane/pane-registry';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 
 const SHELLY_WORDMARK = 'Shelly';
+
+function OpenPaneTabs() {
+  const { t } = useTranslation();
+  const layout = useDeviceLayout();
+  const slots = useMultiPaneStore((s) => s.slots);
+  const focusedSlot = useMultiPaneStore((s) => s.focusedSlot);
+  const preset = useMultiPaneStore((s) => s.preset);
+  const openSlots = useMemo(() => (
+    slots
+      .map((slot, index) => (slot ? { slot, index: index as SlotIndex } : null))
+      .filter((item): item is { slot: NonNullable<(typeof slots)[number]>; index: SlotIndex } => item !== null)
+  ), [slots]);
+
+  const visible = openSlots.length > 1 && (!layout.isWide || preset === 'p1');
+
+  const switchPane = useCallback((slotIndex: SlotIndex) => {
+    const state = useMultiPaneStore.getState();
+    const slot = state.slots[slotIndex];
+    if (!slot) return;
+    state.maximizeSlot(null);
+    state.focusSlot(slotIndex);
+    if (!layout.isWide && state.preset !== 'p1') {
+      useMultiPaneStore.getState().setPreset('p1');
+    }
+    usePaneStore.getState().setFocusedPane(slot.id);
+    if (slot.tab === 'terminal' && slot.sessionId) {
+      useTerminalStore.getState().setActiveSession(slot.sessionId);
+    }
+    useFocusStore.getState().requestTerminalRefocus();
+  }, [layout.isWide]);
+
+  if (!visible) return <View style={styles.topSpacer} />;
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.paneTabsScroller}
+      contentContainerStyle={styles.paneTabsContent}
+      keyboardShouldPersistTaps="handled"
+    >
+      {openSlots.map(({ slot, index }) => {
+        const active = index === focusedSlot;
+        const label = resolvePaneTitle(slot.tab, t);
+        return (
+          <Pressable
+            key={slot.id}
+            style={[
+              styles.paneTab,
+              {
+                borderColor: active ? withAlpha(C.accent, 0.8) : withAlpha(C.border, 0.75),
+                backgroundColor: active ? withAlpha(C.accent, 0.14) : withAlpha(C.bgSurface, 0.55),
+              },
+            ]}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel={t('agentbar.switch_pane_a11y', { name: label })}
+            onPress={() => switchPane(index)}
+          >
+            <View style={[styles.paneTabDot, { backgroundColor: active ? C.accent : C.text2 }]} />
+            <MaterialIcons
+              name={PANE_REGISTRY[slot.tab].icon as any}
+              size={13}
+              color={active ? C.accent : C.text2}
+            />
+            <Text
+              style={[styles.paneTabText, { color: active ? C.accent : C.text2 }]}
+              numberOfLines={1}
+            >
+              {label.toUpperCase()}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
 
 export function AgentBar() {
   const { t } = useTranslation();
@@ -81,7 +163,7 @@ export function AgentBar() {
         <Text style={[styles.addBtnText, { color: C.accent }]}>+</Text>
       </Pressable>
 
-      <View style={{ flex: 1 }} />
+      <OpenPaneTabs />
 
       {/* Right-side: search + settings.
           The git-dirty badge was removed 2026-04-21 — it was counting
@@ -194,6 +276,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingRight: 8,
     gap: 6,
+  },
+  topSpacer: {
+    flex: 1,
+  },
+  paneTabsScroller: {
+    flex: 1,
+    marginLeft: 6,
+    marginRight: 6,
+  },
+  paneTabsContent: {
+    alignItems: 'center',
+    gap: 5,
+    paddingRight: 4,
+  },
+  paneTab: {
+    height: 24,
+    maxWidth: 92,
+    minWidth: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    borderRadius: R.agentTab,
+    borderWidth: 1,
+  },
+  paneTabDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+  },
+  paneTabText: {
+    flexShrink: 1,
+    fontFamily: F.family,
+    fontSize: 8,
+    lineHeight: 10,
+    fontWeight: '700',
+    letterSpacing: 0,
+    includeFontPadding: false,
   },
   iconBtn: {
     padding: 4,
