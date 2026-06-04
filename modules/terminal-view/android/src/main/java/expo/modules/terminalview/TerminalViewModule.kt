@@ -108,19 +108,19 @@ class TerminalViewModule : Module() {
         // These find the view in the activity's view hierarchy and call the command
 
         AsyncFunction("scrollToBottom") { viewTag: Int ->
-            findView(viewTag)?.scrollToBottomCommand()
+            runViewCommand(viewTag, "scrollToBottom") { it.scrollToBottomCommand() }
         }
 
         AsyncFunction("scrollToTop") { viewTag: Int ->
-            findView(viewTag)?.scrollToTopCommand()
+            runViewCommand(viewTag, "scrollToTop") { it.scrollToTopCommand() }
         }
 
         AsyncFunction("selectAll") { viewTag: Int ->
-            findView(viewTag)?.selectAllCommand()
+            runViewCommand(viewTag, "selectAll") { it.selectAllCommand() }
         }
 
         AsyncFunction("clearSelection") { viewTag: Int ->
-            findView(viewTag)?.clearSelectionCommand()
+            runViewCommand(viewTag, "clearSelection") { it.clearSelectionCommand() }
         }
 
         AsyncFunction("getSelectedText") { viewTag: Int ->
@@ -132,15 +132,27 @@ class TerminalViewModule : Module() {
         }
 
         AsyncFunction("focus") { viewTag: Int ->
-            findView(viewTag)?.focusCommand()
+            runViewCommand(viewTag, "focus") { it.focusCommand() }
         }
 
         AsyncFunction("scrollToRow") { viewTag: Int, row: Int ->
-            findView(viewTag)?.scrollToRowCommand(row)
+            runViewCommand(viewTag, "scrollToRow") { it.scrollToRowCommand(row) }
         }
 
         AsyncFunction("refreshScreen") { viewTag: Int ->
-            findView(viewTag)?.refreshScreenCommand()
+            runViewCommand(viewTag, "refreshScreen") { it.refreshScreenCommand() }
+        }
+    }
+
+    private fun runViewCommand(
+        viewTag: Int,
+        command: String,
+        block: (ShellyTerminalView) -> Unit
+    ) {
+        try {
+            findView(viewTag)?.let(block)
+        } catch (e: Exception) {
+            Log.w(TAG, "Terminal view command failed: $command tag=$viewTag", e)
         }
     }
 

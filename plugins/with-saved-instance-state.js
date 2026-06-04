@@ -1,18 +1,17 @@
 /**
- * Expo config plugin: patch MainActivity.kt to pass savedInstanceState
- * through to super.onCreate(). The Expo prebuild template hardcodes
- * `super.onCreate(null)` which throws away Android's restored state,
- * which in turn defeats our Zustand persist middleware and leaves
- * cwd / PTY metadata / pane layout lost after an lmkd kill.
+ * Expo config plugin: keep MainActivity.kt from restoring Android fragment
+ * state. react-native-screens intentionally crashes if Screen fragments are
+ * restored by the platform; Shelly state restoration must come from our
+ * explicit stores/native PTY registries instead.
  *
- * bug #50 — release blocker. See docs/superpowers/specs/ for context.
+ * This protects background resume, fold/unfold, and process recreation paths.
  */
 const { withMainActivity } = require("expo/config-plugins");
 
 function withSavedInstanceState(config) {
   return withMainActivity(config, (config) => {
-    const target = "super.onCreate(null)";
-    const replacement = "super.onCreate(savedInstanceState)";
+    const target = "super.onCreate(savedInstanceState)";
+    const replacement = "super.onCreate(null)";
     if (config.modResults.contents.includes(target)) {
       config.modResults.contents = config.modResults.contents.replace(
         target,

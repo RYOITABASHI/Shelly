@@ -550,32 +550,37 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("installApk") { apkPath: String ->
             val context = requireReactContext()
-            val apk = java.io.File(apkPath)
-            if (!apk.exists() || !apk.isFile) {
-                throw IllegalArgumentException("APK not found: $apkPath")
-            }
-            if (!apk.name.endsWith(".apk", ignoreCase = true)) {
-                throw IllegalArgumentException("Not an APK file: $apkPath")
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-                val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                    data = Uri.parse("package:${context.packageName}")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                val apk = java.io.File(apkPath).canonicalFile
+                if (!apk.exists() || !apk.isFile) {
+                    throw IllegalArgumentException("APK not found: $apkPath")
                 }
-                context.startActivity(settingsIntent)
-                throw IllegalStateException("Allow Shelly to install unknown apps, then tap Install APK again.")
+                if (!apk.name.endsWith(".apk", ignoreCase = true)) {
+                    throw IllegalArgumentException("Not an APK file: $apkPath")
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+                    val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(settingsIntent)
+                    throw IllegalStateException("Allow Shelly to install unknown apps, then tap Install APK again.")
+                }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.shelly.fileprovider",
+                    apk,
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("TerminalEmulator", "installApk failed for $apkPath", e)
+                throw e
             }
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.shelly.fileprovider",
-                apk,
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(intent)
             null
         }
 

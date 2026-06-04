@@ -361,7 +361,7 @@ export default function TerminalScreen() {
         setTimeout(() => {
           const tag = findNodeHandle(terminalViewRef.current);
           if (tag) {
-            TerminalViewModule.refreshScreen(tag);
+            TerminalViewModule.refreshScreen(tag).catch(() => undefined);
           }
         }, 200);
       }
