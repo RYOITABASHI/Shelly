@@ -22,8 +22,16 @@ import {
   type AgentChatSession,
   type AgentChatStatus,
 } from '@/store/agent-chat-store';
-import { resumeCodexSession } from '@/lib/codex-session-resume';
-import { getCodexReplyReadiness, sendCodexReply } from '@/lib/codex-session-reply';
+import {
+  resumeCodexSession,
+  type CodexSessionResumeFailureReason,
+} from '@/lib/codex-session-resume';
+import {
+  getCodexReplyReadiness,
+  sendCodexReply,
+  type CodexReplyBlockedReason,
+  type CodexReplyReadiness,
+} from '@/lib/codex-session-reply';
 import { useTranslation } from '@/lib/i18n';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useTheme } from '@/hooks/use-theme';
@@ -33,6 +41,17 @@ import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
 const MAX_VISIBLE_SESSION_TABS = 4;
+
+type ResumeNotice =
+  | { status: 'pending'; sessionId: string }
+  | { status: 'focused' | 'queued'; sessionId: string; terminalSessionId: string }
+  | { status: 'failed'; sessionId: string; reason: CodexSessionResumeFailureReason };
+
+type AgentNotice = {
+  icon: string;
+  text: string;
+  tone: 'info' | 'success' | 'warning' | 'error';
+};
 
 export default function AgentChatPane() {
   const { t } = useTranslation();
@@ -67,9 +86,12 @@ export default function AgentChatPane() {
   );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
-  const [replyReady, setReplyReady] = useState(false);
+  const [replyReadiness, setReplyReadiness] = useState<CodexReplyReadiness | null>(null);
   const [replyChecking, setReplyChecking] = useState(false);
   const [replySending, setReplySending] = useState(false);
+  const [resumeNotice, setResumeNotice] = useState<ResumeNotice | null>(null);
+  const [resumeWorkingSessionId, setResumeWorkingSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     startPolling();
@@ -101,6 +123,7 @@ export default function AgentChatPane() {
     ),
     [latestSessionId, selectedSessionId, sessions],
   );
+  activeSessionIdRef.current = activeSession?.codexSessionId ?? null;
 
   const visibleEvents = useMemo(() => {
     const sessionId = activeSession?.codexSessionId;
@@ -108,11 +131,17 @@ export default function AgentChatPane() {
     return events.filter((event) => event.codexSessionId === sessionId && event.kind !== 'status');
   }, [activeSession?.codexSessionId, events]);
   const hasTimelineEvents = visibleEvents.length > 0;
+  const replyReady = replyReadiness?.ready ?? false;
+  const resumeWorking = Boolean(activeSession && resumeWorkingSessionId === activeSession.codexSessionId);
+
+  useEffect(() => {
+    setResumeNotice(null);
+  }, [activeSession?.codexSessionId]);
 
   useEffect(() => {
     const session = activeSession;
     let cancelled = false;
-    setReplyReady(false);
+    setReplyReadiness(null);
     if (!session) {
       setReplyChecking(false);
       return () => {
@@ -122,10 +151,10 @@ export default function AgentChatPane() {
     setReplyChecking(true);
     void getCodexReplyReadiness(session)
       .then((readiness) => {
-        if (!cancelled) setReplyReady(readiness.ready);
+        if (!cancelled) setReplyReadiness(readiness);
       })
       .catch(() => {
-        if (!cancelled) setReplyReady(false);
+        if (!cancelled) setReplyReadiness({ ready: false, reason: 'screen_unavailable' });
       })
       .finally(() => {
         if (!cancelled) setReplyChecking(false);
@@ -159,11 +188,34 @@ export default function AgentChatPane() {
   const keyExtractor = useCallback((item: AgentChatEvent) => item.id, []);
   const resumeSelectedSession = useCallback(async () => {
     if (!activeSession) return;
-    const result = await resumeCodexSession(activeSession, { addTerminalPane: addPane });
-    if (result.status === 'failed') {
-      Alert.alert(t('sidebar.codex_resume_failed_title'), t(resumeFailureBodyKey(result.reason)));
+    const sessionId = activeSession.codexSessionId;
+    setResumeWorkingSessionId(sessionId);
+    setResumeNotice({ status: 'pending', sessionId });
+    const result = await resumeCodexSession(activeSession, { addTerminalPane: addPane })
+      .catch(() => ({ status: 'failed' as const, reason: 'no_terminal' as const }));
+    if (activeSessionIdRef.current !== sessionId) {
+      setResumeWorkingSessionId((current) => current === sessionId ? null : current);
+      return;
     }
-  }, [activeSession, addPane, t]);
+    setResumeWorkingSessionId(null);
+    if (result.status === 'failed') {
+      setResumeNotice({
+        status: 'failed',
+        sessionId,
+        reason: result.reason,
+      });
+      Alert.alert(t('sidebar.codex_resume_failed_title'), t(resumeFailureBodyKey(result.reason)));
+      return;
+    }
+    setResumeNotice({
+      status: result.status,
+      sessionId,
+      terminalSessionId: result.sessionId,
+    });
+    setReplyReadiness(null);
+    setTimeout(() => void refresh(), 400);
+    setTimeout(() => void refresh(), 1_500);
+  }, [activeSession, addPane, refresh, t]);
 
   const confirmDismissSession = useCallback((session: AgentChatSession) => {
     const name = session.projectName || session.codexSessionId;
@@ -191,16 +243,28 @@ export default function AgentChatPane() {
     setReplySending(false);
     if (result.status === 'sent') {
       setDraft('');
-      setReplyReady(false);
+      setReplyReadiness(null);
       setTimeout(() => void refresh(), 350);
       return;
     }
-    setReplyReady(false);
+    setReplyReadiness({ ready: false, reason: result.reason });
     const bodyKey = result.status === 'failed'
       ? 'agent_chat.reply_failed_body'
-      : 'agent_chat.reply_not_ready_body';
+      : replyBlockedReasonBodyKey(result.reason);
     Alert.alert(t('agent_chat.reply_not_ready_title'), t(bodyKey));
   }, [activeSession, draft, refresh, replySending, t]);
+
+  const notice = useMemo(
+    () => buildAgentNotice({
+      hasSession: Boolean(activeSession),
+      sessionId: activeSession?.codexSessionId ?? null,
+      replyChecking,
+      replyReadiness,
+      resumeNotice,
+      t,
+    }),
+    [activeSession?.codexSessionId, replyChecking, replyReadiness, resumeNotice, t],
+  );
 
   return (
     <View style={[styles.root, { backgroundColor: paneBg }]}>
@@ -217,12 +281,16 @@ export default function AgentChatPane() {
           <Pressable
             style={[styles.iconButton, !activeSession && styles.iconButtonDisabled]}
             onPress={resumeSelectedSession}
-            disabled={!activeSession}
+            disabled={!activeSession || resumeWorking}
             accessibilityRole="button"
             accessibilityLabel={t('agent_chat.resume_selected_a11y')}
             hitSlop={6}
           >
-            <MaterialIcons name="play-arrow" size={17} color={activeSession ? colors.accent : colors.inactive} />
+            {resumeWorking ? (
+              <ActivityIndicator size="small" color={colors.accent} />
+            ) : (
+              <MaterialIcons name="play-arrow" size={17} color={activeSession ? colors.accent : colors.inactive} />
+            )}
           </Pressable>
           <Pressable
             style={styles.iconButton}
@@ -277,6 +345,15 @@ export default function AgentChatPane() {
           <MaterialIcons name="error-outline" size={13} color={colors.error} />
           <Text style={styles.errorBarText} numberOfLines={2}>
             {t('agent_chat.error_prefix', { message: error })}
+          </Text>
+        </View>
+      ) : null}
+
+      {notice ? (
+        <View style={[styles.noticeBar, noticeToneStyle(styles, notice.tone)]}>
+          <MaterialIcons name={notice.icon as any} size={13} color={noticeToneColor(colors, notice.tone)} />
+          <Text style={[styles.noticeText, { color: noticeToneColor(colors, notice.tone) }]} numberOfLines={2}>
+            {notice.text}
           </Text>
         </View>
       ) : null}
@@ -735,6 +812,127 @@ function sessionTabWorkspaceKey(session: AgentChatSession): string {
   return `${workspace}:${model}`;
 }
 
+function buildAgentNotice({
+  hasSession,
+  sessionId,
+  replyChecking,
+  replyReadiness,
+  resumeNotice,
+  t,
+}: {
+  hasSession: boolean;
+  sessionId: string | null;
+  replyChecking: boolean;
+  replyReadiness: CodexReplyReadiness | null;
+  resumeNotice: ResumeNotice | null;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}): AgentNotice | null {
+  if (!hasSession) return null;
+  const scopedResumeNotice = resumeNotice?.sessionId === sessionId ? resumeNotice : null;
+  if (scopedResumeNotice?.status === 'pending') {
+    return {
+      icon: 'sync',
+      text: t('agent_chat.resume_notice_pending'),
+      tone: 'info',
+    };
+  }
+  if (replyChecking) {
+    return {
+      icon: 'sync',
+      text: t('agent_chat.reply_status_checking'),
+      tone: 'info',
+    };
+  }
+  if (replyReadiness?.ready) {
+    return {
+      icon: 'check-circle',
+      text: t('agent_chat.reply_status_ready'),
+      tone: 'success',
+    };
+  }
+  if (scopedResumeNotice?.status === 'queued') {
+    return {
+      icon: 'terminal',
+      text: t('agent_chat.resume_notice_queued'),
+      tone: 'info',
+    };
+  }
+  if (scopedResumeNotice?.status === 'focused') {
+    return {
+      icon: 'center-focus-strong',
+      text: t('agent_chat.resume_notice_focused'),
+      tone: 'success',
+    };
+  }
+  if (scopedResumeNotice?.status === 'failed') {
+    return {
+      icon: 'error-outline',
+      text: t(resumeFailureBodyKey(scopedResumeNotice.reason)),
+      tone: 'error',
+    };
+  }
+  if (replyReadiness?.ready === false) {
+    return {
+      icon: replyReadiness.reason === 'busy' ? 'pending' : 'lock-outline',
+      text: t(replyBlockedReasonBodyKey(replyReadiness.reason)),
+      tone: replyReadiness.reason === 'busy' ? 'info' : 'warning',
+    };
+  }
+  return null;
+}
+
+function replyBlockedReasonBodyKey(reason: CodexReplyBlockedReason): string {
+  switch (reason) {
+    case 'empty_message':
+      return 'agent_chat.reply_status_empty_message';
+    case 'no_session':
+      return 'agent_chat.reply_status_no_session';
+    case 'not_reliably_bound':
+      return 'agent_chat.reply_status_not_reliably_bound';
+    case 'terminal_missing':
+      return 'agent_chat.reply_status_terminal_missing';
+    case 'terminal_exited':
+    case 'native_exited':
+      return 'agent_chat.reply_status_terminal_exited';
+    case 'busy':
+      return 'agent_chat.reply_status_busy';
+    case 'screen_unavailable':
+      return 'agent_chat.reply_status_screen_unavailable';
+    case 'not_codex_terminal':
+      return 'agent_chat.reply_status_not_codex_terminal';
+    default:
+      return 'agent_chat.reply_not_ready_body';
+  }
+}
+
+function noticeToneColor(colors: ThemeColorPalette, tone: AgentNotice['tone']): string {
+  switch (tone) {
+    case 'success':
+      return colors.success;
+    case 'warning':
+      return colors.warning;
+    case 'error':
+      return colors.error;
+    case 'info':
+    default:
+      return colors.muted;
+  }
+}
+
+function noticeToneStyle(styles: ReturnType<typeof makeStyles>, tone: AgentNotice['tone']) {
+  switch (tone) {
+    case 'success':
+      return styles.noticeSuccess;
+    case 'warning':
+      return styles.noticeWarning;
+    case 'error':
+      return styles.noticeError;
+    case 'info':
+    default:
+      return styles.noticeInfo;
+  }
+}
+
 function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout_full' | 'no_terminal' | undefined): string {
   switch (reason) {
     case 'terminal_cap':
@@ -1073,6 +1271,36 @@ function makeStyles(colors: ThemeColorPalette) {
     errorBarText: {
       flex: 1,
       color: colors.error,
+      fontFamily: F.family,
+      fontSize: 8,
+      lineHeight: 13,
+    },
+    noticeBar: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 6,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      borderTopWidth: 1,
+    },
+    noticeInfo: {
+      borderTopColor: withAlpha(colors.muted, 0.26),
+      backgroundColor: withAlpha(colors.surfaceHigh, 0.34),
+    },
+    noticeSuccess: {
+      borderTopColor: withAlpha(colors.success, 0.34),
+      backgroundColor: withAlpha(colors.success, 0.08),
+    },
+    noticeWarning: {
+      borderTopColor: withAlpha(colors.warning, 0.34),
+      backgroundColor: withAlpha(colors.warning, 0.08),
+    },
+    noticeError: {
+      borderTopColor: withAlpha(colors.error, 0.34),
+      backgroundColor: withAlpha(colors.error, 0.08),
+    },
+    noticeText: {
+      flex: 1,
       fontFamily: F.family,
       fontSize: 8,
       lineHeight: 13,
