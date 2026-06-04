@@ -23,6 +23,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { usePaneStore } from '@/store/pane-store';
+import { useAgentChatStore } from '@/store/agent-chat-store';
 import { execCommand } from '@/hooks/use-native-exec';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -239,6 +241,25 @@ export default function RootLayout() {
     //   am start -a android.intent.action.VIEW \
     //     -d 'shelly://browser?url=https%3A%2F%2F<name>.github.dev'
     // to keep the codespace web UI inside Shelly instead of Chrome.
+    const focusPaneByTab = (tab: 'agent-chat') => {
+      const multiPane = useMultiPaneStore.getState();
+      const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
+      if (existingIndex >= 0) {
+        const slot = multiPane.slots[existingIndex];
+        multiPane.maximizeSlot(null);
+        multiPane.focusSlot(existingIndex as 0 | 1 | 2 | 3);
+        if (slot) usePaneStore.getState().setFocusedPane(slot.id);
+        return true;
+      }
+
+      const result = multiPane.addPane(tab);
+      if (result) {
+        logInfo('DeepLink', `could not add ${tab} pane: ${result}`);
+        return false;
+      }
+      return true;
+    };
+
     const handleDeepLink = (url: string) => {
       try {
         const parsed = Linking.parse(url);
@@ -281,6 +302,13 @@ export default function RootLayout() {
         } else if (parsed.hostname === 'scouter') {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
+        } else if (parsed.hostname === 'agent-chat') {
+          const opened = focusPaneByTab('agent-chat');
+          const compose = parsed.queryParams?.compose;
+          if (opened && (compose === '1' || compose === 'true')) {
+            useAgentChatStore.getState().requestComposeFocus();
+          }
+          logInfo('DeepLink', `Agent Chat ${opened ? 'opened' : 'open failed'}`);
         }
       } catch (e) {
         logError('DeepLink', 'parse failed', e);

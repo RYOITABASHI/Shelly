@@ -79,6 +79,7 @@ export default function AgentChatPane() {
   const sessions = useAgentChatStore((s) => s.sessions);
   const events = useAgentChatStore((s) => s.events);
   const latestSessionId = useAgentChatStore((s) => s.latestSessionId);
+  const composeFocusSignal = useAgentChatStore((s) => s.composeFocusSignal);
   const agentChatLastUpdatedAt = useAgentChatStore((s) => s.lastUpdatedAt);
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
@@ -494,6 +495,7 @@ export default function AgentChatPane() {
         ready={replyReady}
         checking={replyChecking}
         sending={replySending}
+        composeFocusSignal={composeFocusSignal}
         styles={styles}
         colors={colors}
         t={t}
@@ -510,6 +512,7 @@ function AgentChatReplyComposer({
   ready,
   checking,
   sending,
+  composeFocusSignal,
   styles,
   colors,
   t,
@@ -521,18 +524,27 @@ function AgentChatReplyComposer({
   ready: boolean;
   checking: boolean;
   sending: boolean;
+  composeFocusSignal: number;
   styles: ReturnType<typeof makeStyles>;
   colors: ThemeColorPalette;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  const inputRef = useRef<TextInput>(null);
   const canSend = hasSession && ready && !checking && !sending && draft.trim().length > 0;
   const placeholder = hasSession
     ? t(ready ? 'agent_chat.reply_placeholder' : 'agent_chat.reply_locked_placeholder')
     : t('agent_chat.reply_no_session_placeholder');
 
+  useEffect(() => {
+    if (!composeFocusSignal) return;
+    const timeout = setTimeout(() => inputRef.current?.focus(), 120);
+    return () => clearTimeout(timeout);
+  }, [composeFocusSignal]);
+
   return (
     <View style={styles.replyBar}>
       <TextInput
+        ref={inputRef}
         style={[styles.replyInput, !hasSession && styles.replyInputDisabled]}
         value={draft}
         onChangeText={onChangeDraft}

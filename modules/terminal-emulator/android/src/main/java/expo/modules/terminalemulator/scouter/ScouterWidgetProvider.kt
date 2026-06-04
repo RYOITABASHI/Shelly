@@ -132,6 +132,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         private fun render(context: Context, snapshots: List<SessionSnapshot>, load: ScouterSystemLoad): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
+            agentChatPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_codex_ask, it) }
 
             val codex = latestFor(snapshots, ScouterSource.CODEX)
             val local = latestFor(snapshots, ScouterSource.LOCAL_LLM)
@@ -222,6 +223,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             return PendingIntent.getActivity(
                 context,
                 9100,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        private fun agentChatPendingIntent(context: Context): PendingIntent? {
+            val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("shelly://agent-chat?compose=1"))
+                .setPackage(context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return PendingIntent.getActivity(
+                context,
+                9101,
                 launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )

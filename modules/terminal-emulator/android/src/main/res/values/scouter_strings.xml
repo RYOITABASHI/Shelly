@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="scouter_status_dot">Scouter status</string>
+  <string name="scouter_ask_agent_chat_short">ASK</string>
+  <string name="scouter_ask_agent_chat">Open Agent Chat prompt</string>
 </resources>
-

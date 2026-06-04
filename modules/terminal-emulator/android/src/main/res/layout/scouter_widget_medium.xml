@@ -59,6 +59,24 @@
         android:typeface="monospace"
         android:textStyle="bold"
         android:includeFontPadding="false" />
+
+      <TextView
+        android:id="@+id/scouter_codex_ask"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:background="@drawable/scouter_badge_bg"
+        android:contentDescription="@string/scouter_ask_agent_chat"
+        android:paddingStart="7dp"
+        android:paddingEnd="7dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:text="@string/scouter_ask_agent_chat_short"
+        android:textColor="#001200"
+        android:textSize="10sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false" />
     </LinearLayout>
 
     <TextView

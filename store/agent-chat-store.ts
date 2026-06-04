@@ -126,6 +126,7 @@ type AgentChatState = {
   codexPtyLaunches: CodexPtyLaunch[];
   dismissedSessionIds: string[];
   sessionTitleOverrides: Record<string, string>;
+  composeFocusSignal: number;
   latestSessionId: string | null;
   loading: boolean;
   error: string | null;
@@ -135,6 +136,7 @@ type AgentChatState = {
   bindCodexSessionToPty: (sessionId: string, candidate: CodexPtyCandidate) => void;
   dismissSession: (sessionId: string) => void;
   renameSession: (sessionId: string, title: string) => void;
+  requestComposeFocus: () => void;
   refresh: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
@@ -174,6 +176,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   codexPtyLaunches: [],
   dismissedSessionIds: [],
   sessionTitleOverrides: {},
+  composeFocusSignal: 0,
   latestSessionId: null,
   loading: false,
   error: null,
@@ -334,6 +337,10 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       lastUpdatedAt: Date.now(),
     });
     persistSessionTitleOverrides(sessionTitleOverrides);
+  },
+
+  requestComposeFocus: () => {
+    set({ composeFocusSignal: Date.now() });
   },
 
   refresh: async () => {
