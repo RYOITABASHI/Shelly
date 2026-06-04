@@ -22,9 +22,10 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
-import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { useAgentChatStore } from '@/store/agent-chat-store';
+import { resumeCodexSession } from '@/lib/codex-session-resume';
 import { execCommand } from '@/hooks/use-native-exec';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -242,12 +243,26 @@ export default function RootLayout() {
     //   am start -a android.intent.action.VIEW \
     //     -d 'shelly://browser?url=https%3A%2F%2F<name>.github.dev'
     // to keep the codespace web UI inside Shelly instead of Chrome.
+    let agentChatResumeInFlight = false;
+
+    const visiblePresetForSlot = (currentPreset: PresetId, slotIndex: number): PresetId => {
+      const currentCapacity = PRESET_CAPACITY[currentPreset] ?? 1;
+      if (slotIndex < currentCapacity) return currentPreset;
+      if (slotIndex <= 1) return 'p2h';
+      if (slotIndex === 2) return 'p3l';
+      return 'p4';
+    };
+
     const focusPaneByTab = (tab: 'agent-chat') => {
       const multiPane = useMultiPaneStore.getState();
       const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
       if (existingIndex >= 0) {
         const slot = multiPane.slots[existingIndex];
         multiPane.maximizeSlot(null);
+        const visiblePreset = visiblePresetForSlot(multiPane.preset, existingIndex);
+        if (visiblePreset !== multiPane.preset) {
+          multiPane.setPreset(visiblePreset);
+        }
         multiPane.focusSlot(existingIndex as 0 | 1 | 2 | 3);
         if (slot) usePaneStore.getState().setFocusedPane(slot.id);
         return true;
@@ -261,11 +276,69 @@ export default function RootLayout() {
       return true;
     };
 
-    const handleDeepLink = (url: string) => {
+    const waitForMultiPaneHydration = () => new Promise<void>((resolve) => {
+      if (useMultiPaneStore.getState()._hasHydrated) {
+        resolve();
+        return;
+      }
+      let unsubscribe: (() => void) | null = null;
+      const done = () => {
+        if (unsubscribe) {
+          unsubscribe();
+          unsubscribe = null;
+        }
+        resolve();
+      };
+      unsubscribe = useMultiPaneStore.subscribe((state) => {
+        if (state._hasHydrated) done();
+      });
+    });
+
+    const resumeLatestAgentChatSession = async () => {
+      await useAgentChatStore.getState().refresh().catch((e) => {
+        logError('DeepLink', 'Agent Chat refresh before resume failed', e);
+      });
+      const { sessions, latestSessionId, bindCodexSessionToPty } = useAgentChatStore.getState();
+      const session = sessions.find((candidate) => candidate.codexSessionId === latestSessionId)
+        ?? sessions[0]
+        ?? null;
+      if (!session) {
+        logInfo('DeepLink', 'Agent Chat resume skipped: no Codex session');
+        return;
+      }
+
+      const result = await resumeCodexSession(session, {
+        addTerminalPane: (tab) => useMultiPaneStore.getState().addPane(tab),
+      }).catch((e) => {
+        logError('DeepLink', 'Agent Chat resume failed', e);
+        return null;
+      });
+      if (!result) return;
+      if (result.status === 'failed') {
+        logInfo('DeepLink', `Agent Chat resume failed: ${result.reason}`);
+        return;
+      }
+
+      const terminalSession = useTerminalStore.getState().sessions.find((candidate) => candidate.id === result.sessionId);
+      if (terminalSession?.nativeSessionId) {
+        const now = Date.now();
+        bindCodexSessionToPty(session.codexSessionId, {
+          ptySessionId: terminalSession.nativeSessionId,
+          shellySessionId: terminalSession.id,
+          cwd: session.cwd ?? terminalSession.currentDir,
+          startedAt: now,
+          lastSeenAt: now,
+        });
+      }
+      logInfo('DeepLink', `Agent Chat resume ${result.status}: ${result.sessionId}`);
+    };
+
+    const handleDeepLink = async (url: string) => {
       try {
         const parsed = Linking.parse(url);
         logInfo('DeepLink', `received: ${url} → host=${parsed.hostname ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`);
         if (parsed.hostname === 'browser') {
+          await waitForMultiPaneHydration();
           const raw = parsed.queryParams?.url;
           const target = Array.isArray(raw) ? raw[0] : raw;
           if (typeof target === 'string' && target.length > 0) {
@@ -304,10 +377,21 @@ export default function RootLayout() {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
         } else if (parsed.hostname === 'agent-chat') {
+          await waitForMultiPaneHydration();
           const opened = focusPaneByTab('agent-chat');
           const compose = parsed.queryParams?.compose;
           if (opened && (compose === '1' || compose === 'true')) {
-            useAgentChatStore.getState().requestComposeFocus();
+            if (!agentChatResumeInFlight) {
+              agentChatResumeInFlight = true;
+              void resumeLatestAgentChatSession().finally(() => {
+                agentChatResumeInFlight = false;
+                focusPaneByTab('agent-chat');
+                useAgentChatStore.getState().requestComposeFocus();
+              });
+            } else {
+              logInfo('DeepLink', 'Agent Chat resume skipped: already in flight');
+              useAgentChatStore.getState().requestComposeFocus();
+            }
           }
           logInfo('DeepLink', `Agent Chat ${opened ? 'opened' : 'open failed'}`);
         }
@@ -316,12 +400,12 @@ export default function RootLayout() {
       }
     };
     const linkSub = Linking.addEventListener('url', (event) => {
-      handleDeepLink(event.url);
+      void handleDeepLink(event.url);
     });
     // Cold-start case: app launched directly from the deep link (no prior
     // process to receive the 'url' event).
     Linking.getInitialURL().then((url) => {
-      if (url) handleDeepLink(url);
+      if (url) void handleDeepLink(url);
     }).catch(() => {});
 
     // bug #102 / #115 phase 1 (2026-05-08): file-queue poller for the
