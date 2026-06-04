@@ -151,9 +151,12 @@ class JsonlSessionParser(
                 isScouterRateLimitText(payload.optString("stderr")) ||
                 (hasErrorValue && rateLimitMessage != null)
             )
+        val isApproval = isCodexApprovalPayload(payloadType, toolName)
+        val approvalSummary = if (isApproval) approvalSummaryFromPayload(payload, message, toolName) else null
         val status = when {
             hasExplicitRateLimitError -> ScouterStatus.ERROR
             "error" in payloadType || hasErrorValue -> ScouterStatus.ERROR
+            isApproval -> ScouterStatus.WAITING_PERMISSION
             isCodexUserMessagePayload(payloadType, role) -> ScouterStatus.THINKING
             "exec_command_begin" in payloadType || "tool_call" in payloadType || "apply_patch_begin" in payloadType || "patch_apply_begin" in payloadType -> ScouterStatus.TOOL_RUNNING
             "exec_command" in payloadType && "end" !in payloadType -> ScouterStatus.TOOL_RUNNING
@@ -165,6 +168,7 @@ class JsonlSessionParser(
         val eventType = when {
             isCodexUserMessagePayload(payloadType, role) -> ScouterEventType.USER_PROMPT
             status == ScouterStatus.ERROR -> ScouterEventType.POST_TOOL_USE_FAILURE
+            status == ScouterStatus.WAITING_PERMISSION -> ScouterEventType.PERMISSION_REQUEST
             status == ScouterStatus.TOOL_RUNNING -> ScouterEventType.PRE_TOOL_USE
             status == ScouterStatus.COMPLETED -> ScouterEventType.STOP
             status == ScouterStatus.IDLE -> ScouterEventType.SNAPSHOT
@@ -191,7 +195,7 @@ class JsonlSessionParser(
             eventType = eventType,
             derivedStatus = status,
             toolName = toolName,
-            commandSummary = firstNonBlank(payload.optString("command"), message)?.redactForScouter()?.take(160),
+            commandSummary = firstNonBlank(approvalSummary, payload.optString("command"), message)?.redactForScouter()?.take(160),
             errorMessage = if (status == ScouterStatus.ERROR) message?.redactForScouter() else null,
             modelName = modelName,
             tokensUsed = totalTokensObserved.takeIf { it > 0L } ?: (inputTokens + outputTokens + reasoningOutputTokens),
@@ -200,7 +204,7 @@ class JsonlSessionParser(
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
-            lastMessage = chatMessage,
+            lastMessage = approvalSummary?.redactForScouter()?.take(240) ?: chatMessage,
             rateLimitStatus = rateLimit.status,
             rateLimitRemainingRequests = rateLimit.remainingRequests,
             rateLimitRemainingTokens = rateLimit.remainingTokens,
@@ -246,16 +250,19 @@ class JsonlSessionParser(
             message,
             toolName
         )
+        val isApproval = isCodexApprovalPayload(payloadType, toolName)
+        val approvalSummary = if (isApproval) approvalSummaryFromPayload(payload, message, toolName) else null
         val status = when {
+            isApproval -> ScouterStatus.WAITING_PERMISSION
             "function_call_output" in payloadType || "tool_call_output" in payloadType || "tool_result" in payloadType -> ScouterStatus.THINKING
             "web_search_call" in payloadType && payload.optString("status").lowercase() == "completed" -> ScouterStatus.THINKING
             "function_call" in payloadType || "tool_call" in payloadType || "web_search_call" in payloadType -> ScouterStatus.TOOL_RUNNING
             else -> return null
         }
-        val eventType = if (status == ScouterStatus.TOOL_RUNNING) {
-            ScouterEventType.PRE_TOOL_USE
-        } else {
-            ScouterEventType.POST_TOOL_USE
+        val eventType = when (status) {
+            ScouterStatus.WAITING_PERMISSION -> ScouterEventType.PERMISSION_REQUEST
+            ScouterStatus.TOOL_RUNNING -> ScouterEventType.PRE_TOOL_USE
+            else -> ScouterEventType.POST_TOOL_USE
         }
         return codexJsonlEvent(
             json = json,
@@ -264,7 +271,8 @@ class JsonlSessionParser(
             eventType = eventType,
             status = status,
             toolName = toolName,
-            commandSummary = commandSummary?.redactForScouter()?.take(160)
+            commandSummary = firstNonBlank(approvalSummary, commandSummary)?.redactForScouter()?.take(160),
+            lastMessage = approvalSummary
         )
     }
 
@@ -340,6 +348,67 @@ class JsonlSessionParser(
 
     private fun isCodexUserMessagePayload(payloadType: String, role: String): Boolean {
         return "user_message" in payloadType || (payloadType == "message" && role == "user")
+    }
+
+    private fun isCodexApprovalPayload(vararg values: String?): Boolean {
+        return values.any { value ->
+            val normalized = value?.lowercase() ?: return@any false
+            "approval" in normalized || "permission" in normalized
+        }
+    }
+
+    private fun approvalSummaryFromPayload(payload: JSONObject, message: String?, toolName: String?): String? {
+        val approval = payload.optJSONObject("approval")
+            ?: payload.optJSONObject("approval_request")
+            ?: payload.optJSONObject("approvalRequest")
+            ?: payload.optJSONObject("permission")
+            ?: payload.optJSONObject("request")
+        val arguments = payload.optJsonObjectValue("arguments")
+            ?: approval.optJsonObjectValue("arguments")
+        val input = payload.optJsonObjectValue("input")
+            ?: approval.optJsonObjectValue("input")
+        return firstNonBlank(
+            payload.optString("command"),
+            approval?.optString("command"),
+            arguments?.optString("command"),
+            input?.optString("command"),
+            payload.optString("description"),
+            approval?.optString("description"),
+            arguments?.optString("description"),
+            input?.optString("description"),
+            payload.optString("reason"),
+            approval?.optString("reason"),
+            arguments?.optString("reason"),
+            input?.optString("reason"),
+            payload.optString("prompt"),
+            approval?.optString("prompt"),
+            arguments?.optString("prompt"),
+            input?.optString("prompt"),
+            payload.optPlainStringValue("arguments"),
+            approval.optPlainStringValue("arguments"),
+            payload.optPlainStringValue("input"),
+            approval.optPlainStringValue("input"),
+            message,
+            toolName
+        )
+    }
+
+    private fun JSONObject?.optJsonObjectValue(key: String): JSONObject? {
+        if (this == null || !has(key) || isNull(key)) return null
+        val value = opt(key) ?: return null
+        if (value is JSONObject) return value
+        val text = value.toString().trim()
+        if (!text.startsWith("{")) return null
+        return runCatching { JSONObject(text) }.getOrNull()
+    }
+
+    private fun JSONObject?.optPlainStringValue(key: String): String? {
+        if (this == null || !has(key) || isNull(key)) return null
+        val value = opt(key) ?: return null
+        if (value is JSONObject) return null
+        val text = value.toString().trim()
+        if (text.startsWith("{")) return null
+        return text.ifBlank { null }
     }
 
     private fun stableJsonlEventId(line: String): String {
