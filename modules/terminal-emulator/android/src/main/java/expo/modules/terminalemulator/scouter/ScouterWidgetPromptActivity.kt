@@ -2,10 +2,12 @@ package expo.modules.terminalemulator.scouter
 
 import android.app.Activity
 import android.app.Dialog
+import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.Window
@@ -73,7 +75,7 @@ class ScouterWidgetPromptActivity : Activity() {
         val dialog = Dialog(this)
         promptDialog = dialog
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        dialog.setContentView(createUnavailableContent(dialog, messageId))
+        dialog.setContentView(createUnavailableContent(dialog, messageId, target.canResume()))
         dialog.setOnCancelListener { finish() }
         showStyledDialog(dialog, showKeyboard = false)
     }
@@ -154,7 +156,7 @@ class ScouterWidgetPromptActivity : Activity() {
         }
     }
 
-    private fun createUnavailableContent(dialog: Dialog, messageId: Int): LinearLayout {
+    private fun createUnavailableContent(dialog: Dialog, messageId: Int, showResume: Boolean): LinearLayout {
         val density = resources.displayMetrics.density
         fun dp(value: Int): Int = (value * density).toInt()
 
@@ -174,10 +176,18 @@ class ScouterWidgetPromptActivity : Activity() {
             dialog.dismiss()
             finish()
         }
+        val resume = actionText(R.string.scouter_widget_prompt_resume) {
+            dialog.dismiss()
+            launchAgentChatResume()
+            finish()
+        }
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             addView(close)
+            if (showResume) {
+                addView(resume)
+            }
         }
 
         return LinearLayout(this).apply {
@@ -226,12 +236,23 @@ class ScouterWidgetPromptActivity : Activity() {
         }
     }
 
-    private fun replaceWithUnavailableContent(dialog: Dialog, messageId: Int) {
+    private fun replaceWithUnavailableContent(dialog: Dialog, messageId: Int, showResume: Boolean) {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.hideSoftInputFromWindow(input.windowToken, 0)
         input.clearFocus()
-        dialog.setContentView(createUnavailableContent(dialog, messageId))
+        dialog.setContentView(createUnavailableContent(dialog, messageId, showResume))
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+    }
+
+    private fun launchAgentChatResume() {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AGENT_CHAT_RESUME_URI))
+            .setPackage(packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching {
+            startActivity(intent)
+        }.onFailure {
+            Toast.makeText(this, R.string.scouter_widget_prompt_no_codex, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun sendPrompt(prompt: String, dialog: Dialog): Boolean {
@@ -241,7 +262,7 @@ class ScouterWidgetPromptActivity : Activity() {
             val messageId = target.messageResId()
             store.recordWidgetPromptFailed(getString(messageId))
             ScouterWidgetProvider.updateAll(this, force = true)
-            replaceWithUnavailableContent(dialog, messageId)
+            replaceWithUnavailableContent(dialog, messageId, target.canResume())
             return false
         }
 
@@ -312,6 +333,7 @@ class ScouterWidgetPromptActivity : Activity() {
     companion object {
         private val CODEX_STATUS_RE = Regex("""^gpt-[A-Za-z0-9_.-]+\s+default\s+·""")
         private val UUID_SUFFIX_RE = Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
+        private const val AGENT_CHAT_RESUME_URI = "shelly://agent-chat?compose=1"
         private val COLOR_PANEL = Color.rgb(3, 16, 22)
         private val COLOR_BORDER = Color.rgb(0, 157, 209)
         private val COLOR_ACCENT = Color.rgb(48, 213, 255)
@@ -338,4 +360,11 @@ private fun WidgetCodexTarget.messageResId(): Int = when (this) {
     WidgetCodexTarget.Missing -> R.string.scouter_widget_prompt_no_codex
     WidgetCodexTarget.Stale -> R.string.scouter_widget_prompt_stale_codex
     WidgetCodexTarget.Busy -> R.string.scouter_widget_prompt_busy
+}
+
+private fun WidgetCodexTarget.canResume(): Boolean = when (this) {
+    is WidgetCodexTarget.Ready,
+    WidgetCodexTarget.Busy -> false
+    WidgetCodexTarget.Missing,
+    WidgetCodexTarget.Stale -> true
 }

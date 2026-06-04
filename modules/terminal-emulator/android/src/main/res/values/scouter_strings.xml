@@ -8,6 +8,7 @@
   <string name="scouter_widget_prompt_send">Send</string>
   <string name="scouter_widget_prompt_cancel">Cancel</string>
   <string name="scouter_widget_prompt_close">Close</string>
+  <string name="scouter_widget_prompt_resume">Resume Codex</string>
   <string name="scouter_widget_prompt_empty">Prompt is empty</string>
   <string name="scouter_widget_prompt_sent">Sent to Codex</string>
   <string name="scouter_widget_prompt_no_codex">Open or resume a Codex terminal first</string>
