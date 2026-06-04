@@ -648,8 +648,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          rm -rf app/build ../modules/terminal-emulator/android/.cxx ../modules/terminal-emulator/android/build
-          ./gradlew :terminal-emulator:externalNativeBuildRelease assembleRelease -x lintVitalAnalyzeRelease --no-build-cache
+          ./gradlew :terminal-emulator:externalNativeBuildRelease assembleRelease -x lintVitalAnalyzeRelease --build-cache
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
 

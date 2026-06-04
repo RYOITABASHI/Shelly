@@ -133,7 +133,7 @@ class ScouterWidgetPromptActivity : Activity() {
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = panelBackground(dp)
+            background = panelBackground(dp(8), dp(1))
             setPadding(dp(22), dp(22), dp(22), dp(16))
             addView(title, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -182,7 +182,7 @@ class ScouterWidgetPromptActivity : Activity() {
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = panelBackground(dp)
+            background = panelBackground(dp(8), dp(1))
             setPadding(dp(22), dp(22), dp(22), dp(16))
             addView(title, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -203,11 +203,11 @@ class ScouterWidgetPromptActivity : Activity() {
         }
     }
 
-    private fun panelBackground(dp: (Int) -> Int): GradientDrawable = GradientDrawable().apply {
+    private fun panelBackground(cornerRadiusPx: Int, strokeWidthPx: Int): GradientDrawable = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(8).toFloat()
+        cornerRadius = cornerRadiusPx.toFloat()
         setColor(COLOR_PANEL)
-        setStroke(dp(1), COLOR_BORDER)
+        setStroke(strokeWidthPx, COLOR_BORDER)
     }
 
     private fun actionText(labelRes: Int, onClick: () -> Unit): TextView {
