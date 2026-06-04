@@ -14,6 +14,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { resumeCodexSession } from '@/lib/codex-session-resume';
 import { useTranslation } from '@/lib/i18n';
+import { useTerminalStore } from '@/store/terminal-store';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { SidebarSection } from './SidebarSection';
@@ -33,6 +34,7 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
   const dismissSession = useAgentChatStore((s) => s.dismissSession);
   const renameSession = useAgentChatStore((s) => s.renameSession);
+  const bindCodexSessionToPty = useAgentChatStore((s) => s.bindCodexSessionToPty);
   const [renamingSession, setRenamingSession] = useState<AgentChatSession | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
 
@@ -54,8 +56,19 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
     const result = await resumeCodexSession(session, { addTerminalPane: addPane });
     if (result.status === 'failed') {
       Alert.alert(t('sidebar.codex_resume_failed_title'), t(resumeFailureBodyKey(result.reason)));
+      return;
     }
-  }, [addPane, t]);
+    const terminalSession = useTerminalStore.getState().sessions.find((candidate) => candidate.id === result.sessionId);
+    if (!terminalSession?.nativeSessionId) return;
+    const now = Date.now();
+    bindCodexSessionToPty(session.codexSessionId, {
+      ptySessionId: terminalSession.nativeSessionId,
+      shellySessionId: terminalSession.id,
+      cwd: session.cwd ?? terminalSession.currentDir,
+      startedAt: now,
+      lastSeenAt: now,
+    });
+  }, [addPane, bindCodexSessionToPty, t]);
 
   const confirmDismiss = useCallback((session: AgentChatSession) => {
     const name = session.projectName || session.codexSessionId;

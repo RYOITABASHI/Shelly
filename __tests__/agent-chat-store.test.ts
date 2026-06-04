@@ -270,6 +270,64 @@ describe('agent chat store', () => {
     ]);
   });
 
+  it('keeps live timeline events visible when Scouter normalizes a rollout session id', async () => {
+    const baseTime = 1_811_114_500_000;
+    const rawSessionId = 'rollout-2026-06-03T11-42-51-019e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+    const normalizedSessionId = '019e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+      }],
+      recentEvents: [{
+        eventId: 'event-raw-user',
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        timestamp: baseTime,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'raw hello',
+      }],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    useAgentChatStore.getState().ingestNativeEvent({
+      emittedAt: baseTime + 2_000,
+      snapshotJson: JSON.stringify({
+        source: 'CODEX',
+        sessionId: normalizedSessionId,
+        projectName: 'home',
+        currentStatus: 'THINKING',
+        lastEventAt: baseTime + 2_000,
+        sessionStartAt: baseTime,
+      }),
+      eventJson: JSON.stringify({
+        eventId: 'event-normalized-live',
+        source: 'CODEX',
+        sessionId: normalizedSessionId,
+        timestamp: baseTime + 2_000,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'normalized live',
+      }),
+    });
+
+    expect(useAgentChatStore.getState().sessions.map((session) => session.codexSessionId)).toEqual([
+      normalizedSessionId,
+    ]);
+    expect(useAgentChatStore.getState().events.filter((event) => event.kind === 'user_message')).toEqual([
+      expect.objectContaining({ codexSessionId: normalizedSessionId, text: 'raw hello' }),
+      expect.objectContaining({ codexSessionId: normalizedSessionId, text: 'normalized live' }),
+    ]);
+  });
+
   it('keeps only the latest status event per session', () => {
     const baseTime = 1_811_115_000_000;
 
@@ -361,6 +419,56 @@ describe('agent chat store', () => {
       expect.objectContaining({
         text: 'こんにちは',
         ptySessionId: 'shelly-1',
+      }),
+    ]);
+  });
+
+  it('backfills cwd from a rollout event when the session id is UUID-only', async () => {
+    const baseTime = 1_811_116_500_000;
+    const cwd = '/data/data/dev.shelly.terminal/files/home';
+    const rawSessionId = 'rollout-2026-06-03T11-42-51-039e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+    const normalizedSessionId = '039e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+
+    useAgentChatStore.getState().recordCodexPtyCandidate({
+      ptySessionId: 'shelly-mixed-cwd',
+      shellySessionId: 'session-mixed-cwd',
+      cwd,
+      startedAt: baseTime,
+      lastSeenAt: baseTime + 2_000,
+    });
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: normalizedSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 2_000,
+        sessionStartAt: baseTime,
+        modelName: 'gpt-5.5',
+      }],
+      recentEvents: [{
+        eventId: 'event-mixed-cwd-context',
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        timestamp: baseTime + 1,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: `<environment_context><cwd>${cwd}</cwd></environment_context>`,
+      }],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+
+    expect(useAgentChatStore.getState().sessions).toEqual([
+      expect.objectContaining({
+        codexSessionId: normalizedSessionId,
+        bindingConfidence: 'reliable',
+        ptySessionId: 'shelly-mixed-cwd',
+        shellySessionId: 'session-mixed-cwd',
+        cwd,
       }),
     ]);
   });
@@ -548,6 +656,251 @@ describe('agent chat store', () => {
       expect.objectContaining({ codexSessionId: 'session-newer', bindingConfidence: 'reliable', ptySessionId: 'shelly-1' }),
       expect.objectContaining({ codexSessionId: 'session-older', bindingConfidence: 'none', ptySessionId: null }),
     ]);
+  });
+
+  it('reliably binds an old resumed Codex session to the targeted PTY', async () => {
+    const baseTime = 1_811_120_250_000;
+    const cwd = '/data/data/dev.shelly.terminal/files/home';
+    const rawSessionId = 'rollout-2026-06-03T11-42-51-019e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+    const normalizedSessionId = '019e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+        cwd,
+      }],
+      recentEvents: [{
+        eventId: 'event-resumed-user',
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        timestamp: baseTime + 1_000,
+        eventType: 'USER_PROMPT',
+        derivedStatus: 'THINKING',
+        lastMessage: 'こんにちは',
+      }],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({ bindingConfidence: 'none', ptySessionId: null }),
+    );
+
+    useAgentChatStore.getState().bindCodexSessionToPty(normalizedSessionId, {
+      ptySessionId: 'shelly-resume',
+      shellySessionId: 'terminal-resume',
+      cwd,
+      startedAt: baseTime + 2 * 60 * 60_000,
+      lastSeenAt: baseTime + 2 * 60 * 60_000,
+    });
+
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({
+        codexSessionId: rawSessionId,
+        bindingConfidence: 'reliable',
+        ptySessionId: 'shelly-resume',
+        shellySessionId: 'terminal-resume',
+      }),
+    );
+    expect(useAgentChatStore.getState().bindings[rawSessionId]).toEqual(
+      expect.objectContaining({ confidence: 'reliable', reason: 'resume' }),
+    );
+    expect(useAgentChatStore.getState().events.find((event) => event.kind === 'user_message')).toEqual(
+      expect.objectContaining({ ptySessionId: 'shelly-resume' }),
+    );
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: 'session-newer-same-cwd',
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 2 * 60 * 60_000 + 500,
+        sessionStartAt: baseTime + 2 * 60 * 60_000,
+        cwd,
+      }, {
+        source: 'CODEX',
+        sessionId: normalizedSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+        cwd,
+      }],
+      recentEvents: [],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({
+        codexSessionId: 'session-newer-same-cwd',
+        bindingConfidence: 'none',
+        ptySessionId: null,
+      }),
+    );
+    expect(useAgentChatStore.getState().sessions[1]).toEqual(
+      expect.objectContaining({
+        codexSessionId: normalizedSessionId,
+        bindingConfidence: 'reliable',
+        ptySessionId: 'shelly-resume',
+        shellySessionId: 'terminal-resume',
+      }),
+    );
+    expect(useAgentChatStore.getState().bindings[normalizedSessionId]).toEqual(
+      expect.objectContaining({ confidence: 'reliable', reason: 'resume' }),
+    );
+    expect(useAgentChatStore.getState().events.find((event) => event.kind === 'user_message')).toEqual(
+      expect.objectContaining({
+        codexSessionId: normalizedSessionId,
+        text: 'こんにちは',
+        ptySessionId: 'shelly-resume',
+      }),
+    );
+
+    const stateWithResumeBinding = useAgentChatStore.getState();
+    useAgentChatStore.setState({
+      bindings: {
+        ...stateWithResumeBinding.bindings,
+        [normalizedSessionId]: {
+          ...stateWithResumeBinding.bindings[normalizedSessionId],
+          matchedAt: Date.now() - 10 * 60_000,
+        },
+      },
+    });
+    await useAgentChatStore.getState().refresh();
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({
+        codexSessionId: 'session-newer-same-cwd',
+        bindingConfidence: 'reliable',
+        ptySessionId: 'shelly-resume',
+      }),
+    );
+    expect(useAgentChatStore.getState().sessions[1]).toEqual(
+      expect.objectContaining({
+        codexSessionId: normalizedSessionId,
+        bindingConfidence: 'none',
+        ptySessionId: null,
+      }),
+    );
+  });
+
+  it('keeps a fresh resumed Codex binding when the terminal cwd snapshot was stale', async () => {
+    const baseTime = 1_811_120_350_000;
+    const cwd = '/data/data/dev.shelly.terminal/files/home';
+    const staleTerminalCwd = '/data/data/dev.shelly.terminal/files/stale';
+    const rawSessionId = 'rollout-2026-06-03T12-00-00-029e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+    const normalizedSessionId = '029e8b5c-bc3f-7582-88f6-e8a26ba24d66';
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+      }],
+      recentEvents: [],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    useAgentChatStore.getState().bindCodexSessionToPty(normalizedSessionId, {
+      ptySessionId: 'shelly-resume-stale-cwd',
+      shellySessionId: 'terminal-resume-stale-cwd',
+      cwd: staleTerminalCwd,
+      startedAt: baseTime + 30_000,
+      lastSeenAt: baseTime + 30_000,
+    });
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+        cwd,
+      }],
+      recentEvents: [],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({
+        bindingConfidence: 'reliable',
+        ptySessionId: 'shelly-resume-stale-cwd',
+        shellySessionId: 'terminal-resume-stale-cwd',
+        cwd,
+      }),
+    );
+    expect(useAgentChatStore.getState().bindings[rawSessionId]).toEqual(
+      expect.objectContaining({ confidence: 'reliable', reason: 'resume', cwd }),
+    );
+    expect(useAgentChatStore.getState().codexPtyLaunches[0]).toEqual(
+      expect.objectContaining({ ptySessionId: 'shelly-resume-stale-cwd', cwd }),
+    );
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: 'session-newer-after-stale-cwd',
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 30_500,
+        sessionStartAt: baseTime + 30_000,
+        cwd,
+      }, {
+        source: 'CODEX',
+        sessionId: rawSessionId,
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+        cwd,
+      }],
+      recentEvents: [],
+    }));
+    const stateWithResumeBinding = useAgentChatStore.getState();
+    useAgentChatStore.setState({
+      bindings: {
+        ...stateWithResumeBinding.bindings,
+        [rawSessionId]: {
+          ...stateWithResumeBinding.bindings[rawSessionId],
+          matchedAt: Date.now() - 10 * 60_000,
+        },
+      },
+    });
+
+    await useAgentChatStore.getState().refresh();
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({
+        codexSessionId: 'session-newer-after-stale-cwd',
+        bindingConfidence: 'reliable',
+        ptySessionId: 'shelly-resume-stale-cwd',
+      }),
+    );
+    expect(useAgentChatStore.getState().sessions[1]).toEqual(
+      expect.objectContaining({
+        codexSessionId: rawSessionId,
+        bindingConfidence: 'none',
+        ptySessionId: null,
+      }),
+    );
   });
 
   it('renames Codex sessions and keeps the title across refresh', async () => {

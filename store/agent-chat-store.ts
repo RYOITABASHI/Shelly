@@ -30,7 +30,7 @@ export type AgentChatBinding = {
   cwd: string | null;
   confidence: AgentChatBindingConfidence;
   matchedAt: number | null;
-  reason: 'cwd-time' | 'cwd-only' | 'previous' | 'none';
+  reason: 'cwd-time' | 'cwd-only' | 'previous' | 'resume' | 'none';
 };
 
 export type CodexPtyLaunch = {
@@ -132,6 +132,7 @@ type AgentChatState = {
   lastUpdatedAt: number | null;
   ingestNativeEvent: (payload: NativeScouterEventPayload) => void;
   recordCodexPtyCandidate: (candidate: CodexPtyCandidate) => void;
+  bindCodexSessionToPty: (sessionId: string, candidate: CodexPtyCandidate) => void;
   dismissSession: (sessionId: string) => void;
   renameSession: (sessionId: string, title: string) => void;
   refresh: () => Promise<void>;
@@ -151,6 +152,7 @@ const MAX_SESSION_TITLE_LENGTH = 48;
 const REFRESH_MS = 5_000;
 const DEDUPE_WINDOW_MS = 2_000;
 const BINDING_MATCH_WINDOW_MS = 15 * 60_000;
+const RESUME_BINDING_RESERVATION_MS = 5 * 60_000;
 const PTY_LAUNCH_TTL_MS = 2 * 60 * 60_000;
 const MAX_PTY_LAUNCHES = 12;
 const DISMISSED_SESSIONS_STORAGE_KEY = 'shelly_agent_chat_dismissed_sessions';
@@ -202,7 +204,8 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
     const sessionCwdById = collectRecentEventCwd(parsedEvent ? [parsedEvent] : []);
     const sessionsWithCwd = applyRecentEventCwd(sessions, sessionCwdById);
-    const bindings = reconcileBindings(sessionsWithCwd, get().codexPtyLaunches, get().bindings);
+    const launches = applyResumeBindingCwdToLaunches(get().codexPtyLaunches, sessionsWithCwd, get().bindings);
+    const bindings = reconcileBindings(sessionsWithCwd, launches, get().bindings);
     const boundSessions = applySessionTitleOverrides(
       applyBindingsToSessions(sessionsWithCwd, bindings),
       get().sessionTitleOverrides,
@@ -221,6 +224,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       sessions: boundSessions,
       events,
       bindings,
+      codexPtyLaunches: launches,
       latestSessionId: boundSessions[0]?.codexSessionId ?? null,
       loading: false,
       error: null,
@@ -230,7 +234,11 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   recordCodexPtyCandidate: (candidate) => {
     const launch = normalizePtyCandidate(candidate);
-    const launches = upsertPtyLaunch(get().codexPtyLaunches, launch);
+    const launches = applyResumeBindingCwdToLaunches(
+      upsertPtyLaunch(get().codexPtyLaunches, launch),
+      get().sessions,
+      get().bindings,
+    );
     const bindings = reconcileBindings(get().sessions, launches, get().bindings);
     set({
       codexPtyLaunches: launches,
@@ -240,6 +248,47 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
         get().sessionTitleOverrides,
       ),
       events: applyBindingsToEvents(get().events, bindings),
+    });
+  },
+
+  bindCodexSessionToPty: (sessionId, candidate) => {
+    const normalizedSessionId = normalizeCodexSessionId(sessionId);
+    const launch = normalizePtyCandidate(candidate);
+    if (!normalizedSessionId || !launch.ptySessionId) return;
+
+    const currentSessions = get().sessions;
+    const targetSession = currentSessions.find((session) => (
+      normalizeCodexSessionId(session.codexSessionId) === normalizedSessionId
+    ));
+    const bindingSessionId = targetSession?.codexSessionId ?? normalizedSessionId;
+    const bindingCwd = targetSession?.cwd ?? launch.cwd ?? null;
+    const launches = upsertPtyLaunch(get().codexPtyLaunches, {
+      ...launch,
+      cwd: bindingCwd,
+    });
+    const bindings = {
+      ...omitBindingsForNormalizedSession(get().bindings, normalizedSessionId),
+      [bindingSessionId]: {
+        codexSessionId: bindingSessionId,
+        ptySessionId: launch.ptySessionId,
+        shellySessionId: launch.shellySessionId ?? null,
+        cwd: bindingCwd,
+        confidence: 'reliable' as const,
+        matchedAt: Date.now(),
+        reason: 'resume' as const,
+      },
+    };
+    const sessions = applySessionTitleOverrides(
+      applyBindingsToSessions(currentSessions, bindings),
+      get().sessionTitleOverrides,
+    );
+    set({
+      codexPtyLaunches: launches,
+      bindings,
+      sessions,
+      events: applyBindingsToEvents(get().events, bindings),
+      latestSessionId: sessions[0]?.codexSessionId ?? null,
+      lastUpdatedAt: Date.now(),
     });
   },
 
@@ -306,9 +355,13 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       const sessionCwdById = collectRecentEventCwd(recentEvents);
       const sessions = codexSessions.map((session) => {
         const sessionId = session.sessionId?.trim() ?? '';
-        return toAgentChatSession(session, sessionCwdById.get(sessionId));
+        return toAgentChatSession(session, sessionCwdById.get(normalizeCodexSessionId(sessionId)));
       });
-      const launches = prunePtyLaunches(get().codexPtyLaunches, Date.now());
+      const launches = applyResumeBindingCwdToLaunches(
+        prunePtyLaunches(get().codexPtyLaunches, Date.now()),
+        sessions,
+        get().bindings,
+      );
       const bindings = reconcileBindings(sessions, launches, get().bindings);
       const boundSessions = applySessionTitleOverrides(
         applyBindingsToSessions(sessions, bindings),
@@ -541,9 +594,10 @@ function dedupeCodexSessions(sessions: ScouterSession[]): ScouterSession[] {
     if (session.source !== 'CODEX') continue;
     const sessionId = session.sessionId?.trim();
     if (!sessionId) continue;
-    const previous = byId.get(sessionId);
-    if (!previous || timestampOf(session) >= timestampOf(previous)) {
-      byId.set(sessionId, { ...session, sessionId });
+    const normalizedSessionId = normalizeCodexSessionId(sessionId);
+    const previous = byId.get(normalizedSessionId);
+    if (!previous || timestampOf(session) > timestampOf(previous)) {
+      byId.set(normalizedSessionId, { ...session, sessionId });
     }
   }
   return Array.from(byId.values()).sort((a, b) => timestampOf(b) - timestampOf(a));
@@ -647,7 +701,7 @@ function collectRecentEventCwd(events: ScouterRecentEvent[]): Map<string, string
   const bySession = new Map<string, string>();
   for (const event of events) {
     if (event.source !== 'CODEX') continue;
-    const sessionId = event.sessionId?.trim();
+    const sessionId = normalizeCodexSessionId(event.sessionId);
     if (!sessionId || bySession.has(sessionId)) continue;
     const cwd = normalizeCwd(event.cwd ?? extractCwdFromMessage(event.lastMessage));
     if (cwd) bySession.set(sessionId, cwd);
@@ -662,7 +716,7 @@ function applyRecentEventCwd(
   if (cwdBySessionId.size === 0) return sessions;
   return sessions.map((session) => {
     if (session.cwd) return session;
-    const cwd = cwdBySessionId.get(session.codexSessionId);
+    const cwd = cwdBySessionId.get(normalizeCodexSessionId(session.codexSessionId));
     return cwd ? { ...session, cwd } : session;
   });
 }
@@ -707,9 +761,20 @@ function reconcileBindings(
   previous: Record<string, AgentChatBinding>,
 ): Record<string, AgentChatBinding> {
   const next: Record<string, AgentChatBinding> = {};
-  const usedPtySessionIds = new Set<string>();
+  const reusableResumeBindings = collectReusableResumeBindings(sessions, launches, previous);
+  const usedPtySessionIds = new Set(
+    Array.from(reusableResumeBindings.values())
+      .map((binding) => binding.ptySessionId)
+      .filter((ptySessionId): ptySessionId is string => Boolean(ptySessionId)),
+  );
   for (const session of sessions) {
-    const existing = previous[session.codexSessionId];
+    const existing = findBindingForSession(previous, session.codexSessionId);
+    const resumeBinding = reusableResumeBindings.get(session.codexSessionId);
+    if (resumeBinding) {
+      next[session.codexSessionId] = resumeBinding;
+      continue;
+    }
+
     const match = findReliablePtyMatch(session, launches, usedPtySessionIds);
     if (match) {
       usedPtySessionIds.add(match.launch.ptySessionId);
@@ -726,14 +791,16 @@ function reconcileBindings(
     }
 
     if (
-      existing?.confidence === 'reliable'
-      && (!session.cwd || normalizeCwd(existing.cwd) === normalizeCwd(session.cwd))
-      && existing.ptySessionId
-      && launches.some((launch) => launch.ptySessionId === existing.ptySessionId)
+      canReuseReliableBinding(session, existing, launches)
+      && existing?.ptySessionId
       && !usedPtySessionIds.has(existing.ptySessionId)
     ) {
       usedPtySessionIds.add(existing.ptySessionId);
-      next[session.codexSessionId] = { ...existing, reason: 'previous' };
+      next[session.codexSessionId] = {
+        ...existing,
+        codexSessionId: session.codexSessionId,
+        reason: 'previous',
+      };
       continue;
     }
 
@@ -762,6 +829,112 @@ function reconcileBindings(
     };
   }
   return next;
+}
+
+function collectReusableResumeBindings(
+  sessions: AgentChatSession[],
+  launches: CodexPtyLaunch[],
+  previous: Record<string, AgentChatBinding>,
+): Map<string, AgentChatBinding> {
+  const bindings = new Map<string, AgentChatBinding>();
+  const reservedPtySessionIds = new Set<string>();
+  for (const session of sessions) {
+    const binding = findBindingForSession(previous, session.codexSessionId);
+    if (!canReuseRecentResumeBinding(session, binding, launches)) continue;
+    if (!binding.ptySessionId) continue;
+    if (reservedPtySessionIds.has(binding.ptySessionId)) continue;
+    reservedPtySessionIds.add(binding.ptySessionId);
+    bindings.set(session.codexSessionId, {
+      ...binding,
+      codexSessionId: session.codexSessionId,
+      cwd: session.cwd ?? binding.cwd,
+    });
+  }
+  return bindings;
+}
+
+function applyResumeBindingCwdToLaunches(
+  launches: CodexPtyLaunch[],
+  sessions: AgentChatSession[],
+  previous: Record<string, AgentChatBinding>,
+): CodexPtyLaunch[] {
+  const cwdByPtySessionId = new Map<string, string>();
+  for (const session of sessions) {
+    const cwd = normalizeCwd(session.cwd);
+    if (!cwd) continue;
+    const binding = findBindingForSession(previous, session.codexSessionId);
+    if (!canReuseRecentResumeBinding(session, binding, launches) || !binding.ptySessionId) continue;
+    cwdByPtySessionId.set(binding.ptySessionId, cwd);
+  }
+  if (cwdByPtySessionId.size === 0) return launches;
+  return launches.map((launch) => {
+    const cwd = cwdByPtySessionId.get(launch.ptySessionId);
+    if (!cwd || normalizeCwd(launch.cwd) === cwd) return launch;
+    return { ...launch, cwd };
+  });
+}
+
+function findBindingForSession(
+  bindings: Record<string, AgentChatBinding>,
+  sessionId: string | null | undefined,
+): AgentChatBinding | undefined {
+  const directKey = sessionId?.trim() ?? '';
+  if (directKey && bindings[directKey]) return bindings[directKey];
+  const normalized = normalizeCodexSessionId(sessionId);
+  if (!normalized) return undefined;
+  return Object.entries(bindings).find(([key, binding]) => (
+    normalizeCodexSessionId(key) === normalized
+    || normalizeCodexSessionId(binding.codexSessionId) === normalized
+  ))?.[1];
+}
+
+function omitBindingsForNormalizedSession(
+  bindings: Record<string, AgentChatBinding>,
+  normalizedSessionId: string,
+): Record<string, AgentChatBinding> {
+  const next: Record<string, AgentChatBinding> = {};
+  for (const [key, binding] of Object.entries(bindings)) {
+    if (
+      normalizeCodexSessionId(key) === normalizedSessionId
+      || normalizeCodexSessionId(binding.codexSessionId) === normalizedSessionId
+    ) {
+      continue;
+    }
+    next[key] = binding;
+  }
+  return next;
+}
+
+function canReuseRecentResumeBinding(
+  session: AgentChatSession,
+  binding: AgentChatBinding | undefined,
+  launches: CodexPtyLaunch[],
+): binding is AgentChatBinding {
+  return Boolean(
+    binding?.reason === 'resume'
+    && binding.confidence === 'reliable'
+    && binding.ptySessionId
+    && isRecentResumeBinding(binding)
+    && launches.some((launch) => launch.ptySessionId === binding.ptySessionId),
+  );
+}
+
+function isRecentResumeBinding(binding: AgentChatBinding): boolean {
+  return typeof binding.matchedAt === 'number'
+    && Date.now() - binding.matchedAt <= RESUME_BINDING_RESERVATION_MS;
+}
+
+function canReuseReliableBinding(
+  session: AgentChatSession,
+  binding: AgentChatBinding | undefined,
+  launches: CodexPtyLaunch[],
+): binding is AgentChatBinding {
+  return Boolean(
+    binding?.confidence === 'reliable'
+    && (!session.cwd || normalizeCwd(binding.cwd) === normalizeCwd(session.cwd))
+    && binding.ptySessionId
+    && launches.some((launch) => launch.ptySessionId === binding.ptySessionId),
+  );
 }
 
 function findReliablePtyMatch(
@@ -814,7 +987,7 @@ function applyBindingsToSessions(
   bindings: Record<string, AgentChatBinding>,
 ): AgentChatSession[] {
   return sessions.map((session) => {
-    const binding = bindings[session.codexSessionId];
+    const binding = findBindingForSession(bindings, session.codexSessionId);
     if (!binding) return session;
     return {
       ...session,
@@ -831,7 +1004,7 @@ function applyBindingsToEvents(
   bindings: Record<string, AgentChatBinding>,
 ): AgentChatEvent[] {
   return events.map((event) => {
-    const binding = bindings[event.codexSessionId];
+    const binding = findBindingForSession(bindings, event.codexSessionId);
     if (!binding?.ptySessionId) {
       return event.ptySessionId ? { ...event, ptySessionId: undefined } : event;
     }
@@ -1002,16 +1175,25 @@ function mergeEvents(
 ): AgentChatEvent[] {
   if (sessions.length === 0) return [];
 
-  const activeSessionIds = new Set(sessions.map((session) => session.codexSessionId));
+  const activeSessionIdByNormalizedId = new Map(
+    sessions.map((session) => [normalizeCodexSessionId(session.codexSessionId), session.codexSessionId]),
+  );
   const byId = new Map<string, AgentChatEvent>();
   for (const event of existing) {
-    if (activeSessionIds.has(event.codexSessionId)) {
-      byId.set(event.id, event);
-    }
+    const activeSessionId = activeSessionIdByNormalizedId.get(normalizeCodexSessionId(event.codexSessionId));
+    if (!activeSessionId) continue;
+    byId.set(event.id, event.codexSessionId === activeSessionId ? event : {
+      ...event,
+      codexSessionId: activeSessionId,
+    });
   }
   for (const event of incoming) {
-    if (!activeSessionIds.has(event.codexSessionId)) continue;
-    byId.set(event.id, event);
+    const activeSessionId = activeSessionIdByNormalizedId.get(normalizeCodexSessionId(event.codexSessionId));
+    if (!activeSessionId) continue;
+    byId.set(event.id, event.codexSessionId === activeSessionId ? event : {
+      ...event,
+      codexSessionId: activeSessionId,
+    });
   }
   return dedupeTimelineEvents(Array.from(byId.values()))
     .sort((a, b) => a.timestamp - b.timestamp)

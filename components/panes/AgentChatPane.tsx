@@ -73,6 +73,7 @@ export default function AgentChatPane() {
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
   const dismissSession = useAgentChatStore((s) => s.dismissSession);
+  const bindCodexSessionToPty = useAgentChatStore((s) => s.bindCodexSessionToPty);
   const terminalReadinessSignature = useTerminalStore((s) =>
     s.sessions
       .map((session) => [
@@ -193,6 +194,19 @@ export default function AgentChatPane() {
     setResumeNotice({ status: 'pending', sessionId });
     const result = await resumeCodexSession(activeSession, { addTerminalPane: addPane })
       .catch(() => ({ status: 'failed' as const, reason: 'no_terminal' as const }));
+    if (result.status !== 'failed') {
+      const terminalSession = useTerminalStore.getState().sessions.find((session) => session.id === result.sessionId);
+      if (terminalSession?.nativeSessionId) {
+        const now = Date.now();
+        bindCodexSessionToPty(sessionId, {
+          ptySessionId: terminalSession.nativeSessionId,
+          shellySessionId: terminalSession.id,
+          cwd: activeSession.cwd ?? terminalSession.currentDir,
+          startedAt: now,
+          lastSeenAt: now,
+        });
+      }
+    }
     if (activeSessionIdRef.current !== sessionId) {
       setResumeWorkingSessionId((current) => current === sessionId ? null : current);
       return;
@@ -215,7 +229,7 @@ export default function AgentChatPane() {
     setReplyReadiness(null);
     setTimeout(() => void refresh(), 400);
     setTimeout(() => void refresh(), 1_500);
-  }, [activeSession, addPane, refresh, t]);
+  }, [activeSession, addPane, bindCodexSessionToPty, refresh, t]);
 
   const confirmDismissSession = useCallback((session: AgentChatSession) => {
     const name = session.projectName || session.codexSessionId;
