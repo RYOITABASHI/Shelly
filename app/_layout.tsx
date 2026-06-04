@@ -234,8 +234,9 @@ export default function RootLayout() {
     //
     // Supported schemes so far:
     //   shelly://browser?url=<encoded>  — navigate the Browser Pane to a URL.
-    //   shelly://scouter                 — open Scouter detail.
     //                                     Adds a browser pane if none exists.
+    //   shelly://scouter                 — open Scouter detail.
+    //   shelly://agent-chat?compose=1    — open Agent Chat and focus input.
     //
     // Primary client today is `shelly-cs open <codespace>` which fires
     //   am start -a android.intent.action.VIEW \
