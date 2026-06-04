@@ -109,6 +109,22 @@
       android:includeFontPadding="false" />
 
     <TextView
+      android:id="@+id/scouter_codex_conversation"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="3dp"
+      android:ellipsize="end"
+      android:maxLines="2"
+      android:text=""
+      android:textColor="#D8FFE8"
+      android:textSize="10sp"
+      android:typeface="monospace"
+      android:textStyle="bold"
+      android:lineSpacingExtra="0dp"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
+    <TextView
       android:layout_width="match_parent"
       android:layout_height="1dp"
       android:layout_marginTop="3dp"

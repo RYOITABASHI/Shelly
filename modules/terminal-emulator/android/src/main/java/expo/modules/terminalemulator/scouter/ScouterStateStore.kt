@@ -59,6 +59,7 @@ class ScouterStateStore(context: Context) {
             val snapshot = event.toSnapshot(previous)
             all[event.sessionId] = snapshot
             appendRecentEventLocked(event)
+            markWidgetPromptAnsweredLocked(event)
             writeAll(all)
             writeHelperStateLocked(all)
             return snapshot
@@ -108,6 +109,7 @@ class ScouterStateStore(context: Context) {
             .putString(KEY_WIDGET_PROMPT, prompt.take(MAX_WIDGET_TEXT_LENGTH))
             .putLong(KEY_WIDGET_PROMPT_AT, now)
             .putString(KEY_WIDGET_STATUS, "queued")
+            .putLong(KEY_WIDGET_STATUS_AT, now)
             .remove(KEY_WIDGET_ERROR)
             .commit()
         writeHelperState()
@@ -116,6 +118,7 @@ class ScouterStateStore(context: Context) {
     fun recordWidgetPromptFailed(message: String) {
         prefs.edit()
             .putString(KEY_WIDGET_STATUS, "failed")
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
             .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
             .commit()
         writeHelperState()
@@ -130,13 +133,7 @@ class ScouterStateStore(context: Context) {
                     event.optString("lastMessage").isNotBlank()
             }
             val lastAnswer = recent.lastOrNull { event ->
-                event.optString("source") == ScouterSource.CODEX.name &&
-                    event.optString("lastMessage").isNotBlank() &&
-                    event.optString("eventType") != ScouterEventType.USER_PROMPT.name &&
-                    event.optString("derivedStatus") in setOf(
-                        ScouterStatus.IDLE.name,
-                        ScouterStatus.COMPLETED.name
-                    )
+                isCodexAnswerEvent(event)
             }
             return ScouterWidgetConversation(
                 lastPrompt = lastPrompt?.optString("lastMessage")?.ifBlank { null },
@@ -257,11 +254,37 @@ class ScouterStateStore(context: Context) {
         prefs.edit().putString(KEY_RECENT_EVENTS, arr.toString()).commit()
     }
 
+    private fun markWidgetPromptAnsweredLocked(event: ScouterEvent) {
+        if (event.source != ScouterSource.CODEX) return
+        val widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)
+        val widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+        if (
+            widgetStatus == "failed" &&
+            (widgetStatusAt <= 0L || event.timestamp >= widgetStatusAt) &&
+            (event.eventType == ScouterEventType.USER_PROMPT || isCodexAnswerEvent(event))
+        ) {
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, "observed")
+                .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+        }
+        if (!isCodexAnswerEvent(event)) return
+        if (widgetStatus != "queued") return
+        val widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+        val cutoff = maxOf(widgetPromptAt, widgetStatusAt)
+        if (cutoff <= 0L || event.timestamp < cutoff) return
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, "answered")
+            .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+    }
+
     private fun shouldKeepRecentEvent(event: ScouterEvent): Boolean {
         if (event.source != ScouterSource.CODEX) return false
         if (event.eventType == ScouterEventType.USER_PROMPT && !event.lastMessage.isNullOrBlank()) return true
-        if (event.derivedStatus == ScouterStatus.IDLE && !event.lastMessage.isNullOrBlank()) return true
-        if (event.derivedStatus == ScouterStatus.COMPLETED && !event.lastMessage.isNullOrBlank()) return true
+        if (isCodexAnswerEvent(event)) return true
         if (event.eventType == ScouterEventType.PRE_TOOL_USE && !event.toolName.isNullOrBlank()) return true
         if (event.eventType == ScouterEventType.POST_TOOL_USE && (!event.toolName.isNullOrBlank() || !event.commandSummary.isNullOrBlank())) return true
         if (event.eventType == ScouterEventType.POST_TOOL_USE_FAILURE) return true
@@ -269,6 +292,20 @@ class ScouterStateStore(context: Context) {
         if (event.derivedStatus == ScouterStatus.WAITING_PERMISSION) return true
         if (event.derivedStatus == ScouterStatus.ERROR) return true
         return false
+    }
+
+    private fun isCodexAnswerEvent(event: ScouterEvent): Boolean {
+        return event.source == ScouterSource.CODEX &&
+            !event.lastMessage.isNullOrBlank() &&
+            event.eventType != ScouterEventType.USER_PROMPT &&
+            event.derivedStatus in WIDGET_ANSWER_STATUSES
+    }
+
+    private fun isCodexAnswerEvent(event: JSONObject): Boolean {
+        return event.optString("source") == ScouterSource.CODEX.name &&
+            event.optString("lastMessage").isNotBlank() &&
+            event.optString("eventType") != ScouterEventType.USER_PROMPT.name &&
+            event.optString("derivedStatus") in WIDGET_ANSWER_STATUS_NAMES
     }
 
     private fun writeHelperState() {
@@ -311,6 +348,7 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_PROMPT = "widget_prompt"
         private const val KEY_WIDGET_PROMPT_AT = "widget_prompt_at"
         private const val KEY_WIDGET_STATUS = "widget_status"
+        private const val KEY_WIDGET_STATUS_AT = "widget_status_at"
         private const val KEY_WIDGET_ERROR = "widget_error"
         private const val KEY_WIDGET_CODEX_SESSION_ID = "widget_codex_session_id"
         private const val KEY_WIDGET_PTY_SESSION_ID = "widget_pty_session_id"
@@ -319,5 +357,10 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_BINDING_AT = "widget_binding_at"
         private const val MAX_RECENT_EVENTS = 120
         private const val MAX_WIDGET_TEXT_LENGTH = 500
+        private val WIDGET_ANSWER_STATUSES = setOf(
+            ScouterStatus.IDLE,
+            ScouterStatus.COMPLETED
+        )
+        private val WIDGET_ANSWER_STATUS_NAMES = WIDGET_ANSWER_STATUSES.map { it.name }.toSet()
     }
 }

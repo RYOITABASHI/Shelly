@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import android.view.View
 import android.widget.RemoteViews
 import expo.modules.terminalemulator.R
 import java.text.SimpleDateFormat
@@ -153,12 +154,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 emptyTitle = "AGENT: CODEX",
                 emptyBadge = "CX",
                 emptyDetail = "STATE  WAIT [..] no Codex session",
-                emptyMetrics = widgetConversationLine(conversation) ?: listOf(
+                emptyMetrics = listOf(
                     "CTX [..........] --% · TOK --",
                     "FLOW in -- / out -- · CACHE -- · RATE --"
-                ).joinToString("\n"),
-                conversation = conversation
+                ).joinToString("\n")
             )
+            bindCodexConversation(views, conversation)
             bindRow(
                 views = views,
                 snapshot = local,
@@ -173,8 +174,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 emptyMetrics = listOf(
                     "WAVE ........ · TPS --",
                     "PING --ms · PROBE 8080/11434"
-                ).joinToString("\n"),
-                conversation = null
+                ).joinToString("\n")
             )
             val latestAt = listOfNotNull(codex?.lastEventAt, local?.lastEventAt).maxOrNull()
             views.setTextViewText(
@@ -195,8 +195,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             emptyTitle: String,
             emptyBadge: String,
             emptyDetail: String,
-            emptyMetrics: String,
-            conversation: ScouterWidgetConversation?
+            emptyMetrics: String
         ) {
             if (snapshot == null) {
                 views.setTextViewText(titleId, emptyTitle)
@@ -217,7 +216,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(titleId, title.redactForScouter())
             views.setTextViewText(badgeId, snapshot.source.badge())
             views.setTextViewText(detailId, statusLine(snapshot, project, stale).redactForScouter())
-            views.setTextViewText(metricsId, metricsLine(snapshot, conversation))
+            views.setTextViewText(metricsId, metricsLine(snapshot))
             views.setInt(dotId, "setColorFilter", colorForStatus(snapshot.currentStatus, stale))
         }
 
@@ -294,15 +293,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
         }
 
-        private fun metricsLine(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation?): String {
+        private fun metricsLine(snapshot: SessionSnapshot): String {
             return if (snapshot.source == ScouterSource.LOCAL_LLM) {
                 localMetrics(snapshot)
             } else {
-                codexMetrics(snapshot, conversation)
+                codexMetrics(snapshot)
             }
         }
 
-        private fun codexMetrics(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation?): String {
+        private fun codexMetrics(snapshot: SessionSnapshot): String {
             val lines = mutableListOf<String>()
             val contextParts = mutableListOf<String>()
             contextParts += contextGauge(snapshot)
@@ -328,32 +327,66 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
             lines += flowParts.joinToString(" · ")
             if (needsDedicatedRateLimitLine(snapshot)) lines += rateLimitLine(snapshot)
-            widgetConversationLine(conversation)?.let { lines += it }
 
             return lines.filter { it.isNotBlank() }.joinToString("\n")
         }
 
-        private fun widgetConversationLine(conversation: ScouterWidgetConversation?): String? {
+        private fun bindCodexConversation(
+            views: RemoteViews,
+            conversation: ScouterWidgetConversation?
+        ) {
+            val preview = widgetConversationPreview(conversation)
+            if (preview == null) {
+                views.setViewVisibility(R.id.scouter_codex_conversation, View.GONE)
+                views.setTextViewText(R.id.scouter_codex_conversation, "")
+                return
+            }
+            views.setViewVisibility(R.id.scouter_codex_conversation, View.VISIBLE)
+            views.setTextColor(R.id.scouter_codex_conversation, preview.color)
+            views.setTextViewText(R.id.scouter_codex_conversation, preview.text)
+        }
+
+        private fun widgetConversationPreview(conversation: ScouterWidgetConversation?): WidgetConversationPreview? {
             if (conversation == null) return null
-            conversation.widgetError?.let { return "ASK failed · ${shorten(it.redactForScouter(), 44)}" }
+            conversation.widgetError?.takeIf { it.isNotBlank() }?.let {
+                return WidgetConversationPreview(
+                    "ASK ERROR  ${shorten(it.redactForScouter(), 96)}",
+                    Color.rgb(255, 176, 96)
+                )
+            }
             val widgetPromptAt = conversation.widgetPromptAt ?: 0L
             val lastAnswerAt = conversation.lastAnswerAt ?: 0L
             val lastPromptAt = conversation.lastPromptAt ?: 0L
-            val prompt = conversation.widgetPrompt ?: conversation.lastPrompt
-            if (prompt != null && widgetPromptAt > lastAnswerAt) {
-                val status = when (conversation.widgetStatus) {
-                    "queued" -> "ASK sent"
-                    else -> "Q"
-                }
-                return "$status · ${shorten(prompt.redactForScouter(), 44)}"
-            }
+            val latestPromptAt = maxOf(widgetPromptAt, lastPromptAt)
             val answer = conversation.lastAnswer?.takeIf { it.isNotBlank() }
-            if (answer != null && lastAnswerAt >= lastPromptAt) {
-                return "A ${shorten(answer.redactForScouter(), 50)}"
+            if (answer != null && lastAnswerAt >= latestPromptAt) {
+                return WidgetConversationPreview(
+                    "CODEX  ${shorten(answer.redactForScouter(), 128)}",
+                    Color.rgb(216, 255, 232)
+                )
             }
-            if (prompt != null) return "Q · ${shorten(prompt.redactForScouter(), 44)}"
-            return null
+            val prompt = if (widgetPromptAt >= lastPromptAt) conversation.widgetPrompt else conversation.lastPrompt
+            if (!prompt.isNullOrBlank()) {
+                val label = if (conversation.widgetStatus == "queued" && widgetPromptAt > lastAnswerAt) {
+                    "WAIT   "
+                } else {
+                    "YOU    "
+                }
+                return WidgetConversationPreview(
+                    "$label${shorten(prompt.redactForScouter(), 128)}",
+                    Color.rgb(120, 239, 255)
+                )
+            }
+            return WidgetConversationPreview(
+                "ASK ready when Codex is bound",
+                Color.rgb(184, 255, 208)
+            )
         }
+
+        private data class WidgetConversationPreview(
+            val text: String,
+            val color: Int
+        )
 
         private fun needsDedicatedRateLimitLine(snapshot: SessionSnapshot): Boolean {
             val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
