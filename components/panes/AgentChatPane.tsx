@@ -215,6 +215,7 @@ export default function AgentChatPane() {
       cancelled = true;
     };
   }, [
+    activeSession,
     activeSession?.codexSessionId,
     activeSession?.bindingConfidence,
     activeSession?.ptySessionId,
@@ -366,7 +367,7 @@ export default function AgentChatPane() {
       resumeNotice,
       t,
     }),
-    [activeSession?.codexSessionId, interruptNotice, replyChecking, replyNotice, replyReadiness, resumeNotice, t],
+    [activeSession, interruptNotice, replyChecking, replyNotice, replyReadiness, resumeNotice, t],
   );
 
   return (
@@ -483,7 +484,7 @@ export default function AgentChatPane() {
 
       <View style={styles.footer}>
         <MaterialIcons name="lock-outline" size={13} color={colors.muted} />
-        <Text style={styles.footerText}>{t('agent_chat.phase4_hint')}</Text>
+        <Text style={styles.footerText}>{t('agent_chat.operational_hint')}</Text>
       </View>
       <AgentChatReplyComposer
         draft={draft}

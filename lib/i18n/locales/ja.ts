@@ -1179,6 +1179,7 @@ const ja: Record<string, string> = {
   'agent_chat.phase1_hint': 'Phase 1プレビュー: メッセージは読み取り専用です。返信、承認、PTY連携はまだ有効化していません。',
   'agent_chat.phase3_hint': 'Phase 3プレビュー: PTY対応付けを表示します。返信と承認はまだ無効です。',
   'agent_chat.phase4_hint': 'Phase 4プレビュー: 返信と中断は接続済みの前面Codex PTYに送信します。承認カードは読み取り専用です。',
+  'agent_chat.operational_hint': '返信と中断は接続済みの前面Codex PTYに送信します。承認カードはターミナルで確認します。',
   'agent_chat.reply_placeholder': 'Codexへ返信...',
   'agent_chat.reply_locked_placeholder': '接続先のCodexターミナルを開くか復帰してください',
   'agent_chat.reply_no_session_placeholder': 'Codexセッションが選択されていません',

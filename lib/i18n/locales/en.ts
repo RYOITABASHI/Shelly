@@ -1180,6 +1180,7 @@ const en: Record<string, string> = {
   'agent_chat.phase1_hint': 'Phase 1 preview: messages are read-only. Replies, approvals, and PTY binding are not enabled yet.',
   'agent_chat.phase3_hint': 'Phase 3 preview: PTY binding is shown. Replies and approvals are still disabled.',
   'agent_chat.phase4_hint': 'Phase 4 preview: replies and interrupts target the bound foreground Codex PTY. Approval cards are read-only.',
+  'agent_chat.operational_hint': 'Replies and interrupts target the bound foreground Codex PTY. Approval cards are still reviewed in Terminal.',
   'agent_chat.reply_placeholder': 'Reply to Codex...',
   'agent_chat.reply_locked_placeholder': 'Open or resume the bound Codex terminal to reply',
   'agent_chat.reply_no_session_placeholder': 'No Codex session selected',
