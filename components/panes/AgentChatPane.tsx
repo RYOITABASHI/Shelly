@@ -118,7 +118,6 @@ export default function AgentChatPane() {
   const [interruptNotice, setInterruptNotice] = useState<InterruptNotice | null>(null);
   const [interruptWorkingSessionId, setInterruptWorkingSessionId] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
-  const widgetPromptDrainRef = useRef(false);
 
   useEffect(() => {
     startPolling();
@@ -263,50 +262,6 @@ export default function AgentChatPane() {
     agentChatLastUpdatedAt,
     terminalReadinessSignature,
   ]);
-
-  useEffect(() => {
-    if (!activeSession || !replyReadiness?.ready || widgetPromptDrainRef.current) return;
-    if (!TerminalEmulator.consumeScouterWidgetPendingPrompt) return;
-    widgetPromptDrainRef.current = true;
-    const session = activeSession;
-    let cancelled = false;
-    void TerminalEmulator.consumeScouterWidgetPendingPrompt(
-      session.codexSessionId,
-      session.ptySessionId ?? null,
-      session.shellySessionId ?? null,
-    )
-      .then(async (pending) => {
-        if (cancelled || !pending?.prompt?.trim()) return;
-        const result = await sendCodexReply(session, pending.prompt).catch(() => ({
-          status: 'failed' as const,
-          reason: 'screen_unavailable' as const,
-        }));
-        if (cancelled) return;
-        if (result.status === 'sent') {
-          await TerminalEmulator.markScouterWidgetPromptQueued?.(pending.prompt).catch(() => undefined);
-          setReplyNotice({
-            status: 'sent',
-            sessionId: session.codexSessionId,
-            text: normalizeReplyTextForMatch(pending.prompt),
-            sentAt: Date.now(),
-          });
-          setReplyReadiness(null);
-          setTimeout(() => void refresh(), 350);
-          setTimeout(() => void refresh(), 1_200);
-          return;
-        }
-        const message = result.status === 'failed'
-          ? t('agent_chat.reply_failed_body')
-          : t(replyBlockedReasonBodyKey(result.reason));
-        await TerminalEmulator.markScouterWidgetPromptFailed?.(message).catch(() => undefined);
-      })
-      .finally(() => {
-        widgetPromptDrainRef.current = false;
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSession, refresh, replyReadiness?.ready, t]);
 
   const keyExtractor = useCallback((item: AgentChatEvent) => item.id, []);
   const resumeSelectedSession = useCallback(async () => {

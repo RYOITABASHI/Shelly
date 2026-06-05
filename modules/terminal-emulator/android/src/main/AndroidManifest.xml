@@ -2,7 +2,12 @@
   <application>
     <activity
       android:name=".scouter.ScouterWidgetPromptActivity"
+      android:excludeFromRecents="true"
       android:exported="false"
+      android:finishOnTaskLaunch="true"
+      android:launchMode="singleTop"
+      android:noHistory="true"
+      android:taskAffinity=""
       android:theme="@style/ShellyScouterPromptTheme" />
 
     <receiver

@@ -239,7 +239,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun promptPendingIntent(context: Context): PendingIntent? {
             val launchIntent = Intent(context, ScouterWidgetPromptActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                        Intent.FLAG_ACTIVITY_NO_HISTORY or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                )
             return PendingIntent.getActivity(
                 context,
                 9101,
@@ -257,7 +262,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                         ScouterWidgetPromptActivity.ACTION_APPROVAL_DENY
                     }
                 )
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                        Intent.FLAG_ACTIVITY_NO_HISTORY or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                )
             return PendingIntent.getActivity(
                 context,
                 if (allow) 9102 else 9103,

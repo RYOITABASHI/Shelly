@@ -24,9 +24,12 @@ import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
-import { useAgentChatStore } from '@/store/agent-chat-store';
+import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { resumeCodexSession } from '@/lib/codex-session-resume';
+import { getCodexReplyReadiness, sendCodexReply } from '@/lib/codex-session-reply';
+import { detectCodexApprovalPrompt } from '@/lib/codex-pty-detection';
 import { execCommand } from '@/hooks/use-native-exec';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -56,6 +59,13 @@ export const unstable_settings = {
 const BACKGROUND_AGENT_LOG_START_DELAY_MS = 45_000;
 const BACKGROUND_AGENT_REPAIR_DELAY_MS = 90_000;
 const AGENT_LOG_SYNC_INTERVAL_MS = 60_000;
+
+type WidgetPromptTarget = {
+  queuedAt?: number;
+  codexSessionId?: string | null;
+  ptySessionId?: string | null;
+  shellySessionId?: string | null;
+};
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -303,17 +313,41 @@ export default function RootLayout() {
       });
     });
 
-    const resumeLatestAgentChatSession = async () => {
+    const sleep = (ms: number) => new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+    const matchesWidgetPromptTarget = (
+      session: AgentChatSession,
+      target: WidgetPromptTarget | null | undefined,
+    ) => {
+      if (!target) return false;
+      return Boolean(
+        (target.codexSessionId && session.codexSessionId === target.codexSessionId) ||
+          (target.ptySessionId && session.ptySessionId === target.ptySessionId) ||
+          (target.shellySessionId && session.shellySessionId === target.shellySessionId),
+      );
+    };
+
+    const ptyAuthoritativeWidgetSession = (session: AgentChatSession): AgentChatSession => ({
+      ...session,
+      currentStatus: 'idle',
+    });
+
+    const resumeLatestAgentChatSession = async (
+      preferredTarget?: WidgetPromptTarget | null,
+    ): Promise<{ session: AgentChatSession; resumedSession: AgentChatSession } | null> => {
       await useAgentChatStore.getState().refresh().catch((e) => {
         logError('DeepLink', 'Agent Chat refresh before resume failed', e);
       });
       const { sessions, latestSessionId, bindCodexSessionToPty } = useAgentChatStore.getState();
-      const session = sessions.find((candidate) => candidate.codexSessionId === latestSessionId)
+      const session = sessions.find((candidate) => matchesWidgetPromptTarget(candidate, preferredTarget))
+        ?? sessions.find((candidate) => candidate.codexSessionId === latestSessionId)
         ?? sessions[0]
         ?? null;
       if (!session) {
         logInfo('DeepLink', 'Agent Chat resume skipped: no Codex session');
-        return;
+        return null;
       }
 
       const result = await resumeCodexSession(session, {
@@ -322,24 +356,117 @@ export default function RootLayout() {
         logError('DeepLink', 'Agent Chat resume failed', e);
         return null;
       });
-      if (!result) return;
+      if (!result) return null;
       if (result.status === 'failed') {
         logInfo('DeepLink', `Agent Chat resume failed: ${result.reason}`);
-        return;
+        return null;
       }
 
+      let resumedSession = session;
       const terminalSession = useTerminalStore.getState().sessions.find((candidate) => candidate.id === result.sessionId);
       if (terminalSession?.nativeSessionId) {
         const now = Date.now();
+        const cwd = session.cwd ?? terminalSession.currentDir;
         bindCodexSessionToPty(session.codexSessionId, {
           ptySessionId: terminalSession.nativeSessionId,
           shellySessionId: terminalSession.id,
-          cwd: session.cwd ?? terminalSession.currentDir,
+          cwd,
           startedAt: now,
           lastSeenAt: now,
         });
+        resumedSession = {
+          ...session,
+          ptySessionId: terminalSession.nativeSessionId,
+          shellySessionId: terminalSession.id,
+          cwd,
+          bindingConfidence: 'reliable',
+        };
       }
       logInfo('DeepLink', `Agent Chat resume ${result.status}: ${result.sessionId}`);
+      return { session, resumedSession };
+    };
+
+    const latestWidgetSession = (session: AgentChatSession): AgentChatSession => {
+      const latest = useAgentChatStore.getState().sessions
+        .find((candidate) => candidate.codexSessionId === session.codexSessionId);
+      if (!latest) return session;
+      return {
+        ...latest,
+        ptySessionId: session.ptySessionId ?? latest.ptySessionId,
+        shellySessionId: session.shellySessionId ?? latest.shellySessionId,
+        bindingConfidence: session.bindingConfidence === 'reliable'
+          ? 'reliable'
+          : latest.bindingConfidence,
+      };
+    };
+
+    const waitForWidgetCodexReady = async (session: AgentChatSession, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      let current = latestWidgetSession(session);
+      let last = await getCodexReplyReadiness(ptyAuthoritativeWidgetSession(current)).catch(() => null);
+      while (!last?.ready && Date.now() < deadline) {
+        await sleep(650);
+        await useAgentChatStore.getState().refresh().catch(() => undefined);
+        current = latestWidgetSession(current);
+        last = await getCodexReplyReadiness(ptyAuthoritativeWidgetSession(current)).catch(() => null);
+      }
+      return { readiness: last, session: current };
+    };
+
+    const drainWidgetPromptForSession = async (session: AgentChatSession) => {
+      if (!TerminalEmulator.consumeScouterWidgetPendingPrompt) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.('Widget prompt bridge unavailable').catch(() => undefined);
+        return;
+      }
+      const { readiness, session: readySession } = await waitForWidgetCodexReady(session);
+      const ready = readiness;
+      if (!ready?.ready) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.(
+          `Codex resume did not become ready: ${ready?.reason ?? 'not_ready'}`,
+        ).catch(() => undefined);
+        logInfo('DeepLink', `Widget prompt drain skipped: ${ready?.reason ?? 'not_ready'}`);
+        return;
+      }
+      const screenText = await TerminalEmulator.getScreenText(ready.nativeSessionId).catch(() => null);
+      if (typeof screenText === 'string' && detectCodexApprovalPrompt(screenText)) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex approval is pending').catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt drain skipped: approval pending');
+        return;
+      }
+      const pending = await TerminalEmulator.consumeScouterWidgetPendingPrompt(
+        readySession.codexSessionId,
+        readySession.ptySessionId ?? null,
+        readySession.shellySessionId ?? null,
+      ).catch((e) => {
+        logError('DeepLink', 'Widget prompt consume failed', e);
+        return null;
+      });
+      if (!pending?.prompt?.trim()) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.('Widget prompt no longer matches the resumed Codex session').catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt drain skipped: no matching pending prompt');
+        return;
+      }
+
+      const result = await sendCodexReply(ptyAuthoritativeWidgetSession(readySession), pending.prompt).catch(() => ({
+        status: 'failed' as const,
+        reason: 'screen_unavailable' as const,
+      }));
+      if (result.status === 'sent') {
+        await TerminalEmulator.markScouterWidgetPromptQueued?.(pending.prompt).catch(() => undefined);
+        await useAgentChatStore.getState().refresh().catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt sent after Codex resume');
+        return;
+      }
+      const reason = result.reason;
+      await TerminalEmulator.markScouterWidgetPromptFailed?.(`Codex prompt send blocked: ${reason}`).catch(() => undefined);
+      logInfo('DeepLink', `Widget prompt send blocked: ${reason}`);
+    };
+
+    const queryValue = (value: string | string[] | undefined): string | undefined =>
+      Array.isArray(value) ? value[0] : value;
+
+    const returnHomeFromWidgetFlow = () => {
+      void TerminalEmulator.returnToHome?.().catch(() => undefined);
     };
 
     const handleDeepLink = async (url: string) => {
@@ -391,20 +518,54 @@ export default function RootLayout() {
           logInfo('DeepLink', 'Scouter detail opened');
         } else if (target === 'agent-chat') {
           await waitForMultiPaneHydration();
+          const compose = queryValue(parsed.queryParams?.compose);
+          const widgetFlow =
+            queryValue(parsed.queryParams?.source) === 'widget' ||
+            queryValue(parsed.queryParams?.drainWidgetPrompt) === '1' ||
+            queryValue(parsed.queryParams?.returnHome) === '1';
           const opened = focusPaneByTab('agent-chat');
-          const compose = parsed.queryParams?.compose;
+          if (!opened && widgetFlow) {
+            await TerminalEmulator.markScouterWidgetPromptFailed?.('Could not open Agent Chat to resume Codex').catch(() => undefined);
+            returnHomeFromWidgetFlow();
+            return;
+          }
           if (opened && (compose === '1' || compose === 'true')) {
             if (!agentChatResumeInFlight) {
               agentChatResumeInFlight = true;
-              void resumeLatestAgentChatSession().finally(() => {
-                agentChatResumeInFlight = false;
-                focusPaneByTab('agent-chat');
-                useAgentChatStore.getState().requestComposeFocus();
-              });
+              const widgetTarget = widgetFlow && TerminalEmulator.getScouterWidgetPendingPromptTarget
+                ? await TerminalEmulator.getScouterWidgetPendingPromptTarget().catch((e) => {
+                    logError('DeepLink', 'Widget prompt target read failed', e);
+                    return null;
+                  })
+                : null;
+              void resumeLatestAgentChatSession(widgetTarget)
+                .then(async (outcome) => {
+                  if (!widgetFlow) return;
+                  if (!outcome) {
+                    await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex resume failed').catch(() => undefined);
+                    return;
+                  }
+                  await drainWidgetPromptForSession(outcome.resumedSession);
+                })
+                .finally(() => {
+                  agentChatResumeInFlight = false;
+                  if (widgetFlow) {
+                    returnHomeFromWidgetFlow();
+                    return;
+                  }
+                  focusPaneByTab('agent-chat');
+                  useAgentChatStore.getState().requestComposeFocus();
+                });
             } else {
               logInfo('DeepLink', 'Agent Chat resume skipped: already in flight');
-              useAgentChatStore.getState().requestComposeFocus();
+              if (!widgetFlow) {
+                useAgentChatStore.getState().requestComposeFocus();
+              } else {
+                returnHomeFromWidgetFlow();
+              }
             }
+          } else if (widgetFlow) {
+            returnHomeFromWidgetFlow();
           }
           logInfo('DeepLink', `Agent Chat ${opened ? 'opened' : 'open failed'}`);
         }

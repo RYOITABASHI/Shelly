@@ -79,8 +79,15 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ptySessionId?: string | null;
     shellySessionId?: string | null;
   } | null>;
+  getScouterWidgetPendingPromptTarget?(): Promise<{
+    queuedAt: number;
+    codexSessionId?: string | null;
+    ptySessionId?: string | null;
+    shellySessionId?: string | null;
+  } | null>;
   markScouterWidgetPromptQueued?(prompt: string): Promise<void>;
   markScouterWidgetPromptFailed?(message: string): Promise<void>;
+  returnToHome?(): Promise<void>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

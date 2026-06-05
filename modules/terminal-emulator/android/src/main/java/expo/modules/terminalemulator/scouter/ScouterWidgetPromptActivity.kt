@@ -3,6 +3,7 @@ package expo.modules.terminalemulator.scouter
 import android.app.Activity
 import android.app.Dialog
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.graphics.Color
@@ -29,7 +30,6 @@ class ScouterWidgetPromptActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (handleApprovalAction(intent?.action)) {
-            finish()
             return
         }
         input = EditText(this).apply {
@@ -106,7 +106,7 @@ class ScouterWidgetPromptActivity : Activity() {
             }
             if (sendPrompt(prompt, dialog)) {
                 dialog.dismiss()
-                finish()
+                returnHomeAndFinish()
             }
         }
 
@@ -228,14 +228,31 @@ class ScouterWidgetPromptActivity : Activity() {
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
     }
 
-    private fun launchAgentChatResume() {
+    private fun launchAgentChatResume(): Boolean {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AGENT_CHAT_RESUME_URI))
             .setPackage(packageName)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching {
+        return runCatching {
             startActivity(intent)
+            true
         }.onFailure {
             Toast.makeText(this, R.string.scouter_widget_prompt_no_codex, Toast.LENGTH_SHORT).show()
+        }.getOrDefault(false)
+    }
+
+    private fun returnHomeAndFinish() {
+        runCatching {
+            val home = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(home)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            finishAndRemoveTask()
+        } else {
+            @Suppress("DEPRECATION")
+            finish()
         }
     }
 
@@ -247,7 +264,12 @@ class ScouterWidgetPromptActivity : Activity() {
                 store.recordWidgetPromptPending(prompt)
                 ScouterWidgetProvider.updateAll(this, force = true)
                 Toast.makeText(this, R.string.scouter_widget_prompt_queued_resume, Toast.LENGTH_SHORT).show()
-                replaceWithUnavailableContent(dialog, target.messageResId(), showResume = true)
+                if (launchAgentChatResume()) {
+                    dialog.dismiss()
+                    finish()
+                } else {
+                    replaceWithUnavailableContent(dialog, target.messageResId(), showResume = true)
+                }
                 return false
             }
             val messageId = target.messageResId()
@@ -289,6 +311,7 @@ class ScouterWidgetPromptActivity : Activity() {
             store.recordWidgetPromptFailed(getString(R.string.scouter_widget_approval_not_ready))
             ScouterWidgetProvider.updateAll(this, force = true)
             Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
+            returnHomeAndFinish()
             return true
         }
 
@@ -302,10 +325,12 @@ class ScouterWidgetPromptActivity : Activity() {
                 if (decision == "allow") R.string.scouter_widget_approval_sent else R.string.scouter_widget_approval_denied,
                 Toast.LENGTH_SHORT
             ).show()
+            returnHomeAndFinish()
         }, onFailure = { error ->
             store.recordWidgetPromptFailed(error.message ?: error.javaClass.simpleName)
             ScouterWidgetProvider.updateAll(this, force = true)
             Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
+            returnHomeAndFinish()
         })
         return true
     }
@@ -321,7 +346,6 @@ class ScouterWidgetPromptActivity : Activity() {
         if (status == ScouterStatus.WAITING_PERMISSION && isApprovalPromptScreen(screenText)) {
             return WidgetCodexTarget.ApprovalNeeded(session)
         }
-        if (status in BUSY_STATUSES) return WidgetCodexTarget.Busy
         return WidgetCodexTarget.Ready(session)
     }
 
@@ -377,18 +401,12 @@ class ScouterWidgetPromptActivity : Activity() {
         private val APPROVAL_KEYWORD_RE = Regex("""\b(?:approval|approve|permission|allow|deny|yes|no|proceed|continue)\b""", RegexOption.IGNORE_CASE)
         private val APPROVAL_CHOICE_RE = Regex("""\b(?:y/n|yes/no|allow|deny|approve|reject)\b|[\[(]\s*[yY]\s*/\s*[nN]\s*[\])]""", RegexOption.IGNORE_CASE)
         private val UUID_SUFFIX_RE = Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
-        private const val AGENT_CHAT_RESUME_URI = "shelly:///agent-chat?compose=1"
+        private const val AGENT_CHAT_RESUME_URI = "shelly:///agent-chat?compose=1&source=widget&drainWidgetPrompt=1&returnHome=1"
         private val COLOR_PANEL = Color.rgb(3, 16, 22)
         private val COLOR_BORDER = Color.rgb(0, 157, 209)
         private val COLOR_ACCENT = Color.rgb(48, 213, 255)
         private val COLOR_TEXT = Color.rgb(230, 247, 255)
         private val COLOR_MUTED = Color.rgb(126, 169, 190)
-        private val BUSY_STATUSES = setOf(
-            ScouterStatus.THINKING,
-            ScouterStatus.TOOL_RUNNING,
-            ScouterStatus.WAITING_PERMISSION,
-            ScouterStatus.ERROR
-        )
     }
 }
 

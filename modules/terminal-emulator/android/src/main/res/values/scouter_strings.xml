@@ -19,7 +19,7 @@
   <string name="scouter_widget_approval_deny">Deny Codex approval request</string>
   <string name="scouter_widget_approval_allow_short">OK</string>
   <string name="scouter_widget_approval_deny_short">NO</string>
-  <string name="scouter_widget_prompt_queued_resume">Queued. Resume Codex to send.</string>
+  <string name="scouter_widget_prompt_queued_resume">Queued. Resuming Codex...</string>
   <string name="scouter_widget_prompt_no_codex">Open or resume a Codex terminal first</string>
   <string name="scouter_widget_prompt_stale_codex">Bound Codex terminal is not ready</string>
   <string name="scouter_widget_prompt_busy">Codex is busy. Wait for it to finish first.</string>

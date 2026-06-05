@@ -35,6 +35,13 @@ data class ScouterWidgetPendingPrompt(
     val shellySessionId: String?
 )
 
+data class ScouterWidgetPendingPromptTarget(
+    val queuedAt: Long,
+    val codexSessionId: String?,
+    val ptySessionId: String?,
+    val shellySessionId: String?
+)
+
 class ScouterStateStore(context: Context) {
     private val prefs = context.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
     private val helperStateFile = File(context.filesDir, "home/.scouter-state.json")
@@ -121,6 +128,7 @@ class ScouterStateStore(context: Context) {
             .putLong(KEY_WIDGET_PROMPT_AT, now)
             .putString(KEY_WIDGET_STATUS, "queued")
             .putLong(KEY_WIDGET_STATUS_AT, now)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
             .remove(KEY_WIDGET_ERROR)
             .commit()
         writeHelperState()
@@ -131,6 +139,7 @@ class ScouterStateStore(context: Context) {
         val binding = widgetCodexBinding()
         prefs.edit()
             .putString(KEY_WIDGET_PROMPT, prompt.take(MAX_WIDGET_TEXT_LENGTH))
+            .putString(KEY_WIDGET_PENDING_PROMPT, prompt)
             .putLong(KEY_WIDGET_PROMPT_AT, now)
             .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_PENDING_TERMINAL)
             .putLong(KEY_WIDGET_STATUS_AT, now)
@@ -147,6 +156,7 @@ class ScouterStateStore(context: Context) {
             .putString(KEY_WIDGET_STATUS, "failed")
             .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
             .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
+            .remove(KEY_WIDGET_PENDING_PROMPT)
             .commit()
         writeHelperState()
     }
@@ -173,7 +183,9 @@ class ScouterStateStore(context: Context) {
             val retrySending = status == WIDGET_STATUS_SENDING &&
                 (statusAt <= 0L || now - statusAt > WIDGET_SENDING_RETRY_AFTER_MS)
             if (status != WIDGET_STATUS_PENDING_TERMINAL && !retrySending) return null
-            val prompt = prefs.getString(KEY_WIDGET_PROMPT, null)?.ifBlank { null } ?: return null
+            val prompt = prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)?.ifBlank { null }
+                ?: prefs.getString(KEY_WIDGET_PROMPT, null)?.ifBlank { null }
+                ?: return null
             val queuedAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L } ?: now
             val pendingCodexSessionId = prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null }
             val pendingPtySessionId = prefs.getString(KEY_WIDGET_PENDING_PTY_SESSION_ID, null)?.ifBlank { null }
@@ -201,6 +213,25 @@ class ScouterStateStore(context: Context) {
                 pendingCodexSessionId,
                 pendingPtySessionId,
                 pendingShellySessionId
+            )
+        }
+    }
+
+    fun widgetPendingPromptTarget(): ScouterWidgetPendingPromptTarget? {
+        synchronized(lock) {
+            val status = prefs.getString(KEY_WIDGET_STATUS, null)
+            if (status != WIDGET_STATUS_PENDING_TERMINAL && status != WIDGET_STATUS_SENDING) return null
+            prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)
+                ?: prefs.getString(KEY_WIDGET_PROMPT, null)
+                ?: return null
+            val queuedAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+                .takeIf { it > 0L }
+                ?: System.currentTimeMillis()
+            return ScouterWidgetPendingPromptTarget(
+                queuedAt,
+                prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null },
+                prefs.getString(KEY_WIDGET_PENDING_PTY_SESSION_ID, null)?.ifBlank { null },
+                prefs.getString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, null)?.ifBlank { null }
             )
         }
     }
@@ -463,6 +494,7 @@ class ScouterStateStore(context: Context) {
         private const val KEY_SNAPSHOTS = "snapshots"
         private const val KEY_RECENT_EVENTS = "recent_events"
         private const val KEY_WIDGET_PROMPT = "widget_prompt"
+        private const val KEY_WIDGET_PENDING_PROMPT = "widget_pending_prompt"
         private const val KEY_WIDGET_PROMPT_AT = "widget_prompt_at"
         private const val KEY_WIDGET_STATUS = "widget_status"
         private const val KEY_WIDGET_STATUS_AT = "widget_status_at"

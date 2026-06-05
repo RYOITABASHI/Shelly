@@ -776,6 +776,19 @@ class TerminalEmulatorModule : Module() {
             }
         }
 
+        AsyncFunction("getScouterWidgetPendingPromptTarget") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).widgetPendingPromptTarget()?.let { target ->
+                mapOf(
+                    "queuedAt" to target.queuedAt,
+                    "codexSessionId" to target.codexSessionId,
+                    "ptySessionId" to target.ptySessionId,
+                    "shellySessionId" to target.shellySessionId,
+                )
+            }
+        }
+
         AsyncFunction("markScouterWidgetPromptQueued") { prompt: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
@@ -787,6 +800,17 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
             ScouterStateStore(context).recordWidgetPromptFailed(message)
+            null
+        }
+
+        AsyncFunction("returnToHome") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
             null
         }
 
