@@ -174,9 +174,13 @@ export default function AgentChatPane() {
     && !interruptWorking,
   );
   const scrollToLatest = useCallback((animated = false) => {
+    listRef.current?.scrollToEnd({ animated });
     requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated });
     });
+    setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated });
+    }, 80);
   }, []);
 
   useEffect(() => {
@@ -184,7 +188,13 @@ export default function AgentChatPane() {
     const frame = requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated: false });
     });
-    return () => cancelAnimationFrame(frame);
+    const timer = setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated: false });
+    }, 120);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
   }, [activeSession?.codexSessionId, latestVisibleEventId]);
 
   useEffect(() => {

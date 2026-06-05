@@ -1,5 +1,6 @@
 package expo.modules.terminalemulator.scouter
 
+import android.app.AlarmManager
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -22,6 +23,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ScouterWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
+            ACTION_WAIT_EXPIRY_REFRESH -> {
+                val pending = goAsync()
+                enqueueUpdate(context, null, pending::finish, force = true)
+            }
             AppWidgetManager.ACTION_APPWIDGET_UPDATE -> {
                 val ids = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS)
                 val pending = goAsync()
@@ -111,10 +116,55 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val snapshots = if (store.isEnabled()) store.all() else emptyList()
             val conversation = if (store.isEnabled()) store.widgetConversation() else null
             val load = lightweightLoad()
+            scheduleWaitExpiryRefresh(context, conversation)
             ids.forEach { id ->
                 runCatching { manager.updateAppWidget(id, render(context, snapshots, conversation, load)) }
                     .onFailure { Log.w(TAG, "Scouter widget update failed for id=$id", it) }
             }
+        }
+
+        private fun scheduleWaitExpiryRefresh(context: Context, conversation: ScouterWidgetConversation?) {
+            val status = conversation?.widgetStatus ?: return
+            if (status !in WAITING_WIDGET_STATUSES) {
+                cancelWaitExpiryRefresh(context)
+                return
+            }
+            val statusAt = conversation.widgetStatusAt ?: return
+            val elapsed = System.currentTimeMillis() - statusAt
+            if (elapsed < 0L || elapsed > WIDGET_WAIT_DISPLAY_TIMEOUT_MS) {
+                cancelWaitExpiryRefresh(context)
+                return
+            }
+            val delayMs = WIDGET_WAIT_DISPLAY_TIMEOUT_MS - elapsed + WAIT_EXPIRY_REFRESH_SLOP_MS
+            val dueAt = System.currentTimeMillis() + delayMs
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val pendingIntent = waitExpiryRefreshPendingIntent(context, PendingIntent.FLAG_UPDATE_CURRENT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, dueAt, pendingIntent)
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, dueAt, pendingIntent)
+            }
+        }
+
+        private fun cancelWaitExpiryRefresh(context: Context) {
+            val pendingIntent = waitExpiryRefreshPendingIntent(
+                context,
+                PendingIntent.FLAG_NO_CREATE
+            ) ?: return
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
+
+        private fun waitExpiryRefreshPendingIntent(context: Context, flags: Int): PendingIntent? {
+            val intent = Intent(context, ScouterWidgetProvider::class.java)
+                .setAction(ACTION_WAIT_EXPIRY_REFRESH)
+            return PendingIntent.getBroadcast(
+                context,
+                9104,
+                intent,
+                flags or PendingIntent.FLAG_IMMUTABLE
+            )
         }
 
         private fun lightweightLoad(): ScouterSystemLoad {
@@ -663,8 +713,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private const val TAG = "ScouterWidget"
+        private const val ACTION_WAIT_EXPIRY_REFRESH =
+            "expo.modules.terminalemulator.scouter.WIDGET_WAIT_EXPIRY_REFRESH"
         private const val STALE_AFTER_MS = 10 * 60 * 1000L
         private const val WIDGET_WAIT_DISPLAY_TIMEOUT_MS = 2 * 60 * 1000L
+        private const val WAIT_EXPIRY_REFRESH_SLOP_MS = 350L
         private val WAITING_WIDGET_STATUSES = setOf("pending_terminal", "sending")
     }
 }

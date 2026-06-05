@@ -1286,6 +1286,7 @@ function isWidgetPromptSentStatus(status?: string | null): boolean {
   const normalized = status?.trim().toLowerCase();
   if (!normalized) return true;
   return normalized === 'queued'
+    || normalized === 'sending'
     || normalized === 'observed'
     || normalized === 'answered';
 }
@@ -1313,8 +1314,19 @@ function mergeEvents(
   const activeSessionIdByNormalizedId = new Map(
     sessions.map((session) => [normalizeCodexSessionId(session.codexSessionId), session.codexSessionId]),
   );
+  const incomingWidgetConversationIds = new Set(
+    incoming
+      .filter((event) => isWidgetConversationRawEvent(event.rawEvent))
+      .map((event) => event.id),
+  );
   const byId = new Map<string, AgentChatEvent>();
   for (const event of existing) {
+    if (
+      isWidgetConversationRawEvent(event.rawEvent)
+      && !incomingWidgetConversationIds.has(event.id)
+    ) {
+      continue;
+    }
     const activeSessionId = activeSessionIdByNormalizedId.get(normalizeCodexSessionId(event.codexSessionId));
     if (!activeSessionId) continue;
     byId.set(event.id, event.codexSessionId === activeSessionId ? event : {
@@ -1333,6 +1345,15 @@ function mergeEvents(
   return dedupeTimelineEvents(Array.from(byId.values()))
     .sort((a, b) => a.timestamp - b.timestamp)
     .slice(-MAX_EVENTS);
+}
+
+function isWidgetConversationRawEvent(rawEvent: unknown): rawEvent is { source: 'widgetConversation' } {
+  return Boolean(
+    rawEvent
+    && typeof rawEvent === 'object'
+    && 'source' in rawEvent
+    && (rawEvent as { source?: unknown }).source === 'widgetConversation',
+  );
 }
 
 function dedupeTimelineEvents(events: AgentChatEvent[]): AgentChatEvent[] {

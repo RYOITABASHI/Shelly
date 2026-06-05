@@ -77,6 +77,7 @@ class ScouterStateStore(context: Context) {
             val snapshot = event.toSnapshot(previous)
             all[event.sessionId] = snapshot
             appendRecentEventLocked(event)
+            expireStaleWidgetPromptLocked()
             markWidgetPromptAnsweredLocked(event)
             writeAll(all)
             writeHelperStateLocked(all)
@@ -130,6 +131,9 @@ class ScouterStateStore(context: Context) {
             .putString(KEY_WIDGET_STATUS, "queued")
             .putLong(KEY_WIDGET_STATUS_AT, now)
             .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
             .remove(KEY_WIDGET_ERROR)
             .commit()
         writeHelperState()
@@ -158,6 +162,9 @@ class ScouterStateStore(context: Context) {
             .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
             .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
             .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
             .commit()
         writeHelperState()
     }
@@ -178,6 +185,7 @@ class ScouterStateStore(context: Context) {
         shellySessionId: String?
     ): ScouterWidgetPendingPrompt? {
         synchronized(lock) {
+            if (expireStaleWidgetPromptLocked()) return null
             val status = prefs.getString(KEY_WIDGET_STATUS, null)
             val statusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
             val now = System.currentTimeMillis()
@@ -185,7 +193,6 @@ class ScouterStateStore(context: Context) {
                 (statusAt <= 0L || now - statusAt > WIDGET_SENDING_RETRY_AFTER_MS)
             if (status != WIDGET_STATUS_PENDING_TERMINAL && !retrySending) return null
             val prompt = prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)?.ifBlank { null }
-                ?: prefs.getString(KEY_WIDGET_PROMPT, null)?.ifBlank { null }
                 ?: return null
             val queuedAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L } ?: now
             val pendingCodexSessionId = prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null }
@@ -220,11 +227,10 @@ class ScouterStateStore(context: Context) {
 
     fun widgetPendingPromptTarget(): ScouterWidgetPendingPromptTarget? {
         synchronized(lock) {
+            if (expireStaleWidgetPromptLocked()) return null
             val status = prefs.getString(KEY_WIDGET_STATUS, null)
             if (status != WIDGET_STATUS_PENDING_TERMINAL && status != WIDGET_STATUS_SENDING) return null
-            prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)
-                ?: prefs.getString(KEY_WIDGET_PROMPT, null)
-                ?: return null
+            prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)?.ifBlank { null } ?: return null
             val queuedAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
                 .takeIf { it > 0L }
                 ?: System.currentTimeMillis()
@@ -239,6 +245,7 @@ class ScouterStateStore(context: Context) {
 
     fun widgetConversation(): ScouterWidgetConversation {
         synchronized(lock) {
+            expireStaleWidgetPromptLocked()
             val recent = readRecentEventJsons().sortedBy { it.optLong("timestamp", 0L) }
             val lastPrompt = recent.lastOrNull { event ->
                 event.optString("source") == ScouterSource.CODEX.name &&
@@ -405,6 +412,9 @@ class ScouterStateStore(context: Context) {
                 .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
                 .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
                 .remove(KEY_WIDGET_PENDING_PROMPT)
+                .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+                .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+                .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
                 .remove(KEY_WIDGET_ERROR)
                 .commit()
         }
@@ -416,8 +426,33 @@ class ScouterStateStore(context: Context) {
             .putString(KEY_WIDGET_STATUS, "answered")
             .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
             .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
             .remove(KEY_WIDGET_ERROR)
             .commit()
+    }
+
+    private fun expireStaleWidgetPromptLocked(now: Long = System.currentTimeMillis()): Boolean {
+        val status = prefs.getString(KEY_WIDGET_STATUS, null)
+        if (status !in WIDGET_EXPIRABLE_STATUSES) return false
+        val promptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+            .takeIf { it > 0L }
+            ?: prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+        if (promptAt <= 0L || now - promptAt <= WIDGET_PROMPT_EXPIRE_AFTER_MS) return false
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_EXPIRED)
+            .putLong(KEY_WIDGET_STATUS_AT, now)
+            .remove(KEY_WIDGET_PROMPT)
+            .remove(KEY_WIDGET_PROMPT_AT)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperStateLocked(readAllMutable())
+        return true
     }
 
     private fun shouldKeepRecentEvent(event: ScouterEvent): Boolean {
@@ -527,7 +562,9 @@ class ScouterStateStore(context: Context) {
         private const val WIDGET_STATUS_PENDING_TERMINAL = "pending_terminal"
         private const val WIDGET_STATUS_SENDING = "sending"
         private const val WIDGET_STATUS_OBSERVED = "observed"
+        private const val WIDGET_STATUS_EXPIRED = "expired"
         private const val WIDGET_SENDING_RETRY_AFTER_MS = 90_000L
+        private const val WIDGET_PROMPT_EXPIRE_AFTER_MS = 2 * 60 * 1000L
         private const val MAX_RECENT_EVENTS = 120
         private const val MAX_WIDGET_TEXT_LENGTH = 500
         private val WIDGET_ANSWER_STATUSES = setOf(
@@ -536,6 +573,7 @@ class ScouterStateStore(context: Context) {
         )
         private val WIDGET_ANSWER_STATUS_NAMES = WIDGET_ANSWER_STATUSES.map { it.name }.toSet()
         private val WIDGET_AWAITING_ANSWER_STATUSES = setOf("queued", WIDGET_STATUS_SENDING)
+        private val WIDGET_EXPIRABLE_STATUSES = setOf(WIDGET_STATUS_PENDING_TERMINAL, WIDGET_STATUS_SENDING)
     }
 }
 
