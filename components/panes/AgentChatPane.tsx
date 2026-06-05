@@ -23,6 +23,7 @@ import {
   type AgentChatStatus,
 } from '@/store/agent-chat-store';
 import {
+  bindVisibleCodexTerminalToSession,
   resumeCodexSession,
   sendTerminalInterruptToCodexSession,
   type CodexSessionResumeFailureReason,
@@ -70,6 +71,32 @@ type AgentNotice = {
   text: string;
   tone: 'info' | 'success' | 'warning' | 'error';
 };
+
+async function getReadinessWithVisibleCodexBind(
+  session: AgentChatSession,
+): Promise<[CodexReplyReadiness, CodexReplyReadiness | null]> {
+  let effectiveSession = session;
+  let reply = await getCodexReplyReadiness(effectiveSession);
+  if (
+    !reply.ready
+    && (reply.reason === 'not_reliably_bound'
+      || reply.reason === 'terminal_missing'
+      || reply.reason === 'not_codex_terminal'
+      || reply.reason === 'native_exited'
+      || reply.reason === 'terminal_exited')
+  ) {
+    const visibleBind = await bindVisibleCodexTerminalToSession(effectiveSession, { focus: false });
+    if (visibleBind) {
+      effectiveSession = visibleBind.session;
+      reply = await getCodexReplyReadiness(effectiveSession);
+    }
+  }
+
+  const approval = (effectiveSession.currentStatus ?? '').trim().toUpperCase() === 'WAITING_PERMISSION'
+    ? await getCodexApprovalReadiness(effectiveSession)
+    : null;
+  return [reply, approval];
+}
 
 export default function AgentChatPane() {
   const { t } = useTranslation();
@@ -252,12 +279,7 @@ export default function AgentChatPane() {
       };
     }
     setReplyChecking(true);
-    void Promise.all([
-      getCodexReplyReadiness(session),
-      (session.currentStatus ?? '').trim().toUpperCase() === 'WAITING_PERMISSION'
-        ? getCodexApprovalReadiness(session)
-        : Promise.resolve<CodexReplyReadiness | null>(null),
-    ])
+    void getReadinessWithVisibleCodexBind(session)
       .then(([reply, approval]) => {
         if (!cancelled) {
           setReplyReadiness(reply);
@@ -561,6 +583,7 @@ export default function AgentChatPane() {
           ref={listRef}
           style={styles.list}
           data={visibleEvents}
+          extraData={`${activeSession?.codexSessionId ?? ''}:${latestVisibleEventId ?? ''}:${visibleEvents.length}`}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
           contentContainerStyle={styles.listContent}
@@ -568,7 +591,7 @@ export default function AgentChatPane() {
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => scrollToLatest(false)}
           onLayout={() => scrollToLatest(false)}
-          removeClippedSubviews
+          removeClippedSubviews={false}
         />
       )}
 

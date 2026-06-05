@@ -1,4 +1,5 @@
 import { detectCodexActiveTranscript, detectCodexApprovalPrompt } from '@/lib/codex-pty-detection';
+import { bindVisibleCodexTerminalToSession } from '@/lib/codex-session-resume';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import type { AgentChatSession } from '@/store/agent-chat-store';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -94,18 +95,15 @@ export async function sendCodexReply(
   const message = normalizeReplyText(text);
   if (!message.trim()) return { status: 'blocked', reason: 'empty_message' };
 
-  const readiness = await getCodexReplyReadiness(session);
+  const readiness = await getCodexReplyReadinessWithVisibleBind(session);
   if (readiness.ready === false) {
     return { status: 'blocked', reason: readiness.reason };
   }
 
   try {
-    if (message.includes('\n')) {
-      await TerminalEmulator.pasteToSession(readiness.nativeSessionId, message);
-      await TerminalEmulator.writeToSession(readiness.nativeSessionId, '\r');
-    } else {
-      await TerminalEmulator.writeToSession(readiness.nativeSessionId, `${message}\r`);
-    }
+    await TerminalEmulator.writeToSession(readiness.nativeSessionId, '\u0015');
+    await TerminalEmulator.pasteToSession(readiness.nativeSessionId, message);
+    await TerminalEmulator.writeToSession(readiness.nativeSessionId, '\r');
     return {
       status: 'sent',
       terminalSessionId: readiness.terminalSessionId,
@@ -120,7 +118,7 @@ export async function sendCodexApproval(
   session: AgentChatSession | null | undefined,
   decision: CodexApprovalDecision,
 ): Promise<CodexReplySendResult> {
-  const readiness = await getCodexApprovalReadiness(session);
+  const readiness = await getCodexApprovalReadinessWithVisibleBind(session);
   if (readiness.ready === false) {
     return { status: 'blocked', reason: readiness.reason };
   }
@@ -137,6 +135,36 @@ export async function sendCodexApproval(
   }
 }
 
+async function getCodexReplyReadinessWithVisibleBind(
+  session: AgentChatSession | null | undefined,
+): Promise<CodexReplyReadiness> {
+  let readiness = await getCodexReplyReadiness(session);
+  if (readiness.ready === true) return readiness;
+  if (!shouldTryVisibleCodexBind(readiness.reason)) return readiness;
+  const visibleBind = await bindVisibleCodexTerminalToSession(session, { focus: false });
+  if (!visibleBind) return readiness;
+  return getCodexReplyReadiness(visibleBind.session);
+}
+
+async function getCodexApprovalReadinessWithVisibleBind(
+  session: AgentChatSession | null | undefined,
+): Promise<CodexReplyReadiness> {
+  let readiness = await getCodexApprovalReadiness(session);
+  if (readiness.ready === true) return readiness;
+  if (!shouldTryVisibleCodexBind(readiness.reason)) return readiness;
+  const visibleBind = await bindVisibleCodexTerminalToSession(session, { focus: false });
+  if (!visibleBind) return readiness;
+  return getCodexApprovalReadiness(visibleBind.session);
+}
+
+function shouldTryVisibleCodexBind(reason: CodexReplyBlockedReason): boolean {
+  return reason === 'not_reliably_bound'
+    || reason === 'terminal_missing'
+    || reason === 'not_codex_terminal'
+    || reason === 'native_exited'
+    || reason === 'terminal_exited';
+}
+
 async function getBoundCodexTerminalReadiness(
   session: AgentChatSession | null | undefined,
   options: { requireApprovalPrompt?: boolean } = {},
@@ -149,7 +177,7 @@ async function getBoundCodexTerminalReadiness(
   const terminalSession = findBoundTerminalSession(session);
   if (!terminalSession) return { ready: false, reason: 'terminal_missing' };
 
-  if (terminalSession.sessionStatus !== 'alive' || !terminalSession.isAlive) {
+  if (terminalSession.sessionStatus === 'exited') {
     return {
       ready: false,
       reason: 'terminal_exited',

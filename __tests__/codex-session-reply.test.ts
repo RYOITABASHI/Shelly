@@ -11,6 +11,7 @@ const mockGetScreenText = jest.fn();
 const mockWriteToSession = jest.fn();
 const mockPasteToSession = jest.fn();
 const mockFocusTerminalSession = jest.fn();
+const mockBindVisibleCodexTerminalToSession = jest.fn();
 
 jest.mock('@/store/terminal-store', () => ({
   useTerminalStore: {
@@ -38,6 +39,8 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 }));
 
 jest.mock('@/lib/codex-session-resume', () => ({
+  bindVisibleCodexTerminalToSession: (session: AgentChatSession | null | undefined, options: { focus?: boolean }) =>
+    mockBindVisibleCodexTerminalToSession(session, options),
   focusTerminalSession: (sessionId: string) => mockFocusTerminalSession(sessionId),
 }));
 
@@ -107,6 +110,8 @@ function resetMocks(): void {
   mockPasteToSession.mockResolvedValue(undefined);
   mockFocusTerminalSession.mockReset();
   mockFocusTerminalSession.mockReturnValue(true);
+  mockBindVisibleCodexTerminalToSession.mockReset();
+  mockBindVisibleCodexTerminalToSession.mockResolvedValue(null);
 }
 
 describe('codex session replies', () => {
@@ -125,7 +130,23 @@ describe('codex session replies', () => {
     });
   });
 
-  it('writes a single-line reply through the bound native PTY', async () => {
+  it('reports ready for a native-alive Codex PTY while Shelly is still reattaching', async () => {
+    mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-1', {
+      sessionStatus: 'starting',
+      isAlive: false,
+    })];
+
+    const readiness = await getCodexReplyReadiness(codexSession());
+
+    expect(readiness).toEqual({
+      ready: true,
+      reason: 'ready',
+      terminalSessionId: 'terminal-a',
+      nativeSessionId: 'shelly-1',
+    });
+  });
+
+  it('clears the composer then pastes a single-line reply through the bound native PTY before pressing enter', async () => {
     const result = await sendCodexReply(codexSession(), 'こんにちは');
 
     expect(result).toEqual({
@@ -133,16 +154,18 @@ describe('codex session replies', () => {
       terminalSessionId: 'terminal-a',
       nativeSessionId: 'shelly-1',
     });
-    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-1', 'こんにちは\r');
-    expect(mockPasteToSession).not.toHaveBeenCalled();
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(1, 'shelly-1', '\u0015');
+    expect(mockPasteToSession).toHaveBeenCalledWith('shelly-1', 'こんにちは');
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(2, 'shelly-1', '\r');
   });
 
   it('pastes multiline replies before pressing enter', async () => {
     const result = await sendCodexReply(codexSession(), 'first line\nsecond line');
 
     expect(result.status).toBe('sent');
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(1, 'shelly-1', '\u0015');
     expect(mockPasteToSession).toHaveBeenCalledWith('shelly-1', 'first line\nsecond line');
-    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-1', '\r');
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(2, 'shelly-1', '\r');
   });
 
   it('blocks replies when the binding is only a candidate', async () => {
@@ -168,8 +191,9 @@ describe('codex session replies', () => {
       terminalSessionId: 'terminal-a',
       nativeSessionId: 'shelly-recreated',
     });
-    expect(mockWriteToSession).toHaveBeenCalledWith('shelly-recreated', 'do it\r');
-    expect(mockPasteToSession).not.toHaveBeenCalled();
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(1, 'shelly-recreated', '\u0015');
+    expect(mockPasteToSession).toHaveBeenCalledWith('shelly-recreated', 'do it');
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(2, 'shelly-recreated', '\r');
   });
 
   it('does not use a stale native PTY id without a Shelly terminal binding', async () => {
@@ -183,6 +207,38 @@ describe('codex session replies', () => {
     expect(result).toEqual({ status: 'blocked', reason: 'terminal_missing' });
     expect(mockWriteToSession).not.toHaveBeenCalled();
     expect(mockPasteToSession).not.toHaveBeenCalled();
+  });
+
+  it('rebinds to a visible Codex PTY when the stored terminal is marked exited', async () => {
+    const reboundSession = codexSession({
+      ptySessionId: 'shelly-2',
+      shellySessionId: 'terminal-b',
+      bindingConfidence: 'reliable',
+    });
+    mockTerminalState.sessions = [
+      terminalSession('terminal-a', 'shelly-1', {
+        sessionStatus: 'exited',
+        isAlive: false,
+      }),
+      terminalSession('terminal-b', 'shelly-2'),
+    ];
+    mockBindVisibleCodexTerminalToSession.mockResolvedValue({
+      terminalSessionId: 'terminal-b',
+      nativeSessionId: 'shelly-2',
+      session: reboundSession,
+    });
+
+    const result = await sendCodexReply(codexSession(), 'do it');
+
+    expect(mockBindVisibleCodexTerminalToSession).toHaveBeenCalledWith(codexSession(), { focus: false });
+    expect(result).toEqual({
+      status: 'sent',
+      terminalSessionId: 'terminal-b',
+      nativeSessionId: 'shelly-2',
+    });
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(1, 'shelly-2', '\u0015');
+    expect(mockPasteToSession).toHaveBeenCalledWith('shelly-2', 'do it');
+    expect(mockWriteToSession).toHaveBeenNthCalledWith(2, 'shelly-2', '\r');
   });
 
   it('blocks replies while Codex is busy', async () => {

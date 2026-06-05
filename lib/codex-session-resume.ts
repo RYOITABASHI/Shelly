@@ -2,7 +2,7 @@ import { PRESET_CAPACITY, useMultiPaneStore, type Slot, type SlotIndex } from '@
 import { usePaneStore } from '@/store/pane-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useFocusStore } from '@/store/focus-store';
-import type { AgentChatSession } from '@/store/agent-chat-store';
+import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import type { TabSession } from '@/store/types';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
 import { detectCodexActiveTranscript, detectShellReadyText } from '@/lib/codex-pty-detection';
@@ -28,6 +28,12 @@ export type CodexSessionResumeFailureReason =
   | 'layout_full'
   | 'no_terminal';
 
+export type CodexVisibleTerminalBindResult = {
+  terminalSessionId: string;
+  nativeSessionId: string;
+  session: AgentChatSession;
+};
+
 export async function resumeCodexSession(
   session: AgentChatSession,
   options: { addTerminalPane: AddTerminalPane },
@@ -35,6 +41,11 @@ export async function resumeCodexSession(
   const boundSessionId = await findBoundTerminalSessionId(session);
   if (boundSessionId && focusTerminalSession(boundSessionId)) {
     return { status: 'focused', sessionId: boundSessionId };
+  }
+
+  const visibleCodexBind = await bindVisibleCodexTerminalToSession(session, { focus: true });
+  if (visibleCodexBind) {
+    return { status: 'focused', sessionId: visibleCodexBind.terminalSessionId };
   }
 
   let targetSessionId: string | undefined;
@@ -75,6 +86,73 @@ export async function resumeCodexSession(
     useTerminalStore.getState().insertCommand(commandWithEnter, targetSessionId, { durable: true });
   }
   return { status: 'queued', sessionId: targetSessionId };
+}
+
+export async function bindVisibleCodexTerminalToSession(
+  session: AgentChatSession | null | undefined,
+  options: { focus?: boolean } = {},
+): Promise<CodexVisibleTerminalBindResult | null> {
+  if (!session) return null;
+  const terminalSession = await findVisibleCodexTerminalSession();
+  if (!terminalSession) return null;
+
+  const now = Date.now();
+  useAgentChatStore.getState().bindCodexSessionToPty(session.codexSessionId, {
+    ptySessionId: terminalSession.nativeSessionId,
+    shellySessionId: terminalSession.id,
+    cwd: session.cwd ?? terminalSession.currentDir,
+    startedAt: session.sessionStartAt ?? now,
+    lastSeenAt: now,
+  });
+  if (options.focus) {
+    focusTerminalSession(terminalSession.id);
+  }
+
+  return {
+    terminalSessionId: terminalSession.id,
+    nativeSessionId: terminalSession.nativeSessionId,
+    session: {
+      ...session,
+      ptySessionId: terminalSession.nativeSessionId,
+      shellySessionId: terminalSession.id,
+      cwd: session.cwd ?? terminalSession.currentDir,
+      bindingConfidence: 'reliable',
+    },
+  };
+}
+
+async function findVisibleCodexTerminalSession(): Promise<TabSession | undefined> {
+  const terminalSessions = useTerminalStore.getState().sessions;
+  if (terminalSessions.length === 0) return undefined;
+
+  const candidates: TabSession[] = [];
+  const seen = new Set<string>();
+  const addCandidate = (sessionId: string | null | undefined) => {
+    if (!sessionId || seen.has(sessionId)) return;
+    const session = terminalSessions.find((candidate) => candidate.id === sessionId);
+    if (!session) return;
+    seen.add(session.id);
+    candidates.push(session);
+  };
+
+  const multiPane = useMultiPaneStore.getState();
+  const focusedSlot = multiPane.slots[multiPane.focusedSlot];
+  if (focusedSlot?.tab === 'terminal') {
+    addCandidate(focusedSlot.sessionId);
+  }
+  for (const { slot } of visibleSlotEntries()) {
+    if (slot.tab === 'terminal') {
+      addCandidate(slot.sessionId);
+    }
+  }
+  addCandidate(useTerminalStore.getState().activeSessionId);
+
+  for (const candidate of candidates) {
+    if (await isLiveCodexTerminalSession(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function findNewTerminalSessionId(beforeIds: Set<string>): string | undefined {
@@ -220,7 +298,7 @@ function isVisibleSlotIndex(index: number): boolean {
 }
 
 async function isLiveCodexTerminalSession(session: TabSession): Promise<boolean> {
-  if (session.sessionStatus !== 'alive' || !session.isAlive) return false;
+  if (session.sessionStatus === 'exited') return false;
   if (!await isNativeSessionAlive(session)) return false;
   const screenText = await readTerminalScreen(session);
   if (screenText !== null) {
