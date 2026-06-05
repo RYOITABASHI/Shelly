@@ -237,13 +237,22 @@ export default function RootLayout() {
     //   shelly://browser?url=<encoded>  — navigate the Browser Pane to a URL.
     //                                     Adds a browser pane if none exists.
     //   shelly://scouter                 — open Scouter detail.
-    //   shelly://agent-chat?compose=1    — open Agent Chat and focus input.
+    //   shelly:///agent-chat?compose=1   — open Agent Chat and focus input.
+    //   shelly://agent-chat?compose=1    — legacy form, still accepted.
     //
     // Primary client today is `shelly-cs open <codespace>` which fires
     //   am start -a android.intent.action.VIEW \
     //     -d 'shelly://browser?url=https%3A%2F%2F<name>.github.dev'
     // to keep the codespace web UI inside Shelly instead of Chrome.
     let agentChatResumeInFlight = false;
+
+    const normalizeDeepLinkTarget = (parsed: { hostname?: string | null; path?: string | null }) => {
+      const pathTarget = typeof parsed.path === 'string'
+        ? parsed.path.replace(/^\/+/, '').split('/')[0]
+        : '';
+      const hostTarget = typeof parsed.hostname === 'string' ? parsed.hostname : '';
+      return pathTarget || hostTarget;
+    };
 
     const visiblePresetForSlot = (currentPreset: PresetId, slotIndex: number): PresetId => {
       const currentCapacity = PRESET_CAPACITY[currentPreset] ?? 1;
@@ -336,12 +345,16 @@ export default function RootLayout() {
     const handleDeepLink = async (url: string) => {
       try {
         const parsed = Linking.parse(url);
-        logInfo('DeepLink', `received: ${url} → host=${parsed.hostname ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`);
-        if (parsed.hostname === 'browser') {
+        const target = normalizeDeepLinkTarget(parsed);
+        logInfo(
+          'DeepLink',
+          `received: ${url} → target=${target || '(none)'} host=${parsed.hostname ?? '(null)'} path=${parsed.path ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`,
+        );
+        if (target === 'browser') {
           await waitForMultiPaneHydration();
           const raw = parsed.queryParams?.url;
-          const target = Array.isArray(raw) ? raw[0] : raw;
-          if (typeof target === 'string' && target.length > 0) {
+          const browserUrl = Array.isArray(raw) ? raw[0] : raw;
+          if (typeof browserUrl === 'string' && browserUrl.length > 0) {
             // Only addPane('browser') when no Browser Pane is mounted.
             // The store's addPane unconditionally creates a new slot; if
             // we called it on every deep link, repeated `shelly://browser`
@@ -357,10 +370,10 @@ export default function RootLayout() {
                 useMultiPaneStore.getState().addPane('browser');
               }
             } catch {}
-            useBrowserStore.getState().openUrl(target);
-            logInfo('DeepLink', `openUrl dispatched: ${target}`);
+            useBrowserStore.getState().openUrl(browserUrl);
+            logInfo('DeepLink', `openUrl dispatched: ${browserUrl}`);
           }
-        } else if (parsed.hostname === 'clipboard') {
+        } else if (target === 'clipboard') {
           // shelly://clipboard?text=<encoded>
           // Used by shelly-cs auth to copy the OAuth device code to the
           // clipboard automatically. Avoids making the user squint at the
@@ -373,10 +386,10 @@ export default function RootLayout() {
             });
             logInfo('DeepLink', `clipboard set (${text.length} chars)`);
           }
-        } else if (parsed.hostname === 'scouter') {
+        } else if (target === 'scouter') {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
-        } else if (parsed.hostname === 'agent-chat') {
+        } else if (target === 'agent-chat') {
           await waitForMultiPaneHydration();
           const opened = focusPaneByTab('agent-chat');
           const compose = parsed.queryParams?.compose;

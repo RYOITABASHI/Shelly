@@ -377,7 +377,7 @@ class ScouterWidgetPromptActivity : Activity() {
         private val APPROVAL_KEYWORD_RE = Regex("""\b(?:approval|approve|permission|allow|deny|yes|no|proceed|continue)\b""", RegexOption.IGNORE_CASE)
         private val APPROVAL_CHOICE_RE = Regex("""\b(?:y/n|yes/no|allow|deny|approve|reject)\b|[\[(]\s*[yY]\s*/\s*[nN]\s*[\])]""", RegexOption.IGNORE_CASE)
         private val UUID_SUFFIX_RE = Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
-        private const val AGENT_CHAT_RESUME_URI = "shelly://agent-chat?compose=1"
+        private const val AGENT_CHAT_RESUME_URI = "shelly:///agent-chat?compose=1"
         private val COLOR_PANEL = Color.rgb(3, 16, 22)
         private val COLOR_BORDER = Color.rgb(0, 157, 209)
         private val COLOR_ACCENT = Color.rgb(48, 213, 255)
