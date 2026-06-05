@@ -110,11 +110,26 @@ type ScouterRecentEvent = {
   cwd?: string | null;
 };
 
+type ScouterWidgetConversation = {
+  lastPrompt?: string | null;
+  lastPromptAt?: number | null;
+  lastAnswer?: string | null;
+  lastAnswerAt?: number | null;
+  lastApproval?: string | null;
+  lastApprovalAt?: number | null;
+  widgetPrompt?: string | null;
+  widgetPromptAt?: number | null;
+  widgetStatus?: string | null;
+  widgetStatusAt?: number | null;
+  widgetError?: string | null;
+};
+
 type ScouterDebugInfo = {
   enabled?: boolean;
   jsonlWatcherRunning?: boolean;
   sessions?: ScouterSession[];
   recentEvents?: ScouterRecentEvent[];
+  widgetConversation?: ScouterWidgetConversation | null;
 };
 
 type AgentChatState = {
@@ -380,6 +395,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       const newEvents = [
         ...codexSessions.flatMap(sessionToEvents),
         ...recentEvents.flatMap(scouterRecentEventToAgentChatEvent),
+        ...widgetConversationToAgentChatEvents(parsed.widgetConversation, boundSessions),
       ]
         .sort((a, b) => a.timestamp - b.timestamp);
       const events = applyBindingsToEvents(
@@ -1237,6 +1253,56 @@ function scouterRecentEventToAgentChatEvent(event: ScouterRecentEvent): AgentCha
   return [];
 }
 
+function widgetConversationToAgentChatEvents(
+  conversation: ScouterWidgetConversation | null | undefined,
+  sessions: AgentChatSession[],
+): AgentChatEvent[] {
+  const prompt = cleanScouterUserMessage(conversation?.widgetPrompt);
+  const timestamp = normalizeEventTimestamp(conversation?.widgetPromptAt);
+  if (!prompt || !timestamp) return [];
+  if (!isWidgetPromptSentStatus(conversation?.widgetStatus)) return [];
+
+  const session = pickWidgetConversationSession(sessions, timestamp);
+  if (!session) return [];
+
+  return [{
+    id: eventId(session.codexSessionId, 'widget_user_message', timestamp, prompt),
+    source: 'codex',
+    codexSessionId: session.codexSessionId,
+    ptySessionId: session.ptySessionId ?? undefined,
+    role: 'user',
+    kind: 'user_message',
+    text: prompt,
+    status: mapStatus(session.currentStatus),
+    timestamp,
+    rawEvent: {
+      source: 'widgetConversation',
+      conversation,
+    },
+  }];
+}
+
+function isWidgetPromptSentStatus(status?: string | null): boolean {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === 'queued'
+    || normalized === 'observed'
+    || normalized === 'answered';
+}
+
+function pickWidgetConversationSession(
+  sessions: AgentChatSession[],
+  timestamp: number,
+): AgentChatSession | null {
+  const reliable = sessions.find((session) => (
+    session.bindingConfidence === 'reliable' && Boolean(session.ptySessionId?.trim())
+  ));
+  if (reliable) return reliable;
+  return [...sessions]
+    .sort((a, b) => Math.abs(a.lastEventAt - timestamp) - Math.abs(b.lastEventAt - timestamp))[0]
+    ?? null;
+}
+
 function mergeEvents(
   existing: AgentChatEvent[],
   incoming: AgentChatEvent[],
@@ -1393,6 +1459,10 @@ function normalizeCwd(cwd?: string | null): string | null {
 
 function isFiniteTimestamp(value: number): boolean {
   return Number.isFinite(value) && value > 0;
+}
+
+function normalizeEventTimestamp(value?: number | null): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function mapStatus(status?: string): AgentChatStatus {

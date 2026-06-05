@@ -118,6 +118,7 @@ class ScouterStateStore(context: Context) {
             put("recentEvents", JSONArray().also { arr ->
                 recentEvents.forEach { arr.put(it) }
             })
+            put("widgetConversation", widgetConversation().toJson())
         }
     }
 
@@ -380,25 +381,41 @@ class ScouterStateStore(context: Context) {
         if (event.source != ScouterSource.CODEX) return
         val widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)
         val widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+        val widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+        val widgetPrompt = prefs.getString(KEY_WIDGET_PROMPT, null)
         if (
             widgetStatus == "failed" &&
             (widgetStatusAt <= 0L || event.timestamp >= widgetStatusAt) &&
             (event.eventType == ScouterEventType.USER_PROMPT || isCodexAnswerEvent(event))
         ) {
             prefs.edit()
-                .putString(KEY_WIDGET_STATUS, "observed")
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
                 .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+        }
+        if (
+            widgetStatus in WIDGET_AWAITING_ANSWER_STATUSES &&
+            event.eventType == ScouterEventType.USER_PROMPT &&
+            widgetPromptAt > 0L &&
+            event.timestamp >= widgetPromptAt &&
+            widgetPromptMatches(widgetPrompt, event.lastMessage)
+        ) {
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
+                .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_PENDING_PROMPT)
                 .remove(KEY_WIDGET_ERROR)
                 .commit()
         }
         if (!isCodexAnswerEvent(event)) return
         if (widgetStatus !in WIDGET_AWAITING_ANSWER_STATUSES) return
-        val widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
         val cutoff = maxOf(widgetPromptAt, widgetStatusAt)
         if (cutoff <= 0L || event.timestamp < cutoff) return
         prefs.edit()
             .putString(KEY_WIDGET_STATUS, "answered")
             .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
             .remove(KEY_WIDGET_ERROR)
             .commit()
     }
@@ -509,6 +526,7 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_PENDING_SHELLY_SESSION_ID = "widget_pending_shelly_session_id"
         private const val WIDGET_STATUS_PENDING_TERMINAL = "pending_terminal"
         private const val WIDGET_STATUS_SENDING = "sending"
+        private const val WIDGET_STATUS_OBSERVED = "observed"
         private const val WIDGET_SENDING_RETRY_AFTER_MS = 90_000L
         private const val MAX_RECENT_EVENTS = 120
         private const val MAX_WIDGET_TEXT_LENGTH = 500
@@ -519,6 +537,20 @@ class ScouterStateStore(context: Context) {
         private val WIDGET_ANSWER_STATUS_NAMES = WIDGET_ANSWER_STATUSES.map { it.name }.toSet()
         private val WIDGET_AWAITING_ANSWER_STATUSES = setOf("queued", WIDGET_STATUS_SENDING)
     }
+}
+
+private fun ScouterWidgetConversation.toJson(): JSONObject = JSONObject().apply {
+    lastPrompt?.let { put("lastPrompt", it) }
+    lastPromptAt?.let { put("lastPromptAt", it) }
+    lastAnswer?.let { put("lastAnswer", it) }
+    lastAnswerAt?.let { put("lastAnswerAt", it) }
+    lastApproval?.let { put("lastApproval", it) }
+    lastApprovalAt?.let { put("lastApprovalAt", it) }
+    widgetPrompt?.let { put("widgetPrompt", it) }
+    widgetPromptAt?.let { put("widgetPromptAt", it) }
+    widgetStatus?.let { put("widgetStatus", it) }
+    widgetStatusAt?.let { put("widgetStatusAt", it) }
+    widgetError?.let { put("widgetError", it) }
 }
 
 private fun pendingTargetMatches(
@@ -542,4 +574,10 @@ private fun pendingTargetMatches(
 
 private fun firstNonBlank(vararg values: String?): String? {
     return values.firstOrNull { !it.isNullOrBlank() }?.trim()
+}
+
+private fun widgetPromptMatches(expected: String?, actual: String?): Boolean {
+    val expectedValue = expected?.trim()?.replace(Regex("\\s+"), " ")
+    val actualValue = actual?.trim()?.replace(Regex("\\s+"), " ")
+    return !expectedValue.isNullOrBlank() && expectedValue == actualValue
 }

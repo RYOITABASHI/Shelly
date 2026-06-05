@@ -451,7 +451,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
             val prompt = if (widgetPromptAt >= lastPromptAt) conversation.widgetPrompt else conversation.lastPrompt
             if (!prompt.isNullOrBlank()) {
-                val label = if (conversation.widgetStatus in WAITING_WIDGET_STATUSES && widgetPromptAt > lastAnswerAt) {
+                val label = if (isActiveWidgetWait(conversation, widgetPromptAt, lastAnswerAt)) {
                     "WAIT   "
                 } else {
                     "YOU    "
@@ -465,6 +465,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 "ASK ready when Codex is bound",
                 Color.rgb(184, 255, 208)
             )
+        }
+
+        private fun isActiveWidgetWait(
+            conversation: ScouterWidgetConversation,
+            widgetPromptAt: Long,
+            lastAnswerAt: Long
+        ): Boolean {
+            if (conversation.widgetStatus !in WAITING_WIDGET_STATUSES) return false
+            if (widgetPromptAt <= lastAnswerAt) return false
+            val statusAt = conversation.widgetStatusAt ?: widgetPromptAt
+            if (statusAt <= 0L) return false
+            return System.currentTimeMillis() - statusAt <= WIDGET_WAIT_DISPLAY_TIMEOUT_MS
         }
 
         private data class WidgetConversationPreview(
@@ -652,6 +664,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private const val TAG = "ScouterWidget"
         private const val STALE_AFTER_MS = 10 * 60 * 1000L
-        private val WAITING_WIDGET_STATUSES = setOf("pending_terminal", "sending", "queued")
+        private const val WIDGET_WAIT_DISPLAY_TIMEOUT_MS = 2 * 60 * 1000L
+        private val WAITING_WIDGET_STATUSES = setOf("pending_terminal", "sending")
     }
 }

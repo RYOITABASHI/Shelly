@@ -118,6 +118,7 @@ export default function AgentChatPane() {
   const [interruptNotice, setInterruptNotice] = useState<InterruptNotice | null>(null);
   const [interruptWorkingSessionId, setInterruptWorkingSessionId] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
+  const listRef = useRef<FlatList<AgentChatEvent>>(null);
 
   useEffect(() => {
     startPolling();
@@ -156,6 +157,7 @@ export default function AgentChatPane() {
     if (!sessionId) return [];
     return events.filter((event) => event.codexSessionId === sessionId && event.kind !== 'status');
   }, [activeSession?.codexSessionId, events]);
+  const latestVisibleEventId = visibleEvents[visibleEvents.length - 1]?.id ?? null;
   const latestApprovalEventId = useMemo(
     () => [...visibleEvents].reverse().find((event) => event.kind === 'approval')?.id ?? null,
     [visibleEvents],
@@ -171,6 +173,19 @@ export default function AgentChatPane() {
     && !resumeWorking
     && !interruptWorking,
   );
+  const scrollToLatest = useCallback((animated = false) => {
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!latestVisibleEventId) return;
+    const frame = requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeSession?.codexSessionId, latestVisibleEventId]);
 
   useEffect(() => {
     setResumeNotice(null);
@@ -533,6 +548,7 @@ export default function AgentChatPane() {
         />
       ) : (
         <FlatList
+          ref={listRef}
           style={styles.list}
           data={visibleEvents}
           renderItem={renderItem}
@@ -540,6 +556,8 @@ export default function AgentChatPane() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => scrollToLatest(false)}
+          onLayout={() => scrollToLatest(false)}
           removeClippedSubviews
         />
       )}
