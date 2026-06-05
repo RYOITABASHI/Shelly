@@ -124,12 +124,16 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun scheduleWaitExpiryRefresh(context: Context, conversation: ScouterWidgetConversation?) {
-            val status = conversation?.widgetStatus ?: return
+            val status = conversation?.widgetStatus
             if (status !in WAITING_WIDGET_STATUSES) {
                 cancelWaitExpiryRefresh(context)
                 return
             }
-            val statusAt = conversation.widgetStatusAt ?: return
+            val statusAt = conversation?.widgetStatusAt
+            if (statusAt == null) {
+                cancelWaitExpiryRefresh(context)
+                return
+            }
             val elapsed = System.currentTimeMillis() - statusAt
             if (elapsed < 0L || elapsed > WIDGET_WAIT_DISPLAY_TIMEOUT_MS) {
                 cancelWaitExpiryRefresh(context)
@@ -138,7 +142,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val delayMs = WIDGET_WAIT_DISPLAY_TIMEOUT_MS - elapsed + WAIT_EXPIRY_REFRESH_SLOP_MS
             val dueAt = System.currentTimeMillis() + delayMs
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val pendingIntent = waitExpiryRefreshPendingIntent(context, PendingIntent.FLAG_UPDATE_CURRENT)
+            val pendingIntent = waitExpiryRefreshPendingIntent(context)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, dueAt, pendingIntent)
             } else {
@@ -147,25 +151,33 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun cancelWaitExpiryRefresh(context: Context) {
-            val pendingIntent = waitExpiryRefreshPendingIntent(
-                context,
-                PendingIntent.FLAG_NO_CREATE
-            ) ?: return
+            val pendingIntent = existingWaitExpiryRefreshPendingIntent(context) ?: return
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             alarmManager.cancel(pendingIntent)
             pendingIntent.cancel()
         }
 
-        private fun waitExpiryRefreshPendingIntent(context: Context, flags: Int): PendingIntent? {
-            val intent = Intent(context, ScouterWidgetProvider::class.java)
-                .setAction(ACTION_WAIT_EXPIRY_REFRESH)
+        private fun waitExpiryRefreshPendingIntent(context: Context): PendingIntent {
             return PendingIntent.getBroadcast(
                 context,
                 9104,
-                intent,
-                flags or PendingIntent.FLAG_IMMUTABLE
+                waitExpiryRefreshIntent(context),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
+
+        private fun existingWaitExpiryRefreshPendingIntent(context: Context): PendingIntent? {
+            return PendingIntent.getBroadcast(
+                context,
+                9104,
+                waitExpiryRefreshIntent(context),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        private fun waitExpiryRefreshIntent(context: Context): Intent =
+            Intent(context, ScouterWidgetProvider::class.java)
+                .setAction(ACTION_WAIT_EXPIRY_REFRESH)
 
         private fun lightweightLoad(): ScouterSystemLoad {
             val runtime = Runtime.getRuntime()
