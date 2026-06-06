@@ -43,7 +43,11 @@ type InsertCommandOptions = {
 };
 
 function allocateSessionName(sessions: TabSession[]): string | null {
-  const used = new Set(sessions.map((s) => s.nativeSessionId));
+  const used = new Set<string>();
+  for (const session of sessions) {
+    used.add(session.nativeSessionId);
+    if (session.tmuxSession) used.add(session.tmuxSession);
+  }
   for (const id of getReservedNativeSessionIds()) used.add(id);
   for (const name of SESSION_NAMES) {
     if (!used.has(name)) return name;

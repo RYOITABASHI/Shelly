@@ -53,9 +53,11 @@ import { suggestTool } from '@/lib/agent-tool-router';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import {
+  abandonNativeSessionCreate,
   abandonNativeSessionCreateIfTimedOut,
   beginNativeSessionCreate,
   endNativeSessionCreate,
+  isNativeSessionIdReserved,
   isNativeSessionCreateAttemptCurrent,
   isNativeSessionCreateInFlight,
   isNativeSessionCreateTimedOut,
@@ -71,6 +73,18 @@ logInfo('Terminal', 'module loaded');
 type ConnectionState = 'connecting' | 'connected' | 'error';
 
 const NATIVE_SESSION_CREATE_TIMEOUT_MS = 15_000;
+const NATIVE_SESSION_CREATE_AUTO_RETRY_DELAY_MS = 180;
+const NATIVE_SESSION_CREATE_RETRY_IN_FLIGHT_POLL_MS = 200;
+const NATIVE_SESSION_CREATE_RETRY_MAX_WAIT_MS = NATIVE_SESSION_CREATE_TIMEOUT_MS + 1_000;
+const NATIVE_SESSION_CREATE_MAX_AUTO_RETRIES = 1;
+const NATIVE_SESSION_EARLY_EXIT_RETRY_WINDOW_MS = 2_500;
+
+const nativeCreateAutoRetryCounts = new Map<string, number>();
+const nativeSessionCreateStartedAtMs = new Map<string, number>();
+const nativeSessionEarlyExitDecisions = new Map<string, boolean>();
+const nativeSessionExitMarkers = new Set<string>();
+const nativeSessionRetrySchedules = new Set<string>();
+const nativeSessionRetryBudgetClearTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 class NativeSessionCreateTimeoutError extends Error {
   constructor(nativeSessionId: string) {
@@ -103,6 +117,96 @@ function withNativeSessionCreateTimeout<T>(promise: Promise<T>, nativeSessionId:
 
 function isNativeSessionCreateTimeout(error: unknown): boolean {
   return error instanceof NativeSessionCreateTimeoutError;
+}
+
+function claimNativeCreateAutoRetry(sessionId: string, nativeSessionId: string, reason: string): boolean {
+  const retryCount = nativeCreateAutoRetryCounts.get(sessionId) ?? 0;
+  if (retryCount >= NATIVE_SESSION_CREATE_MAX_AUTO_RETRIES) {
+    logInfo('Terminal', `native auto-retry skipped (${reason}) for ${nativeSessionId}`);
+    return false;
+  }
+
+  nativeCreateAutoRetryCounts.set(sessionId, retryCount + 1);
+  logInfo('Terminal', `native auto-retry claimed (${reason}) for ${nativeSessionId}`);
+  return true;
+}
+
+function clearNativeCreateAutoRetry(sessionId: string): void {
+  nativeCreateAutoRetryCounts.delete(sessionId);
+}
+
+function nativeSessionKey(sessionId: string, nativeSessionId: string): string {
+  return `${sessionId}:${nativeSessionId}`;
+}
+
+function cancelNativeCreateRetrySchedules(sessionId: string): void {
+  for (const key of Array.from(nativeSessionRetrySchedules)) {
+    if (key.startsWith(`${sessionId}:`)) {
+      nativeSessionRetrySchedules.delete(key);
+    }
+  }
+}
+
+function makeRetryNativeSessionId(session: TabSession): string {
+  return `${session.tmuxSession || session.nativeSessionId}-${generateId()}`;
+}
+
+function markNativeSessionCreateStarted(sessionId: string, nativeSessionId: string): void {
+  const key = nativeSessionKey(sessionId, nativeSessionId);
+  nativeSessionCreateStartedAtMs.set(key, Date.now());
+  nativeSessionEarlyExitDecisions.delete(key);
+  nativeSessionExitMarkers.delete(key);
+}
+
+function markNativeSessionExited(sessionId: string, nativeSessionId: string): void {
+  nativeSessionExitMarkers.add(nativeSessionKey(sessionId, nativeSessionId));
+}
+
+function didNativeSessionExit(sessionId: string, nativeSessionId: string): boolean {
+  return nativeSessionExitMarkers.has(nativeSessionKey(sessionId, nativeSessionId));
+}
+
+function scheduleNativeCreateAutoRetryClear(sessionId: string, nativeSessionId: string): void {
+  const key = nativeSessionKey(sessionId, nativeSessionId);
+  const existing = nativeSessionRetryBudgetClearTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    nativeSessionRetryBudgetClearTimers.delete(key);
+    nativeSessionCreateStartedAtMs.delete(key);
+    nativeSessionEarlyExitDecisions.delete(key);
+
+    const currentSession = useTerminalStore.getState().sessions.find((session) => session.id === sessionId);
+    if (currentSession?.nativeSessionId === nativeSessionId && currentSession.sessionStatus === 'alive') {
+      clearNativeCreateAutoRetry(sessionId);
+      nativeSessionExitMarkers.delete(key);
+    }
+  }, NATIVE_SESSION_EARLY_EXIT_RETRY_WINDOW_MS);
+
+  nativeSessionRetryBudgetClearTimers.set(key, timer);
+}
+
+function shouldAutoRetryEarlyExit(session: TabSession, exitCode: number, signal?: number): boolean {
+  const key = nativeSessionKey(session.id, session.nativeSessionId);
+  const existingDecision = nativeSessionEarlyExitDecisions.get(key);
+  if (existingDecision !== undefined) return existingDecision;
+
+  if (exitCode === 0 && !signal) {
+    nativeSessionEarlyExitDecisions.set(key, false);
+    nativeSessionCreateStartedAtMs.delete(key);
+    return false;
+  }
+
+  const startedAt = nativeSessionCreateStartedAtMs.get(key);
+  const withinStartupWindow = !!startedAt && Date.now() - startedAt <= NATIVE_SESSION_EARLY_EXIT_RETRY_WINDOW_MS;
+  const shouldRetry = withinStartupWindow
+    && claimNativeCreateAutoRetry(session.id, session.nativeSessionId, 'early exit');
+
+  nativeSessionEarlyExitDecisions.set(key, shouldRetry);
+  if (!shouldRetry) {
+    nativeSessionCreateStartedAtMs.delete(key);
+  }
+  return shouldRetry;
 }
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
@@ -160,6 +264,7 @@ export default function TerminalScreen() {
 
   // Mutex: prevent concurrent ensureNativeSessions / createNativeSession calls
   const sessionMutexRef = useRef(false);
+  const createNativeSessionRef = useRef<((session: TabSession) => Promise<void>) | null>(null);
 
   // Voice dialog mode state
   const [voiceChatVisible, setVoiceChatVisible] = useState(false);
@@ -224,7 +329,7 @@ export default function TerminalScreen() {
   const abandonTimedOutCreate = useCallback((session: TabSession): TabSession => {
     if (!abandonNativeSessionCreateIfTimedOut(session.id, session.nativeSessionId)) return session;
 
-    const nextNativeSessionId = `${session.tmuxSession || session.nativeSessionId}-${generateId()}`;
+    const nextNativeSessionId = makeRetryNativeSessionId(session);
     logInfo(
       'Terminal',
       `abandonTimedOutCreate: ${session.nativeSessionId} -> ${nextNativeSessionId}`,
@@ -243,6 +348,125 @@ export default function TerminalScreen() {
     return nextSession;
   }, []);
 
+  const setNativeSessionLifecycle = useCallback((session: TabSession, status: SessionStatus): TabSession => {
+    let nextSession: TabSession = {
+      ...session,
+      activeCli: null,
+      sessionStatus: status,
+      isAlive: false,
+    };
+
+    useTerminalStore.setState((state) => ({
+      sessions: state.sessions.map((s) => {
+        if (s.id !== session.id || s.nativeSessionId !== session.nativeSessionId) return s;
+        nextSession = {
+          ...s,
+          activeCli: null,
+          sessionStatus: status,
+          isAlive: false,
+        };
+        return nextSession;
+      }),
+    }));
+
+    return nextSession;
+  }, []);
+
+  const replaceNativeSessionForCreate = useCallback((
+    session: TabSession,
+    status: SessionStatus,
+    reason: string,
+  ): TabSession => {
+    const currentSession = useTerminalStore.getState().sessions.find((s) => s.id === session.id) ?? session;
+    const previousNativeSessionId = currentSession.nativeSessionId;
+    cancelNativeCreateRetrySchedules(currentSession.id);
+    const abandonedCreate = abandonNativeSessionCreate(currentSession.id, previousNativeSessionId);
+    if (abandonedCreate) {
+      logInfo('Terminal', `replaceNativeSessionForCreate abandoned in-flight create for ${previousNativeSessionId}`);
+    }
+    const nextNativeSessionId = makeRetryNativeSessionId(currentSession);
+    let nextSession: TabSession = {
+      ...currentSession,
+      activeCli: null,
+      nativeSessionId: nextNativeSessionId,
+      sessionStatus: status,
+      isAlive: false,
+    };
+
+    logInfo(
+      'Terminal',
+      `replaceNativeSessionForCreate (${reason}): ${previousNativeSessionId} -> ${nextNativeSessionId}`,
+    );
+
+    useTerminalStore.setState((state) => ({
+      sessions: state.sessions.map((s) => {
+        if (s.id !== currentSession.id) return s;
+        nextSession = {
+          ...s,
+          activeCli: null,
+          nativeSessionId: nextNativeSessionId,
+          sessionStatus: status,
+          isAlive: false,
+        };
+        return nextSession;
+      }),
+    }));
+
+    return nextSession;
+  }, []);
+
+  const scheduleNativeCreateRetry = useCallback((sessionId: string, nativeSessionId: string, reason: string) => {
+    const key = nativeSessionKey(sessionId, nativeSessionId);
+    if (nativeSessionRetrySchedules.has(key)) {
+      logInfo('Terminal', `native auto-retry already scheduled (${reason}) for ${nativeSessionId}`);
+      return;
+    }
+
+    nativeSessionRetrySchedules.add(key);
+    const scheduledAt = Date.now();
+    const runRetry = () => {
+      if (!nativeSessionRetrySchedules.has(key)) return;
+      const currentSession = useTerminalStore.getState().sessions.find((s) => s.id === sessionId);
+      if (!currentSession || currentSession.nativeSessionId !== nativeSessionId) {
+        nativeSessionRetrySchedules.delete(key);
+        return;
+      }
+      if (currentSession.sessionStatus === 'alive' && currentSession.isAlive) {
+        nativeSessionRetrySchedules.delete(key);
+        return;
+      }
+      if (
+        currentSession.sessionStatus === 'exited'
+        || (currentSession.sessionStatus !== 'starting' && currentSession.sessionStatus !== 'recovering')
+      ) {
+        nativeSessionRetrySchedules.delete(key);
+        return;
+      }
+      if (isNativeSessionCreateInFlight(currentSession.id)) {
+        if (Date.now() - scheduledAt <= NATIVE_SESSION_CREATE_RETRY_MAX_WAIT_MS) {
+          setTimeout(runRetry, NATIVE_SESSION_CREATE_RETRY_IN_FLIGHT_POLL_MS);
+          return;
+        }
+
+        nativeSessionRetrySchedules.delete(key);
+        logInfo('Terminal', `native auto-retry abandoned while create stayed in-flight (${reason}) for ${nativeSessionId}`);
+        useTerminalStore.setState((state) => ({
+          sessions: state.sessions.map((session) =>
+            session.id === sessionId && session.nativeSessionId === nativeSessionId
+              ? { ...session, activeCli: null, sessionStatus: 'exited' as const, isAlive: false }
+              : session
+          ),
+        }));
+        return;
+      }
+
+      nativeSessionRetrySchedules.delete(key);
+      logInfo('Terminal', `native auto-retry running (${reason}) for ${nativeSessionId}`);
+      void createNativeSessionRef.current?.(currentSession);
+    };
+    setTimeout(runRetry, NATIVE_SESSION_CREATE_AUTO_RETRY_DELAY_MS);
+  }, []);
+
   // Create a native session via JNI forkpty (no TCP, no pty-helper)
   const createNativeSession = useCallback(async (session: TabSession) => {
     logInfo('Terminal', 'createNativeSession called for: ' + session.nativeSessionId);
@@ -256,17 +480,28 @@ export default function TerminalScreen() {
       logInfo('Terminal', 'createNativeSession: already in progress for ' + session.nativeSessionId);
       return;
     }
+    markNativeSessionCreateStarted(session.id, session.nativeSessionId);
 
     const isCurrentAttempt = () => (
       isNativeSessionCreateAttemptCurrent(session.id, session.nativeSessionId, attemptId)
     );
     const isStoreSessionCurrent = () => {
       const currentSession = useTerminalStore.getState().sessions.find((s) => s.id === session.id);
-      return currentSession?.nativeSessionId === session.nativeSessionId && isCurrentAttempt();
+      return currentSession?.nativeSessionId === session.nativeSessionId
+        && isCurrentAttempt()
+        && !didNativeSessionExit(session.id, session.nativeSessionId);
     };
     const destroyIfStale = async (phase: string) => {
       if (isStoreSessionCurrent()) return false;
       logInfo('Terminal', `createNativeSession: stale ${phase} ignored for ${session.nativeSessionId}`);
+      const currentOwner = useTerminalStore.getState().sessions.find((s) => s.nativeSessionId === session.nativeSessionId);
+      if (currentOwner && currentOwner.id !== session.id) {
+        logInfo('Terminal', `createNativeSession: stale ${phase} destroy skipped; ${session.nativeSessionId} belongs to ${currentOwner.id}`);
+        return true;
+      }
+      if (isNativeSessionIdReserved(session.nativeSessionId)) {
+        logInfo('Terminal', `createNativeSession: stale ${phase} destroying reserved orphan ${session.nativeSessionId}`);
+      }
       try { await TerminalEmulator.destroySession(session.nativeSessionId); } catch {}
       return true;
     };
@@ -308,6 +543,7 @@ export default function TerminalScreen() {
           }),
         }));
         if (!markedAlive || await destroyIfStale('alive mark')) return;
+        scheduleNativeCreateAutoRetryClear(session.id, session.nativeSessionId);
 
         // bug #65: Case C fallback — only when the native side did NOT resume a
         // live session (i.e. the process was killed and forked afresh). Replay
@@ -344,6 +580,11 @@ export default function TerminalScreen() {
           logInfo('Terminal', 'createNativeSession: stale failure ignored for ' + session.nativeSessionId);
           return;
         }
+        if (claimNativeCreateAutoRetry(session.id, session.nativeSessionId, 'create failure')) {
+          const retrySession = replaceNativeSessionForCreate(session, 'recovering', 'create failure');
+          scheduleNativeCreateRetry(retrySession.id, retrySession.nativeSessionId, 'create failure');
+          return;
+        }
         if (!isNativeSessionCreateTimedOut(session.id, session.nativeSessionId)) {
           Alert.alert('Terminal Error', String(err?.message || err));
         }
@@ -366,6 +607,12 @@ export default function TerminalScreen() {
       if (!isNativeSessionCreateTimeout(err)) throw err;
       if (!markNativeSessionCreateTimedOut(session.id, session.nativeSessionId, attemptId)) return;
       logInfo('Terminal', 'createNativeSession timed out for: ' + session.nativeSessionId);
+      if (claimNativeCreateAutoRetry(session.id, session.nativeSessionId, 'create timeout')) {
+        const retrySession = abandonTimedOutCreate(session);
+        const recoveringSession = setNativeSessionLifecycle(retrySession, 'recovering');
+        scheduleNativeCreateRetry(recoveringSession.id, recoveringSession.nativeSessionId, 'create timeout');
+        return;
+      }
       useTerminalStore.setState((state) => ({
         sessions: state.sessions.map((s) =>
           s.id === session.id && s.nativeSessionId === session.nativeSessionId
@@ -374,42 +621,48 @@ export default function TerminalScreen() {
         ),
       }));
     }
-  }, []);
+  }, [abandonTimedOutCreate, replaceNativeSessionForCreate, scheduleNativeCreateRetry, setNativeSessionLifecycle]);
+
+  createNativeSessionRef.current = createNativeSession;
 
   // Recover a session: destroy and re-create
   const recoverSession = useCallback(async (session: TabSession) => {
-    const targetSession = abandonTimedOutCreate(session);
-    if (isNativeSessionCreateInFlight(targetSession.id)) {
-      console.log('[Terminal] recoverSession: already in progress for', session.nativeSessionId);
-      return;
+    const currentSession = useTerminalStore.getState().sessions.find((s) => s.id === session.id) ?? session;
+    const previousNativeSessionId = currentSession.nativeSessionId;
+    cancelNativeCreateRetrySchedules(currentSession.id);
+    if (isNativeSessionCreateInFlight(currentSession.id)) {
+      const abandoned = abandonNativeSessionCreate(currentSession.id, previousNativeSessionId);
+      logInfo('Terminal', `recoverSession: abandoned in-flight create=${abandoned} for ${previousNativeSessionId}`);
     }
     setIsRecovering(true);
 
-    useTerminalStore.setState((state) => ({
-      sessions: state.sessions.map((s) =>
-        s.id === targetSession.id ? { ...s, sessionStatus: 'recovering' as const } : s
-      ),
-    }));
-
-    try { await TerminalEmulator.destroySession(targetSession.nativeSessionId); } catch {}
-    await createNativeSession(targetSession);
-
-    setIsRecovering(false);
-  }, [abandonTimedOutCreate, createNativeSession]);
+    try {
+      try { await TerminalEmulator.destroySession(previousNativeSessionId); } catch {}
+      const targetSession = replaceNativeSessionForCreate(currentSession, 'recovering', 'manual recover');
+      await createNativeSession(targetSession);
+    } finally {
+      setIsRecovering(false);
+    }
+  }, [createNativeSession, replaceNativeSessionForCreate]);
 
   // Reset a session: destroy, clear state, start fresh
   const resetSession = useCallback(async (session: TabSession) => {
-    const targetSession = abandonTimedOutCreate(session);
-    if (isNativeSessionCreateInFlight(targetSession.id)) {
-      logInfo('Terminal', 'resetSession: already in progress for ' + targetSession.nativeSessionId);
-      return;
+    const currentSession = useTerminalStore.getState().sessions.find((s) => s.id === session.id) ?? session;
+    const previousNativeSessionId = currentSession.nativeSessionId;
+    cancelNativeCreateRetrySchedules(currentSession.id);
+    if (isNativeSessionCreateInFlight(currentSession.id)) {
+      const abandoned = abandonNativeSessionCreate(currentSession.id, previousNativeSessionId);
+      logInfo('Terminal', `resetSession: abandoned in-flight create=${abandoned} for ${previousNativeSessionId}`);
     }
-    try { await TerminalEmulator.destroySession(targetSession.nativeSessionId); } catch {}
+    try { await TerminalEmulator.destroySession(previousNativeSessionId); } catch {}
 
-    useTerminalStore.getState().clearSession(targetSession.id);
+    useTerminalStore.getState().clearSession(currentSession.id);
+    const clearedSession = useTerminalStore.getState().sessions.find((s) => s.id === currentSession.id)
+      ?? currentSession;
+    const targetSession = replaceNativeSessionForCreate(clearedSession, 'starting', 'manual reset');
 
     await createNativeSession(targetSession);
-  }, [abandonTimedOutCreate, createNativeSession]);
+  }, [createNativeSession, replaceNativeSessionForCreate]);
 
   // Ensure native sessions exist. Called on mount and foreground resume.
   // Reads `sessions` via getState() rather than via the closure to keep
@@ -430,7 +683,7 @@ export default function TerminalScreen() {
     try {
       for (const session of sessions) {
         logInfo('Terminal', 'session ' + session.nativeSessionId + ' status=' + session.sessionStatus);
-        if (session.sessionStatus === 'starting' || session.sessionStatus === 'alive') {
+        if (session.sessionStatus === 'starting' || session.sessionStatus === 'alive' || session.sessionStatus === 'recovering') {
           // Check if session is already alive (works in both MultiPane and tab contexts)
           try {
             const alive = await TerminalEmulator.isSessionAlive(session.nativeSessionId);
@@ -558,18 +811,40 @@ export default function TerminalScreen() {
   // ProcessGuard: listen for session exits with signal 9 (SIGKILL)
   useEffect(() => {
     const sub = TerminalEmulator.addListener('onSessionExit', (event: { sessionId: string; exitCode: number; signal?: number }) => {
-      useTerminalStore.setState((state) => ({
-        sessions: state.sessions.map((session) =>
-          session.nativeSessionId === event.sessionId
-            ? {
-                ...session,
-                activeCli: null,
-                sessionStatus: 'exited' as const,
-                isAlive: false,
-              }
-            : session
-        ),
-      }));
+      const exitedSession = useTerminalStore.getState().sessions.find((session) => (
+        session.nativeSessionId === event.sessionId
+      ));
+      if (exitedSession) {
+        markNativeSessionExited(exitedSession.id, exitedSession.nativeSessionId);
+      }
+      const retryEarlyExit = exitedSession
+        ? shouldAutoRetryEarlyExit(exitedSession, event.exitCode, event.signal)
+        : false;
+
+      const retrySession = retryEarlyExit && exitedSession
+        ? replaceNativeSessionForCreate(exitedSession, 'recovering', 'early exit')
+        : null;
+      if (!retrySession) {
+        useTerminalStore.setState((state) => ({
+          sessions: state.sessions.map((session) =>
+            session.nativeSessionId === event.sessionId
+              ? {
+                  ...session,
+                  activeCli: null,
+                  sessionStatus: 'exited' as const,
+                  isAlive: false,
+                }
+              : session
+          ),
+        }));
+      }
+      if (retryEarlyExit && exitedSession) {
+        scheduleNativeCreateRetry(
+          retrySession?.id ?? exitedSession.id,
+          retrySession?.nativeSessionId ?? exitedSession.nativeSessionId,
+          'early exit',
+        );
+      }
 
       if (isProcessKill(event.signal ?? 0, event.exitCode)) {
         killCountRef.current += 1;
@@ -585,7 +860,7 @@ export default function TerminalScreen() {
       }
     });
     return () => sub.remove();
-  }, [checkBatteryExemption]);
+  }, [checkBatteryExemption, replaceNativeSessionForCreate, scheduleNativeCreateRetry]);
 
   // Handle reset requests from PaneCliTabs long-press menu
   const pendingResetId = useTerminalStore((s) => s.pendingResetSessionId);

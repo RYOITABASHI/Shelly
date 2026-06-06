@@ -9,15 +9,21 @@ type NativeSessionCreateRecord = {
 const nativeSessionCreateAttempts = new Map<string, NativeSessionCreateRecord>();
 
 export function reserveNativeSessionId(nativeSessionId: string): void {
-  if (nativeSessionId) reservedNativeSessionIds.add(nativeSessionId);
+  if (!nativeSessionId) return;
+  reservedNativeSessionIds.add(nativeSessionId);
 }
 
 export function releaseNativeSessionId(nativeSessionId: string): void {
-  if (nativeSessionId) reservedNativeSessionIds.delete(nativeSessionId);
+  if (!nativeSessionId) return;
+  reservedNativeSessionIds.delete(nativeSessionId);
 }
 
 export function getReservedNativeSessionIds(): string[] {
   return Array.from(reservedNativeSessionIds);
+}
+
+export function isNativeSessionIdReserved(nativeSessionId: string): boolean {
+  return reservedNativeSessionIds.has(nativeSessionId);
 }
 
 export function beginNativeSessionCreate(
@@ -72,6 +78,14 @@ export function abandonNativeSessionCreateIfTimedOut(sessionId: string, nativeSe
   return true;
 }
 
+export function abandonNativeSessionCreate(sessionId: string, nativeSessionId: string): boolean {
+  const current = nativeSessionCreateAttempts.get(sessionId);
+  if (current?.nativeSessionId !== nativeSessionId) return false;
+  reserveNativeSessionId(nativeSessionId);
+  nativeSessionCreateAttempts.delete(sessionId);
+  return true;
+}
+
 export function reserveNativeSessionIdIfCreating(sessionId: string, nativeSessionId: string): boolean {
   const current = nativeSessionCreateAttempts.get(sessionId);
   if (current?.nativeSessionId !== nativeSessionId) return false;
@@ -85,8 +99,9 @@ export function endNativeSessionCreate(
   nativeSessionId: string,
   attemptId: string,
 ): void {
+  const current = nativeSessionCreateAttempts.get(sessionId);
   releaseNativeSessionId(nativeSessionId);
-  if (isNativeSessionCreateAttemptCurrent(sessionId, nativeSessionId, attemptId)) {
+  if (current?.attemptId === attemptId && current.nativeSessionId === nativeSessionId) {
     nativeSessionCreateAttempts.delete(sessionId);
   }
 }
