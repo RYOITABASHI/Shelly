@@ -351,6 +351,19 @@ export default function TerminalScreen() {
   // Scroll state — show FAB when user scrolls up
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const terminalViewRef = useRef<any>(null);
+  const refocusTick = useFocusStore((s) => s.refocusTick);
+  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
+  const focusTerminalViewNow = useCallback(() => {
+    const tag = findNodeHandle(terminalViewRef.current);
+    if (!tag) return;
+    Promise.resolve(TerminalViewModule.focus(tag)).catch(() => undefined);
+  }, []);
+  const scheduleTerminalFocus = useCallback(() => {
+    const timers = [0, 80, 240, 600].map((delayMs) => (
+      setTimeout(focusTerminalViewNow, delayMs)
+    ));
+    return () => timers.forEach(clearTimeout);
+  }, [focusTerminalViewNow]);
 
   // Keyboard height tracking for terminal resize (same pattern as Chat screen)
   const [, setKeyboardHeight] = useState(0);
@@ -374,6 +387,19 @@ export default function TerminalScreen() {
   // Derive connection state from native session status
   const connectionState = sessionStatusToConnectionState(activeSession?.sessionStatus);
   const isConnected = connectionState === 'connected';
+  const shouldRestoreTerminalFocus = useCallback(() => {
+    if (!activeSessionRecordId || !activeNativeSessionId || !isConnected) return false;
+    if (isHiddenBehindMultiPane) return false;
+    if (paneId && focusedPaneId !== paneId) return false;
+    return true;
+  }, [
+    activeNativeSessionId,
+    activeSessionRecordId,
+    focusedPaneId,
+    isConnected,
+    isHiddenBehindMultiPane,
+    paneId,
+  ]);
 
   // Preview state
   const previewIsOpen = usePreviewStore((s) => s.isOpen);
@@ -799,20 +825,35 @@ export default function TerminalScreen() {
 
   // Run on foreground resume — handles app switch, home button, split view toggle
   useEffect(() => {
+    let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearResumeTimer = () => {
+      if (resumeTimer !== null) {
+        clearTimeout(resumeTimer);
+        resumeTimer = null;
+      }
+    };
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         ensureNativeSessions();
+        clearResumeTimer();
         // Force redraw terminal content after app resume
-        setTimeout(() => {
+        resumeTimer = setTimeout(() => {
+          resumeTimer = null;
           const tag = findNodeHandle(terminalViewRef.current);
           if (tag) {
             TerminalViewModule.refreshScreen(tag).catch(() => undefined);
           }
+          if (shouldRestoreTerminalFocus()) {
+            focusTerminalViewNow();
+          }
         }, 200);
       }
     });
-    return () => sub.remove();
-  }, [ensureNativeSessions]);
+    return () => {
+      clearResumeTimer();
+      sub.remove();
+    };
+  }, [ensureNativeSessions, focusTerminalViewNow, shouldRestoreTerminalFocus]);
 
   // bug #112: focus recovery after Modal dismiss. Closing LayoutAddSheet,
   // ConfigTUI, CommandPalette, or any other Modal leaves the Activity's
@@ -823,14 +864,12 @@ export default function TerminalScreen() {
   // Modal's close handler; we observe it here and call the native
   // TerminalView.focus(tag) helper which does requestFocus +
   // showSoftInput and restores typing without the stray tap.
-  const refocusTick = useFocusStore((s) => s.refocusTick);
-  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   useEffect(() => {
     if (refocusTick === 0) return; // initial mount, nothing to do
+    if (isHiddenBehindMultiPane) return;
     if (paneId && focusedPaneId !== paneId) return;
-    const tag = findNodeHandle(terminalViewRef.current);
-    if (tag) TerminalViewModule.focus(tag);
-  }, [refocusTick, focusedPaneId, paneId]);
+    return scheduleTerminalFocus();
+  }, [focusedPaneId, isHiddenBehindMultiPane, paneId, refocusTick, scheduleTerminalFocus]);
 
   // bug #116: Per-pane focus follow. When the user taps another terminal
   // pane, `PaneSlot.onTouchStart` -> `handleFocusPane` updates
@@ -841,10 +880,19 @@ export default function TerminalScreen() {
   // (global bump); this effect covers inter-pane switching (per-pane edge).
   useEffect(() => {
     if (!paneId) return;
+    if (isHiddenBehindMultiPane) return;
     if (focusedPaneId !== paneId) return;
-    const tag = findNodeHandle(terminalViewRef.current);
-    if (tag) TerminalViewModule.focus(tag);
-  }, [focusedPaneId, paneId]);
+    return scheduleTerminalFocus();
+  }, [focusedPaneId, isHiddenBehindMultiPane, paneId, scheduleTerminalFocus]);
+
+  // Native TerminalView can mount before Android's hidden IME host is ready,
+  // especially after session recovery, background resume, or pane re-layout.
+  // Re-focus after the visible native session reaches connected so commitText
+  // is routed to the current terminal, not a stale host target.
+  useEffect(() => {
+    if (!shouldRestoreTerminalFocus()) return;
+    return scheduleTerminalFocus();
+  }, [scheduleTerminalFocus, shouldRestoreTerminalFocus]);
 
   // Request battery optimization exemption on first mount
   useEffect(() => {
