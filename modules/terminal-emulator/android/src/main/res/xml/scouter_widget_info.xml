@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Full phone width (span the launcher columns), height driven by content.
-     targetCellWidth is clamped down to the grid width by the launcher, so a
-     high value yields a full-width widget on 4/5-column home screens. -->
+<!-- Wide HUD, two launcher rows tall by default. The previous 5x3 request made
+     One UI reserve a large transparent bottom area, so the resize frame looked
+     detached from the card. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
   android:minWidth="320dp"
-  android:minHeight="150dp"
+  android:minHeight="110dp"
+  android:minResizeWidth="250dp"
+  android:minResizeHeight="110dp"
   android:targetCellWidth="5"
-  android:targetCellHeight="3"
+  android:targetCellHeight="2"
   android:updatePeriodMillis="0"
   android:initialLayout="@layout/scouter_widget_medium"
   android:resizeMode="horizontal|vertical"
