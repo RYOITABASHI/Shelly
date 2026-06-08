@@ -44,6 +44,7 @@ import type { ThemeColorPalette } from '@/lib/theme';
 import { fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 const MAX_VISIBLE_SESSION_TABS = 4;
 const LOCAL_REPLY_EVENT_TTL_MS = 10 * 60 * 1000;
@@ -139,6 +140,7 @@ export default function AgentChatPane() {
   const [approvalReadiness, setApprovalReadiness] = useState<CodexReplyReadiness | null>(null);
   const [replyChecking, setReplyChecking] = useState(false);
   const [replySending, setReplySending] = useState(false);
+  const lastScouterChoiceMarkRef = useRef(0);
   const [replyNotice, setReplyNotice] = useState<ReplyNotice | null>(null);
   const [localReplyEvents, setLocalReplyEvents] = useState<AgentChatEvent[]>([]);
   const [approvalNotice, setApprovalNotice] = useState<ApprovalNotice | null>(null);
@@ -306,6 +308,13 @@ export default function AgentChatPane() {
         if (!cancelled) {
           setReplyReadiness(reply);
           setApprovalReadiness(approval);
+          if (!reply.ready && reply.reason === 'interactive_prompt') {
+            const now = Date.now();
+            if (now - lastScouterChoiceMarkRef.current > 5_000) {
+              lastScouterChoiceMarkRef.current = now;
+              void TerminalEmulator.markScouterWidgetChoicePending?.(t('agent_chat.reply_status_interactive_prompt'));
+            }
+          }
         }
       })
       .catch(() => {
@@ -329,6 +338,7 @@ export default function AgentChatPane() {
     activeSession?.currentStatus,
     activeSession?.lastEventAt,
     agentChatLastUpdatedAt,
+    t,
     terminalReadinessSignature,
   ]);
 
@@ -450,6 +460,10 @@ export default function AgentChatPane() {
       return;
     }
     setReplyReadiness({ ready: false, reason: result.reason });
+    if (result.status === 'blocked' && result.reason === 'interactive_prompt') {
+      lastScouterChoiceMarkRef.current = Date.now();
+      void TerminalEmulator.markScouterWidgetChoicePending?.(t('agent_chat.reply_status_interactive_prompt'));
+    }
     const bodyKey = result.status === 'failed'
       ? 'agent_chat.reply_failed_body'
       : replyBlockedReasonBodyKey(result.reason);

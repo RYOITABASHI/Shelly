@@ -34,8 +34,21 @@ export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) 
       onRequestClose={onClose}
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.menu}>
-          <Text style={styles.title}>{t('pane.select_tab')}</Text>
+        <View
+          style={[
+            styles.menu,
+            {
+              backgroundColor: C.bgSurface,
+              borderColor: C.border,
+              shadowColor: C.accent,
+              shadowOpacity: 0.28,
+              shadowRadius: 9,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: 8,
+            },
+          ]}
+        >
+          <Text style={[styles.title, { color: C.text2 }]}>{t('pane.select_tab')}</Text>
           <FlatList
             data={ALL_TABS}
             keyExtractor={(item) => item}
@@ -44,7 +57,10 @@ export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) 
               const isActive = item === currentTab;
               return (
                 <Pressable
-                  style={[styles.item, isActive && styles.itemActive]}
+                  style={[
+                    styles.item,
+                    isActive && { backgroundColor: withAlpha(C.accent, 0.13) },
+                  ]}
                   onPress={() => {
                     onSelect(item);
                     onClose();
@@ -55,7 +71,13 @@ export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) 
                     size={20}
                     color={isActive ? C.accent : C.text2}
                   />
-                  <Text style={[styles.itemText, isActive && styles.itemTextActive]}>
+                  <Text
+                    style={[
+                      styles.itemText,
+                      { color: isActive ? C.accent : C.text1 },
+                      isActive && { fontWeight: '600' },
+                    ]}
+                  >
                     {resolvePaneTitle(item, t)}
                   </Text>
                 </Pressable>
@@ -101,16 +123,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
   },
-  itemActive: {
-    backgroundColor: withAlpha(C.accent, 0.1),
-  },
   itemText: {
     color: C.text1,
     fontSize: 14,
     fontFamily: F.family,
-  },
-  itemTextActive: {
-    color: C.accent,
-    fontWeight: '600',
   },
 });

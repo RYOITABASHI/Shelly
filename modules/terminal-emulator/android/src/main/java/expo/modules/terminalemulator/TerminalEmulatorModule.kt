@@ -19,6 +19,7 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 import expo.modules.terminalemulator.scouter.ScouterStateStore
+import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
 
 class TerminalEmulatorModule : Module() {
 
@@ -864,6 +865,7 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
             ScouterStateStore(context).recordWidgetChoicePending(message)
+            ScouterWidgetProvider.updateAll(context, force = true)
             null
         }
 

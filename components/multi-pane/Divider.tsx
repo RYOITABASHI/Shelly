@@ -132,8 +132,8 @@ export function Divider(props: DividerProps) {
       };
 
   const lineAnimStyle = useAnimatedStyle(() => ({
-    // Line lights up from a faint 0.18 opacity teal wash to a full
-    // neon teal during drag. Thickness also grows 1 → 2px for a
+  // Line lights up from a faint accent wash to full neon during drag.
+  // Thickness also grows 1 → 2px for a
     // subtle "I caught you" feel.
     opacity: 0.18 + 0.7 * active.value,
     transform: [
@@ -159,9 +159,31 @@ export function Divider(props: DividerProps) {
   return (
     <GestureDetector gesture={composed}>
       <View style={[styles.hit, hitStyle]} pointerEvents="box-only">
-        <Animated.View style={[isVertical ? styles.lineV : styles.lineH, lineAnimStyle]} />
-        <Animated.View style={[isVertical ? styles.gripV : styles.gripH, gripAnimStyle]}>
-          <Animated.View style={[isVertical ? styles.barV : styles.barH, barAnimStyle]} />
+        <Animated.View
+          style={[
+            isVertical ? styles.lineV : styles.lineH,
+            { backgroundColor: C.accent },
+            lineAnimStyle,
+          ]}
+        />
+        <Animated.View
+          style={[
+            isVertical ? styles.gripV : styles.gripH,
+            {
+              backgroundColor: withAlpha(C.accent, 0.10),
+              borderColor: withAlpha(C.accent, 0.7),
+              shadowColor: C.accent,
+            },
+            gripAnimStyle,
+          ]}
+        >
+          <Animated.View
+            style={[
+              isVertical ? styles.barV : styles.barH,
+              { backgroundColor: C.accent },
+              barAnimStyle,
+            ]}
+          />
         </Animated.View>
       </View>
     </GestureDetector>
@@ -175,21 +197,19 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   // Idle lines are 1px and dim; the animated opacity + scale on the
-  // container pops them to 2px + full teal neon when the user grabs.
+  // container pops them to 2px + full neon when the user grabs.
   lineV: {
     position: 'absolute',
     width: 1,
     height: '100%',
-    backgroundColor: C.accent,
   },
   lineH: {
     position: 'absolute',
     height: 1,
     width: '100%',
-    backgroundColor: C.accent,
   },
-  // Grip: pill-shaped, translucent dark with a neon teal border and a
-  // teal shadow so it reads as a floating capsule. Native shadow works
+  // Grip: pill-shaped, translucent dark with a neon border and an
+  // accent shadow so it reads as a floating capsule. Native shadow works
   // on iOS; Android falls back to elevation for a comparable lift.
   gripV: {
     alignItems: 'center',
@@ -197,10 +217,7 @@ const styles = StyleSheet.create({
     width: 6,
     height: 36,
     borderRadius: 3,
-    backgroundColor: withAlpha(C.accent, 0.10),
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: withAlpha(C.accent, 0.7),
-    shadowColor: C.accent,
     shadowOffset: { width: 0, height: 0 },
     elevation: 6,
   },
@@ -210,10 +227,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 6,
     borderRadius: 3,
-    backgroundColor: withAlpha(C.accent, 0.10),
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: withAlpha(C.accent, 0.7),
-    shadowColor: C.accent,
     shadowOffset: { width: 0, height: 0 },
     elevation: 6,
   },
@@ -223,12 +237,10 @@ const styles = StyleSheet.create({
     width: 2,
     height: 22,
     borderRadius: 1,
-    backgroundColor: C.accent,
   },
   barH: {
     width: 22,
     height: 2,
     borderRadius: 1,
-    backgroundColor: C.accent,
   },
 });

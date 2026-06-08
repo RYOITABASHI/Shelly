@@ -49,6 +49,25 @@ const FONT_SIZE_PRESETS: FontSizePreset[] = [
   { label: 'L', size: 16 },
 ];
 
+function panelChromeStyle() {
+  return {
+    backgroundColor: C.bgSurface,
+    borderColor: C.border,
+    shadowColor: C.accent,
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+  };
+}
+
+function borderedChromeStyle(alpha = 1) {
+  return {
+    borderColor: alpha >= 1 ? C.border : withAlpha(C.accent, alpha),
+    backgroundColor: C.bgSurface,
+  };
+}
+
 export function SettingsDropdown({ visible, onClose }: Props) {
   const { t } = useTranslation();
   const [mcpOpen, setMcpOpen] = useState(false);
@@ -64,10 +83,10 @@ export function SettingsDropdown({ visible, onClose }: Props) {
       statusBarTranslucent
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.panel} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.header}>
-            <MaterialIcons name="settings" size={13} color={C.text2} />
-            <Text style={styles.headerTitle}>{t('settings.title')}</Text>
+        <Pressable style={[styles.panel, panelChromeStyle()]} onPress={(e) => e.stopPropagation()}>
+          <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
+            <MaterialIcons name="settings" size={13} color={C.accent} />
+            <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('settings.title')}</Text>
             <View style={{ flex: 1 }} />
             <Pressable
               onPress={onClose}
@@ -76,7 +95,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
               accessibilityRole="button"
               accessibilityLabel={t('settings.close_a11y')}
             >
-              <MaterialIcons name="close" size={13} color={C.text2} />
+              <MaterialIcons name="close" size={13} color={C.accent} />
             </Pressable>
           </View>
 
@@ -127,13 +146,13 @@ function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
   return (
     <Section title={t('updates.title')}>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={onOpenBuilds}
         accessibilityRole="button"
         accessibilityLabel={t('updates.open_a11y')}
       >
         <MaterialIcons name="cloud-download" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>{t('updates.check_for_updates')}</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('updates.check_for_updates')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -211,28 +230,38 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
     <Section title={t('scouter.title')}>
       <Row label="Scouter">
         <Pressable
-          style={[styles.switchTrack, enabled && styles.switchTrackOn, busy && styles.integrationRowDisabled]}
+          style={[
+            styles.switchTrack,
+            { backgroundColor: enabled ? withAlpha(C.accent, 0.36) : C.border },
+            busy && styles.integrationRowDisabled,
+          ]}
           onPress={toggle}
           disabled={busy}
           hitSlop={4}
         >
-          <View style={[styles.switchThumb, enabled && styles.switchThumbOn]} />
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: enabled ? C.accent : C.text2 },
+              enabled && { alignSelf: 'flex-end' },
+            ]}
+          />
         </Pressable>
       </Row>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={copyDebug}
         accessibilityRole="button"
         accessibilityLabel={t('scouter.copy_debug_a11y')}
       >
         <MaterialIcons name="bug-report" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>{t('scouter.copy_debug')}</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.copy_debug')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="content-copy" size={14} color={C.text3} />
       </Pressable>
       <View style={styles.credentialGap} />
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={() => {
           onCloseSettings();
           useSettingsStore.getState().setShowScouterDetail(true);
@@ -241,19 +270,19 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
         accessibilityLabel={t('scouter.open_monitor_a11y')}
       >
         <MaterialIcons name="desktop-windows" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>{t('scouter.open_monitor')}</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.open_monitor')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="open-in-new" size={14} color={C.text3} />
       </Pressable>
       <View style={styles.credentialGap} />
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={copyHooks}
         accessibilityRole="button"
         accessibilityLabel={t('scouter.copy_hooks_a11y')}
       >
         <MaterialIcons name="webhook" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>{t('scouter.copy_hooks')}</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.copy_hooks')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="content-copy" size={14} color={C.text3} />
       </Pressable>
@@ -272,24 +301,24 @@ function IntegrationsSection({
   return (
     <Section title={t('integrations.title')}>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={onOpenMcp}
         accessibilityRole="button"
         accessibilityLabel={t('integrations.open_mcp_a11y')}
       >
         <MaterialIcons name="extension" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>MCP Servers</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>MCP Servers</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={onOpenLlama}
         accessibilityRole="button"
         accessibilityLabel={t('integrations.open_llama_a11y')}
       >
         <MaterialIcons name="memory" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Local LLM · llama.cpp</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>Local LLM · llama.cpp</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -344,13 +373,13 @@ function RecoverySection() {
   return (
     <Section title={t('recovery.title')}>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={handleRecover}
         accessibilityRole="button"
         accessibilityLabel={t('recovery.action_a11y')}
       >
         <MaterialIcons name="healing" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>{t('recovery.action')}</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('recovery.action')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -431,19 +460,23 @@ function WallpaperSection() {
       <Row label={t('wallpaper.image')}>
         <View style={styles.wallpaperRow}>
           {wallpaperUri ? (
-            <Image source={{ uri: wallpaperUri }} style={styles.wallpaperPreview} />
+            <Image source={{ uri: wallpaperUri }} style={[styles.wallpaperPreview, { borderColor: C.border }]} />
           ) : (
-            <View style={[styles.wallpaperPreview, styles.wallpaperPreviewEmpty]}>
+            <View style={[styles.wallpaperPreview, styles.wallpaperPreviewEmpty, { borderColor: C.border, backgroundColor: C.bgDeep }]}>
               <MaterialIcons name="image" size={14} color={C.text3} />
             </View>
           )}
-          <Pressable style={styles.wallpaperBtn} onPress={pick} hitSlop={4}>
-            <Text style={styles.wallpaperBtnText}>
+          <Pressable
+            style={[styles.wallpaperBtn, { backgroundColor: withAlpha(C.accent, 0.14), borderColor: withAlpha(C.accent, 0.4) }]}
+            onPress={pick}
+            hitSlop={4}
+          >
+            <Text style={[styles.wallpaperBtnText, { color: C.accent }]}>
               {wallpaperUri ? t('wallpaper.change') : t('wallpaper.pick')}
             </Text>
           </Pressable>
           {wallpaperUri && (
-            <Pressable style={[styles.wallpaperBtn, styles.wallpaperBtnGhost]} onPress={clear} hitSlop={4}>
+            <Pressable style={[styles.wallpaperBtn, styles.wallpaperBtnGhost, { borderColor: C.border }]} onPress={clear} hitSlop={4}>
               <Text style={[styles.wallpaperBtnText, { color: C.text2 }]}>{t('common.clear')}</Text>
             </Pressable>
           )}
@@ -502,12 +535,12 @@ function SliderRow({
     <Row label={label}>
       <View style={styles.sliderGroup}>
         <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
-          <View style={styles.sliderTrack}>
-            <View style={[styles.sliderFill, { width: fillWidth }]} />
-            <View style={[styles.sliderThumb, { left: fillWidth - 5 }]} />
+          <View style={[styles.sliderTrack, { backgroundColor: C.border }]}>
+            <View style={[styles.sliderFill, { width: fillWidth, backgroundColor: C.accent }]} />
+            <View style={[styles.sliderThumb, { left: fillWidth - 5, backgroundColor: C.accent }]} />
           </View>
         </View>
-        <Text style={styles.sliderPercent}>{value}%</Text>
+        <Text style={[styles.sliderPercent, { color: C.text2 }]}>{value}%</Text>
       </View>
     </Row>
   );
@@ -524,17 +557,20 @@ function DisplaySection() {
     <Section title={t('settings.display')}>
       {/* Font size preset */}
       <Row label={t('settings.font_size')}>
-        <View style={styles.segGroup}>
+        <View style={[styles.segGroup, { borderColor: C.border }]}>
           {FONT_SIZE_PRESETS.map((p) => {
             const active = fontSize === p.size;
             return (
               <Pressable
                 key={p.label}
-                style={[styles.segBtn, active && styles.segBtnActive]}
+                style={[
+                  styles.segBtn,
+                  active && { backgroundColor: withAlpha(C.accent, 0.16) },
+                ]}
                 onPress={() => updateSettings({ fontSize: p.size })}
                 hitSlop={4}
               >
-                <Text style={[styles.segLabel, active && styles.segLabelActive]}>
+                <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
                   {p.label}
                 </Text>
               </Pressable>
@@ -586,7 +622,7 @@ function ThemeRow() {
   ];
   return (
     <Row label={t('settings.theme')}>
-      <View style={styles.segGroup}>
+      <View style={[styles.segGroup, { borderColor: C.border }]}>
         {options.map((opt) => {
           const active = uiFont === opt.value;
           return (
@@ -594,7 +630,6 @@ function ThemeRow() {
               key={opt.value}
               style={[
                 styles.segBtn,
-                active && styles.segBtnActive,
                 active && { backgroundColor: withAlpha(C.accent, 0.15) },
               ]}
               onPress={() => {
@@ -610,9 +645,10 @@ function ThemeRow() {
                   styles.themeSwatch,
                   { backgroundColor: opt.swatch },
                   active && styles.themeSwatchActive,
+                  active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
                 ]}
               />
-              <Text style={[styles.segLabel, active && styles.segLabelActive, active && { color: C.accent }]}>
+              <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
                 {opt.label}
               </Text>
             </Pressable>
@@ -638,16 +674,28 @@ function LanguageSection() {
           onPress={() => setLocale('en')}
           hitSlop={4}
         >
-          <View style={[styles.radio, locale === 'en' && styles.radioOn]} />
-          <Text style={[styles.langLabel, locale === 'en' && styles.langLabelActive]}>EN</Text>
+          <View
+            style={[
+              styles.radio,
+              { borderColor: locale === 'en' ? C.accent : C.text2 },
+              locale === 'en' && { backgroundColor: C.accent },
+            ]}
+          />
+          <Text style={[styles.langLabel, { color: locale === 'en' ? C.text1 : C.text2 }]}>EN</Text>
         </Pressable>
         <Pressable
           style={styles.langOption}
           onPress={() => setLocale('ja')}
           hitSlop={4}
         >
-          <View style={[styles.radio, locale === 'ja' && styles.radioOn]} />
-          <Text style={[styles.langLabel, locale === 'ja' && styles.langLabelActive]}>JA</Text>
+          <View
+            style={[
+              styles.radio,
+              { borderColor: locale === 'ja' ? C.accent : C.text2 },
+              locale === 'ja' && { backgroundColor: C.accent },
+            ]}
+          />
+          <Text style={[styles.langLabel, { color: locale === 'ja' ? C.text1 : C.text2 }]}>JA</Text>
         </Pressable>
       </View>
     </Section>
@@ -683,11 +731,11 @@ function AgentsSection() {
     <Section title={t('agents.title')}>
       <Row label={t('agents.default')}>
         <Pressable
-          style={styles.defaultAgentBtn}
+          style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
           onPress={() => setPickerOpen((v) => !v)}
           hitSlop={4}
         >
-          <Text style={styles.defaultAgentLabel}>{currentLabel}</Text>
+          <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>{currentLabel}</Text>
           <MaterialIcons
             name={pickerOpen ? 'arrow-drop-up' : 'arrow-drop-down'}
             size={14}
@@ -696,19 +744,19 @@ function AgentsSection() {
         </Pressable>
       </Row>
       {pickerOpen && (
-        <View style={styles.defaultAgentPicker}>
+        <View style={[styles.defaultAgentPicker, { borderColor: C.border, backgroundColor: C.bgDeep }]}>
           {DEFAULT_AGENT_OPTIONS.map((opt) => {
             const active = opt.value === defaultAgent;
             return (
               <Pressable
                 key={opt.value}
-                style={[styles.pickerRow, active && styles.pickerRowActive]}
+                style={[styles.pickerRow, active && { backgroundColor: withAlpha(C.accent, 0.10) }]}
                 onPress={() => {
                   updateSettings({ defaultAgent: opt.value });
                   setPickerOpen(false);
                 }}
               >
-                <Text style={[styles.pickerLabel, active && styles.pickerLabelActive]}>
+                <Text style={[styles.pickerLabel, { color: active ? C.accent : C.text2 }, active && { fontWeight: '700' }]}>
                   {opt.label}
                 </Text>
                 {active && <MaterialIcons name="check" size={11} color={C.accent} />}
@@ -719,11 +767,20 @@ function AgentsSection() {
       )}
       <Row label={t('agents.auto_approve')}>
         <Pressable
-          style={[styles.switchTrack, autoOn && styles.switchTrackOn]}
+          style={[
+            styles.switchTrack,
+            { backgroundColor: autoOn ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
           onPress={toggleAutoApprove}
           hitSlop={4}
         >
-          <View style={[styles.switchThumb, autoOn && styles.switchThumbOn]} />
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: autoOn ? C.accent : C.text2 },
+              autoOn && { alignSelf: 'flex-end' },
+            ]}
+          />
         </Pressable>
       </Row>
     </Section>
@@ -793,37 +850,37 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
 
   if (!editing) {
     return (
-      <View style={styles.apiKeyRow}>
+      <View style={[styles.apiKeyRow, { borderTopColor: C.border }]}>
         <View style={styles.apiKeyRowHead}>
-          <Text style={styles.apiKeyLabel}>{field.label}</Text>
+          <Text style={[styles.apiKeyLabel, { color: C.text1 }]}>{field.label}</Text>
           {hasStored ? (
             <View style={styles.statusOn}>
               <MaterialIcons name="check" size={10} color={C.accent} />
-              <Text style={styles.statusOnText}>{maskKey(stored)}</Text>
+              <Text style={[styles.statusOnText, { color: C.accent }]}>{maskKey(stored)}</Text>
             </View>
           ) : (
-            <Text style={styles.statusOff}>{t('common.not_set')}</Text>
+            <Text style={[styles.statusOff, { color: C.text3 }]}>{t('common.not_set')}</Text>
           )}
         </View>
         <View style={styles.apiKeyActions}>
-          <Text style={styles.apiKeyHint}>{field.hint}</Text>
+          <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{field.hint}</Text>
           <View style={{ flex: 1 }} />
           <Pressable
             onPress={() => setEditing(true)}
-            style={styles.apiKeyBtn}
+            style={[styles.apiKeyBtn, { borderColor: C.border }]}
             hitSlop={6}
           >
-            <Text style={styles.apiKeyBtnText}>
+            <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>
               {hasStored ? t('common.edit') : t('common.set')}
             </Text>
           </Pressable>
           {hasStored && (
             <Pressable
               onPress={handleClear}
-              style={styles.apiKeyBtn}
+              style={[styles.apiKeyBtn, { borderColor: C.border }]}
               hitSlop={6}
             >
-              <Text style={styles.apiKeyBtnText}>{t('common.clear')}</Text>
+              <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('common.clear')}</Text>
             </Pressable>
           )}
         </View>
@@ -832,9 +889,9 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
   }
 
   return (
-    <View style={styles.apiKeyRow}>
+    <View style={[styles.apiKeyRow, { borderTopColor: C.border }]}>
       <View style={styles.apiKeyRowHead}>
-        <Text style={styles.apiKeyLabel}>{field.label}</Text>
+        <Text style={[styles.apiKeyLabel, { color: C.text1 }]}>{field.label}</Text>
         <Pressable
           onPress={() => setReveal((v) => !v)}
           hitSlop={6}
@@ -850,7 +907,7 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
       <TextInput
         value={draft}
         onChangeText={setDraft}
-        style={styles.apiKeyInput}
+        style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
         placeholder={t('api_keys.paste_placeholder', { name: field.label })}
         placeholderTextColor={C.text3}
         autoCapitalize="none"
@@ -860,17 +917,17 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
         selectTextOnFocus
       />
       <View style={styles.apiKeyActions}>
-        <Text style={styles.apiKeyHint}>{field.hint}</Text>
+        <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{field.hint}</Text>
         <View style={{ flex: 1 }} />
-        <Pressable onPress={handleCancel} style={styles.apiKeyBtn} hitSlop={6}>
-          <Text style={styles.apiKeyBtnText}>{t('common.cancel')}</Text>
+        <Pressable onPress={handleCancel} style={[styles.apiKeyBtn, { borderColor: C.border }]} hitSlop={6}>
+          <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('common.cancel')}</Text>
         </Pressable>
         <Pressable
           onPress={handleSave}
-          style={[styles.apiKeyBtn, styles.apiKeyBtnPrimary]}
+          style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }]}
           hitSlop={6}
         >
-          <Text style={[styles.apiKeyBtnText, styles.apiKeyBtnTextPrimary]}>
+          <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>
             {t('common.save')}
           </Text>
         </Pressable>
@@ -926,17 +983,17 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
 
   return (
     <Section title={t('codex_login.title')}>
-      <Text style={styles.credentialHint}>
+      <Text style={[styles.credentialHint, { color: C.text2 }]}>
         {t('codex_login.description')}
       </Text>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={start}
         accessibilityRole="button"
         accessibilityLabel={t('codex_login.sign_in_a11y')}
       >
         <MaterialIcons name="login" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>{t('codex_login.sign_in_chatgpt')}</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('codex_login.sign_in_chatgpt')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -948,8 +1005,8 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+    <View style={[styles.section, { borderBottomColor: C.border }]}>
+      <Text style={[styles.sectionTitle, { color: C.text2 }]}>{title}</Text>
       <View style={styles.sectionBody}>{children}</View>
     </View>
   );
@@ -958,7 +1015,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
+      <Text style={[styles.rowLabel, { color: C.text1 }]}>{label}</Text>
       <View style={styles.rowControl}>{children}</View>
     </View>
   );
@@ -1125,10 +1182,6 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     backgroundColor: C.text2,
-  },
-  switchThumbOn: {
-    backgroundColor: C.accent,
-    alignSelf: 'flex-end',
   },
   // Slider
   sliderGroup: {
