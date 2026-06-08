@@ -352,6 +352,46 @@ describe('codex session replies', () => {
     expect(mockWriteToSession).not.toHaveBeenCalled();
   });
 
+  it('blocks replies with a launch failure reason after Codex crashes back to shell', async () => {
+    mockGetScreenText.mockResolvedValue([
+      'Bus error        LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 "$@"',
+      '~$',
+    ].join('\n'));
+
+    const result = await sendCodexReply(codexSession(), 'next task');
+
+    expect(result).toEqual({ status: 'blocked', reason: 'codex_launch_failed' });
+    expect(mockWriteToSession).not.toHaveBeenCalled();
+    expect(mockPasteToSession).not.toHaveBeenCalled();
+  });
+
+  it('allows replies after an app-data crash successfully falls back to bundled Codex', async () => {
+    mockGetScreenText.mockResolvedValue([
+      'Bus error        LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 "$@"',
+      '[shelly] Codex app-data runtime crashed during startup; retrying bundled runtime.',
+      ACTIVE_CODEX_SCREEN,
+    ].join('\n'));
+
+    const result = await sendCodexReply(codexSession(), 'next task');
+
+    expect(result).toEqual({
+      status: 'sent',
+      terminalSessionId: 'terminal-a',
+      nativeSessionId: 'shelly-1',
+    });
+    expect(mockPasteToSession).toHaveBeenCalledWith('shelly-1', 'next task');
+  });
+
+  it('treats a native-alive Codex PTY with a blank screen as busy instead of missing', async () => {
+    mockGetScreenText.mockResolvedValue('');
+
+    const result = await sendCodexReply(codexSession(), 'next task');
+
+    expect(result).toEqual({ status: 'blocked', reason: 'busy' });
+    expect(mockBindVisibleCodexTerminalToSession).not.toHaveBeenCalled();
+    expect(mockWriteToSession).not.toHaveBeenCalled();
+  });
+
   it('marks the terminal exited when the native PTY is gone', async () => {
     mockIsSessionAlive.mockResolvedValue(false);
 

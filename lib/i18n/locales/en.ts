@@ -1209,6 +1209,7 @@ const en: Record<string, string> = {
   'agent_chat.reply_status_busy': 'Codex is still working. Wait until it is idle before replying.',
   'agent_chat.reply_status_screen_unavailable': 'Shelly cannot read the bound terminal screen yet.',
   'agent_chat.reply_status_not_codex_terminal': 'The bound terminal is not showing Codex. Press play to resume this session.',
+  'agent_chat.reply_status_codex_launch_failed': 'Codex failed to launch in the bound terminal. Reload or resume with a fresh terminal.',
   'agent_chat.reply_status_interactive_prompt': 'Codex is waiting for a terminal choice. Select an option in Terminal before sending another prompt.',
   'agent_chat.reply_status_no_approval_prompt': 'The bound terminal is not showing an approval prompt yet. Review it in Terminal.',
   'agent_chat.interrupt_status_no_session': 'Select or resume a Codex session before interrupting.',

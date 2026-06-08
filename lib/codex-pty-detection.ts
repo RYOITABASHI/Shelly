@@ -34,6 +34,40 @@ export function detectCodexActiveTranscript(output: string): boolean {
   return lastCodexPrompt >= 0 && lastCodexPrompt > lastShellPrompt;
 }
 
+export function detectCodexLaunchFailureText(output: string): boolean {
+  const text = stripTerminalControl(output);
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const recentLines = lines.slice(-12);
+  if (!recentLines.length) return false;
+
+  let lastFailureLine = -1;
+  let lastLiveCodexLine = -1;
+  let hasNativeCrash = false;
+  let hasCodexLauncher = false;
+  recentLines.forEach((line, index) => {
+    if (isCodexPromptLine(line) || /OpenAI\s+Codex/i.test(line)) {
+      lastLiveCodexLine = index;
+    }
+    if (/\bcodex:\s+(?:launch failed|.*runtime.*(?:crashed|failed|exited))/i.test(line)) {
+      lastFailureLine = index;
+    }
+    if (/\b(?:Bus error|Segmentation fault|Illegal instruction|Trace\/breakpoint trap|Aborted)\b/i.test(line)) {
+      hasNativeCrash = true;
+      lastFailureLine = index;
+    }
+    if (/\b(?:linker64|codex_tui|codex_exec|SHELLY_CODEX_EXEC_PATH|SHELLY_LD_LIBRARY_PATH|LD_LIBRARY_PATH)\b/i.test(line)) {
+      hasCodexLauncher = true;
+    }
+  });
+  if (lastFailureLine < 0) return false;
+  if (lastLiveCodexLine > lastFailureLine) return false;
+  return /\bcodex:\s+(?:launch failed|.*runtime.*(?:crashed|failed|exited))/i.test(recentLines[lastFailureLine] ?? '')
+    || (hasNativeCrash && hasCodexLauncher);
+}
+
 export function detectCodexApprovalPrompt(output: string): boolean {
   const text = stripTerminalControl(output);
   const lines = text

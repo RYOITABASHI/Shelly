@@ -2,6 +2,7 @@ import {
   detectCodexActiveTranscript,
   detectCodexApprovalPrompt,
   detectCodexInteractivePrompt,
+  detectCodexLaunchFailureText,
   detectCodexPtyLaunchText,
   detectShellReadyText,
 } from '@/lib/codex-pty-detection';
@@ -108,5 +109,30 @@ describe('codex pty detection', () => {
       leakedOsc,
       '~$',
     ].join('\n'))).toBe(false);
+  });
+
+  it('detects Codex native launch failures after returning to the shell', () => {
+    const screen = [
+      'Bus error        LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 "$@"',
+      '~$',
+    ].join('\n');
+
+    expect(detectCodexLaunchFailureText(screen)).toBe(true);
+    expect(detectCodexActiveTranscript(screen)).toBe(false);
+    expect(detectShellReadyText(screen)).toBe(true);
+  });
+
+  it('does not treat a successful bundled fallback as a launch failure', () => {
+    const screen = [
+      'Bus error        LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 "$@"',
+      '[shelly] Codex app-data runtime crashed during startup; retrying bundled runtime.',
+      '>_ OpenAI Codex (v0.135.0)',
+      'directory: /data/data/dev.shelly.terminal/files/home',
+      'gpt-5.5 default · /data/data/dev.shelly.terminal/files/home',
+    ].join('\n');
+
+    expect(detectCodexLaunchFailureText(screen)).toBe(false);
+    expect(detectCodexActiveTranscript(screen)).toBe(true);
+    expect(detectShellReadyText(screen)).toBe(false);
   });
 });

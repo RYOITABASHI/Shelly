@@ -5,7 +5,7 @@ import { useFocusStore } from '@/store/focus-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import type { TabSession } from '@/store/types';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
-import { detectCodexActiveTranscript, detectShellReadyText } from '@/lib/codex-pty-detection';
+import { detectCodexActiveTranscript, detectCodexLaunchFailureText, detectShellReadyText } from '@/lib/codex-pty-detection';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 type AddTerminalPane = (
@@ -302,9 +302,11 @@ async function isLiveCodexTerminalSession(session: TabSession): Promise<boolean>
   if (!await isNativeSessionAlive(session)) return false;
   const screenText = await readTerminalScreen(session);
   if (screenText !== null) {
-    return detectCodexActiveTranscript(screenText);
+    if (detectCodexLaunchFailureText(screenText)) return false;
+    if (detectCodexActiveTranscript(screenText)) return true;
+    return session.activeCli === 'codex' && !detectShellReadyText(screenText);
   }
-  return false;
+  return session.activeCli === 'codex';
 }
 
 async function isResumeQueueSafeTerminalSession(session: TabSession): Promise<boolean> {
@@ -314,6 +316,7 @@ async function isResumeQueueSafeTerminalSession(session: TabSession): Promise<bo
   if (session.activeCli && session.activeCli !== 'codex') return false;
   const screenText = await readTerminalScreen(session);
   if (screenText !== null) {
+    if (detectCodexLaunchFailureText(screenText)) return false;
     return !detectCodexActiveTranscript(screenText) && detectShellReadyText(screenText);
   }
   return false;

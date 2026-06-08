@@ -245,6 +245,48 @@ describe('codex session resume', () => {
     expect(mockTerminalState.insertCommand).not.toHaveBeenCalled();
   });
 
+  it('does not queue another resume into a terminal showing a Codex launch failure', async () => {
+    mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-1', { activeCli: 'codex' })];
+    mockGetScreenText.mockResolvedValue([
+      'Bus error        LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 "$@"',
+      '~$',
+    ].join('\n'));
+    mockCreateTerminalSessionForFocusedPane.mockReturnValue(undefined);
+    const addTerminalPane = jest.fn();
+
+    const result = await resumeCodexSession(codexSession({
+      ptySessionId: 'shelly-1',
+      shellySessionId: 'terminal-a',
+      bindingConfidence: 'reliable',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'failed', reason: 'terminal_cap' });
+    expect(mockWriteToSession).not.toHaveBeenCalled();
+    expect(mockPasteToSession).not.toHaveBeenCalled();
+    expect(mockTerminalState.insertCommand).not.toHaveBeenCalled();
+  });
+
+  it('focuses a live Codex PTY after an app-data crash successfully falls back to bundled Codex', async () => {
+    mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-1', { activeCli: 'codex' })];
+    mockGetScreenText.mockResolvedValue([
+      'Bus error        LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 "$@"',
+      '[shelly] Codex app-data runtime crashed during startup; retrying bundled runtime.',
+      'gpt-5.5 default · /data/data/dev.shelly.terminal/files/home',
+    ].join('\n'));
+    const addTerminalPane = jest.fn();
+
+    const result = await resumeCodexSession(codexSession({
+      ptySessionId: 'shelly-1',
+      shellySessionId: 'terminal-a',
+      bindingConfidence: 'reliable',
+    }), { addTerminalPane });
+
+    expect(result).toEqual({ status: 'focused', sessionId: 'terminal-a' });
+    expect(mockWriteToSession).not.toHaveBeenCalled();
+    expect(mockPasteToSession).not.toHaveBeenCalled();
+    expect(mockTerminalState.pendingCommand).toBeNull();
+  });
+
   it('focuses a restored live Codex PTY even when activeCli was not persisted', async () => {
     mockTerminalState.sessions = [terminalSession('terminal-a', 'shelly-1', { activeCli: null })];
     mockGetScreenText.mockResolvedValue('gpt-5.5 default · /data/data/dev.shelly.terminal/files/home\n');

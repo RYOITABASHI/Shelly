@@ -1208,6 +1208,7 @@ const ja: Record<string, string> = {
   'agent_chat.reply_status_busy': 'Codexはまだ処理中です。待機状態になってから返信してください。',
   'agent_chat.reply_status_screen_unavailable': '接続先ターミナルの画面をまだ読み取れません。',
   'agent_chat.reply_status_not_codex_terminal': '接続先ターミナルにCodexが表示されていません。再生ボタンでこのセッションを復帰してください。',
+  'agent_chat.reply_status_codex_launch_failed': '接続先ターミナルでCodexの起動に失敗しました。Reloadするか新しいターミナルで復帰してください。',
   'agent_chat.reply_status_interactive_prompt': 'Codexがターミナル側の選択待ちです。選択肢を処理してから送信してください。',
   'agent_chat.reply_status_no_approval_prompt': '接続先ターミナルにapproval確認がまだ表示されていません。ターミナル側で確認してください。',
   'agent_chat.interrupt_status_no_session': '中断する前にCodexセッションを選択または復帰してください。',

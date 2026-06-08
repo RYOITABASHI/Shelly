@@ -58,6 +58,7 @@ export function CodexSessionsSection({ isOpen, onToggle, iconsOnly }: Props) {
       Alert.alert(t('sidebar.codex_resume_failed_title'), t(resumeFailureBodyKey(result.reason)));
       return;
     }
+    if (result.status !== 'focused') return;
     const terminalSession = useTerminalStore.getState().sessions.find((candidate) => candidate.id === result.sessionId);
     if (!terminalSession?.nativeSessionId) return;
     const now = Date.now();

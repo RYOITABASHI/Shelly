@@ -350,7 +350,7 @@ export default function AgentChatPane() {
     setResumeNotice({ status: 'pending', sessionId });
     const result = await resumeCodexSession(activeSession, { addTerminalPane: addPane })
       .catch(() => ({ status: 'failed' as const, reason: 'no_terminal' as const }));
-    if (result.status !== 'failed') {
+    if (result.status === 'focused') {
       const terminalSession = useTerminalStore.getState().sessions.find((session) => session.id === result.sessionId);
       if (terminalSession?.nativeSessionId) {
         const now = Date.now();
@@ -1405,10 +1405,11 @@ function buildAgentNotice({
     const waitingOnCodex =
       replyReadiness.reason === 'busy' ||
       replyReadiness.reason === 'interactive_prompt';
+    const launchFailed = replyReadiness.reason === 'codex_launch_failed';
     return {
-      icon: waitingOnCodex ? 'pending' : 'lock-outline',
+      icon: launchFailed ? 'error-outline' : waitingOnCodex ? 'pending' : 'lock-outline',
       text: t(replyBlockedReasonBodyKey(replyReadiness.reason)),
-      tone: waitingOnCodex ? 'info' : 'warning',
+      tone: launchFailed ? 'error' : waitingOnCodex ? 'info' : 'warning',
     };
   }
   return null;
@@ -1433,6 +1434,8 @@ function replyBlockedReasonBodyKey(reason: CodexReplyBlockedReason): string {
       return 'agent_chat.reply_status_screen_unavailable';
     case 'not_codex_terminal':
       return 'agent_chat.reply_status_not_codex_terminal';
+    case 'codex_launch_failed':
+      return 'agent_chat.reply_status_codex_launch_failed';
     case 'interactive_prompt':
       return 'agent_chat.reply_status_interactive_prompt';
     case 'no_approval_prompt':

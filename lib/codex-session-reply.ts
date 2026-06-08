@@ -2,6 +2,8 @@ import {
   detectCodexActiveTranscript,
   detectCodexApprovalPrompt,
   detectCodexInteractivePrompt,
+  detectCodexLaunchFailureText,
+  detectShellReadyText,
 } from '@/lib/codex-pty-detection';
 import { bindVisibleCodexTerminalToSession } from '@/lib/codex-session-resume';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -20,6 +22,7 @@ export type CodexReplyReadinessReason =
   | 'busy'
   | 'screen_unavailable'
   | 'not_codex_terminal'
+  | 'codex_launch_failed'
   | 'interactive_prompt'
   | 'no_approval_prompt';
 
@@ -209,7 +212,42 @@ async function getBoundCodexTerminalReadiness(
       nativeSessionId: terminalSession.nativeSessionId,
     };
   }
-  if (!detectCodexActiveTranscript(screenText)) {
+  if (detectCodexLaunchFailureText(screenText)) {
+    return {
+      ready: false,
+      reason: 'codex_launch_failed',
+      terminalSessionId: terminalSession.id,
+      nativeSessionId: terminalSession.nativeSessionId,
+    };
+  }
+  const hasCodexTranscript = detectCodexActiveTranscript(screenText);
+  const hasApprovalPrompt = detectCodexApprovalPrompt(screenText);
+  const hasInteractivePrompt = detectCodexInteractivePrompt(screenText);
+  if (!hasCodexTranscript) {
+    if (options.requireApprovalPrompt && hasApprovalPrompt) {
+      return {
+        ready: true,
+        reason: 'ready',
+        terminalSessionId: terminalSession.id,
+        nativeSessionId: terminalSession.nativeSessionId,
+      };
+    }
+    if (!options.requireApprovalPrompt && hasInteractivePrompt) {
+      return {
+        ready: false,
+        reason: 'interactive_prompt',
+        terminalSessionId: terminalSession.id,
+        nativeSessionId: terminalSession.nativeSessionId,
+      };
+    }
+    if (terminalSession.activeCli === 'codex' && !detectShellReadyText(screenText)) {
+      return {
+        ready: false,
+        reason: 'busy',
+        terminalSessionId: terminalSession.id,
+        nativeSessionId: terminalSession.nativeSessionId,
+      };
+    }
     return {
       ready: false,
       reason: 'not_codex_terminal',
@@ -217,7 +255,7 @@ async function getBoundCodexTerminalReadiness(
       nativeSessionId: terminalSession.nativeSessionId,
     };
   }
-  if (!options.requireApprovalPrompt && detectCodexInteractivePrompt(screenText)) {
+  if (!options.requireApprovalPrompt && hasInteractivePrompt) {
     return {
       ready: false,
       reason: 'interactive_prompt',
@@ -225,7 +263,7 @@ async function getBoundCodexTerminalReadiness(
       nativeSessionId: terminalSession.nativeSessionId,
     };
   }
-  if (options.requireApprovalPrompt && !detectCodexApprovalPrompt(screenText)) {
+  if (options.requireApprovalPrompt && !hasApprovalPrompt) {
     return {
       ready: false,
       reason: 'no_approval_prompt',
