@@ -186,14 +186,36 @@ object LibExtractor {
             for ((apkEntry, fileName) in LIBS) {
                 val outFile = File(libDir, fileName)
                 if (!forceRefresh && fileName !in ALWAYS_REFRESH && outFile.exists() && outFile.length() > 0) continue
-                if (forceRefresh && outFile.exists()) outFile.delete()
                 val entry = zipFile.getEntry(apkEntry) ?: continue
+                // Atomic replace: write to a temp file, then rename over the target.
+                // A running process that has the live .so mmap'd (codex_tui under
+                // LD_PRELOAD=libexec_wrapper.so) must never observe a deleted or
+                // partially-written file during a version-change re-extract — that
+                // race truncated the mapping's backing and crashed codex with
+                // SIGBUS/BUS_ADRERR at open+0. rename(2) is atomic and leaves any
+                // existing mapping pinned to the complete old inode until unmapped.
+                val tmpFile = File(libDir, "$fileName.new")
                 zipFile.getInputStream(entry).use { input ->
-                    outFile.outputStream().use { output ->
+                    tmpFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
-                outFile.setExecutable(true, false)
+                tmpFile.setExecutable(true, false)
+                if (!tmpFile.renameTo(outFile)) {
+                    // Rare: rename-over-existing unsupported. Fall back to delete +
+                    // rename (the old inode still survives in any live mapping; only
+                    // the directory entry changes), then an in-place copy as a last
+                    // resort if even that fails.
+                    if (outFile.exists()) outFile.delete()
+                    if (!tmpFile.renameTo(outFile)) {
+                        Log.w(TAG, "atomic rename failed for $fileName; copying in place")
+                        tmpFile.inputStream().use { input ->
+                            outFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        tmpFile.delete()
+                        outFile.setExecutable(true, false)
+                    }
+                }
             }
         } finally {
             zipFile.close()
