@@ -20,6 +20,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useWorktreeStore, type WorktreeAgent } from '@/store/worktree-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { useTranslation } from '@/lib/i18n';
 
 type Props = {
   visible: boolean;
@@ -28,17 +29,17 @@ type Props = {
   onClose: () => void;
 };
 
-const AGENTS: Array<{ id: WorktreeAgent; label: string; emoji: string; color: string }> = [
-  { id: 'claude', label: 'Claude', emoji: '🟣', color: '#A78BFA' },
-  { id: 'codex',  label: 'Codex',  emoji: '🟢', color: '#22C55E' },
-  { id: 'none',   label: 'None',   emoji: '⚪', color: '#9CA3AF' },
+const AGENTS: { id: WorktreeAgent; label: string; color: string }[] = [
+  { id: 'codex', label: 'Codex', color: '#22C55E' },
+  { id: 'none', label: 'None', color: '#9CA3AF' },
 ];
 
 function supportedInitialAgent(agent: WorktreeAgent): WorktreeAgent {
-  return agent === 'gemini' ? 'none' : agent;
+  return agent === 'codex' || agent === 'none' ? agent : 'codex';
 }
 
-export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', onClose }: Props) {
+export function WorktreeAddModal({ visible, repoPath, initialAgent = 'codex', onClose }: Props) {
+  const { t } = useTranslation();
   const addWorktree = useWorktreeStore((s) => s.addWorktree);
   const [agent, setAgent] = useState<WorktreeAgent>(supportedInitialAgent(initialAgent));
   const [branch, setBranch] = useState('');
@@ -62,9 +63,9 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
     if (result.ok === true) {
       onClose();
     } else {
-      Alert.alert('Create worktree failed', result.error);
+      Alert.alert(t('worktrees.create_failed'), result.error);
     }
-  }, [repoPath, branch, agent, busy, addWorktree, onClose]);
+  }, [repoPath, branch, agent, busy, addWorktree, onClose, t]);
 
   const canSubmit = !busy && repoPath != null && branch.trim().length > 0;
 
@@ -80,13 +81,13 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
 
-          <Text style={styles.title}>NEW WORKTREE</Text>
+          <Text style={styles.title}>{t('worktrees.new_title')}</Text>
           <Text style={styles.subtitle}>
-            Creates an isolated branch + working copy under ~/.shelly-worktrees/.
+            {t('worktrees.new_subtitle')}
           </Text>
 
           {/* Agent chooser */}
-          <Text style={styles.label}>AGENT</Text>
+          <Text style={styles.label}>{t('worktrees.agent')}</Text>
           <View style={styles.agentRow}>
             {AGENTS.map((a) => (
               <Pressable
@@ -94,7 +95,6 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
                 onPress={() => setAgent(a.id)}
                 style={[styles.agentChip, agent === a.id && { borderColor: a.color, backgroundColor: withAlpha(C.accent, 0.06) }]}
               >
-                <Text style={[styles.agentEmoji]}>{a.emoji}</Text>
                 <Text style={[styles.agentLabel, agent === a.id && { color: a.color }]}>
                   {a.label}
                 </Text>
@@ -103,7 +103,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
           </View>
 
           {/* Branch input */}
-          <Text style={styles.label}>BRANCH</Text>
+          <Text style={styles.label}>{t('worktrees.branch')}</Text>
           <TextInput
             style={styles.input}
             value={branch}
@@ -117,13 +117,13 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
             editable={!busy}
           />
           <Text style={styles.hint}>
-            Existing branches are reused; new ones are created with `-b`.
+            {t('worktrees.branch_hint')}
           </Text>
 
           {/* Actions */}
           <View style={styles.actions}>
             <Pressable style={styles.cancelBtn} onPress={onClose} disabled={busy}>
-              <Text style={styles.cancelText}>Cancel</Text>
+              <Text style={styles.cancelText}>{t('common.cancel')}</Text>
             </Pressable>
             <Pressable
               style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
@@ -135,7 +135,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'claude', o
               ) : (
                 <>
                   <MaterialIcons name="add" size={14} color={C.btnPrimaryText} />
-                  <Text style={styles.submitText}>Create</Text>
+                  <Text style={styles.submitText}>{t('common.create')}</Text>
                 </>
               )}
             </Pressable>
@@ -208,9 +208,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 5,
-  },
-  agentEmoji: {
-    fontSize: 10,
   },
   agentLabel: {
     fontSize: 10,

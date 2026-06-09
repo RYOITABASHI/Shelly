@@ -152,15 +152,15 @@ export async function generateProjectContext(
     `2>/dev/null`,
   );
 
-  // ── 6. README / PRESENTATION / CLAUDE.md 冒頭（あれば）────────────────
+  // ── 6. README / PRESENTATION / AGENTS.md 冒頭（あれば）────────────────
   const readmeSnippet = await runCmd(
     `head -20 '${escaped}/README.md' 2>/dev/null || echo ""`,
   );
   const presentationSnippet = await runCmd(
     `head -30 '${escaped}/PRESENTATION.md' 2>/dev/null || echo ""`,
   );
-  const claudeMd = await runCmd(
-    `head -30 '${escaped}/CLAUDE.md' 2>/dev/null || echo ""`,
+  const agentsMd = await runCmd(
+    `head -30 '${escaped}/AGENTS.md' 2>/dev/null || echo ""`,
   );
 
   // ── 7. git情報 ────────────────────────────────────────────────────────
@@ -188,14 +188,14 @@ export async function generateProjectContext(
     }
   }
 
-  // CLAUDE.md（プロジェクトルール・設計方針）
-  if (claudeMd.trim()) {
-    const claudeLines = claudeMd.trim().split('\n')
+  // AGENTS.md（プロジェクトルール・設計方針）
+  if (agentsMd.trim()) {
+    const agentsLines = agentsMd.trim().split('\n')
       .filter(l => l.trim())
       .slice(0, 10);
-    if (claudeLines.length > 0) {
-      lines.push('## Project Rules (CLAUDE.md)');
-      for (const l of claudeLines) lines.push(l);
+    if (agentsLines.length > 0) {
+      lines.push('## Project Rules (AGENTS.md)');
+      for (const l of agentsLines) lines.push(l);
       lines.push('');
     }
   }

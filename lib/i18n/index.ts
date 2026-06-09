@@ -7,6 +7,7 @@
 import { getLocales } from 'expo-localization';
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useCallback, useMemo } from 'react';
 import en from './locales/en';
 import ja from './locales/ja';
 
@@ -87,7 +88,7 @@ export function t(key: string, params?: Record<string, string | number>): string
 export function useTranslation() {
   const locale = useI18n((s) => s.locale);
 
-  const translate = (key: string, params?: Record<string, string | number>): string => {
+  const translate = useCallback((key: string, params?: Record<string, string | number>): string => {
     let text = LOCALES[locale]?.[key] ?? LOCALES.en[key] ?? key;
     if (params) {
       for (const [k, v] of Object.entries(params)) {
@@ -95,9 +96,9 @@ export function useTranslation() {
       }
     }
     return text;
-  };
+  }, [locale]);
 
-  return { t: translate, locale };
+  return useMemo(() => ({ t: translate, locale }), [translate, locale]);
 }
 
 /**

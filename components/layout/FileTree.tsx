@@ -10,6 +10,7 @@ import { readDirEntries } from '@/lib/fs-native';
 import { openFile } from '@/lib/open-file';
 import { normalizePath } from '@/lib/normalize-path';
 import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
+import { useTranslation } from '@/lib/i18n';
 
 type FileEntry = {
   name: string;
@@ -31,6 +32,7 @@ function sq(p: string): string {
 }
 
 export function FileTree() {
+  const { t } = useTranslation();
   // bug #43: defensively normalize any stale `~/` from a pre-fix persisted store.
   const rawRepoPath = useSidebarStore((s) => s.activeRepoPath);
   const repoPath = rawRepoPath ? normalizePath(rawRepoPath) : rawRepoPath;
@@ -97,30 +99,30 @@ export function FileTree() {
   const handleLongPress = useCallback((entry: FileEntry) => {
     Alert.alert(
       entry.name,
-      entry.isDirectory ? 'Directory' : 'File',
+      entry.isDirectory ? t('file_tree.directory') : t('file_tree.file'),
       [
         {
-          text: 'Rename',
+          text: t('file_tree.rename'),
           onPress: () => {
             setRenameTarget(entry);
             setRenameName(entry.name);
           },
         },
         {
-          text: 'Copy path',
+          text: t('file_tree.copy_path'),
           onPress: async () => {
             await Clipboard.setStringAsync(entry.path);
-            ToastAndroid.show('Path copied', ToastAndroid.SHORT);
+            ToastAndroid.show(t('file_tree.path_copied'), ToastAndroid.SHORT);
           },
         },
         {
-          text: 'Delete',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: () => {
-            Alert.alert('Delete ' + entry.name + '?', 'This cannot be undone.', [
-              { text: 'Cancel', style: 'cancel' },
+            Alert.alert(t('file_tree.delete_title', { name: entry.name }), t('common.cannot_undo'), [
+              { text: t('common.cancel'), style: 'cancel' },
               {
-                text: 'Delete',
+                text: t('common.delete'),
                 style: 'destructive',
                 onPress: async () => {
                   const cmd = entry.isDirectory
@@ -128,21 +130,21 @@ export function FileTree() {
                     : `rm ${sq(entry.path)}`;
                   const r = await execCommand(cmd, 10_000);
                   if (r.exitCode === 0) {
-                    ToastAndroid.show('Deleted', ToastAndroid.SHORT);
+                    ToastAndroid.show(t('file_tree.deleted'), ToastAndroid.SHORT);
                     loadDir(cwd);
                   } else {
-                    ToastAndroid.show('rm failed: ' + (r.stderr || '').trim(), ToastAndroid.LONG);
+                    ToastAndroid.show(t('file_tree.rm_failed', { error: (r.stderr || '').trim() }), ToastAndroid.LONG);
                   }
                 },
               },
             ]);
           },
         },
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
       ],
       { cancelable: true },
     );
-  }, [cwd, loadDir]);
+  }, [cwd, loadDir, t]);
 
   const performCreate = useCallback(async () => {
     const name = createName.trim();
@@ -151,14 +153,14 @@ export function FileTree() {
     const cmd = createMode === 'dir' ? `mkdir -p ${sq(target)}` : `touch ${sq(target)}`;
     const r = await execCommand(cmd, 10_000);
     if (r.exitCode === 0) {
-      ToastAndroid.show(createMode === 'dir' ? 'Folder created' : 'File created', ToastAndroid.SHORT);
+      ToastAndroid.show(createMode === 'dir' ? t('file_tree.folder_created') : t('file_tree.file_created'), ToastAndroid.SHORT);
       setCreateMode(null);
       setCreateName('');
       loadDir(cwd);
     } else {
-      ToastAndroid.show('create failed: ' + (r.stderr || '').trim(), ToastAndroid.LONG);
+      ToastAndroid.show(t('file_tree.create_failed', { error: (r.stderr || '').trim() }), ToastAndroid.LONG);
     }
-  }, [createMode, createName, cwd, loadDir]);
+  }, [createMode, createName, cwd, loadDir, t]);
 
   const performRename = useCallback(async () => {
     if (!renameTarget) return;
@@ -171,20 +173,20 @@ export function FileTree() {
     const newPath = `${parent}/${name}`;
     const r = await execCommand(`mv ${sq(renameTarget.path)} ${sq(newPath)}`, 10_000);
     if (r.exitCode === 0) {
-      ToastAndroid.show('Renamed', ToastAndroid.SHORT);
+      ToastAndroid.show(t('file_tree.renamed'), ToastAndroid.SHORT);
       setRenameTarget(null);
       loadDir(cwd);
     } else {
-      ToastAndroid.show('mv failed: ' + (r.stderr || '').trim(), ToastAndroid.LONG);
+      ToastAndroid.show(t('file_tree.mv_failed', { error: (r.stderr || '').trim() }), ToastAndroid.LONG);
     }
-  }, [renameTarget, renameName, cwd, loadDir]);
+  }, [renameTarget, renameName, cwd, loadDir, t]);
 
   // No repo bound — prompt the user to pick one. The Sidebar's REPOSITORIES
   // section has the + ADD REPOSITORY affordance; just hint toward it.
   if (!repoPath) {
     return (
       <View style={styles.container}>
-        <Text style={styles.emptyHint}>Add a repository above to browse files.</Text>
+        <Text style={styles.emptyHint}>{t('file_tree.empty_hint')}</Text>
       </View>
     );
   }
@@ -196,7 +198,7 @@ export function FileTree() {
         <MaterialIcons name="search" size={I.fileIcon} color={C.text2} />
         <TextInput
           style={styles.search}
-          placeholder="SEARCH FILES..."
+          placeholder={t('file_tree.search_placeholder')}
           placeholderTextColor={C.text2}
           value={search}
           onChangeText={setSearch}
@@ -266,11 +268,11 @@ export function FileTree() {
         <Pressable style={promptStyles.backdrop} onPress={() => setCreateMode(null)}>
           <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
             <Text style={[promptStyles.title, { color: C.accent }]}>
-              {createMode === 'dir' ? 'New Folder' : 'New File'}
+              {createMode === 'dir' ? t('file_tree.new_folder') : t('file_tree.new_file')}
             </Text>
             <TextInput
               style={promptStyles.input}
-              placeholder={createMode === 'dir' ? 'folder name' : 'file.ext'}
+              placeholder={createMode === 'dir' ? t('file_tree.folder_name') : t('file_tree.file_name_placeholder')}
               placeholderTextColor={C.text3}
               value={createName}
               onChangeText={setCreateName}
@@ -279,13 +281,13 @@ export function FileTree() {
             />
             <View style={promptStyles.actions}>
               <Pressable onPress={() => setCreateMode(null)} style={promptStyles.btn}>
-                <Text style={promptStyles.btnText}>Cancel</Text>
+                <Text style={promptStyles.btnText}>{t('common.cancel')}</Text>
               </Pressable>
               <Pressable
                 onPress={performCreate}
                 style={[promptStyles.btn, promptStyles.btnPrimary, { backgroundColor: C.accent, borderColor: C.accent }]}
               >
-                <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>Create</Text>
+                <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>{t('common.create')}</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -296,7 +298,7 @@ export function FileTree() {
       <ShellyModal visible={renameTarget !== null} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}>
         <Pressable style={promptStyles.backdrop} onPress={() => setRenameTarget(null)}>
           <Pressable style={promptStyles.card} onPress={(e) => e.stopPropagation()}>
-            <Text style={[promptStyles.title, { color: C.accent }]}>Rename</Text>
+            <Text style={[promptStyles.title, { color: C.accent }]}>{t('file_tree.rename')}</Text>
             <TextInput
               style={promptStyles.input}
               value={renameName}
@@ -306,13 +308,13 @@ export function FileTree() {
             />
             <View style={promptStyles.actions}>
               <Pressable onPress={() => setRenameTarget(null)} style={promptStyles.btn}>
-                <Text style={promptStyles.btnText}>Cancel</Text>
+                <Text style={promptStyles.btnText}>{t('common.cancel')}</Text>
               </Pressable>
               <Pressable
                 onPress={performRename}
                 style={[promptStyles.btn, promptStyles.btnPrimary, { backgroundColor: C.accent, borderColor: C.accent }]}
               >
-                <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>Rename</Text>
+                <Text style={[promptStyles.btnText, promptStyles.btnPrimaryText]}>{t('file_tree.rename')}</Text>
               </Pressable>
             </View>
           </Pressable>

@@ -7,7 +7,7 @@
  * picker sheet for enums.
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { colors as C } from '@/theme.config';
 import {
   View,
@@ -29,17 +29,17 @@ import Animated, { SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSettingsStore } from '@/store/settings-store';
 import { useCosmeticStore, SoundProfile, FontFamily } from '@/store/cosmetic-store';
-import { getAllThemes } from '@/lib/theme-engine';
-import { useThemeStore } from '@/lib/theme-engine';
+import { getAllThemes, useThemeStore } from '@/lib/theme-engine';
 import { TERMINAL_THEME_NAMES } from '@/lib/terminal-theme';
 import { useI18n, AVAILABLE_LOCALES } from '@/lib/i18n';
-import { useUsageStore } from '@/store/usage-store';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt';
 import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -91,8 +91,6 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'themeEngine',    label: 'Color Theme',      type: 'enum', options: ALL_THEMES, source: 'custom', description: 'WezTerm-style themes' },
       { key: 'terminalTheme',  label: 'Terminal Theme',   type: 'enum', options: TERMINAL_THEME_NAMES, source: 'settings' },
       { key: 'fontFamily',     label: 'Font Family',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen'], source: 'cosmetic' },
-      { key: 'crtEnabled',     label: 'CRT Effect',       type: 'boolean', source: 'cosmetic' },
-      { key: 'crtIntensity',   label: 'CRT Intensity',    type: 'number', min: 0, max: 100, source: 'cosmetic' },
       { key: 'gpuRendering',   label: 'GPU Rendering',    type: 'boolean', source: 'settings' },
     ],
   },
@@ -108,6 +106,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'cerebrasApiKey',  label: 'Cerebras API Key', type: 'secret', source: 'settings' },
       { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
       { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
+      { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'e.g. gemini-2.0-flash' },
     ],
   },
   {
@@ -119,7 +118,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'teamMembers.groq',       label: 'Groq',         type: 'boolean', source: 'custom', description: 'Enable Groq in AI Pane' },
       { key: 'teamMembers.perplexity', label: 'Perplexity',   type: 'boolean', source: 'custom', description: 'Enable Perplexity in AI Pane' },
       { key: 'teamMembers.local',      label: 'Local LLM',    type: 'boolean', source: 'custom', description: 'Enable local LLM in AI Pane' },
-      { key: 'defaultAgent',           label: 'Default Agent', type: 'enum', options: ['codex', 'claude-code', 'gemini-cli', 'local'], source: 'settings' },
+      { key: 'defaultAgent',           label: 'Default Agent', type: 'enum', options: ['codex'], source: 'settings' },
       { key: 'experienceMode',         label: 'Experience Mode', type: 'enum', options: ['learning', 'standard', 'power'], source: 'settings' },
       { key: 'autoApproveLevel',       label: 'CLI Approval Level', type: 'enum', options: ['safe', 'moderate', 'yolo'], source: 'settings', description: 'How much to auto-approve' },
     ],
@@ -172,7 +171,6 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     icon: 'storage',
     items: [
       { key: 'rerunSetup',       label: 'Re-run Setup Wizard', type: 'action', source: 'custom', actionLabel: 'Run', description: 'Run initial setup again' },
-      { key: 'usageAlertEnabled', label: 'Usage Alerts',  type: 'boolean', source: 'custom', description: 'Notify on cost threshold' },
       { key: 'exportLogs',        label: 'Export Logs',    type: 'action', source: 'custom', actionLabel: 'Share as text' },
       { key: 'deleteHistory',     label: 'Delete All History', type: 'action', source: 'custom', actionLabel: 'Delete', dangerAction: true },
     ],
@@ -221,7 +219,7 @@ function getValue(
   if (source === 'cosmetic') {
     return (cosmetics as unknown as Record<string, unknown>)[key];
   }
-  // Handle nested keys like 'teamMembers.claude'
+  // Handle nested keys like 'teamMembers.local'
   if (key.includes('.')) {
     const [parent, child] = key.split('.');
     const obj = (settings as Record<string, unknown>)[parent];
@@ -452,7 +450,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const dotfiles = useDotfilesStore();
   const themeStore = useThemeStore();
   const i18n = useI18n();
-  const usageStore = useUsageStore();
 
   const [picker, setPicker] = useState<{
     def: SettingDef;
@@ -468,7 +465,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
       loadCustomContext().then(setCustomContextText).catch((e) => {
         logError('ConfigTUI', 'Failed to load custom context', e);
       });
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       TerminalEmulator.getScouterDebugInfo()
         .then((raw: string) => {
           const parsed = JSON.parse(raw);
@@ -481,7 +477,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   }, [visible]);
 
   // Build custom values map for 'custom' source items
-  const customValues: Record<string, unknown> = {
+  const customValues: Record<string, unknown> = useMemo(() => ({
     themeEngine: themeStore.currentThemeId,
     locale: i18n.locale,
     'teamMembers.gemini': settings.teamMembers?.gemini,
@@ -490,10 +486,20 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     'teamMembers.perplexity': settings.teamMembers?.perplexity,
     'teamMembers.local': settings.teamMembers?.local,
     customContext: customContextText,
-    usageAlertEnabled: usageStore.alertEnabled,
     dotfilesPat: dotfiles.pat,
     scouterEnabled,
-  };
+  }), [
+    customContextText,
+    dotfiles.pat,
+    i18n.locale,
+    scouterEnabled,
+    settings.teamMembers?.gemini,
+    settings.teamMembers?.cerebras,
+    settings.teamMembers?.groq,
+    settings.teamMembers?.local,
+    settings.teamMembers?.perplexity,
+    themeStore.currentThemeId,
+  ]);
 
   const getVal = useCallback(
     (def: SettingDef) => getValue(def.key, def.source, settings, cosmetics, customValues),
@@ -518,12 +524,8 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             setCustomContextText(String(rawValue));
             saveCustomContext(String(rawValue));
             break;
-          case 'usageAlertEnabled':
-            usageStore.setAlertSettings({ alertEnabled: Boolean(rawValue) });
-            break;
           case 'scouterEnabled': {
             const enabled = Boolean(rawValue);
-            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
             TerminalEmulator.setScouterEnabled(enabled)
               .then(() => {
                 setScouterEnabled(enabled);
@@ -577,7 +579,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         logError('ConfigTUI', 'Failed to apply ' + def.key, e);
       }
     },
-    [updateSettings, cosmetics, settings, themeStore, i18n, dotfiles, usageStore],
+    [updateSettings, cosmetics, settings, themeStore, i18n, dotfiles],
   );
 
   // Action handlers
@@ -585,7 +587,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     logInfo('ConfigTUI', 'Action: ' + def.key);
     switch (def.key) {
       case 'rerunSetup': {
-        const { resetSetup, runFirstLaunchSetup } = require('@/lib/first-launch-setup');
         resetSetup().then(() => {
           const session = useTerminalStore.getState().sessions[0];
           if (session?.nativeSessionId) {
@@ -633,7 +634,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
               style: 'destructive',
               onPress: async () => {
                 try {
-                  const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
                   const result = await TerminalEmulator.forceRecoverFromFrozenState();
                   const cleanedCount = Array.isArray(result?.cleaned) ? result.cleaned.length : 0;
                   const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
@@ -663,7 +663,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
       case 'scouterDebugInfo':
         (async () => {
           try {
-            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
             const info = await TerminalEmulator.getScouterDebugInfo();
             Alert.alert('Scouter Debug', info.slice(0, 3500));
           } catch (e: any) {
@@ -674,17 +673,16 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
       case 'scouterHookTemplate':
         (async () => {
           try {
-            const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
-            const cc = await TerminalEmulator.getScouterHookTemplate('cc');
             const codex = await TerminalEmulator.getScouterHookTemplate('codex');
-            Alert.alert('Scouter Hooks', `Claude Code:\n${cc}\n\nCodex:\n${codex}`.slice(0, 3500));
+            const local = await TerminalEmulator.getScouterHookTemplate('local');
+            Alert.alert('Scouter Hooks', `Codex:\n${codex}\n\nLocal LLM:\n${local}`.slice(0, 3500));
           } catch (e: any) {
             Alert.alert('Scouter Hooks failed', String(e?.message || e));
           }
         })();
         break;
     }
-  }, [dotfiles]);
+  }, [dotfiles, onClose]);
 
   const handleToggle = useCallback(
     (def: SettingDef) => applyValue(def, !getVal(def)),

@@ -124,6 +124,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   const { settings } = useTerminalStore();
   const visualPreset =
     settings.uiFont === 'orange' ? 'orange'
+      : settings.uiFont === 'scouter-green' ? 'green'
       : settings.uiFont === 'purple' || settings.uiFont === 'shelly' || settings.uiFont === 'modal' ? 'purple'
         : 'blue';
   const presetColors = themePresets[settings.uiFont as ThemePresetId]?.colors;
@@ -161,6 +162,17 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
           backgroundColor: withAlpha(accent, 0.06),
           borderColor: withAlpha(accent, 0.46),
           borderRadius: 3,
+        },
+        textColor: accent,
+        iconColor: accent,
+      };
+    }
+    if (visualPreset === 'green') {
+      return {
+        key: {
+          backgroundColor: withAlpha(accent, 0.07),
+          borderColor: withAlpha(accent, 0.46),
+          borderRadius: 2,
         },
         textColor: accent,
         iconColor: accent,
@@ -204,8 +216,6 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
       await startRecording();
     }
   }, [onVoice, isRecording, startRecording, stopRecording, settings.hapticFeedback]);
-
-  const currentSet = KEY_SETS[activeSet];
 
   const handleKeyPress = useCallback((key: KeyConfig) => {
     if (settings.hapticFeedback) {
@@ -255,7 +265,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
     if (settings.hapticFeedback) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-  }, [settings.hapticFeedback, barWidth]);
+  }, [settings.hapticFeedback, barWidth, SET_ORDER]);
   const onBarLayout = useCallback((e: LayoutChangeEvent) => {
     setBarWidth(e.nativeEvent.layout.width);
   }, []);
@@ -268,7 +278,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     }
-  }, [activeSet, settings.hapticFeedback]);
+  }, [activeSet, settings.hapticFeedback, SET_ORDER]);
 
   // Render a single key set page
   const renderKeySet = useCallback((setId: KeySetId) => {

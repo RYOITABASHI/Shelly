@@ -15,20 +15,20 @@ import { View, Text, Pressable, Alert, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useWorktreeStore, type WorktreeAgent, type Worktree } from '@/store/worktree-store';
-import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { usePaneStore } from '@/store/pane-store';
 import { WorktreeAddModal } from './WorktreeAddModal';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, sizes as S } from '@/theme.config';
+import { useTranslation } from '@/lib/i18n';
 
 function agentColor(agent: WorktreeAgent): string {
   return agent === 'none' ? C.text3 : C.accent;
 }
 
-function supportedAgent(agent: WorktreeAgent): Exclude<WorktreeAgent, 'gemini'> {
-  return agent === 'gemini' ? 'none' : agent;
+function supportedAgent(agent: WorktreeAgent | string): WorktreeAgent {
+  return agent === 'codex' ? 'codex' : 'none';
 }
 
 /** Phase 2: pick the right CLI invocation for a worktree. Once the agent
@@ -38,9 +38,8 @@ function resumeCommandFor(wt: Worktree): string | null {
   const agent = supportedAgent(wt.agent);
   if (agent === 'none') return null;
   if (!wt.agentStarted) return agent;
-  // Claude Code: `claude --continue` resumes the most recent session in
-  //   the current directory. Well-documented + stable.
-  // Codex: `codex --continue` behaves analogously as of codex-termux.
+  // Codex: `codex --continue` resumes the most recent session in the
+  // current directory on supported codex-termux builds.
   return `${agent} --continue`;
 }
 
@@ -65,6 +64,7 @@ type Props = {
 };
 
 export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
+  const { t } = useTranslation();
   const activeRepoPath = useSidebarStore((s) => s.activeRepoPath);
   const worktrees = useWorktreeStore((s) => s.worktrees);
   const removeWorktree = useWorktreeStore((s) => s.removeWorktree);
@@ -73,7 +73,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
   const setSession = useWorktreeStore((s) => s.setSession);
 
   const [addVisible, setAddVisible] = useState(false);
-  const [initialAgent, setInitialAgent] = useState<WorktreeAgent>('claude');
+  const [initialAgent, setInitialAgent] = useState<WorktreeAgent>('codex');
   const addPane = useAddPane();
 
   const repoWorktrees = activeRepoPath
@@ -145,24 +145,24 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
   const handleRemove = useCallback(
     (worktreeId: string, branch: string) => {
       Alert.alert(
-        'Remove worktree',
-        `Remove the "${branch}" worktree? The branch itself will not be deleted.`,
+        t('worktrees.remove_title'),
+        t('worktrees.remove_body', { branch }),
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: t('common.cancel'), style: 'cancel' },
           {
-            text: 'Remove',
+            text: t('common.remove'),
             style: 'destructive',
             onPress: async () => {
               const r = await removeWorktree(worktreeId);
               if (r.error) {
-                Alert.alert('Removed with warnings', r.error);
+                Alert.alert(t('worktrees.removed_warnings'), r.error);
               }
             },
           },
         ],
       );
     },
-    [removeWorktree],
+    [removeWorktree, t],
   );
 
   const handleAdd = useCallback((agent: WorktreeAgent) => {
@@ -173,7 +173,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
   return (
     <>
       <SidebarSection
-        title="WORKTREES"
+        title={t('worktrees.title')}
         icon="call-split"
         isOpen={isOpen}
         onToggle={onToggle}
@@ -181,11 +181,11 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
       >
         {!activeRepoPath ? (
           <Text style={styles.empty}>
-            Select a repository to manage worktrees.
+            {t('worktrees.select_repo')}
           </Text>
         ) : repoWorktrees.length === 0 ? (
           <Text style={styles.empty}>
-            No worktrees yet. Add one per agent to work in parallel.
+            {t('worktrees.empty')}
           </Text>
         ) : (
           repoWorktrees.map((wt) => {
@@ -202,7 +202,6 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
                     <Text style={styles.meta} numberOfLines={1}>
                       {relativeTime(wt.lastTouchedAt)}
                       {resumable ? ' · resume' : ''}
-                      {wt.agent === 'gemini' ? ' · unsupported' : ''}
                     </Text>
                   </View>
                   {resumable ? (
@@ -227,7 +226,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
             binding can still pick "None" inside the modal. */}
         {activeRepoPath ? (
           <View style={styles.addRow}>
-            {(['claude', 'codex'] as WorktreeAgent[]).map((a) => (
+            {(['codex'] as WorktreeAgent[]).map((a) => (
               <Pressable
                 key={a}
                 style={[styles.addChip, { borderColor: agentColor(a) }]}

@@ -497,7 +497,7 @@ WRAPPEREOF
 }
 
 find_local_llm_model() {
-  model_name="\${1:-Qwen3-8B-Q4_K_M}"
+  model_name="\${1:-Qwen3.5-4B-Q4_K_M}"
   if [ -n "\${LOCAL_LLM_MODEL_PATH:-}" ] && [ -f "$LOCAL_LLM_MODEL_PATH" ]; then
     printf '%s\\n' "$LOCAL_LLM_MODEL_PATH"
     return 0
@@ -516,9 +516,15 @@ find_local_llm_model() {
     fi
   done
 
+  search_pattern='Qwen3.*4B.*Q4_K_M\\|Qwen3.*Q4_K_M.*4B'
+  case "$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]')" in
+    *8b*) search_pattern='Qwen3.*8B.*Q4_K_M\\|Qwen3.*Q4_K_M.*8B' ;;
+    *4b*) search_pattern='Qwen3.*4B.*Q4_K_M\\|Qwen3.*Q4_K_M.*4B' ;;
+  esac
+
   for dir in "$HOME/models" "$HOME" "/sdcard/Download" "/sdcard/models" "/sdcard/llama" "/sdcard/Documents/models" "/sdcard/Models"; do
     [ -d "$dir" ] || continue
-    found=$(find "$dir" -maxdepth 2 -type f -name '*.gguf' 2>/dev/null | grep -i 'Qwen3.*8B.*Q4_K_M\\|Qwen3.*Q4_K_M.*8B' | head -n 1 || true)
+    found=$(find "$dir" -maxdepth 2 -type f -name '*.gguf' 2>/dev/null | grep -i "$search_pattern" | head -n 1 || true)
     if [ -n "$found" ]; then
       printf '%s\\n' "$found"
       return 0
@@ -530,7 +536,7 @@ find_local_llm_model() {
 
 ensure_local_llm_server() {
   base_url="$1"
-  model_name="\${2:-Qwen3-8B-Q4_K_M}"
+  model_name="\${2:-Qwen3.5-4B-Q4_K_M}"
   reason_file="$TMP_DIR/local-llm-start-$AGENT_ID.reason"
   : > "$reason_file"
 
@@ -859,11 +865,7 @@ function generateToolCommand(tool: ToolChoice, escapedPrompt: string, rawPrompt:
   const resultVar = '"$RESULT_FILE"';
   switch (tool.type) {
     case 'cli':
-      if (tool.cli === 'claude') {
-        return `echo 'Claude Code is available in Terminal only. Background Claude execution is disabled.' > ${resultVar}`;
-      }
-      if (tool.cli === 'codex') {
-        return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 if command -v codex >/dev/null 2>&1; then
   timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
@@ -871,12 +873,10 @@ else
   echo 'Codex CLI is not installed or not on PATH. Run shelly-runtime-update codex, then codex-login.' > ${resultVar}
 fi
 rm -f "$PROMPT_FILE"`;
-      }
-      return `echo 'Gemini CLI is experimental in Shelly. Use Gemini API for background agents.' > ${resultVar}`;
     case 'gemini-api':
       return geminiApiCommand(escapedPrompt, resultVar, tool.model);
     case 'local':
-      const localModel = (tool.model || 'Qwen3-8B-Q4_K_M').replace(/"/g, '\\"');
+      const localModel = (tool.model || 'Qwen3.5-4B-Q4_K_M').replace(/"/g, '\\"');
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
@@ -933,14 +933,14 @@ elif command -v codex >/dev/null 2>&1; then
   timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
   rm -f "$PROMPT_FILE"
 else
-  echo 'No background agent backend is configured. Add a Gemini API key or use Codex in Terminal.' > ${resultVar}
+  echo 'No background agent backend is configured. Add a Gemini API key, install Codex, or choose Local LLM/Perplexity explicitly.' > ${resultVar}
 fi`;
   }
 }
 
 function articleEvalCommand(rawPrompt: string, resultVar: string, localModel?: string, codexCmd?: string): string {
   const promptMarker = `SHELLY_AB_PROMPT_${Math.random().toString(36).slice(2)}`;
-  const localModelValue = (localModel || 'Qwen3-8B-Q4_K_M').replace(/"/g, '\\"');
+  const localModelValue = (localModel || 'Qwen3.5-4B-Q4_K_M').replace(/"/g, '\\"');
   const codexCmdValue = (codexCmd || 'codex').replace(/"/g, '\\"');
   return `PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
 LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
@@ -1010,9 +1010,9 @@ LOCAL_EXIT=$?
 set -e
 LOCAL_END=$(date +%s)
 if [ "$LOCAL_EXIT" -eq 0 ]; then
-  extract_ai_content "$RUN_DIR/local.response.json" > "$RUN_DIR/local-qwen3-8b.md" 2>> "$RUN_DIR/local.stderr.log" || true
+  extract_ai_content "$RUN_DIR/local.response.json" > "$RUN_DIR/local-qwen.md" 2>> "$RUN_DIR/local.stderr.log" || true
 else
-  echo "Local LLM failed with exit $LOCAL_EXIT" > "$RUN_DIR/local-qwen3-8b.md"
+  echo "Local LLM failed with exit $LOCAL_EXIT" > "$RUN_DIR/local-qwen.md"
 fi
 
 CODEX_START=$(date +%s)
@@ -1028,11 +1028,11 @@ fi
 set -e
 CODEX_END=$(date +%s)
 
-local_bytes=$(wc -c < "$RUN_DIR/local-qwen3-8b.md" | tr -d ' ')
+local_bytes=$(wc -c < "$RUN_DIR/local-qwen.md" | tr -d ' ')
 codex_bytes=$(wc -c < "$RUN_DIR/codex.md" | tr -d ' ')
-local_headings=$(grep -c '^#' "$RUN_DIR/local-qwen3-8b.md" 2>/dev/null || true)
+local_headings=$(grep -c '^#' "$RUN_DIR/local-qwen.md" 2>/dev/null || true)
 codex_headings=$(grep -c '^#' "$RUN_DIR/codex.md" 2>/dev/null || true)
-local_links=$(grep -Eo 'https?://[^ )]+' "$RUN_DIR/local-qwen3-8b.md" 2>/dev/null | wc -l | tr -d ' ')
+local_links=$(grep -Eo 'https?://[^ )]+' "$RUN_DIR/local-qwen.md" 2>/dev/null | wc -l | tr -d ' ')
 codex_links=$(grep -Eo 'https?://[^ )]+' "$RUN_DIR/codex.md" 2>/dev/null | wc -l | tr -d ' ')
 
 cat > "$RUN_DIR/metrics.json" <<METRICSEOF
@@ -1048,7 +1048,7 @@ $(cat "$RUN_DIR/metrics.json")
 \`\`\`
 
 ## Quick Read
-- Qwen/local output: $RUN_DIR/local-qwen3-8b.md
+- Qwen/local output: $RUN_DIR/local-qwen.md
 - Codex output: $RUN_DIR/codex.md
 - Prompt: $RUN_DIR/prompt.md
 - Context: $RUN_DIR/context.md
@@ -1063,12 +1063,12 @@ $(cat "$RUN_DIR/metrics.json")
 EVALEOF
 
 cat > ${resultVar} <<RESULTEOF
-# Qwen3-8B-Q4_K_M vs Codex A/B Article Eval
+# Qwen3 local vs Codex A/B Article Eval
 
 Run directory: $RUN_DIR
 
 ## Verdict Stub
-Review \`eval.md\`, \`local-qwen3-8b.md\`, and \`codex.md\`.
+Review \`eval.md\`, \`local-qwen.md\`, and \`codex.md\`.
 
 ## Metrics
 \`\`\`json
@@ -1076,7 +1076,7 @@ $(cat "$RUN_DIR/metrics.json")
 \`\`\`
 
 ## Local Qwen Preview
-$(head -n 40 "$RUN_DIR/local-qwen3-8b.md")
+$(head -n 40 "$RUN_DIR/local-qwen.md")
 
 ## Codex Preview
 $(head -n 40 "$RUN_DIR/codex.md")

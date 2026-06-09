@@ -4,7 +4,7 @@
  * Terminal input 4-layer routing parser.
  *
  * Priority:
- *   1. @mention    — @claude / @gemini / @local for direct tool targeting
+ *   1. @mention    — @codex / @local / API-backed agents for direct targeting
  *   2. NL + tool   — Natural language containing tool name keywords
  *   3. NL only     — Natural language → AI suggests best tool
  *   4. Shell cmd   — ls / git status etc → Native shell direct execution
@@ -13,10 +13,10 @@ import { t } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RouteTarget = 'claude' | 'gemini' | 'local' | 'shell' | 'suggest' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena' | 'actions';
+export type RouteTarget = 'local' | 'shell' | 'suggest' | 'gemini' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena' | 'actions';
 
 export type InputLayer =
-  | 'mention'        // @claude / @gemini / @local
+  | 'mention'        // @codex / @local / @perplexity / etc.
   | 'nl_with_tool'   // 自然言語 + ツール名キーワード
   | 'natural'        // 自然言語のみ → ツール提案
   | 'command';       // シェルコマンド → ネイティブシェル直接実行
@@ -58,11 +58,10 @@ export interface MentionHint {
 // ─── @mention パターン ────────────────────────────────────────────────────────
 
 const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: string }> = [
-  { pattern: /^@claude\s*/i,  target: 'claude',  label: 'Claude Code' },
-  { pattern: /^@gemini\s*/i,  target: 'gemini',  label: 'Gemini CLI' },
   { pattern: /^@local\s*/i,   target: 'local',   label: 'Local LLM' },
   { pattern: /^@llm\s*/i,     target: 'local',   label: 'Local LLM' },
   { pattern: /^@ai\s*/i,      target: 'local',   label: 'Local LLM' },
+  { pattern: /^@gemini\s*/i,  target: 'gemini',  label: 'Gemini API' },
   { pattern: /^@perplexity\s*/i, target: 'perplexity', label: 'Perplexity' },
   { pattern: /^@pplx\s*/i,       target: 'perplexity', label: 'Perplexity' },
   { pattern: /^@search\s*/i,     target: 'perplexity', label: 'Perplexity' },
@@ -87,29 +86,6 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
 // ─── 自然言語 + ツール名キーワード ────────────────────────────────────────────
 
 const NL_TOOL_PATTERNS: Array<{ keywords: string[]; target: RouteTarget; label: string }> = [
-  {
-    keywords: [
-      'claudeで', 'claude codeで', 'claudeに', 'claude codeに', 'claudecodeで', 'claudecodeに',
-      'クロードで', 'クロードに', 'クロードコードで', 'クロードコードに',
-      'claudeを実行', 'claude codeを実行', 'claudecodeを実行', 'クロードを実行', 'クロードコードを実行',
-      'claudeを起動', 'claude codeを起動', 'claudecodeを起動', 'クロードを起動', 'クロードコードを起動',
-      'claude使って', 'claude code使って', 'claudecode使って', 'クロード使って',
-      'claude開いて', 'claudecode開いて', 'クロード開いて',
-    ],
-    target: 'claude',
-    label: 'Claude Code',
-  },
-  {
-    keywords: [
-      'geminiで', 'gemini cliで', 'geminiに', 'ジェミニで', 'ジェミニに',
-      'geminiを実行', 'gemini cliを実行', 'ジェミニを実行',
-      'geminiを起動', 'gemini cliを起動', 'ジェミニを起動',
-      'gemini使って', 'gemini cli使って', 'ジェミニ使って',
-      'gemini開いて', 'ジェミニ開いて',
-    ],
-    target: 'gemini',
-    label: 'Gemini CLI',
-  },
   {
     keywords: [
       'codexで', 'codexに', 'コデックスで', 'コデックスに',
@@ -153,7 +129,7 @@ const SHELL_COMMAND_PREFIXES = [
   'git', 'node', 'python', 'python3', 'ruby', 'go', 'cargo', 'make', 'cmake',
   'gcc', 'g++', 'clang', 'javac', 'java',
   // AI CLI
-  'claude', 'gemini', 'codex', 'ollama',
+  'codex', 'ollama',
   // シェル制御
   'clear', 'history', 'which', 'whereis', 'type', 'alias', 'export', 'source',
   'chmod', 'chown', 'chgrp', 'sudo', 'su',
@@ -248,7 +224,7 @@ const TERMINAL_REFERENCE_PATTERNS = [
   /(look at|check|see|read)\s*(the\s*)?(terminal|right)/i,
   // セカンドオピニオン (5-3)
   /右で(やってる|やっている)こと(を|)(レビュー|評価|確認|チェック)/,
-  /Claudeが(やってる|やっている)こと(どう|どう思う)/,
+  /Codexが(やってる|やっている)こと(どう|どう思う)/,
   /(別の|他の)AI(に|で)(聞|確認|レビュー)/,
   /review what('s| is) (happening|going on) (on the|in the) (right|terminal)/i,
   /second opinion/i,
@@ -272,7 +248,7 @@ export type TerminalIntent = 'reference' | 'second-opinion' | 'session-summary';
 
 const SECOND_OPINION_PATTERNS = [
   /右で(やってる|やっている)こと(を|)(レビュー|評価|確認|チェック)/,
-  /Claudeが(やってる|やっている)こと(どう|どう思う)/,
+  /Codexが(やってる|やっている)こと(どう|どう思う)/,
   /(別の|他の)AI(に|で)(聞|確認|レビュー)/,
   /review what('s| is) (happening|going on) (on the|in the) (right|terminal)/i,
   /second opinion/i,
@@ -327,7 +303,7 @@ export function buildToolSuggestions(input: string): ToolSuggestion[] {
   const lower = input.toLowerCase();
   const suggestions: ToolSuggestion[] = [];
 
-  // コード生成・実装系 → Claude Code 推奨
+  // コード生成・実装系 → Codex 推奨
   const codeSignals = [
     'コードを', '実装して', '作って', '書いて', 'プログラム', 'スクリプト',
     'バグ', 'エラー', 'リファクタ', 'テスト', 'デバッグ',
@@ -338,15 +314,15 @@ export function buildToolSuggestions(input: string): ToolSuggestion[] {
   const codeScore = codeSignals.filter((k) => lower.includes(k)).length;
   if (codeScore > 0) {
     suggestions.push({
-      target: 'claude',
-      label: 'Claude Code',
+      target: 'codex',
+      label: 'Codex CLI',
       reason: t('router.code_reason'),
-      mentionExample: `@claude ${input}`,
+      mentionExample: `@codex ${input}`,
       confidence: Math.min(0.95, 0.5 + codeScore * 0.15),
     });
   }
 
-  // 調査・検索・情報収集系 → Gemini CLI 推奨
+  // 調査・検索・情報収集系 → Perplexity 推奨
   const researchSignals = [
     '調べて', '検索して', '最新', 'ニュース', '情報', 'ドキュメント',
     '説明して', 'とは', 'について', '比較', 'メリット', 'デメリット',
@@ -356,10 +332,10 @@ export function buildToolSuggestions(input: string): ToolSuggestion[] {
   const researchScore = researchSignals.filter((k) => lower.includes(k)).length;
   if (researchScore > 0) {
     suggestions.push({
-      target: 'gemini',
-      label: 'Gemini CLI',
+      target: 'perplexity',
+      label: 'Perplexity',
       reason: t('router.research_reason'),
-      mentionExample: `@gemini ${input}`,
+      mentionExample: `@perplexity ${input}`,
       confidence: Math.min(0.9, 0.5 + researchScore * 0.15),
     });
   }
@@ -384,17 +360,17 @@ export function buildToolSuggestions(input: string): ToolSuggestion[] {
   // Default suggestion if nothing matched
   if (suggestions.length === 0) {
     suggestions.push({
-      target: 'claude',
-      label: 'Claude Code',
+      target: 'codex',
+      label: 'Codex CLI',
       reason: t('router.default_reason'),
-      mentionExample: `@claude ${input}`,
+      mentionExample: `@codex ${input}`,
       confidence: 0.6,
     });
     suggestions.push({
-      target: 'gemini',
-      label: 'Gemini CLI',
+      target: 'local',
+      label: 'Local LLM',
       reason: t('router.research_fallback'),
-      mentionExample: `@gemini ${input}`,
+      mentionExample: `@local ${input}`,
       confidence: 0.4,
     });
   }
@@ -443,8 +419,8 @@ export function parseInput(input: string): ParsedInput {
         logSummary: `[${label}] ${trimmed.slice(0, 60)}${trimmed.length > 60 ? '…' : ''}`,
         mentionHint: {
           key: `hint_mention_${target}`,
-          text: t('router.mention_hint', { target: target === 'claude' ? 'claude' : target === 'gemini' ? 'gemini' : 'local' }),
-          example: `@${target === 'claude' ? 'claude' : target === 'gemini' ? 'gemini' : 'local'} ${trimmed.replace(/claudeで|geminiで|ローカルllmで/gi, '').trim()}`,
+          text: t('router.mention_hint', { target }),
+          example: `@${target} ${trimmed.replace(/codexで|ローカルllmで|perplexityで|パープレで/gi, '').trim()}`,
         },
       };
     }
@@ -549,11 +525,10 @@ export function buildRoutingDetail(parsed: ParsedInput): string {
 
 export function getTargetLabel(target: RouteTarget): string {
   const labels: Record<RouteTarget, string> = {
-    claude: 'Claude Code',
-    gemini: 'Gemini CLI',
     local: 'Local LLM',
     shell: 'Shell',
     suggest: t('router.suggest'),
+    gemini: 'Gemini API',
     perplexity: 'Perplexity',
     team: 'Team Table',
     browser: 'Browser',
@@ -571,11 +546,10 @@ export function getTargetLabel(target: RouteTarget): string {
 
 export function getTargetColor(target: RouteTarget): string {
   const colors: Record<RouteTarget, string> = {
-    claude:     '#F59E0B', // アンバー
-    gemini:     '#3B82F6', // ブルー
     local:      '#8B5CF6', // パープル
     shell:      '#00D4AA', // ティール（既存ブランドカラー）
     suggest:    '#6B7280', // グレー
+    gemini:     '#60A5FA', // ブルー（Gemini API）
     perplexity: '#20B2AA', // ティールグリーン（Perplexityブランドカラー）
     groq:       '#F97316', // オレンジ（Groqブランドカラー）
     team:       '#EC4899', // ピンク（Team Tableブランドカラー）

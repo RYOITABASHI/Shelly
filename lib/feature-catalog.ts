@@ -20,7 +20,7 @@ export const FEATURE_CATALOG: Feature[] = [
   // AI
   { id: 'ai-pane', name: 'AI Pane', description: 'Streaming AI responses with terminal context', category: 'ai' },
   { id: 'inline-diff', name: 'Inline Diff Preview', description: 'Green/red diff with accept/reject in AI responses', category: 'ai', triggerContext: 'AI suggests code changes' },
-  { id: 'agent-selector', name: 'Agent Selector', description: 'Switch AI agents per pane (Claude, Gemini, Local...)', category: 'ai' },
+  { id: 'agent-selector', name: 'Agent Selector', description: 'Switch AI agents per pane (Codex, Local, cloud APIs...)', category: 'ai' },
   { id: 'terminal-context', name: 'Terminal Context', description: 'AI reads your terminal output automatically', category: 'ai' },
 
   // Browser
@@ -43,7 +43,6 @@ export const FEATURE_CATALOG: Feature[] = [
   { id: 'savepoints', name: 'Auto Savepoints', description: 'Automatic git snapshots with undo', category: 'workflow' },
 
   // Config
-  { id: 'crt-mode', name: 'CRT Mode', description: 'Retro CRT display effect with scanlines', category: 'config' },
   { id: 'sound-profiles', name: 'Sound Profiles', description: 'Modern, Retro (8-bit), or Silent sounds', category: 'config' },
   { id: 'fonts', name: 'Font Selection', description: 'Multiple monospace fonts including pixel fonts', category: 'config' },
 ];

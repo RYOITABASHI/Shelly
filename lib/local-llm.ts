@@ -5,8 +5,8 @@
  *
  * 設計方針:
  * - Ollama互換API（http://127.0.0.1:11434）に直接HTTPリクエスト
- * - タスク分類: 「基本チャット」はLocal LLMで処理、「コード生成」「調査」はClaude/Geminiに委譲
- * - Local LLM無効時はすべてClaude Code / Gemini CLIに送信
+ * - タスク分類: 「基本チャット」はLocal LLMで処理、「コード生成」はCodexに委譲
+ * - Local LLM無効時はCodexに送信
  * - ストリーミングレスポンス対応（Ollama /api/chat）
  */
 
@@ -18,10 +18,10 @@ import { routeIntent, formatRoutingMessage, type RoutingDecision } from './inten
 
 export type TaskCategory =
   | 'chat'          // 基本的な質問・会話 → Local LLM
-  | 'code'          // コード生成・修正 → Claude Code
-  | 'research'      // 調査・情報収集 → Gemini CLI
+  | 'code'          // コード生成・修正 → Codex
+  | 'research'      // 調査・情報収集 → Codex / Local LLM
   | 'file_ops'      // ファイル操作 → シェル直接実行
-  | 'unknown';      // 判定不能 → Claude Code（デフォルト）
+  | 'unknown';      // 判定不能 → Codex / Local LLM
 
 export interface OllamaMessage {
   role: 'user' | 'assistant' | 'system';
@@ -32,12 +32,17 @@ export interface OllamaChatRequest {
   model: string;
   messages: OllamaMessage[];
   stream?: boolean;
+  think?: boolean;
   options?: {
     temperature?: number;
     num_ctx?: number;
     num_predict?: number;
   };
 }
+
+const DEFAULT_LOCAL_MAX_TOKENS = 384;
+const DEFAULT_LOCAL_CONTEXT_TOKENS = 1024;
+const XHR_PROGRESS_FLUSH_MS = 50;
 
 export interface OllamaChatResponse {
   model: string;
@@ -49,7 +54,7 @@ export interface OllamaChatResponse {
 
 export interface OllamaStreamChunk {
   model: string;
-  message: { role: string; content: string };
+  message?: { role?: string; content?: string; thinking?: string };
   done: boolean;
 }
 
@@ -69,6 +74,9 @@ export interface OpenAIChatRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  chat_template_kwargs?: {
+    enable_thinking?: boolean;
+  };
 }
 
 export interface OpenAIChatResponse {
@@ -87,7 +95,7 @@ export interface OpenAIStreamChunk {
   object: string;
   choices: Array<{
     index: number;
-    delta: { role?: string; content?: string };
+    delta: { role?: string; content?: string | null; reasoning_content?: string | null };
     finish_reason: string | null;
   }>;
 }
@@ -112,11 +120,52 @@ export interface LocalLlmConfig {
   enabled: boolean;
 }
 
+function shouldDisableThinking(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized || normalized === 'default' || normalized === 'local') return true;
+  return /qwen[\s._-]*3/i.test(normalized);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatRequest {
+  if (!shouldDisableThinking(req.model)) return req;
+  return {
+    ...req,
+    chat_template_kwargs: {
+      ...req.chat_template_kwargs,
+      enable_thinking: false,
+    },
+  };
+}
+
+function withOllamaThinkingOptions(req: OllamaChatRequest): OllamaChatRequest {
+  if (!shouldDisableThinking(req.model)) return req;
+  return {
+    ...req,
+    think: false,
+  };
+}
+
+function safeEmitChunk(
+  onChunk: (text: string, done: boolean) => void,
+  text: string,
+  done: boolean,
+): void {
+  try {
+    onChunk(text, done);
+  } catch {
+    // Keep provider stream parsing from taking down the app UI.
+  }
+}
+
 export interface OrchestrationResult {
   category: TaskCategory;
-  handledBy: 'local_llm' | 'claude' | 'gemini' | 'codex';
+  handledBy: 'local_llm' | 'codex';
   response?: string;         // Local LLMが直接回答した場合
-  delegatedCommand?: string; // Claude/Geminiに委譲する場合のコマンド
+  delegatedCommand?: string; // Codexに委譲する場合のコマンド
   reasoning: string;         // 判定理由（デバッグ用）
   /** ツール未インストール時のセットアップ案内 */
   setupRequired?: boolean;
@@ -143,14 +192,13 @@ export function classifyTask(userInput: string): TaskCategory {
   ];
   if (fileOpsKeywords.some((k) => input.includes(k))) return 'file_ops';
 
-  // CLI実行キーワード（特定のAIツール名を含む → code扱い）
+  // CLI実行キーワード（Codexを含む → code扱い）
   const cliExecKeywords = [
-    'claude code', 'クロードコード', 'クロード', 'claude',
-    'gemini cli', 'ジェミニ', 'codex', 'コデックス',
+    'codex', 'コデックス',
     '実行して', '起動して', '使って', '動かして', '走らせて', '立ち上げて',
     'run ', 'start ', 'launch ', 'execute ',
   ];
-  const hasCliName = ['claude', 'クロード', 'gemini', 'ジェミニ', 'codex', 'コデックス'].some((k) => input.includes(k));
+  const hasCliName = ['codex', 'コデックス'].some((k) => input.includes(k));
   const hasExecVerb = ['実行', '起動', '使って', '動かして', '走らせ', '立ち上げ', 'run', 'start', 'launch', 'execute'].some((k) => input.includes(k));
   if (hasCliName && hasExecVerb) return 'code';
 
@@ -194,14 +242,14 @@ export function classifyTask(userInput: string): TaskCategory {
 /**
  * 接続確認。llama-server（/health）とOllama（/api/tags）両方に対応。
  */
-export async function checkOllamaConnection(baseUrl: string): Promise<{
+export async function checkOllamaConnection(baseUrl: string, timeoutMs = 5000): Promise<{
   available: boolean;
   models: string[];
   error?: string;
 }> {
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const apiType = detectApiType(baseUrl);
 
     if (apiType === 'openai') {
@@ -246,7 +294,7 @@ export async function ollamaChat(
   messages: OllamaMessage[],
   timeoutMs = 60000,
   externalSignal?: AbortSignal,
-  maxTokens = 512,
+  maxTokens = DEFAULT_LOCAL_MAX_TOKENS,
   _retried = false,
 ): Promise<{ success: boolean; content: string; error?: string }> {
   try {
@@ -264,23 +312,27 @@ export async function ollamaChat(
     if (apiType === 'openai') {
       // llama-server: OpenAI互換 /v1/chat/completions
       url = `${config.baseUrl}/v1/chat/completions`;
-      const req: OpenAIChatRequest = {
+      const req = withOpenAIChatTemplateOptions({
         model: config.model,
         messages,
         stream: false,
-        temperature: 0.7,
+        temperature: 0.4,
         max_tokens: maxTokens,
-      };
+      });
       body = JSON.stringify(req);
     } else {
       // Ollama: /api/chat
       url = `${config.baseUrl}/api/chat`;
-      const req: OllamaChatRequest = {
+      const req = withOllamaThinkingOptions({
         model: config.model,
         messages,
         stream: false,
-        options: { temperature: 0.7, num_predict: maxTokens },
-      };
+        options: {
+          temperature: 0.4,
+          num_ctx: DEFAULT_LOCAL_CONTEXT_TOKENS,
+          num_predict: maxTokens,
+        },
+      });
       body = JSON.stringify(req);
     }
 
@@ -348,6 +400,7 @@ export async function ollamaChatStream(
   timeoutMs = 120000,
   externalSignal?: AbortSignal,
   _retried = false,
+  maxTokens = DEFAULT_LOCAL_MAX_TOKENS,
 ): Promise<{ success: boolean; content?: string; error?: string }> {
   const apiType = detectApiType(config.baseUrl);
   const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
@@ -357,28 +410,32 @@ export async function ollamaChatStream(
 
   if (apiType === 'openai') {
     url = `${config.baseUrl}/v1/chat/completions`;
-    const req: OpenAIChatRequest = {
+    const req = withOpenAIChatTemplateOptions({
       model: config.model,
       messages,
       stream: true,
-      temperature: 0.7,
-      max_tokens: 2048,
-    };
+      temperature: 0.4,
+      max_tokens: maxTokens,
+    });
     body = JSON.stringify(req);
   } else {
     url = `${config.baseUrl}/api/chat`;
-    const req: OllamaChatRequest = {
+    const req = withOllamaThinkingOptions({
       model: config.model,
       messages,
       stream: true,
-      options: { temperature: 0.7, num_predict: 2048 },
-    };
+      options: {
+        temperature: 0.4,
+        num_ctx: DEFAULT_LOCAL_CONTEXT_TOKENS,
+        num_predict: maxTokens,
+      },
+    });
     body = JSON.stringify(req);
   }
 
   // React Native: XMLHttpRequest でストリーミング
   if (isReactNative) {
-    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried);
+    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried, maxTokens);
   }
 
   // Web: fetch + ReadableStream
@@ -419,7 +476,7 @@ export async function ollamaChatStream(
         } catch {}
       }
       if (fullContent) {
-        onChunk(fullContent, true);
+        safeEmitChunk(onChunk, fullContent, true);
         return { success: true, content: fullContent };
       }
       return { success: false, error: 'ReadableStream not supported and fallback parse failed' };
@@ -428,28 +485,46 @@ export async function ollamaChatStream(
     const decoder = new TextDecoder();
     let buffer = '';
     const MAX_BUFFER_SIZE = 102400;
+    let emittedChunks = 0;
+    let emittedDone = false;
+    const handleChunk = (text: string, done: boolean) => {
+      if (text) emittedChunks += 1;
+      if (done) emittedDone = true;
+      safeEmitChunk(onChunk, text, done);
+    };
 
     try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      if (buffer.length > MAX_BUFFER_SIZE) {
-        const lastNewline = buffer.lastIndexOf('\n');
-        buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 1) : '';
-      }
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > MAX_BUFFER_SIZE) {
+          const lastNewline = buffer.lastIndexOf('\n');
+          buffer = lastNewline >= 0 ? buffer.slice(lastNewline + 1) : '';
+        }
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
 
-      for (const line of lines) {
-        parseSSELine(line, apiType, onChunk);
+        for (const line of lines) {
+          parseSSELine(line, apiType, handleChunk);
+        }
       }
-    }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        parseSSELine(buffer, apiType, handleChunk);
+      }
     } finally {
       clearTimeout(timer);
     }
 
+    if (emittedChunks === 0) {
+      return {
+        success: false,
+        error: 'Local LLM returned an empty response. The model may have crashed or returned an unexpected stream format.',
+      };
+    }
+    if (!emittedDone) safeEmitChunk(onChunk, '', true);
     return { success: true };
   } catch (err) {
     clearTimeout(timer);
@@ -465,7 +540,7 @@ export async function ollamaChatStream(
     if (!_retried) {
       const check = await checkOllamaConnection(config.baseUrl);
       if (check.available) {
-        return ollamaChatStream(config, messages, onChunk, timeoutMs, externalSignal, true);
+        return ollamaChatStream(config, messages, onChunk, timeoutMs, externalSignal, true, maxTokens);
       }
     }
 
@@ -498,7 +573,10 @@ function parseSSELine(
   } else {
     try {
       const chunk = JSON.parse(trimmed) as OllamaStreamChunk;
-      onChunk(chunk.message.content, chunk.done);
+      const content = chunk.message?.content ?? '';
+      const isDone = chunk.done === true;
+      if (content) onChunk(content, isDone);
+      else if (isDone) onChunk('', true);
     } catch { /* skip */ }
   }
 }
@@ -516,88 +594,200 @@ function xhrStream(
   externalSignal?: AbortSignal,
   baseUrl?: string,
   _retried = false,
+  maxTokens = 1024,
 ): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
     let lastIndex = 0;
+    let lineBuffer = '';
     let settled = false;
+    let emittedChunks = 0;
+    let progressTimer: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | null = null;
+
+    const handleChunk = (text: string, done: boolean) => {
+      if (settled) return;
+      if (text) emittedChunks += 1;
+      safeEmitChunk(onChunk, text, done);
+    };
 
     const finish = (result: { success: boolean; error?: string }) => {
       if (settled) return;
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+        progressTimer = null;
+      }
+      if (abortHandler && externalSignal) {
+        externalSignal.removeEventListener('abort', abortHandler);
+        abortHandler = null;
+      }
       settled = true;
       resolve(result);
     };
 
-    xhr.open('POST', url);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.timeout = timeoutMs;
+    let xhr: XMLHttpRequest;
+    try {
+      xhr = new XMLHttpRequest();
+    } catch (err) {
+      finish({ success: false, error: errorMessage(err) });
+      return;
+    }
+
+    const failFromException = (err: unknown) => {
+      if (settled) return;
+      finish({ success: false, error: errorMessage(err) });
+      try {
+        xhr.abort();
+      } catch {}
+    };
+
+    try {
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.timeout = timeoutMs;
+    } catch (err) {
+      failFromException(err);
+      return;
+    }
 
     if (externalSignal) {
       if (externalSignal.aborted) { finish({ success: false, error: 'Aborted' }); return; }
-      externalSignal.addEventListener('abort', () => { xhr.abort(); }, { once: true });
+      abortHandler = () => {
+        if (settled) return;
+        try {
+          xhr.abort();
+        } catch (err) {
+          failFromException(err);
+        }
+      };
+      externalSignal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    // Throttle onprogress to prevent UI thread saturation
-    let progressTimer: ReturnType<typeof setTimeout> | null = null;
-    const processNewData = () => {
+    const processNewData = (flush = false) => {
+      if (settled) return;
       const text = xhr.responseText;
-      if (!text || text.length <= lastIndex) return;
+      if (!text || text.length <= lastIndex) {
+        if (flush && lineBuffer) {
+          parseSSELine(lineBuffer, apiType, handleChunk);
+          lineBuffer = '';
+        }
+        return;
+      }
 
       const newData = text.slice(lastIndex);
       lastIndex = text.length;
 
-      const lines = newData.split('\n');
+      const lines = (lineBuffer + newData).split('\n');
+      if (!flush) {
+        lineBuffer = lines.pop() ?? '';
+      } else {
+        lineBuffer = '';
+      }
       for (const line of lines) {
-        parseSSELine(line, apiType, onChunk);
+        parseSSELine(line, apiType, handleChunk);
+      }
+    };
+    const processNewDataSafely = (flush = false): boolean => {
+      try {
+        processNewData(flush);
+        return true;
+      } catch (err) {
+        failFromException(err);
+        return false;
       }
     };
 
+    // Throttle onprogress to prevent UI thread saturation
     xhr.onprogress = () => {
+      if (settled) return;
       if (progressTimer) return; // Already scheduled
       progressTimer = setTimeout(() => {
         progressTimer = null;
-        processNewData();
-      }, 80);
+        if (settled) return;
+        processNewDataSafely();
+      }, XHR_PROGRESS_FLUSH_MS);
     };
 
     xhr.onload = () => {
+      if (settled) return;
       if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
       if (xhr.status < 200 || xhr.status >= 300) {
+        if (xhr.status === 503 && !_retried && baseUrl && !(externalSignal?.aborted)) {
+          waitForLocalLlmReady(baseUrl, Math.min(timeoutMs, 120000), externalSignal).then((ready) => {
+            if (settled) return;
+            if (ready) {
+              xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true, maxTokens)
+                .then(finish, failFromException);
+            } else {
+              finish({ success: false, error: 'HTTP 503: local LLM is still loading or failed to load the model' });
+            }
+          }, failFromException);
+          return;
+        }
         finish({ success: false, error: `HTTP ${xhr.status}` });
         return;
       }
       // Process any remaining data
-      processNewData();
-      onChunk('', true);
+      if (!processNewDataSafely(true)) return;
+      if (emittedChunks === 0) {
+        finish({
+          success: false,
+          error: 'Local LLM returned an empty response. The model may have crashed or returned an unexpected stream format.',
+        });
+        return;
+      }
+      handleChunk('', true);
       finish({ success: true });
     };
 
     xhr.onerror = () => {
+      if (settled) return;
       // Connection-level error — retry once if server is still alive (and not already retried)
       if (!_retried && baseUrl && !(externalSignal?.aborted)) {
         checkOllamaConnection(baseUrl).then((check) => {
+          if (settled) return;
           if (check.available) {
-            xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true)
-              .then(finish);
+            xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, baseUrl, true, maxTokens)
+              .then(finish, failFromException);
           } else {
             finish({ success: false, error: 'XHR network error' });
           }
-        });
+        }, failFromException);
       } else {
         finish({ success: false, error: 'XHR network error' });
       }
     };
 
     xhr.ontimeout = () => {
+      if (settled) return;
       finish({ success: false, error: 'Timeout. The model may be too large.' });
     };
 
     xhr.onabort = () => {
+      if (settled) return;
       finish({ success: false, error: 'Aborted' });
     };
 
-    xhr.send(body);
+    try {
+      xhr.send(body);
+    } catch (err) {
+      failFromException(err);
+    }
   });
+}
+
+async function waitForLocalLlmReady(
+  baseUrl: string,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (externalSignal?.aborted) return false;
+    const check = await checkOllamaConnection(baseUrl);
+    if (check.available) return true;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return false;
 }
 
 // ─── AI Orchestrator ──────────────────────────────────────────────────────────
@@ -607,7 +797,7 @@ function xhrStream(
  *
  * フロー:
  * 1. LLMベースのインテントルーターでユーザー意図を解析
- * 2. 最適なツールを選択（Claude Code / Gemini CLI / Codex / ローカルLLM / Shell）
+ * 2. 最適なツールを選択（Codex / ローカルLLM / Shell）
  * 3. ツール未インストールの場合、セットアップを提案
  * 4. LLM無効時はキーワードベースにフォールバック
  */
@@ -619,7 +809,7 @@ export async function orchestrateTask(
   userProfileSummary?: string,
   customContext?: string,
   toolStatuses?: ToolStatus[],
-  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
+  defaultAgent?: 'codex',
 ): Promise<OrchestrationResult> {
   // LLMベースのインテントルーティング
   const routing = await routeIntent(userInput, config, toolStatuses ?? [], defaultAgent);
@@ -668,32 +858,12 @@ export async function orchestrateTask(
       } else {
         return {
           category: 'chat',
-          handledBy: 'claude',
-          delegatedCommand: buildClaudeCommand(userInput),
-          reasoning: `Local LLM error (${result.error}), falling back to Claude Code`,
+          handledBy: 'codex',
+          delegatedCommand: buildCodexCommand(userInput),
+          reasoning: `Local LLM error (${result.error}), falling back to Codex`,
           routingDecision: routing,
         };
       }
-    }
-
-    case 'claude-code': {
-      return {
-        category: 'code',
-        handledBy: 'claude',
-        delegatedCommand: buildClaudeCommand(userInput),
-        reasoning: routing.reason,
-        routingDecision: routing,
-      };
-    }
-
-    case 'gemini-cli': {
-      return {
-        category: 'research',
-        handledBy: 'gemini',
-        delegatedCommand: buildGeminiCommand(userInput),
-        reasoning: routing.reason,
-        routingDecision: routing,
-      };
     }
 
     case 'codex': {
@@ -709,8 +879,8 @@ export async function orchestrateTask(
     default: {
       return {
         category: 'unknown',
-        handledBy: 'claude',
-        delegatedCommand: buildClaudeCommand(userInput),
+        handledBy: 'codex',
+        delegatedCommand: buildCodexCommand(userInput),
         reasoning: routing.reason,
         routingDecision: routing,
       };
@@ -732,10 +902,14 @@ export async function orchestrateChatStream(
   userProfileSummary?: string,
   customContext?: string,
   toolStatuses?: ToolStatus[],
-  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
+  defaultAgent?: 'codex',
   externalSignal?: AbortSignal,
   forceLocal?: boolean,
 ): Promise<OrchestrationResult> {
+  const emitChunk = (text: string, done: boolean) => {
+    safeEmitChunk(onChunk, text, done);
+  };
+
   // ローカルモデル（127.0.0.1/localhost）またはforceLocal指定の場合はルーティングをスキップ
   // → double-inference（ルーティング用LLM呼び出し + 実際の応答用LLM呼び出し）を防止
   const isLocalEndpoint = config.baseUrl?.includes('127.0.0.1') || config.baseUrl?.includes('localhost');
@@ -747,17 +921,17 @@ export async function orchestrateChatStream(
       { role: 'user', content: userInput },
     ];
     // ストリーミング（RN: XHR, Web: ReadableStream）
-    const result = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
+    const result = await ollamaChatStream(config, messages, emitChunk, 120000, externalSignal);
     if (result.success) {
       return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Local model — routing skipped' };
     }
     // ストリーミング失敗時は非ストリーミングにフォールバック
     const fallback = await ollamaChat(config, messages, 60000, externalSignal);
     if (fallback.success && fallback.content) {
-      onChunk(fallback.content, true);
+      emitChunk(fallback.content, true);
       return { category: 'chat', handledBy: 'local_llm', response: fallback.content, reasoning: 'Local model — routing skipped' };
     }
-    onChunk('Could not connect to local LLM. Make sure llama-server is running.', true);
+    emitChunk('Could not connect to local LLM. Make sure llama-server is running.', true);
     return { category: 'chat', handledBy: 'local_llm', response: '', reasoning: 'Connection failed' };
   }
 
@@ -777,7 +951,7 @@ export async function orchestrateChatStream(
     const result = await orchestrateTask(userInput, config, conversationHistory, projectContext, userProfileSummary, customContext, toolStatuses, defaultAgent);
     // orchestrateTaskがlocal_llmで応答を返した場合はonChunk経由で渡す
     if (result.handledBy === 'local_llm' && result.response) {
-      onChunk(result.response, true);
+      emitChunk(result.response, true);
       return result;
     }
     return result;
@@ -797,7 +971,7 @@ export async function orchestrateChatStream(
   ];
 
   // ストリーミング（RN: XHR, Web: ReadableStream）
-  const streamResult = await ollamaChatStream(config, messages, onChunk, 120000, externalSignal);
+  const streamResult = await ollamaChatStream(config, messages, emitChunk, 120000, externalSignal);
   if (streamResult.success) {
     return {
       category: 'chat',
@@ -809,7 +983,7 @@ export async function orchestrateChatStream(
   // ストリーミング失敗時は非ストリーミングにフォールバック
   const fallback = await ollamaChat(config, messages, 60000, externalSignal);
   if (fallback.success && fallback.content) {
-    onChunk(fallback.content, true);
+    emitChunk(fallback.content, true);
     return {
       category: 'chat',
       handledBy: 'local_llm',
@@ -819,23 +993,13 @@ export async function orchestrateChatStream(
 
   return {
     category: 'chat',
-    handledBy: 'claude',
-    delegatedCommand: buildClaudeCommand(userInput),
-    reasoning: `Local LLM error (${fallback.error}), falling back to Claude Code`,
+    handledBy: 'codex',
+    delegatedCommand: buildCodexCommand(userInput),
+    reasoning: `Local LLM error (${fallback.error}), falling back to Codex`,
   };
 }
 
 // ─── Command Builders ─────────────────────────────────────────────────────────
-
-function buildClaudeCommand(userInput: string): string {
-  const escaped = userInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-  return `claude --print "${escaped}"`;
-}
-
-function buildGeminiCommand(userInput: string): string {
-  const escaped = userInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-  return `gemini -p "${escaped}"`;
-}
 
 function buildCodexCommand(userInput: string): string {
   const escaped = userInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
@@ -864,8 +1028,6 @@ export function getCategoryLabel(category: TaskCategory): string {
 export function getHandlerLabel(handler: OrchestrationResult['handledBy']): string {
   const labels: Record<OrchestrationResult['handledBy'], string> = {
     local_llm: 'Local LLM',
-    claude: 'Claude Code',
-    gemini: 'Gemini CLI',
     codex: 'Codex CLI',
   };
   return labels[handler];

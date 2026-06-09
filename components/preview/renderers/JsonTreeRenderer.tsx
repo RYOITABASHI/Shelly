@@ -21,7 +21,7 @@ const JsonNode = memo(function JsonNode({ keyName, value, depth }: { keyName?: s
     <View style={{ paddingLeft: depth > 0 ? 16 : 0 }}>
       <TouchableOpacity onPress={() => setExpanded(!expanded)} activeOpacity={0.7}>
         <Text style={[styles.nodeText, { color: colors.foreground }]}>
-          {keyName ? <Text style={{ color: '#3B82F6' }}>"{keyName}": </Text> : null}
+          {keyName ? <Text style={{ color: '#3B82F6' }}>{`"${keyName}": `}</Text> : null}
           <Text style={{ color: colors.muted }}>{expanded ? bracket[0] : `${bracket[0]}...${bracket[1]} (${entries.length})`}</Text>
         </Text>
       </TouchableOpacity>
@@ -36,7 +36,7 @@ const JsonNode = memo(function JsonNode({ keyName, value, depth }: { keyName?: s
 function JsonLeaf({ keyName, value, color }: { keyName?: string; value: string; color: string }) {
   return (
     <Text style={styles.nodeText}>
-      {keyName ? <Text style={{ color: '#3B82F6' }}>"{keyName}": </Text> : null}
+      {keyName ? <Text style={{ color: '#3B82F6' }}>{`"${keyName}": `}</Text> : null}
       <Text style={{ color }}>{value}</Text>
     </Text>
   );

@@ -19,6 +19,7 @@ build/
 # Logs
 *.log
 npm-debug.log*
+diagnostics/
 
 # OS
 .DS_Store

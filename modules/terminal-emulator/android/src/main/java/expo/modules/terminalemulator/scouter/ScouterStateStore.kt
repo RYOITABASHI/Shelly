@@ -5,10 +5,58 @@ import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
+data class ScouterWidgetConversation(
+    val lastPrompt: String?,
+    val lastPromptAt: Long?,
+    val lastAnswer: String?,
+    val lastAnswerAt: Long?,
+    val lastApproval: String?,
+    val lastApprovalAt: Long?,
+    val widgetPrompt: String?,
+    val widgetPromptAt: Long?,
+    val widgetStatus: String?,
+    val widgetStatusAt: Long?,
+    val widgetError: String?,
+    val choiceOptions: List<ChoiceOption> = emptyList()
+)
+
+data class ScouterWidgetCodexBinding(
+    val codexSessionId: String?,
+    val ptySessionId: String?,
+    val shellySessionId: String?,
+    val cwd: String?,
+    val updatedAt: Long
+)
+
+data class ScouterWidgetPendingPrompt(
+    val prompt: String,
+    val queuedAt: Long,
+    val codexSessionId: String?,
+    val ptySessionId: String?,
+    val shellySessionId: String?
+)
+
+data class ScouterWidgetPendingPromptTarget(
+    val queuedAt: Long,
+    val codexSessionId: String?,
+    val ptySessionId: String?,
+    val shellySessionId: String?
+)
+
+data class ScouterWidgetPendingApproval(
+    val decision: String,
+    val queuedAt: Long,
+    val approvalAt: Long?,
+    val approvalText: String?,
+    val codexSessionId: String?,
+    val ptySessionId: String?,
+    val shellySessionId: String?
+)
+
 class ScouterStateStore(context: Context) {
     private val prefs = context.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
     private val helperStateFile = File(context.filesDir, "home/.scouter-state.json")
-    private val lock = Any()
+    private val lock = STORE_LOCK
 
     fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
 
@@ -39,6 +87,9 @@ class ScouterStateStore(context: Context) {
             val previous = all[event.sessionId]
             val snapshot = event.toSnapshot(previous)
             all[event.sessionId] = snapshot
+            appendRecentEventLocked(event)
+            expireStaleWidgetPromptLocked()
+            markWidgetPromptAnsweredLocked(event)
             writeAll(all)
             writeHelperStateLocked(all)
             return snapshot
@@ -59,17 +110,434 @@ class ScouterStateStore(context: Context) {
 
     fun clearSnapshots() {
         synchronized(lock) {
-            prefs.edit().putString(KEY_SNAPSHOTS, "[]").commit()
+            prefs.edit()
+                .putString(KEY_SNAPSHOTS, "[]")
+                .putString(KEY_RECENT_EVENTS, "[]")
+                .commit()
             writeHelperStateLocked(emptyMap())
         }
     }
 
-    fun debugJson(): JSONObject = JSONObject().apply {
-        put("enabled", isEnabled())
-        put("port", getRuntimePort())
-        put("sessions", JSONArray().also { arr ->
-            all().forEach { arr.put(it.toJson()) }
-        })
+    fun debugJson(): JSONObject {
+        val recentEvents = readRecentEventJsons()
+        return JSONObject().apply {
+            put("enabled", isEnabled())
+            put("port", getRuntimePort())
+            put("recentEventCount", recentEvents.size)
+            put("sessions", JSONArray().also { arr ->
+                all().forEach { arr.put(it.toJson()) }
+            })
+            put("recentEvents", JSONArray().also { arr ->
+                recentEvents.forEach { arr.put(it) }
+            })
+            put("widgetConversation", widgetConversation().toJson())
+        }
+    }
+
+    fun recordWidgetPromptQueued(prompt: String) {
+        val now = System.currentTimeMillis()
+        prefs.edit()
+            .putString(KEY_WIDGET_PROMPT, prompt.take(MAX_WIDGET_TEXT_LENGTH))
+            .putLong(KEY_WIDGET_PROMPT_AT, now)
+            .putString(KEY_WIDGET_STATUS, "queued")
+            .putLong(KEY_WIDGET_STATUS_AT, now)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperState()
+    }
+
+    fun recordWidgetPromptPending(prompt: String) {
+        val now = System.currentTimeMillis()
+        val binding = widgetCodexBinding()
+        prefs.edit()
+            .putString(KEY_WIDGET_PROMPT, prompt.take(MAX_WIDGET_TEXT_LENGTH))
+            .putString(KEY_WIDGET_PENDING_PROMPT, prompt)
+            .putLong(KEY_WIDGET_PROMPT_AT, now)
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_PENDING_TERMINAL)
+            .putLong(KEY_WIDGET_STATUS_AT, now)
+            .putString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, binding?.codexSessionId?.takeIf { it.isNotBlank() })
+            .putString(KEY_WIDGET_PENDING_PTY_SESSION_ID, binding?.ptySessionId?.takeIf { it.isNotBlank() })
+            .putString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, binding?.shellySessionId?.takeIf { it.isNotBlank() })
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperState()
+    }
+
+    fun recordWidgetPromptFailed(message: String) {
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, "failed")
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .commit()
+        writeHelperState()
+    }
+
+    fun recordWidgetChoicePending(message: String, options: List<ChoiceOption> = emptyList()) {
+        val editor = prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_CHOICE_PENDING)
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+        if (options.isEmpty()) {
+            editor.remove(KEY_WIDGET_CHOICE_OPTIONS)
+        } else {
+            editor.putString(KEY_WIDGET_CHOICE_OPTIONS, ChoiceOption.listToJson(options).toString())
+        }
+        editor.commit()
+        writeHelperState()
+    }
+
+    // Records that a numbered choice was written to the bound terminal so the
+    // widget pills stop re-firing (mirrors recordWidgetApprovalDecision).
+    fun recordWidgetChoiceSelected(index: Int) {
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_CHOICE_SENT)
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .putString(KEY_WIDGET_ERROR, "Sent choice $index to Codex")
+            .remove(KEY_WIDGET_CHOICE_OPTIONS)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .commit()
+        writeHelperState()
+    }
+
+    fun recordWidgetApprovalPending(decision: String): Boolean {
+        val normalized = normalizeApprovalDecision(decision)
+        val now = System.currentTimeMillis()
+        val binding = widgetCodexBinding()
+        if (binding?.codexSessionId.isNullOrBlank() || binding?.ptySessionId.isNullOrBlank()) {
+            return false
+        }
+        val approval = latestApprovalForSession(binding?.codexSessionId) ?: return false
+        val approvalAt = approval.optLong("timestamp", 0L).takeIf { it > 0L } ?: return false
+        val approvalText = approvalTextFromEvent(approval)
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, approvalPendingStatus(normalized))
+            .putLong(KEY_WIDGET_STATUS_AT, now)
+            .putString(KEY_WIDGET_PENDING_APPROVAL_DECISION, normalized)
+            .putLong(KEY_WIDGET_PENDING_APPROVAL_AT, approvalAt)
+            .putString(KEY_WIDGET_PENDING_APPROVAL_TEXT, approvalText?.take(MAX_WIDGET_TEXT_LENGTH))
+            .putString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, binding?.codexSessionId?.takeIf { it.isNotBlank() })
+            .putString(KEY_WIDGET_PENDING_PTY_SESSION_ID, binding?.ptySessionId?.takeIf { it.isNotBlank() })
+            .putString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, binding?.shellySessionId?.takeIf { it.isNotBlank() })
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperState()
+        return true
+    }
+
+    fun recordWidgetApprovalDecision(decision: String) {
+        val normalized = normalizeApprovalDecision(decision)
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, "approval_$normalized")
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperState()
+    }
+
+    fun recordWidgetApprovalFailed(message: String) {
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_APPROVAL_FAILED)
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .commit()
+        writeHelperState()
+    }
+
+    fun recordWidgetApprovalResolved() {
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperState()
+    }
+
+    fun consumeWidgetPromptPending(
+        codexSessionId: String?,
+        ptySessionId: String?,
+        shellySessionId: String?
+    ): ScouterWidgetPendingPrompt? {
+        synchronized(lock) {
+            if (expireStaleWidgetPromptLocked()) return null
+            val status = prefs.getString(KEY_WIDGET_STATUS, null)
+            val statusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+            val now = System.currentTimeMillis()
+            val retrySending = status == WIDGET_STATUS_SENDING &&
+                (statusAt <= 0L || now - statusAt > WIDGET_SENDING_RETRY_AFTER_MS)
+            if (status != WIDGET_STATUS_PENDING_TERMINAL && !retrySending) return null
+            val prompt = prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)?.ifBlank { null }
+                ?: return null
+            val queuedAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L } ?: now
+            val pendingCodexSessionId = prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null }
+            val pendingPtySessionId = prefs.getString(KEY_WIDGET_PENDING_PTY_SESSION_ID, null)?.ifBlank { null }
+            val pendingShellySessionId = prefs.getString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, null)?.ifBlank { null }
+            if (!pendingTargetMatches(
+                    pendingCodexSessionId,
+                    pendingPtySessionId,
+                    pendingShellySessionId,
+                    codexSessionId,
+                    ptySessionId,
+                    shellySessionId
+                )
+            ) {
+                return null
+            }
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_SENDING)
+                .putLong(KEY_WIDGET_STATUS_AT, now)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+            writeHelperStateLocked(readAllMutable())
+            return ScouterWidgetPendingPrompt(
+                prompt,
+                queuedAt,
+                pendingCodexSessionId,
+                pendingPtySessionId,
+                pendingShellySessionId
+            )
+        }
+    }
+
+    fun widgetPendingPromptTarget(): ScouterWidgetPendingPromptTarget? {
+        synchronized(lock) {
+            if (expireStaleWidgetPromptLocked()) return null
+            val status = prefs.getString(KEY_WIDGET_STATUS, null)
+            if (status != WIDGET_STATUS_PENDING_TERMINAL && status != WIDGET_STATUS_SENDING) return null
+            prefs.getString(KEY_WIDGET_PENDING_PROMPT, null)?.ifBlank { null } ?: return null
+            val queuedAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+                .takeIf { it > 0L }
+                ?: System.currentTimeMillis()
+            return ScouterWidgetPendingPromptTarget(
+                queuedAt,
+                prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null },
+                prefs.getString(KEY_WIDGET_PENDING_PTY_SESSION_ID, null)?.ifBlank { null },
+                prefs.getString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, null)?.ifBlank { null }
+            )
+        }
+    }
+
+    fun consumeWidgetApprovalPending(
+        codexSessionId: String?,
+        ptySessionId: String?,
+        shellySessionId: String?
+    ): ScouterWidgetPendingApproval? {
+        synchronized(lock) {
+            if (expireStaleWidgetPromptLocked()) return null
+            val status = prefs.getString(KEY_WIDGET_STATUS, null)
+            val storedDecision = prefs.getString(KEY_WIDGET_PENDING_APPROVAL_DECISION, null)
+            val decision = firstNonBlank(storedDecision, approvalDecisionFromStatus(status))
+                ?.let(::normalizeApprovalDecision)
+                ?: return null
+            val statusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+            val now = System.currentTimeMillis()
+            val retrySending = status == approvalSendingStatus(decision) &&
+                (statusAt <= 0L || now - statusAt > WIDGET_SENDING_RETRY_AFTER_MS)
+            if (status != approvalPendingStatus(decision) && !retrySending) return null
+            val pendingCodexSessionId = prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null }
+            val pendingPtySessionId = prefs.getString(KEY_WIDGET_PENDING_PTY_SESSION_ID, null)?.ifBlank { null }
+            val pendingShellySessionId = prefs.getString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, null)?.ifBlank { null }
+            val currentBinding = widgetCodexBinding()
+            if (!approvalPendingTargetMatches(
+                    pendingCodexSessionId,
+                    pendingPtySessionId,
+                    pendingShellySessionId,
+                    codexSessionId,
+                    ptySessionId,
+                    shellySessionId,
+                    currentBinding
+                )
+            ) {
+                return null
+            }
+            val pendingApprovalAt = prefs.getLong(KEY_WIDGET_PENDING_APPROVAL_AT, 0L).takeIf { it > 0L }
+                ?: return null
+            val pendingApprovalText = prefs.getString(KEY_WIDGET_PENDING_APPROVAL_TEXT, null)?.ifBlank { null }
+            val latestApproval = latestApprovalForSession(pendingCodexSessionId ?: codexSessionId) ?: return null
+            val latestApprovalAt = latestApproval.optLong("timestamp", 0L).takeIf { it > 0L } ?: return null
+            val latestApprovalText = approvalTextFromEvent(latestApproval)
+            if (
+                latestApprovalAt != pendingApprovalAt ||
+                !approvalTextMatches(pendingApprovalText, latestApprovalText)
+            ) {
+                return null
+            }
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, approvalSendingStatus(decision))
+                .putLong(KEY_WIDGET_STATUS_AT, now)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+            writeHelperStateLocked(readAllMutable())
+            return ScouterWidgetPendingApproval(
+                decision,
+                statusAt.takeIf { it > 0L } ?: now,
+                pendingApprovalAt,
+                pendingApprovalText,
+                pendingCodexSessionId,
+                pendingPtySessionId,
+                pendingShellySessionId
+            )
+        }
+    }
+
+    fun widgetPendingApprovalTarget(): ScouterWidgetPendingPromptTarget? {
+        synchronized(lock) {
+            if (expireStaleWidgetPromptLocked()) return null
+            val status = prefs.getString(KEY_WIDGET_STATUS, null)
+            val decision = firstNonBlank(
+                prefs.getString(KEY_WIDGET_PENDING_APPROVAL_DECISION, null),
+                approvalDecisionFromStatus(status)
+            ) ?: return null
+            if (status != approvalPendingStatus(decision) && status != approvalSendingStatus(decision)) return null
+            prefs.getLong(KEY_WIDGET_PENDING_APPROVAL_AT, 0L).takeIf { it > 0L } ?: return null
+            val queuedAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+                .takeIf { it > 0L }
+                ?: System.currentTimeMillis()
+            return ScouterWidgetPendingPromptTarget(
+                queuedAt,
+                prefs.getString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, null)?.ifBlank { null },
+                prefs.getString(KEY_WIDGET_PENDING_PTY_SESSION_ID, null)?.ifBlank { null },
+                prefs.getString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, null)?.ifBlank { null }
+            )
+        }
+    }
+
+    fun widgetConversation(codexSessionId: String? = widgetCodexBinding()?.codexSessionId): ScouterWidgetConversation {
+        synchronized(lock) {
+            expireStaleWidgetPromptLocked()
+            val recent = readRecentEventJsons()
+                .filter { event -> matchesCodexSession(event.optString("sessionId"), codexSessionId) }
+                .sortedBy { it.optLong("timestamp", 0L) }
+            val lastPrompt = recent.lastOrNull { event ->
+                event.optString("source") == ScouterSource.CODEX.name &&
+                    event.optString("eventType") == ScouterEventType.USER_PROMPT.name &&
+                    event.optString("lastMessage").isNotBlank()
+            }
+            val lastAnswer = recent.lastOrNull { event ->
+                isCodexAnswerEvent(event)
+            }
+            val lastApproval = recent.lastOrNull { event ->
+                isCodexApprovalEvent(event)
+            }
+            return ScouterWidgetConversation(
+                lastPrompt = lastPrompt?.optString("lastMessage")?.ifBlank { null },
+                lastPromptAt = lastPrompt?.optLong("timestamp", 0L)?.takeIf { it > 0L },
+                lastAnswer = lastAnswer?.optString("lastMessage")?.ifBlank { null },
+                lastAnswerAt = lastAnswer?.optLong("timestamp", 0L)?.takeIf { it > 0L },
+                lastApproval = firstNonBlank(
+                    lastApproval?.optString("lastMessage"),
+                    lastApproval?.optString("commandSummary"),
+                    lastApproval?.optString("toolName")
+                ),
+                lastApprovalAt = lastApproval?.optLong("timestamp", 0L)?.takeIf { it > 0L },
+                widgetPrompt = prefs.getString(KEY_WIDGET_PROMPT, null)?.ifBlank { null },
+                widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L },
+                widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)?.ifBlank { null },
+                widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L).takeIf { it > 0L },
+                widgetError = prefs.getString(KEY_WIDGET_ERROR, null)?.ifBlank { null },
+                choiceOptions = if (prefs.getString(KEY_WIDGET_STATUS, null) == WIDGET_STATUS_CHOICE_PENDING) {
+                    ChoiceOption.listFromJson(prefs.getString(KEY_WIDGET_CHOICE_OPTIONS, null))
+                } else {
+                    emptyList()
+                }
+            )
+        }
+    }
+
+    fun setWidgetCodexBinding(
+        codexSessionId: String?,
+        ptySessionId: String?,
+        shellySessionId: String?,
+        cwd: String?
+    ) {
+        if (ptySessionId.isNullOrBlank()) {
+            clearWidgetCodexBinding()
+            return
+        }
+        prefs.edit()
+            .putString(KEY_WIDGET_CODEX_SESSION_ID, codexSessionId?.takeIf { it.isNotBlank() })
+            .putString(KEY_WIDGET_PTY_SESSION_ID, ptySessionId)
+            .putString(KEY_WIDGET_SHELLY_SESSION_ID, shellySessionId?.takeIf { it.isNotBlank() })
+            .putString(KEY_WIDGET_CWD, cwd?.takeIf { it.isNotBlank() })
+            .putLong(KEY_WIDGET_BINDING_AT, System.currentTimeMillis())
+            .commit()
+        writeHelperState()
+    }
+
+    fun clearWidgetCodexBinding() {
+        prefs.edit()
+            .remove(KEY_WIDGET_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_CWD)
+            .remove(KEY_WIDGET_BINDING_AT)
+            .commit()
+        writeHelperState()
+    }
+
+    fun widgetCodexBinding(): ScouterWidgetCodexBinding? {
+        synchronized(lock) {
+            val ptySessionId = prefs.getString(KEY_WIDGET_PTY_SESSION_ID, null)?.ifBlank { null }
+                ?: return null
+            return ScouterWidgetCodexBinding(
+                codexSessionId = prefs.getString(KEY_WIDGET_CODEX_SESSION_ID, null)?.ifBlank { null },
+                ptySessionId = ptySessionId,
+                shellySessionId = prefs.getString(KEY_WIDGET_SHELLY_SESSION_ID, null)?.ifBlank { null },
+                cwd = prefs.getString(KEY_WIDGET_CWD, null)?.ifBlank { null },
+                updatedAt = prefs.getLong(KEY_WIDGET_BINDING_AT, 0L)
+            )
+        }
     }
 
     private fun readAllMutable(): MutableMap<String, SessionSnapshot> {
@@ -92,6 +560,231 @@ class ScouterStateStore(context: Context) {
         prefs.edit().putString(KEY_SNAPSHOTS, arr.toString()).commit()
     }
 
+    private fun appendRecentEventLocked(event: ScouterEvent) {
+        if (!shouldKeepRecentEvent(event)) return
+        val events = readRecentEventJsons()
+        events.add(event.toJson())
+        writeRecentEventsLocked(events)
+    }
+
+    private fun readRecentEventJsons(): MutableList<JSONObject> {
+        val raw = prefs.getString(KEY_RECENT_EVENTS, "[]") ?: "[]"
+        val arr = runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
+        val out = mutableListOf<JSONObject>()
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let(out::add)
+        }
+        return out
+    }
+
+    private fun writeRecentEventsLocked(events: List<JSONObject>) {
+        val byEventId = LinkedHashMap<String, JSONObject>()
+        events
+            .sortedBy { it.optLong("timestamp", 0L) }
+            .forEach { event ->
+                val id = event.optString("eventId").ifBlank {
+                    listOf(
+                        event.optString("sessionId"),
+                        event.optString("eventType"),
+                        event.optLong("timestamp", 0L).toString(),
+                        event.optString("lastMessage"),
+                        event.optString("toolName")
+                    ).joinToString("|")
+                }
+                byEventId[id] = event
+            }
+        val arr = JSONArray()
+        byEventId.values
+            .sortedBy { it.optLong("timestamp", 0L) }
+            .takeLast(MAX_RECENT_EVENTS)
+            .forEach { arr.put(it) }
+        prefs.edit().putString(KEY_RECENT_EVENTS, arr.toString()).commit()
+    }
+
+    private fun markWidgetPromptAnsweredLocked(event: ScouterEvent) {
+        if (event.source != ScouterSource.CODEX) return
+        val widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)
+        val widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+        val widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+        val widgetPrompt = prefs.getString(KEY_WIDGET_PROMPT, null)
+        if (
+            widgetStatus == "failed" &&
+            (widgetStatusAt <= 0L || event.timestamp >= widgetStatusAt) &&
+            (event.eventType == ScouterEventType.USER_PROMPT || isCodexAnswerEvent(event))
+        ) {
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
+                .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+        }
+        if (
+            widgetStatus == WIDGET_STATUS_APPROVAL_FAILED &&
+            (widgetStatusAt <= 0L || event.timestamp >= widgetStatusAt) &&
+            (event.eventType == ScouterEventType.USER_PROMPT || isCodexAnswerEvent(event) || isCodexApprovalEvent(event))
+        ) {
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
+                .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+        }
+        if (
+            widgetStatus == WIDGET_STATUS_CHOICE_PENDING &&
+            (widgetStatusAt <= 0L || event.timestamp >= widgetStatusAt) &&
+            (
+                event.eventType == ScouterEventType.USER_PROMPT ||
+                    event.eventType == ScouterEventType.PRE_TOOL_USE ||
+                    event.eventType == ScouterEventType.POST_TOOL_USE ||
+                    event.eventType == ScouterEventType.POST_TOOL_USE_FAILURE ||
+                    isCodexAnswerEvent(event) ||
+                    isCodexApprovalEvent(event)
+                )
+        ) {
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
+                .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_CHOICE_OPTIONS)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+        }
+        if (
+            widgetStatus in WIDGET_AWAITING_ANSWER_STATUSES &&
+            event.eventType == ScouterEventType.USER_PROMPT &&
+            widgetPromptAt > 0L &&
+            event.timestamp >= widgetPromptAt &&
+            widgetPromptMatches(widgetPrompt, event.lastMessage)
+        ) {
+            prefs.edit()
+                .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
+                .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_PENDING_PROMPT)
+                .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+                .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+                .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+                .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+                .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+                .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+                .remove(KEY_WIDGET_ERROR)
+                .commit()
+        }
+        if (!isCodexAnswerEvent(event)) return
+        if (widgetStatus !in WIDGET_AWAITING_ANSWER_STATUSES) return
+        val cutoff = maxOf(widgetPromptAt, widgetStatusAt)
+        if (cutoff <= 0L || event.timestamp < cutoff) return
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, "answered")
+            .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+    }
+
+    private fun expireStaleWidgetPromptLocked(now: Long = System.currentTimeMillis()): Boolean {
+        val status = prefs.getString(KEY_WIDGET_STATUS, null)
+        if (status !in WIDGET_EXPIRABLE_STATUSES) return false
+        val statusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L)
+        val promptAt = if (approvalDecisionFromStatus(status) != null) {
+            statusAt
+        } else {
+            prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L)
+                .takeIf { it > 0L }
+                ?: statusAt
+        }
+        if (promptAt <= 0L || now - promptAt <= WIDGET_PROMPT_EXPIRE_AFTER_MS) return false
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_EXPIRED)
+            .putLong(KEY_WIDGET_STATUS_AT, now)
+            .remove(KEY_WIDGET_PROMPT)
+            .remove(KEY_WIDGET_PROMPT_AT)
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_ERROR)
+            .commit()
+        writeHelperStateLocked(readAllMutable())
+        return true
+    }
+
+    private fun shouldKeepRecentEvent(event: ScouterEvent): Boolean {
+        if (event.source != ScouterSource.CODEX) return false
+        if (event.eventType == ScouterEventType.USER_PROMPT && !event.lastMessage.isNullOrBlank()) return true
+        if (isCodexAnswerEvent(event)) return true
+        if (event.eventType == ScouterEventType.PRE_TOOL_USE && !event.toolName.isNullOrBlank()) return true
+        if (event.eventType == ScouterEventType.POST_TOOL_USE && (!event.toolName.isNullOrBlank() || !event.commandSummary.isNullOrBlank())) return true
+        if (event.eventType == ScouterEventType.POST_TOOL_USE_FAILURE) return true
+        if (event.eventType == ScouterEventType.PERMISSION_REQUEST) return true
+        if (event.derivedStatus == ScouterStatus.WAITING_PERMISSION) return true
+        if (event.derivedStatus == ScouterStatus.ERROR) return true
+        return false
+    }
+
+    private fun isCodexAnswerEvent(event: ScouterEvent): Boolean {
+        return event.source == ScouterSource.CODEX &&
+            !event.lastMessage.isNullOrBlank() &&
+            event.eventType != ScouterEventType.USER_PROMPT &&
+            event.derivedStatus in WIDGET_ANSWER_STATUSES
+    }
+
+    private fun isCodexAnswerEvent(event: JSONObject): Boolean {
+        return event.optString("source") == ScouterSource.CODEX.name &&
+            event.optString("lastMessage").isNotBlank() &&
+            event.optString("eventType") != ScouterEventType.USER_PROMPT.name &&
+            event.optString("derivedStatus") in WIDGET_ANSWER_STATUS_NAMES
+    }
+
+    private fun isCodexApprovalEvent(event: ScouterEvent): Boolean {
+        return event.source == ScouterSource.CODEX &&
+            (
+                event.eventType == ScouterEventType.PERMISSION_REQUEST ||
+                    event.derivedStatus == ScouterStatus.WAITING_PERMISSION
+                ) &&
+            (
+                !event.lastMessage.isNullOrBlank() ||
+                    !event.commandSummary.isNullOrBlank() ||
+                    !event.toolName.isNullOrBlank()
+                )
+    }
+
+    private fun isCodexApprovalEvent(event: JSONObject): Boolean {
+        return event.optString("source") == ScouterSource.CODEX.name &&
+            (
+                event.optString("eventType") == ScouterEventType.PERMISSION_REQUEST.name ||
+                    event.optString("derivedStatus") == ScouterStatus.WAITING_PERMISSION.name
+                ) &&
+            (
+                event.optString("lastMessage").isNotBlank() ||
+                    event.optString("commandSummary").isNotBlank() ||
+                    event.optString("toolName").isNotBlank()
+                )
+    }
+
+    private fun latestApprovalForSession(codexSessionId: String?): JSONObject? {
+        return readRecentEventJsons()
+            .asSequence()
+            .filter { event -> matchesCodexSession(event.optString("sessionId"), codexSessionId) }
+            .filter { event -> isCodexApprovalEvent(event) }
+            .maxByOrNull { event -> event.optLong("timestamp", 0L) }
+    }
+
+    private fun approvalTextFromEvent(event: JSONObject): String? {
+        return firstNonBlank(
+            event.optString("lastMessage"),
+            event.optString("commandSummary"),
+            event.optString("toolName")
+        )
+    }
+
     private fun writeHelperState() {
         synchronized(lock) {
             writeHelperStateLocked(readAllMutable())
@@ -105,12 +798,18 @@ class ScouterStateStore(context: Context) {
             put("port", getRuntimePort())
             put("hookTokenPreview", if (token.isNotBlank()) token.take(6) + "…" else "")
             put("hookToken", token)
+            val recentEvents = readRecentEventJsons()
+            put("recentEventCount", recentEvents.size)
             put("sessions", JSONArray().also { arr ->
                 values.values.sortedByDescending { it.lastEventAt }.take(20).forEach { arr.put(it.toJson()) }
             })
+            put("recentEvents", JSONArray().also { arr ->
+                recentEvents.forEach { arr.put(it) }
+            })
         }
-        helperStateFile.parentFile?.mkdirs()
-        val tmp = File(helperStateFile.parentFile, helperStateFile.name + ".tmp")
+        val parent = helperStateFile.parentFile ?: return
+        parent.mkdirs()
+        val tmp = File(parent, "${helperStateFile.name}.${android.os.Process.myTid()}.${System.nanoTime()}.tmp")
         tmp.writeText(json.toString(2))
         if (!tmp.renameTo(helperStateFile)) {
             tmp.copyTo(helperStateFile, overwrite = true)
@@ -119,9 +818,174 @@ class ScouterStateStore(context: Context) {
     }
 
     companion object {
+        private val STORE_LOCK = Any()
         private const val KEY_ENABLED = "enabled"
         private const val KEY_TOKEN = "session_token"
         private const val KEY_PORT = "runtime_port"
         private const val KEY_SNAPSHOTS = "snapshots"
+        private const val KEY_RECENT_EVENTS = "recent_events"
+        private const val KEY_WIDGET_PROMPT = "widget_prompt"
+        private const val KEY_WIDGET_PENDING_PROMPT = "widget_pending_prompt"
+        private const val KEY_WIDGET_PENDING_APPROVAL_DECISION = "widget_pending_approval_decision"
+        private const val KEY_WIDGET_PENDING_APPROVAL_AT = "widget_pending_approval_at"
+        private const val KEY_WIDGET_PENDING_APPROVAL_TEXT = "widget_pending_approval_text"
+        private const val KEY_WIDGET_PROMPT_AT = "widget_prompt_at"
+        private const val KEY_WIDGET_STATUS = "widget_status"
+        private const val KEY_WIDGET_STATUS_AT = "widget_status_at"
+        private const val KEY_WIDGET_ERROR = "widget_error"
+        private const val KEY_WIDGET_CHOICE_OPTIONS = "widget_choice_options"
+        private const val KEY_WIDGET_CODEX_SESSION_ID = "widget_codex_session_id"
+        private const val KEY_WIDGET_PTY_SESSION_ID = "widget_pty_session_id"
+        private const val KEY_WIDGET_SHELLY_SESSION_ID = "widget_shelly_session_id"
+        private const val KEY_WIDGET_CWD = "widget_cwd"
+        private const val KEY_WIDGET_BINDING_AT = "widget_binding_at"
+        private const val KEY_WIDGET_PENDING_CODEX_SESSION_ID = "widget_pending_codex_session_id"
+        private const val KEY_WIDGET_PENDING_PTY_SESSION_ID = "widget_pending_pty_session_id"
+        private const val KEY_WIDGET_PENDING_SHELLY_SESSION_ID = "widget_pending_shelly_session_id"
+        private const val WIDGET_STATUS_PENDING_TERMINAL = "pending_terminal"
+        private const val WIDGET_STATUS_SENDING = "sending"
+        private const val WIDGET_STATUS_CHOICE_PENDING = "choice_pending"
+        private const val WIDGET_STATUS_CHOICE_SENT = "choice_sent"
+        private const val WIDGET_STATUS_OBSERVED = "observed"
+        private const val WIDGET_STATUS_EXPIRED = "expired"
+        private const val WIDGET_STATUS_APPROVAL_FAILED = "approval_failed"
+        private const val WIDGET_STATUS_APPROVAL_PENDING_PREFIX = "approval_pending_"
+        private const val WIDGET_STATUS_APPROVAL_SENDING_PREFIX = "approval_sending_"
+        private const val WIDGET_SENDING_RETRY_AFTER_MS = 90_000L
+        private const val WIDGET_PROMPT_EXPIRE_AFTER_MS = 2 * 60 * 1000L
+        private const val MAX_RECENT_EVENTS = 120
+        private const val MAX_WIDGET_TEXT_LENGTH = 500
+        private val WIDGET_ANSWER_STATUSES = setOf(
+            ScouterStatus.IDLE,
+            ScouterStatus.COMPLETED
+        )
+        private val WIDGET_ANSWER_STATUS_NAMES = WIDGET_ANSWER_STATUSES.map { it.name }.toSet()
+        private val WIDGET_AWAITING_ANSWER_STATUSES = setOf("queued", WIDGET_STATUS_SENDING)
+        private val WIDGET_EXPIRABLE_STATUSES = setOf(
+            WIDGET_STATUS_PENDING_TERMINAL,
+            WIDGET_STATUS_SENDING,
+            approvalPendingStatus("allow"),
+            approvalPendingStatus("deny"),
+            approvalSendingStatus("allow"),
+            approvalSendingStatus("deny")
+        )
+
+        fun normalizeApprovalDecision(decision: String): String = if (decision == "deny") "deny" else "allow"
+
+        fun approvalPendingStatus(decision: String): String =
+            WIDGET_STATUS_APPROVAL_PENDING_PREFIX + normalizeApprovalDecision(decision)
+
+        fun approvalSendingStatus(decision: String): String =
+            WIDGET_STATUS_APPROVAL_SENDING_PREFIX + normalizeApprovalDecision(decision)
+
+        fun approvalDecisionFromStatus(status: String?): String? = when (status) {
+            approvalPendingStatus("allow"), approvalSendingStatus("allow"), "approval_allow" -> "allow"
+            approvalPendingStatus("deny"), approvalSendingStatus("deny"), "approval_deny" -> "deny"
+            else -> null
+        }
+
+        fun approvalFailedStatus(): String = WIDGET_STATUS_APPROVAL_FAILED
+        fun choicePendingStatus(): String = WIDGET_STATUS_CHOICE_PENDING
     }
 }
+
+private fun ScouterWidgetConversation.toJson(): JSONObject = JSONObject().apply {
+    lastPrompt?.let { put("lastPrompt", it) }
+    lastPromptAt?.let { put("lastPromptAt", it) }
+    lastAnswer?.let { put("lastAnswer", it) }
+    lastAnswerAt?.let { put("lastAnswerAt", it) }
+    lastApproval?.let { put("lastApproval", it) }
+    lastApprovalAt?.let { put("lastApprovalAt", it) }
+    widgetPrompt?.let { put("widgetPrompt", it) }
+    widgetPromptAt?.let { put("widgetPromptAt", it) }
+    widgetStatus?.let { put("widgetStatus", it) }
+    widgetStatusAt?.let { put("widgetStatusAt", it) }
+    widgetError?.let { put("widgetError", it) }
+    if (choiceOptions.isNotEmpty()) put("choiceOptions", ChoiceOption.listToJson(choiceOptions))
+}
+
+private fun pendingTargetMatches(
+    pendingCodexSessionId: String?,
+    pendingPtySessionId: String?,
+    pendingShellySessionId: String?,
+    codexSessionId: String?,
+    ptySessionId: String?,
+    shellySessionId: String?
+): Boolean {
+    if (pendingPtySessionId.isNullOrBlank() &&
+        pendingShellySessionId.isNullOrBlank() &&
+        pendingCodexSessionId.isNullOrBlank()
+    ) {
+        return true
+    }
+    return (!pendingPtySessionId.isNullOrBlank() && pendingPtySessionId == ptySessionId) ||
+        (!pendingShellySessionId.isNullOrBlank() && pendingShellySessionId == shellySessionId) ||
+        sameCodexSession(pendingCodexSessionId, codexSessionId)
+}
+
+private fun approvalPendingTargetMatches(
+    pendingCodexSessionId: String?,
+    pendingPtySessionId: String?,
+    pendingShellySessionId: String?,
+    codexSessionId: String?,
+    ptySessionId: String?,
+    shellySessionId: String?,
+    currentBinding: ScouterWidgetCodexBinding?
+): Boolean {
+    if (pendingCodexSessionId.isNullOrBlank() || pendingPtySessionId.isNullOrBlank()) {
+        return false
+    }
+    if (!sameCodexSession(pendingCodexSessionId, codexSessionId)) return false
+    if (pendingPtySessionId == ptySessionId) {
+        return pendingShellySessionId.isNullOrBlank() || pendingShellySessionId == shellySessionId
+    }
+
+    return currentBinding != null &&
+        sameCodexSession(pendingCodexSessionId, currentBinding.codexSessionId) &&
+        currentBinding.ptySessionId == ptySessionId &&
+        (currentBinding.shellySessionId.isNullOrBlank() || currentBinding.shellySessionId == shellySessionId)
+}
+
+private fun firstNonBlank(vararg values: String?): String? {
+    return values.firstOrNull { !it.isNullOrBlank() }?.trim()
+}
+
+private fun matchesCodexSession(candidate: String?, expected: String?): Boolean {
+    val expectedValue = normalizeScouterCodexSessionId(expected) ?: return true
+    val candidateValue = normalizeScouterCodexSessionId(candidate) ?: return false
+    return candidateValue == expectedValue
+}
+
+private fun sameCodexSession(left: String?, right: String?): Boolean {
+    val leftValue = normalizeScouterCodexSessionId(left) ?: return false
+    val rightValue = normalizeScouterCodexSessionId(right) ?: return false
+    return leftValue == rightValue
+}
+
+private fun approvalTextMatches(expected: String?, actual: String?): Boolean {
+    val expectedValue = normalizeApprovalText(expected) ?: return false
+    val actualValue = normalizeApprovalText(actual) ?: return false
+    return expectedValue == actualValue
+}
+
+private fun normalizeApprovalText(value: String?): String? {
+    return value
+        ?.trim()
+        ?.replace(Regex("\\s+"), " ")
+        ?.takeIf { it.isNotBlank() }
+}
+
+private fun normalizeScouterCodexSessionId(sessionId: String?): String? {
+    val trimmed = sessionId?.trim().orEmpty()
+    if (trimmed.isBlank()) return null
+    return CODEX_SESSION_UUID_SUFFIX_RE.find(trimmed)?.groupValues?.getOrNull(1) ?: trimmed
+}
+
+private fun widgetPromptMatches(expected: String?, actual: String?): Boolean {
+    val expectedValue = expected?.trim()?.replace(Regex("\\s+"), " ")
+    val actualValue = actual?.trim()?.replace(Regex("\\s+"), " ")
+    return !expectedValue.isNullOrBlank() && expectedValue == actualValue
+}
+
+private val CODEX_SESSION_UUID_SUFFIX_RE =
+    Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")

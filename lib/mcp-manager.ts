@@ -4,8 +4,8 @@
  * MCP (Model Context Protocol) サーバー管理ライブラリ。
  *
  * Shellyから利用するMCPサーバーの定義・設定・状態管理。
- * Claude Code側の ~/.claude/settings.json への登録とは別に、
- * ローカルMCPサーバー（Serena等）のライフサイクル管理を担当。
+ * MCPクライアントへ貼り付ける設定生成と、ローカルMCPサーバー
+ * （Serena等）のライフサイクル管理を担当。
  */
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -36,8 +36,8 @@ export interface McpServerDef {
   remoteUrl?: string;
   /** npxパッケージ名（npx のみ） */
   npxPackage?: string;
-  /** Claude Code settings.json 用の mcpServers エントリ */
-  claudeConfig: {
+  /** MCP client settings 用の mcpServers エントリ */
+  clientConfig: {
     type: 'stdio' | 'sse' | 'http';
     command?: string;
     args?: string[];
@@ -61,7 +61,7 @@ export const MCP_CATALOG: McpServerDef[] = [
     iconColor: '#60A5FA',
     tags: ['docs', 'context', 'libraries'],
     npxPackage: '@upstash/context7-mcp@latest',
-    claudeConfig: {
+    clientConfig: {
       type: 'stdio',
       command: 'npx',
       args: ['-y', '@upstash/context7-mcp@latest'],
@@ -78,7 +78,7 @@ export const MCP_CATALOG: McpServerDef[] = [
     iconColor: '#818CF8',
     tags: ['expo', 'react-native', 'mobile'],
     remoteUrl: 'https://mcp.expo.dev/sse',
-    claudeConfig: {
+    clientConfig: {
       type: 'http',
       url: 'https://api.expo.dev/mcp',
     },
@@ -97,7 +97,7 @@ export const MCP_CATALOG: McpServerDef[] = [
     startCommand: 'serena start-mcp-server',
     stopCommand: 'pkill -f "serena start-mcp-server"',
     statusCommand: 'pgrep -f "serena start-mcp-server" > /dev/null && echo "running" || echo "stopped"',
-    claudeConfig: {
+    clientConfig: {
       type: 'stdio',
       command: 'serena',
       args: ['start-mcp-server', '--transport', 'stdio'],
@@ -156,16 +156,16 @@ export function buildMcpStatusCommand(server: McpServerDef): string | null {
 }
 
 /**
- * Claude Code settings.json 用の mcpServers オブジェクトを生成する。
+ * MCP client settings 用の mcpServers オブジェクトを生成する。
  */
-export function buildClaudeSettingsMcpBlock(
+export function buildMcpServersBlock(
   enabledServerIds: string[],
 ): Record<string, any> {
   const mcpServers: Record<string, any> = {};
   for (const id of enabledServerIds) {
     const server = MCP_CATALOG.find((s) => s.id === id);
     if (!server) continue;
-    mcpServers[server.id] = { ...server.claudeConfig };
+    mcpServers[server.id] = { ...server.clientConfig };
   }
   return mcpServers;
 }

@@ -10,9 +10,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
 import { speakText, stopSpeaking } from '@/lib/tts';
-import { GEMINI_API_BASE } from '@/lib/gemini';
 import { groqTranscribe } from '@/lib/groq';
-import { parseInput, hasTerminalReference } from '@/lib/input-router';
+import { parseInput } from '@/lib/input-router';
 import { summarizeForSpeech } from '@/lib/voice-chain-helpers';
 import { releaseRecorder } from '@/hooks/use-speech-input';
 
@@ -138,15 +137,8 @@ export function useVoiceChat() {
         return;
       }
 
-      // Read file as base64
-      const FileSystem = await import('expo-file-system/legacy');
-      const base64Audio = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
       const settings = useTerminalStore.getState().settings;
       const groqKey = settings.groqApiKey;
-      const geminiKey = settings.geminiApiKey;
 
       // ── Step 1: Transcribe ──────────────────────────────────────────────────
       let transcript = '';
@@ -158,30 +150,8 @@ export function useVoiceChat() {
           return;
         }
         transcript = result.content ?? '';
-      } else if (geminiKey && geminiKey.trim().length >= 10) {
-        const transcribeUrl = `${GEMINI_API_BASE}/models/gemini-2.0-flash:generateContent`;
-        const transcribeRes = await fetch(transcribeUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
-          body: JSON.stringify({
-            contents: [{
-              role: 'user',
-              parts: [
-                { inline_data: { mime_type: 'audio/m4a', data: base64Audio } },
-                { text: 'Transcribe this audio exactly. The audio is likely Japanese or English — detect the language from the audio. Output only the transcribed text, nothing else.' },
-              ],
-            }],
-            generationConfig: { maxOutputTokens: 1024, temperature: 0.1 },
-          }),
-        });
-        if (!transcribeRes.ok) {
-          setState((s) => ({ ...s, status: 'idle', error: `Transcription error: HTTP ${transcribeRes.status}` }));
-          return;
-        }
-        const transcribeJson = await transcribeRes.json();
-        transcript = transcribeJson?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
       } else {
-        setState((s) => ({ ...s, status: 'idle', error: 'Groq or Gemini API key required for transcription' }));
+        setState((s) => ({ ...s, status: 'idle', error: 'Groq API key required for transcription' }));
         return;
       }
 
@@ -266,28 +236,6 @@ export function useVoiceChat() {
             return;
           }
           response = result.content ?? '';
-        } else if (geminiKey && geminiKey.trim().length >= 10) {
-          const chatUrl = `${GEMINI_API_BASE}/models/${settings.geminiModel || 'gemini-2.0-flash'}:generateContent`;
-          const chatRes = await fetch(chatUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
-            signal: abortRef.current.signal,
-            body: JSON.stringify({
-              systemInstruction: {
-                parts: [{
-                  text: 'You are a voice assistant integrated with a terminal. Respond concisely in natural spoken language. No code blocks or markdown. Keep responses to 3-4 sentences max. Match the user\'s language (Japanese or English).',
-                }],
-              },
-              contents: conversationRef.current,
-              generationConfig: { maxOutputTokens: 512, temperature: 0.7 },
-            }),
-          });
-          if (!chatRes.ok) {
-            setState((s) => ({ ...s, status: 'idle', error: `Response error: HTTP ${chatRes.status}` }));
-            return;
-          }
-          const chatJson = await chatRes.json();
-          response = chatJson?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
         } else {
           setState((s) => ({ ...s, status: 'idle', error: 'API key required for AI response' }));
           return;

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -27,7 +27,7 @@ export function PreviewBanner({ url, onOpen, onDismiss }: PreviewBannerProps) {
     // Auto-dismiss after 10 seconds
     const timer = setTimeout(onDismiss, 10000);
     return () => clearTimeout(timer);
-  }, []);
+  }, [onDismiss, slideAnim]);
 
   const handleCopyUrl = async () => {
     await Clipboard.setStringAsync(url);

@@ -1,12 +1,12 @@
-export type ContentType = 'plain' | 'markdown' | 'json' | 'image' | 'table' | 'diff' | 'claude-action';
+export type ContentType = 'plain' | 'markdown' | 'json' | 'image' | 'table' | 'diff' | 'cli-action';
 
 export function detectContentType(command: string, output: string): ContentType {
   const trimmed = output.trim();
   if (!trimmed) return 'plain';
 
-  // Claude Code action: Read/Edit/Write/Bash tool patterns
+  // AI CLI action: Read/Edit/Write/Bash tool patterns
   if (/^(Read|Edit|Write|Bash|Search|Grep|Glob)\s/m.test(trimmed) ||
-      /^● (READ|EDIT|BASH|WRITE)/m.test(trimmed)) return 'claude-action';
+      /^● (READ|EDIT|BASH|WRITE)/m.test(trimmed)) return 'cli-action';
 
   // Diff: starts with --- or diff --git
   if (/^(---|\+\+\+|diff --git|@@)/m.test(trimmed)) return 'diff';

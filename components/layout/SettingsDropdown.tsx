@@ -1,7 +1,7 @@
 // components/layout/SettingsDropdown.tsx
 //
 // Drop-down settings panel anchored to the gear button in AgentBar.
-// Consolidates Display (CRT/Font), Language, AI Agents, and API Keys
+// Consolidates Display (Font/Theme), Language, AI Agents, and API Keys
 // that were previously scattered across the top bar.
 
 import React, { useRef, useState, useEffect } from 'react';
@@ -24,7 +24,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
@@ -32,10 +32,10 @@ import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWra
 import { BuildsModal } from '@/components/layout/BuildsModal';
 import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
-import { execCommand } from '@/hooks/use-native-exec';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 type Props = {
   visible: boolean;
@@ -49,7 +49,27 @@ const FONT_SIZE_PRESETS: FontSizePreset[] = [
   { label: 'L', size: 16 },
 ];
 
+function panelChromeStyle() {
+  return {
+    backgroundColor: C.bgSurface,
+    borderColor: C.border,
+    shadowColor: C.accent,
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+  };
+}
+
+function borderedChromeStyle(alpha = 1) {
+  return {
+    borderColor: alpha >= 1 ? C.border : withAlpha(C.accent, alpha),
+    backgroundColor: C.bgSurface,
+  };
+}
+
 export function SettingsDropdown({ visible, onClose }: Props) {
+  const { t } = useTranslation();
   const [mcpOpen, setMcpOpen] = useState(false);
   const [llamaOpen, setLlamaOpen] = useState(false);
   const [buildsOpen, setBuildsOpen] = useState(false);
@@ -63,19 +83,19 @@ export function SettingsDropdown({ visible, onClose }: Props) {
       statusBarTranslucent
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.panel} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.header}>
-            <MaterialIcons name="settings" size={13} color={C.text2} />
-            <Text style={styles.headerTitle}>SETTINGS</Text>
+        <Pressable style={[styles.panel, panelChromeStyle()]} onPress={(e) => e.stopPropagation()}>
+          <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
+            <MaterialIcons name="settings" size={13} color={C.accent} />
+            <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('settings.title')}</Text>
             <View style={{ flex: 1 }} />
             <Pressable
               onPress={onClose}
               hitSlop={8}
               style={styles.closeBtn}
               accessibilityRole="button"
-              accessibilityLabel="Close settings"
+              accessibilityLabel={t('settings.close_a11y')}
             >
-              <MaterialIcons name="close" size={13} color={C.text2} />
+              <MaterialIcons name="close" size={13} color={C.accent} />
             </Pressable>
           </View>
 
@@ -87,10 +107,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
-            <CredentialImportSection />
             <CodexLoginSection onClose={onClose} />
-            <ClaudeLoginSection onClose={onClose} />
-            <GeminiLoginSection onClose={onClose} />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -125,16 +142,17 @@ export function SettingsDropdown({ visible, onClose }: Props) {
 }
 
 function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
+  const { t } = useTranslation();
   return (
-    <Section title="UPDATES / BUILDS">
+    <Section title={t('updates.title')}>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={onOpenBuilds}
         accessibilityRole="button"
-        accessibilityLabel="Open build status and self-update panel"
+        accessibilityLabel={t('updates.open_a11y')}
       >
         <MaterialIcons name="cloud-download" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Check builds / install APK</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('updates.check_for_updates')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -143,13 +161,13 @@ function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
 }
 
 function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onCloseSettings: () => void }) {
+  const { t } = useTranslation();
   const [enabled, setEnabled] = useState(false);
   const [port, setPort] = useState(-1);
   const [busy, setBusy] = useState(false);
 
   const load = React.useCallback(async () => {
     try {
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       const info = await TerminalEmulator.getScouterDebugInfo();
       const parsed = JSON.parse(info);
       setEnabled(Boolean(parsed?.enabled));
@@ -167,97 +185,104 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
     const next = !enabled;
     setBusy(true);
     try {
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       await TerminalEmulator.setScouterEnabled(next);
       setEnabled(next);
       await load();
-      ToastAndroid.show(next ? 'Scouter enabled' : 'Scouter disabled', ToastAndroid.SHORT);
+      ToastAndroid.show(next ? t('scouter.enabled') : t('scouter.disabled'), ToastAndroid.SHORT);
       logInfo('SettingsDropdown', 'Scouter enabled=' + next);
     } catch (e: any) {
-      Alert.alert('Scouter failed', String(e?.message || e));
+      Alert.alert(t('scouter.failed'), String(e?.message || e));
       logError('SettingsDropdown', 'Failed to toggle Scouter', e);
     } finally {
       setBusy(false);
     }
-  }, [enabled]);
+  }, [enabled, load, t]);
 
   const copyDebug = React.useCallback(async () => {
     try {
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
       const info = await TerminalEmulator.getScouterDebugInfo();
       await Clipboard.setStringAsync(info);
-      Alert.alert('Scouter Debug', `${info.slice(0, 2500)}\n\nCopied to clipboard.`);
+      Alert.alert(t('scouter.debug_title'), `${info.slice(0, 2500)}\n\n${t('common.copied_clipboard')}`);
     } catch (e: any) {
-      Alert.alert('Scouter Debug failed', String(e?.message || e));
+      Alert.alert(t('scouter.debug_failed'), String(e?.message || e));
       logError('SettingsDropdown', 'Failed to get Scouter debug info', e);
     }
-  }, []);
+  }, [t]);
 
   const copyHooks = React.useCallback(async () => {
     try {
       if (!enabled || port <= 0) {
-        Alert.alert('Scouter disabled', 'Turn Scouter on first, then copy hook templates.');
+        Alert.alert(t('scouter.disabled'), t('scouter.enable_first'));
         return;
       }
-      const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
-      const cc = await TerminalEmulator.getScouterHookTemplate('cc');
       const codex = await TerminalEmulator.getScouterHookTemplate('codex');
-      const text = `Claude Code:\n${cc}\n\nCodex:\n${codex}`;
+      const local = await TerminalEmulator.getScouterHookTemplate('local');
+      const text = `Codex:\n${codex}\n\nLocal LLM:\n${local}`;
       await Clipboard.setStringAsync(text);
-      Alert.alert('Scouter Hooks', `${text.slice(0, 2500)}\n\nCopied to clipboard.`);
+      Alert.alert(t('scouter.hooks_title'), `${text.slice(0, 2500)}\n\n${t('common.copied_clipboard')}`);
     } catch (e: any) {
-      Alert.alert('Scouter Hooks failed', String(e?.message || e));
+      Alert.alert(t('scouter.hooks_failed'), String(e?.message || e));
       logError('SettingsDropdown', 'Failed to get Scouter hook templates', e);
     }
-  }, [enabled, port]);
+  }, [enabled, port, t]);
 
   return (
-    <Section title="SCOUTER">
+    <Section title={t('scouter.title')}>
       <Row label="Scouter">
         <Pressable
-          style={[styles.switchTrack, enabled && styles.switchTrackOn, busy && styles.integrationRowDisabled]}
+          style={[
+            styles.switchTrack,
+            { backgroundColor: enabled ? withAlpha(C.accent, 0.36) : C.border },
+            busy && styles.integrationRowDisabled,
+          ]}
           onPress={toggle}
           disabled={busy}
           hitSlop={4}
         >
-          <View style={[styles.switchThumb, enabled && styles.switchThumbOn]} />
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: enabled ? C.accent : C.text2 },
+              enabled && { alignSelf: 'flex-end' },
+            ]}
+          />
         </Pressable>
       </Row>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={copyDebug}
         accessibilityRole="button"
-        accessibilityLabel="Copy Scouter debug info"
+        accessibilityLabel={t('scouter.copy_debug_a11y')}
       >
         <MaterialIcons name="bug-report" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Copy debug info</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.copy_debug')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="content-copy" size={14} color={C.text3} />
       </Pressable>
       <View style={styles.credentialGap} />
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={() => {
           onCloseSettings();
           useSettingsStore.getState().setShowScouterDetail(true);
         }}
         accessibilityRole="button"
-        accessibilityLabel="Open Scouter detail"
+        accessibilityLabel={t('scouter.open_monitor_a11y')}
       >
         <MaterialIcons name="desktop-windows" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Open Scouter monitor</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.open_monitor')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="open-in-new" size={14} color={C.text3} />
       </Pressable>
       <View style={styles.credentialGap} />
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={copyHooks}
         accessibilityRole="button"
-        accessibilityLabel="Copy Scouter hook templates"
+        accessibilityLabel={t('scouter.copy_hooks_a11y')}
       >
         <MaterialIcons name="webhook" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Copy hook templates</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.copy_hooks')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="content-copy" size={14} color={C.text3} />
       </Pressable>
@@ -272,27 +297,28 @@ function IntegrationsSection({
   onOpenMcp: () => void;
   onOpenLlama: () => void;
 }) {
+  const { t } = useTranslation();
   return (
-    <Section title="INTEGRATIONS">
+    <Section title={t('integrations.title')}>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={onOpenMcp}
         accessibilityRole="button"
-        accessibilityLabel="Open MCP Servers settings"
+        accessibilityLabel={t('integrations.open_mcp_a11y')}
       >
         <MaterialIcons name="extension" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>MCP Servers</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>MCP Servers</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={onOpenLlama}
         accessibilityRole="button"
-        accessibilityLabel="Open Local LLM llama.cpp settings"
+        accessibilityLabel={t('integrations.open_llama_a11y')}
       >
         <MaterialIcons name="memory" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Local LLM · llama.cpp</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>Local LLM · llama.cpp</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -306,59 +332,54 @@ function IntegrationsSection({
 // Palette and harder to find). Original Recovery entry stays in
 // ConfigTUI; this is the discoverable mirror.
 function RecoverySection() {
+  const { t } = useTranslation();
   const handleRecover = React.useCallback(() => {
     Alert.alert(
-      'Force-recover Shelly?',
-      'Wipes ~/.shelly-cli.staging and the stale update lockfile. ' +
-      'Live install (~/.shelly-cli) is preserved — your CLIs keep working. ' +
-      'Use this only if Shelly freezes on launch and task-kill from the ' +
-      'recents list does not recover.\n\n' +
-      'After recovery, fully close Shelly (recents → swipe up) and ' +
-      'relaunch. The next launch will refresh from upstream automatically.',
+      t('recovery.confirm_title'),
+      t('recovery.confirm_body'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Recover',
+          text: t('recovery.recover'),
           style: 'destructive',
           onPress: async () => {
             try {
-              const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
               const result = await TerminalEmulator.forceRecoverFromFrozenState();
               const cleanedCount = Array.isArray(result?.cleaned) ? result.cleaned.length : 0;
               const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
               if (errorCount > 0) {
                 Alert.alert(
-                  'Recovery completed with warnings',
-                  `Cleaned ${cleanedCount} item(s). ${errorCount} could not be removed:\n\n` +
+                  t('recovery.warn_title'),
+                  t('recovery.warn_body', { cleaned: cleanedCount, errors: errorCount }) + '\n\n' +
                   (result.errors as string[]).slice(0, 5).join('\n') +
-                  (errorCount > 5 ? `\n…+${errorCount - 5} more` : ''),
+                  (errorCount > 5 ? `\n...+${errorCount - 5} ${t('common.more')}` : ''),
                 );
               } else {
                 Alert.alert(
-                  'Recovery complete',
-                  `Cleaned ${cleanedCount} item(s). Force-stop Shelly (recents → swipe up) and relaunch.`,
+                  t('recovery.complete_title'),
+                  t('recovery.complete_body', { cleaned: cleanedCount }),
                 );
               }
               logInfo('SettingsDropdown', 'forceRecoverFromFrozenState ok=' + result?.ok + ' cleaned=' + cleanedCount + ' errors=' + errorCount);
             } catch (e: any) {
               logError('SettingsDropdown', 'forceRecoverFromFrozenState failed', e);
-              Alert.alert('Recovery failed', String(e?.message || e));
+              Alert.alert(t('recovery.failed'), String(e?.message || e));
             }
           },
         },
       ],
     );
-  }, []);
+  }, [t]);
   return (
-    <Section title="RECOVERY">
+    <Section title={t('recovery.title')}>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={handleRecover}
         accessibilityRole="button"
-        accessibilityLabel="Force-recover from frozen state"
+        accessibilityLabel={t('recovery.action_a11y')}
       >
         <MaterialIcons name="healing" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Force-recover from frozen state</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('recovery.action')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -377,18 +398,14 @@ function RecoverySection() {
 // eviction and OS cleanup; the source URI under /data/user/0/.../cache would
 // eventually be purged and leave the wallpaper blank.
 //
-// CRT + wallpaper both enabled reads poorly (scanlines over a photo =
-// visual mud), so we warn on toggle but do not hard-block — some users
-// might actually want that retro-monitor-over-poster look.
-
 function WallpaperSection() {
+  const { t } = useTranslation();
   const wallpaperUri = useCosmeticStore((s) => s.wallpaperUri);
   const wallpaperOpacity = useCosmeticStore((s) => s.wallpaperOpacity);
   const panelOpacity = useCosmeticStore((s) => s.panelOpacity);
   const setWallpaper = useCosmeticStore((s) => s.setWallpaper);
   const setWallpaperOpacity = useCosmeticStore((s) => s.setWallpaperOpacity);
   const setPanelOpacity = useCosmeticStore((s) => s.setPanelOpacity);
-  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
   // Note: blurEnabled / blurIntensity still live in cosmetic-store but no
   // UI toggle renders today — there is no chrome BlurView consumer yet,
   // so exposing a toggle would be a dead switch. Store fields stay so the
@@ -399,8 +416,8 @@ function WallpaperSection() {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
         Alert.alert(
-          'Permission needed',
-          'Shelly needs access to your photo library to pick a wallpaper.',
+          t('wallpaper.permission_title'),
+          t('wallpaper.permission_body'),
         );
         return;
       }
@@ -426,18 +443,8 @@ function WallpaperSection() {
         FileSystem.deleteAsync(wallpaperUri, { idempotent: true }).catch(() => {});
       }
       setWallpaper(dest);
-      if (crtEnabled) {
-        Alert.alert(
-          'CRT + Wallpaper',
-          'CRT scanlines tend to read as visual noise over a photo. Disable CRT?',
-          [
-            { text: 'Keep both', style: 'cancel' },
-            { text: 'Disable CRT', onPress: () => useCosmeticStore.getState().setCrt(false) },
-          ],
-        );
-      }
     } catch (e) {
-      Alert.alert('Pick failed', String((e as Error)?.message ?? e));
+      Alert.alert(t('wallpaper.pick_failed'), String((e as Error)?.message ?? e));
     }
   };
 
@@ -449,24 +456,28 @@ function WallpaperSection() {
   };
 
   return (
-    <Section title="WALLPAPER">
-      <Row label="Image">
+    <Section title={t('wallpaper.title')}>
+      <Row label={t('wallpaper.image')}>
         <View style={styles.wallpaperRow}>
           {wallpaperUri ? (
-            <Image source={{ uri: wallpaperUri }} style={styles.wallpaperPreview} />
+            <Image source={{ uri: wallpaperUri }} style={[styles.wallpaperPreview, { borderColor: C.border }]} />
           ) : (
-            <View style={[styles.wallpaperPreview, styles.wallpaperPreviewEmpty]}>
+            <View style={[styles.wallpaperPreview, styles.wallpaperPreviewEmpty, { borderColor: C.border, backgroundColor: C.bgDeep }]}>
               <MaterialIcons name="image" size={14} color={C.text3} />
             </View>
           )}
-          <Pressable style={styles.wallpaperBtn} onPress={pick} hitSlop={4}>
-            <Text style={styles.wallpaperBtnText}>
-              {wallpaperUri ? 'Change' : 'Pick'}
+          <Pressable
+            style={[styles.wallpaperBtn, { backgroundColor: withAlpha(C.accent, 0.14), borderColor: withAlpha(C.accent, 0.4) }]}
+            onPress={pick}
+            hitSlop={4}
+          >
+            <Text style={[styles.wallpaperBtnText, { color: C.accent }]}>
+              {wallpaperUri ? t('wallpaper.change') : t('wallpaper.pick')}
             </Text>
           </Pressable>
           {wallpaperUri && (
-            <Pressable style={[styles.wallpaperBtn, styles.wallpaperBtnGhost]} onPress={clear} hitSlop={4}>
-              <Text style={[styles.wallpaperBtnText, { color: C.text2 }]}>Clear</Text>
+            <Pressable style={[styles.wallpaperBtn, styles.wallpaperBtnGhost, { borderColor: C.border }]} onPress={clear} hitSlop={4}>
+              <Text style={[styles.wallpaperBtnText, { color: C.text2 }]}>{t('common.clear')}</Text>
             </Pressable>
           )}
         </View>
@@ -475,12 +486,12 @@ function WallpaperSection() {
       {wallpaperUri && (
         <>
           <SliderRow
-            label="Image Opacity"
+            label={t('wallpaper.image_opacity')}
             value={wallpaperOpacity}
             onChange={setWallpaperOpacity}
           />
           <SliderRow
-            label="Panel Opacity"
+            label={t('wallpaper.panel_opacity')}
             value={panelOpacity}
             onChange={setPanelOpacity}
           />
@@ -492,8 +503,8 @@ function WallpaperSection() {
 
 /**
  * Small reusable 0-100 slider row. Extracted so WallpaperSection can
- * reuse the same geometry as DisplaySection's CRT Intensity control
- * without copy-pasting the PanResponder boilerplate.
+ * keep opacity controls consistent without copy-pasting the PanResponder
+ * boilerplate.
  */
 function SliderRow({
   label,
@@ -524,12 +535,12 @@ function SliderRow({
     <Row label={label}>
       <View style={styles.sliderGroup}>
         <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
-          <View style={styles.sliderTrack}>
-            <View style={[styles.sliderFill, { width: fillWidth }]} />
-            <View style={[styles.sliderThumb, { left: fillWidth - 5 }]} />
+          <View style={[styles.sliderTrack, { backgroundColor: C.border }]}>
+            <View style={[styles.sliderFill, { width: fillWidth, backgroundColor: C.accent }]} />
+            <View style={[styles.sliderThumb, { left: fillWidth - 5, backgroundColor: C.accent }]} />
           </View>
         </View>
-        <Text style={styles.sliderPercent}>{value}%</Text>
+        <Text style={[styles.sliderPercent, { color: C.text2 }]}>{value}%</Text>
       </View>
     </Row>
   );
@@ -538,73 +549,28 @@ function SliderRow({
 // ─── Display ─────────────────────────────────────────────────────────────────
 
 function DisplaySection() {
-  const crtEnabled = useCosmeticStore((s) => s.crtEnabled);
-  const crtIntensity = useCosmeticStore((s) => s.crtIntensity);
-  const setCrt = useCosmeticStore((s) => s.setCrt);
-  const setCrtIntensity = useCosmeticStore((s) => s.setCrtIntensity);
-
+  const { t } = useTranslation();
   const fontSize = useSettingsStore((s) => s.settings.fontSize);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
-  const trackWidth = 140;
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const x = e.nativeEvent.locationX;
-        setCrtIntensity(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
-      },
-      onPanResponderMove: (e) => {
-        const x = e.nativeEvent.locationX;
-        setCrtIntensity(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
-      },
-    })
-  ).current;
-
-  const fillWidth = (crtIntensity / 100) * trackWidth;
-
   return (
-    <Section title="DISPLAY">
-      {/* CRT Effect toggle */}
-      <Row label="CRT Effect">
-        <Pressable
-          style={[styles.switchTrack, crtEnabled && styles.switchTrackOn]}
-          onPress={() => setCrt(!crtEnabled)}
-          hitSlop={4}
-        >
-          <View style={[styles.switchThumb, crtEnabled && styles.switchThumbOn]} />
-        </Pressable>
-      </Row>
-
-      {/* Intensity slider (only when CRT enabled) */}
-      {crtEnabled && (
-        <Row label="Intensity">
-          <View style={styles.sliderGroup}>
-            <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
-              <View style={styles.sliderTrack}>
-                <View style={[styles.sliderFill, { width: fillWidth }]} />
-                <View style={[styles.sliderThumb, { left: fillWidth - 5 }]} />
-              </View>
-            </View>
-            <Text style={styles.sliderPercent}>{crtIntensity}%</Text>
-          </View>
-        </Row>
-      )}
-
+    <Section title={t('settings.display')}>
       {/* Font size preset */}
-      <Row label="Font Size">
-        <View style={styles.segGroup}>
+      <Row label={t('settings.font_size')}>
+        <View style={[styles.segGroup, { borderColor: C.border }]}>
           {FONT_SIZE_PRESETS.map((p) => {
             const active = fontSize === p.size;
             return (
               <Pressable
                 key={p.label}
-                style={[styles.segBtn, active && styles.segBtnActive]}
+                style={[
+                  styles.segBtn,
+                  active && { backgroundColor: withAlpha(C.accent, 0.16) },
+                ]}
                 onPress={() => updateSettings({ fontSize: p.size })}
                 hitSlop={4}
               >
-                <Text style={[styles.segLabel, active && styles.segLabelActive]}>
+                <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
                   {p.label}
                 </Text>
               </Pressable>
@@ -623,6 +589,7 @@ type UiFontId =
   | 'blue'
   | 'orange'
   | 'purple'
+  | 'scouter-green'
   | 'shelly'
   | 'blackline'
   | 'modal'
@@ -640,20 +607,22 @@ type UiFontId =
   | 'one-dark';
 
 function ThemeRow() {
+  const { t } = useTranslation();
   const rawUiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
   const uiFont: UiFontId =
     rawUiFont === 'shelly' || rawUiFont === 'modal' ? 'purple'
       : rawUiFont === 'blackline' ? 'blue'
         : rawUiFont;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const options: Array<{ value: UiFontId; label: string; swatch: string }> = [
-    { value: 'blue',   label: 'Blue',   swatch: themePresets.blue.colors.accent },
-    { value: 'orange', label: 'Orange', swatch: themePresets.orange.colors.accent },
-    { value: 'purple', label: 'Purple', swatch: themePresets.purple.colors.accent },
+  const options: { value: UiFontId; label: string; swatch: string }[] = [
+    { value: 'blue',   label: t('theme.blue'), swatch: themePresets.blue.colors.accent },
+    { value: 'orange', label: t('theme.red'), swatch: themePresets.orange.colors.accent },
+    { value: 'purple', label: t('theme.purple'), swatch: themePresets.purple.colors.accent },
+    { value: 'scouter-green', label: t('theme.scouter_green'), swatch: themePresets['scouter-green'].colors.accent },
   ];
   return (
-    <Row label="Theme">
-      <View style={styles.segGroup}>
+    <Row label={t('settings.theme')}>
+      <View style={[styles.segGroup, { borderColor: C.border }]}>
         {options.map((opt) => {
           const active = uiFont === opt.value;
           return (
@@ -661,7 +630,6 @@ function ThemeRow() {
               key={opt.value}
               style={[
                 styles.segBtn,
-                active && styles.segBtnActive,
                 active && { backgroundColor: withAlpha(C.accent, 0.15) },
               ]}
               onPress={() => {
@@ -677,9 +645,10 @@ function ThemeRow() {
                   styles.themeSwatch,
                   { backgroundColor: opt.swatch },
                   active && styles.themeSwatchActive,
+                  active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
                 ]}
               />
-              <Text style={[styles.segLabel, active && styles.segLabelActive, active && { color: C.accent }]}>
+              <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
                 {opt.label}
               </Text>
             </Pressable>
@@ -693,27 +662,40 @@ function ThemeRow() {
 // ─── Language ────────────────────────────────────────────────────────────────
 
 function LanguageSection() {
+  const { t } = useTranslation();
   const locale = useI18n((s) => s.locale);
   const setLocale = useI18n((s) => s.setLocale);
 
   return (
-    <Section title="LANGUAGE">
+    <Section title={t('settings.language')}>
       <View style={styles.langRow}>
         <Pressable
           style={styles.langOption}
           onPress={() => setLocale('en')}
           hitSlop={4}
         >
-          <View style={[styles.radio, locale === 'en' && styles.radioOn]} />
-          <Text style={[styles.langLabel, locale === 'en' && styles.langLabelActive]}>EN</Text>
+          <View
+            style={[
+              styles.radio,
+              { borderColor: locale === 'en' ? C.accent : C.text2 },
+              locale === 'en' && { backgroundColor: C.accent },
+            ]}
+          />
+          <Text style={[styles.langLabel, { color: locale === 'en' ? C.text1 : C.text2 }]}>EN</Text>
         </Pressable>
         <Pressable
           style={styles.langOption}
           onPress={() => setLocale('ja')}
           hitSlop={4}
         >
-          <View style={[styles.radio, locale === 'ja' && styles.radioOn]} />
-          <Text style={[styles.langLabel, locale === 'ja' && styles.langLabelActive]}>JA</Text>
+          <View
+            style={[
+              styles.radio,
+              { borderColor: locale === 'ja' ? C.accent : C.text2 },
+              locale === 'ja' && { backgroundColor: C.accent },
+            ]}
+          />
+          <Text style={[styles.langLabel, { color: locale === 'ja' ? C.text1 : C.text2 }]}>JA</Text>
         </Pressable>
       </View>
     </Section>
@@ -722,15 +704,14 @@ function LanguageSection() {
 
 // ─── AI Agents ───────────────────────────────────────────────────────────────
 
-const DEFAULT_AGENT_OPTIONS: Array<{ value: 'cerebras' | 'groq' | 'gemini-cli' | 'claude-code' | 'codex'; label: string }> = [
+const DEFAULT_AGENT_OPTIONS: { value: 'cerebras' | 'groq' | 'codex'; label: string }[] = [
   { value: 'cerebras',    label: 'Cerebras' },
   { value: 'groq',        label: 'Groq' },
   { value: 'codex',       label: 'Codex' },
-  { value: 'claude-code', label: 'Claude' },
-  { value: 'gemini-cli',  label: 'Gemini CLI Experimental' },
 ];
 
 function AgentsSection() {
+  const { t } = useTranslation();
   const defaultAgent = useSettingsStore((s) => s.settings.defaultAgent);
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
@@ -747,14 +728,14 @@ function AgentsSection() {
   const autoOn = autoApproveLevel !== 'none';
 
   return (
-    <Section title="AI AGENTS">
-      <Row label="Default">
+    <Section title={t('agents.title')}>
+      <Row label={t('agents.default')}>
         <Pressable
-          style={styles.defaultAgentBtn}
+          style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
           onPress={() => setPickerOpen((v) => !v)}
           hitSlop={4}
         >
-          <Text style={styles.defaultAgentLabel}>{currentLabel}</Text>
+          <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>{currentLabel}</Text>
           <MaterialIcons
             name={pickerOpen ? 'arrow-drop-up' : 'arrow-drop-down'}
             size={14}
@@ -763,19 +744,19 @@ function AgentsSection() {
         </Pressable>
       </Row>
       {pickerOpen && (
-        <View style={styles.defaultAgentPicker}>
+        <View style={[styles.defaultAgentPicker, { borderColor: C.border, backgroundColor: C.bgDeep }]}>
           {DEFAULT_AGENT_OPTIONS.map((opt) => {
             const active = opt.value === defaultAgent;
             return (
               <Pressable
                 key={opt.value}
-                style={[styles.pickerRow, active && styles.pickerRowActive]}
+                style={[styles.pickerRow, active && { backgroundColor: withAlpha(C.accent, 0.10) }]}
                 onPress={() => {
                   updateSettings({ defaultAgent: opt.value });
                   setPickerOpen(false);
                 }}
               >
-                <Text style={[styles.pickerLabel, active && styles.pickerLabelActive]}>
+                <Text style={[styles.pickerLabel, { color: active ? C.accent : C.text2 }, active && { fontWeight: '700' }]}>
                   {opt.label}
                 </Text>
                 {active && <MaterialIcons name="check" size={11} color={C.accent} />}
@@ -784,13 +765,22 @@ function AgentsSection() {
           })}
         </View>
       )}
-      <Row label="Auto-approve">
+      <Row label={t('agents.auto_approve')}>
         <Pressable
-          style={[styles.switchTrack, autoOn && styles.switchTrackOn]}
+          style={[
+            styles.switchTrack,
+            { backgroundColor: autoOn ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
           onPress={toggleAutoApprove}
           hitSlop={4}
         >
-          <View style={[styles.switchThumb, autoOn && styles.switchThumbOn]} />
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: autoOn ? C.accent : C.text2 },
+              autoOn && { alignSelf: 'flex-end' },
+            ]}
+          />
         </Pressable>
       </Row>
     </Section>
@@ -799,7 +789,7 @@ function AgentsSection() {
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
-type ApiKeyFieldKey = 'cerebrasApiKey' | 'groqApiKey' | 'geminiApiKey' | 'perplexityApiKey';
+type ApiKeyFieldKey = 'geminiApiKey' | 'cerebrasApiKey' | 'groqApiKey' | 'perplexityApiKey';
 
 type ApiKeyField = {
   key: ApiKeyFieldKey;
@@ -808,9 +798,9 @@ type ApiKeyField = {
 };
 
 const API_KEY_FIELDS: ApiKeyField[] = [
+  { key: 'geminiApiKey',     label: 'Gemini',     hint: 'aistudio.google.com/app/apikey' },
   { key: 'cerebrasApiKey',   label: 'Cerebras',   hint: 'cloud.cerebras.ai' },
   { key: 'groqApiKey',       label: 'Groq',       hint: 'console.groq.com' },
-  { key: 'geminiApiKey',     label: 'Gemini',     hint: 'aistudio.google.com/apikey' },
   { key: 'perplexityApiKey', label: 'Perplexity', hint: 'perplexity.ai/settings/api' },
 ];
 
@@ -821,6 +811,7 @@ function maskKey(value: string): string {
 }
 
 function ApiKeyRow({ field }: { field: ApiKeyField }) {
+  const { t } = useTranslation();
   const stored = useSettingsStore((s) => (s.settings[field.key] as string | undefined) ?? '');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
@@ -859,37 +850,37 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
 
   if (!editing) {
     return (
-      <View style={styles.apiKeyRow}>
+      <View style={[styles.apiKeyRow, { borderTopColor: C.border }]}>
         <View style={styles.apiKeyRowHead}>
-          <Text style={styles.apiKeyLabel}>{field.label}</Text>
+          <Text style={[styles.apiKeyLabel, { color: C.text1 }]}>{field.label}</Text>
           {hasStored ? (
             <View style={styles.statusOn}>
               <MaterialIcons name="check" size={10} color={C.accent} />
-              <Text style={styles.statusOnText}>{maskKey(stored)}</Text>
+              <Text style={[styles.statusOnText, { color: C.accent }]}>{maskKey(stored)}</Text>
             </View>
           ) : (
-            <Text style={styles.statusOff}>未設定</Text>
+            <Text style={[styles.statusOff, { color: C.text3 }]}>{t('common.not_set')}</Text>
           )}
         </View>
         <View style={styles.apiKeyActions}>
-          <Text style={styles.apiKeyHint}>{field.hint}</Text>
+          <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{field.hint}</Text>
           <View style={{ flex: 1 }} />
           <Pressable
             onPress={() => setEditing(true)}
-            style={styles.apiKeyBtn}
+            style={[styles.apiKeyBtn, { borderColor: C.border }]}
             hitSlop={6}
           >
-            <Text style={styles.apiKeyBtnText}>
-              {hasStored ? 'EDIT' : 'SET'}
+            <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>
+              {hasStored ? t('common.edit') : t('common.set')}
             </Text>
           </Pressable>
           {hasStored && (
             <Pressable
               onPress={handleClear}
-              style={styles.apiKeyBtn}
+              style={[styles.apiKeyBtn, { borderColor: C.border }]}
               hitSlop={6}
             >
-              <Text style={styles.apiKeyBtnText}>CLEAR</Text>
+              <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('common.clear')}</Text>
             </Pressable>
           )}
         </View>
@@ -898,9 +889,9 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
   }
 
   return (
-    <View style={styles.apiKeyRow}>
+    <View style={[styles.apiKeyRow, { borderTopColor: C.border }]}>
       <View style={styles.apiKeyRowHead}>
-        <Text style={styles.apiKeyLabel}>{field.label}</Text>
+        <Text style={[styles.apiKeyLabel, { color: C.text1 }]}>{field.label}</Text>
         <Pressable
           onPress={() => setReveal((v) => !v)}
           hitSlop={6}
@@ -916,8 +907,8 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
       <TextInput
         value={draft}
         onChangeText={setDraft}
-        style={styles.apiKeyInput}
-        placeholder={`Paste ${field.label} API key`}
+        style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+        placeholder={t('api_keys.paste_placeholder', { name: field.label })}
         placeholderTextColor={C.text3}
         autoCapitalize="none"
         autoCorrect={false}
@@ -926,18 +917,18 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
         selectTextOnFocus
       />
       <View style={styles.apiKeyActions}>
-        <Text style={styles.apiKeyHint}>{field.hint}</Text>
+        <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{field.hint}</Text>
         <View style={{ flex: 1 }} />
-        <Pressable onPress={handleCancel} style={styles.apiKeyBtn} hitSlop={6}>
-          <Text style={styles.apiKeyBtnText}>CANCEL</Text>
+        <Pressable onPress={handleCancel} style={[styles.apiKeyBtn, { borderColor: C.border }]} hitSlop={6}>
+          <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('common.cancel')}</Text>
         </Pressable>
         <Pressable
           onPress={handleSave}
-          style={[styles.apiKeyBtn, styles.apiKeyBtnPrimary]}
+          style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }]}
           hitSlop={6}
         >
-          <Text style={[styles.apiKeyBtnText, styles.apiKeyBtnTextPrimary]}>
-            SAVE
+          <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>
+            {t('common.save')}
           </Text>
         </Pressable>
       </View>
@@ -946,176 +937,12 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
 }
 
 function ApiKeysSection() {
+  const { t } = useTranslation();
   return (
-    <Section title="API KEYS">
+    <Section title={t('api_keys.title')}>
       {API_KEY_FIELDS.map((f) => (
         <ApiKeyRow key={f.key} field={f} />
       ))}
-    </Section>
-  );
-}
-
-// ─── CLI Credential Import ──────────────────────────────────────────────────
-
-const README_CREDENTIALS_URL =
-  'https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials';
-
-const CLAUDE_IMPORT_CMD = String.raw`set -eu
-ROOT_JSON="/sdcard/Download/shelly-claude-root.json"
-CLAUDE_TAR="/sdcard/Download/termux-claude-dir.tar"
-if [ ! -f "$ROOT_JSON" ]; then
-  echo "Missing $ROOT_JSON"
-  echo "Prepare the files first using the README Bring your own credentials steps:"
-  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
-  exit 2
-fi
-if [ ! -f "$CLAUDE_TAR" ]; then
-  echo "Missing $CLAUDE_TAR"
-  echo "Prepare the files first using the README Bring your own credentials steps:"
-  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
-  exit 2
-fi
-mkdir -p "$HOME/.claude"
-cp "$ROOT_JSON" "$HOME/.claude.json"
-chmod 600 "$HOME/.claude.json"
-tar xf "$CLAUDE_TAR" -C "$HOME/.claude"
-if [ ! -f "$HOME/.claude/.credentials.json" ]; then
-  echo "Import finished, but ~/.claude/.credentials.json is still missing."
-  echo "The tar file must contain the donor ~/.claude directory contents."
-  exit 3
-fi
-chmod 700 "$HOME/.claude" 2>/dev/null || true
-chmod 600 "$HOME/.claude/.credentials.json"
-echo "== claude --version =="
-claude --version
-echo
-echo "== credential files =="
-ls -l "$HOME/.claude.json" "$HOME/.claude/.credentials.json"
-echo
-if command -v shelly-doctor >/dev/null 2>&1; then
-  echo "== shelly-doctor =="
-  shelly-doctor
-else
-  echo "== shelly-doctor =="
-  echo "shelly-doctor is not available in this shell; credential file checks above passed."
-fi`;
-
-const GEMINI_IMPORT_CMD = String.raw`set -eu
-GEMINI_TAR="/sdcard/Download/termux-gemini-dir.tar"
-if [ ! -f "$GEMINI_TAR" ]; then
-  echo "Missing $GEMINI_TAR"
-  echo "Prepare the file first using the README Bring your own credentials steps:"
-  echo "https://github.com/RYOITABASHI/Shelly#bring-your-own-credentials"
-  exit 2
-fi
-mkdir -p "$HOME/.gemini"
-tar xf "$GEMINI_TAR" -C "$HOME/.gemini"
-if [ ! -f "$HOME/.gemini/oauth_creds.json" ]; then
-  echo "Import finished, but ~/.gemini/oauth_creds.json is still missing."
-  echo "The tar file must contain the donor ~/.gemini directory contents."
-  exit 3
-fi
-chmod 700 "$HOME/.gemini" 2>/dev/null || true
-chmod 600 "$HOME/.gemini/oauth_creds.json"
-echo "== gemini --version =="
-gemini --version
-echo
-echo "== credential files =="
-ls -l "$HOME/.gemini/oauth_creds.json"
-echo
-if command -v shelly-doctor >/dev/null 2>&1; then
-  echo "== shelly-doctor =="
-  shelly-doctor
-else
-  echo "== shelly-doctor =="
-  echo "shelly-doctor is not available in this shell; credential file checks above passed."
-fi`;
-
-function CredentialImportSection() {
-  const [busy, setBusy] = useState<'claude' | 'gemini' | null>(null);
-
-  const runImport = React.useCallback(async (kind: 'claude' | 'gemini') => {
-    const label = kind === 'claude' ? 'Claude' : 'Gemini';
-    const command = kind === 'claude' ? CLAUDE_IMPORT_CMD : GEMINI_IMPORT_CMD;
-    setBusy(kind);
-    try {
-      const result = await execCommand(command, 120_000);
-      const output = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
-      if (result.exitCode !== 0) {
-        Alert.alert(
-          `${label} import failed`,
-          `${output || `exit code ${result.exitCode}`}\n\nPrepare the files first using the README steps:\n${README_CREDENTIALS_URL}`,
-        );
-        logError('SettingsDropdown', `${label} credential import failed`, output || result.exitCode);
-        return;
-      }
-      Alert.alert(
-        `${label} credentials imported`,
-        `${output}\n\nSecurity reminder: delete the copied credential file(s) from /sdcard/Download after you confirm ${label} works.`,
-      );
-      logInfo('SettingsDropdown', `${label} credential import ok`);
-    } catch (e: any) {
-      Alert.alert(
-        `${label} import failed`,
-        `${String(e?.message || e)}\n\nPrepare the files first using the README steps:\n${README_CREDENTIALS_URL}`,
-      );
-      logError('SettingsDropdown', `${label} credential import threw`, e);
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
-  const confirmImport = React.useCallback((kind: 'claude' | 'gemini') => {
-    const label = kind === 'claude' ? 'Claude' : 'Gemini';
-    const expected =
-      kind === 'claude'
-        ? '/sdcard/Download/shelly-claude-root.json\n/sdcard/Download/termux-claude-dir.tar'
-        : '/sdcard/Download/termux-gemini-dir.tar';
-    Alert.alert(
-      `Import ${label} credentials?`,
-      `Shelly will copy sensitive OAuth credential files from:\n\n${expected}\n\nThis does not delete the /sdcard/Download copies. Delete them manually after import.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Import', onPress: () => void runImport(kind) },
-      ],
-    );
-  }, [runImport]);
-
-  return (
-    <Section title="IMPORT CLI CREDENTIALS">
-      <Text style={styles.credentialHint}>
-        OAuth does not complete inside Shelly for Claude/Gemini yet. Import
-        credentials created in Termux, desktop, or Codespaces.
-      </Text>
-      <Pressable
-        style={[styles.integrationRow, busy === 'claude' && styles.integrationRowDisabled]}
-        onPress={() => confirmImport('claude')}
-        disabled={busy !== null}
-        accessibilityRole="button"
-        accessibilityLabel="Import Claude credentials"
-      >
-        <MaterialIcons name="vpn-key" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>
-          {busy === 'claude' ? 'Importing Claude...' : 'Import Claude credentials'}
-        </Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-      <View style={styles.credentialGap} />
-      <Pressable
-        style={[styles.integrationRow, busy === 'gemini' && styles.integrationRowDisabled]}
-        onPress={() => confirmImport('gemini')}
-        disabled={busy !== null}
-        accessibilityRole="button"
-        accessibilityLabel="Import Gemini credentials"
-      >
-        <MaterialIcons name="vpn-key" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>
-          {busy === 'gemini' ? 'Importing Gemini...' : 'Import Gemini credentials'}
-        </Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
     </Section>
   );
 }
@@ -1128,21 +955,19 @@ function CredentialImportSection() {
 // pane opens via the shelly://browser deep link, and ~/.codex/auth.json
 // (mode 0600) is written on success. Verification is delegated to
 // shelly-doctor (which already reports `codex auth: <exists|missing>`).
-// Kept distinct from CredentialImportSection per project policy: Codex
-// authenticates in-app via OAuth, while Claude/Gemini still need
-// credential transplant.
 
 function CodexLoginSection({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
   const addPane = useAddPane();
 
   const start = React.useCallback(() => {
     Alert.alert(
-      'Sign in with ChatGPT?',
-      'Opens the Browser Pane to auth.openai.com for the device-code flow. After you approve in the browser, Shelly writes ~/.codex/auth.json (mode 0600). Run `shelly doctor` afterwards to confirm.',
+      t('codex_login.confirm_title'),
+      t('codex_login.confirm_body'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Sign in',
+          text: t('codex_login.sign_in'),
           onPress: () => {
             const result = addPane('terminal');
             if (result !== null) return; // useAddPane already alerted
@@ -1154,138 +979,21 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
         },
       ],
     );
-  }, [addPane, onClose]);
+  }, [addPane, onClose, t]);
 
   return (
-    <Section title="CODEX LOGIN">
-      <Text style={styles.credentialHint}>
-        Sign in with your ChatGPT subscription via device-code OAuth. Runs in a
-        new terminal pane and opens the verification page in Shelly's Browser
-        Pane.
+    <Section title={t('codex_login.title')}>
+      <Text style={[styles.credentialHint, { color: C.text2 }]}>
+        {t('codex_login.description')}
       </Text>
       <Pressable
-        style={styles.integrationRow}
+        style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={start}
         accessibilityRole="button"
-        accessibilityLabel="Sign in with ChatGPT for Codex"
+        accessibilityLabel={t('codex_login.sign_in_a11y')}
       >
         <MaterialIcons name="login" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Sign in with ChatGPT</Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-    </Section>
-  );
-}
-
-// ─── Claude / Gemini login (loopback OAuth via xdg-open shim) ───────────────
-// Phase 1 of bug #102 / #115: Bionic Android has no native xdg-open, so
-// Claude Code's `/login` (i3 opener) and Gemini CLI's `auth login`
-// both fail silently with ENOENT and fall through to manual paste —
-// except the user has nowhere to actually open the URL without leaving Shelly.
-// HomeInitializer.kt now installs a `$HOME/bin/xdg-open` shim that
-// fires the `shelly://browser?url=…` deep link, so the auth URL opens
-// in Shelly's Browser Pane. The user signs in there, copies the
-// `code#state` token from the success page, and pastes it back into
-// the CLI's manual-paste UI.
-//
-// These buttons are pure UX shortcuts — they spawn a fresh terminal
-// pane and queue the actual auth command (`claude` -> then /login,
-// `gemini auth login`).
-// No new auth logic, no token exchange. Loopback automation (the
-// callback intercept inside Browser Pane) is intentionally deferred
-// to Phase 2 once we've verified Phase 1 on hardware.
-
-// We deliberately spawn the bare REPL (`claude\n` / `gemini\n`) instead
-// `claude` still needs the REPL prompt and a manual `/login`, but
-// Gemini CLI exposes a real `auth login` subcommand that we can launch
-// directly. The Alert spells this out so the user knows the next move.
-
-function ClaudeLoginSection({ onClose }: { onClose: () => void }) {
-  const addPane = useAddPane();
-
-  const start = React.useCallback(() => {
-    Alert.alert(
-      'Start Claude sign-in?',
-      'Spawns a fresh terminal pane with the Claude REPL. After the prompt appears, type /login to begin sign-in. The auth URL will open in Shelly\'s Browser Pane via the xdg-open shim.\n\nIf the flow fails on-device, fall back to credential transplant (see README).',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start',
-          onPress: () => {
-            const result = addPane('terminal');
-            if (result !== null) return; // useAddPane already alerted
-            const sessionId = useTerminalStore.getState().activeSessionId;
-            useTerminalStore.getState().insertCommand('claude\n', sessionId);
-            logInfo('SettingsDropdown', 'claude REPL launched for /login');
-            onClose();
-          },
-        },
-      ],
-    );
-  }, [addPane, onClose]);
-
-  return (
-    <Section title="CLAUDE LOGIN (BETA)">
-      <Text style={styles.credentialHint}>
-        Browser-launch assist for Claude Code's `/login`. Beta — full OAuth
-        completion is under hardware verification. Falls back to credential
-        transplant if the in-app flow can't finish (see README).
-      </Text>
-      <Pressable
-        style={styles.integrationRow}
-        onPress={start}
-        accessibilityRole="button"
-        accessibilityLabel="Start Claude sign-in"
-      >
-        <MaterialIcons name="login" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Start Claude sign-in</Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-    </Section>
-  );
-}
-
-function GeminiLoginSection({ onClose }: { onClose: () => void }) {
-  const addPane = useAddPane();
-
-  const start = React.useCallback(() => {
-    Alert.alert(
-      'Start Gemini sign-in?',
-      'Spawns a fresh terminal pane and runs Gemini CLI\'s auth subcommand. Shelly opens the verification URL in the Browser Pane via the xdg-open shim and the CLI finishes the loopback flow on-device.\n\nIf the flow fails, fall back to credential transplant (see README).',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start',
-          onPress: () => {
-            const result = addPane('terminal');
-            if (result !== null) return; // useAddPane already alerted
-            const sessionId = useTerminalStore.getState().activeSessionId;
-            useTerminalStore.getState().insertCommand('gemini auth login\n', sessionId);
-            logInfo('SettingsDropdown', 'gemini auth login launched');
-            onClose();
-          },
-        },
-      ],
-    );
-  }, [addPane, onClose]);
-
-  return (
-    <Section title="GEMINI LOGIN (BETA)">
-      <Text style={styles.credentialHint}>
-        Browser-launch assist for Gemini CLI's `/auth`. Beta — full OAuth
-        completion is under hardware verification. Falls back to credential
-        transplant if the in-app flow can't finish (see README).
-      </Text>
-      <Pressable
-        style={styles.integrationRow}
-        onPress={start}
-        accessibilityRole="button"
-        accessibilityLabel="Start Gemini sign-in"
-      >
-        <MaterialIcons name="login" size={13} color={C.text2} />
-        <Text style={styles.integrationLabel}>Start Gemini sign-in</Text>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('codex_login.sign_in_chatgpt')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
@@ -1297,8 +1005,8 @@ function GeminiLoginSection({ onClose }: { onClose: () => void }) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+    <View style={[styles.section, { borderBottomColor: C.border }]}>
+      <Text style={[styles.sectionTitle, { color: C.text2 }]}>{title}</Text>
       <View style={styles.sectionBody}>{children}</View>
     </View>
   );
@@ -1307,7 +1015,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
+      <Text style={[styles.rowLabel, { color: C.text1 }]}>{label}</Text>
       <View style={styles.rowControl}>{children}</View>
     </View>
   );
@@ -1474,10 +1182,6 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     backgroundColor: C.text2,
-  },
-  switchThumbOn: {
-    backgroundColor: C.accent,
-    alignSelf: 'flex-end',
   },
   // Slider
   sliderGroup: {

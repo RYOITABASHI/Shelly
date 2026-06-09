@@ -1,7 +1,7 @@
 /**
  * lib/parse-plan.ts — Plan Mode出力のパーサー
  *
- * Gemini CLI の Plan Mode 出力や、AI応答内の計画フォーマットを
+ * Plan Mode 出力や、AI応答内の計画フォーマットを
  * 構造化データ (PlanMessage) にパースする。
  */
 
@@ -24,7 +24,7 @@ export type PlanStep = {
 
 export type PlanMessage = {
   id: string;
-  source: string;         // 'gemini' | 'claude' | 'local' etc
+  source: string;         // 'codex' | 'local' | 'assistant' etc
   title: string;
   steps: PlanStep[];
   createdAt: number;

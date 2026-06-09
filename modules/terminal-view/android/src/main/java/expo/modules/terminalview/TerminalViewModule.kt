@@ -1,12 +1,17 @@
 package expo.modules.terminalview
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import expo.modules.terminalemulator.ShellyTerminalSession
 import expo.modules.terminalemulator.TerminalEmulatorModule
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class TerminalViewModule : Module() {
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
         private const val TAG = "TerminalViewModule"
@@ -108,49 +113,108 @@ class TerminalViewModule : Module() {
         // These find the view in the activity's view hierarchy and call the command
 
         AsyncFunction("scrollToBottom") { viewTag: Int ->
-            findView(viewTag)?.scrollToBottomCommand()
+            runViewCommand(viewTag, "scrollToBottom") { it.scrollToBottomCommand() }
         }
 
         AsyncFunction("scrollToTop") { viewTag: Int ->
-            findView(viewTag)?.scrollToTopCommand()
+            runViewCommand(viewTag, "scrollToTop") { it.scrollToTopCommand() }
         }
 
         AsyncFunction("selectAll") { viewTag: Int ->
-            findView(viewTag)?.selectAllCommand()
+            runViewCommand(viewTag, "selectAll") { it.selectAllCommand() }
         }
 
         AsyncFunction("clearSelection") { viewTag: Int ->
-            findView(viewTag)?.clearSelectionCommand()
+            runViewCommand(viewTag, "clearSelection") { it.clearSelectionCommand() }
         }
 
         AsyncFunction("getSelectedText") { viewTag: Int ->
-            findView(viewTag)?.getSelectedTextCommand() ?: ""
+            runViewCommandSync(viewTag, "getSelectedText", "") {
+                it.getSelectedTextCommand() ?: ""
+            }
         }
 
         AsyncFunction("copyToClipboard") { viewTag: Int ->
-            findView(viewTag)?.copyToClipboardCommand() ?: false
+            runViewCommandSync(viewTag, "copyToClipboard", false) {
+                it.copyToClipboardCommand()
+            }
         }
 
         AsyncFunction("focus") { viewTag: Int ->
-            findView(viewTag)?.focusCommand()
+            runViewCommand(viewTag, "focus") { it.focusCommand() }
         }
 
         AsyncFunction("scrollToRow") { viewTag: Int, row: Int ->
-            findView(viewTag)?.scrollToRowCommand(row)
+            runViewCommand(viewTag, "scrollToRow") { it.scrollToRowCommand(row) }
         }
 
         AsyncFunction("refreshScreen") { viewTag: Int ->
-            findView(viewTag)?.refreshScreenCommand()
+            runViewCommand(viewTag, "refreshScreen") { it.refreshScreenCommand() }
+        }
+    }
+
+    private fun runViewCommand(
+        viewTag: Int,
+        command: String,
+        block: (ShellyTerminalView) -> Unit
+    ) {
+        val task = Runnable {
+            try {
+                findView(viewTag)?.let(block)
+            } catch (e: Exception) {
+                Log.w(TAG, "Terminal view command failed: $command tag=$viewTag", e)
+            }
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            task.run()
+        } else {
+            mainHandler.post(task)
+        }
+    }
+
+    private fun <T> runViewCommandSync(
+        viewTag: Int,
+        command: String,
+        fallback: T,
+        block: (ShellyTerminalView) -> T
+    ): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return try {
+                findView(viewTag)?.let(block) ?: fallback
+            } catch (e: Exception) {
+                Log.w(TAG, "Terminal view command failed: $command tag=$viewTag", e)
+                fallback
+            }
+        }
+
+        val result = AtomicReference<T>(fallback)
+        val done = CountDownLatch(1)
+        mainHandler.post {
+            try {
+                result.set(findView(viewTag)?.let(block) ?: fallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "Terminal view command failed: $command tag=$viewTag", e)
+            } finally {
+                done.countDown()
+            }
+        }
+
+        return try {
+            if (done.await(1, TimeUnit.SECONDS)) result.get() else fallback
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            fallback
         }
     }
 
     private fun findView(viewTag: Int): ShellyTerminalView? {
-        return try {
+        try {
             val activity = appContext.currentActivity ?: return null
-            activity.findViewById(viewTag) as? ShellyTerminalView
+            return activity.findViewById(viewTag) as? ShellyTerminalView
         } catch (e: Exception) {
             Log.w(TAG, "Could not find view with tag $viewTag", e)
-            null
+            return null
         }
     }
 }

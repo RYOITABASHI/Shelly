@@ -77,6 +77,24 @@ public final class TerminalRow {
 
     /** NOTE: The sourceX2 is exclusive. */
     public void copyInterval(TerminalRow line, int sourceX1, int sourceX2, int destinationX) {
+        if (line == null || sourceX2 <= sourceX1) return;
+
+        if (sourceX1 < 0) {
+            destinationX -= sourceX1;
+            sourceX1 = 0;
+        }
+        if (destinationX < 0) {
+            sourceX1 -= destinationX;
+            destinationX = 0;
+        }
+
+        int columnsToCopy = Math.min(
+            sourceX2 - sourceX1,
+            Math.min(line.mColumns - sourceX1, mColumns - destinationX)
+        );
+        if (columnsToCopy <= 0) return;
+        sourceX2 = sourceX1 + columnsToCopy;
+
         mHasNonOneWidthOrSurrogateChars |= line.mHasNonOneWidthOrSurrogateChars;
         final int x1 = line.findStartOfColumn(sourceX1);
         final int x2 = line.findStartOfColumn(sourceX2);
@@ -97,7 +115,16 @@ public final class TerminalRow {
                 sourceX1 += latestNonCombiningWidth;
                 latestNonCombiningWidth = w;
             }
-            setChar(destinationX, codePoint, line.getStyle(sourceX1));
+            // Some TUIs issue reverse-index / block-copy sequences exactly at
+            // the right edge while the source row contains wide or combining
+            // characters. The copied glyph range is already clamped by
+            // TerminalBuffer.blockCopy(), but sourceX1 can advance to the
+            // exclusive end column for the last Java char. Reuse the last
+            // visible cell style instead of crashing the terminal thread.
+            int styleColumn = Math.max(0, Math.min(sourceX1, line.mColumns - 1));
+            if (destinationX < 0 || destinationX >= mColumns) break;
+            if (WcWidth.width(codePoint) == 2 && destinationX >= mColumns - 1) codePoint = ' ';
+            setChar(destinationX, codePoint, line.getStyle(styleColumn));
         }
     }
 
@@ -173,6 +200,14 @@ public final class TerminalRow {
         mStyle[columnToSet] = style;
 
         final int newCodePointDisplayWidth = WcWidth.width(codePoint);
+        if (newCodePointDisplayWidth == 2 && columnToSet == mColumns - 1) {
+            // A wide glyph cannot occupy the final column. TerminalEmulator
+            // normally wraps before reaching this state, but resize/race
+            // edges can still route one here. Do not throw: a thrown
+            // exception makes TerminalSession drop the whole output chunk.
+            setChar(columnToSet, ' ', style);
+            return;
+        }
         // For wide characters (CJK), also set style on the second column they occupy
         if (newCodePointDisplayWidth == 2 && columnToSet + 1 < mStyle.length) {
             mStyle[columnToSet + 1] = style;
@@ -284,7 +319,7 @@ public final class TerminalRow {
             ++mSpaceUsed;
         } else if (oldCodePointDisplayWidth == 1 && newCodePointDisplayWidth == 2) {
             if (columnToSet == mColumns - 1) {
-                throw new IllegalArgumentException("Cannot put wide character in last column");
+                return;
             } else if (columnToSet == mColumns - 2) {
                 // Truncate the line to the second part of this wide char:
                 mSpaceUsed = (short) newNextColumnIndex;

@@ -1,6 +1,6 @@
 import React, { memo, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
-import { colors as TC, fonts as F, sizes as S } from '@/theme.config';
+import { colors as TC } from '@/theme.config';
 
 type Props = {
   json: string;

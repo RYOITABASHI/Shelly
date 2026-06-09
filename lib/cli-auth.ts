@@ -1,7 +1,7 @@
 /**
  * lib/cli-auth.ts — CLI Authentication Helper
  *
- * Manages authentication for CLI tools (Claude Code, Gemini CLI, Codex)
+ * Manages authentication for CLI tools (Codex)
  * via the native exec layer. Handles:
  * - API key storage in SecureStore (expo-secure-store)
  * - OAuth URL extraction from CLI login output
@@ -14,7 +14,7 @@
 import { saveApiKey, getApiKey, deleteApiKey } from '@/lib/secure-store';
 import type { ApiKeyName } from '@/lib/secure-store';
 
-export type AuthToolId = 'claude-code' | 'gemini-cli' | 'codex';
+export type AuthToolId = 'codex';
 
 export type AuthMethod = 'browser' | 'api-key';
 
@@ -40,28 +40,6 @@ export interface AuthToolConfig {
 }
 
 export const AUTH_TOOL_CONFIGS: AuthToolConfig[] = [
-  {
-    id: 'claude-code',
-    name: 'Claude Code',
-    envVar: 'ANTHROPIC_API_KEY',
-    secureStoreKey: 'claudeAuthToken',
-    apiKeyUrl: 'https://console.anthropic.com/settings/keys',
-    checkInstalled: 'claude --version 2>/dev/null',
-    loginCommand: 'claude',
-    color: '#F59E0B',
-    icon: 'code',
-  },
-  {
-    id: 'gemini-cli',
-    name: 'Gemini CLI',
-    envVar: 'GEMINI_API_KEY',
-    secureStoreKey: 'geminiAuthToken',
-    apiKeyUrl: 'https://aistudio.google.com/app/apikey',
-    checkInstalled: 'gemini --version 2>/dev/null',
-    loginCommand: 'gemini auth login 2>&1',
-    color: '#3B82F6',
-    icon: 'auto-awesome',
-  },
   {
     id: 'codex',
     name: 'Codex CLI',
@@ -169,9 +147,7 @@ export async function verifyAuth(
 
 /**
  * Extract an OAuth URL from CLI login command output.
- * Claude Code emits a URL during its REPL login flow; Gemini emits a
- * Google OAuth URL during `gemini auth login`; Codex emits a device-code
- * verification URL during `codex-login --open`.
+ * Codex emits a device-code verification URL during `codex-login --open`.
  */
 export function extractOAuthUrl(output: string): string | null {
   // Match common URL patterns from CLI output

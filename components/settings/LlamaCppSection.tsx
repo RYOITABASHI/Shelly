@@ -31,6 +31,7 @@ import {
   getRecommendedModel,
   estimateTotalSetupTime,
 } from '@/lib/llamacpp-setup';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ export function LlamaCppSection({
   onRunCommand,
   onUpdateLocalLlmUrl,
 }: LlamaCppSectionProps) {
+  const { t } = useTranslation();
   const recommended = getRecommendedModel();
   const [expandedModelId, setExpandedModelId] = useState<string | null>(recommended?.id ?? null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
@@ -77,20 +79,39 @@ export function LlamaCppSection({
   const [setupLog, setSetupLog] = useState<string[]>([]);
   const [showSetupLog, setShowSetupLog] = useState(false);
 
-  // ── Auto-check server status on mount ──────────────────────────────────────
+  // ── Re-check server status while this settings sheet is open ───────────────
   useEffect(() => {
-    if (!isConnected) return;
+    if (!isConnected) {
+      setServerStatus('unknown');
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
     const cmd = buildStatusCommand();
-    onRunCommand(cmd, 'Server status check').then((result) => {
-      setServerStatus(resolveServerStatus(result));
-    });
-  }, [isConnected]);
+    const checkStatus = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const result = await onRunCommand(cmd, t('llama.status_check'));
+        if (!cancelled) setServerStatus(resolveServerStatus(result));
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 7000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [isConnected, onRunCommand, t]);
 
   // ── llama.cpp セットアップ ────────────────────────────────────────────────
 
   const handleSetup = useCallback(async () => {
     if (!isConnected) {
-      Alert.alert('Not connected', 'Terminal is not connected.');
+      Alert.alert(t('common.not_connected'), t('common.terminal_not_connected'));
       return;
     }
 
@@ -98,12 +119,12 @@ export function LlamaCppSection({
     const totalMin = Math.round(estimateTotalSetupTime(steps) / 60);
 
     Alert.alert(
-      'llama.cpp Setup',
-      `Install llama.cpp locally.\n\nEstimated time: ~${totalMin} min\n\nContinue?`,
+      t('llama.setup_title'),
+      t('llama.setup_body', { minutes: totalMin }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Start setup',
+          text: t('llama.start_setup'),
           onPress: async () => {
             setIsSettingUp(true);
             setShowSetupLog(true);
@@ -116,7 +137,7 @@ export function LlamaCppSection({
                 setSetupLog((prev) => [...prev, result.output as string]);
               }
               if (!result.success && step.critical) {
-                setSetupLog((prev) => [...prev, `[ERROR] ${step.label}  failed. Setup aborted.`]);
+                setSetupLog((prev) => [...prev, `[ERROR] ${step.label} failed. ${t('llama.setup_aborted')}`]);
                 setIsSettingUp(false);
                 return;
               }
@@ -129,69 +150,88 @@ export function LlamaCppSection({
         },
       ]
     );
-  }, [isConnected, onRunCommand, onUpdateLocalLlmUrl]);
+  }, [isConnected, onRunCommand, onUpdateLocalLlmUrl, t]);
 
   // ── モデルダウンロード ────────────────────────────────────────────────────
 
   const handleDownload = useCallback(async (model: LlamaCppModel) => {
     if (!isConnected) {
-      Alert.alert('Not connected', 'Terminal is not connected.');
+      Alert.alert(t('common.not_connected'), t('common.terminal_not_connected'));
       return;
     }
     setLoadingModelId(model.id);
     const cmd = buildDownloadCommand(model);
-    const result = await onRunCommand(cmd, `${model.name} download`);
-    setLoadingModelId(null);
-    if (result.success) {
-      Alert.alert('Done', `${model.name}  download complete.`);
-    } else {
-      Alert.alert('Error', 'Download failed.');
+    let result: { success: boolean; output?: string };
+    try {
+      result = await onRunCommand(cmd, `${model.name} download`);
+    } catch (error) {
+      result = {
+        success: false,
+        output: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      setLoadingModelId(null);
     }
-  }, [isConnected, onRunCommand]);
+    if (result.success) {
+      Alert.alert(t('common.done'), t('llama.download_complete', { name: model.name }));
+    } else {
+      const details = (result.output ?? '').trim().slice(-800);
+      Alert.alert(t('common.error'), `${t('llama.download_failed')}${details ? `\n\n${details}` : ''}`);
+    }
+  }, [isConnected, onRunCommand, t]);
 
   // ── サーバー起動/停止 ────────────────────────────────────────────────────
 
   const handleStartServer = useCallback(async (model: LlamaCppModel) => {
     if (!isConnected) {
-      Alert.alert('Not connected', 'Terminal is not connected.');
+      Alert.alert(t('common.not_connected'), t('common.terminal_not_connected'));
       return;
     }
     const script = buildDaemonStartScript(model, installedModelPaths?.[model.id]);
-    const result = await onRunCommand(script, `${model.name} start`);
+    let result: { success: boolean; output?: string };
+    try {
+      result = await onRunCommand(script, `${model.name} start`);
+    } catch (error) {
+      result = {
+        success: false,
+        output: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (result.success) {
       setServerStatus('running');
       onSelectModel(model);
       onUpdateLocalLlmUrl('http://127.0.0.1:8080');
     } else {
       setServerStatus(resolveServerStatus(result));
-      Alert.alert('Error', `Failed to start.\n\n${(result.output ?? '').slice(-1200)}`);
+      const detail = (result.output ?? '').trim() || t('llama.no_startup_output');
+      Alert.alert(t('common.error'), `${t('llama.start_failed')}\n\n${detail.slice(-1200)}`);
     }
-  }, [installedModelPaths, isConnected, onRunCommand, onSelectModel, onUpdateLocalLlmUrl]);
+  }, [installedModelPaths, isConnected, onRunCommand, onSelectModel, onUpdateLocalLlmUrl, t]);
 
   const handleStopServer = useCallback(async () => {
     if (!isConnected) return;
     const cmd = buildStopCommand();
-    const result = await onRunCommand(cmd, 'llama-server stop');
+    const result = await onRunCommand(cmd, t('llama.stop_server'));
     if (result.success) {
       setServerStatus('stopped');
     }
-  }, [isConnected, onRunCommand]);
+  }, [isConnected, onRunCommand, t]);
 
   const handleCheckStatus = useCallback(async () => {
     if (!isConnected) return;
     const cmd = buildStatusCommand();
-    const result = await onRunCommand(cmd, 'Server status check');
+    const result = await onRunCommand(cmd, t('llama.status_check'));
     setServerStatus(resolveServerStatus(result));
-  }, [isConnected, onRunCommand]);
+  }, [isConnected, onRunCommand, t]);
 
   const handleDeleteModel = useCallback(async (model: LlamaCppModel) => {
     Alert.alert(
-      'Delete model',
-      `Delete ${model.name}?`,
+      t('llama.delete_model_title'),
+      t('llama.delete_model_body', { name: model.name }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: async () => {
             const cmd = buildDeleteModelCommand(model);
@@ -200,12 +240,13 @@ export function LlamaCppSection({
         },
       ]
     );
-  }, [onRunCommand]);
+  }, [onRunCommand, t]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   const installedModels = MODEL_CATALOG.filter((m) => installedModelIds.has(m.id));
   const notInstalledModels = MODEL_CATALOG.filter((m) => !installedModelIds.has(m.id));
+  const operationInProgress = isSettingUp || loadingModelId !== null;
 
   return (
     <View>
@@ -214,14 +255,14 @@ export function LlamaCppSection({
         <TouchableOpacity
           style={[styles.setupBtn, !isConnected && styles.setupBtnDisabled]}
           onPress={handleSetup}
-          disabled={isSettingUp}
+          disabled={operationInProgress}
         >
           {isSettingUp
             ? <ActivityIndicator size="small" color="#00D4AA" />
             : <MaterialIcons name="build" size={16} color={isConnected ? '#00D4AA' : '#4B5563'} />
           }
           <Text style={[styles.setupBtnText, !isConnected && styles.setupBtnTextDisabled]}>
-            {isSettingUp ? 'Setting up...' : 'llama.cpp Setup'}
+            {isSettingUp ? t('llama.setting_up') : t('llama.setup_button')}
           </Text>
         </TouchableOpacity>
 
@@ -234,9 +275,9 @@ export function LlamaCppSection({
             styles.statusDotGray,
           ]} />
           <Text style={styles.statusBtnText}>
-            {serverStatus === 'running' ? 'Running' :
-             serverStatus === 'starting' ? 'Starting' :
-             serverStatus === 'stopped' ? 'Stopped' : 'Unknown'}
+            {serverStatus === 'running' ? t('llama.running') :
+             serverStatus === 'starting' ? t('llama.starting') :
+             serverStatus === 'stopped' ? t('llama.stopped') : t('llama.unknown')}
           </Text>
         </TouchableOpacity>
       </View>
@@ -256,24 +297,27 @@ export function LlamaCppSection({
       {(serverStatus === 'running' || serverStatus === 'starting') && (
         <TouchableOpacity style={styles.stopBtn} onPress={handleStopServer}>
           <MaterialIcons name="stop" size={16} color="#F87171" />
-          <Text style={styles.stopBtnText}>Stop server</Text>
+          <Text style={styles.stopBtnText}>{t('llama.stop_server')}</Text>
         </TouchableOpacity>
       )}
 
       {/* ── インストール済みモデル ──────────────────────────────────────── */}
       {installedModels.length > 0 && (
         <>
-          <Text style={styles.catalogLabel}>Installed</Text>
+          <Text style={styles.catalogLabel}>{t('llama.installed')}</Text>
           {installedModels.map((model) => {
             const isActive = activeModelId === model.id;
-            const canStart = serverStatus !== 'starting' && (serverStatus !== 'running' || !isActive);
+            const canStart =
+              !operationInProgress &&
+              serverStatus !== 'starting' &&
+              (serverStatus !== 'running' || !isActive);
             return (
               <View key={model.id} style={[styles.modelCard, isActive && styles.modelCardActive]}>
                 <View style={styles.installedRow}>
                   <View style={styles.installedInfo}>
                     <View style={styles.modelTitleRow}>
                       <Text style={styles.modelName}>{model.name}</Text>
-                      {isActive && <View style={styles.activeBadge}><Text style={styles.activeBadgeText}>Active</Text></View>}
+                      {isActive && <View style={styles.activeBadge}><Text style={styles.activeBadgeText}>{t('llama.active')}</Text></View>}
                     </View>
                     <Text style={styles.modelMeta}>{model.sizeGb}GB · RAM {model.ramRequiredGb}GB</Text>
                   </View>
@@ -283,12 +327,13 @@ export function LlamaCppSection({
                         style={[styles.actionBtn, styles.actionBtnPrimary]}
                         onPress={() => handleStartServer(model)}
                       >
-                        <Text style={styles.actionBtnPrimaryText}>Start</Text>
+                        <Text style={styles.actionBtnPrimaryText}>{t('llama.start')}</Text>
                       </TouchableOpacity>
                     )}
                     <TouchableOpacity
                       style={[styles.actionBtn, styles.actionBtnDanger]}
                       onPress={() => handleDeleteModel(model)}
+                      disabled={operationInProgress}
                     >
                       <MaterialIcons name="delete-outline" size={14} color="#F87171" />
                     </TouchableOpacity>
@@ -298,13 +343,13 @@ export function LlamaCppSection({
             );
           })}
           <Text style={styles.storageSummary}>
-            Storage used: {installedModels.reduce((sum, m) => sum + m.sizeGb, 0).toFixed(1)}GB
+            {t('llama.storage_used', { size: installedModels.reduce((sum, m) => sum + m.sizeGb, 0).toFixed(1) })}
           </Text>
         </>
       )}
 
       {/* ── モデルカタログ（未インストールのみ） ──────────────────────────── */}
-      <Text style={styles.catalogLabel}>Model Catalog</Text>
+      <Text style={styles.catalogLabel}>{t('llama.model_catalog')}</Text>
       {notInstalledModels.map((model) => {
         const isExpanded = expandedModelId === model.id;
         const isLoading = loadingModelId === model.id;
@@ -318,7 +363,7 @@ export function LlamaCppSection({
             >
               <View style={styles.modelTitleRow}>
                 <Text style={styles.modelName}>{model.name}</Text>
-                {isRec && <View style={styles.recBadge}><Text style={styles.recBadgeText}>Recommended</Text></View>}
+                {isRec && <View style={styles.recBadge}><Text style={styles.recBadgeText}>{t('llama.recommended')}</Text></View>}
                 {model.badge && <View style={styles.badge}><Text style={styles.badgeText}>{model.badge}</Text></View>}
               </View>
               <Text style={styles.modelMeta}>{model.sizeGb}GB · RAM {model.ramRequiredGb}GB · {model.quantization}</Text>
@@ -331,11 +376,11 @@ export function LlamaCppSection({
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.actionBtnPrimary]}
                     onPress={() => handleDownload(model)}
-                    disabled={isLoading}
+                    disabled={operationInProgress}
                   >
                     {isLoading
                       ? <ActivityIndicator size="small" color="#0A0A0A" />
-                      : <Text style={styles.actionBtnPrimaryText}>Download ({model.sizeGb}GB)</Text>
+                      : <Text style={styles.actionBtnPrimaryText}>{t('llama.download', { size: model.sizeGb })}</Text>
                     }
                   </TouchableOpacity>
                 </View>

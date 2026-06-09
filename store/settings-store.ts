@@ -5,7 +5,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppSettings } from './types';
-import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys } from '@/lib/secure-store';
+import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys, deleteLegacySecrets } from '@/lib/secure-store';
 import { useSoundStore } from '@/lib/sounds';
 import { useAgentStore } from '@/store/agent-store';
 import { logInfo, logError } from '@/lib/debug-logger';
@@ -21,6 +21,13 @@ function dotenvValue(value: string): string {
   return `'${normalized.replace(/'/g, "'\\''")}'`;
 }
 
+export const DEFAULT_LOCAL_LLM_MODEL = 'Qwen3.5-4B-Q4_K_M';
+
+const LEGACY_LOCAL_LLM_MODELS = new Set([
+  'Qwen3-4B-Instruct-2507-Q4_K_M',
+  'Qwen3-8B-Q4_K_M',
+]);
+
 export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 14,
   lineHeight: 1.4,
@@ -35,11 +42,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   highContrastOutput: true,
   localLlmEnabled: false,
   localLlmUrl: 'http://127.0.0.1:8080',
-  localLlmModel: 'Qwen3-8B-Q4_K_M',
+  localLlmModel: DEFAULT_LOCAL_LLM_MODEL,
+  localLlmModelPath: '',
   groqModel: 'llama-3.3-70b-versatile',
   perplexityApiKey: '',
   teamMembers: {
-    claude: false,
     gemini: true,
     codex: true,
     cerebras: true,
@@ -47,7 +54,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     perplexity: true,
     local: true,
   },
-  teamFacilitatorPriority: ['gemini', 'codex', 'perplexity', 'local', 'claude'],
+  teamFacilitatorPriority: ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'],
   enableCommandSafety: true,
   safetyConfirmLevel: 'HIGH' as const,
   experienceMode: 'learning' as const,
@@ -61,6 +68,70 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiFont: 'blue',
   showVimKeyBar: false,
 };
+
+const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];
+
+type LegacySettings = Omit<AppSettings, 'defaultAgent' | 'teamMembers' | 'teamFacilitatorPriority'> & {
+  defaultAgent?: AppSettings['defaultAgent'] | 'claude-code' | 'gemini-cli';
+  teamMembers?: Partial<AppSettings['teamMembers']> & { claude?: boolean; gemini?: boolean };
+  teamFacilitatorPriority?: Array<AppSettings['teamFacilitatorPriority'][number] | 'claude' | 'gemini'>;
+  claudeAuthToken?: unknown;
+  geminiAuthToken?: unknown;
+};
+
+function sanitizeRemovedAgents(settings: AppSettings): { settings: AppSettings; changed: boolean } {
+  let changed = false;
+  const legacy = settings as LegacySettings;
+  const {
+    claudeAuthToken: oldClaudeAuthToken,
+    geminiAuthToken: oldGeminiAuthToken,
+    ...cleanedSettings
+  } = legacy;
+  if (oldClaudeAuthToken !== undefined || oldGeminiAuthToken !== undefined) {
+    changed = true;
+  }
+  const defaultAgent =
+    legacy.defaultAgent === 'claude-code' || legacy.defaultAgent === 'gemini-cli'
+      ? 'codex'
+      : (legacy.defaultAgent ?? DEFAULT_SETTINGS.defaultAgent);
+  if (defaultAgent !== legacy.defaultAgent) {
+    changed = true;
+  }
+  if (legacy.teamMembers?.claude !== undefined) {
+    changed = true;
+  }
+  if (legacy.teamFacilitatorPriority?.some((agent) => agent === 'claude')) {
+    changed = true;
+  }
+
+  const next: AppSettings = {
+    ...(cleanedSettings as AppSettings),
+    defaultAgent,
+    teamMembers: {
+      gemini: legacy.teamMembers?.gemini ?? DEFAULT_SETTINGS.teamMembers.gemini,
+      codex: legacy.teamMembers?.codex ?? DEFAULT_SETTINGS.teamMembers.codex,
+      cerebras: legacy.teamMembers?.cerebras ?? DEFAULT_SETTINGS.teamMembers.cerebras,
+      groq: legacy.teamMembers?.groq ?? DEFAULT_SETTINGS.teamMembers.groq,
+      perplexity: legacy.teamMembers?.perplexity ?? DEFAULT_SETTINGS.teamMembers.perplexity,
+      local: legacy.teamMembers?.local ?? DEFAULT_SETTINGS.teamMembers.local,
+    },
+    teamFacilitatorPriority: Array.isArray(legacy.teamFacilitatorPriority)
+      ? legacy.teamFacilitatorPriority.filter((agent): agent is AppSettings['teamFacilitatorPriority'][number] =>
+          agent === 'gemini' || agent === 'cerebras' || agent === 'groq' || agent === 'codex' || agent === 'perplexity' || agent === 'local',
+        )
+      : [...ACTIVE_TEAM_PRIORITY],
+  };
+
+  const normalizedPriority = next.teamFacilitatorPriority.length > 0
+    ? next.teamFacilitatorPriority
+    : ACTIVE_TEAM_PRIORITY;
+  if (normalizedPriority.join('|') !== next.teamFacilitatorPriority.join('|')) {
+    next.teamFacilitatorPriority = normalizedPriority;
+    changed = true;
+  }
+
+  return { settings: next, changed };
+}
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
@@ -92,16 +163,29 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         AsyncStorage.getItem('shelly_settings'),
         loadApiKeys(),
       ]);
+      deleteLegacySecrets().catch((err) => {
+        logError('Settings', 'Failed to delete legacy OAuth secrets', err);
+      });
       const settings = {
         ...DEFAULT_SETTINGS,
         ...(settingsRaw ? JSON.parse(settingsRaw) : {}),
         ...secureKeys,
       };
+      let shouldPersist = false;
+      if (LEGACY_LOCAL_LLM_MODELS.has(settings.localLlmModel)) {
+        settings.localLlmModel = DEFAULT_LOCAL_LLM_MODEL;
+        shouldPersist = true;
+      }
+      const sanitized = sanitizeRemovedAgents(settings);
+      shouldPersist = shouldPersist || sanitized.changed;
+      if (shouldPersist) {
+        AsyncStorage.setItem('shelly_settings', JSON.stringify(stripApiKeys(sanitized.settings))).catch(() => {});
+      }
       // Sync sound store on load
-      useSoundStore.getState().setEnabled(settings.soundEffects ?? true);
-      useSoundStore.getState().setVolume(settings.soundVolume ?? 0.6);
+      useSoundStore.getState().setEnabled(sanitized.settings.soundEffects ?? true);
+      useSoundStore.getState().setVolume(sanitized.settings.soundVolume ?? 0.6);
       logInfo('Settings', 'Settings loaded');
-      set({ settings, isSettingsLoaded: true });
+      set({ settings: sanitized.settings, isSettingsLoaded: true });
     } catch (err) {
       logError('Settings', 'Failed to load settings', err);
       console.error('[Settings] loadSettings failed, using defaults:', err);
@@ -112,7 +196,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   updateSettings: (newSettings: Partial<AppSettings>) => {
     logInfo('Settings', 'Updated: ' + Object.keys(newSettings).join(', '));
     set((state) => {
-      const updated = { ...state.settings, ...newSettings };
+      const shouldClearLocalLlmModelPath =
+        'localLlmModel' in newSettings && !('localLlmModelPath' in newSettings);
+      const updated = {
+        ...state.settings,
+        ...newSettings,
+        ...(shouldClearLocalLlmModelPath ? { localLlmModelPath: '' } : {}),
+      };
       // Save API keys to SecureStore, strip them from AsyncStorage
       for (const [key, value] of Object.entries(newSettings)) {
         if (isApiKeyField(key) && typeof value === 'string') {
@@ -135,6 +225,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       if ('localLlmModel' in newSettings && typeof newSettings.localLlmModel === 'string') {
         envUpdates.push(['LOCAL_LLM_MODEL', newSettings.localLlmModel]);
+      }
+      if (shouldClearLocalLlmModelPath) {
+        envUpdates.push(['LOCAL_LLM_MODEL_PATH', '']);
+      } else if ('localLlmModelPath' in newSettings && typeof newSettings.localLlmModelPath === 'string') {
+        envUpdates.push(['LOCAL_LLM_MODEL_PATH', newSettings.localLlmModelPath]);
       }
       if (envUpdates.length > 0) {
         const keys = envUpdates.map(([key]) => key);

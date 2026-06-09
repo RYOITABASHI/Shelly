@@ -7,7 +7,7 @@
  * Shelly do X?" / "how do I use Y?" grounded in facts.
  *
  * Stage 1 minimum: feature-catalog only + a short primer. Subsequent
- * stages will ingest README / CLAUDE.md / DEFERRED.md excerpts via a
+ * stages will ingest README / AGENTS.md / DEFERRED.md excerpts via a
  * generated docs-content.ts. For now we keep this inline + small so it
  * ships in one commit without touching the build pipeline.
  */
@@ -46,18 +46,17 @@ function formatFeature(f: Feature): string {
 
 const CATALOG_SECTION = FEATURE_CATALOG.map(formatFeature).join('\n');
 
-// Hand-curated snippets from README / CLAUDE.md / DEFERRED.md. Keeps
+// Hand-curated snippets from README / AGENTS.md / DEFERRED.md. Keeps
 // the prompt small while still surfacing the most-asked capabilities
 // that the pure feature-catalog description doesn't cover (ship state,
 // roadmap).
 const CURATED_DOCS = `
-SHIPPING (as of 2026-04):
+SHIPPING (as of 2026-05):
 - Shelly runs standalone on Android (JNI forkpty; Termux not required).
-- Bundled CLIs: claude (pinned 2.1.112, the last cli.js release before
-  Anthropic's Bun-SEA switch), gemini (latest), codex (via
-  DioNanos/codex-termux Android-native fork).
-- Auto-update pipeline with snapshot + health check + rollback — a
-  broken upstream @latest never blocks the claude command.
+- Bundled CLI: codex (via DioNanos/codex-termux Android-native fork).
+- Local LLM and cloud API panes are available for non-CLI assistant work.
+- CLI update checks are limited to Codex and run only when explicitly
+  requested by the user.
 - GitHub Codespaces integration via shelly-cs CLI: OAuth device flow,
   list / create / open / use / stop / delete / doctor. The \`cs\`
   alias resolves to a default codespace for a one-tap "open my dev
@@ -84,8 +83,8 @@ ROADMAP / PLANNED (DEFERRED.md highlights):
 EXPLICITLY OUT OF SCOPE:
 - Cloud storage providers (Google Drive / Dropbox / OneDrive) — Shelly
   defers to rclone, which already speaks 40+ backends.
-- Anthropic / OpenAI paid-API direct integration — user policy is
-  "no paid APIs except Perplexity". Claude and Codex ship as CLIs only.
+- Removed legacy CLI providers.
+- OpenAI paid-API direct integration outside the Codex CLI.
 `;
 
 export function buildAskSystemPrompt(): string {

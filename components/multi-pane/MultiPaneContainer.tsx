@@ -24,42 +24,40 @@ import {
   useMultiPaneStore,
   getLayout,
   PRESET_CAPACITY,
+  resolveSinglePaneSlot,
   type PaneTab,
-  type PresetId,
   type Ratios,
   type SlotIndex,
 } from '@/hooks/use-multi-pane';
 import { logInfo } from '@/lib/debug-logger';
-import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
+import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { useTranslation } from '@/lib/i18n';
 
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
 function EmptyState() {
+  const { t } = useTranslation();
   const addPane = useAddPane();
-  const options: { tab: PaneTab; label: string; icon: string }[] = [
-    { tab: 'terminal', label: 'Terminal', icon: 'terminal' },
-    { tab: 'ai',       label: 'AI Chat',  icon: 'auto-awesome' },
-    { tab: 'browser',  label: 'Browser',  icon: 'language' },
-  ];
+  const options: PaneTab[] = ['terminal', 'ai', 'agent-chat', 'browser'];
   return (
     <View style={emptyStyles.root}>
-      <Text style={emptyStyles.title}>NO PANES OPEN</Text>
-      <Text style={emptyStyles.subtitle}>Add a pane to get started</Text>
+      <Text style={emptyStyles.title}>{t('pane.empty_title')}</Text>
+      <Text style={emptyStyles.subtitle}>{t('pane.empty_subtitle')}</Text>
       <View style={emptyStyles.row}>
-        {options.map((opt) => (
+        {options.map((tab) => (
           <Pressable
-            key={opt.tab}
+            key={tab}
             style={emptyStyles.btn}
-            onPress={() => addPane(opt.tab)}
+            onPress={() => addPane(tab)}
           >
-            <MaterialIcons name={opt.icon as any} size={18} color={C.accent} />
-            <Text style={emptyStyles.btnLabel}>{opt.label}</Text>
+            <MaterialIcons name={PANE_REGISTRY[tab].icon as any} size={18} color={C.accent} />
+            <Text style={emptyStyles.btnLabel}>{resolvePaneTitle(tab, t)}</Text>
           </Pressable>
         ))}
       </View>
@@ -123,6 +121,7 @@ export function MultiPaneContainer() {
   const hasHydrated  = useMultiPaneStore((s) => s._hasHydrated);
   const preset       = useMultiPaneStore((s) => s.preset);
   const slots        = useMultiPaneStore((s) => s.slots);
+  const focusedSlot  = useMultiPaneStore((s) => s.focusedSlot);
   const ratios       = useMultiPaneStore((s) => s.ratios);
   const maximized    = useMultiPaneStore((s) => s.maximizedSlot);
   const setLeafTab   = useMultiPaneStore((s) => s.setLeafTab);
@@ -130,34 +129,10 @@ export function MultiPaneContainer() {
   const splitPane    = useMultiPaneStore((s) => s.splitPane);
   const setRatio     = useMultiPaneStore((s) => s.setRatio);
   const resetRatio   = useMultiPaneStore((s) => s.resetRatio);
-  const setPreset    = useMultiPaneStore((s) => s.setPreset);
-
-  const { isWide } = useDeviceLayout();
-
-  // Auto-reorient horizontally-biased presets when the Z Fold 6 (or any
-  // foldable) closes into the narrow cover screen. 2-cols side-by-side
-  // reads as two very thin slits once the width collapses past ~380dp,
-  // so swap to a top/bottom stack that keeps each pane legible.
-  // Mapping: p2h → p2v, p3l / p3r → p3t. Leave p1 / p2v / p3t / p4 alone
-  // (already vertical-friendly) and don't auto-swap *back* to horizontal
-  // when reopening — the user may have deliberately picked vertical on
-  // the inner screen too.
-  const prevWideRef = useRef(isWide);
-  useEffect(() => {
-    const wasWide = prevWideRef.current;
-    prevWideRef.current = isWide;
-    if (wasWide && !isWide) {
-      const reorient: Partial<Record<PresetId, PresetId>> = {
-        p2h: 'p2v',
-        p3l: 'p3t',
-        p3r: 'p3t',
-      };
-      const next = reorient[preset];
-      if (next && next !== preset) setPreset(next);
-    }
-  }, [isWide, preset, setPreset]);
 
   const [size, setSize] = useState({ W: 0, H: 0 });
+  const [keyboardFreeHeight, setKeyboardFreeHeight] = useState(0);
+  const keyboardFreeWidthRef = useRef(0);
 
   // Single source of truth for keyboard avoidance across the whole pane
   // grid. Each individual pane used to add its own paddingBottom =
@@ -228,10 +203,28 @@ export function MultiPaneContainer() {
 
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
-    setSize((prev) =>
-      prev.W === width && prev.H === height ? prev : { W: width, H: height },
-    );
-  }, []);
+    setKeyboardFreeHeight((prev) => {
+      const widthChanged = keyboardFreeWidthRef.current > 0 &&
+        Math.abs(width - keyboardFreeWidthRef.current) > 2;
+      if (prev <= 0 || height > prev || (keyboardHeight <= 0 && widthChanged)) {
+        keyboardFreeWidthRef.current = width;
+        return height;
+      }
+      // If adjustResize fires before keyboardDidShow/metrics, the first
+      // reduced layout can arrive while keyboardHeight is still 0. Keep the
+      // previous taller baseline so the later keyboard height is not
+      // subtracted a second time.
+      if (keyboardHeight <= 0 && height >= prev - 48) {
+        keyboardFreeWidthRef.current = width;
+        return height;
+      }
+      return prev;
+    });
+    setSize((prev) => {
+      if (prev.W === width && prev.H === height) return prev;
+      return { W: width, H: height };
+    });
+  }, [keyboardHeight]);
 
   if (!hasHydrated) {
     return <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout} />;
@@ -268,21 +261,29 @@ export function MultiPaneContainer() {
     );
   }
 
-  // Shrink the usable height by the keyboard size when the IME is up, so
-  // the entire grid (terminals + AI + dividers) slides above the keyboard
-  // as one unit. Without this, per-pane padding tried to compensate and
-  // ended up collapsing content in split layouts.
-  const gridHeight = size.H > 0 ? Math.max(0, size.H - keyboardHeight) : 0;
+  // Shrink the usable height by the keyboard size only when the Android
+  // window did not already resize. On One UI with adjustResize, the root
+  // layout height is already reduced; subtracting keyboardHeight again
+  // leaves the panes crushed into the top half with a large empty gap.
+  const alreadyResizedForIme = keyboardHeight > 0 && size.H > 0 &&
+    keyboardFreeHeight > 0 &&
+    keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
+  const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
+  const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
   const { slotRects, dividers } = getLayout(preset, ratios, size.W, gridHeight);
+  const singlePaneSlot = preset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
 
   return (
     <View
-      style={[styles.root, { paddingBottom: keyboardHeight, backgroundColor: containerBg }]}
+      style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
       onLayout={onContainerLayout}
     >
       {slots.map((slot, i) => {
         if (!slot) return null;
-        const rect = slotRects[i as SlotIndex];
+        if (singlePaneSlot !== null && i !== singlePaneSlot) return null;
+        const rect = singlePaneSlot !== null
+          ? { x: 0, y: 0, w: size.W, h: gridHeight }
+          : slotRects[i as SlotIndex];
         // Skip render until we have a real size — first frame would place
         // every slot at (0,0,0,0) which the children don't like.
         if (rect.w <= 0 || rect.h <= 0) return null;
@@ -309,7 +310,7 @@ export function MultiPaneContainer() {
 
       {size.W > 0 && size.H > 0 && dividers.map((d, idx) => {
         const isVertical = d.kind === 'vertical';
-        const containerSize = isVertical ? size.W : size.H;
+        const containerSize = isVertical ? size.W : gridHeight;
         const currentRatio = ratios[d.ratioKey as keyof Ratios];
         return (
           <Divider

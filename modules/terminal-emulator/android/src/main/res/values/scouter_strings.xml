@@ -1,5 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="scouter_status_dot">Scouter status</string>
+  <string name="scouter_ask_agent_chat_short">ASK</string>
+  <string name="scouter_ask_agent_chat">Ask Codex from widget</string>
+  <string name="scouter_widget_prompt_title">Ask Codex</string>
+  <string name="scouter_widget_prompt_hint">Type a prompt for the bound Codex terminal</string>
+  <string name="scouter_widget_prompt_send">Send</string>
+  <string name="scouter_widget_prompt_cancel">Cancel</string>
+  <string name="scouter_widget_prompt_close">Close</string>
+  <string name="scouter_widget_prompt_resume">Resume Codex</string>
+  <string name="scouter_widget_prompt_empty">Prompt is empty</string>
+  <string name="scouter_widget_prompt_sent">Sent to Codex</string>
+  <string name="scouter_widget_prompt_approval_needed">Codex is waiting for approval. Use OK or NO on the widget.</string>
+  <string name="scouter_widget_prompt_interactive">Codex is waiting for a terminal choice</string>
+  <string name="scouter_widget_approval_sent">Approval sent to Codex</string>
+  <string name="scouter_widget_approval_denied">Denial sent to Codex</string>
+  <string name="scouter_widget_approval_queued_resume">Approval queued. Resuming Codex...</string>
+  <string name="scouter_widget_approval_not_ready">Codex approval is not ready</string>
+  <string name="scouter_widget_approval_allow">Allow Codex approval request</string>
+  <string name="scouter_widget_approval_deny">Deny Codex approval request</string>
+  <string name="scouter_widget_approval_allow_short">OK</string>
+  <string name="scouter_widget_approval_deny_short">NO</string>
+  <string name="scouter_widget_prompt_queued_resume">Queued. Resuming Codex...</string>
+  <string name="scouter_widget_prompt_no_codex">Open or resume a Codex terminal first</string>
+  <string name="scouter_widget_prompt_stale_codex">Bound Codex terminal is not ready</string>
+  <string name="scouter_widget_prompt_busy">Codex is busy. Wait for it to finish first.</string>
+  <string name="scouter_widget_choice_sent">Choice sent to Codex</string>
+  <string name="scouter_widget_choice_not_ready">Codex choice is no longer available</string>
 </resources>
-

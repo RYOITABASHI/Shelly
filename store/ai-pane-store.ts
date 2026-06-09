@@ -81,6 +81,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         serializable[paneId] = {
           ...conv,
           isStreaming: false,
+          terminalContext: null,
           messages: conv.messages.slice(-MAX_MESSAGES_PER_PANE).map((m) => ({
             ...m,
             isStreaming: false,
@@ -103,7 +104,15 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
           const data = JSON.parse(raw) as Record<string, AIPaneConversation>;
-          set({ conversations: data, isLoaded: true });
+          const conversations: Record<string, AIPaneConversation> = {};
+          for (const [paneId, conv] of Object.entries(data)) {
+            conversations[paneId] = {
+              ...conv,
+              isStreaming: false,
+              terminalContext: null,
+            };
+          }
+          set({ conversations, isLoaded: true });
         } else {
           set({ isLoaded: true });
         }

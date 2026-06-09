@@ -59,6 +59,69 @@ export const Colors = {
 
 export type ThemeColorPalette = (typeof Colors)[ColorScheme];
 
+type RuntimeThemeSource = {
+  bgDeep: string;
+  bgSurface: string;
+  bgSidebar: string;
+  btnSecondaryBg: string;
+  text1: string;
+  text2: string;
+  text3: string;
+  border: string;
+  accent: string;
+  accentGreen: string;
+  accentBlue: string;
+  accentPurple: string;
+  accentCode: string;
+  warning: string;
+  errorText: string;
+};
+
+export function refreshRuntimeThemeColors(palette: RuntimeThemeSource) {
+  const base = {
+    primary: palette.accent,
+    background: palette.bgDeep,
+    backgroundDeep: palette.bgDeep,
+    surface: palette.bgSurface,
+    surfaceHigh: palette.bgSidebar,
+    surface2: palette.btnSecondaryBg,
+    foreground: palette.text1,
+    foregroundDim: palette.text1,
+    muted: palette.text2,
+    inactive: palette.text3,
+    hint: palette.text3,
+    border: palette.border,
+    borderLight: palette.border,
+    borderHeavy: palette.border,
+    success: palette.accentGreen,
+    warning: palette.warning,
+    error: palette.errorText,
+    accent: palette.accent,
+    prompt: palette.accent,
+    command: palette.accentCode,
+    tint: palette.accent,
+    link: palette.accentBlue,
+    aiPurple: palette.accentPurple,
+    interpretPurple: palette.accentPurple,
+    interpretText: palette.accentPurple,
+    keyLabel: palette.text2,
+    infoText: palette.text2,
+  };
+
+  const runtime = {
+    ...base,
+    text: base.foreground,
+    background: base.background,
+    tint: base.primary,
+    icon: base.muted,
+    tabIconDefault: base.muted,
+    tabIconSelected: base.primary,
+  };
+
+  Object.assign(Colors.light, runtime);
+  Object.assign(Colors.dark, runtime);
+}
+
 export const Fonts = Platform.select({
   ios: {
     /** iOS `UIFontDescriptorSystemDesignDefault` */

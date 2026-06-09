@@ -18,7 +18,7 @@ export function SaveBadge() {
         Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }),
       ]).start();
     }
-  }, [showBadge]);
+  }, [showBadge, opacity]);
 
   return (
     <Animated.Text style={[styles.badge, { opacity }]}>

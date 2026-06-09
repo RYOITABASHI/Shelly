@@ -17,6 +17,9 @@ import { detectApprovalPrompt } from '@/lib/realtime-translate';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { generateId } from '@/lib/id';
 import { diagnosePackageError } from '@/lib/package-doctor';
+import { detectCodexPtyLaunchText } from '@/lib/codex-pty-detection';
+import { useAgentChatStore } from '@/store/agent-chat-store';
+import { useTerminalStore } from '@/store/terminal-store';
 
 // Patterns indicating file changes in PTY output (with capturing groups for file paths)
 const FILE_CHANGE_OUTPUT = [
@@ -62,6 +65,9 @@ export function useTerminalOutput() {
   const errorAccum = useRef<string[]>([]);
   const pkgErrorDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pkgErrorAccum = useRef<string[]>([]);
+  const codexOutputBuffers = useRef<Record<string, string>>({});
+  const codexLastDetectedAt = useRef<Record<string, number>>({});
+  const restoredReplaySessions = useRef<Record<string, number>>({});
   const { isWide } = useDeviceLayout();
 
   // Batch buffer for output analysis (省バッテリー: per-line → batched)
@@ -72,6 +78,14 @@ export function useTerminalOutput() {
   useEffect(() => {
     const sub = TerminalEmulator.addListener('onSessionOutput', (event: { sessionId: string; data: string }) => {
       if (!event.data) return;
+
+      detectForegroundCodexPty(
+        event.sessionId,
+        event.data,
+        codexOutputBuffers.current,
+        codexLastDetectedAt.current,
+        restoredReplaySessions.current,
+      );
 
       // Always add to execution log immediately (lightweight)
       const lines = event.data.split('\n');
@@ -123,4 +137,67 @@ export function useTerminalOutput() {
       if (pkgErrorDebounce.current) clearTimeout(pkgErrorDebounce.current);
     };
   }, [addTerminalOutput, isWide]);
+}
+
+function detectForegroundCodexPty(
+  nativeSessionId: string,
+  chunk: string,
+  buffers: Record<string, string>,
+  lastDetectedAt: Record<string, number>,
+  restoredReplaySessions: Record<string, number>,
+): void {
+  if (isRestoredHistoryChunk(nativeSessionId, chunk, restoredReplaySessions)) {
+    return;
+  }
+
+  const previous = buffers[nativeSessionId] ?? '';
+  const buffer = `${previous}${chunk}`.slice(-4000);
+  buffers[nativeSessionId] = buffer;
+
+  const detection = detectCodexPtyLaunchText(buffer);
+  if (!detection) return;
+
+  const now = Date.now();
+  if (now - (lastDetectedAt[nativeSessionId] ?? 0) < 3_000) return;
+  lastDetectedAt[nativeSessionId] = now;
+
+  const terminalState = useTerminalStore.getState();
+  const shellSession = terminalState.sessions.find((session) => session.nativeSessionId === nativeSessionId);
+  const cwd = detection.cwd ?? shellSession?.currentDir ?? null;
+  if (!cwd) return;
+
+  if (shellSession && shellSession.activeCli !== 'codex') {
+    useTerminalStore.setState((state) => ({
+      sessions: state.sessions.map((session) => (
+        session.id === shellSession.id ? { ...session, activeCli: 'codex' as const } : session
+      )),
+    }));
+    void useTerminalStore.getState().saveSessionState();
+  }
+
+  useAgentChatStore.getState().recordCodexPtyCandidate({
+    ptySessionId: nativeSessionId,
+    shellySessionId: shellSession?.id ?? null,
+    cwd,
+    lastSeenAt: now,
+  });
+}
+
+function isRestoredHistoryChunk(
+  nativeSessionId: string,
+  chunk: string,
+  restoredReplaySessions: Record<string, number>,
+): boolean {
+  const now = Date.now();
+  if (chunk.includes('previous session (restored)')) {
+    restoredReplaySessions[nativeSessionId] = now;
+  }
+  const startedAt = restoredReplaySessions[nativeSessionId] ?? 0;
+  const isRestoredReplay = startedAt > 0 && now - startedAt < 4_000;
+  if (chunk.includes('end of restored history')) {
+    delete restoredReplaySessions[nativeSessionId];
+  } else if (startedAt > 0 && now - startedAt >= 4_000) {
+    delete restoredReplaySessions[nativeSessionId];
+  }
+  return isRestoredReplay;
 }

@@ -16,6 +16,7 @@ import { useTheme } from '@/lib/theme-engine';
 import { fonts as F } from '@/theme.config';
 import { useProfileStore, SSHProfile } from '@/store/profile-store';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Edit/Add modal ─────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ type EditModalProps = {
 };
 
 function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
+  const { t } = useTranslation();
   const theme = useTheme();
   const c = theme.colors;
   // Match ModalHeader — keep the BACK affordance clear of the Android
@@ -54,7 +56,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
 
   function handleSave() {
     if (!name.trim() || !host.trim()) {
-      Alert.alert('Required', 'Name and Host are required.');
+      Alert.alert(t('profiles.required_title'), t('profiles.required_body'));
       return;
     }
     onSave({
@@ -84,46 +86,46 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
               hitSlop={10}
               style={styles.modalBackButton}
               accessibilityRole="button"
-              accessibilityLabel="Back to profiles"
+              accessibilityLabel={t('profiles.back_a11y')}
             >
               <MaterialIcons name="arrow-back" size={16} color={c.muted} />
-              <Text style={[styles.modalBackText, { color: c.muted }]}>BACK</Text>
+              <Text style={[styles.modalBackText, { color: c.muted }]}>{t('common.back')}</Text>
             </Pressable>
             <Text style={[styles.modalTitle, { color: c.foreground, flex: 1, textAlign: 'center' }]} numberOfLines={1}>
-              {initial.id ? 'Edit Profile' : 'Add Profile'}
+              {initial.id ? t('profiles.edit_profile') : t('profiles.add_profile')}
             </Text>
             <View style={styles.modalBackButton} />
           </View>
 
-          <Text style={labelStyle}>Name *</Text>
+          <Text style={labelStyle}>{t('profiles.name_required')}</Text>
           <TextInput style={inputStyle} value={name} onChangeText={setName} placeholder="my-server" placeholderTextColor={c.muted} autoCapitalize="none" />
 
-          <Text style={labelStyle}>Host / HostName *</Text>
+          <Text style={labelStyle}>{t('profiles.host_required')}</Text>
           <TextInput style={inputStyle} value={host} onChangeText={setHost} placeholder="192.168.1.10" placeholderTextColor={c.muted} autoCapitalize="none" keyboardType="url" />
 
           <View style={styles.row2}>
             <View style={styles.flex1}>
-              <Text style={labelStyle}>Port</Text>
+              <Text style={labelStyle}>{t('profiles.port')}</Text>
               <TextInput style={inputStyle} value={port} onChangeText={setPort} placeholder="22" placeholderTextColor={c.muted} keyboardType="number-pad" />
             </View>
             <View style={[styles.flex2, { marginLeft: 8 }]}>
-              <Text style={labelStyle}>User</Text>
+              <Text style={labelStyle}>{t('profiles.user')}</Text>
               <TextInput style={inputStyle} value={user} onChangeText={setUser} placeholder="root" placeholderTextColor={c.muted} autoCapitalize="none" />
             </View>
           </View>
 
-          <Text style={labelStyle}>Identity File (optional)</Text>
+          <Text style={labelStyle}>{t('profiles.identity_file_optional')}</Text>
           <TextInput style={inputStyle} value={keyFile} onChangeText={setKeyFile} placeholder="~/.ssh/id_rsa" placeholderTextColor={c.muted} autoCapitalize="none" />
 
-          <Text style={labelStyle}>Jump Host (optional)</Text>
+          <Text style={labelStyle}>{t('profiles.jump_host_optional')}</Text>
           <TextInput style={inputStyle} value={jumpHost} onChangeText={setJumpHost} placeholder="bastion.example.com" placeholderTextColor={c.muted} autoCapitalize="none" />
 
           <View style={styles.modalButtons}>
             <Pressable style={[styles.btn, { borderColor: c.border }]} onPress={onClose}>
-              <Text style={{ color: c.muted, fontSize: 13 }}>Cancel</Text>
+              <Text style={{ color: c.muted, fontSize: 13 }}>{t('common.cancel')}</Text>
             </Pressable>
             <Pressable style={[styles.btn, { backgroundColor: c.foreground, borderColor: c.foreground }]} onPress={handleSave}>
-              <Text style={{ color: '#000', fontSize: 13, fontWeight: '700' }}>Save</Text>
+              <Text style={{ color: '#000', fontSize: 13, fontWeight: '700' }}>{t('common.save')}</Text>
             </Pressable>
           </View>
         </View>
@@ -135,6 +137,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
 // ─── ProfilesSection ─────────────────────────────────────────────────────────
 
 export function ProfilesSection() {
+  const { t } = useTranslation();
   const theme = useTheme();
   const c = theme.colors;
 
@@ -159,20 +162,20 @@ export function ProfilesSection() {
   const handleLongPress = useCallback(
     (p: SSHProfile) => {
       Alert.alert(p.name, p.host, [
-        { text: 'Edit', onPress: () => setEditTarget(p) },
+        { text: t('common.edit'), onPress: () => setEditTarget(p) },
         {
-          text: 'Delete',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: () =>
-            Alert.alert('Delete', `Remove "${p.name}"?`, [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => removeProfile(p.id) },
+            Alert.alert(t('common.delete'), t('profiles.remove_body', { name: p.name }), [
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('common.delete'), style: 'destructive', onPress: () => removeProfile(p.id) },
             ]),
         },
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
       ]);
     },
-    [removeProfile],
+    [removeProfile, t],
   );
 
   const handleImport = useCallback(async () => {
@@ -180,14 +183,14 @@ export function ProfilesSection() {
     try {
       const count = await importFromSSHConfig();
       if (count > 0) {
-        Alert.alert('Imported', `Added ${count} profile${count > 1 ? 's' : ''} from ~/.ssh/config`);
+        Alert.alert(t('profiles.imported_title'), t('profiles.imported_body', { count }));
       } else {
-        Alert.alert('No new profiles', 'No new hosts found in ~/.ssh/config');
+        Alert.alert(t('profiles.no_new_title'), t('profiles.no_new_body'));
       }
     } finally {
       setImporting(false);
     }
-  }, [importFromSSHConfig]);
+  }, [importFromSSHConfig, t]);
 
   const handleSave = useCallback(
     (p: SSHProfile) => {
@@ -204,7 +207,7 @@ export function ProfilesSection() {
   return (
     <View>
       {profiles.length === 0 ? (
-        <Text style={[styles.emptyText, { color: c.muted }]}>No saved profiles</Text>
+        <Text style={[styles.emptyText, { color: c.muted }]}>{t('profiles.empty')}</Text>
       ) : (
         profiles.map((p) => (
           <Pressable
@@ -239,7 +242,7 @@ export function ProfilesSection() {
       >
         <MaterialIcons name="download" size={12} color={c.muted} />
         <Text style={[styles.actionBtnText, { color: c.muted }]}>
-          {importing ? 'Importing…' : 'Import from ~/.ssh/config'}
+          {importing ? t('profiles.importing') : t('profiles.import_from_ssh')}
         </Text>
       </Pressable>
 
@@ -248,7 +251,7 @@ export function ProfilesSection() {
         onPress={() => setEditTarget({})}
       >
         <MaterialIcons name="add" size={12} color={c.muted} />
-        <Text style={[styles.actionBtnText, { color: c.muted }]}>Add Profile</Text>
+        <Text style={[styles.actionBtnText, { color: c.muted }]}>{t('profiles.add_profile')}</Text>
       </Pressable>
 
       {/* Edit / Add modal */}

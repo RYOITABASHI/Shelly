@@ -10,12 +10,14 @@ import { colors as C } from '@/theme.config';
 import { McpSection } from './McpSection';
 import { ModalHeader } from './ModalHeader';
 import { execCommand } from '@/hooks/use-native-exec';
+import { useTranslation } from '@/lib/i18n';
 
 type Props = {
   onClose: () => void;
 };
 
 export function McpSectionWrapper({ onClose }: Props) {
+  const { t } = useTranslation();
   // onRunCommand mirror that used to route through the Termux bridge.
   // Now it calls execCommand directly and adapts the result shape to
   // whatever McpSection expects: { success, output }.
@@ -32,7 +34,7 @@ export function McpSectionWrapper({ onClose }: Props) {
 
   return (
     <View style={styles.root}>
-      <ModalHeader title="MCP SERVERS" onClose={onClose} />
+      <ModalHeader title={t('mcp.title')} onClose={onClose} />
       <ScrollView style={styles.body}>
         <McpSection isConnected={true} onRunCommand={handleRun} />
       </ScrollView>

@@ -1,7 +1,31 @@
 import type { ExpoConfig } from "expo/config";
+import { execSync } from "node:child_process";
 
 const bundleId = "dev.shelly.terminal";
 const schemeFromBundleId = "shelly";
+const lastManualAndroidVersionCode = 532;
+const fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1;
+
+function androidVersionCode(): number {
+  const envVersionCode = Number.parseInt(process.env.SHELLY_ANDROID_VERSION_CODE || "", 10);
+  if (Number.isInteger(envVersionCode) && envVersionCode >= fallbackAndroidVersionCode) {
+    return envVersionCode;
+  }
+
+  try {
+    const gitCount = Number.parseInt(
+      execSync("git rev-list --count HEAD", { encoding: "utf8" }).trim(),
+      10,
+    );
+    if (Number.isInteger(gitCount) && gitCount > 0) {
+      return Math.max(gitCount, fallbackAndroidVersionCode);
+    }
+  } catch {
+    // Keep local config evaluation working outside a full git checkout.
+  }
+
+  return fallbackAndroidVersionCode;
+}
 
 const env = {
   // App branding - update these values directly (do not use env vars)
@@ -18,11 +42,11 @@ const env = {
 const config: ExpoConfig & { android?: any } = {
   name: env.appName,
   slug: env.appSlug,
-  version: "5.3.1",
+  version: "5.3.8",
   // OTA remains disabled for release APKs: installed devices should run
   // exactly the JS bundled in the APK. Keep runtimeVersion aligned with
   // the app semver so a future OTA re-enable starts from a clean boundary.
-  runtimeVersion: "5.3.1",
+  runtimeVersion: "5.3.8",
   orientation: "default",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -49,8 +73,9 @@ const config: ExpoConfig & { android?: any } = {
     // Scoped Storage (targetSdk 30+) blocks direct open() on /sdcard paths
     // and the "push a script, source it from the shell" workflow is broken.
     // We request it at first run via Environment.isExternalStorageManager().
-    // Shelly is distributed via GitHub Releases / F-Droid (not Play Store),
-    // so the all-files-access restriction does not apply.
+    // Shelly is distributed via GitHub Releases for now (not Play Store),
+    // so the Play Store all-files-access review does not apply yet.
+    versionCode: androidVersionCode(),
     permissions: [
       "POST_NOTIFICATIONS",
       "FOREGROUND_SERVICE",
@@ -85,6 +110,7 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-terminal-service",
     "./plugins/with-apk-installer",
     "./plugins/with-saved-instance-state",
+    "./plugins/with-configuration-change-guard",
     [
       "expo-audio",
       {
@@ -112,7 +138,7 @@ const config: ExpoConfig & { android?: any } = {
       {
         android: {
           // bug #139 (2026-04-27): arm64-v8a only. All of Shelly's
-          // bundled native binaries (claude SEA, codex termux fork,
+          // bundled native binaries (codex termux fork,
           // bash/node/git/python/etc.) are arm64-only. Shipping
           // armeabi-v7a was packaging RN/Hermes/Reanimated 32-bit
           // .so files for an architecture nothing else in the APK
@@ -126,7 +152,7 @@ const config: ExpoConfig & { android?: any } = {
       },
     ],
   ],
-  // expo-updates remains disabled for GitHub/F-Droid release APKs. Every
+  // expo-updates remains disabled for GitHub release APKs. Every
   // JS update ships through a new APK so CLI harness fixes and docs stay
   // tied to the binary the user actually installed.
   updates: {

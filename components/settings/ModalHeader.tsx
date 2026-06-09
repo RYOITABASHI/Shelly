@@ -12,6 +12,7 @@ import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors as C, fonts as F } from '@/theme.config';
+import { useTranslation } from '@/lib/i18n';
 
 type Props = {
   title: string;
@@ -21,6 +22,7 @@ type Props = {
 };
 
 export function ModalHeader({ title, onClose, subtitle }: Props) {
+  const { t } = useTranslation();
   // Respect Android status bar / notch — otherwise BACK/× collide with
   // the system clock and battery icons on devices like the Z Fold6 (bug #33).
   const insets = useSafeAreaInsets();
@@ -32,10 +34,10 @@ export function ModalHeader({ title, onClose, subtitle }: Props) {
           hitSlop={10}
           style={styles.backButton}
           accessibilityRole="button"
-          accessibilityLabel={`Back from ${title}`}
+          accessibilityLabel={t('modal.back_from', { title })}
         >
           <MaterialIcons name="arrow-back" size={16} color={C.accent} />
-          <Text style={styles.backText}>BACK</Text>
+          <Text style={styles.backText}>{t('common.back')}</Text>
         </Pressable>
         <View style={styles.titleWrap} pointerEvents="none">
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
@@ -45,7 +47,7 @@ export function ModalHeader({ title, onClose, subtitle }: Props) {
           hitSlop={10}
           style={styles.closeButton}
           accessibilityRole="button"
-          accessibilityLabel={`Close ${title}`}
+          accessibilityLabel={t('modal.close', { title })}
         >
           <MaterialIcons name="close" size={16} color={C.text2} />
         </Pressable>

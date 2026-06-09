@@ -36,7 +36,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
   // Priority 1: Qwen/Codex article drafting evaluation
   if (ARTICLE_EVAL_KEYWORDS.some((kw) => lower.includes(kw))) {
     return {
-      tool: { type: 'ab-article-eval', localModel: 'Qwen3-8B-Q4_K_M', codexCmd: 'codex' },
+      tool: { type: 'ab-article-eval', localModel: 'Qwen3.5-4B-Q4_K_M', codexCmd: 'codex' },
       label: 'Qwen/Codex A/B Eval',
       reason: 'Article drafting comparison — runs local Qwen and Codex against the same source context',
     };
@@ -69,11 +69,12 @@ export function suggestTool(prompt: string): ToolSuggestion {
     };
   }
 
-  // Default: Gemini API (free Google AI Studio quota, no fragile TUI/PTY path)
+  // Default: Gemini API. It keeps background agents on an API path without
+  // reintroducing the removed Gemini CLI/OAuth surface.
   return {
     tool: { type: 'gemini-api' },
     label: 'Gemini API',
-    reason: 'General-purpose — Gemini API uses the free Google quota without relying on the experimental CLI',
+    reason: 'General-purpose — Gemini API uses Google AI Studio quota without relying on the removed CLI path',
   };
 }
 
@@ -83,7 +84,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
 export async function checkToolAvailability(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<Record<string, boolean>> {
-  const tools = ['claude', 'gemini', 'codex'];
+  const tools = ['codex'];
   const results: Record<string, boolean> = {};
 
   for (const tool of tools) {
@@ -98,7 +99,12 @@ export async function checkToolAvailability(
   // Check local LLM
   try {
     const output = await runCommand(
-      'node -e "const http=require(\'http\'); const req=http.get(\'http://127.0.0.1:8080/health\', res=>{process.stdout.write(\'found\'); res.resume();}); req.setTimeout(2000,()=>req.destroy()); req.on(\'error\',()=>process.stdout.write(\'notfound\'));" 2>/dev/null || echo "notfound"'
+      [
+        `(command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo found)`,
+        `(command -v wget >/dev/null 2>&1 && wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo found)`,
+        `(command -v toybox >/dev/null 2>&1 && printf 'GET /v1/models HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' | toybox nc -w 2 127.0.0.1 8080 2>/dev/null | grep -q 'HTTP/1\\.[01] 200' && echo found)`,
+        `echo notfound`,
+      ].join(' || ')
     );
     results['local'] = !output.includes('notfound');
   } catch {

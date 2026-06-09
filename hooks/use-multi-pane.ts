@@ -25,6 +25,7 @@ import { logInfo, logLifecycle } from '@/lib/debug-logger';
 export type PaneTab =
   | 'terminal'
   | 'ai'
+  | 'agent-chat'
   | 'browser'
   | 'markdown'
   | 'preview'
@@ -174,6 +175,13 @@ function firstFilledIndex(slots: readonly Slot[]): SlotIndex {
     if (slots[i]) return i as SlotIndex;
   }
   return 0;
+}
+
+export function resolveSinglePaneSlot(
+  slots: readonly Slot[],
+  focusedSlot: SlotIndex,
+): SlotIndex {
+  return slots[focusedSlot] ? focusedSlot : firstFilledIndex(slots);
 }
 
 function firstEmptyIndex(slots: readonly Slot[], capacity: number): SlotIndex | null {
@@ -440,8 +448,8 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         // Terminal cap — 3 terminals max. Android 12+ phantom process killer
         // caps app-owned subprocess count at ~32; each idle terminal occupies
-        // ~1 subprocess (bash), bumped to 5-10 once a CLI (claude/codex/
-        // gemini) starts its node helper and spawns tools. 3 panes × ~10 peak
+        // ~1 subprocess (bash), bumped to 5-10 once a CLI starts its node
+        // helper and spawns tools. 3 panes × ~10 peak
         // = 30 processes fits comfortably under 32 on Samsung (the strictest
         // OEM we support). Bumping above 3 needs a Foreground Service
         // (bug #65 Case B) to keep children out of the phantom pool. This
@@ -470,14 +478,19 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
         const slotId = genId();
+        let newSessionId: string | undefined;
         if (tab === 'terminal') {
           const { useTerminalStore } = require('@/store/terminal-store');
-          const newSessionId = useTerminalStore.getState().addSession();
+          newSessionId = useTerminalStore.getState().addSession();
+          if (!newSessionId) {
+            logInfo('MultiPane', 'addPane terminal ignored — session cap reached');
+            return 'terminal_cap';
+          }
           newSlots[empty] = { id: slotId, tab, sessionId: newSessionId };
         } else {
           newSlots[empty] = { id: slotId, tab };
         }
-        set({ preset, slots: newSlots, focusedSlot: empty });
+        set({ preset, slots: newSlots, focusedSlot: empty, maximizedSlot: null });
 
         // bug #116 follow-up 10 (P1-2): mirror focusedSlot into
         // usePaneStore so the newly-added pane becomes the actual focus
@@ -606,7 +619,7 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
         // ── New preset actions ──
         // Presets are view layouts, not destructive pane operations.
-        // p4 -> p1 should temporarily show the first pane only, then restore
+        // p4 -> p1 should temporarily show the focused pane only, then restore
         // the hidden panes if the user returns to p2/p3/p4. Older builds
         // trimmed surplus slots here, which made MultiPane feel "dead":
         // one tap on a smaller layout deleted panes and their sessions.
@@ -621,8 +634,12 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
               `setPreset ${preset} — hiding ${used - cap} surplus pane(s) without deleting`,
             );
             const { focusedSlot, maximizedSlot } = get();
-            const safeFocus: SlotIndex = (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
-            const safeMax = maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
+            const safeFocus: SlotIndex = preset === 'p1'
+              ? resolveSinglePaneSlot(compacted, focusedSlot)
+              : (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
+            const safeMax = preset === 'p1'
+              ? null
+              : maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
             set({ preset, slots: compacted, focusedSlot: safeFocus, maximizedSlot: safeMax });
             return;
           }

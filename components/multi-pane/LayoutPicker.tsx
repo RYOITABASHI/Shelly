@@ -20,6 +20,7 @@ import {
 } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { useTranslation } from '@/lib/i18n';
 
 type PresetEntry = {
   id: PresetId;
@@ -38,6 +39,7 @@ const PRESETS: PresetEntry[] = [
 ];
 
 export function LayoutPicker({ onPicked }: { onPicked?: () => void }) {
+  const { t } = useTranslation();
   const preset   = useMultiPaneStore((s) => s.preset);
   const slots    = useMultiPaneStore((s) => s.slots);
   const setPreset = useMultiPaneStore((s) => s.setPreset);
@@ -51,7 +53,7 @@ export function LayoutPicker({ onPicked }: { onPicked?: () => void }) {
   // in setPreset; switching back to a larger preset restores them.
   return (
     <View style={styles.root}>
-      <Text style={styles.title}>LAYOUT</Text>
+      <Text style={styles.title}>{t('pane.layout')}</Text>
       <View style={styles.grid}>
         {PRESETS.map((p) => {
           const capacity = PRESET_CAPACITY[p.id];

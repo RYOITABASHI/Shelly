@@ -7,7 +7,16 @@ import { logInfo, logError } from '@/lib/debug-logger';
 import { normalizePath } from '@/lib/normalize-path';
 
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
-export type SidebarSection = 'tasks' | 'repos' | 'files' | 'device' | 'ports' | 'profiles' | 'worktrees' | 'quickLaunch';
+export type SidebarSection =
+  | 'tasks'
+  | 'repos'
+  | 'files'
+  | 'device'
+  | 'ports'
+  | 'profiles'
+  | 'worktrees'
+  | 'quickLaunch'
+  | 'codexSessions';
 
 interface SidebarState {
   mode: SidebarMode;
@@ -31,60 +40,60 @@ export const useSidebarStore = create<SidebarState>()(
   persist(
     (set, get) => ({
       mode: 'icons',
-  openSections: { tasks: true, repos: true, files: true, device: false, ports: false, profiles: false, worktrees: true, quickLaunch: true },
-  activeRepoPath: null,
-  repoPaths: [],
+      openSections: defaultOpenSections(),
+      activeRepoPath: null,
+      repoPaths: [],
 
-  setMode: (mode) => set({ mode }),
+      setMode: (mode) => set({ mode }),
 
-  toggleSection: (section) =>
-    set((s) => ({
-      openSections: { ...s.openSections, [section]: !s.openSections[section] },
-    })),
+      toggleSection: (section) =>
+        set((s) => ({
+          openSections: { ...s.openSections, [section]: !s.openSections[section] },
+        })),
 
-  // bug #43: normalize `~/` before storing — Plan B bash doesn't expand
-  // tilde, and single-quoted paths in shell commands would break otherwise.
-  setActiveRepo: (path) => set({ activeRepoPath: normalizePath(path) }),
+      // bug #43: normalize `~/` before storing — Plan B bash doesn't expand
+      // tilde, and single-quoted paths in shell commands would break otherwise.
+      setActiveRepo: (path) => set({ activeRepoPath: normalizePath(path) }),
 
-  addRepo: (path) =>
-    set((s) => {
-      const np = normalizePath(path);
-      return {
-        repoPaths: s.repoPaths.includes(np) ? s.repoPaths : [...s.repoPaths, np],
-      };
-    }),
+      addRepo: (path) =>
+        set((s) => {
+          const np = normalizePath(path);
+          return {
+            repoPaths: s.repoPaths.includes(np) ? s.repoPaths : [...s.repoPaths, np],
+          };
+        }),
 
-  removeRepo: (path) =>
-    set((s) => {
-      const np = normalizePath(path);
-      return {
-        repoPaths: s.repoPaths.filter((p) => p !== np),
-        activeRepoPath: s.activeRepoPath === np ? null : s.activeRepoPath,
-      };
-    }),
+      removeRepo: (path) =>
+        set((s) => {
+          const np = normalizePath(path);
+          return {
+            repoPaths: s.repoPaths.filter((p) => p !== np),
+            activeRepoPath: s.activeRepoPath === np ? null : s.activeRepoPath,
+          };
+        }),
 
-  loadRepos: async () => {
-    try {
-      const result = await execCommand(
-        'find ~/ -maxdepth 2 -name .git -type d ' +
-        '-not -path "*/node_modules/*" -not -path "*/.npm/*" ' +
-        '-not -path "*/.cache/*" -not -path "*/.shelly-cli/*" ' +
-        '-not -path "*/.shelly-rootfs/*" ' +
-        '2>/dev/null | head -20 | sed "s/\\.git$//"'
-      );
-      const paths = result.stdout
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((p: string) => normalizePath(p.replace(/\/$/, '')));
-      logInfo('Sidebar', 'Found ' + paths.length + ' repos');
-      if (paths.length > 0) {
-        set({ repoPaths: paths, activeRepoPath: paths[0] });
-      }
-    } catch (e) {
-      logError('Sidebar', 'loadRepos failed', e);
-    }
-  },
+      loadRepos: async () => {
+        try {
+          const result = await execCommand(
+            'find ~/ -maxdepth 2 -name .git -type d ' +
+            '-not -path "*/node_modules/*" -not -path "*/.npm/*" ' +
+            '-not -path "*/.cache/*" -not -path "*/.shelly-cli/*" ' +
+            '-not -path "*/.shelly-rootfs/*" ' +
+            '2>/dev/null | head -20 | sed "s/\\.git$//"'
+          );
+          const paths = result.stdout
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((p: string) => normalizePath(p.replace(/\/$/, '')));
+          logInfo('Sidebar', 'Found ' + paths.length + ' repos');
+          if (paths.length > 0) {
+            set({ repoPaths: paths, activeRepoPath: paths[0] });
+          }
+        } catch (e) {
+          logError('Sidebar', 'loadRepos failed', e);
+        }
+      },
     }),
     {
       name: 'sidebar-store-v1',
@@ -95,17 +104,36 @@ export const useSidebarStore = create<SidebarState>()(
         activeRepoPath: s.activeRepoPath,
         repoPaths: s.repoPaths,
       }),
-      version: 3,
+      version: 4,
       migrate: (persistedState) => {
         const state = (persistedState ?? {}) as Partial<Pick<
           SidebarState,
           'mode' | 'openSections' | 'activeRepoPath' | 'repoPaths'
         >>;
-        return {
-          ...state,
-          mode: 'icons',
-        };
-      },
+	        return {
+	          ...state,
+	          mode: isSidebarMode(state.mode) ? state.mode : 'icons',
+	          openSections: { ...defaultOpenSections(), ...(state.openSections ?? {}) },
+	        };
+	      },
     }
   )
 );
+
+function defaultOpenSections(): Record<SidebarSection, boolean> {
+  return {
+    tasks: true,
+    repos: true,
+    files: true,
+    device: false,
+    ports: false,
+    profiles: false,
+    worktrees: true,
+    quickLaunch: true,
+    codexSessions: true,
+  };
+}
+
+function isSidebarMode(value: unknown): value is SidebarMode {
+  return value === 'expanded' || value === 'icons' || value === 'hidden';
+}

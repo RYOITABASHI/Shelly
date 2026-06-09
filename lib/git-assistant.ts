@@ -199,8 +199,8 @@ export function generateGuide(intent: GitIntent, userInput: string): GitGuide {
           type: 'tip',
           explanation:
             '以下のように聞いてみてください:\n' +
-            `  @claude ${userInput}\n` +
-            `  @gemini ${userInput}\n\n` +
+            `  @codex ${userInput}\n` +
+            `  @perplexity ${userInput}\n\n` +
             'AIがGitの状態を確認しながら最適な手順を教えてくれます。',
         },
         {
@@ -687,8 +687,8 @@ export function generateGuide(intent: GitIntent, userInput: string): GitGuide {
               '  @git 状況を確認\n' +
               '  @git 差分を見たい\n\n' +
               '複雑な操作はAIに任せましょう:\n' +
-              '  @claude ブランチ戦略を教えて\n' +
-              '  @gemini rebaseのやり方',
+              '  @codex ブランチ戦略を教えて\n' +
+              '  @perplexity rebaseの調査をして',
           },
         ],
       };

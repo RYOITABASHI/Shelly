@@ -2,7 +2,7 @@
  * hooks/use-tool-discovery.ts — CLI + LLM 自動検出ポーリング
  *
  * アプリ起動時と定期間隔で以下を自動検出する:
- * - CLIツール: claude, gemini, codex (ブリッジ経由 `which` コマンド)
+ * - CLIツール: codex (ブリッジ経由 `which` コマンド)
  * - ローカルLLM: llama-server / ollama (HTTP health check, 複数ポート対応)
  *
  * 検出結果に基づいてstoreを自動更新:
@@ -10,8 +10,7 @@
  * - defaultAgent: 設定済みCLIが消えた場合のみ再選択（ユーザー設定は尊重）
  *
  * CLIの優先順位 (フォールバック時のみ):
- *   claude-code > codex > gemini-cli
- *   （claude/codexは定額利用可、geminiはAPI課金の可能性）
+ *   codex
  */
 
 import { useEffect, useRef, useCallback } from 'react';
@@ -26,17 +25,11 @@ const POLL_INTERVAL = 120000; // 120秒（省バッテリー: 30s→120s）
 // ── CLI定義 ────────────────────────────────────────────────────────────────────
 
 const CLI_TOOLS = [
-  { id: 'claude-code', command: 'which claude', agent: 'claude-code' as const },
-  { id: 'gemini-cli', command: 'which gemini', agent: 'gemini-cli' as const },
   { id: 'codex', command: 'which codex', agent: 'codex' as const },
 ] as const;
 
 // フォールバック優先順位（設定済みCLIがアンインストールされた場合のみ使用）
-const FALLBACK_PRIORITY: Array<'claude-code' | 'codex' | 'gemini-cli'> = [
-  'claude-code',  // 定額Max/Pro、最強
-  'codex',        // 定額Pro、軽量高速
-  'gemini-cli',   // Google認証、無料枠あり
-];
+const FALLBACK_PRIORITY: Array<'codex'> = ['codex'];
 
 // ── LLM定義 ────────────────────────────────────────────────────────────────────
 

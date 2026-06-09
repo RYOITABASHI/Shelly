@@ -14,9 +14,9 @@ import * as Clipboard from 'expo-clipboard';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
-import { getDeviceProfile, type KillFixStep } from '@/lib/process-guard';
+import { getDeviceProfile } from '@/lib/process-guard';
 import { useTranslation } from '@/lib/i18n';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C } from '@/theme.config';
 
 type Props = {
   visible: boolean;

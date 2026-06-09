@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scouter Widget — Even G2 style preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --g2:      #12b53e;   /* primary deep green */
+      --g2-dim:  #2a9148;   /* secondary deep green */
+      --g2-line: rgba(18, 181, 62, 0.72);  /* outline stroke */
+      --g2-faint:rgba(18, 181, 62, 0.32);
+      --white:   #ffffff;
+      --smoke:   radial-gradient(125% 160% at 50% 60%, rgba(0,0,0,0.64), rgba(0,0,0,0.08) 82%);
+      --glow:    0 0 5px rgba(18, 181, 62, 0.5), 0 1px 2px rgba(0,0,0,0.95);
+      --white-sh:0 1px 3px rgba(0,0,0,0.96);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      display: flex; flex-wrap: wrap; gap: 28px; justify-content: center; align-items: flex-start;
+      padding: 36px 18px;
+      background: #0a0a0a;
+      color: #eaffea;
+    }
+    .col { width: min(420px, 100%); }
+    .label { color: #7a9a7a; font-size: 12px; margin: 0 0 10px 4px; letter-spacing: .04em; }
+
+    /* a phone home-screen swatch to test transparency over wallpaper */
+    .home {
+      width: 100%; border-radius: 26px; padding: 18px 0 34px;
+      background-position: center; background-size: cover;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.06);
+    }
+    .home.dark  { background: radial-gradient(120% 80% at 50% 0%, #14202a, #05070a 70%); }
+    .home.photo { background-image:
+        linear-gradient(rgba(0,0,0,.25), rgba(0,0,0,.45)),
+        url("https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1200&q=70"); }
+    .home.light { background: linear-gradient(160deg, #cfe3f0, #8fa9bd); }
+
+    /* ── THE WIDGET ── full phone width, transparent, thin green outline ── */
+    .w {
+      width: calc(100% - 24px); margin: 0 auto;
+      border: 1px solid var(--g2-line);
+      border-radius: 16px;
+      background: var(--smoke);           /* strong smoke scrim, fades at edges */
+      padding: 11px 14px 12px;
+      text-shadow: var(--glow);
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    /* header line */
+    .w .hd { display:flex; align-items:center; gap:8px; }
+    .w .dot { width:7px; height:7px; border-radius:50%; background: var(--g2); box-shadow: 0 0 6px var(--g2); }
+    .w .agent { color: var(--g2); font-weight: 700; font-size: 13px; letter-spacing:.06em; }
+    .w .state { color: var(--g2-dim); font-size: 12px; }
+    .w .clock { margin-left:auto; color: var(--g2-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+    /* reply — the primary content */
+    .w .reply { color: var(--white); font-size: 13px; line-height: 1.45; text-shadow: var(--white-sh); }
+    /* meta line (model · tokens) — quiet */
+    .w .meta { color: var(--g2-dim); font-size: 11px; letter-spacing:.02em; }
+    /* divider */
+    .w .div { height:1px; background: var(--g2-faint); margin: 1px 0; }
+    /* local llm — single compact dim line */
+    .w .local { display:flex; align-items:center; gap:8px; color: var(--g2-dim); font-size: 11px; }
+    .w .local .dot { width:6px;height:6px; background: var(--g2-dim); box-shadow:none; }
+    /* ASK pill — prominent rounded-outline bubble, full width, bottom */
+    .ask {
+      margin-top: 2px;
+      display:flex; align-items:center; gap:8px;
+      border: 1px solid var(--g2-line); border-radius: 999px;
+      padding: 9px 14px; color: var(--g2); font-size: 12px; font-weight: 600;
+      background: transparent;
+    }
+    .ask .ph { color: var(--g2-dim); font-weight: 400; }
+    .ask .go { margin-left:auto; color: var(--g2); }
+    /* approval row replaces ask when waiting */
+    .appr { display:flex; gap:10px; margin-top:2px; }
+    .appr .btn { flex:1; text-align:center; border:1px solid var(--g2-line); border-radius:999px; padding:9px 0; font-weight:700; font-size:12px; }
+    .appr .allow { color: var(--g2); }
+    .appr .deny  { color: #ff9aaa; border-color: rgba(255,154,170,.5); }
+    .appr .q { color: var(--g2-dim); font-size:11px; margin-top:6px; }
+  </style>
+</head>
+<body>
+
+  <div class="col">
+    <p class="label">① 通常（返答表示）— 暗い壁紙</p>
+    <div class="home dark">
+      <div class="w">
+        <div class="hd">
+          <span class="dot"></span>
+          <span class="agent">CODEX</span>
+          <span class="state">· completed</span>
+          <span class="clock">16:02</span>
+        </div>
+        <div class="reply">おはようございます。今日は何を進めますか？ Phase 1 の Agent Chat pane から着手できます。</div>
+        <div class="meta">gpt-5.5 · 138k tok · shelly</div>
+        <div class="div"></div>
+        <div class="local"><span class="dot"></span>LOCAL · Qwen3-8B · ready</div>
+        <div class="ask"><span>ASK</span><span class="ph">プロンプトを送る…</span><span class="go">▸</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <p class="label">② 承認待ち（ALLOW / DENY 前面化）— 写真壁紙</p>
+    <div class="home photo">
+      <div class="w">
+        <div class="hd">
+          <span class="dot" style="background:#ffcf5a;box-shadow:0 0 6px #ffcf5a"></span>
+          <span class="agent">CODEX</span>
+          <span class="state" style="color:#ffcf5a">· waiting permission</span>
+          <span class="clock">16:03</span>
+        </div>
+        <div class="reply">ホーム直下に test-widget-approval-deny.txt を作成してよいですか？</div>
+        <div class="meta">gpt-5.5 · run_command</div>
+        <div class="appr">
+          <div class="btn allow">ALLOW</div>
+          <div class="btn deny">DENY</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <p class="label">③ アイドル（セッション無し）— 明るい壁紙（可読性チェック）</p>
+    <div class="home light">
+      <div class="w">
+        <div class="hd">
+          <span class="dot" style="background:#6f8d6f;box-shadow:none"></span>
+          <span class="agent">CODEX</span>
+          <span class="state">· no session</span>
+          <span class="clock">--:--</span>
+        </div>
+        <div class="reply" style="color:#bfe9c6">Codex セッションを開始すると、ここに最新の応答が表示されます。</div>
+        <div class="meta">waiting for ~/.codex/sessions</div>
+        <div class="div"></div>
+        <div class="local"><span class="dot"></span>LOCAL · offline</div>
+        <div class="ask"><span>ASK</span><span class="ph">プロンプトを送る…</span><span class="go">▸</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <p class="label">④ ASK タップで開く入力面（G2 風・透明ダイアログのイメージ）</p>
+    <div class="home dark">
+      <div class="w" style="gap:10px">
+        <div class="hd"><span class="dot"></span><span class="agent">CODEX</span><span class="state">· ask</span></div>
+        <div class="reply" style="color:#fff;border:1px dashed var(--g2-faint);border-radius:12px;padding:10px 12px;min-height:54px">市場トレンドを3行で要約して｜<span style="opacity:.5">（外部キーボード / Type-less で入力）</span></div>
+        <div class="appr">
+          <div class="btn deny" style="color:var(--g2-dim);border-color:var(--g2-faint)">CANCEL</div>
+          <div class="btn allow">SEND ▸</div>
+        </div>
+      </div>
+    </div>
+    <p class="label" style="margin-top:10px;color:#5a7a5a">※ ウィジェットに直接打ち込みは不可（Android 仕様）。ASK タップ→この入力 Activity で打つ。</p>
+  </div>
+
+</body>
+</html>

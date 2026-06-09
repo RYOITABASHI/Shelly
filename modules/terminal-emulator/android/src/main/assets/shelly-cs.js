@@ -35,8 +35,8 @@ const CLIENT_ID = process.env.SHELLY_OAUTH_CLIENT_ID || DEFAULT_CLIENT_ID;
 
 // Default template repo used when `shelly-cs create` is called without
 // --repo. The template ships a devcontainer.json that installs Node 20
-// and @anthropic-ai/claude-code via postCreateCommand, so the created
-// codespace has claude-code ready in its web terminal immediately.
+// and Shelly's recommended CLI tooling via postCreateCommand, so the
+// created codespace is ready in its web terminal immediately.
 const DEFAULT_TEMPLATE_REPO = process.env.SHELLY_CS_DEFAULT_REPO || 'RYOITABASHI/shelly-codespace-template';
 
 // OAuth scope for device flow. codespace=CRUD, repo=template/work repo
@@ -319,8 +319,9 @@ async function cmdList() {
 
 async function cmdCreate(args) {
   // Default to the Shelly template repo when --repo is omitted. The
-  // template has a devcontainer.json that pre-installs claude-code, so
-  // `shelly-cs create` with no args gets a ready-to-code environment.
+  // template has a devcontainer.json that pre-installs Shelly's recommended
+  // CLI tooling, so `shelly-cs create` with no args gets a ready-to-code
+  // environment.
   const repo = args['--repo'] || DEFAULT_TEMPLATE_REPO;
   if (!repo.includes('/')) {
     throw new Error('Usage: shelly-cs create [--repo <owner/repo>] [--machine basicLinux32gb]');
@@ -720,7 +721,7 @@ function usage() {
   console.error(`  ${C.cyan}shelly-cs auth${C.reset}                 sign in with GitHub`);
   console.error(`  ${C.cyan}shelly-cs create${C.reset}               make a codespace (default template)`);
   console.error(`  ${C.cyan}shelly-cs use <name>${C.reset}           remember it as your default`);
-  console.error(`  ${C.cyan}cs${C.reset}                             open default in Browser Pane (then claude ready)`);
+  console.error(`  ${C.cyan}cs${C.reset}                             open default in Browser Pane`);
   console.error('');
   console.error('Commands:');
   console.error(`  ${C.cyan}auth${C.reset}                                      OAuth device-flow sign-in`);

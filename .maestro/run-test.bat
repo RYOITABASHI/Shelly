@@ -17,7 +17,7 @@ if "%1"=="" (
     echo   chat      - Chat tab test
     echo   terminal  - Terminal tab test
     echo   settings  - Settings tab test
-    echo   bridge    - Bridge recovery test
+    echo   pty       - Native PTY smoke test
     echo   all       - Run all tests
     exit /b 1
 )
@@ -25,7 +25,7 @@ if "%1"=="" (
 if "%1"=="setup" (
     echo Running Setup Wizard test...
     echo WARNING: This will clear app data!
-    adb shell pm clear space.manus.shelly.terminal.t20260224103125
+    adb shell pm clear dev.shelly.terminal
     "%MAESTRO_BIN%" test "%TEST_DIR%\01_setup_wizard_ja.yaml"
     exit /b %ERRORLEVEL%
 )
@@ -48,9 +48,9 @@ if "%1"=="settings" (
     exit /b %ERRORLEVEL%
 )
 
-if "%1"=="bridge" (
-    echo Running Bridge recovery test...
-    "%MAESTRO_BIN%" test "%TEST_DIR%\05_bridge_recovery_ja.yaml"
+if "%1"=="pty" (
+    echo Running native PTY smoke test...
+    "%MAESTRO_BIN%" test "%TEST_DIR%\05_native_pty_recovery_ja.yaml"
     exit /b %ERRORLEVEL%
 )
 
@@ -59,7 +59,7 @@ if "%1"=="all" (
     "%MAESTRO_BIN%" test "%TEST_DIR%\02_chat_tab_ja.yaml"
     "%MAESTRO_BIN%" test "%TEST_DIR%\03_terminal_tab_ja.yaml"
     "%MAESTRO_BIN%" test "%TEST_DIR%\04_settings_tab_ja.yaml"
-    "%MAESTRO_BIN%" test "%TEST_DIR%\05_bridge_recovery_ja.yaml"
+    "%MAESTRO_BIN%" test "%TEST_DIR%\05_native_pty_recovery_ja.yaml"
     exit /b %ERRORLEVEL%
 )
 

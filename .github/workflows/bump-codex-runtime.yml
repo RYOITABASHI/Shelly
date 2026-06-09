@@ -1,0 +1,134 @@
+name: Bump Codex Runtime
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 0 * * *'
+
+concurrency:
+  group: codex-runtime-bump
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve latest supported Codex runtime
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_codex="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+          current_termux="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          current_integrity="$(tr -d '[:space:]' < .ci-versions/codex-termux.integrity)"
+
+          latest_termux=""
+          latest_integrity=""
+          latest_format=""
+          for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
+            npm_version="${candidate#v}"
+            npm_codex="$(npm view "@openai/codex@${npm_version}" version 2>/dev/null || true)"
+            if [ "$npm_codex" != "$npm_version" ]; then
+              echo "Skipping codex-termux ${candidate}: @openai/codex@${npm_version} is not published yet" >&2
+              continue
+            fi
+
+            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
+            if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
+              latest_termux="$candidate"
+              latest_format="npm-pack"
+              latest_integrity="$(npm view "@mmmbuto/codex-cli-termux@${npm_version}" dist.integrity)"
+              break
+            fi
+            if printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$"; then
+              latest_termux="$candidate"
+              latest_format="legacy"
+              tmp="$(mktemp -d)"
+              gh release download "$candidate" \
+                --repo DioNanos/codex-termux \
+                --pattern "codex-termux-android-arm64-${candidate}.tar.gz.sha256" \
+                --dir "$tmp" \
+                --clobber
+              latest_integrity="sha256-$(tr -d '[:space:]' < "$tmp/codex-termux-android-arm64-${candidate}.tar.gz.sha256")"
+              break
+            fi
+          done
+
+          if [ -z "$latest_termux" ] || [ -z "$latest_integrity" ]; then
+            echo "FATAL: no supported codex-termux release found" >&2
+            exit 1
+          fi
+          latest_codex="${latest_termux#v}"
+
+          echo "current codex=${current_codex} codex-termux=${current_termux}"
+          echo "latest codex=${latest_codex} codex-termux=${latest_termux} (${latest_format})"
+
+          if [ "$current_codex" = "$latest_codex" ] &&
+             [ "$current_termux" = "$latest_termux" ] &&
+             [ "$current_integrity" = "$latest_integrity" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$latest_codex" > .ci-versions/codex.txt
+          printf '%s\n' "$latest_termux" > .ci-versions/codex-termux.txt
+          printf '%s\n' "$latest_integrity" > .ci-versions/codex-termux.integrity
+          {
+            echo "changed=true"
+            echo "codex=${latest_codex}"
+            echo "codex_termux=${latest_termux}"
+            echo "format=${latest_format}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open bump pull request
+        if: steps.resolve.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODEX_VERSION: ${{ steps.resolve.outputs.codex }}
+          CODEX_TERMUX_VERSION: ${{ steps.resolve.outputs.codex_termux }}
+          CODEX_TERMUX_FORMAT: ${{ steps.resolve.outputs.format }}
+        run: |
+          set -euo pipefail
+          branch="bot/codex-runtime-${CODEX_TERMUX_VERSION#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add .ci-versions/codex.txt .ci-versions/codex-termux.txt .ci-versions/codex-termux.integrity
+          git commit -m "chore(codex): bump runtime to ${CODEX_VERSION}"
+          git push --force-with-lease origin "$branch"
+          cat > /tmp/codex-runtime-pr.md <<EOF
+          Updates the pinned Shelly Codex runtime.
+
+          - @openai/codex: ${CODEX_VERSION}
+          - codex-termux: ${CODEX_TERMUX_VERSION} (${CODEX_TERMUX_FORMAT})
+
+          A validation Android build is dispatched for this branch. Merging this PR triggers the normal Android APK release workflow with a new versionCode.
+          EOF
+          if gh pr view "$branch" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh pr edit "$branch" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "chore(codex): bump runtime to ${CODEX_VERSION}" \
+              --body-file /tmp/codex-runtime-pr.md
+          else
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$branch" \
+              --title "chore(codex): bump runtime to ${CODEX_VERSION}" \
+              --body-file /tmp/codex-runtime-pr.md
+          fi
+          gh workflow run build-android.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"

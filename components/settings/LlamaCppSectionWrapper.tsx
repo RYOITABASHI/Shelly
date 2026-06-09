@@ -13,7 +13,7 @@
 // - persist onSelectModel as settings-store.localLlmUrl + active id
 // - persist onUpdateLocalLlmUrl as settings-store update
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { colors as C, fonts as F } from '@/theme.config';
 import { LlamaCppSection } from './LlamaCppSection';
@@ -59,7 +59,7 @@ async function fetchActiveServerModelId(endpoint: string): Promise<string | null
     const res = await fetch(url, { signal: ctrl.signal });
     clearTimeout(timeout);
     if (!res.ok) return null;
-    const json = await res.json() as { data?: Array<{ id?: string }> };
+    const json = await res.json() as { data?: { id?: string }[] };
     const first = json.data?.[0]?.id;
     return typeof first === 'string' && first.length > 0 ? first : null;
   } catch {
@@ -117,6 +117,7 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
   const [installedModelPaths, setInstalledModelPaths] = useState<Record<string, string>>({});
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [activeServerLabel, setActiveServerLabel] = useState<string | null>(null);
+  const refreshInFlightRef = useRef(false);
 
   // Refresh installed model list by scanning every likely path on disk,
   // then loose-matching basenames against the catalog. Also ask the
@@ -124,102 +125,113 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
   // so the UI can show an "Active: ..." hint even when the on-disk file
   // is not in a canonical location.
   const refreshInstalled = useCallback(async () => {
-    const r = await execCommand(LIST_MODELS_CMD, 10_000);
-    // Parse "<size> <path>" lines and dedup by (basename, size) — the same
-    // file can show up multiple times when search roots overlap.
-    const seen = new Set<string>();
-    const fullPaths: string[] = [];
-    for (const raw of (r.stdout ?? '').split('\n')) {
-      const line = raw.trim();
-      if (!line) continue;
-      const sp = line.indexOf(' ');
-      if (sp < 0) continue;
-      const size = line.slice(0, sp);
-      const path = line.slice(sp + 1);
-      const key = `${basenameOf(path)}|${size}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      fullPaths.push(path);
-    }
-    const found = new Set<string>();
-    const paths: Record<string, string> = {};
-    for (const model of MODEL_CATALOG) {
-      for (const path of fullPaths) {
-        const base = basenameOf(path);
-        if (basenameMatchesCatalog(base, model.filename)) {
-          found.add(model.id);
-          paths[model.id] = path;
-          break;
-        }
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    try {
+      const r = await execCommand(LIST_MODELS_CMD, 10_000);
+      // Parse "<size> <path>" lines and dedup by (basename, size) — the same
+      // file can show up multiple times when search roots overlap.
+      const seen = new Set<string>();
+      const fullPaths: string[] = [];
+      for (const raw of (r.stdout ?? '').split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        const sp = line.indexOf(' ');
+        if (sp < 0) continue;
+        const size = line.slice(0, sp);
+        const path = line.slice(sp + 1);
+        const key = `${basenameOf(path)}|${size}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        fullPaths.push(path);
       }
-    }
-
-    // Consult the running server for its active model. Try the HTTP
-    // endpoint first (fast, authoritative); fall back to parsing `ps`
-    // output if the endpoint is unreachable. Whichever model the server
-    // is actively serving MUST count as installed — otherwise the UI
-    // would show a Download button for a file that demonstrably exists
-    // on disk (the bug spotted on the first device test).
-    let resolvedActiveId: string | null = null;
-    const serverModel = await fetchActiveServerModelId(localLlmUrl);
-    if (serverModel) {
-      setActiveServerLabel(serverModel);
+      const found = new Set<string>();
+      const paths: Record<string, string> = {};
       for (const model of MODEL_CATALOG) {
-        if (basenameMatchesCatalog(serverModel, model.filename)) {
-          resolvedActiveId = model.id;
-          break;
+        for (const path of fullPaths) {
+          const base = basenameOf(path);
+          if (basenameMatchesCatalog(base, model.filename)) {
+            found.add(model.id);
+            paths[model.id] = path;
+            break;
+          }
         }
       }
-    } else {
-      const psPath = await fetchServerModelPathFromPs();
-      if (psPath) {
-        const base = basenameOf(psPath);
-        setActiveServerLabel(base);
+
+      // Consult the running server for its active model. Try the HTTP
+      // endpoint first (fast, authoritative); fall back to parsing `ps`
+      // output if the endpoint is unreachable. Whichever model the server
+      // is actively serving MUST count as installed — otherwise the UI
+      // would show a Download button for a file that demonstrably exists
+      // on disk (the bug spotted on the first device test).
+      let resolvedActiveId: string | null = null;
+      const serverModel = await fetchActiveServerModelId(localLlmUrl);
+      if (serverModel) {
+        setActiveServerLabel(serverModel);
         for (const model of MODEL_CATALOG) {
-          if (basenameMatchesCatalog(base, model.filename)) {
+          if (basenameMatchesCatalog(serverModel, model.filename)) {
             resolvedActiveId = model.id;
-            paths[model.id] = psPath;
             break;
           }
         }
       } else {
-        setActiveServerLabel(null);
+        const psPath = await fetchServerModelPathFromPs();
+        if (psPath) {
+          const base = basenameOf(psPath);
+          setActiveServerLabel(base);
+          for (const model of MODEL_CATALOG) {
+            if (basenameMatchesCatalog(base, model.filename)) {
+              resolvedActiveId = model.id;
+              paths[model.id] = psPath;
+              break;
+            }
+          }
+        } else {
+          setActiveServerLabel(null);
+        }
       }
-    }
 
-    if (resolvedActiveId) {
-      found.add(resolvedActiveId);
-    }
-    setInstalledModelIds(found);
-    setInstalledModelPaths(paths);
+      if (resolvedActiveId) {
+        found.add(resolvedActiveId);
+      }
+      setInstalledModelIds(found);
+      setInstalledModelPaths(paths);
 
-    if (resolvedActiveId) {
-      setActiveModelId(resolvedActiveId);
-      return;
-    }
+      if (resolvedActiveId) {
+        setActiveModelId(resolvedActiveId);
+        return;
+      }
 
-    // No server hint — fall back to the previous heuristic of picking
-    // whichever installed model happens to be first in catalog order.
-    setActiveModelId((prev) => {
-      if (prev && found.has(prev)) return prev;
-      return found.values().next().value ?? null;
-    });
+      // No live server hint means nothing is actively being served. Keep the
+      // installed list intact, but avoid showing a stale green Active badge.
+      setActiveModelId(null);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
   }, [localLlmUrl]);
 
   useEffect(() => {
     refreshInstalled();
+    const interval = setInterval(refreshInstalled, 10000);
+    return () => clearInterval(interval);
   }, [refreshInstalled]);
 
   const handleRun = useCallback(
-    async (command: string, _label: string) => {
-      // llama.cpp setup commands can be long — bump timeout to 10 min.
-      const r = await execCommand(command, 600_000);
+    async (command: string, label: string) => {
+      const timeout =
+        label.toLowerCase().includes('download') || command.includes('MODEL_URL=')
+          ? 3_600_000
+          : command.includes('RELEASE_API=')
+            ? 1_200_000
+            : 600_000;
+      const r = await execCommand(command, timeout);
       const ok = r.exitCode === 0;
       if (ok) {
         // Any successful command may have mutated $HOME/models, refresh.
         refreshInstalled();
       }
-      return { success: ok, output: (r.stdout ?? '') + (r.stderr ?? '') };
+      const output = ((r.stdout ?? '') + (r.stderr ?? '')).trim();
+      return { success: ok, output: output || (ok ? '' : `exit code ${r.exitCode}`) };
     },
     [refreshInstalled],
   );
@@ -228,9 +240,13 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
     (model: LlamaCppModel) => {
       setActiveModelId(model.id);
       const cfg = getLlamaCppLocalLlmConfig(model);
-      updateSettings({ localLlmUrl: cfg.baseUrl, localLlmModel: cfg.model });
+      updateSettings({
+        localLlmUrl: cfg.baseUrl,
+        localLlmModel: cfg.model,
+        localLlmModelPath: installedModelPaths[model.id] ?? `$HOME/models/${model.filename}`,
+      });
     },
-    [updateSettings],
+    [installedModelPaths, updateSettings],
   );
 
   const handleUpdateLocalLlmUrl = useCallback(

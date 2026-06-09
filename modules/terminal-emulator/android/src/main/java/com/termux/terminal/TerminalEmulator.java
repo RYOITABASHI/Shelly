@@ -2103,31 +2103,17 @@ public final class TerminalEmulator {
                         try {
                             String colorSpec = textParameter.substring(lastSemiIndex, charIndex);
                             if ("?".equals(colorSpec)) {
-                                if (specialIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
-                                    // Gemini CLI queries OSC 11 while restarting after trust
-                                    // changes. On Android PTYs that reply can race with the
-                                    // child process exit and get echoed visibly by the shell as
-                                    // "^[]11;rgb:...". Shelly owns pane backgrounds anyway, so
-                                    // suppress the background-color report.
-                                    android.util.Log.d(LOG_TAG, "Ignoring OSC " + value + " default background color query");
-                                    specialIndex++;
-                                    if (endOfInput || (specialIndex > TextStyle.COLOR_INDEX_CURSOR) || ++charIndex >= textParameter.length())
-                                        break;
-                                    lastSemiIndex = charIndex;
-                                    continue;
-                                }
-                                // Report current color in the same format xterm and gnome-terminal does.
-                                int rgb = mColors.mCurrentColors[specialIndex];
-                                int r = (65535 * ((rgb & 0x00FF0000) >> 16)) / 255;
-                                int g = (65535 * ((rgb & 0x0000FF00) >> 8)) / 255;
-                                int b = (65535 * ((rgb & 0x000000FF))) / 255;
-                                mSession.write("\033]" + value + ";rgb:" + String.format(Locale.US, "%04x", r) + "/" + String.format(Locale.US, "%04x", g) + "/"
-                                    + String.format(Locale.US, "%04x", b) + bellOrStringTerminator);
+                                // Some TUIs query OSC 10/11/12 while restarting after trust
+                                // changes. On Android PTYs that reply can race with child
+                                // process exit and get echoed visibly by the shell as
+                                // "R10;rgb:...". Shelly owns pane foreground/background/cursor
+                                // theme state, so suppress these reports.
+                                android.util.Log.d(LOG_TAG, "Ignoring OSC " + value + " default color query");
                             } else {
                                 if (specialIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
                                     // Shelly keeps pane backgrounds owned by the app theme.
                                     // TUI/CLI apps may send OSC 11 to tint their terminal
-                                    // background (Claude Code currently uses a grey value),
+                                    // background,
                                     // which makes one pane look disabled or unfocused.
                                     // Foreground/cursor OSC changes remain supported.
                                     android.util.Log.d(LOG_TAG, "Ignoring OSC " + value + " default background color change: " + colorSpec);
@@ -2731,7 +2717,7 @@ public final class TerminalEmulator {
         // DECSET 2004 gate: only wrap if the guest has advertised
         // bracketed-paste mode. A readline guest (local bash with our bind,
         // or remote bash over SSH) emits `\e[?2004h` on prompt display.
-        // Full-screen TUIs such as Claude Code normally do understand the
+        // Full-screen TUIs normally do understand the
         // standard bracketed-paste markers and expect to receive `\e[200~`.
         // They often also enable alternate-screen or mouse tracking. In that
         // mode, sending Shelly's readline-only `\C-x\C-b` trigger means the

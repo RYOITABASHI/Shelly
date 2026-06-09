@@ -303,7 +303,7 @@ function detectSkillsFromCommand(command: string, profile: UserProfile): void {
     'psql': ['PostgreSQL'], 'mysql': ['MySQL'], 'mongosh': ['MongoDB'],
     'ssh': ['SSH/Networking'], 'curl': ['HTTP/API'],
     'expo': ['Expo'], 'eas': ['EAS Build'],
-    'claude': ['Claude Code'], 'gemini': ['Gemini'],
+    'codex': ['Codex'],
   };
 
   const cmd = command.trim().split(/\s+/)[0];

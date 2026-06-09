@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Even-G2 style query "bubble": rounded-outline pill, transparent fill,
+     deep-green stroke. Used for the ASK prompt affordance and approval pills. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+  android:inset="1dp">
+  <shape android:shape="rectangle">
+    <corners android:radius="999dp" />
+    <solid android:color="#00000000" />
+    <stroke
+      android:width="1dp"
+      android:color="#CC00FF41" />
+  </shape>
+</inset>

@@ -70,7 +70,7 @@ export function VoiceChat({ visible, onClose }: Props) {
     } else {
       deactivate();
     }
-  }, [visible]);
+  }, [visible, activate, deactivate]);
 
   // Auto-start listening when idle and active with autoContinue
   useEffect(() => {
@@ -81,7 +81,7 @@ export function VoiceChat({ visible, onClose }: Props) {
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [state.status, state.isActive, state.autoContinue, state.response]);
+  }, [state.status, state.isActive, state.autoContinue, state.response, startListening]);
 
   // Pulse animation for recording
   const pulseScale = useSharedValue(1);
@@ -98,7 +98,7 @@ export function VoiceChat({ visible, onClose }: Props) {
     } else {
       pulseScale.value = withTiming(1, { duration: 200 });
     }
-  }, [state.status]);
+  }, [state.status, pulseScale]);
 
   const pulseStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pulseScale.value }],

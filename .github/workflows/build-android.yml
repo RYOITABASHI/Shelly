@@ -3,19 +3,60 @@ name: Build Android APK
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '**/*.md'
   workflow_dispatch:
-  # Nightly rebuild to pick up @anthropic-ai/claude-code-linux-arm64-musl@latest
-  # releases (bug #117 Path C-bis auto-follow). If Anthropic ships a new
-  # version between 00:00 UTC runs, the next push or manual dispatch also
-  # picks it up.
-  schedule:
-    - cron: '0 0 * * *'
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
-  build:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm check
+
+      - name: Unit tests
+        run: pnpm test -- --runInBand
+
+  build:
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -42,19 +83,24 @@ jobs:
 
       - name: Resolve CLI versions for payload cache
         run: |
-          mkdir -p .ci-versions
-          npm view @google/gemini-cli version > .ci-versions/gemini-cli.txt
-          npm view @openai/codex version > .ci-versions/codex.txt
-          printf 'gemini-cli: '; cat .ci-versions/gemini-cli.txt
-          printf 'codex: '; cat .ci-versions/codex.txt
+          set -euo pipefail
+          test -s .ci-versions/codex.txt || { echo "FATAL: .ci-versions/codex.txt is missing" >&2; exit 1; }
+          test -s .ci-versions/codex-termux.txt || { echo "FATAL: .ci-versions/codex-termux.txt is missing" >&2; exit 1; }
+          test -s .ci-versions/codex-termux.integrity || { echo "FATAL: .ci-versions/codex-termux.integrity is missing" >&2; exit 1; }
+          CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+          CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          if [ "${CODEX_VERSION}" != "${CODEX_TERMUX_VERSION#v}" ]; then
+            echo "FATAL: @openai/codex ${CODEX_VERSION} must match codex-termux ${CODEX_TERMUX_VERSION}" >&2
+            exit 1
+          fi
+          printf 'codex: %s\n' "${CODEX_VERSION}"
+          printf 'codex-termux: %s\n' "${CODEX_TERMUX_VERSION}"
 
       - name: Restore generated Android payload cache
         id: android-payload-cache
         uses: actions/cache@v4
         with:
           path: |
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libld_musl_shelly.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libexec_wrapper_musl.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_https.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_http.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libssh_keygen.so
@@ -71,101 +117,15 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libassuan.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libksba.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libclaude.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_musl_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
-            modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
-          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/gemini-cli.txt', '.ci-versions/codex.txt', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux.txt', '.ci-versions/codex-termux.integrity', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
             android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
-
-      - name: Set up QEMU (for Alpine aarch64 musl build)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build patched musl libc for claude-code 2.1.113+ (bug #117 Path C-bis)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        # Natively compile musl v1.2.4 inside an aarch64 Alpine container
-        # (emulated via qemu-user-static) with the hardcoded
-        # /etc/resolv.conf path rewritten to Shelly's app-writable home.
-        # bionic has no /etc/resolv.conf (it uses net.dns* properties),
-        # and LD_PRELOAD can't intercept musl's inline syscalls — so we
-        # bake the path in at build time. Alpine 3.19 ships musl 1.2.4;
-        # pinning the source tag keeps ABI compatibility with the
-        # claude-code-linux-arm64-musl prebuilt.
-        #
-        # A cross-compile via musl.cc used to live here, but musl.cc was
-        # unreachable from GitHub-hosted runners (connect timeout) in
-        # initial CI trials. Native-in-qemu is ~3× slower (~5 min vs
-        # ~90 s) but removes the third-party hosting dependency.
-        #
-        # Proof-of-concept verified on Termux/Galaxy Z Fold6 (2026-04-21):
-        # `./ld-musl-aarch64.so.1 ./claude --print ...` round-trips
-        # api.anthropic.com successfully. See DEFERRED.md bug #117.
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          RESOLV_CONF_PATH="/data/user/0/dev.shelly.terminal/files/home/.shelly-ssl/resolv.conf"
-
-          mkdir -p /tmp/musl-out
-          curl -fsSL --retry 3 --retry-delay 5 \
-            https://github.com/ifduyue/musl/archive/refs/tags/v1.2.4.tar.gz \
-            -o /tmp/musl-v1.2.4.tar.gz
-          CID="$(docker create --platform linux/arm64 \
-            -v /tmp/musl-out:/out \
-            -e RESOLV_CONF_PATH="${RESOLV_CONF_PATH}" \
-            alpine:3.19 sh -euxc '
-              apk add --no-progress build-base
-              cd /tmp
-              mkdir musl
-              tar xzf /tmp/musl-v1.2.4.tar.gz -C musl --strip-components=1
-              cd musl
-              # We tried macro-based -DMUSL_RESOLV_CONF_PATH during PoC —
-              # does not survive the shell→make→shell round-trip because
-              # make re-invokes /bin/sh which strips the quoted literal.
-              # Direct sed of the string literal in src/network/resolvconf.c
-              # is foolproof.
-              sed -i "s|\"/etc/resolv.conf\"|\"${RESOLV_CONF_PATH}\"|g" src/network/resolvconf.c
-              grep -q "${RESOLV_CONF_PATH}" src/network/resolvconf.c
-              ./configure --prefix=/tmp/musl-out >/tmp/configure.log 2>&1 || { tail -30 /tmp/configure.log; exit 1; }
-              make -j"$(nproc)" >/tmp/make.log 2>&1 || { tail -30 /tmp/make.log; exit 1; }
-              make install >/tmp/install.log 2>&1 || { tail -30 /tmp/install.log; exit 1; }
-              strip --strip-unneeded lib/libc.so
-              cp lib/libc.so /out/libld_musl_shelly.so
-              # This container itself is Alpine/aarch64, so system gcc is
-              # already a musl 1.2.4 compiler. The wrapper does not need
-              # Shelly patched resolver path, only musl ABI compatibility
-              # with the loader used for Claude Code.
-              gcc -shared -fPIC -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror \
-                /tmp/exec-wrapper-musl.c \
-                -o /out/libexec_wrapper_musl.so
-              strip --strip-unneeded /out/libexec_wrapper_musl.so
-              # Sanity checks inside the container — readelf/strings are
-              # the Alpine aarch64 natives, no cross-tool needed.
-              readelf -h /out/libld_musl_shelly.so | grep -E "Type|Machine"
-              strings /out/libld_musl_shelly.so | grep -q "${RESOLV_CONF_PATH}" && echo "[musl] resolv.conf path baked in ✓"
-              readelf -h /out/libexec_wrapper_musl.so | grep -E "Type|Machine"
-              readelf -d /out/libexec_wrapper_musl.so | grep -E "Shared library: \\[(libc\\.so|libc\\.musl-aarch64\\.so\\.1)\\]"
-            ')"
-          trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
-          docker cp /tmp/musl-v1.2.4.tar.gz "${CID}:/tmp/musl-v1.2.4.tar.gz"
-          docker cp "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c" "${CID}:/tmp/exec-wrapper-musl.c"
-          docker start -a "${CID}"
-          docker rm "${CID}" >/dev/null
-          trap - EXIT
-          cp /tmp/musl-out/libld_musl_shelly.so "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          cp /tmp/musl-out/libexec_wrapper_musl.so "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libld_musl_shelly.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libexec_wrapper_musl.so"
 
       - name: Install aarch64 cross-binutils (for strip --strip-unneeded)
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
@@ -316,9 +276,9 @@ jobs:
           echo "[termux-extras] bundled ssh-keygen → $(basename "$dst") ($(stat -c %s "$dst") bytes)"
 
           # bug #130 (2026-04-27): Tier-1 dev essentials. Same Termux apt
-          # mirror, same extract pattern. These are the binaries Claude
-          # Code / Codex routinely complain about ("gh: command not
-          # found", "gpg: not found", "unzip: not found") during
+          # mirror, same extract pattern. These are the binaries Codex
+          # routinely complains about ("gh: command not found",
+          # "gpg: not found", "unzip: not found") during
           # Shelly-on-Shelly dev. git-credential-* come from the git
           # package we already extracted in step 1.
           #
@@ -417,253 +377,31 @@ jobs:
             fi
           done
 
-      - name: Bundle claude-code musl binary (bug #117 Path C-bis)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        # claude-code 2.1.113+ ships as a Bun SEA (Single Executable
-        # Application) — a statically linked ~220 MB ET_EXEC binary that
-        # can't be exec'd directly on Android bionic (unexpected e_type: 2
-        # from /system/bin/linker64). We pair it with the Shelly-patched
-        # ld-musl-aarch64.so.1 from the previous step so bionic can exec
-        # the DYN loader, which in turn mmaps and runs the ET_EXEC claude.
-        #
-        # @latest is intentional — CI runs per-commit and nightly
-        # (scheduled below), so Shelly users get the newest claude-code
-        # within 24 h of an Anthropic release without any runtime download.
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          cd /tmp
-          npm pack @anthropic-ai/claude-code-linux-arm64-musl@latest
-          tar xzf anthropic-ai-claude-code-linux-arm64-musl-*.tgz
-          test -f package/claude || { echo "claude binary missing from tarball"; ls -la package; exit 1; }
-          CLAUDE_VERSION=$(node -p "require('/tmp/package/package.json').version")
-          echo "[claude] bundling @anthropic-ai/claude-code-linux-arm64-musl@${CLAUDE_VERSION}"
-          python3 - package/claude <<'PY'
-          import sys
-
-          path = sys.argv[1]
-          data = bytearray(open(path, "rb").read())
-          patches = [
-              (
-                  b"try{return A28=GFK(),A28}catch{}",
-                  b"try{return A28=null,A28 }catch{}",
-              ),
-              (
-                  b"try{pc8=DFK()}catch{pc8=null}",
-                  b"try{pc8=null }catch{pc8=null}",
-              ),
-          ]
-          for label, (src, dst) in zip(("audio", "image"), patches):
-              if len(src) != len(dst):
-                  raise SystemExit(f"FATAL: {label} patch length mismatch")
-              count = data.count(src)
-              data = data.replace(src, dst)
-              print(f"[claude] native addon loader patch {label}: {count}")
-          open(path, "wb").write(data)
-          PY
-          cp package/claude "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so"
-          file "${GITHUB_WORKSPACE}/${JNILIBS}/libclaude.so" | head -1
-
-          # Experimental Path D (2026-04-29): extract Claude Code's bundled
-          # cli.js from the Bun SEA and run it with Shelly's bionic Node.
-          # This avoids the musl SEA loader path entirely, which is where
-          # Shelly currently hits __errno_location / Bash-tool breakage.
-          # Keep libclaude.so above as the default route until this path
-          # passes on-device smoke tests.
-          EXTRACT_ROOT="/tmp/claude-extracted-root"
-          EXTRACT_PKG="${EXTRACT_ROOT}/node_modules/@anthropic-ai/claude-code-extracted"
-          EXTRACT_POLYFILL="/tmp/claude-extracted-polyfill.js"
-          rm -rf "${EXTRACT_ROOT}"
-          mkdir -p "${EXTRACT_PKG}"
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-          const runtimeUpdate = path.join(
-            process.env.GITHUB_WORKSPACE,
-            'modules/terminal-emulator/android/src/main/assets/shelly-runtime-update.js',
-          );
-          const src = fs.readFileSync(runtimeUpdate, 'utf8');
-          const polyStart = 'const CLAUDE_BUN_NODE_POLYFILL = `\n';
-          const polyEnd = '\n`;\n\nfunction log';
-          const start = src.indexOf(polyStart);
-          const end = src.indexOf(polyEnd, start + polyStart.length);
-          if (start < 0 || end < 0) {
-            throw new Error('Claude Bun/Node polyfill block not found');
-          }
-          const raw = src.slice(start + polyStart.length, end);
-          const polyfill = Function('return `\n' + raw + '\n`;')().replace(/^\n|\n$/g, '');
-          if (!polyfill.includes('shellyPatchClaudeChildProcessShell')) {
-            throw new Error('extracted Claude polyfill missing child_process shell patch');
-          }
-          fs.writeFileSync('/tmp/claude-extracted-polyfill.js', polyfill);
-          NODE
-          aarch64-linux-gnu-objcopy -O binary --only-section=.bun package/claude /tmp/claude.bun.section
-          python3 - /tmp/claude.bun.section "${EXTRACT_PKG}/cli.js" "${EXTRACT_POLYFILL}" <<'PY'
-          import re
-          import sys
-
-          section_path, out_path, polyfill_path = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(section_path, "rb") as f:
-              data = f.read()
-
-          marker = b"file:///$bunfs/root/src/entrypoints/cli.js"
-          i = data.find(marker)
-          if i < 0:
-              sys.exit("FATAL: cli.js marker not found in Claude .bun section")
-          start = data.find(b"// @bun", i)
-          if start < 0:
-              sys.exit("FATAL: cli.js bundle start not found after marker")
-
-          # Claude Code 2.1.133 dropped the 4-byte LE size prefix that used to
-          # sit at data[start-4:start] (those bytes are now just the trailing
-          # ".js\0" of the marker string above). The wrapper itself is still
-          # the same Bun CJS shape ending in "})\n", just no longer length-
-          # prefixed. Scan forward through the ASCII JS body until we hit a
-          # non-text byte (the bunfs payload that follows is binary), then
-          # trim back to the last "})\n" close — that's the wrapper's true
-          # end. This works for both pre-2.1.133 (where the size-bound read
-          # landed on the same close) and post-2.1.133 (where there's no
-          # size to read in the first place). Validates head + tail markers
-          # afterwards so a more aggressive shape change still fails loud.
-          def _is_text(b):
-              return 9 <= b <= 13 or 32 <= b <= 126
-
-          end = start
-          n = len(data)
-          while end < n and _is_text(data[end]):
-              end += 1
-          src = data[start:end].decode("utf-8")
-          head = "// @bun @bytecode @bun-cjs\n(function(exports, require, module, __filename, __dirname) {"
-          tail = "})\n"
-          if not src.startswith(head):
-              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper head: "
-                       + repr(src[:120]))
-          last_close = src.rfind(tail)
-          if last_close < 0:
-              sys.exit("FATAL: Claude cli.js wrapper close `})` not found "
-                       "in text region (length=" + str(len(src)) + ")")
-          src = src[:last_close + len(tail)]
-          if not src.endswith(tail):
-              sys.exit("FATAL: unexpected Claude cli.js CJS wrapper tail: "
-                       + repr(src[-60:]))
-          print("[claude-extract] cli.js wrapper bytes: head=ok tail=ok "
-                "length=" + str(len(src)))
-
-          body = src[len(head):-len(tail)]
-
-          # Termux/Shelly have no writable /tmp. Keep the patches narrow and
-          # fail loud if upstream minification changes the matched shapes.
-          tmp_literal = '"/tmp/claude","/private/tmp/claude"'
-          tmp_replacement = (
-              '(process.env.CLAUDE_TMPDIR||"/tmp/claude"),'
-              '(process.env.CLAUDE_TMPDIR||"/private/tmp/claude")'
-          )
-          n = body.count(tmp_literal)
-          if n == 0:
-              if 'process.env.CLAUDE_TMPDIR||"/tmp/claude"' in body:
-                  print("[claude-extract] sandbox tmp allowlist already patched")
-              else:
-                  sys.exit("FATAL: Claude tmp allowlist patch target not found")
-          elif n == 1:
-              body = body.replace(tmp_literal, tmp_replacement)
-              print("[claude-extract] patched sandbox tmp allowlist")
-          else:
-              sys.exit(f"FATAL: Claude tmp allowlist target matched {n} times")
-
-          bridge_pat = re.compile(r'`/tmp/claude-mcp-browser-bridge-\$\{([A-Za-z_$][\w$]*)\(\)\}`')
-          matches = bridge_pat.findall(body)
-          bridge_done_marker = 'process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"'
-          if not matches:
-              if "claude-mcp-browser-bridge-" in body and bridge_done_marker in body:
-                  print("[claude-extract] browser bridge tmpdir already patched")
-              else:
-                  sys.exit("FATAL: Claude browser bridge tmpdir patch target not found")
-          elif len(set(matches)) == 1 and len(matches) == 1:
-              fn = matches[0]
-              body = bridge_pat.sub(
-                  '`${process.env.CLAUDE_CODE_TMPDIR||process.env.TMPDIR||"/tmp"}'
-                  '/claude-mcp-browser-bridge-${' + fn + '()}`',
-                  body,
-              )
-              print(f"[claude-extract] patched browser bridge tmpdir (fn={fn})")
-          else:
-              sys.exit(f"FATAL: ambiguous Claude browser bridge matches: {matches}")
-
-          # Claude's Bun bundle can use TC39 explicit resource management
-          # syntax (`using` / `await using`) before Shelly's bundled Node can
-          # parse it. The declarations are used for short-lived telemetry /
-          # file-handle helpers; lowering the declaration keyword to `const`
-          # preserves runtime behavior well enough for the CLI route and is
-          # verified below by `node cli.js --version` in CI.
-          body, using_await_count = re.subn(r"(?<![\w$])await\s+using\s+", "const ", body)
-          body, using_count = re.subn(r"(?<![\w$])using\s+", "const ", body)
-          print(f"[claude-extract] lowered using declarations: await={using_await_count} sync={using_count}")
-
-          polyfill = open(polyfill_path, "r", encoding="utf-8").read()
-          if "shellyPatchClaudeChildProcessShell" not in polyfill:
-              sys.exit("FATAL: extracted Claude polyfill missing child_process shell patch")
-
-          out = "#!/usr/bin/env node\n/* __SHELLY_CLAUDE_BUN_EXTRACTED__ */\n" + polyfill + "\n" + body
-          with open(out_path, "w", encoding="utf-8") as f:
-              f.write(out)
-          print(f"[claude-extract] wrote {out_path} ({len(out)} bytes)")
-          PY
-          chmod +x "${EXTRACT_PKG}/cli.js"
-          cat > "${EXTRACT_PKG}/package.json" <<'PKG'
-          {
-            "name": "claude-code-extracted",
-            "version": "0.0.0",
-            "private": true,
-            "dependencies": {
-              "ajv": "^8",
-              "ajv-formats": "^3",
-              "node-fetch": "^2",
-              "undici": "^6",
-              "ws": "^8",
-              "yaml": "^2"
-            }
-          }
-          PKG
-          (cd "${EXTRACT_PKG}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
-          node "${EXTRACT_PKG}/cli.js" --version
-          (cd "${EXTRACT_ROOT}" && tar czf "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz" node_modules)
-          ls -lh "${GITHUB_WORKSPACE}/modules/terminal-emulator/android/src/main/assets/claude-extracted.tar.gz"
-          sha256sum "${EXTRACT_PKG}/cli.js" | awk '{print "[claude-extract] cli.js sha256: "$1}'
-
       - name: Download codex-termux Android binaries (exec + TUI)
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
           # DioNanos/codex-termux has used two release asset layouts:
           #   1. legacy: codex-termux-android-arm64-<tag>.tar.gz + .sha256
           #   2. npm-pack: mmmbuto-codex-cli-termux-<version>.tgz
-          # Prefer the newest release that has either known layout. The npm-pack
-          # layout is verified against npm dist.integrity before extraction.
-          CODEX_TERMUX_VERSION=""
+          # Release builds are pinned by .ci-versions so a source commit maps to
+          # one Codex runtime. The separate bump workflow updates these pins.
+          CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          CODEX_TERMUX_INTEGRITY="$(tr -d '[:space:]' < .ci-versions/codex-termux.integrity)"
           CODEX_TERMUX_FORMAT=""
-          for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
-            echo "[codex] probing $candidate for supported asset pattern"
-            assets="$(gh release view "$candidate" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
-            npm_version="${candidate#v}"
-            if printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${candidate}\.tar\.gz$"; then
-              CODEX_TERMUX_VERSION="$candidate"
-              CODEX_TERMUX_FORMAT="legacy"
-              echo "[codex] selected $candidate (legacy assets)"
-              break
-            fi
-            if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${npm_version}\.tgz$"; then
-              CODEX_TERMUX_VERSION="$candidate"
-              CODEX_TERMUX_FORMAT="npm-pack"
-              echo "[codex] selected $candidate (npm-pack asset)"
-              break
-            fi
-            echo "[codex] $candidate skipped (no supported assets)"
-          done
-          if [ -z "$CODEX_TERMUX_VERSION" ]; then
-            echo "FATAL: none of the 5 most recent codex-termux releases have a supported asset pattern" >&2
+          assets="$(gh release view "$CODEX_TERMUX_VERSION" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
+          CODEX_NPM_VERSION="${CODEX_TERMUX_VERSION#v}"
+          if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}\.tgz$" &&
+             printf '%s\n' "$CODEX_TERMUX_INTEGRITY" | grep -q '^sha512-'; then
+            CODEX_TERMUX_FORMAT="npm-pack"
+          elif printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${CODEX_TERMUX_VERSION}\.tar\.gz$" &&
+               printf '%s\n' "$CODEX_TERMUX_INTEGRITY" | grep -q '^sha256-'; then
+            CODEX_TERMUX_FORMAT="legacy"
+          else
+            echo "FATAL: pinned codex-termux ${CODEX_TERMUX_VERSION} has no asset matching pinned integrity format" >&2
             exit 1
           fi
           echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION} (${CODEX_TERMUX_FORMAT})"
@@ -678,7 +416,7 @@ jobs:
             # DioNanos/codex-termux .sha256 files contain a bare hex digest
             # (no filename suffix), so sha256sum -c rejects them with
             # "no properly formatted checksum lines found". Read and compare manually.
-            EXPECTED_HASH="$(tr -d '[:space:]' < "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256")"
+            EXPECTED_HASH="${CODEX_TERMUX_INTEGRITY#sha256-}"
             ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
             if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
               echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
@@ -689,14 +427,13 @@ jobs:
             echo "[codex] sha256 OK: ${ACTUAL_HASH}"
             mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
           else
-            CODEX_NPM_VERSION="${CODEX_TERMUX_VERSION#v}"
             gh release download "${CODEX_TERMUX_VERSION}" \
               --repo DioNanos/codex-termux \
               --pattern "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" \
               --dir /tmp \
               --clobber
             mv "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" /tmp/codex-termux.tar.gz
-            EXPECTED_INTEGRITY="$(npm view "@mmmbuto/codex-cli-termux@${CODEX_NPM_VERSION}" dist.integrity)"
+            EXPECTED_INTEGRITY="${CODEX_TERMUX_INTEGRITY}"
             ACTUAL_INTEGRITY="$(node -e 'const fs=require("fs"),crypto=require("crypto"); process.stdout.write("sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' /tmp/codex-termux.tar.gz)"
             if [ "${EXPECTED_INTEGRITY}" != "${ACTUAL_INTEGRITY}" ]; then
               echo "FATAL: npm integrity mismatch for codex-termux tarball" >&2
@@ -736,73 +473,130 @@ jobs:
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
 
-      - name: Bundle AI CLIs (Gemini CLI + Codex JS dispatcher)
+      - name: Package Codex runtime update
+        run: |
+          set -euo pipefail
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          runtime_dir="${RUNNER_TEMP}/codex-runtime"
+          rm -rf "${runtime_dir}"
+          mkdir -p "${runtime_dir}"
+          cp "${JNILIBS}/libcodex_exec.so" "${runtime_dir}/codex_exec"
+          cp "${JNILIBS}/libcodex_tui.so" "${runtime_dir}/codex_tui"
+          chmod 755 "${runtime_dir}/codex_exec" "${runtime_dir}/codex_tui"
+          if [ -f "${JNILIBS}/libcodex_cxx_shared.so" ]; then
+            cp "${JNILIBS}/libcodex_cxx_shared.so" "${runtime_dir}/libc++_shared.so"
+            chmod 755 "${runtime_dir}/libc++_shared.so"
+          fi
+          node -e '
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const out = {};
+            for (const name of fs.readdirSync(process.argv[1]).sort()) {
+              const p = `${process.argv[1]}/${name}`;
+              if (fs.statSync(p).isFile()) {
+                out[name] = crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+              }
+            }
+            fs.writeFileSync(`${process.argv[1]}/files.sha256.json`, JSON.stringify(out, null, 2) + "\n");
+          ' "${runtime_dir}"
+          tar -C "${runtime_dir}" -czf "${RUNNER_TEMP}/codex-runtime.tar.gz" .
+          sha256sum "${RUNNER_TEMP}/codex-runtime.tar.gz"
+          ls -lh "${RUNNER_TEMP}/codex-runtime.tar.gz"
+
+      - name: Bundle Codex JS dispatcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
+          CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
           mkdir -p cli-bundle
-          # bug #139 (2026-04-27): dropped @anthropic-ai/claude-code@2.1.112
-          # from the bundle. The musl SEA at libclaude.so is the primary
-          # Claude path now (claude() bash function in HomeInitializer.kt
-          # prefers it over cli.js — line 1184). The bundled cli.js was
-          # only reached when both runtime SEA and APK SEA failed, an
-          # extremely rare path on a working device. Saves ~250-300 MB
-          # APK. If a user truly hits the rare offline+SEA-broken path,
-          # __shelly_bg_cli_update can pull cli.js fresh from npm on
-          # next network event into ~/.shelly-cli.
-          #
-          # Gemini stays — pure JS, ~30 MB compressed, genuinely needed
-          # for offline first-launch.
-          # Codex JS dispatcher stays — small (~5 MB) and required to
-          # patch into the codex-termux native binary at install time.
           npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
-            @google/gemini-cli@latest \
-            @openai/codex@latest
-          # Patch clipboardy: remove Termux guard so Gemini CLI starts without Termux
-          # The check may be in clipboardy hoisted to various locations or bundled in chunks
-          find cli-bundle/lib -name "*.js" -exec grep -l "TERMUX_VERSION" {} \; | while read f; do
-            sed -i "s|process.env.TERMUX_VERSION===void 0|false|g" "$f"
-            sed -i "s|process.env.TERMUX_VERSION === undefined|false|g" "$f"
-            echo "Patched TERMUX_VERSION in: $f"
-          done
-          node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-          const bundleDir = path.join('cli-bundle', 'lib', 'node_modules', '@google', 'gemini-cli', 'bundle');
-          if (!fs.existsSync(bundleDir)) {
-            console.log(`[gemini] bundle dir missing at ${bundleDir}`);
-            process.exit(0);
-          }
-          const files = fs.readdirSync(bundleDir).filter((f) => (f.startsWith('chunk-') || f.startsWith('gemini-')) && f.endsWith('.js'));
-          let termuxPatched = 0;
-          let shellPatched = 0;
-          let commandExistsPatched = 0;
-          for (const file of files) {
-            const filePath = path.join(bundleDir, file);
-            const before = fs.readFileSync(filePath, 'utf8');
-            let after = before;
-            after = after.replace(/throw new Error\("You need to install Termux[^"]*"\)/g, 'undefined');
-            after = after.replace(/shell:\s*true([,}])/g, 'shell:"/system/bin/sh"$1');
-            after = after.replace(
-              /execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/g,
-              'execSync(getCommandExistsCmd(cmd),{stdio:"ignore",shell:"/system/bin/sh"})'
-            );
-            if (after !== before) {
-              if (/throw new Error\("You need to install Termux[^"]*"\)/.test(before)) termuxPatched++;
-              if (/shell:\s*true[,}]/.test(before)) shellPatched++;
-              if (/execSync\(getCommandExistsCmd\(cmd\),\s*\{\s*stdio:\s*"ignore"\s*\}\)/.test(before)) commandExistsPatched++;
-              fs.writeFileSync(filePath, after);
-            }
-          }
-          console.log(`[gemini] patched termux=${termuxPatched} shellTrue=${shellPatched} commandExists=${commandExistsPatched} files=${files.length}`);
-          NODE
-          # Tar them up for APK assets (LibExtractor will extract on first launch)
+            "@openai/codex@${CODEX_VERSION}"
           cd cli-bundle/lib
           tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
           cd ../..
           ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
 
+      - name: Validate Android config version code
+        run: |
+          GIT_VERSION_CODE="$(git rev-list --count HEAD)"
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "FATAL: checkout is shallow; versionCode would not be monotonic" >&2
+            exit 1
+          fi
+          EXPECTED_VERSION_CODE="$(npx expo config --json | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) {
+                process.exit(1);
+              }
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          if [ -n "${SHELLY_ANDROID_VERSION_CODE:-}" ]; then
+            if [ "${EXPECTED_VERSION_CODE}" != "${SHELLY_ANDROID_VERSION_CODE}" ]; then
+              echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match SHELLY_ANDROID_VERSION_CODE ${SHELLY_ANDROID_VERSION_CODE}" >&2
+              exit 1
+            fi
+            if [ "${EXPECTED_VERSION_CODE}" -lt "${GIT_VERSION_CODE}" ]; then
+              echo "FATAL: SHELLY_ANDROID_VERSION_CODE ${EXPECTED_VERSION_CODE} is lower than git commit count ${GIT_VERSION_CODE}" >&2
+              exit 1
+            fi
+          elif [ "${EXPECTED_VERSION_CODE}" != "${GIT_VERSION_CODE}" ]; then
+            echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match git commit count ${GIT_VERSION_CODE}" >&2
+            exit 1
+          fi
+          if [ "${EXPECTED_VERSION_CODE}" -le 532 ]; then
+            echo "FATAL: android versionCode ${EXPECTED_VERSION_CODE} must be greater than the last shipped manual code 532" >&2
+            exit 1
+          fi
+
       - name: Prebuild Android
         run: npx expo prebuild --platform android
+
+      - name: Validate prebuilt Android version code
+        run: |
+          GIT_VERSION_CODE="$(git rev-list --count HEAD)"
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "FATAL: checkout is shallow; versionCode would not be monotonic" >&2
+            exit 1
+          fi
+          EXPECTED_VERSION_CODE="$(npx expo config --json | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) {
+                process.exit(1);
+              }
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          ACTUAL_VERSION_CODE="$(awk '/versionCode / { print $2; exit }' android/app/build.gradle)"
+          if [ -n "${SHELLY_ANDROID_VERSION_CODE:-}" ]; then
+            if [ "${EXPECTED_VERSION_CODE}" != "${SHELLY_ANDROID_VERSION_CODE}" ]; then
+              echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match SHELLY_ANDROID_VERSION_CODE ${SHELLY_ANDROID_VERSION_CODE}" >&2
+              exit 1
+            fi
+            if [ "${EXPECTED_VERSION_CODE}" -lt "${GIT_VERSION_CODE}" ]; then
+              echo "FATAL: SHELLY_ANDROID_VERSION_CODE ${EXPECTED_VERSION_CODE} is lower than git commit count ${GIT_VERSION_CODE}" >&2
+              exit 1
+            fi
+          elif [ "${EXPECTED_VERSION_CODE}" != "${GIT_VERSION_CODE}" ]; then
+            echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match git commit count ${GIT_VERSION_CODE}" >&2
+            exit 1
+          fi
+          if [ "${EXPECTED_VERSION_CODE}" -le 532 ]; then
+            echo "FATAL: android versionCode ${EXPECTED_VERSION_CODE} must be greater than the last shipped manual code 532" >&2
+            exit 1
+          fi
+          if [ "${ACTUAL_VERSION_CODE}" != "${EXPECTED_VERSION_CODE}" ]; then
+            echo "FATAL: android/app/build.gradle versionCode ${ACTUAL_VERSION_CODE} does not match app.config.ts ${EXPECTED_VERSION_CODE}" >&2
+            exit 1
+          fi
 
       - name: Setup JDK
         uses: actions/setup-java@v4
@@ -815,48 +609,6 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Build shelly-musl trampoline loader (bug #117)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          SRC="modules/terminal-emulator/android/src/main/jni/shelly-musl-exec.c"
-          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_musl_exec.so"
-          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-
-          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
-          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
-            "${SRC}" -o "${OUT}"
-          chmod 755 "${OUT}"
-          ls -lh "${OUT}"
-          file "${OUT}"
-
-      - name: Build musl exec wrapper for Claude SEA (bug #117/#731)
-        if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        # Compile the musl-native exec wrapper (exec-wrapper-musl.c) inside
-        # an Alpine arm64 container so the resulting .so depends ONLY on
-        # libc.musl-aarch64.so.1. The previous Path C-bis step compiled
-        # exec-wrapper.c (bionic source) under Alpine which produced a
-        # binary referencing __register_atfork / __open_2 / __errno —
-        # symbols musl ld-musl cannot resolve, surfaced on-device as
-        # "Error relocating libexec_wrapper.so" when claude() routed the
-        # bionic preload into the musl loader. This step overwrites the
-        # earlier output with the correct musl-native build.
-        run: |
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          SRC="/work/modules/terminal-emulator/android/src/main/jni/exec-wrapper-musl.c"
-          OUT="/work/${JNILIBS}/libexec_wrapper_musl.so"
-
-          docker run --rm --platform linux/arm64 \
-            -v "${GITHUB_WORKSPACE}:/work" \
-            alpine:3.19 sh -euxc "
-              apk add --no-progress build-base file
-              cc -shared -fPIC -O2 -fno-builtin -fno-stack-protector -Wall -Wextra -Werror '${SRC}' -o '${OUT}'
-              strip --strip-unneeded '${OUT}'
-              chmod 755 '${OUT}'
-              ls -lh '${OUT}'
-              file '${OUT}'
-            "
 
       - name: Build Shelly shell launcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
@@ -896,8 +648,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          rm -rf app/build ../modules/terminal-emulator/android/.cxx ../modules/terminal-emulator/android/build
-          ./gradlew :terminal-emulator:externalNativeBuildRelease assembleRelease -x lintVitalAnalyzeRelease --no-build-cache
+          ./gradlew :terminal-emulator:externalNativeBuildRelease assembleRelease -x lintVitalAnalyzeRelease --build-cache
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
 
@@ -927,7 +678,44 @@ jobs:
           execve_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="execve"{print $3; exit}')"
           test -n "${execve_size}" || { echo "FATAL: execve symbol missing from libexec_wrapper.so"; exit 1; }
           echo "libexec_wrapper.so execve size=${execve_size}"
-          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v182:raw-syscall'
+          readlink_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="readlink"{print $3; exit}')"
+          test -n "${readlink_size}" || { echo "FATAL: readlink symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so readlink size=${readlink_size}"
+          readlinkat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="readlinkat"{print $3; exit}')"
+          test -n "${readlinkat_size}" || { echo "FATAL: readlinkat symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so readlinkat size=${readlinkat_size}"
+          open_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="open"{print $3; exit}')"
+          test -n "${open_size}" || { echo "FATAL: open symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so open size=${open_size}"
+          openat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="openat"{print $3; exit}')"
+          test -n "${openat_size}" || { echo "FATAL: openat symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so openat size=${openat_size}"
+          if readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__open_2" || $8=="__openat_2"{found=1} END{exit found ? 0 : 1}'; then
+            echo "FATAL: private FORTIFY open symbols must not be exported from libexec_wrapper.so"
+            exit 1
+          fi
+          readelf -d /tmp/libexec_wrapper.so | grep -q 'BIND_NOW' || { echo "FATAL: libexec_wrapper.so must be linked with BIND_NOW"; exit 1; }
+          readelf -d /tmp/libexec_wrapper.so | grep -q 'FLAGS_1.*NOW' || { echo "FATAL: libexec_wrapper.so must have FLAGS_1 NOW"; exit 1; }
+          readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_JUMP_SLOT"{print "libexec_wrapper.so jump_slot " $5}'
+          # Keep the LD_PRELOAD hot path free of libc PLT calls. The remaining
+          # allowlisted slots are NDK CRT entries plus the constructor's dlsym.
+          unexpected_jump_slots="$(readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_JUMP_SLOT" && $5 !~ /^(__cxa_finalize|__cxa_atexit|__register_atfork|dlsym)(@|$)/ {print}')"
+          if [ -n "${unexpected_jump_slots}" ]; then
+            echo "FATAL: libexec_wrapper.so has unexpected PLT relocations"
+            echo "${unexpected_jump_slots}"
+            exit 1
+          fi
+          forbidden_jump_slots="$(readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_JUMP_SLOT" && $5 ~ /^(getpid|__errno|execve|open|openat|readlink|readlinkat|memcpy|__stack_chk_fail|__memcpy_chk|__strcpy_chk|abort)(@|$)/ {print}')"
+          if [ -n "${forbidden_jump_slots}" ]; then
+            echo "FATAL: libexec_wrapper.so has crash-prone libc PLT relocations"
+            echo "${forbidden_jump_slots}"
+            exit 1
+          fi
+          environ_reloc_count="$(readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_GLOB_DAT" && $5 ~ /^environ(@|$)/ {count++} END{print count+0}')"
+          test "${environ_reloc_count}" = "0" || { echo "FATAL: libexec_wrapper.so must not depend on libc environ, got ${environ_reloc_count} relocation(s)"; exit 1; }
+          readelf -d /tmp/libexec_wrapper.so | grep -q INIT_ARRAY || { echo "FATAL: libexec_wrapper.so constructor INIT_ARRAY missing"; exit 1; }
+          grep -qaF 'SHELLY_CODEX_PROC_EXE_OPEN_SHIM' /tmp/libexec_wrapper.so || { echo "FATAL: Codex proc-exe open shim gate missing from libexec_wrapper.so"; exit 1; }
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v217:bti-open-interposer'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
@@ -937,6 +725,217 @@ jobs:
         with:
           name: shelly-apk
           path: android/app/build/outputs/apk/release/*.apk
+
+      - name: Publish Android update release
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_TAG: android-latest
+          UPDATE_MANIFEST_NAME: latest.json
+          CODEX_RUNTIME_TAG: codex-runtime-latest
+          CODEX_RUNTIME_MANIFEST_NAME: codex-runtime.json
+        run: |
+          set -euo pipefail
+          apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
+          test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
+          codex_runtime_tar="${RUNNER_TEMP}/codex-runtime.tar.gz"
+          test -s "${codex_runtime_tar}" || { echo "FATAL: Codex runtime tarball not found" >&2; exit 1; }
+
+          config_json="$(npx expo config --json)"
+          version_code="$(printf '%s' "${config_json}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) process.exit(1);
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          version_name="$(printf '%s' "${config_json}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              process.stdout.write(String(config.version || ""));
+            });
+          ')"
+          sha256="$(sha256sum "${apk}" | awk '{print $1}')"
+          codex_version="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+          codex_termux_version="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          short_sha="${GITHUB_SHA:0:12}"
+          run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
+          codex_runtime_asset_name="Shelly-codex-runtime-v${codex_termux_version#v}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.tar.gz"
+          codex_runtime_asset="${RUNNER_TEMP}/${codex_runtime_asset_name}"
+          cp "${codex_runtime_tar}" "${codex_runtime_asset}"
+          codex_runtime_sha256="$(sha256sum "${codex_runtime_asset}" | awk '{print $1}')"
+          codex_runtime_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_RUNTIME_TAG}/${codex_runtime_asset_name}"
+          update_apk_name="Shelly-android-v${version_name}-${version_code}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.apk"
+          release_apk="${RUNNER_TEMP}/${update_apk_name}"
+          cp "${apk}" "${release_apk}"
+          apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${update_apk_name}"
+          apk_size_bytes="$(wc -c < "${release_apk}" | tr -d '[:space:]')"
+
+          VERSION_CODE="${version_code}" \
+          VERSION_NAME="${version_name}" \
+          SHA256="${sha256}" \
+          APK_SIZE_BYTES="${apk_size_bytes}" \
+          CODEX_VERSION="${codex_version}" \
+          CODEX_TERMUX_VERSION="${codex_termux_version}" \
+          APK_URL="${apk_url}" \
+          APK_ASSET_NAME="${update_apk_name}" \
+          CREATED_AT="${created_at}" \
+          node <<'NODE' > "${UPDATE_MANIFEST_NAME}"
+          const manifest = {
+            schemaVersion: 1,
+            channel: "android-latest",
+            versionCode: Number(process.env.VERSION_CODE),
+            versionName: process.env.VERSION_NAME,
+            gitSha: process.env.GITHUB_SHA,
+            runId: Number(process.env.GITHUB_RUN_ID),
+            runNumber: Number(process.env.GITHUB_RUN_NUMBER),
+            createdAt: process.env.CREATED_AT,
+            codexVersion: process.env.CODEX_VERSION,
+            codexTermuxVersion: process.env.CODEX_TERMUX_VERSION,
+            apkAssetName: process.env.APK_ASSET_NAME,
+            apkUrl: process.env.APK_URL,
+            apkSizeBytes: Number(process.env.APK_SIZE_BYTES),
+            sha256: process.env.SHA256,
+          };
+          process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");
+          NODE
+
+          cat > /tmp/shelly-android-update-release.md <<EOF
+          Rolling Android update build.
+
+          - versionName: ${version_name}
+          - versionCode: ${version_code}
+          - codex: ${codex_version}
+          - codex-termux: ${codex_termux_version}
+          - commit: ${GITHUB_SHA}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - sha256: ${sha256}
+          EOF
+
+          CODEX_RUNTIME_VERSION="${codex_termux_version#v}" \
+          CODEX_VERSION="${codex_version}" \
+          CODEX_TERMUX_VERSION="${codex_termux_version}" \
+          CODEX_RUNTIME_SHA256="${codex_runtime_sha256}" \
+          CODEX_RUNTIME_URL="${codex_runtime_url}" \
+          CODEX_RUNTIME_ASSET_NAME="${codex_runtime_asset_name}" \
+          CREATED_AT="${created_at}" \
+          node <<'NODE' > "${CODEX_RUNTIME_MANIFEST_NAME}"
+          const manifest = {
+            schemaVersion: 1,
+            channel: "codex-runtime-latest",
+            version: process.env.CODEX_RUNTIME_VERSION,
+            codexVersion: process.env.CODEX_VERSION,
+            codexTermuxVersion: process.env.CODEX_TERMUX_VERSION,
+            gitSha: process.env.GITHUB_SHA,
+            runId: Number(process.env.GITHUB_RUN_ID),
+            runNumber: Number(process.env.GITHUB_RUN_NUMBER),
+            createdAt: process.env.CREATED_AT,
+            assetName: process.env.CODEX_RUNTIME_ASSET_NAME,
+            tarballUrl: process.env.CODEX_RUNTIME_URL,
+            sha256: process.env.CODEX_RUNTIME_SHA256,
+          };
+          process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");
+          NODE
+
+          cat > /tmp/shelly-codex-runtime-release.md <<EOF
+          Rolling Codex runtime update.
+
+          - codex: ${codex_version}
+          - codex-termux: ${codex_termux_version}
+          - commit: ${GITHUB_SHA}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - sha256: ${codex_runtime_sha256}
+          EOF
+
+          if gh release view "${CODEX_RUNTIME_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${CODEX_RUNTIME_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly Codex runtime latest" \
+              --notes-file /tmp/shelly-codex-runtime-release.md
+          else
+            gh release create "${CODEX_RUNTIME_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly Codex runtime latest" \
+              --notes-file /tmp/shelly-codex-runtime-release.md \
+              --latest=false
+          fi
+
+          gh release upload "${CODEX_RUNTIME_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${codex_runtime_asset}"
+
+          uploaded_runtime_asset="$(gh release view "${CODEX_RUNTIME_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets \
+            --jq ".assets[] | select(.name == \"${codex_runtime_asset_name}\")")"
+          test -n "${uploaded_runtime_asset}" || { echo "FATAL: uploaded Codex runtime asset not visible in release" >&2; exit 1; }
+          uploaded_runtime_digest="$(printf '%s' "${uploaded_runtime_asset}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const asset = JSON.parse(input);
+              process.stdout.write(String(asset.digest || ""));
+            });
+          ')"
+          if [ -n "${uploaded_runtime_digest}" ] && [ "${uploaded_runtime_digest}" != "sha256:${codex_runtime_sha256}" ]; then
+            echo "FATAL: Codex runtime digest mismatch: ${uploaded_runtime_digest}" >&2
+            exit 1
+          fi
+
+          gh release upload "${CODEX_RUNTIME_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${CODEX_RUNTIME_MANIFEST_NAME}" \
+            --clobber
+
+          if gh release view "${UPDATE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${UPDATE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly Android latest" \
+              --notes-file /tmp/shelly-android-update-release.md
+          else
+            gh release create "${UPDATE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly Android latest" \
+              --notes-file /tmp/shelly-android-update-release.md \
+              --latest=false
+          fi
+
+          gh release upload "${UPDATE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${release_apk}"
+
+          uploaded_asset="$(gh release view "${UPDATE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets \
+            --jq ".assets[] | select(.name == \"${update_apk_name}\")")"
+          test -n "${uploaded_asset}" || { echo "FATAL: uploaded APK asset not visible in release" >&2; exit 1; }
+          uploaded_digest="$(printf '%s' "${uploaded_asset}" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const asset = JSON.parse(input);
+              process.stdout.write(String(asset.digest || ""));
+            });
+          ')"
+          if [ -n "${uploaded_digest}" ] && [ "${uploaded_digest}" != "sha256:${sha256}" ]; then
+            echo "FATAL: release APK digest mismatch: ${uploaded_digest}" >&2
+            exit 1
+          fi
+
+          gh release upload "${UPDATE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${UPDATE_MANIFEST_NAME}" \
+            --clobber
 
       - name: Publish EAS Update (OTA)
         # Expo Updates are disabled in app.config.ts for the v5.1.x release

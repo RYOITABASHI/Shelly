@@ -13,8 +13,8 @@
  * 4. Fallback: keyword-based classifyTask() when LLM unavailable
  *
  * Priority order (when LLM unavailable):
- *   chat: groq (if key set) > CLI fallback
- *   code: claude-code > codex
+ *   chat: groq (if key set) > local-llm
+ *   code: codex
  */
 
 import type { ToolStatus } from './shelly-system-prompt';
@@ -25,7 +25,7 @@ import { getToolById } from './env-manager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RoutingTool = 'claude-code' | 'gemini-cli' | 'codex' | 'local-llm' | 'groq';
+export type RoutingTool = 'codex' | 'local-llm' | 'groq';
 
 export interface RoutingDecision {
   tool: RoutingTool;
@@ -42,19 +42,9 @@ export interface RoutingDecision {
 function buildRoutingPrompt(toolStatuses: ToolStatus[]): string {
   const toolDescriptions = [
     {
-      id: 'claude-code',
-      name: 'Claude Code',
-      strengths: 'Code generation, file editing, project creation, bug fixing, refactoring, git operations. Can autonomously read/write files. Most capable for complex tasks.',
-    },
-    {
-      id: 'gemini-cli',
-      name: 'Gemini CLI',
-      strengths: 'Web search, latest info research, documentation lookup, code generation. Good at information gathering via Google Search. Free tier available.',
-    },
-    {
       id: 'codex',
       name: 'Codex CLI',
-      strengths: 'Fast, lightweight code fixes, simple file edits, quick tasks. Lighter than Claude Code, suited for quick modifications.',
+      strengths: 'Code generation, file editing, project creation, bug fixing, refactoring, git operations, and quick modifications.',
     },
     {
       id: 'groq',
@@ -100,7 +90,7 @@ export async function routeIntent(
   userInput: string,
   config: LocalLlmConfig,
   toolStatuses: ToolStatus[] = [],
-  defaultAgent?: 'gemini-cli' | 'claude-code' | 'codex',
+  defaultAgent?: 'codex',
   options?: { groqApiKey?: string },
 ): Promise<RoutingDecision> {
   // LLM disabled → fallback
@@ -137,7 +127,7 @@ function parseRoutingResponse(content: string): { tool: RoutingTool; reason: str
 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
-    const validTools: RoutingTool[] = ['claude-code', 'gemini-cli', 'codex', 'local-llm', 'groq'];
+    const validTools: RoutingTool[] = ['codex', 'local-llm', 'groq'];
     if (validTools.includes(parsed.tool)) {
       return { tool: parsed.tool, reason: parsed.reason || '' };
     }
@@ -165,10 +155,7 @@ function buildDecision(
     usedFallback,
   };
 
-  const toolIdMap: Partial<Record<RoutingTool, ToolId>> = {
-    'claude-code': 'claude-code',
-    'gemini-cli': 'gemini-cli',
-  };
+  const toolIdMap: Partial<Record<RoutingTool, ToolId>> = {};
 
   const toolId = toolIdMap[tool];
   if (toolId) {
@@ -192,13 +179,13 @@ function buildDecision(
  * Fallback routing when LLM is unavailable.
  *
  * Priority order (based on installed tools):
- *   claude-code (if installed) > codex (if installed)
+ *   codex (if installed) > local-llm
  *
- * - chat → groq (if API key set) > local-llm > best CLI
- * - code → claude-code > codex
+ * - chat → default backend
+ * - code → codex
  * - research → default supported backend
- * - file_ops → best available CLI
- * - unknown → best installed CLI
+ * - file_ops → codex
+ * - unknown → default supported backend
  */
 function fallbackRoute(
   userInput: string,
@@ -209,35 +196,19 @@ function fallbackRoute(
   const input = userInput.toLowerCase();
   const category = classifyTask(userInput);
 
-  // Explicit tool name mentions
-  const mentionsClaude = ['claude'].some((k) => input.includes(k));
-  const mentionsGemini = ['gemini'].some((k) => input.includes(k));
-  if (mentionsClaude && !mentionsGemini) {
-    return buildDecision('claude-code', 'Routing to Claude Code', userInput, toolStatuses, true);
-  }
-  if (mentionsGemini && !mentionsClaude) {
-    return buildDecision('gemini-cli', 'Routing to Gemini CLI', userInput, toolStatuses, true);
-  }
-
   // Determine best available CLI based on installed tools
-  const hasClaude = toolStatuses.some((s) => s.id === 'claude-code' && s.installed);
   const hasCodex = toolStatuses.some((s) => s.id === 'codex' && s.installed);
   const hasGroqKey = !!(options?.groqApiKey && options.groqApiKey.trim().length > 0);
 
-  // Default agent priority: explicit > claude-code > codex.
-  // Gemini CLI is still available when explicitly mentioned, but it is not
-  // selected automatically while the Android TUI path is experimental.
+  // Default agent priority: explicit > codex > groq > local-llm.
   const defaultAgent: RoutingTool = explicitDefault
-    ?? (hasClaude ? 'claude-code' : hasCodex ? 'codex' : 'local-llm');
+    ?? (hasCodex ? 'codex' : hasGroqKey ? 'groq' : 'local-llm');
 
-  const defaultLabel = defaultAgent === 'claude-code' ? 'Claude Code'
-    : defaultAgent === 'codex' ? 'Codex CLI'
+  const defaultLabel = defaultAgent === 'codex' ? 'Codex CLI'
     : defaultAgent === 'local-llm' ? 'Local LLM'
-    : 'Gemini CLI';
+    : 'Groq';
 
-  // Chat tasks: route to user's default CLI (not Groq — Groq is for intent classification & interpretation)
-  // Code tasks: prefer claude-code if available
-  const codeTool: RoutingTool = hasClaude ? 'claude-code' : defaultAgent;
+  const codeTool: RoutingTool = hasCodex ? 'codex' : defaultAgent;
 
   const categoryToTool: Record<TaskCategory, RoutingTool> = {
     chat: defaultAgent,
@@ -249,7 +220,7 @@ function fallbackRoute(
 
   const categoryReasons: Record<TaskCategory, string> = {
     chat: `Responding via ${defaultLabel}`,
-    code: hasClaude ? 'Code task — delegating to Claude Code' : `Code task — using ${defaultLabel}`,
+    code: `Code task — using ${codeTool === 'codex' ? 'Codex CLI' : defaultLabel}`,
     research: `Research task — using ${defaultLabel}`,
     file_ops: `File operation — using ${defaultLabel}`,
     unknown: `Using ${defaultLabel}`,
@@ -265,8 +236,6 @@ function fallbackRoute(
 
 export function formatRoutingMessage(decision: RoutingDecision): string {
   const toolLabels: Record<RoutingTool, string> = {
-    'claude-code': 'Claude Code',
-    'gemini-cli': 'Gemini CLI',
     'codex': 'Codex CLI',
     'groq': 'Groq',
     'local-llm': 'Local LLM',

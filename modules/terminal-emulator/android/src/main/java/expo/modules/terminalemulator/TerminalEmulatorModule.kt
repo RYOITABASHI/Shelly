@@ -1,10 +1,13 @@
 package expo.modules.terminalemulator
 
 import android.app.AlarmManager
+import android.app.DownloadManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -15,6 +18,8 @@ import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
+import expo.modules.terminalemulator.scouter.ScouterStateStore
+import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
 
 class TerminalEmulatorModule : Module() {
 
@@ -60,6 +65,73 @@ class TerminalEmulatorModule : Module() {
         sendEvent(name, body)
     }
 
+    private fun requireReactContext(): Context =
+        appContext.reactContext ?: throw IllegalStateException("React context unavailable")
+
+    private fun startTerminalSessionService(context: Context, info: String? = null) {
+        val intent = Intent(context, TerminalSessionService::class.java).apply {
+            if (info != null) {
+                action = TerminalSessionService.ACTION_UPDATE_NOTIFICATION
+                putExtra("session_info", info)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    private fun validateDownloadPath(downloadSubdir: String, fileName: String): java.io.File {
+        val subdirRe = Regex("^[A-Za-z0-9._-]+$")
+        val apkNameRe = Regex("^[A-Za-z0-9._-]+\\.apk$", RegexOption.IGNORE_CASE)
+        require(subdirRe.matches(downloadSubdir)) { "Invalid download directory: $downloadSubdir" }
+        require(apkNameRe.matches(fileName)) { "Invalid APK file name: $fileName" }
+
+        val downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val target = java.io.File(java.io.File(downloadsRoot, downloadSubdir), fileName).canonicalFile
+        val root = downloadsRoot.canonicalFile
+        require(target.path == root.path || target.path.startsWith(root.path + java.io.File.separator)) {
+            "Download path escapes Downloads directory"
+        }
+        return target
+    }
+
+    private fun downloadStatusName(status: Int): String =
+        when (status) {
+            DownloadManager.STATUS_PENDING -> "pending"
+            DownloadManager.STATUS_RUNNING -> "running"
+            DownloadManager.STATUS_PAUSED -> "paused"
+            DownloadManager.STATUS_SUCCESSFUL -> "successful"
+            DownloadManager.STATUS_FAILED -> "failed"
+            else -> "unknown"
+        }
+
+    private fun cursorLong(cursor: Cursor, column: String, fallback: Long = 0L): Long {
+        val index = cursor.getColumnIndex(column)
+        if (index < 0 || cursor.isNull(index)) return fallback
+        return cursor.getLong(index)
+    }
+
+    private fun cursorString(cursor: Cursor, column: String): String? {
+        val index = cursor.getColumnIndex(column)
+        if (index < 0 || cursor.isNull(index)) return null
+        return cursor.getString(index)
+    }
+
+    private fun sha256Hex(file: java.io.File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        file.inputStream().use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
     private fun getAgentRequestCode(context: Context, agentId: String): Int {
         val prefs = context.getSharedPreferences("shelly_agent_ids", Context.MODE_PRIVATE)
         val existing = prefs.getInt(agentId, -1)
@@ -97,7 +169,7 @@ class TerminalEmulatorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
 
-        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize")
+        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize", "onScouterEvent")
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
         // outlived the previous Module instance. Without this, live sessions
@@ -107,7 +179,21 @@ class TerminalEmulatorModule : Module() {
             for (session in sessions.values) {
                 session.emitEvent = ::emitEvent
             }
-            appContext.reactContext?.let { ScouterLifecycleService.get(it).ensureStartedIfEnabled() }
+            appContext.reactContext?.let { context ->
+                val scouter = ScouterLifecycleService.get(context)
+                scouter.setEventSink { event, snapshot ->
+                    emitEvent(
+                        "onScouterEvent",
+                        mapOf(
+                            "eventJson" to event.toJson().toString(),
+                            "snapshotJson" to snapshot.toJson().toString(),
+                            "emittedAt" to System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                runCatching { scouter.ensureStartedIfEnabled() }
+                    .onFailure { Log.w("TerminalEmulator", "Scouter autostart skipped after startup failure", it) }
+            }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
         }
 
@@ -116,6 +202,7 @@ class TerminalEmulatorModule : Module() {
                 ?: throw IllegalArgumentException("sessionId is required")
             val rows = (config["rows"] as? Number)?.toInt() ?: 24
             val cols = (config["cols"] as? Number)?.toInt() ?: 80
+            val context = appContext.reactContext ?: throw IllegalStateException("No React context")
 
             // Case B reattach: live session already exists in the Service
             // registry. Rewire its emitEvent to this Module instance (harmless
@@ -126,6 +213,7 @@ class TerminalEmulatorModule : Module() {
                 existing.emitEvent = ::emitEvent
                 if (existing.isAlive()) {
                     acquireWakeLock()
+                    startTerminalSessionService(context)
                     return@AsyncFunction mapOf(
                         "sessionId" to sessionId,
                         "resumed" to true
@@ -137,8 +225,6 @@ class TerminalEmulatorModule : Module() {
                     sessions.remove(sessionId)
                 }
             }
-
-            val context = appContext.reactContext ?: throw IllegalStateException("No React context")
 
             // Extract bundled libs from APK & initialize home directory
             val libDir = LibExtractor.extractAll(context)
@@ -172,6 +258,7 @@ class TerminalEmulatorModule : Module() {
             )
 
             sessions[sessionId] = session
+            startTerminalSessionService(context)
             acquireWakeLock()
             mapOf(
                 "sessionId" to sessionId,
@@ -255,6 +342,12 @@ class TerminalEmulatorModule : Module() {
             val session = sessions[sessionId]
                 ?: throw IllegalArgumentException("Session $sessionId not found")
             session.getTranscriptText(maxLines)
+        }
+
+        AsyncFunction("getScreenText") { sessionId: String ->
+            val session = sessions[sessionId]
+                ?: throw IllegalArgumentException("Session $sessionId not found")
+            session.getScreenText()
         }
 
         AsyncFunction("writeToEmulator") { sessionId: String, text: String ->
@@ -354,12 +447,7 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("startSessionService") {
             val context = appContext.reactContext ?: return@AsyncFunction null
-            val intent = Intent(context, TerminalSessionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            startTerminalSessionService(context)
             null
         }
 
@@ -371,15 +459,7 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("updateSessionNotification") { info: String ->
             val context = appContext.reactContext ?: return@AsyncFunction null
-            val intent = Intent(context, TerminalSessionService::class.java).apply {
-                action = TerminalSessionService.ACTION_UPDATE_NOTIFICATION
-                putExtra("session_info", info)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            startTerminalSessionService(context, info)
             null
         }
 
@@ -471,42 +551,178 @@ class TerminalEmulatorModule : Module() {
         }
 
         AsyncFunction("installApk") { apkPath: String ->
-            val context = appContext.reactContext
-                ?: throw IllegalStateException("React context unavailable")
+            val context = requireReactContext()
+            try {
+                val apk = java.io.File(apkPath).canonicalFile
+                if (!apk.exists() || !apk.isFile) {
+                    throw IllegalArgumentException("APK not found: $apkPath")
+                }
+                if (!apk.name.endsWith(".apk", ignoreCase = true)) {
+                    throw IllegalArgumentException("Not an APK file: $apkPath")
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+                    val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(settingsIntent)
+                    throw IllegalStateException("Allow Shelly to install unknown apps, then tap Install APK again.")
+                }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.shelly.fileprovider",
+                    apk,
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("TerminalEmulator", "installApk failed for $apkPath", e)
+                throw e
+            }
+            null
+        }
+
+        AsyncFunction("enqueueApkDownload") { url: String, downloadSubdir: String, fileName: String ->
+            val context = requireReactContext()
+            val target = validateDownloadPath(downloadSubdir, fileName)
+            target.parentFile?.mkdirs()
+            if (target.exists() && !target.delete()) {
+                throw IllegalStateException("Could not replace existing APK: ${target.absolutePath}")
+            }
+
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                setTitle(fileName)
+                setDescription("Shelly Android update")
+                setMimeType("application/vnd.android.package-archive")
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS,
+                    "$downloadSubdir/$fileName",
+                )
+            }
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val downloadId = manager.enqueue(request)
+            Log.i("TerminalEmulator", "enqueueApkDownload: id=$downloadId target=${target.absolutePath}")
+            mapOf(
+                "downloadId" to downloadId,
+                "path" to target.absolutePath,
+            )
+        }
+
+        AsyncFunction("getApkDownloadStatus") { downloadId: Long ->
+            val context = requireReactContext()
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val query = DownloadManager.Query().setFilterById(downloadId)
+            manager.query(query).use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    return@AsyncFunction mapOf(
+                        "downloadId" to downloadId,
+                        "status" to "missing",
+                        "reason" to 0L,
+                        "downloadedBytes" to 0L,
+                        "totalBytes" to -1L,
+                        "localUri" to null,
+                    )
+                }
+                val status = cursorLong(cursor, DownloadManager.COLUMN_STATUS).toInt()
+                mapOf(
+                    "downloadId" to downloadId,
+                    "status" to downloadStatusName(status),
+                    "reason" to cursorLong(cursor, DownloadManager.COLUMN_REASON),
+                    "downloadedBytes" to cursorLong(cursor, DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
+                    "totalBytes" to cursorLong(cursor, DownloadManager.COLUMN_TOTAL_SIZE_BYTES, -1L),
+                    "localUri" to cursorString(cursor, DownloadManager.COLUMN_LOCAL_URI),
+                )
+            }
+        }
+
+        AsyncFunction("verifyApkFile") { apkPath: String, expectedSha256: String, expectedSizeBytes: Long ->
             val apk = java.io.File(apkPath)
             if (!apk.exists() || !apk.isFile) {
-                throw IllegalArgumentException("APK not found: $apkPath")
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to 0L,
+                    "error" to "APK not found: $apkPath",
+                )
             }
             if (!apk.name.endsWith(".apk", ignoreCase = true)) {
-                throw IllegalArgumentException("Not an APK file: $apkPath")
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to apk.length(),
+                    "error" to "Not an APK file: $apkPath",
+                )
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-                val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                    data = Uri.parse("package:${context.packageName}")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(settingsIntent)
-                throw IllegalStateException("Allow Shelly to install unknown apps, then tap Install APK again.")
+            val bytes = apk.length()
+            if (expectedSizeBytes > 0 && bytes != expectedSizeBytes) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to bytes,
+                    "error" to "size mismatch: expected $expectedSizeBytes, got $bytes",
+                )
             }
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.shelly.fileprovider",
-                apk,
+            val actualSha256 = sha256Hex(apk)
+            mapOf(
+                "ok" to actualSha256.equals(expectedSha256, ignoreCase = true),
+                "actualSha256" to actualSha256,
+                "bytes" to bytes,
+                "error" to if (actualSha256.equals(expectedSha256, ignoreCase = true)) null else "sha256 mismatch",
             )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(intent)
+        }
+
+        AsyncFunction("removeApkDownload") { downloadId: Long ->
+            val context = requireReactContext()
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            manager.remove(downloadId)
             null
+        }
+
+        AsyncFunction("getAppVersionInfo") {
+            val context = requireReactContext()
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.PackageInfoFlags.of(0),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode.toLong()
+            }
+            mapOf(
+                "packageName" to context.packageName,
+                "versionName" to (packageInfo.versionName ?: ""),
+                "versionCode" to versionCode,
+            )
         }
 
         AsyncFunction("setScouterEnabled") { enabled: Boolean ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
             val scouter = ScouterLifecycleService.get(context)
-            if (enabled) scouter.start() else scouter.stop()
+            runCatching {
+                if (enabled) scouter.start() else scouter.stop()
+            }.onFailure { error ->
+                Log.w("TerminalEmulator", "setScouterEnabled($enabled) failed", error)
+                if (enabled) {
+                    runCatching { scouter.stop() }
+                        .onFailure { Log.w("TerminalEmulator", "Failed to clean up Scouter after enable failure", it) }
+                }
+                throw IllegalStateException("Scouter failed to ${if (enabled) "start" else "stop"}", error)
+            }
             null
         }
 
@@ -516,10 +732,152 @@ class TerminalEmulatorModule : Module() {
             ScouterLifecycleService.get(context).debugJson().toString(2)
         }
 
+        AsyncFunction("refreshScouter") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterLifecycleService.get(context).refreshJson().toString(2)
+        }
+
         AsyncFunction("getScouterHookTemplate") { source: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
             ScouterLifecycleService.get(context).hookTemplate(source).toString(2)
+        }
+
+        AsyncFunction("setScouterCodexBinding") { binding: Map<String, Any?> ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).setWidgetCodexBinding(
+                codexSessionId = binding["codexSessionId"] as? String,
+                ptySessionId = binding["ptySessionId"] as? String,
+                shellySessionId = binding["shellySessionId"] as? String,
+                cwd = binding["cwd"] as? String,
+            )
+            null
+        }
+
+        AsyncFunction("consumeScouterWidgetPendingPrompt") {
+            codexSessionId: String?,
+            ptySessionId: String?,
+            shellySessionId: String? ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).consumeWidgetPromptPending(
+                codexSessionId,
+                ptySessionId,
+                shellySessionId
+            )?.let { pending ->
+                mapOf(
+                    "prompt" to pending.prompt,
+                    "queuedAt" to pending.queuedAt,
+                    "codexSessionId" to pending.codexSessionId,
+                    "ptySessionId" to pending.ptySessionId,
+                    "shellySessionId" to pending.shellySessionId,
+                )
+            }
+        }
+
+        AsyncFunction("getScouterWidgetPendingPromptTarget") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).widgetPendingPromptTarget()?.let { target ->
+                mapOf(
+                    "queuedAt" to target.queuedAt,
+                    "codexSessionId" to target.codexSessionId,
+                    "ptySessionId" to target.ptySessionId,
+                    "shellySessionId" to target.shellySessionId,
+                )
+            }
+        }
+
+        AsyncFunction("consumeScouterWidgetPendingApproval") {
+            codexSessionId: String?,
+            ptySessionId: String?,
+            shellySessionId: String? ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).consumeWidgetApprovalPending(
+                codexSessionId,
+                ptySessionId,
+                shellySessionId
+            )?.let { pending ->
+                mapOf(
+                    "decision" to pending.decision,
+                    "queuedAt" to pending.queuedAt,
+                    "approvalAt" to pending.approvalAt,
+                    "approvalText" to pending.approvalText,
+                    "codexSessionId" to pending.codexSessionId,
+                    "ptySessionId" to pending.ptySessionId,
+                    "shellySessionId" to pending.shellySessionId,
+                )
+            }
+        }
+
+        AsyncFunction("getScouterWidgetPendingApprovalTarget") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).widgetPendingApprovalTarget()?.let { target ->
+                mapOf(
+                    "queuedAt" to target.queuedAt,
+                    "codexSessionId" to target.codexSessionId,
+                    "ptySessionId" to target.ptySessionId,
+                    "shellySessionId" to target.shellySessionId,
+                )
+            }
+        }
+
+        AsyncFunction("markScouterWidgetPromptQueued") { prompt: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).recordWidgetPromptQueued(prompt)
+            null
+        }
+
+        AsyncFunction("markScouterWidgetApprovalDecision") { decision: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).recordWidgetApprovalDecision(decision)
+            null
+        }
+
+        AsyncFunction("markScouterWidgetApprovalFailed") { message: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).recordWidgetApprovalFailed(message)
+            null
+        }
+
+        AsyncFunction("markScouterWidgetApprovalResolved") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).recordWidgetApprovalResolved()
+            null
+        }
+
+        AsyncFunction("markScouterWidgetPromptFailed") { message: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).recordWidgetPromptFailed(message)
+            null
+        }
+
+        AsyncFunction("markScouterWidgetChoicePending") { message: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).recordWidgetChoicePending(message)
+            ScouterWidgetProvider.updateAll(context, force = true)
+            null
+        }
+
+        AsyncFunction("returnToHome") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            null
         }
 
         // Phase 0: execve verification test
@@ -724,18 +1082,48 @@ class TerminalEmulatorModule : Module() {
             val homeDir = HomeInitializer.getHomeDir(context)
             val bashPath = LibExtractor.getBashPath(context)
             val libPath = libDir.absolutePath
+            val homePath = homeDir.absolutePath
+            val sslDir = "$homePath/.shelly-ssl"
+            val caBundle = "$sslDir/ca-certificates.crt"
+            val opensslConf = "$sslDir/openssl.cnf"
+            try {
+                val sslDirFile = java.io.File(sslDir)
+                sslDirFile.mkdirs()
+                val caBundleFile = java.io.File(caBundle)
+                if (!caBundleFile.exists() || caBundleFile.length() == 0L) {
+                    context.assets.open("ca-certificates.crt").use { input ->
+                        caBundleFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+                val opensslConfFile = java.io.File(opensslConf)
+                if (!opensslConfFile.exists()) opensslConfFile.writeText("")
+            } catch (e: Exception) {
+                Log.w("TerminalEmulator", "execCommand TLS env seed failed: ${e.message}")
+            }
 
-            // Prepend PATH export so bundled tools (node, npm, git, etc.) are found
-            val wrappedCommand = "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && export LD_LIBRARY_PATH='$libPath' && export HOME='${homeDir.absolutePath}' && $command"
+            // Non-interactive Settings commands do not source ~/.bashrc, so mirror
+            // the TLS environment that HomeInitializer writes for bundled tools.
+            val wrappedCommand =
+                "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && " +
+                "export LD_LIBRARY_PATH='$libPath' && " +
+                "export HOME='$homePath' && " +
+                "export SSL_CERT_FILE='$caBundle' && " +
+                "export SSL_CERT_DIR='$sslDir' && " +
+                "export CURL_CA_BUNDLE='$caBundle' && " +
+                "export NODE_EXTRA_CA_CERTS='$caBundle' && " +
+                "export GIT_SSL_CAINFO='$caBundle' && " +
+                "export REQUESTS_CA_BUNDLE='$caBundle' && " +
+                "export OPENSSL_CONF='$opensslConf' && " +
+                "$command"
 
-            Log.i("TerminalEmulator", "execCommand: bash=$bashPath lib=$libPath home=${homeDir.absolutePath}")
+            Log.i("TerminalEmulator", "execCommand: bash=$bashPath lib=$libPath home=$homePath")
             Log.i("TerminalEmulator", "execCommand: bash exists=${java.io.File(bashPath).exists()} lib exists=${libDir.exists()} files=${libDir.list()?.size ?: 0}")
 
             val result = ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
                 bashPath,
                 libPath,
-                homeDir.absolutePath,
+                homePath,
                 wrappedCommand,
                 timeout
             )

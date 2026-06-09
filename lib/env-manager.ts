@@ -9,16 +9,13 @@
  */
 
 import type { ToolStatus } from './shelly-system-prompt';
-import { execCommand } from '@/hooks/use-native-exec';
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ToolId =
   | 'node'
   | 'python'
   | 'git'
-  | 'claude-code'
-  | 'gemini-cli'
+  | 'codex'
   | 'llama-server';
 
 export type SetupPhase =
@@ -107,33 +104,17 @@ export const TOOL_CATALOG: ToolDefinition[] = [
 
   // ── AIツール（ユーザー選択） ────────────────────────────────────────────
   {
-    id: 'claude-code',
-    name: 'Claude Code',
-    description: 'Anthropic製AIコーディングエージェント',
+    id: 'codex',
+    name: 'Codex CLI',
+    description: 'OpenAI製AIコーディングエージェント',
     category: 'ai',
-    checkCommand: 'claude --version 2>/dev/null',
-    versionCommand: 'claude --version 2>/dev/null | head -1',
-    installGuidance: 'Claude Code is not installed. Run: npm install -g @anthropic-ai/claude-code',
+    checkCommand: 'codex --version 2>/dev/null',
+    versionCommand: 'codex --version 2>/dev/null | head -1',
+    installGuidance: 'Codex CLI is not installed. Run: npm install -g @openai/codex',
     dependencies: ['node'],
     requiresAuth: true,
-    authUrl: 'https://console.anthropic.com/',
-    authCheckCommand: 'claude --version 2>/dev/null && echo "ok"',
-    userFriendlyDescription: 'コード生成・ファイル編集・プロジェクト作成を自動で行うAI。一番賢い。',
-    selectable: true,
-  },
-  {
-    id: 'gemini-cli',
-    name: 'Gemini CLI',
-    description: 'Google製AIエージェント',
-    category: 'ai',
-    checkCommand: 'gemini --version 2>/dev/null',
-    versionCommand: 'gemini --version 2>/dev/null | head -1',
-    installGuidance: 'Gemini CLI is not installed. Run: npm install -g @google/gemini-cli',
-    dependencies: ['node'],
-    requiresAuth: true,
-    authUrl: 'https://aistudio.google.com/apikey',
-    authCheckCommand: 'gemini --version 2>/dev/null && echo "ok"',
-    userFriendlyDescription: 'Google製のAIアシスタント。無料枠あり。セットアップが簡単で初心者におすすめ。',
+    authCheckCommand: 'codex --version 2>/dev/null && echo "ok"',
+    userFriendlyDescription: 'コード生成・ファイル編集・プロジェクト作成を自動で行うAI。',
     selectable: true,
   },
   {

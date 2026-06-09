@@ -11,7 +11,6 @@ import { View, Text, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
 import { getActiveLlmLabel } from '@/hooks/use-tool-discovery';
-import { UsageIndicator } from '@/components/UsageIndicator';
 
 function getActiveChat(settings: {
   cerebrasApiKey?: string;
@@ -24,9 +23,8 @@ function getActiveChat(settings: {
   if (settings.localLlmEnabled) return { label: 'Local LLM', color: '#60A5FA' };
   const cli = settings.defaultAgent || 'codex';
   const map: Record<string, { label: string; color: string }> = {
-    'claude-code': { label: 'Claude', color: '#D4A574' },
     'codex': { label: 'Codex', color: '#4ADE80' },
-    'gemini-cli': { label: 'Gemini', color: '#60A5FA' },
+    'local': { label: 'Local LLM', color: '#60A5FA' },
   };
   return map[cli] ?? { label: 'CLI', color: '#6B7280' };
 }
@@ -58,9 +56,7 @@ export function StatusIndicator({ bridgeOnly }: StatusIndicatorProps = {}) {
 
   // CLI session labels
   const cliSessionMap: Record<string, { label: string; color: string }> = {
-    claude: { label: 'Claude Code', color: '#D4A574' },
     codex: { label: 'Codex', color: '#4ADE80' },
-    gemini: { label: 'Gemini CLI', color: '#60A5FA' },
   };
   const cliSession = activeCliSession ? cliSessionMap[activeCliSession] : null;
 
@@ -99,9 +95,6 @@ export function StatusIndicator({ bridgeOnly }: StatusIndicatorProps = {}) {
         </>
       )}
 
-      {/* Usage cost badge */}
-      <Text style={styles.separator}>·</Text>
-      <UsageIndicator />
     </View>
   );
 }

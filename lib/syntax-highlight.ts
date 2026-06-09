@@ -15,7 +15,7 @@ export type Token = {
 // --- Color Map ------------------------------------------------------------------
 
 // Mock-faithful palette. Keywords land on the same purple Shelly uses for
-// the CLAUDE role label so code blocks read as "same family" as the AI
+// the agent role label so code blocks read as "same family" as the AI
 // pane. Strings pop in pink, numbers in amber.
 export const TOKEN_COLORS: Record<TokenType, string> = {
   keyword:     '#A78BFA', // purple — import/from/const/function/return

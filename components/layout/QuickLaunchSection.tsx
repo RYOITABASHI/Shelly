@@ -17,12 +17,18 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { useTranslation } from '@/lib/i18n';
 
-type Cli = 'claude' | 'codex';
+type QuickLaunchCommand = 'codex' | 'diag';
 
-const CLI_LABEL: Record<Cli, string> = {
-  claude: 'Claude',
+const COMMAND_LABEL: Record<QuickLaunchCommand, string> = {
   codex: 'Codex',
+  diag: 'Diag',
+};
+
+const COMMAND_TEXT: Record<QuickLaunchCommand, string> = {
+  codex: 'codex',
+  diag: 'shelly-codex-diagnose',
 };
 
 type Props = {
@@ -32,45 +38,45 @@ type Props = {
 };
 
 export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
+  const { t } = useTranslation();
   const addPane = useAddPane();
 
   const launch = useCallback(
-    (cli: Cli) => {
+    (command: QuickLaunchCommand) => {
       const result = addPane('terminal');
       if (result !== null) return; // useAddPane already alerted
       const sessionId = useTerminalStore.getState().activeSessionId;
-      // The shell function name on the user's $PATH matches the cli token
-      // (claude/codex are bashrc-defined functions in HomeInitializer.kt).
+      // The command tokens are bashrc-defined functions in HomeInitializer.kt.
       // Trailing newline so bash auto-runs it the
       // moment the new pane's TerminalPane effect picks the command up.
-      useTerminalStore.getState().insertCommand(`${cli}\n`, sessionId);
+      useTerminalStore.getState().insertCommand(`${COMMAND_TEXT[command]}\n`, sessionId);
     },
     [addPane],
   );
 
   return (
     <SidebarSection
-      title="QUICK LAUNCH"
+      title={t('quick_launch.title')}
       icon="rocket-launch"
       isOpen={isOpen}
       onToggle={onToggle}
       iconsOnly={iconsOnly}
     >
       <View style={styles.row}>
-        {(['claude', 'codex'] as const).map((cli) => (
+        {(['codex', 'diag'] as const).map((command) => (
           <Pressable
-            key={cli}
+            key={command}
             style={[
               styles.chip,
               { borderColor: C.accent, backgroundColor: withAlpha(C.accent, 0.08) },
             ]}
-            onPress={() => launch(cli)}
+            onPress={() => launch(command)}
             hitSlop={4}
             accessibilityRole="button"
-            accessibilityLabel={`Launch ${CLI_LABEL[cli]} in a new terminal pane`}
+            accessibilityLabel={t('quick_launch.launch_a11y', { name: COMMAND_LABEL[command] })}
           >
             <Text style={[styles.chipLabel, { color: C.accent }]}>
-              {CLI_LABEL[cli]}
+              {COMMAND_LABEL[command]}
             </Text>
           </Pressable>
         ))}
@@ -88,6 +94,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   chip: {
+    flex: 1,
     flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',

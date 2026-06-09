@@ -9,7 +9,7 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import type { GitGuide, GitGuideStep } from '@/lib/git-assistant';
 import { useTranslation } from '@/lib/i18n';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C } from '@/theme.config';
 
 
 type Props = {

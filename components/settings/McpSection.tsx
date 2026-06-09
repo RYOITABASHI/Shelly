@@ -4,7 +4,7 @@
  * Settings画面のMCP (Model Context Protocol) 管理セクション。
  * - MCPサーバーカタログ（推奨表示・ワンタップ有効化）
  * - 各サーバーの状態表示（running/stopped/error）
- * - Claude Codeへの設定反映ボタン
+ * - MCPクライアント設定のコピー/共有
  * - ローカルサーバー（Serena）の起動/停止
  */
 
@@ -25,7 +25,6 @@ import { useMcpStore } from '@/store/mcp-store';
 import {
   MCP_CATALOG,
   McpServerDef,
-  buildMcpInstallCommand,
   buildMcpStartCommand,
   buildMcpStopCommand,
   buildMcpStatusCommand,
@@ -49,10 +48,9 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
     loadState,
     toggleServer,
     setServerStatus,
-    markInstalled,
     enableRecommended,
     getEnabledIds,
-    generateClaudeConfig,
+    generateClientConfig,
   } = useMcpStore();
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -62,19 +60,19 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
   // Load state on mount
   useEffect(() => {
     loadState();
-  }, []);
+  }, [loadState]);
 
   // Auto-enable recommended on first load
   useEffect(() => {
     if (isLoaded && !initialized) {
       enableRecommended();
     }
-  }, [isLoaded, initialized]);
+  }, [isLoaded, initialized, enableRecommended]);
 
-  // ── Claude Code設定への反映 ──────────────────────────────────────────────
+  // ── MCPクライアント設定のコピー ─────────────────────────────────────────
 
-  const handleApplyToClaudeCode = useCallback(async () => {
-    const config = generateClaudeConfig();
+  const handleCopyMcpConfig = useCallback(async () => {
+    const config = generateClientConfig();
     const enabledCount = getEnabledIds().length;
 
     if (enabledCount === 0) {
@@ -82,87 +80,25 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
       return;
     }
 
-    // Bridge接続時: 直接 settings.json を更新
-    if (isConnected) {
-      setIsApplying(true);
-      try {
-        // 現在の settings.json を読み込み
-        const readResult = await onRunCommand(
-          'cat ~/.claude/settings.json 2>/dev/null || echo "{}"',
-          t('mcp.loading_config'),
-        );
-        let currentSettings: Record<string, any> = {};
-        try {
-          currentSettings = JSON.parse(readResult.output || '{}');
-        } catch {
-          currentSettings = {};
-        }
-
-        // mcpServers を追加/更新
-        currentSettings.mcpServers = {
-          ...(currentSettings.mcpServers ?? {}),
-          ...config,
-        };
-
-        // 書き戻し
-        const jsonStr = JSON.stringify(currentSettings, null, 2);
-        const escaped = jsonStr.replace(/'/g, "'\\''");
-        const writeResult = await onRunCommand(
-          `echo '${escaped}' > ~/.claude/settings.json`,
-          t('mcp.writing_config'),
-        );
-
-        setIsApplying(false);
-        if (writeResult.success) {
-          Alert.alert(
-            t('mcp.applied_title'),
-            t('mcp.applied_msg', { count: String(enabledCount) }),
-          );
-        } else {
-          Alert.alert(t('mcp.write_error_title'), t('mcp.write_error_msg'));
-        }
-      } catch {
-        setIsApplying(false);
-        Alert.alert(t('mcp.apply_error_title'), t('mcp.apply_error_msg'));
-      }
-    } else {
-      // 未接続時: クリップボードに設定JSONをコピー
-      const configJson = JSON.stringify({ mcpServers: config }, null, 2);
-      try {
-        await Clipboard.setStringAsync(configJson);
-        Alert.alert(
-          t('mcp.copied_title'),
-          t('mcp.copied_msg', { count: String(enabledCount) }),
-        );
-      } catch {
-        await Share.share({
-          message: configJson,
-          title: 'MCP Server Settings',
-        });
-      }
+    const configJson = JSON.stringify({ mcpServers: config }, null, 2);
+    setIsApplying(true);
+    try {
+      await Clipboard.setStringAsync(configJson);
+      Alert.alert(
+        t('mcp.copied_title'),
+        t('mcp.copied_msg', { count: String(enabledCount) }),
+      );
+    } catch {
+      await Share.share({
+        message: configJson,
+        title: 'MCP Server Settings',
+      });
+    } finally {
+      setIsApplying(false);
     }
-  }, [isConnected, onRunCommand, generateClaudeConfig, getEnabledIds]);
+  }, [generateClientConfig, getEnabledIds, t]);
 
   // ── ローカルサーバー操作 ─────────────────────────────────────────────────
-
-  const handleInstall = useCallback(async (server: McpServerDef) => {
-    const cmd = buildMcpInstallCommand(server);
-    if (!cmd) return;
-    if (!isConnected) {
-      Alert.alert(t('mcp.not_connected_title'), t('mcp.not_connected_msg'));
-      return;
-    }
-    setBusyId(server.id);
-    setServerStatus(server.id, 'starting');
-    const result = await onRunCommand(cmd, t('mcp.server_install', { name: server.name }));
-    if (result.success) {
-      markInstalled(server.id);
-      setServerStatus(server.id, 'stopped');
-    } else {
-      setServerStatus(server.id, 'error', result.output);
-    }
-    setBusyId(null);
-  }, [isConnected, onRunCommand, setServerStatus, markInstalled]);
 
   const handleStart = useCallback(async (server: McpServerDef) => {
     const cmd = buildMcpStartCommand(server);
@@ -179,7 +115,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
       setServerStatus(server.id, 'error', result.output);
     }
     setBusyId(null);
-  }, [isConnected, onRunCommand, setServerStatus]);
+  }, [isConnected, onRunCommand, setServerStatus, t]);
 
   const handleStop = useCallback(async (server: McpServerDef) => {
     const cmd = buildMcpStopCommand(server);
@@ -188,7 +124,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
     await onRunCommand(cmd, t('mcp.server_stop', { name: server.name }));
     setServerStatus(server.id, 'stopped');
     setBusyId(null);
-  }, [isConnected, onRunCommand, setServerStatus]);
+  }, [isConnected, onRunCommand, setServerStatus, t]);
 
   const handleCheckStatus = useCallback(async (server: McpServerDef) => {
     const cmd = buildMcpStatusCommand(server);
@@ -196,7 +132,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
     const result = await onRunCommand(cmd, t('mcp.server_status_check', { name: server.name }));
     const isRunning = result.output?.trim() === 'running';
     setServerStatus(server.id, isRunning ? 'running' : 'stopped');
-  }, [isConnected, onRunCommand, setServerStatus]);
+  }, [isConnected, onRunCommand, setServerStatus, t]);
 
   // ── Render ──────────────────────────────────────────────────────────────
 
@@ -220,7 +156,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
         </View>
         <TouchableOpacity
           style={[styles.applyBtn, enabledCount === 0 && styles.applyBtnDisabled]}
-          onPress={handleApplyToClaudeCode}
+          onPress={handleCopyMcpConfig}
           disabled={isApplying || enabledCount === 0}
         >
           {isApplying ? (
@@ -229,7 +165,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
             <>
               <MaterialIcons name="sync" size={14} color={enabledCount > 0 ? '#0A0A0A' : '#4B5563'} />
               <Text style={[styles.applyBtnText, enabledCount === 0 && styles.applyBtnTextDisabled]}>
-                {isConnected ? t('mcp.apply_btn') : t('mcp.copy_btn')}
+                {t('mcp.copy_btn')}
               </Text>
             </>
           )}

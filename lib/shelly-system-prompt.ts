@@ -33,13 +33,11 @@ function getShellyIdentity(): string {
     : '# Available commands (use exact names)';
 
   const cmdDesc = locale === 'ja'
-    ? `- claude — Claude Code（AIコーディング）
-- gemini — Gemini CLI（AI検索・コード生成）
-- codex — Codex CLI（軽量コード修正）
+    ? `- codex — Codex CLI（AIコーディング）
+- local LLM — オフライン相談・下書き
 - git, node, python, pnpm — 開発ツール`
-    : `- claude — Claude Code (AI coding)
-- gemini — Gemini CLI (AI search & code gen)
-- codex — Codex CLI (lightweight code fixes)
+    : `- codex — Codex CLI (AI coding)
+- local LLM — offline chat and drafting
 - git, node, python, pnpm — dev tools`;
 
   const execNote = locale === 'ja'
@@ -63,8 +61,7 @@ command
 // ─── Tool Definitions ─────────────────────────────────────────────────────────
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
-  'claude-code': 'Claude Code (command: claude)',
-  'gemini-cli': 'Gemini CLI (command: gemini)',
+  'codex': 'Codex CLI (command: codex)',
   'llama-server': 'llama-server: local LLM',
   'node': 'Node.js',
   'python': 'Python',

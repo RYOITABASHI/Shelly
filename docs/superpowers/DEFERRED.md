@@ -45,6 +45,27 @@
 
 **Why not now**: v5.3.1 の価値は Claude Code + Codex の real Android CLI 体験、API-backed AI Pane、更新済み Local LLM catalog にある。Gemini CLI を launch blocker にすると、既に動く主要体験のリリースを遅らせる割に品質保証ができない。
 
+### Claude Code Bash tool Exit code 1
+
+**優先度**: P1
+**状態**: 未解決。v148〜v186 相当の Bash-tool / exec-wrapper / launcher 追従では解決せず、当て推量ビルドを停止。
+
+**症状**:
+- Claude Code の Bash tool が `Exit code 1` になり、Terminal からの `claude --version` や TUI 起動とは別経路で失敗する。
+- Claude Code 2.1.143+ 以降、Bash tool harness / nested shell / env scrub / bionic `LD_PRELOAD` interposer の組み合わせが頻繁に変わり、`.bashrc_version` 148〜186 で約 40 回の改訂を重ねても安定した修正に至っていない。
+
+**経緯**:
+- 2026-05-21 の集中セッションで 7 ビルドと複数エージェント解析を投入したが、診断は次ビルドで毎回反証された。
+- 主な仮説は `libexec_wrapper.so` null-deref、`env` relay / SELinux EACCES、`execve()` stack frame overflow など。いずれも単体の確定修正として main に載せるには不十分だった。
+- リモートスクショ往復とデバイス内トレースだけでは、`--print` canary hang や `SHELLY_CLAUDE_PATCH_TRACE` 自体の起動阻害を切り分けきれなかった。
+
+**次の一手**:
+1. 当て推量ビルド禁止。まず観測手段を確立する。
+2. シンボル付き `libexec_wrapper.so` と一致 build ID の tombstone、または APK 同梱 `strace` 相当の syscall trace を用意する。
+3. native exec-wrapper / linker64 / env scrub の専用デバッグタスクとして再開し、1 仮説 1 証拠で進める。
+
+**Why not now**: Codex / Claude CLI の既存サポート面を壊さずに main を green に戻すことを優先する。未検証の exec-wrapper relay や launcher churn は main に載せない。
+
 ## 🟢 現状サマリ (2026-05-08、BASHRC_VERSION 81、PR #34 + #37 着地)
 
 **Phase 1 OAuth bridge 実機完了** (Galaxy Z Fold6 / Android 14):
@@ -1695,6 +1716,12 @@ claude() {
 - Nacre の後継、分割型レイアウト、トラックボール
 - MEMORY.md の「やりたいことリスト」参照
 
+### Codex Agent Chat の Watch / Shelly-owned STT 拡張
+- **優先度**: P3
+- **現状**: `docs/superpowers/specs/2026-06-02-codex-agent-chat-ui-design.md` で V1 は Shelly 本体の `TextInput` ベース Agent Chat に限定。Type-less など外部入力ツールが文字を入れる前提で、Shelly 側の mic button / speech recognition / Galaxy Watch reply は入れない。
+- **Why not now**: Codex JSONL ↔ PTY session binding と安全な reply routing が先。Watch や Shelly-owned STT を同時に入れると、バグの切り分け対象が UI / native event bridge / audio focus / wearable transport に分散する。
+- → sync: `docs/superpowers/specs/2026-06-02-codex-agent-chat-ui-design.md`
+
 ### UI セルフチェック機能
 - ワイヤレス ADB 経由でスクショ → マルチモーダル AI に UI/UX バグ検出依頼
 - MEMORY.md の「やりたいことリスト」参照
@@ -1721,6 +1748,8 @@ claude() {
 - **2026-04-21**: bug #117 Path C-bis **end-to-end 成立** ✅。Windows PC + WSL2 Ubuntu 24.04 + musl.cc `aarch64-linux-musl-gcc` で musl v1.2.4 を `src/network/resolvconf.c` patch 後に cross-build (633 KB stripped)。Termux 実機で `./ld-musl ./claude --print "reply with OK"` が `OK` を api.anthropic.com から取得。世界初「Android ネイティブで最新 Claude Code (2.1.116) 動作」実機確認。次は Shelly CI への取り込み (musl build step + LibExtractor + HomeInitializer BASHRC_VERSION 43) で v0.1.1 目玉機能化。
 - **2026-05-13**: v119 実機で bare `claude` native route が TUI まで到達する一方、`/login` 後の trust/onboarding prompt で Bun SEA が exit 139。v120 で `~/.claude.json` HOME trust seed と `shelly-doctor` 診断を追加。`SHELLY_AUTO_UPDATE_CLIS=0` は v101 の foreground TUI 汚染対策として維持し、auto-update 再有効化は P2 に defer。
 - **2026-05-20**: Claude Code 2.1.143+ Bash tool 追従で、内部 subprocess 実装追跡だけでは更新時に再発しやすいことを確認。`sdk-tools.d.ts` snapshot + schema diff + behavior smoke + breaking version gate を P1 として登録。
+- **2026-05-21**: Claude Code Bash tool `Exit code 1` 追跡で 7 ビルドを試したが未解決。証明済みの CI marker / exec-wrapper null-deref hardening のみ main に残し、未検証の relay / launcher / stack-frame churn は deferred 化。
+- **2026-06-02**: Codex Agent Chat UI 設計を追加。V1 は Shelly 本体の pane-native chat + Type-less など外部入力ツールからの text input に限定し、Galaxy Watch / Shelly-owned STT は P3 deferred。
 
 ---
 

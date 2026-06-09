@@ -1,5 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <application>
+    <activity
+      android:name=".scouter.ScouterWidgetPromptActivity"
+      android:excludeFromRecents="true"
+      android:exported="false"
+      android:finishOnTaskLaunch="true"
+      android:launchMode="singleTop"
+      android:noHistory="true"
+      android:taskAffinity=""
+      android:theme="@style/ShellyScouterPromptTheme" />
+
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">
@@ -12,4 +22,3 @@
     </receiver>
   </application>
 </manifest>
-

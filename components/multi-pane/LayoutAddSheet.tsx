@@ -13,11 +13,13 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LayoutPicker } from './LayoutPicker';
-import { useMultiPaneStore, type PaneTab } from '@/hooks/use-multi-pane';
+import type { PaneTab } from '@/hooks/use-multi-pane';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { useTranslation } from '@/lib/i18n';
 
 type Props = {
   visible: boolean;
@@ -27,21 +29,23 @@ type Props = {
 type Tab = 'add' | 'layout';
 
 type AddOption =
-  | { kind: 'pane'; id: PaneTab; label: string; icon: string }
-  | { kind: 'sidebar'; id: 'fileTree'; label: string; icon: string };
+  | { kind: 'pane'; id: PaneTab }
+  | { kind: 'sidebar'; id: 'fileTree'; icon: string };
 
 const ADD_OPTIONS: AddOption[] = [
-  { kind: 'pane', id: 'terminal', label: 'Terminal', icon: 'terminal' },
-  { kind: 'pane', id: 'ai',       label: 'AI Chat',  icon: 'auto-awesome' },
-  { kind: 'pane', id: 'browser',  label: 'Browser',  icon: 'language' },
-  { kind: 'pane', id: 'preview',  label: 'Preview',  icon: 'preview' },
-  { kind: 'pane', id: 'markdown', label: 'Markdown', icon: 'description' },
-  { kind: 'pane', id: 'ask',      label: 'Ask Shelly', icon: 'help-outline' },
-  { kind: 'sidebar', id: 'fileTree', label: 'File Tree', icon: 'folder-open' },
+  { kind: 'pane', id: 'terminal' },
+  { kind: 'pane', id: 'ai' },
+  { kind: 'pane', id: 'agent-chat' },
+  { kind: 'pane', id: 'browser' },
+  { kind: 'pane', id: 'preview' },
+  { kind: 'pane', id: 'markdown' },
+  { kind: 'pane', id: 'ask' },
+  { kind: 'sidebar', id: 'fileTree', icon: 'folder-open' },
 ];
 
 export function LayoutAddSheet({ visible, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('add');
+  const { t } = useTranslation();
   const addPane = useAddPane();
 
   const handleAdd = (opt: AddOption) => {
@@ -107,19 +111,23 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
             showsVerticalScrollIndicator={false}
           >
             {tab === 'add' ? (
-              ADD_OPTIONS.map((opt) => (
-                <Pressable
-                  key={`${opt.kind}-${opt.id}`}
-                  style={styles.option}
-                  onPress={() => handleAdd(opt)}
-                >
-                  <View style={styles.optionIcon}>
-                    <MaterialIcons name={opt.icon as any} size={18} color={C.accent} />
-                  </View>
-                  <Text style={styles.optionLabel}>{opt.label}</Text>
-                  <MaterialIcons name="chevron-right" size={16} color={C.text3} />
-                </Pressable>
-              ))
+              ADD_OPTIONS.map((opt) => {
+                const icon = opt.kind === 'pane' ? PANE_REGISTRY[opt.id].icon : opt.icon;
+                const label = opt.kind === 'pane' ? resolvePaneTitle(opt.id, t) : t('sidebar.file_tree');
+                return (
+                  <Pressable
+                    key={`${opt.kind}-${opt.id}`}
+                    style={styles.option}
+                    onPress={() => handleAdd(opt)}
+                  >
+                    <View style={styles.optionIcon}>
+                      <MaterialIcons name={icon as any} size={18} color={C.accent} />
+                    </View>
+                    <Text style={styles.optionLabel}>{label}</Text>
+                    <MaterialIcons name="chevron-right" size={16} color={C.text3} />
+                  </Pressable>
+                );
+              })
             ) : (
               <LayoutPicker onPicked={onClose} />
             )}

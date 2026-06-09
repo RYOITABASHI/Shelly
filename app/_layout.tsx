@@ -1,10 +1,8 @@
 import "@/global.css";
-import React from "react";
+import React, { useEffect } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
-import { Stack } from "expo-router";
-import { ErrorBoundaryProps } from "expo-router";
+import { Stack, type ErrorBoundaryProps } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
 import { AppState, View, Text, Pressable, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
@@ -24,8 +22,20 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
-import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
+import { usePaneStore } from '@/store/pane-store';
+import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
+import { resumeCodexSession } from '@/lib/codex-session-resume';
+import {
+  getCodexApprovalReadiness,
+  getCodexReplyReadiness,
+  sendCodexApproval,
+  sendCodexReply,
+  type CodexApprovalDecision,
+} from '@/lib/codex-session-reply';
+import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/codex-pty-detection';
 import { execCommand } from '@/hooks/use-native-exec';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -50,6 +60,17 @@ const ebStyles = StyleSheet.create({
 
 export const unstable_settings = {
   initialRouteName: "index",
+};
+
+const BACKGROUND_AGENT_LOG_START_DELAY_MS = 45_000;
+const BACKGROUND_AGENT_REPAIR_DELAY_MS = 90_000;
+const AGENT_LOG_SYNC_INTERVAL_MS = 60_000;
+
+type WidgetPromptTarget = {
+  queuedAt?: number;
+  codexSessionId?: string | null;
+  ptySessionId?: string | null;
+  shellySessionId?: string | null;
 };
 
 export default function RootLayout() {
@@ -96,43 +117,59 @@ export default function RootLayout() {
       logError('RootLayout', 'loadSettings failed', e);
     });
 
-    // Load background agents after HOME resolves; otherwise the fallback path
-    // can clear persisted agents from JS state before native HOME is known.
-    import('@/lib/home-path').then(({ initHomePath }) => {
-      initHomePath().then(() => loadAgentsFromDisk(async (cmd) => {
-        const result = await execCommand(cmd, 30_000);
-        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
-        return result.stdout;
-      })).then(() => {
+    let disposed = false;
+    const runNativeShell = async (cmd: string, timeoutMs = 30_000) => {
+      const result = await execCommand(cmd, timeoutMs);
+      if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+      return result.stdout;
+    };
+
+    // Restore agent metadata immediately so manual @agent commands work after
+    // launch. Heavy log sync and script/alarm repair are still deferred below.
+    void (async () => {
+      try {
+        const { initHomePath } = await import('@/lib/home-path');
+        await initHomePath();
+        if (disposed) return;
+        await loadAgentsFromDisk(runNativeShell, {
+          syncLogs: false,
+          repairSchedules: true,
+          repairDelayMs: BACKGROUND_AGENT_REPAIR_DELAY_MS,
+          shouldRepair: () => !disposed && AppState.currentState === 'active',
+        });
         logInfo('RootLayout', 'Loaded: agents');
-      }).catch((e: any) => {
+      } catch (e: any) {
         logError('RootLayout', 'loadAgentsFromDisk failed', e);
-      });
-    });
+      }
+    })();
 
     // Background agents can complete while the JS bridge is asleep. Refresh
     // their on-disk logs when Shelly returns to foreground, and periodically
     // while it is open, so the sidebar/history reflects scheduled runs.
     let agentLogSyncInFlight = false;
+    let agentLogSyncReady = false;
+    let agentLogInterval: ReturnType<typeof setInterval> | null = null;
     const syncAgentLogs = async () => {
-      if (agentLogSyncInFlight) return;
+      if (disposed || agentLogSyncInFlight) return;
       agentLogSyncInFlight = true;
       try {
         await import('@/lib/home-path').then(({ initHomePath }) => initHomePath());
-        await syncAgentRunLogsFromDisk(async (cmd) => {
-          const result = await execCommand(cmd, 30_000);
-          if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
-          return result.stdout;
-        });
+        if (disposed) return;
+        await syncAgentRunLogsFromDisk(runNativeShell);
       } catch (e: any) {
         logError('RootLayout', 'syncAgentRunLogsFromDisk failed', e);
       } finally {
         agentLogSyncInFlight = false;
       }
     };
-    const agentLogInterval = setInterval(syncAgentLogs, 60_000);
+    const agentLogStartTimer = setTimeout(() => {
+      if (disposed) return;
+      agentLogSyncReady = true;
+      void syncAgentLogs();
+      agentLogInterval = setInterval(syncAgentLogs, AGENT_LOG_SYNC_INTERVAL_MS);
+    }, BACKGROUND_AGENT_LOG_START_DELAY_MS);
     const agentLogSub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void syncAgentLogs();
+      if (state === 'active' && agentLogSyncReady) void syncAgentLogs();
     });
 
 
@@ -206,25 +243,6 @@ export default function RootLayout() {
       });
     });
 
-    // bug #50: Start Foreground Service immediately at app launch so lmkd
-    // treats us as a foreground-adjacent process even before the first pane
-    // is created. Without this, switching to Termux for a few minutes would
-    // let lmkd reap Shelly and destroy all PTY state. Idempotent with the
-    // call already in TerminalPane.tsx:227.
-    import('@/modules/terminal-emulator/src/TerminalEmulatorModule').then((mod) => {
-      const TerminalEmulator: any = (mod as any).default ?? mod;
-      try {
-        TerminalEmulator.startSessionService?.().catch(() => {});
-      } catch {}
-      try {
-        TerminalEmulator.requestBatteryOptimizationExemption?.().catch(() => {});
-      } catch {}
-      logInfo('RootLayout', 'Loaded: FGS startup');
-    }).catch((e: any) => {
-      logError('RootLayout', 'FGS startup failed', e);
-    });
-
-
     // Initialize reduce-motion detection for sound/animation system
     useSoundStore.getState().initReduceMotion();
 
@@ -233,21 +251,385 @@ export default function RootLayout() {
     //
     // Supported schemes so far:
     //   shelly://browser?url=<encoded>  — navigate the Browser Pane to a URL.
-    //   shelly://scouter                 — open Scouter detail.
     //                                     Adds a browser pane if none exists.
+    //   shelly://scouter                 — open Scouter detail.
+    //   shelly:///agent-chat?compose=1   — open Agent Chat and focus input.
+    //   shelly://agent-chat?compose=1    — legacy form, still accepted.
     //
     // Primary client today is `shelly-cs open <codespace>` which fires
     //   am start -a android.intent.action.VIEW \
     //     -d 'shelly://browser?url=https%3A%2F%2F<name>.github.dev'
     // to keep the codespace web UI inside Shelly instead of Chrome.
-    const handleDeepLink = (url: string) => {
+    let agentChatResumeInFlight = false;
+
+    const normalizeDeepLinkTarget = (parsed: { hostname?: string | null; path?: string | null }) => {
+      const pathTarget = typeof parsed.path === 'string'
+        ? parsed.path.replace(/^\/+/, '').split('/')[0]
+        : '';
+      const hostTarget = typeof parsed.hostname === 'string' ? parsed.hostname : '';
+      return pathTarget || hostTarget;
+    };
+
+    const visiblePresetForSlot = (currentPreset: PresetId, slotIndex: number): PresetId => {
+      const currentCapacity = PRESET_CAPACITY[currentPreset] ?? 1;
+      if (slotIndex < currentCapacity) return currentPreset;
+      if (slotIndex <= 1) return 'p2h';
+      if (slotIndex === 2) return 'p3l';
+      return 'p4';
+    };
+
+    const focusPaneByTab = (tab: 'agent-chat') => {
+      const multiPane = useMultiPaneStore.getState();
+      const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
+      if (existingIndex >= 0) {
+        const slot = multiPane.slots[existingIndex];
+        multiPane.maximizeSlot(null);
+        const visiblePreset = visiblePresetForSlot(multiPane.preset, existingIndex);
+        if (visiblePreset !== multiPane.preset) {
+          multiPane.setPreset(visiblePreset);
+        }
+        multiPane.focusSlot(existingIndex as 0 | 1 | 2 | 3);
+        if (slot) usePaneStore.getState().setFocusedPane(slot.id);
+        return true;
+      }
+
+      const result = multiPane.addPane(tab);
+      if (result) {
+        logInfo('DeepLink', `could not add ${tab} pane: ${result}`);
+        return false;
+      }
+      return true;
+    };
+
+    const waitForMultiPaneHydration = () => new Promise<void>((resolve) => {
+      if (useMultiPaneStore.getState()._hasHydrated) {
+        resolve();
+        return;
+      }
+      let unsubscribe: (() => void) | null = null;
+      const done = () => {
+        if (unsubscribe) {
+          unsubscribe();
+          unsubscribe = null;
+        }
+        resolve();
+      };
+      unsubscribe = useMultiPaneStore.subscribe((state) => {
+        if (state._hasHydrated) done();
+      });
+    });
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+    const matchesWidgetPromptTarget = (
+      session: AgentChatSession,
+      target: WidgetPromptTarget | null | undefined,
+    ) => {
+      if (!target) return false;
+      return Boolean(
+        (target.codexSessionId && sameCodexSessionId(session.codexSessionId, target.codexSessionId)) ||
+          (target.ptySessionId && session.ptySessionId === target.ptySessionId) ||
+          (target.shellySessionId && session.shellySessionId === target.shellySessionId),
+      );
+    };
+
+    const normalizeCodexSessionId = (sessionId: string | null | undefined): string | null => {
+      const trimmed = sessionId?.trim();
+      if (!trimmed) return null;
+      return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/.exec(trimmed)?.[1] ?? trimmed;
+    };
+
+    const sameCodexSessionId = (
+      left: string | null | undefined,
+      right: string | null | undefined,
+    ): boolean => {
+      const leftValue = normalizeCodexSessionId(left);
+      const rightValue = normalizeCodexSessionId(right);
+      return Boolean(leftValue && rightValue && leftValue === rightValue);
+    };
+
+    const ptyAuthoritativeWidgetSession = (session: AgentChatSession): AgentChatSession => ({
+      ...session,
+      currentStatus: 'idle',
+    });
+
+    const approvalAuthoritativeWidgetSession = (session: AgentChatSession): AgentChatSession => ({
+      ...session,
+      currentStatus: 'WAITING_PERMISSION',
+    });
+
+    const resumeLatestAgentChatSession = async (
+      preferredTarget?: WidgetPromptTarget | null,
+    ): Promise<{ session: AgentChatSession; resumedSession: AgentChatSession } | null> => {
+      await useAgentChatStore.getState().refresh().catch((e) => {
+        logError('DeepLink', 'Agent Chat refresh before resume failed', e);
+      });
+      const { sessions, latestSessionId, bindCodexSessionToPty } = useAgentChatStore.getState();
+      const session = sessions.find((candidate) => matchesWidgetPromptTarget(candidate, preferredTarget))
+        ?? sessions.find((candidate) => candidate.codexSessionId === latestSessionId)
+        ?? sessions[0]
+        ?? null;
+      if (!session) {
+        logInfo('DeepLink', 'Agent Chat resume skipped: no Codex session');
+        return null;
+      }
+
+      const result = await resumeCodexSession(session, {
+        addTerminalPane: (tab) => useMultiPaneStore.getState().addPane(tab),
+      }).catch((e) => {
+        logError('DeepLink', 'Agent Chat resume failed', e);
+        return null;
+      });
+      if (!result) return null;
+      if (result.status === 'failed') {
+        logInfo('DeepLink', `Agent Chat resume failed: ${result.reason}`);
+        return null;
+      }
+
+      let resumedSession = session;
+      const terminalSession = useTerminalStore.getState().sessions.find((candidate) => candidate.id === result.sessionId);
+      if (terminalSession?.nativeSessionId) {
+        const now = Date.now();
+        const cwd = session.cwd ?? terminalSession.currentDir;
+        bindCodexSessionToPty(session.codexSessionId, {
+          ptySessionId: terminalSession.nativeSessionId,
+          shellySessionId: terminalSession.id,
+          cwd,
+          startedAt: now,
+          lastSeenAt: now,
+        });
+        resumedSession = {
+          ...session,
+          ptySessionId: terminalSession.nativeSessionId,
+          shellySessionId: terminalSession.id,
+          cwd,
+          bindingConfidence: 'reliable',
+        };
+      }
+      logInfo('DeepLink', `Agent Chat resume ${result.status}: ${result.sessionId}`);
+      return { session, resumedSession };
+    };
+
+    const latestWidgetSession = (session: AgentChatSession): AgentChatSession => {
+      const latest = useAgentChatStore.getState().sessions
+        .find((candidate) => sameCodexSessionId(candidate.codexSessionId, session.codexSessionId));
+      if (!latest) return session;
+      return {
+        ...latest,
+        ptySessionId: session.ptySessionId ?? latest.ptySessionId,
+        shellySessionId: session.shellySessionId ?? latest.shellySessionId,
+        bindingConfidence: session.bindingConfidence === 'reliable'
+          ? 'reliable'
+          : latest.bindingConfidence,
+      };
+    };
+
+    const waitForWidgetCodexReady = async (session: AgentChatSession, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      let current = latestWidgetSession(session);
+      let last = await getCodexReplyReadiness(ptyAuthoritativeWidgetSession(current)).catch(() => null);
+      while (!last?.ready && Date.now() < deadline) {
+        if (last?.reason === 'interactive_prompt') break;
+        await sleep(650);
+        await useAgentChatStore.getState().refresh().catch(() => undefined);
+        current = latestWidgetSession(current);
+        last = await getCodexReplyReadiness(ptyAuthoritativeWidgetSession(current)).catch(() => null);
+      }
+      return { readiness: last, session: current };
+    };
+
+    const waitForWidgetCodexApprovalReady = async (session: AgentChatSession, timeoutMs = 30_000) => {
+      const deadline = Date.now() + timeoutMs;
+      let noApprovalPromptSince: number | null = null;
+      let current = latestWidgetSession(session);
+      let last = await getCodexApprovalReadiness(approvalAuthoritativeWidgetSession(current)).catch(() => null);
+      while (!last?.ready && Date.now() < deadline) {
+        if (last?.reason === 'no_approval_prompt') {
+          noApprovalPromptSince ??= Date.now();
+          if (Date.now() - noApprovalPromptSince >= 3_000) break;
+        } else {
+          noApprovalPromptSince = null;
+        }
+        await sleep(650);
+        await useAgentChatStore.getState().refresh().catch(() => undefined);
+        current = latestWidgetSession(current);
+        last = await getCodexApprovalReadiness(approvalAuthoritativeWidgetSession(current)).catch(() => null);
+      }
+      return { readiness: last, session: current };
+    };
+
+    const drainWidgetPromptForSession = async (session: AgentChatSession) => {
+      if (!TerminalEmulator.consumeScouterWidgetPendingPrompt) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.('Widget prompt bridge unavailable').catch(() => undefined);
+        return;
+      }
+      const { readiness, session: readySession } = await waitForWidgetCodexReady(session);
+      const ready = readiness;
+      if (!ready?.ready) {
+        const message = ready?.reason === 'interactive_prompt'
+          ? 'Codex is waiting for a terminal choice'
+          : `Codex resume did not become ready: ${ready?.reason ?? 'not_ready'}`;
+        if (ready?.reason === 'interactive_prompt') {
+          await TerminalEmulator.markScouterWidgetChoicePending?.(message).catch(() => undefined);
+        } else {
+          await TerminalEmulator.markScouterWidgetPromptFailed?.(message).catch(() => undefined);
+        }
+        logInfo('DeepLink', `Widget prompt drain skipped: ${ready?.reason ?? 'not_ready'}`);
+        return;
+      }
+      const screenText = await TerminalEmulator.getScreenText(ready.nativeSessionId).catch(() => null);
+      if (typeof screenText === 'string' && detectCodexApprovalPrompt(screenText)) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex approval is pending').catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt drain skipped: approval pending');
+        return;
+      }
+      if (typeof screenText === 'string' && detectCodexInteractivePrompt(screenText)) {
+        await TerminalEmulator.markScouterWidgetChoicePending?.('Codex is waiting for a terminal choice').catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt drain skipped: interactive choice pending');
+        return;
+      }
+      const pending = await TerminalEmulator.consumeScouterWidgetPendingPrompt(
+        readySession.codexSessionId,
+        readySession.ptySessionId ?? null,
+        readySession.shellySessionId ?? null,
+      ).catch((e) => {
+        logError('DeepLink', 'Widget prompt consume failed', e);
+        return null;
+      });
+      if (!pending?.prompt?.trim()) {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.('Widget prompt no longer matches the resumed Codex session').catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt drain skipped: no matching pending prompt');
+        return;
+      }
+
+      const result = await sendCodexReply(ptyAuthoritativeWidgetSession(readySession), pending.prompt).catch(() => ({
+        status: 'failed' as const,
+        reason: 'screen_unavailable' as const,
+      }));
+      if (result.status === 'sent') {
+        await TerminalEmulator.markScouterWidgetPromptQueued?.(pending.prompt).catch(() => undefined);
+        await useAgentChatStore.getState().refresh().catch(() => undefined);
+        logInfo('DeepLink', 'Widget prompt sent after Codex resume');
+        return;
+      }
+      const reason = result.reason;
+      await TerminalEmulator.markScouterWidgetPromptFailed?.(`Codex prompt send blocked: ${reason}`).catch(() => undefined);
+      logInfo('DeepLink', `Widget prompt send blocked: ${reason}`);
+    };
+
+    const normalizeApprovalDecision = (value: string | null | undefined): CodexApprovalDecision | null => {
+      if (value === 'allow' || value === 'deny') return value;
+      return null;
+    };
+
+    const markWidgetApprovalFailed = async (message: string) => {
+      if (TerminalEmulator.markScouterWidgetApprovalFailed) {
+        await TerminalEmulator.markScouterWidgetApprovalFailed(message).catch(() => undefined);
+      } else {
+        await TerminalEmulator.markScouterWidgetPromptFailed?.(message).catch(() => undefined);
+      }
+    };
+
+    const markWidgetApprovalResolved = async () => {
+      await TerminalEmulator.markScouterWidgetApprovalResolved?.().catch(() => undefined);
+    };
+
+    const drainWidgetApprovalForSession = async (
+      session: AgentChatSession,
+      requestedDecision: CodexApprovalDecision | null,
+    ) => {
+      if (!TerminalEmulator.consumeScouterWidgetPendingApproval) {
+        await markWidgetApprovalFailed('Widget approval bridge unavailable');
+        return;
+      }
+      const { readiness, session: readySession } = await waitForWidgetCodexApprovalReady(session);
+      const ready = readiness;
+      if (!ready?.ready) {
+        if (ready?.reason === 'no_approval_prompt') {
+          const pending = await TerminalEmulator.consumeScouterWidgetPendingApproval(
+            readySession.codexSessionId,
+            readySession.ptySessionId ?? null,
+            readySession.shellySessionId ?? null,
+          ).catch((e) => {
+            logError('DeepLink', 'Widget approval auto-resolve consume failed', e);
+            return null;
+          });
+          const pendingDecision = normalizeApprovalDecision(pending?.decision);
+          if (pending && (!requestedDecision || pendingDecision === requestedDecision)) {
+            await markWidgetApprovalResolved();
+            await useAgentChatStore.getState().refresh().catch(() => undefined);
+            logInfo('DeepLink', 'Widget approval resolved without prompt after Codex resume');
+            return;
+          }
+        }
+        await markWidgetApprovalFailed(
+          `Codex approval resume did not become ready: ${ready?.reason ?? 'not_ready'}`,
+        );
+        logInfo('DeepLink', `Widget approval drain skipped: ${ready?.reason ?? 'not_ready'}`);
+        return;
+      }
+      const pending = await TerminalEmulator.consumeScouterWidgetPendingApproval(
+        readySession.codexSessionId,
+        readySession.ptySessionId ?? null,
+        readySession.shellySessionId ?? null,
+      ).catch((e) => {
+        logError('DeepLink', 'Widget approval consume failed', e);
+        return null;
+      });
+      if (!pending) {
+        await markWidgetApprovalFailed('Widget approval no longer matches the resumed Codex session');
+        logInfo('DeepLink', 'Widget approval drain skipped: no matching pending approval');
+        return;
+      }
+      const decision = normalizeApprovalDecision(pending.decision);
+      if (!decision) {
+        await markWidgetApprovalFailed('Widget approval decision is missing');
+        logInfo('DeepLink', 'Widget approval drain skipped: missing decision');
+        return;
+      }
+      if (requestedDecision && requestedDecision !== decision) {
+        await markWidgetApprovalFailed('Widget approval decision changed before Codex resumed');
+        logInfo('DeepLink', 'Widget approval drain skipped: decision mismatch');
+        return;
+      }
+
+      const result = await sendCodexApproval(approvalAuthoritativeWidgetSession(readySession), decision).catch(() => ({
+        status: 'failed' as const,
+        reason: 'screen_unavailable' as const,
+      }));
+      if (result.status === 'sent') {
+        await TerminalEmulator.markScouterWidgetApprovalDecision?.(decision).catch(() => undefined);
+        await useAgentChatStore.getState().refresh().catch(() => undefined);
+        logInfo('DeepLink', `Widget approval ${decision} sent after Codex resume`);
+        return;
+      }
+      const reason = result.reason;
+      await markWidgetApprovalFailed(`Codex approval send blocked: ${reason}`);
+      logInfo('DeepLink', `Widget approval send blocked: ${reason}`);
+    };
+
+    const queryValue = (value: string | string[] | undefined): string | undefined =>
+      Array.isArray(value) ? value[0] : value;
+
+    const returnHomeFromWidgetFlow = () => {
+      void TerminalEmulator.returnToHome?.().catch(() => undefined);
+    };
+
+    const handleDeepLink = async (url: string) => {
       try {
         const parsed = Linking.parse(url);
-        logInfo('DeepLink', `received: ${url} → host=${parsed.hostname ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`);
-        if (parsed.hostname === 'browser') {
+        const target = normalizeDeepLinkTarget(parsed);
+        logInfo(
+          'DeepLink',
+          `received: ${url} → target=${target || '(none)'} host=${parsed.hostname ?? '(null)'} path=${parsed.path ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`,
+        );
+        if (target === 'browser') {
+          await waitForMultiPaneHydration();
           const raw = parsed.queryParams?.url;
-          const target = Array.isArray(raw) ? raw[0] : raw;
-          if (typeof target === 'string' && target.length > 0) {
+          const browserUrl = Array.isArray(raw) ? raw[0] : raw;
+          if (typeof browserUrl === 'string' && browserUrl.length > 0) {
             // Only addPane('browser') when no Browser Pane is mounted.
             // The store's addPane unconditionally creates a new slot; if
             // we called it on every deep link, repeated `shelly://browser`
@@ -263,10 +645,10 @@ export default function RootLayout() {
                 useMultiPaneStore.getState().addPane('browser');
               }
             } catch {}
-            useBrowserStore.getState().openUrl(target);
-            logInfo('DeepLink', `openUrl dispatched: ${target}`);
+            useBrowserStore.getState().openUrl(browserUrl);
+            logInfo('DeepLink', `openUrl dispatched: ${browserUrl}`);
           }
-        } else if (parsed.hostname === 'clipboard') {
+        } else if (target === 'clipboard') {
           // shelly://clipboard?text=<encoded>
           // Used by shelly-cs auth to copy the OAuth device code to the
           // clipboard automatically. Avoids making the user squint at the
@@ -279,21 +661,97 @@ export default function RootLayout() {
             });
             logInfo('DeepLink', `clipboard set (${text.length} chars)`);
           }
-        } else if (parsed.hostname === 'scouter') {
+        } else if (target === 'scouter') {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
+        } else if (target === 'agent-chat') {
+          await waitForMultiPaneHydration();
+          const compose = queryValue(parsed.queryParams?.compose);
+          const drainWidgetApproval = normalizeApprovalDecision(queryValue(parsed.queryParams?.drainWidgetApproval));
+          const widgetFlow =
+            queryValue(parsed.queryParams?.source) === 'widget' ||
+            queryValue(parsed.queryParams?.drainWidgetPrompt) === '1' ||
+            drainWidgetApproval !== null ||
+            queryValue(parsed.queryParams?.returnHome) === '1';
+          const opened = focusPaneByTab('agent-chat');
+          if (!opened && widgetFlow) {
+            if (drainWidgetApproval) {
+              await markWidgetApprovalFailed('Could not open Agent Chat to resume Codex');
+            } else {
+              await TerminalEmulator.markScouterWidgetPromptFailed?.('Could not open Agent Chat to resume Codex').catch(() => undefined);
+            }
+            returnHomeFromWidgetFlow();
+            return;
+          }
+          if (opened && (compose === '1' || compose === 'true')) {
+            if (!agentChatResumeInFlight) {
+              agentChatResumeInFlight = true;
+              let widgetTarget: WidgetPromptTarget | null = null;
+              if (widgetFlow && drainWidgetApproval) {
+                widgetTarget = TerminalEmulator.getScouterWidgetPendingApprovalTarget
+                  ? await TerminalEmulator.getScouterWidgetPendingApprovalTarget().catch((e) => {
+                      logError('DeepLink', 'Widget approval target read failed', e);
+                      return null;
+                    })
+                  : null;
+              } else if (widgetFlow) {
+                widgetTarget = TerminalEmulator.getScouterWidgetPendingPromptTarget
+                  ? await TerminalEmulator.getScouterWidgetPendingPromptTarget().catch((e) => {
+                      logError('DeepLink', 'Widget prompt target read failed', e);
+                      return null;
+                    })
+                  : null;
+              }
+              void resumeLatestAgentChatSession(widgetTarget)
+                .then(async (outcome) => {
+                  if (!widgetFlow) return;
+                  if (!outcome) {
+                    if (drainWidgetApproval) {
+                      await markWidgetApprovalFailed('Codex resume failed');
+                    } else {
+                      await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex resume failed').catch(() => undefined);
+                    }
+                    return;
+                  }
+                  if (drainWidgetApproval) {
+                    await drainWidgetApprovalForSession(outcome.resumedSession, drainWidgetApproval);
+                  } else {
+                    await drainWidgetPromptForSession(outcome.resumedSession);
+                  }
+                })
+                .finally(() => {
+                  agentChatResumeInFlight = false;
+                  if (widgetFlow) {
+                    returnHomeFromWidgetFlow();
+                    return;
+                  }
+                  focusPaneByTab('agent-chat');
+                  useAgentChatStore.getState().requestComposeFocus();
+                });
+            } else {
+              logInfo('DeepLink', 'Agent Chat resume skipped: already in flight');
+              if (!widgetFlow) {
+                useAgentChatStore.getState().requestComposeFocus();
+              } else {
+                returnHomeFromWidgetFlow();
+              }
+            }
+          } else if (widgetFlow) {
+            returnHomeFromWidgetFlow();
+          }
+          logInfo('DeepLink', `Agent Chat ${opened ? 'opened' : 'open failed'}`);
         }
       } catch (e) {
         logError('DeepLink', 'parse failed', e);
       }
     };
     const linkSub = Linking.addEventListener('url', (event) => {
-      handleDeepLink(event.url);
+      void handleDeepLink(event.url);
     });
     // Cold-start case: app launched directly from the deep link (no prior
     // process to receive the 'url' event).
     Linking.getInitialURL().then((url) => {
-      if (url) handleDeepLink(url);
+      if (url) void handleDeepLink(url);
     }).catch(() => {});
 
     // bug #102 / #115 phase 1 (2026-05-08): file-queue poller for the
@@ -322,10 +780,9 @@ export default function RootLayout() {
     // Phase 1.2 (bug #102/#115): each queue line is either a plain URL
     // (legacy format used by shelly-xdg-open.c and shelly-codex-auth.js)
     // or a JSON object describing how the URL should be opened. The JSON
-    // form was added to support Google OAuth (Gemini login), which needs
-    // a real Chrome process via Custom Tabs because Chromium WebView
-    // unconditionally appends an X-Requested-With header that
-    // accounts.google.com uses to gate sign-in. JSON shape (all fields
+    // form supports OAuth flows that need a real browser process via
+    // Custom Tabs because Chromium WebView can append headers that some
+    // providers use to gate sign-in. JSON shape (all fields
     // optional except `url`):
     //
     //   {
@@ -376,9 +833,8 @@ export default function RootLayout() {
       } catch (e) {
         logError('DeepLinkQueue', `Linking.openURL also failed (provider=${providerTag}); collapsing to in-app: ${e}`);
       }
-      // Last resort: open in-app. For Google OAuth the user will see
-      // the WebView block message, but a visible failure is better than
-      // a silent hang.
+      // Last resort: open in-app. A visible failure is better than a
+      // silent hang.
       try {
         const slots = useMultiPaneStore.getState().slots;
         const hasBrowser = slots.some((s) => s?.tab === 'browser');
@@ -414,7 +870,7 @@ export default function RootLayout() {
 
     // Codex review (PR #50, Phase 1.2 Stage 1): the original
     // read-then-delete flow lost any line a concurrent emitter
-    // (shelly-xdg-open.c, shelly-codex-auth.js, future Gemini wrapper)
+    // (shelly-xdg-open.c, shelly-codex-auth.js, or another CLI bridge)
     // appended between the read and the delete. Append-mode atomic
     // writes survive a missing-file gap, so move-to-spool first then
     // consume the spool — anything written after the move lands in a
@@ -441,7 +897,7 @@ export default function RootLayout() {
         const spoolPath = `${queuePath}.${Date.now()}.${Math.random().toString(16).slice(2, 10)}.spool`;
         try {
           await FileSystem.moveAsync({ from: queuePath, to: spoolPath });
-        } catch (e) {
+        } catch {
           // The queue file may have been consumed by a sibling drain
           // between getInfoAsync and moveAsync. Not an error.
           return;
@@ -459,7 +915,7 @@ export default function RootLayout() {
             let parsed: any;
             try {
               parsed = JSON.parse(line);
-            } catch (e) {
+            } catch {
               logError('DeepLinkQueue', `rejected malformed JSON line: ${line.slice(0, 96)}`);
               continue;
             }
@@ -497,20 +953,26 @@ export default function RootLayout() {
     };
     const queueInterval = setInterval(drainQueue, 250);
 
-    // Unload sounds when app goes to background
+    // Snapshot terminal state before the bridge can be paused or killed.
     const sub = AppState.addEventListener('change', (state) => {
+      logInfo('RootLayout', `AppState changed: ${state}`);
+      if (state === 'inactive' || state === 'background') {
+        void useTerminalStore.getState().saveSessionState();
+      }
       if (state === 'background') {
         unloadSounds();
       }
     });
     return () => {
+      disposed = true;
       sub.remove();
       agentLogSub.remove();
       linkSub.remove();
+      clearTimeout(agentLogStartTimer);
       clearInterval(queueInterval);
-      clearInterval(agentLogInterval);
+      if (agentLogInterval) clearInterval(agentLogInterval);
     };
-  }, []);
+  }, [loadSettings]);
 
   // bug #62 (regression restore): Wave E added `<Stack key={locale}>` as the
   // emergency fix for "i18n language switch doesn't update UI strings" —

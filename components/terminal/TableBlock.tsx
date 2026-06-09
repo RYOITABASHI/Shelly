@@ -1,6 +1,6 @@
 import React, { memo, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
-import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { colors as C } from '@/theme.config';
 
 type Props = {
   output: string;

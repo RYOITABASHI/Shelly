@@ -61,20 +61,35 @@ export type SetupPhase =
  */
 export const MODEL_CATALOG: LlamaCppModel[] = [
   {
-    id: 'qwen3-8b-q4-k-m',
-    name: 'Qwen3-8B Q4_K_M',
-    description: '推奨・高品質。日本語、コード、クロスペイン補助のバランスが最も良いZ Fold6向けモデル。',
-    sizeGb: 4.7,
-    ramRequiredGb: 6.0,
+    id: 'qwen3.5-4b-q4',
+    name: 'Qwen3.5-4B Q4_K_M',
+    description: '推奨。Qwen3世代から更新された、スマホ上のAIペインで常用しやすいZ Fold6向けモデル。',
+    sizeGb: 2.7,
+    ramRequiredGb: 5.2,
     language: 'ja',
     useCase: 'balanced',
     quantization: 'Q4_K_M',
-    huggingFaceRepo: 'Qwen/Qwen3-8B-GGUF',
-    filename: 'Qwen3-8B-Q4_K_M.gguf',
+    huggingFaceRepo: 'unsloth/Qwen3.5-4B-GGUF',
+    filename: 'Qwen3.5-4B-Q4_K_M.gguf',
     downloadUrl:
-      'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
+      'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
     recommended: true,
-    badge: '推奨・高品質',
+    badge: '推奨',
+  },
+  {
+    id: 'qwen3.5-9b-q4',
+    name: 'Qwen3.5-9B Q4_K_M',
+    description: '高品質。4Bより重いが、推論品質を優先したい時の上位モデル。',
+    sizeGb: 5.3,
+    ramRequiredGb: 8.4,
+    language: 'ja',
+    useCase: 'balanced',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'unsloth/Qwen3.5-9B-GGUF',
+    filename: 'Qwen3.5-9B-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
+    badge: '高品質',
   },
   {
     id: 'gemma3-4b-q4',
@@ -120,21 +135,6 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
       'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
   },
   {
-    id: 'qwen3-4b-q4',
-    name: 'Qwen 3 4B',
-    description: 'Qwen2.5比で大幅に賢い。日中英バランス良好。Z Fold6に最適。',
-    sizeGb: 2.6,
-    ramRequiredGb: 5.0,
-    language: 'ja',
-    useCase: 'balanced',
-    quantization: 'Q4_K_M',
-    huggingFaceRepo: 'unsloth/Qwen3-4B-Instruct-2507-GGUF',
-    filename: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
-    downloadUrl:
-      'https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
-    badge: 'Qwen',
-  },
-  {
     id: 'phi4-mini-q4',
     name: 'Phi-4 Mini',
     description: 'Microsoftの超軽量モデル。推論・数学に強い。',
@@ -171,165 +171,243 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
 const MODELS_DIR = '$HOME/models';
 // Resolved inside generated shell scripts. Native exec does not always source
 // interactive shell rc files, so do not rely on $HOME/.local/bin being on PATH.
-const SERVER_BIN = '"$LLAMA_SERVER_BIN"';
+const SERVER_BIN =
+  `/system/bin/sh -c 'cd "$1" || exit 1; shift; unset LD_PRELOAD; export HOME="$HOME"; export ANDROID_ROOT="\${ANDROID_ROOT:-/system}"; export ANDROID_DATA="\${ANDROID_DATA:-/data}"; export LD_LIBRARY_PATH="\${LLAMA_LIB_PATH}\${SHELLY_LD_LIBRARY_PATH:+:$SHELLY_LD_LIBRARY_PATH}\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; exec /system/bin/linker64 "$@"' sh "$REAL_LLAMA_SERVER_DIR" "$REAL_LLAMA_SERVER_BIN"`;
 
 const LLAMA_SERVER_BIN_INIT =
-  'LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-$(command -v llama-server 2>/dev/null || printf \'%s\' "$HOME/.local/bin/llama-server")}"';
+  'LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-$HOME/.local/bin/llama-server}"';
+
+const REAL_LLAMA_SERVER_BIN_INIT = [
+  `INSTALL_MARKER="$HOME/.local/llama.cpp/.shelly-install-ok"`,
+  `if [ ! -f "$INSTALL_MARKER" ]; then`,
+  `  echo "llama.cpp install is incomplete; run llama.cpp Setup and wait for Setup complete."`,
+  `  exit 1`,
+  `fi`,
+  `if [ ! -e "$LLAMA_SERVER_BIN" ]; then`,
+  `  echo "llama-server launcher metadata is missing: $LLAMA_SERVER_BIN"`,
+  `fi`,
+  `REALPATH_FILE="$HOME/.local/bin/llama-server.realpath"`,
+  `if [ ! -s "$REALPATH_FILE" ]; then`,
+  `  echo "llama-server real binary metadata is missing: $REALPATH_FILE"`,
+  `  echo "Run llama.cpp setup first."`,
+  `  exit 1`,
+  `fi`,
+  `REAL_LLAMA_SERVER_BIN="$(cat "$REALPATH_FILE" 2>/dev/null || true)"`,
+  `if [ ! -x "$REAL_LLAMA_SERVER_BIN" ]; then`,
+  `  echo "llama-server binary not found or not executable: $REAL_LLAMA_SERVER_BIN"`,
+  `  echo "Run llama.cpp setup first."`,
+  `  exit 1`,
+  `fi`,
+  `REAL_LLAMA_SERVER_DIR="\${REAL_LLAMA_SERVER_BIN%/*}"`,
+  `LLAMA_LIB_PATH="$(find "$HOME/.local/llama.cpp" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':')"`,
+  `export LLAMA_LIB_PATH`,
+].join('\n');
 
 const HEALTH_CHECK_CMD = [
-  `node -e 'const http=require("http");const req=http.get("http://127.0.0.1:8080/v1/models",res=>{process.exit(res.statusCode>=200&&res.statusCode<300?0:1)});req.on("error",()=>process.exit(1));req.setTimeout(2000,()=>{req.destroy();process.exit(1);});' >/dev/null 2>&1`,
-  `curl -fsS --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
-  `wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
+  `command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
+  `command -v wget >/dev/null 2>&1 && wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
+  `command -v toybox >/dev/null 2>&1 && printf 'GET /v1/models HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' | toybox nc -w 2 127.0.0.1 8080 2>/dev/null | grep -q 'HTTP/1\\.[01] 200'`,
 ].join(' || ');
 
-const INSTALL_LLAMA_SERVER_CMD = `cat > /tmp/shelly-install-llama-server.js <<'NODE'
-const fs = require('fs');
-const http = require('http');
-const https = require('https');
-const { spawnSync } = require('child_process');
-
-const home = process.env.HOME;
-const tmpDir = '/tmp/shelly-llama-server-install';
-const outDir = home + '/.local/bin';
-const installDir = home + '/.local/llama.cpp';
-const tmpInstallDir = home + '/.local/llama.cpp.tmp';
-const releaseApi = 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest';
-
-function requestText(urlText, redirects = 5) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlText);
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url, { headers: { 'User-Agent': 'Shelly-local-llm-installer/1' } }, (res) => {
-      if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
-        res.resume();
-        if (redirects <= 0) reject(new Error('too many redirects'));
-        else resolve(requestText(new URL(res.headers.location, url).toString(), redirects - 1));
-        return;
-      }
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => body += chunk);
-      res.on('end', () => {
-        if (!res.statusCode || res.statusCode >= 400) reject(new Error('HTTP ' + res.statusCode + ' from ' + urlText));
-        else resolve(body);
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => req.destroy(new Error('request timed out')));
-  });
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function download(urlText, outFile, redirects = 5) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlText);
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url, { headers: { 'User-Agent': 'Shelly-local-llm-installer/1' } }, (res) => {
-      if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location) {
-        res.resume();
-        if (redirects <= 0) reject(new Error('too many redirects'));
-        else resolve(download(new URL(res.headers.location, url).toString(), outFile, redirects - 1));
-        return;
-      }
-      if (!res.statusCode || res.statusCode >= 400) {
-        res.resume();
-        reject(new Error('download failed: HTTP ' + res.statusCode));
-        return;
-      }
-      const tmp = outFile + '.part';
-      const file = fs.createWriteStream(tmp);
-      res.pipe(file);
-      file.on('finish', () => file.close(() => {
-        fs.renameSync(tmp, outFile);
-        resolve();
-      }));
-      file.on('error', (err) => {
-        try { fs.unlinkSync(tmp); } catch (_) {}
-        reject(err);
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(120000, () => req.destroy(new Error('download timed out')));
-  });
+const TLS_ENV_PRELUDE = [
+  'SHELLY_CA="$HOME/.shelly-ssl/ca-certificates.crt"',
+  'SHELLY_OPENSSL_CONF="$HOME/.shelly-ssl/openssl.cnf"',
+  'if [ -s "$SHELLY_CA" ]; then',
+  '  export SSL_CERT_FILE="$SHELLY_CA"',
+  '  export CURL_CA_BUNDLE="$SHELLY_CA"',
+  '  export REQUESTS_CA_BUNDLE="$SHELLY_CA"',
+  '  export GIT_SSL_CAINFO="$SHELLY_CA"',
+  '  export NODE_EXTRA_CA_CERTS="$SHELLY_CA"',
+  '  export SSL_CERT_DIR="$HOME/.shelly-ssl"',
+  'else',
+  '  [ -n "${SSL_CERT_FILE:-}" ] && [ ! -r "$SSL_CERT_FILE" ] && unset SSL_CERT_FILE',
+  '  [ -n "${CURL_CA_BUNDLE:-}" ] && [ ! -r "$CURL_CA_BUNDLE" ] && unset CURL_CA_BUNDLE',
+  '  [ -n "${REQUESTS_CA_BUNDLE:-}" ] && [ ! -r "$REQUESTS_CA_BUNDLE" ] && unset REQUESTS_CA_BUNDLE',
+  '  [ -n "${GIT_SSL_CAINFO:-}" ] && [ ! -r "$GIT_SSL_CAINFO" ] && unset GIT_SSL_CAINFO',
+  '  [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && [ ! -r "$NODE_EXTRA_CA_CERTS" ] && unset NODE_EXTRA_CA_CERTS',
+  '  [ -n "${SSL_CERT_DIR:-}" ] && [ ! -d "$SSL_CERT_DIR" ] && unset SSL_CERT_DIR',
+  'fi',
+  'if [ -e "$SHELLY_OPENSSL_CONF" ]; then',
+  '  export OPENSSL_CONF="$SHELLY_OPENSSL_CONF"',
+  'elif [ -n "${OPENSSL_CONF:-}" ] && [ ! -r "$OPENSSL_CONF" ]; then',
+  '  unset OPENSSL_CONF',
+  'fi',
+].join('\n');
+
+const INSTALL_LLAMA_SERVER_CMD = `set -e
+INSTALL_DIR="$HOME/.local/llama.cpp"
+TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
+TMP_INSTALL_DIR="$HOME/.local/llama.cpp.tmp"
+OUT_DIR="$HOME/.local/bin"
+RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+INSTALL_MARKER="$INSTALL_DIR/.shelly-install-ok"
+
+mkdir -p "$TMP_ROOT" "$OUT_DIR"
+${TLS_ENV_PRELUDE}
+
+fetch_text() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 --retry-delay 2 "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O - "$1"
+  else
+    echo "curl or wget is required to install llama.cpp" >&2
+    return 127
+  fi
 }
 
-function run(cmd, args) {
-  const r = spawnSync(cmd, args, { stdio: 'inherit' });
-  if (r.status !== 0) throw new Error(cmd + ' failed with exit ' + r.status);
+download_file() {
+  url="$1"
+  out_file="$2"
+  tmp_file="$out_file.part"
+  rm -f "$tmp_file"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$tmp_file" "$url"
+  else
+    echo "curl or wget is required to install llama.cpp" >&2
+    return 127
+  fi
+  mv "$tmp_file" "$out_file"
 }
 
-function findFile(dir, name) {
-  const stack = [dir];
-  while (stack.length) {
-    const cur = stack.pop();
-    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
-      const path = cur + '/' + entry.name;
-      if (entry.isDirectory()) stack.push(path);
-      else if (entry.isFile() && entry.name === name) return path;
-    }
-  }
-  return null;
+find_llama_server() {
+  find "$1" -type f -name llama-server 2>/dev/null | head -n 1
 }
 
-function collectSoDirs(dir) {
-  const dirs = new Set();
-  const stack = [dir];
-  while (stack.length) {
-    const cur = stack.pop();
-    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
-      const path = cur + '/' + entry.name;
-      if (entry.isDirectory()) stack.push(path);
-      else if (entry.isFile() && /\\\\.so(\\\\.|$)/.test(entry.name)) dirs.add(cur);
-    }
-  }
-  return Array.from(dirs);
+find_common_lib() {
+  find "$1" -type f -name libllama-common.so 2>/dev/null | head -n 1
 }
 
-(async () => {
-  if (!home) throw new Error('HOME is not set');
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  fs.mkdirSync(tmpDir, { recursive: true });
-  fs.mkdirSync(outDir, { recursive: true });
+collect_so_dirs() {
+  find "$INSTALL_DIR" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':'
+}
 
-  const release = JSON.parse(await requestText(releaseApi));
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const asset = assets.find((a) => /bin-android-arm64\\\\.(tar\\\\.gz|tgz|zip)$/i.test(a.name || ''));
-  if (!asset || !asset.browser_download_url) {
-    throw new Error('android arm64 llama.cpp asset not found in latest release');
-  }
+write_wrapper() {
+  FINAL_BINARY="$1"
+  BINARY_DIR="$(dirname "$FINAL_BINARY")"
+  LIB_PATH="$(collect_so_dirs)$BINARY_DIR:$INSTALL_DIR:$INSTALL_DIR/lib"
+  cat > "$OUT_DIR/llama-server" <<WRAPPER_EOF
+#!/system/bin/sh
+cd "$BINARY_DIR" || exit 1
+export LD_LIBRARY_PATH="$LIB_PATH:\\$LD_LIBRARY_PATH"
+unset LD_PRELOAD
+if [ -x /system/bin/linker64 ]; then
+  exec /system/bin/linker64 "$FINAL_BINARY" "\\$@"
+fi
+exec "$FINAL_BINARY" "\\$@"
+WRAPPER_EOF
+  printf '%s\\n' "$FINAL_BINARY" > "$OUT_DIR/llama-server.realpath"
+  chmod 755 "$OUT_DIR/llama-server" "$FINAL_BINARY"
+}
 
-  const archive = tmpDir + '/' + asset.name;
-  console.log('Downloading ' + asset.name);
-  await download(asset.browser_download_url, archive);
+smoke_test_binary() {
+  FINAL_BINARY="$1"
+  BINARY_DIR="$(dirname "$FINAL_BINARY")"
+  LIB_PATH="$(collect_so_dirs)$BINARY_DIR:$INSTALL_DIR:$INSTALL_DIR/lib"
+  (
+    cd "$BINARY_DIR" || exit 1
+    unset LD_PRELOAD
+    export ANDROID_ROOT="\${ANDROID_ROOT:-/system}"
+    export ANDROID_DATA="\${ANDROID_DATA:-/data}"
+    export LD_LIBRARY_PATH="$LIB_PATH:$LD_LIBRARY_PATH"
+    if [ -x /system/bin/linker64 ]; then
+      /system/bin/linker64 "$FINAL_BINARY" --version >/dev/null 2>&1 ||
+        /system/bin/linker64 "$FINAL_BINARY" --help >/dev/null 2>&1
+    else
+      "$FINAL_BINARY" --version >/dev/null 2>&1 || "$FINAL_BINARY" --help >/dev/null 2>&1
+    fi
+  )
+}
 
-  const extractDir = tmpDir + '/extract';
-  fs.mkdirSync(extractDir, { recursive: true });
-  if (/\\\\.zip$/i.test(asset.name)) run('unzip', ['-o', archive, '-d', extractDir]);
-  else run('tar', ['-xzf', archive, '-C', extractDir]);
+EXISTING_BINARY=""
+if [ -d "$INSTALL_DIR" ]; then
+  EXISTING_BINARY="$(find_llama_server "$INSTALL_DIR")"
+fi
+if [ -n "$EXISTING_BINARY" ] && [ -n "$(find_common_lib "$INSTALL_DIR")" ] && [ -f "$INSTALL_MARKER" ]; then
+  chmod 755 "$EXISTING_BINARY"
+  write_wrapper "$EXISTING_BINARY"
+  if smoke_test_binary "$EXISTING_BINARY"; then
+    printf 'ok\\n' > "$INSTALL_MARKER"
+    echo "Repaired: $OUT_DIR/llama-server"
+    exit 0
+  fi
+  echo "Existing llama-server failed smoke test; reinstalling..."
+elif [ -n "$EXISTING_BINARY" ]; then
+  chmod 755 "$EXISTING_BINARY" 2>/dev/null || true
+  write_wrapper "$EXISTING_BINARY"
+  if smoke_test_binary "$EXISTING_BINARY"; then
+    echo "Existing llama-server install is from an older Shelly setup; reinstalling to refresh launcher metadata..."
+  else
+    echo "Existing llama-server install is incomplete; reinstalling..."
+  fi
+fi
 
-  const binary = findFile(extractDir, 'llama-server');
-  if (!binary) throw new Error('llama-server binary not found inside archive');
+RELEASE_JSON="$TMP_ROOT/release.json"
+fetch_text "$RELEASE_API" > "$RELEASE_JSON"
+ASSET_URL="$(grep -o 'https://[^"]*bin-android-arm64[^"]*' "$RELEASE_JSON" | grep -E '\\.(tar\\.gz|tgz|zip)$' | head -n 1)"
+if [ -z "$ASSET_URL" ]; then
+  echo "android arm64 llama.cpp asset not found in latest release" >&2
+  grep -o '"name":[^,]*' "$RELEASE_JSON" | head -n 20 >&2 || true
+  exit 1
+fi
 
-  fs.rmSync(tmpInstallDir, { recursive: true, force: true });
-  fs.mkdirSync(tmpInstallDir, { recursive: true });
-  fs.cpSync(extractDir, tmpInstallDir, { recursive: true });
-  const installedBinary = findFile(tmpInstallDir, 'llama-server');
-  fs.chmodSync(installedBinary, 0o755);
-  fs.rmSync(installDir, { recursive: true, force: true });
-  fs.renameSync(tmpInstallDir, installDir);
+ASSET_NAME="$(basename "$ASSET_URL")"
+ARCHIVE="$TMP_ROOT/$ASSET_NAME"
+EXTRACT_DIR="$TMP_ROOT/extract"
+rm -rf "$EXTRACT_DIR" "$TMP_INSTALL_DIR" "$ARCHIVE" "$ARCHIVE.part"
+mkdir -p "$EXTRACT_DIR" "$TMP_INSTALL_DIR"
 
-  const finalBinary = findFile(installDir, 'llama-server');
-  const binaryDir = finalBinary.slice(0, finalBinary.lastIndexOf('/'));
-  const libPath = [...collectSoDirs(installDir), binaryDir, installDir, installDir + '/lib'].join(':');
-  const wrapper = '#!/bin/sh\\nexport LD_LIBRARY_PATH="' + libPath + ':\${LD_LIBRARY_PATH:-}"\\nexec "' + finalBinary + '" "$@"\\n';
-  fs.writeFileSync(outDir + '/llama-server', wrapper, { mode: 0o755 });
-  fs.chmodSync(outDir + '/llama-server', 0o755);
-  console.log('Installed: ' + outDir + '/llama-server');
-})().catch((err) => {
-  console.error(err && err.message ? err.message : String(err));
-  process.exit(1);
-});
-NODE
-node /tmp/shelly-install-llama-server.js`;
+echo "Downloading $ASSET_NAME"
+download_file "$ASSET_URL" "$ARCHIVE"
+
+case "$ARCHIVE" in
+  *.zip)
+    command -v unzip >/dev/null 2>&1 || { echo "unzip is required to extract $ASSET_NAME" >&2; exit 1; }
+    unzip -oq "$ARCHIVE" -d "$EXTRACT_DIR"
+    ;;
+  *)
+    command -v tar >/dev/null 2>&1 || { echo "tar is required to extract $ASSET_NAME" >&2; exit 1; }
+    tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR"
+    ;;
+esac
+
+BINARY="$(find_llama_server "$EXTRACT_DIR")"
+if [ -z "$BINARY" ]; then
+  echo "llama-server binary not found inside $ASSET_NAME" >&2
+  exit 1
+fi
+if [ -z "$(find_common_lib "$EXTRACT_DIR")" ]; then
+  echo "libllama-common.so not found inside $ASSET_NAME" >&2
+  exit 1
+fi
+
+cp -R "$EXTRACT_DIR"/. "$TMP_INSTALL_DIR"/
+INSTALLED_BINARY="$(find_llama_server "$TMP_INSTALL_DIR")"
+if [ -z "$INSTALLED_BINARY" ]; then
+  echo "llama-server binary disappeared during install copy" >&2
+  exit 1
+fi
+chmod 755 "$INSTALLED_BINARY"
+rm -rf "$INSTALL_DIR"
+mv "$TMP_INSTALL_DIR" "$INSTALL_DIR"
+
+FINAL_BINARY="$(find_llama_server "$INSTALL_DIR")"
+write_wrapper "$FINAL_BINARY"
+if ! smoke_test_binary "$FINAL_BINARY"; then
+  echo "Installed llama-server failed smoke test" >&2
+  BINARY_DIR="$(dirname "$FINAL_BINARY")"
+  LIB_PATH="$(collect_so_dirs)$BINARY_DIR:$INSTALL_DIR:$INSTALL_DIR/lib"
+  (cd "$BINARY_DIR" && LD_LIBRARY_PATH="$LIB_PATH:$LD_LIBRARY_PATH" /system/bin/linker64 "$FINAL_BINARY" --version) 2>&1 | head -n 20 >&2 || true
+  exit 1
+fi
+printf 'ok\\n' > "$INSTALL_MARKER"
+echo "Installed: $OUT_DIR/llama-server"`;
 
 /**
  * llama.cppのセットアップステップ一覧を生成する。
@@ -359,12 +437,28 @@ export function buildSetupSteps(): LlamaCppSetupStep[] {
  */
 export function buildDownloadCommand(model: LlamaCppModel): string {
   const dest = `${MODELS_DIR}/${model.filename}`;
+  const url = shellQuote(model.downloadUrl);
+  const name = shellQuote(model.name);
   return [
+    `set -e`,
+    TLS_ENV_PRELUDE,
     `echo "Downloading ${model.name} (${model.sizeGb}GB)..."`,
     `mkdir -p ${MODELS_DIR}`,
-    `wget -c --show-progress -O "${dest}" "${model.downloadUrl}"`,
+    `df -h ${MODELS_DIR} 2>/dev/null || true`,
+    `MODEL_URL=${url}`,
+    `MODEL_NAME=${name}`,
+    `MODEL_DEST="${dest}"`,
+    `if command -v curl >/dev/null 2>&1; then`,
+    `  curl -L --fail --retry 3 --retry-delay 2 -C - -o "$MODEL_DEST" "$MODEL_URL"`,
+    `elif command -v wget >/dev/null 2>&1; then`,
+    `  wget -c -O "$MODEL_DEST" "$MODEL_URL"`,
+    `else`,
+    `  echo "Download failed: curl or wget is required." >&2`,
+    `  exit 1`,
+    `fi`,
+    `test -s "$MODEL_DEST"`,
     `echo "Download complete: ${dest}"`,
-  ].join(' && ');
+  ].join('\n');
 }
 
 /**
@@ -379,7 +473,6 @@ export function buildServerStartCommand(config: LlamaCppServerConfig): string {
     `--threads ${config.threads}`,
     config.gpuLayers > 0 ? `--n-gpu-layers ${config.gpuLayers}` : '',
     '--host 127.0.0.1',
-    '--log-disable',
   ]
     .filter(Boolean)
     .join(' \\\n  ');
@@ -397,10 +490,10 @@ export function buildRecommendedStartCommand(
   const config: LlamaCppServerConfig = {
     port: 8080,
     modelPath,
-    // ctx-sizeを小さくすると起動時間・メモリ・推論速度が大幅改善する
-    contextSize: model.useCase === 'chat' ? 2048 : 4096,
-    // Snapdragon 8 Gen3: 性能コアは6スレッドまで有効
-    threads: 6,
+    // Z Fold6 has enough big-core headroom for a short interactive burst. Four
+    // threads keeps local chat responsive without monopolizing the UI thread.
+    contextSize: 1024,
+    threads: 4,
     gpuLayers: 0, // Adreno GPU offloadは現状不安定なためCPU only
   };
   return buildServerStartCommand(config);
@@ -412,19 +505,49 @@ export function buildRecommendedStartCommand(
 export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string): string {
   const logFile = `${MODELS_DIR}/llama-server.log`;
   const pidFile = `${MODELS_DIR}/llama-server.pid`;
-  const startCmd = buildRecommendedStartCommand(model, modelPath);
+  const resolvedModelPath = modelPath ?? `${MODELS_DIR}/${model.filename}`;
+  const startCmd = buildRecommendedStartCommand(model, resolvedModelPath);
 
   return [
     `# llama-server バックグラウンド起動スクリプト`,
     LLAMA_SERVER_BIN_INIT,
-    `if [ ! -x "$LLAMA_SERVER_BIN" ]; then`,
-    `  echo "llama-server not found or not executable: $LLAMA_SERVER_BIN"`,
+    REAL_LLAMA_SERVER_BIN_INIT,
+    `mkdir -p ${MODELS_DIR}`,
+    `MODEL_PATH="${resolvedModelPath}"`,
+    `if [ ! -s "$MODEL_PATH" ]; then`,
+    `  echo "model not found or empty: $MODEL_PATH"`,
     `  exit 1`,
     `fi`,
-    `mkdir -p ${MODELS_DIR}`,
-    `pkill -f '[l]lama-server' 2>/dev/null || true`,
+    `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
+    `echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"`,
+    `echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"`,
+    `echo "model: $MODEL_PATH"`,
+    `if [ -f "${pidFile}" ]; then`,
+    `  OLD_PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
+    `  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then`,
+    `    kill "$OLD_PID" 2>/dev/null || true`,
+    `    sleep 1`,
+    `    kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null || true`,
+    `  fi`,
+    `  rm -f "${pidFile}"`,
+    `fi`,
+    `OLD_PID="$(ps -Af 2>/dev/null | grep -F llama-server | grep -v grep | awk '{print $2}' | head -n1)"`,
+    `if [ -n "$OLD_PID" ]; then`,
+    `  kill "$OLD_PID" 2>/dev/null || true`,
+    `  sleep 1`,
+    `  kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null || true`,
+    `fi`,
     `sleep 1`,
-    `nohup ${startCmd} > "${logFile}" 2>&1 &`,
+    `echo "launching llama-server..."`,
+    `{
+  echo "llama-server launcher: $LLAMA_SERVER_BIN"
+  echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"
+  echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"
+  echo "llama-server libs: $LLAMA_LIB_PATH"
+  ls -l "$LLAMA_SERVER_BIN" "$REAL_LLAMA_SERVER_BIN" 2>&1 || true
+  echo "--- starting llama-server ---"
+} > "${logFile}"`,
+    `nohup /system/bin/nice -n 5 ${startCmd} >> "${logFile}" 2>&1 &`,
     `echo $! > "${pidFile}"`,
     `echo "llama-server started (PID: $(cat ${pidFile}))"`,
     `echo "API: http://127.0.0.1:8080/v1/chat/completions"`,
@@ -456,19 +579,45 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
  * llama-serverの停止コマンドを生成する。
  */
 export function buildStopCommand(): string {
-  return `pkill -f '[l]lama-server' && echo "llama-server stopped" || echo "llama-server not running"`;
+  const pidFile = `${MODELS_DIR}/llama-server.pid`;
+  return [
+    `STOPPED=0`,
+    `if [ -f "${pidFile}" ]; then`,
+    `  PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
+    `  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then`,
+    `    kill "$PID" 2>/dev/null || true`,
+    `    sleep 1`,
+    `    kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null || true`,
+    `    STOPPED=1`,
+    `  fi`,
+    `  rm -f "${pidFile}"`,
+    `fi`,
+    `PID="$(ps -Af 2>/dev/null | grep -F llama-server | grep -v grep | awk '{print $2}' | head -n1)"`,
+    `if [ -n "$PID" ]; then`,
+    `  kill "$PID" 2>/dev/null || true`,
+    `  sleep 1`,
+    `  kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null || true`,
+    `  STOPPED=1`,
+    `fi`,
+    `if [ "$STOPPED" = 1 ]; then echo "llama-server stopped"; else echo "llama-server not running"; fi`,
+  ].join('\n');
 }
 
 /**
  * llama-serverの状態確認コマンドを生成する。
  */
 export function buildStatusCommand(): string {
+  const pidFile = `${MODELS_DIR}/llama-server.pid`;
   return [
     `if ${HEALTH_CHECK_CMD}; then`,
     `  echo "running"`,
     `  exit 0`,
     `fi`,
-    `if pgrep -f '[l]lama-server' >/dev/null 2>&1; then`,
+    `if [ -f "${pidFile}" ] && PID="$(cat "${pidFile}" 2>/dev/null)" && [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then`,
+    `  echo "starting_or_unreachable"`,
+    `  exit 1`,
+    `fi`,
+    `if ps -Af 2>/dev/null | grep -F llama-server | grep -v grep >/dev/null; then`,
     `  echo "starting_or_unreachable"`,
     `  exit 1`,
     `fi`,
@@ -537,25 +686,55 @@ export function estimateTotalSetupTime(steps: LlamaCppSetupStep[]): number {
 export function buildStartAllScript(model: LlamaCppModel): string {
   const logFile = `${MODELS_DIR}/llama-server.log`;
   const pidFile = `${MODELS_DIR}/llama-server.pid`;
-  const startCmd = buildRecommendedStartCommand(model);
+  const resolvedModelPath = `${MODELS_DIR}/${model.filename}`;
+  const startCmd = buildRecommendedStartCommand(model, resolvedModelPath);
 
   return [
     `#!/bin/bash`,
     `# Shelly llama-server 起動スクリプト`,
     ``,
     LLAMA_SERVER_BIN_INIT,
-    `if [ ! -x "$LLAMA_SERVER_BIN" ]; then`,
-    `  echo "llama-server not found or not executable: $LLAMA_SERVER_BIN"`,
+    REAL_LLAMA_SERVER_BIN_INIT,
+    `MODEL_PATH="${resolvedModelPath}"`,
+    `if [ ! -s "$MODEL_PATH" ]; then`,
+    `  echo "model not found or empty: $MODEL_PATH"`,
     `  exit 1`,
     `fi`,
+    `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
+    `echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"`,
+    `echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"`,
+    `echo "model: $MODEL_PATH"`,
     ``,
     `# 1. 既存プロセスを停止`,
-    `pkill -f '[l]lama-server' 2>/dev/null || true`,
+    `if [ -f "${pidFile}" ]; then`,
+    `  OLD_PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
+    `  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then`,
+    `    kill "$OLD_PID" 2>/dev/null || true`,
+    `    sleep 1`,
+    `    kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null || true`,
+    `  fi`,
+    `  rm -f "${pidFile}"`,
+    `fi`,
+    `OLD_PID="$(ps -Af 2>/dev/null | grep -F llama-server | grep -v grep | awk '{print $2}' | head -n1)"`,
+    `if [ -n "$OLD_PID" ]; then`,
+    `  kill "$OLD_PID" 2>/dev/null || true`,
+    `  sleep 1`,
+    `  kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null || true`,
+    `fi`,
     `sleep 1`,
     ``,
     `# 2. llama-serverをバックグラウンドで起動`,
     `echo "llama-serverを起動中..."`,
-    `nohup ${startCmd} > "${logFile}" 2>&1 &`,
+    `echo "llama-server launcher: $LLAMA_SERVER_BIN"`,
+    `{
+  echo "llama-server launcher: $LLAMA_SERVER_BIN"
+  echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"
+  echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"
+  echo "llama-server libs: $LLAMA_LIB_PATH"
+  ls -l "$LLAMA_SERVER_BIN" "$REAL_LLAMA_SERVER_BIN" 2>&1 || true
+  echo "--- starting llama-server ---"
+} > "${logFile}"`,
+    `nohup /system/bin/nice -n 5 ${startCmd} >> "${logFile}" 2>&1 &`,
     `echo $! > "${pidFile}"`,
     `echo "llama-server started (PID: $(cat ${pidFile}))"`,
     ``,

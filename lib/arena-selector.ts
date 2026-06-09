@@ -7,20 +7,17 @@
 import type { ChatAgent } from '@/store/chat-store';
 import type { AppSettings } from '@/store/types';
 
-const ARENA_ELIGIBLE: ChatAgent[] = ['claude', 'gemini', 'groq', 'cerebras', 'local', 'perplexity'];
+const ARENA_ELIGIBLE: ChatAgent[] = ['codex', 'groq', 'cerebras', 'local', 'perplexity'];
 
 /**
- * APIキーが設定済みのエージェントから2つランダム選択。
- * 2つ未満の場合はfallback (claude + gemini)。
+ * 設定済みのエージェントから2つランダム選択。
+ * 2つ未満の場合は Codex + Local にfallback。
  */
 export function selectArenaAgents(settings: AppSettings): [ChatAgent, ChatAgent] {
   const available: ChatAgent[] = [];
 
-  // Claude: 同梱claude cliが利用可能（API key不要）
-  available.push('claude');
-
-  // Gemini: 同梱gemini cliが利用可能（API key不要）
-  available.push('gemini');
+  // Codex: bundled CLI path.
+  available.push('codex');
 
   if (settings.groqApiKey) available.push('groq');
   if (settings.cerebrasApiKey) available.push('cerebras');
@@ -28,7 +25,7 @@ export function selectArenaAgents(settings: AppSettings): [ChatAgent, ChatAgent]
   if (settings.perplexityApiKey) available.push('perplexity');
 
   if (available.length < 2) {
-    return ['claude', 'gemini'];
+    return ['codex', 'local'];
   }
 
   // Shuffle and pick 2

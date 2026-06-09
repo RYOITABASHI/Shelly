@@ -8,8 +8,8 @@
  *      pane's terminalContext so `buildAIPaneSystemPrompt` folds it
  *      into the system message on the next dispatch.
  *   3. The user types "make X do Y" into the AI pane input.
- *   4. The existing use-ai-pane-dispatch sends it to Cerebras/Claude/
- *      Gemini with the file as context and a hint to reply with a
+ *   4. The existing use-ai-pane-dispatch sends it to the selected AI
+ *      provider with the file as context and a hint to reply with a
  *      unified diff.
  *   5. The assistant reply containing a unified diff is automatically
  *      picked up by InlineDiff via hasDiffContent() and rendered with
@@ -92,7 +92,7 @@ export async function applyStagedEdit(newContent: string): Promise<string | null
 // ── Unified diff apply ────────────────────────────────────────────────
 //
 // Minimal unified-diff applier. Enough to handle the diffs Cerebras /
-// Claude / Gemini generate for small file edits, not a full `patch(1)`
+// AI providers generate small file edits, not a full `patch(1)`
 // replacement. Supports multiple hunks in a single diff and assumes
 // the hunks apply in order against the *original* content.
 

@@ -26,12 +26,10 @@ export function SavepointBubble({ messageId, projectDir, runCommand }: Props) {
   const [diffContent, setDiffContent] = useState('');
   const [reverting, setReverting] = useState(false);
 
-  if (!info) return null;
-
-  const totalFiles = info.filesChanged + info.filesCreated + info.filesDeleted;
+  const totalFiles = info ? info.filesChanged + info.filesCreated + info.filesDeleted : 0;
 
   const handleUndo = useCallback(async () => {
-    if (info.reverted || reverting) return;
+    if (!info || info.reverted || reverting) return;
     setReverting(true);
     const success = await revertLastSavepoint(projectDir, runCommand);
     setReverting(false);
@@ -40,13 +38,15 @@ export function SavepointBubble({ messageId, projectDir, runCommand }: Props) {
     } else {
       Alert.alert('', t('savepoint.revert_failed'));
     }
-  }, [info.reverted, reverting, projectDir, runCommand, messageId, markReverted, t]);
+  }, [info, reverting, projectDir, runCommand, messageId, markReverted, t]);
 
   const handleViewDiff = useCallback(async () => {
     const diff = await getLastDiff(projectDir, runCommand);
     setDiffContent(diff);
     setDiffVisible(true);
   }, [projectDir, runCommand]);
+
+  if (!info) return null;
 
   return (
     <View style={styles.container}>

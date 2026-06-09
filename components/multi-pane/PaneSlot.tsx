@@ -2,11 +2,10 @@ import React, { useState, useMemo, createContext, useEffect, useRef, useCallback
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
-import { PANE_REGISTRY } from './pane-registry';
+import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { PaneSelector } from './PaneSelector';
 import PaneCliTabs from './PaneCliTabs';
-import type { PaneTab } from '@/hooks/use-multi-pane';
-import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore, getAgentColor } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -18,6 +17,7 @@ import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { getAiPaneAgentMeta, getEnabledAiPaneAgents, isAiPaneAgent } from '@/lib/ai-pane-agents';
+import { useTranslation } from '@/lib/i18n';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -37,19 +37,13 @@ type Props = {
   canSplit: boolean;
 };
 
-/** Derive display title for pane header matching mock style */
-function getPaneTitle(tab: PaneTab): string {
-  switch (tab) {
-    case 'terminal': return 'TERMINAL';
-    case 'ai':       return 'AI';
-    case 'browser':  return 'BROWSER';
-    case 'markdown': return 'MARKDOWN';
-    case 'preview':  return 'PREVIEW';
-    default:         return String(tab).toUpperCase();
-  }
+/** Derive display title for pane header matching mock style. */
+function getPaneTitle(tab: PaneTab, translate: (key: string) => string): string {
+  return resolvePaneTitle(tab, translate, 'header').toUpperCase();
 }
 
 const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV, canSplit }: Props) => {
+  const { t } = useTranslation();
   const [selectorVisible, setSelectorVisible] = useState(false);
   const [splitMenuVisible, setSplitMenuVisible] = useState(false);
   const [agentMenuVisible, setAgentMenuVisible] = useState(false);
@@ -81,7 +75,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   });
   const teamMembers = useSettingsStore((s) => s.settings.teamMembers);
   const activeRepoPath = useSidebarStore((s) => s.activeRepoPath);
-  const Component = useMemo(() => entry.getComponent(), [tab]);
+  const Component = useMemo(() => entry.getComponent(), [entry]);
   const BrowserComponent = useMemo(() => PANE_REGISTRY['browser'].getComponent(), []);
   const ctxValue = useMemo(() => ({ paneWidth, paneHeight }), [paneWidth, paneHeight]);
 
@@ -131,7 +125,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
     useFocusStore.getState().requestTerminalRefocus();
   }, [leafId, setFocusedPane]);
 
-  const paneTitle = getPaneTitle(tab);
+  const paneTitle = getPaneTitle(tab, t);
   const cwdDisplay = activeRepoPath
     ? `— ${activeRepoPath.replace(/^\/data\/data\/com\.termux\/files\/home/, '~')}`
     : '';
@@ -154,8 +148,14 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
     <View
       style={[
         styles.pane,
-        { backgroundColor: paneBg },
-        isFocusedPane && styles.paneFocused,
+        {
+          backgroundColor: paneBg,
+          borderColor: isFocusedPane ? C.accent : C.border,
+          shadowColor: isFocusedPane ? C.accent : 'transparent',
+          shadowOpacity: isFocusedPane ? 0.42 : 0,
+          shadowRadius: isFocusedPane ? 10 : 0,
+          elevation: isFocusedPane ? 6 : 0,
+        },
       ]}
       onTouchStart={handleFocusPane}
       onLayout={(e) => {
@@ -170,32 +170,37 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           {
             borderTopColor: isFocusedPane ? C.accent : agentColor,
             borderBottomColor: isFocusedPane ? withAlpha(C.accent, 0.75) : C.border,
-            backgroundColor: isFocusedPane ? withAlpha(C.accent, 0.12) : headerBg,
+            backgroundColor: isFocusedPane ? withAlpha(C.accent, 0.14) : headerBg,
           },
         ]}
       >
-        {isFocusedPane && <View style={styles.focusRail} />}
+        {isFocusedPane && <View style={[styles.focusRail, { backgroundColor: C.accent }]} />}
         {/* Pane-type pill — tap to switch this pane between Terminal / AI /
             Browser / Markdown. The dropdown chevron makes it obvious that
             this is interactive. */}
         <Pressable
           style={[
             styles.paneTypePill,
+            {
+              borderColor: withAlpha(C.accent, isFocusedPane ? 0.8 : 0.34),
+              backgroundColor: withAlpha(C.accent, isFocusedPane ? 0.18 : 0.07),
+            },
             isFocusedPane && {
-              borderColor: withAlpha(C.accent, 0.8),
-              backgroundColor: withAlpha(C.accent, 0.18),
+              shadowColor: C.accent,
+              shadowOpacity: 0.3,
+              shadowRadius: 5,
             },
           ]}
           onPress={() => setSelectorVisible(true)}
           hitSlop={6}
-          accessibilityLabel="Change pane type"
+          accessibilityLabel={t('pane.change_type_a11y')}
         >
           <MaterialIcons name={entry.icon as any} size={11} color={C.accent} />
           {!isVeryNarrow && (
             <Text
               style={[
                 styles.paneTypeLabel,
-                isFocusedPane && styles.paneTypeLabelFocused,
+                { color: isFocusedPane ? C.accent : C.text1 },
               ]}
               numberOfLines={1}
             >
@@ -205,7 +210,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
         </Pressable>
         {cwdDisplay && !isNarrow ? (
-          <Text style={styles.headerPath} numberOfLines={1}>
+          <Text style={[styles.headerPath, { color: C.text2 }]} numberOfLines={1}>
             {cwdDisplay}
           </Text>
         ) : null}
@@ -227,10 +232,10 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             style={[styles.agentBadge, { borderColor: aiPaneAgentColor + '66', backgroundColor: aiPaneAgentColor + '14' }]}
             onPress={() => setAgentMenuVisible(true)}
             hitSlop={6}
-            accessibilityLabel="Switch agent"
+            accessibilityLabel={t('pane.switch_agent_a11y')}
           >
             <View style={[styles.agentBadgeDot, { backgroundColor: aiPaneAgentColor }]} />
-            <Text style={styles.agentBadgeLabel} numberOfLines={1}>
+            <Text style={[styles.agentBadgeLabel, { color: C.text1 }]} numberOfLines={1}>
               {aiPaneAgent ? aiPaneAgentLabel.toUpperCase() : 'AGENT'}
             </Text>
             <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
@@ -242,10 +247,14 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         {notification && (
           <View style={[
             styles.notificationBadge,
-            notification.status === 'done' ? styles.notifDone : styles.notifError,
+            {
+              backgroundColor: notification.status === 'done'
+                ? C.badgeRunningBg
+                : C.errorBg,
+            },
           ]}>
-            <Text style={styles.notifText}>
-              {notification.status === 'done' ? 'Done' : 'Error'}
+            <Text style={[styles.notifText, { color: C.text1 }]}>
+              {notification.status === 'done' ? t('common.done') : t('common.error')}
             </Text>
           </View>
         )}
@@ -258,7 +267,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
               style={styles.actionBtn}
               onPress={() => setSplitMenuVisible(true)}
               hitSlop={6}
-              accessibilityLabel="Split pane"
+              accessibilityLabel={t('pane.split_a11y')}
             >
               <MaterialIcons name="call-split" size={13} color={C.text2} />
             </Pressable>
@@ -267,7 +276,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             style={styles.actionBtn}
             onPress={() => useMultiPaneStore.getState().toggleMaximize(leafId)}
             hitSlop={6}
-            accessibilityLabel="Maximize pane"
+            accessibilityLabel={t('pane.maximize_a11y')}
           >
             <MaterialIcons
               name={isMaximized ? 'fullscreen-exit' : 'fullscreen'}
@@ -279,7 +288,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             style={styles.actionBtn}
             onPress={onRemove}
             hitSlop={6}
-            accessibilityLabel="Close pane"
+            accessibilityLabel={t('pane.close_a11y')}
           >
             <MaterialIcons name="close" size={13} color={C.text2} />
           </Pressable>
@@ -350,6 +359,7 @@ function SplitMenu({
   onSplitV: (tab: PaneTab) => void;
   currentTab: PaneTab;
 }) {
+  const { t } = useTranslation();
   const [step, setStep] = useState<'direction' | 'tab'>('direction');
   const [direction, setDirection] = useState<'h' | 'v'>('h');
 
@@ -372,36 +382,53 @@ function SplitMenu({
     onClose();
   };
 
-  const suggestedTab: PaneTab = (['terminal', 'ai', 'browser', 'markdown', 'ask'] as PaneTab[])
+  const suggestedTab: PaneTab = (['terminal', 'ai', 'agent-chat', 'browser', 'markdown', 'ask'] as PaneTab[])
     .find((t) => t !== currentTab) ?? 'terminal';
 
   return (
     <Pressable style={menuStyles.backdrop} onPress={handleClose}>
-      <Pressable style={menuStyles.menu} onPress={(e) => e.stopPropagation()}>
+      <Pressable
+        style={[
+          menuStyles.menu,
+          {
+            backgroundColor: C.bgSurface,
+            borderColor: C.border,
+            shadowColor: C.accent,
+            shadowOpacity: 0.28,
+            shadowRadius: 9,
+            shadowOffset: { width: 0, height: 0 },
+            elevation: 8,
+          },
+        ]}
+        onPress={(e) => e.stopPropagation()}
+      >
         {step === 'direction' ? (
           <>
-            <Text style={menuStyles.title}>Split Pane</Text>
+            <Text style={[menuStyles.title, { color: C.text2 }]}>{t('pane.split_pane')}</Text>
             <Pressable style={menuStyles.option} onPress={() => handleDirection('h')}>
               <MaterialIcons name="view-column" size={18} color={C.accent} />
-              <Text style={menuStyles.optionText}>Split Right</Text>
+              <Text style={[menuStyles.optionText, { color: C.text1 }]}>{t('pane.split_right')}</Text>
             </Pressable>
             <Pressable style={menuStyles.option} onPress={() => handleDirection('v')}>
               <MaterialIcons name="view-stream" size={18} color={C.accent} />
-              <Text style={menuStyles.optionText}>Split Down</Text>
+              <Text style={[menuStyles.optionText, { color: C.text1 }]}>{t('pane.split_down')}</Text>
             </Pressable>
           </>
         ) : (
           <>
-            <Text style={menuStyles.title}>Open In New Pane</Text>
-            {(['terminal', 'ai', 'browser', 'markdown', 'ask'] as PaneTab[]).map((t) => (
+            <Text style={[menuStyles.title, { color: C.text2 }]}>{t('pane.open_in_new')}</Text>
+            {(['terminal', 'ai', 'agent-chat', 'browser', 'markdown', 'ask'] as PaneTab[]).map((tabOption) => (
               <Pressable
-                key={t}
-                style={[menuStyles.option, t === suggestedTab && menuStyles.optionHighlight]}
-                onPress={() => handleTabSelect(t)}
+                key={tabOption}
+                style={[
+                  menuStyles.option,
+                  tabOption === suggestedTab && { backgroundColor: withAlpha(C.accent, 0.13) },
+                ]}
+                onPress={() => handleTabSelect(tabOption)}
               >
-                <MaterialIcons name={PANE_REGISTRY[t].icon as any} size={16} color={t === suggestedTab ? C.accent : C.text2} />
-                <Text style={[menuStyles.optionText, t === suggestedTab && { color: C.accent }]}>
-                  {PANE_REGISTRY[t].title}
+                <MaterialIcons name={PANE_REGISTRY[tabOption].icon as any} size={16} color={tabOption === suggestedTab ? C.accent : C.text2} />
+                <Text style={[menuStyles.optionText, { color: tabOption === suggestedTab ? C.accent : C.text1 }]}>
+                  {resolvePaneTitle(tabOption, t)}
                 </Text>
               </Pressable>
             ))}
@@ -427,14 +454,29 @@ function AgentMenu({
   boundAgent: string | null;
   onSelect: (key: string) => void;
 }) {
+  const { t } = useTranslation();
   if (!visible) return null;
 
   const agents = getEnabledAiPaneAgents(teamMembers);
 
   return (
     <Pressable style={menuStyles.backdrop} onPress={onClose}>
-      <Pressable style={agentStyles.menu} onPress={(e) => e.stopPropagation()}>
-        <Text style={menuStyles.title}>Switch Agent</Text>
+      <Pressable
+        style={[
+          agentStyles.menu,
+          {
+            backgroundColor: C.bgSurface,
+            borderColor: C.border,
+            shadowColor: C.accent,
+            shadowOpacity: 0.28,
+            shadowRadius: 9,
+            shadowOffset: { width: 0, height: 0 },
+            elevation: 8,
+          },
+        ]}
+        onPress={(e) => e.stopPropagation()}
+      >
+        <Text style={[menuStyles.title, { color: C.text2 }]}>{t('pane.switch_agent')}</Text>
         {agents.map((key) => {
           const meta = getAiPaneAgentMeta(key);
           const color = meta.color;
@@ -442,11 +484,14 @@ function AgentMenu({
           return (
             <Pressable
               key={key}
-              style={[agentStyles.row, isActive && agentStyles.rowActive]}
+              style={[
+                agentStyles.row,
+                isActive && { backgroundColor: withAlpha(C.accent, 0.13) },
+              ]}
               onPress={() => onSelect(key)}
             >
               <View style={[agentStyles.dot, { backgroundColor: color }]} />
-              <Text style={[agentStyles.label, isActive && { color: C.accent }]}>
+              <Text style={[agentStyles.label, { color: isActive ? C.accent : C.text1 }]}>
                 {meta.label}
               </Text>
               {isActive && (
@@ -470,9 +515,6 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     overflow: 'hidden',
   },
-  paneFocused: {
-    borderColor: withAlpha(C.accent, 0.9),
-  },
   header: {
     height: S.paneHeaderHeight,
     flexDirection: 'row',
@@ -489,7 +531,6 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     width: 3,
     borderRadius: 2,
-    backgroundColor: C.accent,
     marginRight: 2,
   },
   headerLeft: {
@@ -506,8 +547,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: withAlpha(C.accent, 0.25),
-    backgroundColor: withAlpha(C.accent, 0.06),
     flexShrink: 0,
   },
   agentBadge: {
@@ -538,9 +577,6 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: F.paneHeader.weight,
     letterSpacing: 0.5,
-  },
-  paneTypeLabelFocused: {
-    color: C.accent,
   },
   headerTitle: {
     color: C.text1,
@@ -596,12 +632,6 @@ const styles = StyleSheet.create({
     paddingVertical: P.statusBadge.py,
     borderRadius: R.badge,
     marginLeft: 4,
-  },
-  notifDone: {
-    backgroundColor: C.badgeRunningBg,
-  },
-  notifError: {
-    backgroundColor: C.errorBg,
   },
   notifText: {
     color: C.text1,
@@ -680,9 +710,6 @@ const menuStyles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 6,
   },
-  optionHighlight: {
-    backgroundColor: withAlpha(C.accent, 0.08),
-  },
   optionText: {
     color: C.text1,
     fontSize: 12,
@@ -706,9 +733,6 @@ const agentStyles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 8,
     borderRadius: 6,
-  },
-  rowActive: {
-    backgroundColor: withAlpha(C.accent, 0.08),
   },
   dot: {
     width: 8,

@@ -340,10 +340,8 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
                     fprintf(rc, "export SHELLY_LD_LIBRARY_PATH=\"%s\"\n", ldLibPath);
                     fprintf(rc, "unset LD_LIBRARY_PATH LD_PRELOAD\n");
                     fprintf(rc, "export PS1='shelly:~$ '\n");
-                    fprintf(rc, "claude() { LD_LIBRARY_PATH=\"%s\" /system/bin/linker64 \"%s/node\" \"%s/node_modules/@anthropic-ai/claude-code/cli.js\" \"$@\"; }\n", ldLibPath, ldLibPath, ldLibPath);
-                    fprintf(rc, "gemini() { GEMINI_CLI_NO_RELAUNCH=true LD_LIBRARY_PATH=\"%s\" /system/bin/linker64 \"%s/node\" \"%s/node_modules/@google/gemini-cli/bundle/gemini.js\" \"$@\"; }\n", ldLibPath, ldLibPath, ldLibPath);
                     fprintf(rc, "codex() { LD_LIBRARY_PATH=\"%s\" /system/bin/linker64 \"%s/node\" \"%s/node_modules/@openai/codex/bin/codex.js\" \"$@\"; }\n", ldLibPath, ldLibPath, ldLibPath);
-                    fprintf(rc, "export -f claude gemini codex\n");
+                    fprintf(rc, "export -f codex\n");
                     fclose(rc);
                 }
             }

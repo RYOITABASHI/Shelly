@@ -1,20 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Even-G2 style: full-width HUD card, transparent background with a soft
+     "smoke" gradient + thin deep-green outline (see scouter_widget_bg). Deep
+     green chrome, pure-white reply text, badges/gauges dropped, ASK as a
+     bottom rounded-outline pill. All view ids are preserved so the provider
+     bindings (ScouterWidgetProvider) need no change. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
   android:id="@+id/scouter_widget_root"
   android:layout_width="match_parent"
   android:layout_height="match_parent"
-  android:padding="4dp">
+  android:padding="2dp">
 
   <LinearLayout
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="top"
     android:orientation="vertical"
-    android:paddingStart="10dp"
-    android:paddingTop="9dp"
-    android:paddingEnd="10dp"
-    android:paddingBottom="9dp"
+    android:paddingStart="14dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="14dp"
+    android:paddingBottom="10dp"
     android:background="@drawable/scouter_widget_bg">
 
+    <!-- ── CODEX header ── -->
     <LinearLayout
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
@@ -22,86 +29,292 @@
       android:orientation="horizontal">
 
       <ImageView
-        android:id="@+id/scouter_status_dot"
-        android:layout_width="12dp"
-        android:layout_height="12dp"
+        android:id="@+id/scouter_codex_dot"
+        android:layout_width="10dp"
+        android:layout_height="10dp"
         android:src="@drawable/scouter_status_dot"
         android:contentDescription="@string/scouter_status_dot" />
 
       <TextView
-        android:id="@+id/scouter_title"
+        android:id="@+id/scouter_codex_title"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
         android:layout_weight="1"
         android:ellipsize="middle"
         android:singleLine="true"
-        android:text="Scouter"
-        android:textColor="#F4FFF4"
+        android:text="CODEX"
+        android:textColor="#00FF41"
         android:textSize="15sp"
+        android:letterSpacing="0.06"
         android:typeface="monospace"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        android:shadowColor="#B300FF41"
+        android:shadowRadius="7"
+        android:includeFontPadding="false" />
 
+      <!-- badge kept for provider binding but hidden in the G2 layout -->
       <TextView
-        android:id="@+id/scouter_source_badge"
+        android:id="@+id/scouter_codex_badge"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:background="@drawable/scouter_badge_bg"
-        android:paddingStart="7dp"
-        android:paddingEnd="7dp"
-        android:paddingTop="2dp"
-        android:paddingBottom="2dp"
-        android:text="SH"
-        android:textColor="#001200"
-        android:textSize="11sp"
+        android:text="CX"
+        android:textColor="#00FF41"
+        android:textSize="9sp"
         android:typeface="monospace"
-        android:textStyle="bold" />
+        android:includeFontPadding="false"
+        android:visibility="gone" />
     </LinearLayout>
 
+    <!-- status line -->
     <TextView
-      android:id="@+id/scouter_detail"
-      android:layout_width="match_parent"
-      android:layout_height="wrap_content"
-      android:layout_marginTop="7dp"
-      android:ellipsize="middle"
-      android:singleLine="true"
-      android:text="No agent session yet"
-      android:textColor="#7DDB7D"
-      android:textSize="14sp"
-      android:typeface="monospace"
-      android:textStyle="bold" />
-
-    <TextView
-      android:layout_width="match_parent"
-      android:layout_height="1dp"
-      android:layout_marginTop="7dp"
-      android:layout_marginBottom="6dp"
-      android:background="#66338F33"
-      android:text="" />
-
-    <TextView
-      android:id="@+id/scouter_metrics"
-      android:layout_width="match_parent"
-      android:layout_height="wrap_content"
-      android:ellipsize="end"
-      android:singleLine="true"
-      android:text="Open Shelly to start"
-      android:textColor="#9BC49B"
-      android:textSize="12sp"
-      android:typeface="monospace"
-      android:textStyle="bold" />
-
-    <TextView
-      android:id="@+id/scouter_usage"
+      android:id="@+id/scouter_codex_detail"
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
       android:layout_marginTop="3dp"
       android:ellipsize="end"
       android:singleLine="true"
+      android:text="No Codex session"
+      android:textColor="#8CFFAA"
+      android:shadowColor="#6600FF41"
+      android:shadowRadius="4"
+      android:textSize="12sp"
+      android:typeface="monospace"
+      android:includeFontPadding="false" />
+
+    <!-- reply (primary content) — pure white for max legibility -->
+    <TextView
+      android:id="@+id/scouter_codex_conversation"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="5dp"
+      android:ellipsize="end"
+      android:maxLines="2"
       android:text=""
-      android:textColor="#7A967A"
+      android:textColor="#00FF41"
+      android:textSize="14sp"
+      android:lineSpacingExtra="1dp"
+      android:typeface="monospace"
+      android:shadowColor="#B300FF41"
+      android:shadowRadius="6"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
+    <!-- compact model/token line -->
+    <TextView
+      android:id="@+id/scouter_codex_metrics"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="4dp"
+      android:ellipsize="end"
+      android:maxLines="1"
+      android:text="Waiting for ~/.codex/sessions"
+      android:textColor="#66FF88"
+      android:textSize="10sp"
+      android:typeface="monospace"
+      android:lineSpacingExtra="0dp"
+      android:includeFontPadding="false" />
+
+    <!-- consumed-token / rate-limit usage line (bound by provider; hidden
+         until a rate/limit line is available) -->
+    <TextView
+      android:id="@+id/scouter_codex_usage"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:ellipsize="end"
+      android:maxLines="1"
+      android:singleLine="true"
+      android:text=""
+      android:textColor="#5FBF7D"
+      android:textSize="9sp"
+      android:typeface="monospace"
+      android:lineSpacingExtra="0dp"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
+    <!-- approval pills (shown by provider only while WAITING_PERMISSION) -->
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="6dp"
+      android:orientation="horizontal">
+
+      <TextView
+        android:id="@+id/scouter_codex_allow"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:minHeight="32dp"
+        android:background="@drawable/scouter_ask_pill_bg"
+        android:contentDescription="@string/scouter_widget_approval_allow"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text="@string/scouter_widget_approval_allow_short"
+        android:textColor="#00FF41"
+        android:textSize="13sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
+        android:visibility="gone" />
+
+      <TextView
+        android:id="@+id/scouter_codex_deny"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:gravity="center"
+        android:minHeight="32dp"
+        android:background="@drawable/scouter_ask_pill_bg"
+        android:contentDescription="@string/scouter_widget_approval_deny"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text="@string/scouter_widget_approval_deny_short"
+        android:textColor="#00FF41"
+        android:textSize="13sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
+        android:visibility="gone" />
+
+      <!-- third interactive-choice pill (reused with allow/deny for numbered
+           Codex choices; hidden by default) -->
+      <TextView
+        android:id="@+id/scouter_codex_choice3"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:gravity="center"
+        android:minHeight="32dp"
+        android:background="@drawable/scouter_ask_pill_bg"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text=""
+        android:textColor="#12B53E"
+        android:textSize="13sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
+        android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- ASK prompt pill (bottom, full width) -->
+    <TextView
+      android:id="@+id/scouter_codex_ask"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="6dp"
+      android:gravity="center"
+      android:minHeight="32dp"
+      android:background="@drawable/scouter_ask_pill_bg"
+      android:contentDescription="@string/scouter_ask_agent_chat"
+      android:paddingStart="14dp"
+      android:paddingEnd="14dp"
+      android:paddingTop="7dp"
+      android:paddingBottom="7dp"
+      android:text="@string/scouter_ask_agent_chat_short"
+      android:textColor="#00FF41"
+      android:textSize="13sp"
+      android:letterSpacing="0.04"
+      android:typeface="monospace"
+      android:textStyle="bold"
+      android:shadowColor="#B300FF41"
+      android:shadowRadius="6"
+      android:includeFontPadding="false" />
+
+    <!-- divider — must be a TextView (plain <View> is not in the App Widget
+         RemoteViews class allowlist and throws InflateException in the host) -->
+    <TextView
+      android:layout_width="match_parent"
+      android:layout_height="1dp"
+      android:layout_marginTop="8dp"
+      android:layout_marginBottom="7dp"
+      android:background="#3300FF41"
+      android:text="" />
+
+    <!-- ── LOCAL LLM row (compact) ── -->
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:gravity="center_vertical"
+      android:orientation="horizontal">
+
+      <ImageView
+        android:id="@+id/scouter_local_dot"
+        android:layout_width="10dp"
+        android:layout_height="10dp"
+        android:src="@drawable/scouter_status_dot"
+        android:contentDescription="@string/scouter_status_dot" />
+
+      <TextView
+        android:id="@+id/scouter_local_title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:layout_weight="1"
+        android:ellipsize="middle"
+        android:singleLine="true"
+        android:text="LOCAL LLM"
+        android:textColor="#8CFFAA"
+        android:textSize="13sp"
+        android:letterSpacing="0.06"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false" />
+
+      <TextView
+        android:id="@+id/scouter_local_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="LL"
+        android:textColor="#8CFFAA"
+        android:textSize="9sp"
+        android:typeface="monospace"
+        android:includeFontPadding="false"
+        android:visibility="gone" />
+    </LinearLayout>
+
+    <TextView
+      android:id="@+id/scouter_local_detail"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:ellipsize="end"
+      android:singleLine="true"
+      android:text="No local endpoint"
+      android:textColor="#66FF88"
       android:textSize="11sp"
       android:typeface="monospace"
-      android:textStyle="bold" />
+      android:includeFontPadding="false" />
+
+    <TextView
+      android:id="@+id/scouter_local_metrics"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:ellipsize="end"
+      android:maxLines="1"
+      android:text="Probe 8080 / 11434"
+      android:textColor="#34E85E"
+      android:textSize="10sp"
+      android:typeface="monospace"
+      android:lineSpacingExtra="0dp"
+      android:includeFontPadding="false" />
+
+    <TextView
+      android:id="@+id/scouter_footer"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="3dp"
+      android:ellipsize="end"
+      android:singleLine="true"
+      android:text="updated --:--:--"
+      android:textColor="#34E85E"
+      android:textSize="10sp"
+      android:typeface="monospace"
+      android:includeFontPadding="false" />
   </LinearLayout>
 </FrameLayout>

@@ -44,13 +44,13 @@ export type ProFeature =
 export const FREE_NL_DAILY_LIMIT = 20;
 
 /** Number of themes available for free */
-export const FREE_THEME_COUNT = 3;
+export const FREE_THEME_COUNT = 4;
 
 /** Number of templates available for free */
 export const FREE_TEMPLATE_COUNT = 2;
 
-/** Free theme IDs (first 3) */
-export const FREE_THEME_IDS = ['blue', 'orange', 'purple'] as const;
+/** Free theme IDs */
+export const FREE_THEME_IDS = ['blue', 'orange', 'purple', 'scouter-green'] as const;
 
 // ── Gate logic ───────────────────────────────────────────────────────────────
 

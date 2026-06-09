@@ -28,12 +28,7 @@
  *     ticks (rare but possible when an OAuth flow opens both an auth
  *     URL and a redirect URL in quick succession).
  *
- * Triggered by:
- *   - Claude Code's i3() OAuth opener (cli.js ~ offset 6880697):
- *     `spawn(process.env.BROWSER ?? "xdg-open", [url])`.
- *   - Gemini CLI's authWithWeb(): identical pattern via google-auth-
- *     library's openBrowser().
- *   - Any other tool respecting xdg-open / $BROWSER conventions.
+ * Triggered by tools respecting xdg-open / $BROWSER conventions.
  *
  * HomeInitializer.kt symlinks `$HOME/bin/xdg-open` → `$libDir/
  * shelly_xdg_open` and exports `BROWSER=$HOME/bin/xdg-open`. Either
@@ -46,10 +41,9 @@
  *   0  success (URL queued for RN dispatch)
  *   1  bad arg / unsupported scheme / I/O failure
  *
- * Caller note: Claude Code's i3() ignores the return code, so a non-
- * zero exit doesn't break the OAuth flow. We still bother validating
- * the input because the same binary may be called from contexts that
- * DO check (wsl-open compatibility, manual user invocation).
+ * Caller note: some CLI OAuth openers ignore the return code, so a non-zero
+ * exit may not break the OAuth flow. We still validate input because the same
+ * binary may be called from contexts that do check the result.
  *
  * SECURITY NOTE on scheme allowlist: passing arbitrary URLs through a
  * file queue that the RN side will hand to a WebView is a privilege-

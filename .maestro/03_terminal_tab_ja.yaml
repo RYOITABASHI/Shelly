@@ -1,12 +1,23 @@
-appId: space.manus.shelly.terminal.t20260224103125
+appId: dev.shelly.terminal
 ---
-# ターミナルタブ E2E テスト (日本語版)
+# ネイティブPTY回帰スモークテスト。
+# 初回セットアップ完了後、ターミナルペインが表示されている状態で実行する。
 
 - launchApp
-- tapOn: "Terminal"
+
 - assertVisible:
-    text: "接続済み"
-    optional: true
+    id: "native-terminal-view"
+  timeout: 20000
+
+- tapOn:
+    id: "native-terminal-view"
+
+- inputText: "bash -c 'echo SHELLY_PTY_SMOKE_OK'"
+- pressKey: Enter
+
 - assertVisible:
-    text: "ttydに接続できません"
-    optional: true
+    text: "SHELLY_PTY_SMOKE_OK"
+  timeout: 10000
+
+- inputText: "exit"
+- pressKey: Enter

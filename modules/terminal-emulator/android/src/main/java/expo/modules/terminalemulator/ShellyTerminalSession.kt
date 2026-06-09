@@ -2,9 +2,11 @@ package expo.modules.terminalemulator
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
 import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -29,12 +31,19 @@ class ShellyTerminalSession(
         private const val TAG = "ShellyTerminalSession"
         private const val BATCH_INTERVAL_MS = 16L
         private const val MAX_OUTPUT_BYTES = 64 * 1024
+        private const val SCOUTER_WIDGET_SCREEN_REFRESH_INTERVAL_MS = 1_200L
+        private val SCOUTER_WIDGET_SCREEN_REFRESH_RE = Regex(
+            """(?:Would you like to make the following edits|Press enter to confirm|Approaching rate limits|Switch to\b.*\bmodel\b|Keep current model|approval|approve|permission|allow|deny|Yes, proceed|select an option|choose an option)""",
+            RegexOption.IGNORE_CASE
+        )
     }
 
     private val outputBuffer = StringBuilder()
     private val batchHandler = Handler(Looper.getMainLooper())
     @Volatile private var flushScheduled = false
     private var lastTranscriptLength = 0
+    @Volatile private var lastScouterWidgetScreenRefreshMs = 0L
+    @Volatile private var lastScouterWidgetPromptScreenActive = false
 
     val terminalSession: TerminalSession
 
@@ -172,6 +181,13 @@ class ShellyTerminalSession(
         return if (lines.size > maxLines) lines.takeLast(maxLines).joinToString("\n") else fullText
     }
 
+    fun getScreenText(): String {
+        val emulator = terminalSession.emulator ?: return ""
+        return emulator.screen
+            .getSelectedText(0, 0, 10000, 10000, false)
+            .trimEnd()
+    }
+
     fun destroy() {
         batchHandler.removeCallbacks(flushRunnable)
         flushOutputBuffer()
@@ -203,7 +219,11 @@ class ShellyTerminalSession(
 
         val emulator = changedSession.emulator ?: return
         val screen = emulator.screen
-        val fullText = screen.transcriptText ?: return
+        val fullText = screen.transcriptText
+        if (fullText == null) {
+            maybeRefreshScouterWidgetForPromptState()
+            return
+        }
         val currentLength = fullText.length
         if (currentLength > lastTranscriptLength) {
             val newText = fullText.substring(lastTranscriptLength)
@@ -217,6 +237,7 @@ class ShellyTerminalSession(
                 onOutputDelta?.invoke(fullText)
             }
         }
+        maybeRefreshScouterWidgetForPromptState()
     }
 
     override fun onTitleChanged(changedSession: TerminalSession) {
@@ -252,6 +273,28 @@ class ShellyTerminalSession(
     override fun onBell(session: TerminalSession) {
         emitEvent("onBell", mapOf("sessionId" to sessionId))
     }
+
+    private fun maybeRefreshScouterWidgetForPromptState() {
+        val now = SystemClock.uptimeMillis()
+        if (
+            !lastScouterWidgetPromptScreenActive &&
+            now - lastScouterWidgetScreenRefreshMs < SCOUTER_WIDGET_SCREEN_REFRESH_INTERVAL_MS
+        ) {
+            return
+        }
+        val screenText = runCatching { getScreenText() }.getOrDefault("")
+        val promptScreenActive = SCOUTER_WIDGET_SCREEN_REFRESH_RE.containsMatchIn(screenText)
+        val changed = promptScreenActive != lastScouterWidgetPromptScreenActive
+        if (!promptScreenActive && !lastScouterWidgetPromptScreenActive) {
+            lastScouterWidgetScreenRefreshMs = now
+            return
+        }
+        if (!changed && now - lastScouterWidgetScreenRefreshMs < SCOUTER_WIDGET_SCREEN_REFRESH_INTERVAL_MS) return
+        lastScouterWidgetPromptScreenActive = promptScreenActive
+        lastScouterWidgetScreenRefreshMs = now
+        ScouterWidgetProvider.updateAll(appContext)
+    }
+
     override fun onColorsChanged(session: TerminalSession) {}
     override fun onTerminalCursorStateChange(state: Boolean) {}
     override fun setTerminalShellPid(session: TerminalSession, pid: Int) {}

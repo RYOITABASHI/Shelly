@@ -7,16 +7,14 @@
  * 表示条件: onboarding未完了 && chatLoaded
  * 非表示: オンボーディング完了 or スキップ
  */
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState } from 'react';
 import { View, Text, Pressable, TextInput, StyleSheet, Linking } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTranslation } from '@/lib/i18n';
 import { useTerminalStore } from '@/store/terminal-store';
 import {
   type OnboardingStep,
-  getOnboardingStep,
   setOnboardingStep,
-  isOnboardingDone,
 } from '@/lib/chat-onboarding';
 
 type Props = {
@@ -29,7 +27,6 @@ type Props = {
 export function ChatOnboarding({ step, onStepChange }: Props) {
   const { t } = useTranslation();
   const { updateSettings } = useTerminalStore();
-  const settings = useTerminalStore((s) => s.settings);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -76,27 +73,12 @@ export function ChatOnboarding({ step, onStepChange }: Props) {
     return (
       <View style={styles.container}>
         <Text style={styles.message}>{t('onboarding.after_cmd')}</Text>
-        <Pressable style={styles.primaryBtn} onPress={() => advanceTo('gemini_cli_bridge')}>
+        <Pressable style={styles.primaryBtn} onPress={() => advanceTo('cerebras_setup')}>
           <MaterialIcons name="auto-awesome" size={16} color="#000" />
           <Text style={styles.primaryBtnText}>{t('onboarding.setup_cerebras')}</Text>
         </Pressable>
         <Pressable style={styles.skipBtn} onPress={handleSkip}>
           <Text style={styles.skipText}>{t('onboarding.skip')}</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  if (step === 'gemini_cli_bridge') {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.message}>{t('onboarding.gemini_bridge')}</Text>
-        <Pressable style={[styles.primaryBtn, { backgroundColor: '#60A5FA' }]} onPress={() => advanceTo('cerebras_setup')}>
-          <MaterialIcons name="terminal" size={16} color="#000" />
-          <Text style={styles.primaryBtnText}>{t('onboarding.gemini_bridge_next')}</Text>
-        </Pressable>
-        <Pressable style={styles.skipBtn} onPress={() => advanceTo('cerebras_setup')}>
-          <Text style={styles.skipText}>{t('onboarding.try_gemini')}</Text>
         </Pressable>
       </View>
     );

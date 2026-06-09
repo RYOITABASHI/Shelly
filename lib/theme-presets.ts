@@ -108,6 +108,7 @@ export type ThemePresetId =
   | 'blue'
   | 'orange'
   | 'purple'
+  | 'scouter-green'
   // Legacy persisted ids only. They are not exposed in the UI.
   | 'shelly'
   | 'blackline'
@@ -160,7 +161,7 @@ export const shellyPalette: Palette = {
   accentGreen:   '#39FF14',  // neon lime (+diff, LINKED, branch, prompts)
   accentBlue:    '#0AF0FF',  // electric cyan-blue (YOU, folder/file)
   accentSky:     '#38E1FF',  // lighter cyan (COMPONENTS, :8081 EXPO)
-  accentPurple:  '#B14AFF',  // neon violet (IMPORT/FROM, CLAUDE label)
+  accentPurple:  '#B14AFF',  // neon violet (IMPORT/FROM, agent label)
   accentPink:    '#FF2ED3',  // hot magenta-pink (strings, voice)
   accentAmber:   '#FFE500',  // neon yellow (BASH warning, RUNNING)
   accentCode:    '#0AF0FF',  // alias for accentBlue
@@ -213,162 +214,216 @@ export const shellyPalette: Palette = {
   diffRemoveBorder: '#FF3366',
 };
 
-// ── Blue palette — WezTerm-inspired terminal workstation.
-// Pure black surfaces keep transparency compatible; the theme difference
-// comes from crisp blue chrome, cool secondary text, and low-fill buttons.
+// ── Scouter Green — monochrome app chrome, syntax stays independent. ───────
+// This preset intentionally keeps every UI-facing semantic/accent token in the
+// same green family. Code syntax highlighting and ANSI parsing use separate
+// palettes, so command/code colour can still carry meaning while the Shelly
+// chrome reads like a single HUD layer.
+export const scouterGreenPalette: Palette = {
+  bgDeep:     '#000000',
+  bgSurface:  '#000000',
+  bgSidebar:  '#000000',
+  border:     '#00FF41',
+
+  accent:        '#00FF41',
+  accentGreen:   '#00FF41',
+  accentBlue:    '#7DFF9F',
+  accentSky:     '#C8FFD4',
+  accentPurple:  '#7DFF9F',
+  accentPink:    '#A8FF78',
+  accentAmber:   '#C8FF4D',
+  accentCode:    '#7DFF9F',
+  warning:       '#C8FF4D',
+
+  text1:      '#E6FFEC',
+  text2:      '#9CFFB2',
+  text3:      '#4CFF74',
+
+  errorText:  '#A8FF78',
+  errorBg:    'rgba(0,255,65,0.14)',
+  addText:    '#39FF14',
+  addBg:      'rgba(57,255,20,0.14)',
+
+  btnPrimaryBg:     '#00FF41',
+  btnPrimaryText:   '#000000',
+  btnSecondaryBg:   '#031108',
+  btnSecondaryText: '#E6FFEC',
+
+  badgeRunningBg:   'rgba(200,255,77,0.18)',
+  badgeRunningText: '#C8FF4D',
+  badgeLinkedBg:    'rgba(57,255,20,0.16)',
+  badgeLinkedText:  '#39FF14',
+  badgeConnectBg:   '#000000',
+  badgeConnectText: '#34E85E',
+
+  layoutActiveBg:     '#00FF41',
+  layoutActiveText:   '#000000',
+  layoutInactiveBg:   '#000000',
+  layoutInactiveText: '#34E85E',
+
+  crtBadgeBg:   '#000000',
+  crtBadgeText: '#00FF41',
+
+  autoSaveBg: '#000000',
+
+  diffAddBorder:    '#39FF14',
+  diffRemoveBorder: '#A8FF78',
+};
+
+// ── Blue palette — cool chrome with amber warnings.
 export const bluePalette: Palette = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#243040',
+  border:     '#143A52',
 
-  accent:        '#4DA3FF',
-  accentGreen:   '#4DA3FF',
-  accentBlue:    '#4DA3FF',
-  accentSky:     '#4DA3FF',
-  accentPurple:  '#4DA3FF',
-  accentPink:    '#4DA3FF',
-  accentAmber:   '#4DA3FF',
-  accentCode:    '#4DA3FF',
-  warning:       '#4DA3FF',
+  accent:        '#1CA9E0',
+  accentGreen:   '#2BD9C4',
+  accentBlue:    '#1CA9E0',
+  accentSky:     '#5CC8F0',
+  accentPurple:  '#6FA8D8',
+  accentPink:    '#4FD0E0',
+  accentAmber:   '#F2B705',
+  accentCode:    '#5CC8F0',
+  warning:       '#F2B705',
 
-  text1:      '#E8EEF8',
-  text2:      '#97A6BA',
-  text3:      '#526070',
+  text1:      '#D6ECF7',
+  text2:      '#7FA8C4',
+  text3:      '#3E5A70',
 
-  errorText:  '#4DA3FF',
-  errorBg:    'rgba(77,163,255,0.12)',
-  addText:    '#4DA3FF',
-  addBg:      'rgba(77,163,255,0.12)',
+  errorText:  '#FF5A3C',
+  errorBg:    'rgba(255,90,60,0.14)',
+  addText:    '#2BD9C4',
+  addBg:      'rgba(43,217,196,0.14)',
 
-  btnPrimaryBg:     '#4DA3FF',
+  btnPrimaryBg:     '#1CA9E0',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#000000',
-  btnSecondaryText: '#E8EEF8',
+  btnSecondaryBg:   '#0A1620',
+  btnSecondaryText: '#D6ECF7',
 
-  badgeRunningBg:   'rgba(77,163,255,0.14)',
-  badgeRunningText: '#4DA3FF',
-  badgeLinkedBg:    'rgba(77,163,255,0.14)',
-  badgeLinkedText:  '#4DA3FF',
+  badgeRunningBg:   'rgba(242,183,5,0.18)',
+  badgeRunningText: '#F2B705',
+  badgeLinkedBg:    'rgba(43,217,196,0.18)',
+  badgeLinkedText:  '#2BD9C4',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#526070',
+  badgeConnectText: '#3E5A70',
 
-  layoutActiveBg:     '#4DA3FF',
+  layoutActiveBg:     '#1CA9E0',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#526070',
+  layoutInactiveText: '#3E5A70',
 
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#4DA3FF',
+  crtBadgeText: '#1CA9E0',
 
   autoSaveBg: '#000000',
 
-  diffAddBorder:    '#4DA3FF',
-  diffRemoveBorder: '#4DA3FF',
+  diffAddBorder:    '#2BD9C4',
+  diffRemoveBorder: '#FF5A3C',
 };
 
-// ── Orange palette — Claude Code-inspired warm terminal chrome.
+// ── Red palette — red chrome with orange heat.
 export const orangePalette: Palette = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#3A1712',
+  border:     '#5C1410',
 
-  accent:        '#FF4B35',
-  accentGreen:   '#FF4B35',
-  accentBlue:    '#FF4B35',
-  accentSky:     '#FF4B35',
-  accentPurple:  '#FF4B35',
-  accentPink:    '#FF4B35',
-  accentAmber:   '#FF4B35',
-  accentCode:    '#FF4B35',
-  warning:       '#FF4B35',
+  accent:        '#E63420',
+  accentGreen:   '#FFB020',
+  accentBlue:    '#FF6A3C',
+  accentSky:     '#FFA060',
+  accentPurple:  '#E6504A',
+  accentPink:    '#FF4A5C',
+  accentAmber:   '#FF8A00',
+  accentCode:    '#FF8A00',
+  warning:       '#FFB800',
 
-  text1:      '#F4EEE8',
-  text2:      '#B7A79C',
-  text3:      '#6F5E54',
+  text1:      '#F7DCD6',
+  text2:      '#C49890',
+  text3:      '#70504A',
 
-  errorText:  '#FF4B35',
-  errorBg:    'rgba(255,75,53,0.12)',
-  addText:    '#FF4B35',
-  addBg:      'rgba(255,75,53,0.12)',
+  errorText:  '#FF2E1F',
+  errorBg:    'rgba(255,46,31,0.14)',
+  addText:    '#FFB020',
+  addBg:      'rgba(255,176,32,0.14)',
 
-  btnPrimaryBg:     '#FF4B35',
+  btnPrimaryBg:     '#E63420',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#120D0A',
-  btnSecondaryText: '#F4EEE8',
+  btnSecondaryBg:   '#1A0807',
+  btnSecondaryText: '#F7DCD6',
 
-  badgeRunningBg:   'rgba(255,75,53,0.14)',
-  badgeRunningText: '#FF4B35',
-  badgeLinkedBg:    'rgba(255,75,53,0.14)',
-  badgeLinkedText:  '#FF4B35',
+  badgeRunningBg:   'rgba(255,184,0,0.18)',
+  badgeRunningText: '#FFB800',
+  badgeLinkedBg:    'rgba(255,138,0,0.18)',
+  badgeLinkedText:  '#FF8A00',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#6F5E54',
+  badgeConnectText: '#70504A',
 
-  layoutActiveBg:     '#FF4B35',
+  layoutActiveBg:     '#E63420',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#6F5E54',
+  layoutInactiveText: '#70504A',
 
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#FF4B35',
+  crtBadgeText: '#E63420',
 
   autoSaveBg: '#000000',
 
-  diffAddBorder:    '#FF4B35',
-  diffRemoveBorder: '#FF4B35',
+  diffAddBorder:    '#FFB020',
+  diffRemoveBorder: '#FF2E1F',
 };
 
-// ── Purple palette — violet-first dark editor chrome.
+// ── Purple palette — purple chrome with neon green sync.
 export const purplePalette: Palette = {
   bgDeep:     '#000000',
   bgSurface:  '#000000',
   bgSidebar:  '#000000',
-  border:     '#2B1748',
+  border:     '#3A1F66',
 
-  accent:        '#9B5CFF',
-  accentGreen:   '#9B5CFF',
-  accentBlue:    '#9B5CFF',
-  accentSky:     '#9B5CFF',
-  accentPurple:  '#9B5CFF',
-  accentPink:    '#9B5CFF',
-  accentAmber:   '#9B5CFF',
-  accentCode:    '#9B5CFF',
-  warning:       '#9B5CFF',
+  accent:        '#8B3FD6',
+  accentGreen:   '#39FF14',
+  accentBlue:    '#A06FE0',
+  accentSky:     '#B56CFF',
+  accentPurple:  '#8B3FD6',
+  accentPink:    '#D24FFF',
+  accentAmber:   '#C8FF3C',
+  accentCode:    '#39FF14',
+  warning:       '#C8FF3C',
 
-  text1:      '#F2EAFE',
-  text2:      '#B8A8D6',
-  text3:      '#66557E',
+  text1:      '#E8DCF7',
+  text2:      '#A88FC4',
+  text3:      '#5A4A70',
 
-  errorText:  '#9B5CFF',
-  errorBg:    'rgba(155,92,255,0.12)',
-  addText:    '#9B5CFF',
-  addBg:      'rgba(155,92,255,0.12)',
+  errorText:  '#FF3C5A',
+  errorBg:    'rgba(255,60,90,0.14)',
+  addText:    '#39FF14',
+  addBg:      'rgba(57,255,20,0.14)',
 
-  btnPrimaryBg:     '#9B5CFF',
+  btnPrimaryBg:     '#8B3FD6',
   btnPrimaryText:   '#000000',
-  btnSecondaryBg:   '#000000',
-  btnSecondaryText: '#F2EAFE',
+  btnSecondaryBg:   '#160B26',
+  btnSecondaryText: '#E8DCF7',
 
-  badgeRunningBg:   'rgba(155,92,255,0.14)',
-  badgeRunningText: '#9B5CFF',
-  badgeLinkedBg:    'rgba(155,92,255,0.14)',
-  badgeLinkedText:  '#9B5CFF',
+  badgeRunningBg:   'rgba(200,255,60,0.18)',
+  badgeRunningText: '#C8FF3C',
+  badgeLinkedBg:    'rgba(57,255,20,0.18)',
+  badgeLinkedText:  '#39FF14',
   badgeConnectBg:   '#000000',
-  badgeConnectText: '#66557E',
+  badgeConnectText: '#5A4A70',
 
-  layoutActiveBg:     '#9B5CFF',
+  layoutActiveBg:     '#8B3FD6',
   layoutActiveText:   '#000000',
   layoutInactiveBg:   '#000000',
-  layoutInactiveText: '#66557E',
+  layoutInactiveText: '#5A4A70',
 
   crtBadgeBg:   '#000000',
-  crtBadgeText: '#9B5CFF',
+  crtBadgeText: '#39FF14',
 
   autoSaveBg: '#000000',
 
-  diffAddBorder:    '#9B5CFF',
-  diffRemoveBorder: '#9B5CFF',
+  diffAddBorder:    '#39FF14',
+  diffRemoveBorder: '#FF3C5A',
 };
 
 // ── Silkscreen palette — the previous static theme.config.ts values,
@@ -833,6 +888,7 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
   blue:         { id: 'blue',         font: 'JetBrainsMono_400Regular', colors: bluePalette },
   orange:       { id: 'orange',       font: 'JetBrainsMono_400Regular', colors: orangePalette },
   purple:       { id: 'purple',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
+  'scouter-green': { id: 'scouter-green', font: 'JetBrainsMono_400Regular', colors: scouterGreenPalette },
   shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
   blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: bluePalette },
   modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: purplePalette },
@@ -866,6 +922,13 @@ export function applyThemePreset(id: ThemePresetId) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const themeConfig = require('@/theme.config');
   Object.assign(themeConfig.colors, preset.colors);
+
+  // Keep the older useTheme()/Colors.dark runtime object in sync too.
+  // Several terminal block components still read that API, so leaving it
+  // stale made red/purple themes retain blue command/link accents.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { refreshRuntimeThemeColors } = require('@/lib/theme');
+  refreshRuntimeThemeColors(preset.colors);
 
   // 2. Re-bind the shared neon-glow style objects. They hold
   //    textShadowColor / shadowColor values keyed to the OLD palette;

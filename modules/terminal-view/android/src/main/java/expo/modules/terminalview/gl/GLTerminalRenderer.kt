@@ -18,9 +18,6 @@ import javax.microedition.khronos.opengles.GL10
  *   2. Glyph quads (glyph shader + atlas texture)
  *   3. Overlays (cursor, selection)
  *   4. Block chrome (separators, badges, chevrons) — added by Command Blocks
- *
- * Post-process (CRT):
- *   Render to FBO → fullscreen quad with CRT shader
  */
 class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer {
     companion object {
@@ -55,7 +52,6 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
     private lateinit var selectionShader: ShaderProgram
     lateinit var atlas: GlyphAtlas; private set
     private lateinit var cellBatcher: CellBatcher
-    lateinit var postProcessor: PostProcessor; private set
     val scrollAnimator = ScrollAnimator()
     val cursorAnimator = CursorAnimator()
     val highlightCache = HighlightCache()
@@ -164,9 +160,6 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         // Init highlight worker
         highlightWorker = HighlightWorker(highlightCache)
 
-        // Init post-processor
-        postProcessor = PostProcessor(context)
-
         // Init block chrome renderer
         val chrome = BlockChromeRenderer(atlas)
         chrome.init()
@@ -190,8 +183,6 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         rows = (height / atlas.cellHeight).toInt().coerceAtLeast(1)
         cellBatcher.resize(cols, rows)
 
-        postProcessor.init(width, height)
-
         dirtyFlags = DirtyFlags.ALL
     }
 
@@ -200,12 +191,9 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         val emulator = session?.terminalSession?.emulator
 
         // Idle detection
-        if (dirtyFlags == DirtyFlags.NONE && !postProcessor.enabled) {
+        if (dirtyFlags == DirtyFlags.NONE) {
             return
         }
-
-        // Post-process: begin
-        postProcessor.beginRender()
 
         // Re-apply the clear colour every frame so a transparentBackground
         // toggle after onSurfaceCreated takes effect without surface
@@ -267,9 +255,6 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
             }
         }
 
-        // Post-process: end
-        postProcessor.endRenderAndApply()
-
         dirtyFlags = DirtyFlags.NONE
     }
 
@@ -283,7 +268,6 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         highlightWorker.shutdown()
         cellBatcher.destroy()
         atlas.destroy()
-        postProcessor.destroy()
         bgShader.destroy()
         glyphShader.destroy()
         cursorShader.destroy()

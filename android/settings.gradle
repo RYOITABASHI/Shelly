@@ -1,0 +1,55 @@
+pluginManagement {
+  def reactNativeGradlePlugin = new File(
+    providers.exec {
+      workingDir(rootDir)
+      commandLine("node", "--print", "require.resolve('@react-native/gradle-plugin/package.json', { paths: [require.resolve('react-native/package.json')] })")
+    }.standardOutput.asText.get().trim()
+  ).getParentFile().absolutePath
+  includeBuild(reactNativeGradlePlugin)
+
+  def expoPluginsPath = new File(
+    providers.exec {
+      workingDir(rootDir)
+      commandLine("node", "--print", "require.resolve('expo-modules-autolinking/package.json', { paths: [require.resolve('expo/package.json')] })")
+    }.standardOutput.asText.get().trim(),
+    "../android/expo-gradle-plugin"
+  ).absolutePath
+  includeBuild(expoPluginsPath)
+}
+
+plugins {
+  id("com.facebook.react.settings")
+  id("expo-autolinking-settings")
+}
+
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {
+    ex.autolinkLibrariesFromCommand()
+  } else {
+    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
+  }
+}
+expoAutolinking.useExpoModules()
+
+rootProject.name = 'Shelly'
+
+expoAutolinking.useExpoVersionCatalog()
+
+include ':app'
+includeBuild(expoAutolinking.reactNativeGradlePlugin)
+
+def shellyReactNativeModules = [
+  [name: 'react-native-async-storage_async-storage', path: '../node_modules/@react-native-async-storage/async-storage/android'],
+  [name: 'react-native-gesture-handler', path: '../node_modules/react-native-gesture-handler/android'],
+  [name: 'react-native-reanimated', path: '../node_modules/react-native-reanimated/android'],
+  [name: 'react-native-safe-area-context', path: '../node_modules/react-native-safe-area-context/android'],
+  [name: 'react-native-screens', path: '../node_modules/react-native-screens/android'],
+  [name: 'react-native-svg', path: '../node_modules/react-native-svg/android'],
+  [name: 'react-native-webview', path: '../node_modules/react-native-webview/android'],
+  [name: 'react-native-worklets', path: '../node_modules/react-native-worklets/android'],
+]
+
+shellyReactNativeModules.each { module ->
+  include ":${module.name}"
+  project(":${module.name}").projectDir = new File(rootProject.projectDir, module.path)
+}
