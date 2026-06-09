@@ -21,17 +21,43 @@ class NotificationDispatcher(private val context: Context) {
     init {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                notificationManager.createNotificationChannel(
-                    NotificationChannel(
-                        CHANNEL_ID,
-                        "Scouter",
-                        NotificationManager.IMPORTANCE_DEFAULT
-                    ).apply {
-                        description = "Scouter agent session updates"
-                    }
+                // Per-category channels so the user controls each type from the OS
+                // notification settings (mute / importance / sound / vibration).
+                // Actionable types (approval, choice) and errors default to HIGH so
+                // they pop as heads-up; completions / long-running are quiet (LOW).
+                val channels = listOf(
+                    Triple(CH_APPROVAL, "Codex approvals", NotificationManager.IMPORTANCE_HIGH),
+                    Triple(CH_CHOICE, "Codex choices", NotificationManager.IMPORTANCE_HIGH),
+                    Triple(CH_ERROR, "Errors", NotificationManager.IMPORTANCE_HIGH),
+                    Triple(CH_RATE, "Rate limits", NotificationManager.IMPORTANCE_DEFAULT),
+                    Triple(CH_COMPLETED, "Completions", NotificationManager.IMPORTANCE_LOW),
+                    Triple(CH_RUNNING, "Long-running", NotificationManager.IMPORTANCE_LOW)
                 )
+                channels.forEach { (id, name, importance) ->
+                    notificationManager.createNotificationChannel(
+                        NotificationChannel(id, name, importance).apply {
+                            description = "Scouter: $name"
+                        }
+                    )
+                }
+                // Drop the old single channel so it doesn't linger as an orphan in
+                // the OS settings list. Best-effort; ignored if already gone.
+                runCatching { notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
+                    .onFailure { Log.w(TAG, "Failed to delete legacy Scouter channel", it) }
             }
-        }.onFailure { Log.w(TAG, "Failed to create Scouter notification channel", it) }
+        }.onFailure { Log.w(TAG, "Failed to create Scouter notification channels", it) }
+    }
+
+    // Maps a stable notification id to its category channel (O+). Pre-O the
+    // channel id is ignored by the builder, so a missing match is harmless.
+    private fun channelForId(id: Int): String = when (id) {
+        ID_APPROVAL -> CH_APPROVAL
+        ID_CHOICE -> CH_CHOICE
+        ID_ERROR -> CH_ERROR
+        ID_RATE -> CH_RATE
+        ID_REPLY -> CH_COMPLETED
+        ID_LONG_RUNNING -> CH_RUNNING
+        else -> CH_RATE
     }
 
     // Single entry point per Scouter event. `conversation` is the widget
@@ -404,7 +430,7 @@ class NotificationDispatcher(private val context: Context) {
             } else null
 
             val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification.Builder(context, CHANNEL_ID)
+                Notification.Builder(context, channelForId(id))
             } else {
                 @Suppress("DEPRECATION")
                 Notification.Builder(context)
@@ -440,7 +466,15 @@ class NotificationDispatcher(private val context: Context) {
 
     companion object {
         private const val TAG = "ScouterNotification"
-        private const val CHANNEL_ID = "scouter"
+        // Legacy single channel (pre-2026-06), deleted on init now that each
+        // category has its own channel below.
+        private const val LEGACY_CHANNEL_ID = "scouter"
+        private const val CH_APPROVAL = "scouter_approval"
+        private const val CH_CHOICE = "scouter_choice"
+        private const val CH_ERROR = "scouter_error"
+        private const val CH_RATE = "scouter_rate"
+        private const val CH_COMPLETED = "scouter_completed"
+        private const val CH_RUNNING = "scouter_running"
 
         // Stable notification IDs per category so a new state REPLACES the prior
         // notification (never stacks). Distinct from the existing 9201-9203.
