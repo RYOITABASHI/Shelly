@@ -280,10 +280,21 @@ class ScouterLifecycleService private constructor(private val context: Context) 
     // untouched.
 
     private fun livePollLoop() {
+        var lastHeartbeatAt = SystemClock.uptimeMillis()
         while (pollRunning) {
             val interval = runCatching { pollOnce() }
                 .onFailure { Log.w(TAG, "live pts poll failed", it) }
                 .getOrDefault(POLL_IDLE_MS)
+            // Heartbeat: the widget has updatePeriodMillis=0 and only re-renders on
+            // events, so an idle session freezes CPU/RAM/clock/footer indefinitely.
+            // Force a refresh ~every WIDGET_HEARTBEAT_MS to keep them current even
+            // when nothing is happening. Best-effort; never disturbs the poll.
+            val now = SystemClock.uptimeMillis()
+            if (now - lastHeartbeatAt >= WIDGET_HEARTBEAT_MS) {
+                lastHeartbeatAt = now
+                runCatching { requestWidgetRefresh(force = true, reason = "heartbeat") }
+                    .onFailure { Log.w(TAG, "heartbeat widget refresh failed", it) }
+            }
             try {
                 Thread.sleep(interval)
             } catch (ie: InterruptedException) {
@@ -304,16 +315,36 @@ class ScouterLifecycleService private constructor(private val context: Context) 
             result.choices.joinToString { it.index.toString() }
 
         // INACTIVE/READY: nothing is blocking. Reset the dedup signature and
-        // leave ALL store state alone (existing flows own non-blocking states).
+        // leave ALL store state alone (existing flows own non-blocking states),
+        // but drop any live usage-limit override now that the banner is gone so
+        // the widget stops showing "RATE LIMITED" once the cap clears.
         if (result.state == CodexScreenInspect.State.INACTIVE ||
             result.state == CodexScreenInspect.State.READY
         ) {
             lastLiveStateKey = null
+            if (store.clearWidgetUsageLimited()) {
+                requestWidgetRefresh(force = true, reason = "live-poll-rate-clear")
+            }
             return POLL_ACTIVE_MS
         }
 
-        // Already surfaced this exact blocking state — no spam.
-        if (key == lastLiveStateKey) return POLL_ACTIVE_MS
+        // Refresh the usage-limit override on EVERY tick the banner is up so a
+        // long-lived cap never ages out of the store freshness window. This write
+        // is widget-only and cheap; the notification + forced refresh below stay
+        // deduped so a persistent banner doesn't spam. For the other blocking
+        // states (INTERACTIVE/APPROVAL) the cap is no longer the live screen, so
+        // drop any lingering override — otherwise a direct RATE_LIMITED → menu
+        // transition (never passing through READY/INACTIVE) would co-render a
+        // stale "RATE LIMITED" line alongside the choice/approval UI.
+        if (result.state == CodexScreenInspect.State.RATE_LIMITED) {
+            store.recordWidgetUsageLimited(result.summary)
+        } else if (store.clearWidgetUsageLimited()) {
+            requestWidgetRefresh(force = true, reason = "live-poll-rate-clear")
+        }
+
+        // Already surfaced this exact blocking state — no notification/refresh spam.
+        val isNewState = key != lastLiveStateKey
+        if (!isNewState) return POLL_ACTIVE_MS
         lastLiveStateKey = key
 
         when (result.state) {
@@ -331,8 +362,10 @@ class ScouterLifecycleService private constructor(private val context: Context) 
                 }
             }
             CodexScreenInspect.State.RATE_LIMITED -> {
-                // Passive usage-limit banner (no menu): do NOT touch widget choice
-                // state. Just fire a deduped notification off the snapshot.
+                // Passive usage-limit banner (no menu): the override is already
+                // recorded above. Push it to the widget and fire a deduped
+                // notification off the snapshot.
+                requestWidgetRefresh(force = true, reason = "live-poll-rate")
                 val snap = store.all().firstOrNull {
                     it.source == ScouterSource.CODEX &&
                         normalizeCodexSessionId(it.sessionId) ==
@@ -356,6 +389,7 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         private const val LONG_RUNNING_THRESHOLD_MS = 120_000L
         private const val POLL_ACTIVE_MS = 6_000L
         private const val POLL_IDLE_MS = 15_000L
+        private const val WIDGET_HEARTBEAT_MS = 60_000L
         private val CODEX_SESSION_UUID_SUFFIX_RE =
             Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
         @Volatile private var instance: ScouterLifecycleService? = null

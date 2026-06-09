@@ -53,6 +53,17 @@ data class ScouterWidgetPendingApproval(
     val shellySessionId: String?
 )
 
+// Live usage-limit override surfaced by the PTS poll. Codex shows a rate-limit
+// banner with no JSONL event, so the widget's structured/JSONL rate line goes
+// stale (e.g. "WK 4% left" while actually capped). This carries the live banner
+// text so render can overwrite that stale line with "RATE LIMITED". recordedAt
+// drives a freshness window so a dead poll thread can't pin it forever.
+data class ScouterWidgetUsageLimited(
+    val summary: String,
+    val recordedAt: Long,
+    val resetAt: Long?
+)
+
 class ScouterStateStore(context: Context) {
     private val prefs = context.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
     private val helperStateFile = File(context.filesDir, "home/.scouter-state.json")
@@ -302,6 +313,47 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_ERROR)
             .commit()
         writeHelperState()
+    }
+
+    // Live usage-limit override (PTS poll). Widget-only: does NOT writeHelperState
+    // since no shell helper consumes it, which keeps the per-poll re-record cheap.
+    // The poll re-records on every active tick (~6s) while the banner is up and
+    // clears it when the banner is gone, so the freshness window below is just a
+    // safety net against a stalled poll thread.
+    fun recordWidgetUsageLimited(summary: String, resetAt: Long? = null) {
+        val trimmed = summary.trim().take(MAX_WIDGET_TEXT_LENGTH).ifBlank { "RATE LIMITED" }
+        val editor = prefs.edit()
+            .putString(KEY_WIDGET_USAGE_LIMITED_SUMMARY, trimmed)
+            .putLong(KEY_WIDGET_USAGE_LIMITED_AT, System.currentTimeMillis())
+        if (resetAt != null && resetAt > 0L) {
+            editor.putLong(KEY_WIDGET_USAGE_LIMITED_RESET_AT, resetAt)
+        } else {
+            editor.remove(KEY_WIDGET_USAGE_LIMITED_RESET_AT)
+        }
+        editor.commit()
+    }
+
+    // Returns true when an override was actually present and cleared, so callers
+    // can decide whether a widget refresh is worth firing.
+    fun clearWidgetUsageLimited(): Boolean {
+        if (!prefs.contains(KEY_WIDGET_USAGE_LIMITED_AT)) return false
+        prefs.edit()
+            .remove(KEY_WIDGET_USAGE_LIMITED_SUMMARY)
+            .remove(KEY_WIDGET_USAGE_LIMITED_AT)
+            .remove(KEY_WIDGET_USAGE_LIMITED_RESET_AT)
+            .commit()
+        return true
+    }
+
+    fun widgetUsageLimited(now: Long = System.currentTimeMillis()): ScouterWidgetUsageLimited? {
+        val recordedAt = prefs.getLong(KEY_WIDGET_USAGE_LIMITED_AT, 0L).takeIf { it > 0L } ?: return null
+        if (now - recordedAt > WIDGET_USAGE_LIMITED_FRESH_MS) return null
+        val summary = prefs.getString(KEY_WIDGET_USAGE_LIMITED_SUMMARY, null)?.ifBlank { null } ?: return null
+        return ScouterWidgetUsageLimited(
+            summary = summary,
+            recordedAt = recordedAt,
+            resetAt = prefs.getLong(KEY_WIDGET_USAGE_LIMITED_RESET_AT, 0L).takeIf { it > 0L }
+        )
     }
 
     fun consumeWidgetPromptPending(
@@ -842,6 +894,9 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_PENDING_CODEX_SESSION_ID = "widget_pending_codex_session_id"
         private const val KEY_WIDGET_PENDING_PTY_SESSION_ID = "widget_pending_pty_session_id"
         private const val KEY_WIDGET_PENDING_SHELLY_SESSION_ID = "widget_pending_shelly_session_id"
+        private const val KEY_WIDGET_USAGE_LIMITED_SUMMARY = "widget_usage_limited_summary"
+        private const val KEY_WIDGET_USAGE_LIMITED_AT = "widget_usage_limited_at"
+        private const val KEY_WIDGET_USAGE_LIMITED_RESET_AT = "widget_usage_limited_reset_at"
         private const val WIDGET_STATUS_PENDING_TERMINAL = "pending_terminal"
         private const val WIDGET_STATUS_SENDING = "sending"
         private const val WIDGET_STATUS_CHOICE_PENDING = "choice_pending"
@@ -853,6 +908,10 @@ class ScouterStateStore(context: Context) {
         private const val WIDGET_STATUS_APPROVAL_SENDING_PREFIX = "approval_sending_"
         private const val WIDGET_SENDING_RETRY_AFTER_MS = 90_000L
         private const val WIDGET_PROMPT_EXPIRE_AFTER_MS = 2 * 60 * 1000L
+        // Safety net only: the poll re-records on every active tick (~6s) and
+        // clears on resolve, so the override should never actually age out while
+        // the banner is up. This just frees it if the poll thread dies.
+        private const val WIDGET_USAGE_LIMITED_FRESH_MS = 3 * 60 * 1000L
         private const val MAX_RECENT_EVENTS = 120
         private const val MAX_WIDGET_TEXT_LENGTH = 500
         private val WIDGET_ANSWER_STATUSES = setOf(

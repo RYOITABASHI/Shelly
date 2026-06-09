@@ -118,6 +118,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val snapshots = if (store.isEnabled()) store.all() else emptyList()
             val binding = if (store.isEnabled()) store.widgetCodexBinding() else null
             val conversation = if (store.isEnabled()) store.widgetConversation(binding?.codexSessionId) else null
+            val usageLimited = if (store.isEnabled()) store.widgetUsageLimited() else null
             val load = runCatching { ScouterSystemSampler(context).sample() }
                 .getOrElse {
                     Log.w(TAG, "Scouter widget system sample failed; using lightweight load", it)
@@ -125,7 +126,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 }
             scheduleWaitExpiryRefresh(context, conversation)
             ids.forEach { id ->
-                runCatching { manager.updateAppWidget(id, render(context, snapshots, binding, conversation, load)) }
+                runCatching { manager.updateAppWidget(id, render(context, snapshots, binding, conversation, load, usageLimited)) }
                     .onFailure { Log.w(TAG, "Scouter widget update failed for id=$id", it) }
             }
         }
@@ -211,7 +212,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             snapshots: List<SessionSnapshot>,
             binding: ScouterWidgetCodexBinding?,
             conversation: ScouterWidgetConversation?,
-            load: ScouterSystemLoad
+            load: ScouterSystemLoad,
+            usageLimited: ScouterWidgetUsageLimited? = null
         ): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
@@ -254,7 +256,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             // Usage/limit line: visible only when there is a rate/limit summary
             // for a live Codex session and no approval is taking over the bottom
             // row; hidden (and cleared) otherwise so it never shows stale data.
-            val usageLine = if (approvalIsActionable) null else codex?.let { codexUsageLine(it, conversation) }
+            val usageLine = if (approvalIsActionable) null else codex?.let { codexUsageLine(it, conversation, usageLimited) }
             if (usageLine.isNullOrBlank()) {
                 views.setTextViewText(R.id.scouter_codex_usage, "")
                 views.setViewVisibility(R.id.scouter_codex_usage, View.GONE)
@@ -301,10 +303,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                     "PING --ms · PROBE 8080/11434"
                 ).joinToString("\n")
             )
-            val latestAt = listOfNotNull(codex?.lastEventAt, local?.lastEventAt).maxOrNull()
+            // "updated" = actual render wall-clock, not max(lastEventAt). The poll
+            // heartbeat re-renders ~every 60s, so this stays live even when idle;
+            // showing the data timestamp made a fresh render look stale.
             views.setTextViewText(
                 R.id.scouter_footer,
-                "${loadLine(load)} · ${latestAt?.let { "updated ${formatTime(it)}" } ?: "updated --:--:--"}"
+                "${loadLine(load)} · updated ${formatTime(System.currentTimeMillis())}"
             )
             return views
         }
@@ -696,7 +700,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             // Option B USAGE line: MODEL · TOK · $cost · <n>%ctx (skip blanks).
             snapshot.modelName?.takeIf { it.isNotBlank() }?.let { parts += "MODEL ${shortModelName(it)}" }
             if (snapshot.tokensUsed > 0L) parts += "TOK ${formatTokens(snapshot.tokensUsed)}"
-            snapshot.totalCostUsd.takeIf { it > 0.0 }?.let {
+            // Prefer a real cost if the source emitted one (e.g. Claude); otherwise
+            // derive it from the static LiteLLM price table, since Codex never
+            // emits totalCostUsd and leaves it structurally 0.
+            val cost = snapshot.totalCostUsd.takeIf { it > 0.0 }
+                ?: ScouterModelPricing.costUsd(snapshot.modelName, snapshot.inputTokens, snapshot.outputTokens)
+            cost?.let {
                 parts += "$" + String.format(Locale.US, "%.2f", it)
             }
             snapshot.contextPercentRemaining?.let {
@@ -722,7 +731,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         // Usage/limit line bound to scouter_codex_usage. Returns the rate-limit /
         // status-window summary (e.g. "LIMIT 5H 20% · WK 58% · RESET 14:05" or
         // "RATE LIMITED · ..."), or null when there is nothing meaningful to show.
-        private fun codexUsageLine(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation? = null): String? {
+        private fun codexUsageLine(
+            snapshot: SessionSnapshot,
+            conversation: ScouterWidgetConversation? = null,
+            usageLimited: ScouterWidgetUsageLimited? = null
+        ): String? {
+            // Live PTS poll saw a usage-limit banner: this is the most authoritative
+            // signal (Codex emits no JSONL event for it), so it overrides the stale
+            // structured/JSONL percentages that would otherwise read e.g. "WK 4% left".
+            usageLimited?.let {
+                val detail = it.summary.takeIf { s -> s.isNotBlank() && !s.equals("RATE LIMITED", ignoreCase = true) }
+                return if (detail != null) "RATE LIMITED · ${shorten(detail, 48)}" else "RATE LIMITED"
+            }
             // Rate-limit / status-window summary (ordering unchanged from before).
             // Cost now lives on the USAGE (metrics) line, so this returns the
             // rate-limit summary only, or null when there is nothing to show.
