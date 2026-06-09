@@ -732,14 +732,17 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     setLoading(true);
     setError(null);
     try {
-      // The three GitHub calls are now internally bounded by fetchWithTimeout
-      // (AbortController), so they can't hang. The two non-fetch probes have no
-      // intrinsic abort, so wrap them in withTimeout — together this guarantees
-      // refresh() can never stay pending forever on "Checking…".
+      // fetchWithTimeout only bounds the request up to the response headers — it
+      // clears its AbortController timer the moment fetch() resolves, so the
+      // subsequent `await response.json()/.text()` body read is UNBOUNDED. A
+      // GitHub response held open mid-body then hangs the body read forever, and
+      // Promise.allSettled never settles → "Checking…" sticks (bug: updater hang).
+      // Wrap EVERY entry (fetches included) in withTimeout so the whole operation
+      // — headers + body read — is bounded and refresh() always completes.
       const [runsResult, updateResult, codexRuntimeResult, versionResult, codexResult] = await Promise.allSettled([
-        fetchBuildRuns(),
-        fetchLatestAndroidUpdate(),
-        fetchLatestCodexRuntime(),
+        withTimeout(fetchBuildRuns(), 25_000, 'Build runs'),
+        withTimeout(fetchLatestAndroidUpdate(), 25_000, 'Android update'),
+        withTimeout(fetchLatestCodexRuntime(), 25_000, 'Codex runtime'),
         withTimeout<AppVersionInfo>(TerminalEmulator.getAppVersionInfo(), 10_000, 'App version'),
         withTimeout<CodexVersionInfo | null>(fetchInstalledCodexVersion(), 20_000, 'Codex version probe'),
       ]);
