@@ -4,6 +4,7 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.Locale
 
 class JsonlSessionParser(
     private val source: ScouterSource,
@@ -17,6 +18,10 @@ class JsonlSessionParser(
     private var totalTokensObserved: Long = 0
     private var totalCostUsd: Double = 0.0
     private var modelName: String? = null
+    // Effective Codex approval policy as reported by the rollout JSONL
+    // (turn_context / session_meta payloads). Normalized to one of
+    // "never" | "on-request" | "on-failure" | "untrusted"; null = unknown.
+    private var codexApprovalPolicy: String? = null
     private var previousCodexTotal: CodexUsage? = null
     private var codexCwd: String? = null
     private var codexSessionId: String = extractCodexSessionIdFromFileName(file.nameWithoutExtension)
@@ -124,7 +129,8 @@ class JsonlSessionParser(
             rateLimitPrimaryUsedPercent = rateLimitsSnapshot.primaryUsedPercent,
             rateLimitSecondaryUsedPercent = rateLimitsSnapshot.secondaryUsedPercent,
             rateLimitPrimaryResetAt = rateLimitsSnapshot.primaryResetAt,
-            rateLimitSecondaryResetAt = rateLimitsSnapshot.secondaryResetAt
+            rateLimitSecondaryResetAt = rateLimitsSnapshot.secondaryResetAt,
+            approvalPolicy = codexApprovalPolicy
         )
     }
 
@@ -261,7 +267,8 @@ class JsonlSessionParser(
             rateLimitRemainingRequests = rateLimit.remainingRequests,
             rateLimitRemainingTokens = rateLimit.remainingTokens,
             rateLimitResetAt = rateLimit.resetAt,
-            retryAfterSeconds = rateLimit.retryAfterSeconds
+            retryAfterSeconds = rateLimit.retryAfterSeconds,
+            approvalPolicy = codexApprovalPolicy
         )
     }
 
@@ -357,7 +364,8 @@ class JsonlSessionParser(
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
             totalCostUsd = totalCostUsd,
-            lastMessage = lastMessage?.redactForScouter()?.take(240)
+            lastMessage = lastMessage?.redactForScouter()?.take(240),
+            approvalPolicy = codexApprovalPolicy
         )
     }
 
@@ -388,6 +396,37 @@ class JsonlSessionParser(
             ?: codexSessionId
         modelName = jsonObjects.asSequence().mapNotNull { extractCodexModel(it) }.firstOrNull() ?: modelName
         codexCwd = extractCodexCwd(*jsonObjects) ?: codexCwd
+        codexApprovalPolicy = jsonObjects.asSequence().mapNotNull { extractCodexApprovalPolicy(it) }.firstOrNull()
+            ?: codexApprovalPolicy
+    }
+
+    // Reads the effective approval policy from a Codex rollout JSONL object.
+    // codex-rs writes it on the `turn_context` (and sometimes `session_meta`)
+    // payload as a snake_case string under `approval_policy`. We also tolerate
+    // camelCase and a nested `turn_context`/`config` object, and the related
+    // `ask_for_approval` alias. Returns null when no recognizable value is
+    // present so callers keep the previously-known policy (or null = unknown).
+    private fun extractCodexApprovalPolicy(json: JSONObject?): String? {
+        if (json == null) return null
+        val payload = json.optJSONObject("payload")
+        val nested = payload?.optJSONObject("turn_context")
+            ?: payload?.optJSONObject("config")
+            ?: json.optJSONObject("turn_context")
+        val raw = firstNonBlank(
+            json.optString("approval_policy"),
+            json.optString("approvalPolicy"),
+            json.optString("ask_for_approval"),
+            json.optString("askForApproval"),
+            payload?.optString("approval_policy"),
+            payload?.optString("approvalPolicy"),
+            payload?.optString("ask_for_approval"),
+            payload?.optString("askForApproval"),
+            nested?.optString("approval_policy"),
+            nested?.optString("approvalPolicy"),
+            nested?.optString("ask_for_approval"),
+            nested?.optString("askForApproval")
+        ) ?: return null
+        return normalizeApprovalPolicy(raw)
     }
 
     private fun isCodexSyntheticUserMessage(message: String?): Boolean {
@@ -653,6 +692,26 @@ class JsonlSessionParser(
         private fun normalizeCodexSessionId(value: String): String {
             val trimmed = value.trim()
             return extractCodexSessionIdFromFileName(trimmed) ?: trimmed
+        }
+
+        // Maps a raw approval-policy string from the Codex rollout JSONL to a
+        // canonical token. codex-rs serializes the `AskForApproval` enum as
+        // kebab/snake variants (untrusted, on-failure, on-request, never); the
+        // full-bypass sandbox mode is treated as "never" since it auto-approves.
+        // Unknown values are returned lowercased+trimmed so we never crash, and
+        // blanks degrade to null.
+        fun normalizeApprovalPolicy(value: String?): String? {
+            val token = value?.trim()?.lowercase(Locale.US)?.replace('_', '-') ?: return null
+            if (token.isBlank()) return null
+            return when (token) {
+                "never", "none", "auto", "full-auto", "yolo",
+                "dangerously-bypass-approvals-and-sandbox",
+                "bypass", "bypass-approvals" -> "never"
+                "on-request", "onrequest", "unless-trusted", "auto-edit" -> "on-request"
+                "on-failure", "onfailure" -> "on-failure"
+                "untrusted" -> "untrusted"
+                else -> token
+            }
         }
 
         private fun extractCodexSessionIdFromFileName(value: String): String? {

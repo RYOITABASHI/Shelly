@@ -25,4 +25,6 @@
   <string name="scouter_widget_prompt_no_codex">Open or resume a Codex terminal first</string>
   <string name="scouter_widget_prompt_stale_codex">Bound Codex terminal is not ready</string>
   <string name="scouter_widget_prompt_busy">Codex is busy. Wait for it to finish first.</string>
+  <string name="scouter_widget_choice_sent">Choice sent to Codex</string>
+  <string name="scouter_widget_choice_not_ready">Codex choice is no longer available</string>
 </resources>

@@ -178,6 +178,27 @@
         android:textStyle="bold"
         android:includeFontPadding="false"
         android:visibility="gone" />
+
+      <!-- third interactive-choice pill (reused with allow/deny for numbered
+           Codex choices; hidden by default) -->
+      <TextView
+        android:id="@+id/scouter_codex_choice3"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:gravity="center"
+        android:minHeight="32dp"
+        android:background="@drawable/scouter_ask_pill_bg"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text=""
+        android:textColor="#12B53E"
+        android:textSize="13sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
+        android:visibility="gone" />
     </LinearLayout>
 
     <!-- ASK prompt pill (bottom, full width) -->

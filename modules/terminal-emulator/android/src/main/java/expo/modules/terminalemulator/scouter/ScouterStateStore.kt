@@ -16,7 +16,8 @@ data class ScouterWidgetConversation(
     val widgetPromptAt: Long?,
     val widgetStatus: String?,
     val widgetStatusAt: Long?,
-    val widgetError: String?
+    val widgetError: String?,
+    val choiceOptions: List<ChoiceOption> = emptyList()
 )
 
 data class ScouterWidgetCodexBinding(
@@ -188,11 +189,35 @@ class ScouterStateStore(context: Context) {
         writeHelperState()
     }
 
-    fun recordWidgetChoicePending(message: String) {
-        prefs.edit()
+    fun recordWidgetChoicePending(message: String, options: List<ChoiceOption> = emptyList()) {
+        val editor = prefs.edit()
             .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_CHOICE_PENDING)
             .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
             .putString(KEY_WIDGET_ERROR, message.take(MAX_WIDGET_TEXT_LENGTH))
+            .remove(KEY_WIDGET_PENDING_PROMPT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+        if (options.isEmpty()) {
+            editor.remove(KEY_WIDGET_CHOICE_OPTIONS)
+        } else {
+            editor.putString(KEY_WIDGET_CHOICE_OPTIONS, ChoiceOption.listToJson(options).toString())
+        }
+        editor.commit()
+        writeHelperState()
+    }
+
+    // Records that a numbered choice was written to the bound terminal so the
+    // widget pills stop re-firing (mirrors recordWidgetApprovalDecision).
+    fun recordWidgetChoiceSelected(index: Int) {
+        prefs.edit()
+            .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_CHOICE_SENT)
+            .putLong(KEY_WIDGET_STATUS_AT, System.currentTimeMillis())
+            .putString(KEY_WIDGET_ERROR, "Sent choice $index to Codex")
+            .remove(KEY_WIDGET_CHOICE_OPTIONS)
             .remove(KEY_WIDGET_PENDING_PROMPT)
             .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
             .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
@@ -460,7 +485,12 @@ class ScouterStateStore(context: Context) {
                 widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L },
                 widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)?.ifBlank { null },
                 widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L).takeIf { it > 0L },
-                widgetError = prefs.getString(KEY_WIDGET_ERROR, null)?.ifBlank { null }
+                widgetError = prefs.getString(KEY_WIDGET_ERROR, null)?.ifBlank { null },
+                choiceOptions = if (prefs.getString(KEY_WIDGET_STATUS, null) == WIDGET_STATUS_CHOICE_PENDING) {
+                    ChoiceOption.listFromJson(prefs.getString(KEY_WIDGET_CHOICE_OPTIONS, null))
+                } else {
+                    emptyList()
+                }
             )
         }
     }
@@ -614,6 +644,7 @@ class ScouterStateStore(context: Context) {
             prefs.edit()
                 .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_OBSERVED)
                 .putLong(KEY_WIDGET_STATUS_AT, event.timestamp)
+                .remove(KEY_WIDGET_CHOICE_OPTIONS)
                 .remove(KEY_WIDGET_ERROR)
                 .commit()
         }
@@ -802,6 +833,7 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_STATUS = "widget_status"
         private const val KEY_WIDGET_STATUS_AT = "widget_status_at"
         private const val KEY_WIDGET_ERROR = "widget_error"
+        private const val KEY_WIDGET_CHOICE_OPTIONS = "widget_choice_options"
         private const val KEY_WIDGET_CODEX_SESSION_ID = "widget_codex_session_id"
         private const val KEY_WIDGET_PTY_SESSION_ID = "widget_pty_session_id"
         private const val KEY_WIDGET_SHELLY_SESSION_ID = "widget_shelly_session_id"
@@ -813,6 +845,7 @@ class ScouterStateStore(context: Context) {
         private const val WIDGET_STATUS_PENDING_TERMINAL = "pending_terminal"
         private const val WIDGET_STATUS_SENDING = "sending"
         private const val WIDGET_STATUS_CHOICE_PENDING = "choice_pending"
+        private const val WIDGET_STATUS_CHOICE_SENT = "choice_sent"
         private const val WIDGET_STATUS_OBSERVED = "observed"
         private const val WIDGET_STATUS_EXPIRED = "expired"
         private const val WIDGET_STATUS_APPROVAL_FAILED = "approval_failed"
@@ -868,6 +901,7 @@ private fun ScouterWidgetConversation.toJson(): JSONObject = JSONObject().apply 
     widgetStatus?.let { put("widgetStatus", it) }
     widgetStatusAt?.let { put("widgetStatusAt", it) }
     widgetError?.let { put("widgetError", it) }
+    if (choiceOptions.isNotEmpty()) put("choiceOptions", ChoiceOption.listToJson(choiceOptions))
 }
 
 private fun pendingTargetMatches(

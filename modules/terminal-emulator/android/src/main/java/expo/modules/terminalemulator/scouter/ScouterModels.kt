@@ -1,8 +1,44 @@
 package expo.modules.terminalemulator.scouter
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 import java.util.UUID
+
+// A single numbered option parsed from a Codex interactive prompt
+// (e.g. "1" -> "Switch to gpt-5.4-mini"). `index` is the digit the user must
+// type in the terminal; `label` is the human-readable text rendered on the pill.
+data class ChoiceOption(val index: Int, val label: String) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("index", index)
+        put("label", label)
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject?): ChoiceOption? {
+            if (json == null) return null
+            if (!json.has("index") || json.isNull("index")) return null
+            val index = json.optInt("index", Int.MIN_VALUE)
+            if (index == Int.MIN_VALUE) return null
+            val label = json.optString("label").takeIf { it.isNotBlank() } ?: return null
+            return ChoiceOption(index, label)
+        }
+
+        fun listToJson(options: List<ChoiceOption>): JSONArray = JSONArray().apply {
+            options.forEach { put(it.toJson()) }
+        }
+
+        fun listFromJson(raw: String?): List<ChoiceOption> {
+            if (raw.isNullOrBlank()) return emptyList()
+            val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+            val out = mutableListOf<ChoiceOption>()
+            for (i in 0 until arr.length()) {
+                fromJson(arr.optJSONObject(i))?.let(out::add)
+            }
+            return out
+        }
+    }
+}
 
 enum class ScouterSource {
     CODEX,
@@ -80,7 +116,10 @@ data class ScouterEvent(
     val rateLimitPrimaryUsedPercent: Double? = null,
     val rateLimitSecondaryUsedPercent: Double? = null,
     val rateLimitPrimaryResetAt: Long? = null,
-    val rateLimitSecondaryResetAt: Long? = null
+    val rateLimitSecondaryResetAt: Long? = null,
+    // Effective Codex approval policy parsed from the rollout JSONL
+    // (turn_context/session_meta). null = unknown. "never" => auto-approve.
+    val approvalPolicy: String? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("schemaVersion", schemaVersion)
@@ -125,6 +164,7 @@ data class ScouterEvent(
         put("rateLimitSecondaryUsedPercent", rateLimitSecondaryUsedPercent)
         put("rateLimitPrimaryResetAt", rateLimitPrimaryResetAt)
         put("rateLimitSecondaryResetAt", rateLimitSecondaryResetAt)
+        put("approvalPolicy", approvalPolicy)
     }
 
     fun toSnapshot(previous: SessionSnapshot? = null): SessionSnapshot {
@@ -169,7 +209,10 @@ data class ScouterEvent(
             rateLimitPrimaryUsedPercent = rateLimitPrimaryUsedPercent ?: previous?.rateLimitPrimaryUsedPercent,
             rateLimitSecondaryUsedPercent = rateLimitSecondaryUsedPercent ?: previous?.rateLimitSecondaryUsedPercent,
             rateLimitPrimaryResetAt = rateLimitPrimaryResetAt ?: previous?.rateLimitPrimaryResetAt,
-            rateLimitSecondaryResetAt = rateLimitSecondaryResetAt ?: previous?.rateLimitSecondaryResetAt
+            rateLimitSecondaryResetAt = rateLimitSecondaryResetAt ?: previous?.rateLimitSecondaryResetAt,
+            // Carry forward: turn_context only appears at turn boundaries, so most
+            // events (token_count, tool calls) carry null — keep the last known policy.
+            approvalPolicy = approvalPolicy ?: previous?.approvalPolicy
         )
     }
 }
@@ -211,7 +254,9 @@ data class SessionSnapshot(
     val rateLimitPrimaryUsedPercent: Double? = null,
     val rateLimitSecondaryUsedPercent: Double? = null,
     val rateLimitPrimaryResetAt: Long? = null,
-    val rateLimitSecondaryResetAt: Long? = null
+    val rateLimitSecondaryResetAt: Long? = null,
+    // Effective Codex approval policy (null = unknown). "never" => auto-approve.
+    val approvalPolicy: String? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("sessionId", sessionId)
@@ -251,6 +296,7 @@ data class SessionSnapshot(
         put("rateLimitSecondaryUsedPercent", rateLimitSecondaryUsedPercent)
         put("rateLimitPrimaryResetAt", rateLimitPrimaryResetAt)
         put("rateLimitSecondaryResetAt", rateLimitSecondaryResetAt)
+        put("approvalPolicy", approvalPolicy)
     }
 
     companion object {
@@ -317,7 +363,8 @@ data class SessionSnapshot(
                 } else null,
                 rateLimitSecondaryResetAt = if (json.has("rateLimitSecondaryResetAt") && !json.isNull("rateLimitSecondaryResetAt")) {
                     json.optLong("rateLimitSecondaryResetAt")
-                } else null
+                } else null,
+                approvalPolicy = json.optString("approvalPolicy").ifBlank { null }
             )
         }
     }

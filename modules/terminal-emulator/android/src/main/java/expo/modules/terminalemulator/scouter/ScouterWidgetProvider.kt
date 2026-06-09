@@ -253,12 +253,24 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 views.setTextViewText(R.id.scouter_codex_usage, usageLine)
                 views.setViewVisibility(R.id.scouter_codex_usage, View.VISIBLE)
             }
+            // Path A: bound terminal is live and currently showing the
+            // interactive numbered prompt. When 2-3 options parse cleanly, render
+            // tappable choice pills that write the chosen digit directly to the
+            // PTY (mirrors the approval ALLOW/DENY pills).
+            val livePathAChoices = if (boundScreen.state == BoundCodexScreenState.INTERACTIVE) {
+                boundScreen.choiceOptions.takeIf { it.size in 2..3 }
+            } else {
+                null
+            }
             val choiceScreen = when {
                 boundScreen.state == BoundCodexScreenState.INTERACTIVE -> boundScreen
                 !approvalIsActionable && boundScreen.state == BoundCodexScreenState.READY -> storedChoicePendingScreen(conversation)
                 else -> null
             }
-            if (choiceScreen != null) {
+            if (livePathAChoices != null) {
+                bindCodexChoicePending(views, choiceScreen ?: boundScreen)
+                bindCodexChoicePills(views, context, binding, boundCodex, livePathAChoices)
+            } else if (choiceScreen != null) {
                 bindCodexChoicePending(views, choiceScreen)
             } else {
                 views.setTextViewText(R.id.scouter_codex_ask, context.getString(R.string.scouter_ask_agent_chat_short))
@@ -300,7 +312,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             if (isInteractivePromptScreen(screenText)) {
                 return BoundCodexScreen(
                     BoundCodexScreenState.INTERACTIVE,
-                    interactivePromptSummary(screenText)
+                    interactivePromptSummary(screenText),
+                    parseInteractiveChoices(screenText)
                 )
             }
             return BoundCodexScreen(BoundCodexScreenState.READY)
@@ -328,6 +341,71 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(
                 R.id.scouter_codex_conversation,
                 "CHOICE REQUIRED  ${shorten(message.redactForScouter(), 104)}"
+            )
+        }
+
+        // Renders 2-3 numbered choices onto the approval pill row, reusing
+        // scouter_codex_allow (option 1), scouter_codex_deny (option 2) and
+        // scouter_codex_choice3 (option 3). Each pill shows the option's label,
+        // is retinted HUD green (so the reused DENY pill isn't read as a
+        // rejection), and is wired to write the option's own digit. Extra pills
+        // are hidden; ASK is hidden so the urgent choice comes forward. Mirrors
+        // bindCodexApprovalActions.
+        private fun bindCodexChoicePills(
+            views: RemoteViews,
+            context: Context,
+            binding: ScouterWidgetCodexBinding?,
+            codex: SessionSnapshot?,
+            options: List<ChoiceOption>
+        ) {
+            val pillIds = intArrayOf(
+                R.id.scouter_codex_allow,
+                R.id.scouter_codex_deny,
+                R.id.scouter_codex_choice3
+            )
+            views.setViewVisibility(R.id.scouter_codex_ask, View.GONE)
+            pillIds.forEachIndexed { slot, pillId ->
+                val option = options.getOrNull(slot)
+                if (option == null) {
+                    views.setViewVisibility(pillId, View.GONE)
+                    return@forEachIndexed
+                }
+                val pillLabel = shorten("${option.index}. ${option.label}", 24)
+                views.setTextViewText(pillId, pillLabel)
+                views.setTextColor(pillId, HUD_GREEN)
+                views.setViewVisibility(pillId, View.VISIBLE)
+                views.setOnClickPendingIntent(
+                    pillId,
+                    choiceSelectPendingIntent(context, binding, codex, option)
+                )
+            }
+        }
+
+        private fun choiceSelectPendingIntent(
+            context: Context,
+            binding: ScouterWidgetCodexBinding?,
+            codex: SessionSnapshot?,
+            option: ChoiceOption
+        ): PendingIntent {
+            val launchIntent = Intent(context, ScouterWidgetPromptActivity::class.java)
+                .setAction(ScouterWidgetPromptActivity.ACTION_CHOICE_SELECT)
+                .putExtra(ScouterWidgetPromptActivity.EXTRA_CODEX_SESSION_ID, codex?.sessionId ?: binding?.codexSessionId)
+                .putExtra(ScouterWidgetPromptActivity.EXTRA_PTY_SESSION_ID, binding?.ptySessionId)
+                .putExtra(ScouterWidgetPromptActivity.EXTRA_CHOICE_INDEX, option.index)
+                .putExtra(ScouterWidgetPromptActivity.EXTRA_CHOICE_LABEL, option.label)
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                        Intent.FLAG_ACTIVITY_NO_HISTORY or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                )
+            // Distinct request code per option index so the three pills get
+            // distinct PendingIntents (extras would otherwise be coalesced).
+            return PendingIntent.getActivity(
+                context,
+                CHOICE_SELECT_REQUEST_BASE + option.index,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
 
@@ -501,6 +579,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             conversation: ScouterWidgetConversation?,
             boundScreen: BoundCodexScreen
         ): Boolean {
+            // Skip-approval: when the bound Codex runs with approvals auto-handled
+            // (approval_policy == "never"), Codex never emits an approval prompt, so
+            // the ALLOW/DENY pills must never show. Suppress deterministically rather
+            // than relying on WAITING_PERMISSION simply never firing.
+            if (isAutoApprovePolicy(codex?.approvalPolicy)) return false
             val lastApprovalAt = conversation?.lastApprovalAt ?: 0L
             val widgetStatusAt = conversation?.widgetStatusAt ?: 0L
             val decisionAfterApproval = ScouterStateStore.approvalDecisionFromStatus(conversation?.widgetStatus) != null &&
@@ -513,6 +596,14 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 lastApprovalAt > 0L &&
                 !conversation?.lastApproval.isNullOrBlank() &&
                 !decisionAfterApproval
+        }
+
+        // True when the Codex session is running with approvals auto-handled.
+        // "never" is codex-rs's no-prompt policy (also reached via --full-auto /
+        // --dangerously-bypass-approvals-and-sandbox, normalized upstream). null /
+        // any other value => approvals may still be requested (current behavior).
+        private fun isAutoApprovePolicy(policy: String?): Boolean {
+            return policy?.trim()?.lowercase(Locale.US) == "never"
         }
 
         private fun displaySourceName(source: ScouterSource): String = when (source) {
@@ -538,7 +629,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         private fun agentStatus(snapshot: SessionSnapshot, project: String): String {
             val tool = snapshot.currentTool?.takeIf { it.isNotBlank() }
             val file = snapshot.currentFile?.takeIf { it.isNotBlank() }?.let { displayPathLeaf(it) }
-            return when (snapshot.currentStatus) {
+            val base = when (snapshot.currentStatus) {
                 ScouterStatus.IDLE -> "Waiting in $project"
                 ScouterStatus.THINKING -> "Thinking in $project"
                 ScouterStatus.TOOL_RUNNING -> {
@@ -549,6 +640,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 ScouterStatus.COMPLETED -> "Completed in $project"
                 ScouterStatus.ERROR -> "Error in $project"
             }
+            // Explicit auto-approve indicator so the user knows approvals are
+            // handled automatically (no ALLOW/DENY pills will appear). Subtle,
+            // single token, reuses the existing scouter_codex_detail slot.
+            return if (isAutoApprovePolicy(snapshot.approvalPolicy)) "$base · AUTO" else base
         }
 
         private fun localStatus(snapshot: SessionSnapshot): String {
@@ -967,6 +1062,33 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             return hasInteractiveKeyword && (numberedChoices >= 2 || hasFocusedChoice)
         }
 
+        // Parses numbered choices (e.g. "1. Switch to gpt-5.4-mini") from the
+        // tail of the interactive prompt screen into tappable options. Strips an
+        // optional focus caret (">") and the "<digit>." / "<digit>)" prefix,
+        // keeping the digit as the option index. Caps usable options at 3 and
+        // returns empty (→ banner fallback) when 0 or >3 are parsed, or when
+        // duplicate indices appear (ambiguous/unsafe to map to a single digit).
+        private fun parseInteractiveChoices(screenText: String): List<ChoiceOption> {
+            val recentLines = screenText
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .takeLast(12)
+            val out = mutableListOf<ChoiceOption>()
+            val seen = mutableSetOf<Int>()
+            for (line in recentLines) {
+                val match = INTERACTIVE_CHOICE_CAPTURE_RE.find(line) ?: continue
+                val index = match.groupValues.getOrNull(1)?.toIntOrNull() ?: continue
+                val label = match.groupValues.getOrNull(2).orEmpty().trim()
+                if (label.isBlank()) continue
+                if (!seen.add(index)) return emptyList()
+                out += ChoiceOption(index, shorten(label.redactForScouter(), 36))
+                if (out.size > 3) return emptyList()
+            }
+            if (out.size < 1 || out.size > 3) return emptyList()
+            return out
+        }
+
         private fun interactivePromptSummary(screenText: String): String {
             val recentLines = screenText
                 .lines()
@@ -1065,7 +1187,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private data class BoundCodexScreen(
             val state: BoundCodexScreenState,
-            val message: String? = null
+            val message: String? = null,
+            val choiceOptions: List<ChoiceOption> = emptyList()
         )
 
         private const val TAG = "ScouterWidget"
@@ -1076,6 +1199,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         private const val WIDGET_CHOICE_DISPLAY_TIMEOUT_MS = 30 * 60 * 1000L
         private const val WIDGET_APPROVAL_SENT_DISPLAY_MS = 12 * 1000L
         private const val WAIT_EXPIRY_REFRESH_SLOP_MS = 350L
+        // Base request code for choice-select PendingIntents; the option index is
+        // added so each pill (1/2/3) gets a distinct PendingIntent. Kept clear of
+        // 9100-9104 used by launch/prompt/approval/wait-refresh intents.
+        private const val CHOICE_SELECT_REQUEST_BASE = 9110
         private val CODEX_SESSION_UUID_SUFFIX_RE =
             Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
         private val FIVE_HOUR_LIMIT_RE = Regex("""(?i)\b(?:5\s*h|5-hour|five[- ]hour)\b""")
@@ -1088,6 +1215,9 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         private val INTERACTIVE_PROMPT_KEYWORD_RE = Regex("""(?:Approaching rate limits|Switch to\b.*\bmodel\b|Keep current model|Would you like to make the following edits|Yes,\s*proceed|don't ask again|Press enter to confirm|esc to go back|rate limit reminders|select an option|choose an option)""", RegexOption.IGNORE_CASE)
         private val INTERACTIVE_NUMBERED_CHOICE_RE = Regex("""^\s*(?:[>]\s*)?\d+[\).]\s+\S""")
         private val INTERACTIVE_FOCUSED_CHOICE_RE = Regex("""^\s*(?:[>]\s*)\d+[\).]\s+\S""")
+        // Capturing variant of INTERACTIVE_NUMBERED_CHOICE_RE: group 1 = digit,
+        // group 2 = label text after the "<digit>." / "<digit>)" marker.
+        private val INTERACTIVE_CHOICE_CAPTURE_RE = Regex("""^\s*(?:[>]\s*)?(\d+)[\).]\s+(\S.*)$""")
         private val WAITING_WIDGET_STATUSES = setOf(
             "pending_terminal",
             "sending",
