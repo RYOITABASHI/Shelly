@@ -10,6 +10,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
@@ -301,6 +302,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 views.setTextViewText(R.id.scouter_codex_ask, context.getString(R.string.scouter_ask_agent_chat_short))
                 bindCodexConversation(views, boundCodex, conversation, showStoredChoicePending = false)
             }
+            // Live timer: reset countdown while rate-limited, else session elapsed
+            // while working. Suppressed during approval/choice so it doesn't clutter
+            // the actionable bottom row.
+            val timerSuppressed = approvalIsActionable || livePathAChoices != null || choiceScreen != null
+            bindCodexTimer(views, codex, usageLimited, timerSuppressed)
             bindRow(
                 views = views,
                 snapshot = local,
@@ -657,14 +663,17 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             } else {
                 agentStatus(snapshot, project)
             }
-            val label = if (snapshot.source == ScouterSource.LOCAL_LLM) "HEALTH" else "STATE "
+            val label = if (snapshot.source == ScouterSource.LOCAL_LLM) "HEALTH" else "STATE"
+            // The status signal ([OK]/[!!]/[..]) is shown once, in the top-right
+            // badge slot — don't repeat it here (it appeared twice: "STALE [--] …"
+            // plus the badge). Keep this line to the textual status only.
             return if (stale) {
                 // Stale = no live updates; the status is last-known, not current.
                 // Frame it as "last:" so e.g. "Thinking in HOME" doesn't imply the
                 // dead session is actively working right now (bug: stale contradiction).
-                "STALE ${statusSignal(snapshot.currentStatus, stale)} last: $status"
+                "STALE last: $status"
             } else {
-                "$label ${statusSignal(snapshot.currentStatus, stale)} $status"
+                "$label $status"
             }
         }
 
@@ -745,6 +754,48 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 "DOING idle · last ${formatTime(snapshot.lastEventAt)}"
             }
             return shorten(line, 40)
+        }
+
+        // Live timer bound to scouter_codex_timer. A Chronometer self-ticks every
+        // second WITHOUT a widget re-render (so it stays alive between heartbeats),
+        // using the SystemClock.elapsedRealtime() timebase. Priority: rate-limit
+        // reset countdown > active-session elapsed > hidden. `suppress` hides it in
+        // approval/choice states. All RemoteViews calls are safe on API 24+.
+        private fun bindCodexTimer(
+            views: RemoteViews,
+            codex: SessionSnapshot?,
+            usageLimited: ScouterWidgetUsageLimited?,
+            suppress: Boolean
+        ) {
+            val now = System.currentTimeMillis()
+            val elapsedNow = SystemClock.elapsedRealtime()
+            // Reset countdown: earliest known future reset across the live override
+            // and the structured snapshot fields.
+            val resetAt = if (suppress) null else listOfNotNull(
+                usageLimited?.resetAt,
+                codex?.rateLimitPrimaryResetAt,
+                codex?.rateLimitResetAt
+            ).filter { it > now }.minOrNull()
+            if (resetAt != null) {
+                views.setChronometerCountDown(R.id.scouter_codex_timer, true)
+                views.setChronometer(R.id.scouter_codex_timer, elapsedNow + (resetAt - now), "RESET %s", true)
+                views.setViewVisibility(R.id.scouter_codex_timer, View.VISIBLE)
+                return
+            }
+            // Session elapsed while actively working (not idle / stale / suppressed).
+            val sessionStart = codex?.takeIf {
+                !suppress && !isStale(it) && it.sessionStartAt > 0L &&
+                    (it.currentStatus == ScouterStatus.THINKING || it.currentStatus == ScouterStatus.TOOL_RUNNING)
+            }?.sessionStartAt
+            if (sessionStart != null) {
+                views.setChronometerCountDown(R.id.scouter_codex_timer, false)
+                views.setChronometer(R.id.scouter_codex_timer, elapsedNow - (now - sessionStart), "RUN %s", true)
+                views.setViewVisibility(R.id.scouter_codex_timer, View.VISIBLE)
+                return
+            }
+            // Nothing to time: stop ticking and hide.
+            views.setChronometer(R.id.scouter_codex_timer, elapsedNow, null, false)
+            views.setViewVisibility(R.id.scouter_codex_timer, View.GONE)
         }
 
         // Usage/limit line bound to scouter_codex_usage. Returns the rate-limit /

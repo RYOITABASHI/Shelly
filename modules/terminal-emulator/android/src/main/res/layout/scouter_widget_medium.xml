@@ -81,7 +81,7 @@
       android:textColor="#8CFFAA"
       android:shadowColor="#6600FF41"
       android:shadowRadius="4"
-      android:textSize="12sp"
+      android:textSize="13sp"
       android:typeface="monospace"
       android:includeFontPadding="false" />
 
@@ -95,7 +95,7 @@
       android:singleLine="true"
       android:text=""
       android:textColor="#66FF88"
-      android:textSize="11sp"
+      android:textSize="12sp"
       android:typeface="monospace"
       android:includeFontPadding="false" />
 
@@ -127,7 +127,7 @@
       android:maxLines="1"
       android:text="Waiting for ~/.codex/sessions"
       android:textColor="#66FF88"
-      android:textSize="10sp"
+      android:textSize="11sp"
       android:typeface="monospace"
       android:lineSpacingExtra="0dp"
       android:includeFontPadding="false" />
@@ -144,9 +144,24 @@
       android:singleLine="true"
       android:text=""
       android:textColor="#5FBF7D"
-      android:textSize="9sp"
+      android:textSize="11sp"
       android:typeface="monospace"
       android:lineSpacingExtra="0dp"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
+    <!-- Live timer (Chronometer self-ticks with no widget re-render): shows the
+         rate-limit reset countdown while limited, else the active session's
+         elapsed time. Hidden by the provider until there is something to time. -->
+    <Chronometer
+      android:id="@+id/scouter_codex_timer"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:text=""
+      android:textColor="#66FF88"
+      android:textSize="11sp"
+      android:typeface="monospace"
       android:includeFontPadding="false"
       android:visibility="gone" />
 
@@ -303,7 +318,7 @@
       android:singleLine="true"
       android:text="No local endpoint"
       android:textColor="#66FF88"
-      android:textSize="11sp"
+      android:textSize="12sp"
       android:typeface="monospace"
       android:includeFontPadding="false" />
 
@@ -316,7 +331,7 @@
       android:maxLines="1"
       android:text="Probe 8080 / 11434"
       android:textColor="#34E85E"
-      android:textSize="10sp"
+      android:textSize="11sp"
       android:typeface="monospace"
       android:lineSpacingExtra="0dp"
       android:includeFontPadding="false" />
