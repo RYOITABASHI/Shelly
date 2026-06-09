@@ -357,10 +357,17 @@ async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null>
   const apkAsset = assets.find((asset: any) => asset?.name === apkAssetName);
   const rawApkSizeBytes = Number(raw?.apkSizeBytes);
   const assetSizeBytes = Number(apkAsset?.size);
-  const apkSizeBytes = Number.isInteger(rawApkSizeBytes) && rawApkSizeBytes > 0
-    ? rawApkSizeBytes
-    : Number.isInteger(assetSizeBytes) && assetSizeBytes > 0
-      ? assetSizeBytes
+  // The GitHub asset's own .size is authoritative — it is exactly the byte
+  // count the DownloadManager fetches and what verifyApkFile must check against.
+  // The manifest's apkSizeBytes is a secondary value computed in CI and has
+  // been observed to drift by a few bytes vs the uploaded asset, which made the
+  // size check reject a fully-correct (sha256-valid) download and re-loop the
+  // 668 MB download forever. Prefer the asset size; fall back to the manifest
+  // only when the asset has no usable size.
+  const apkSizeBytes = Number.isInteger(assetSizeBytes) && assetSizeBytes > 0
+    ? assetSizeBytes
+    : Number.isInteger(rawApkSizeBytes) && rawApkSizeBytes > 0
+      ? rawApkSizeBytes
       : undefined;
   if (!Number.isInteger(versionCode) || versionCode < 1) {
     throw new Error('Release manifest has an invalid versionCode.');
