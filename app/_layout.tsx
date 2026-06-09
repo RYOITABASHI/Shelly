@@ -25,7 +25,7 @@ import { useBrowserStore } from '@/store/browser-store';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
-import { resumeCodexSession } from '@/lib/codex-session-resume';
+import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
   getCodexApprovalReadiness,
   getCodexReplyReadiness,
@@ -468,13 +468,16 @@ export default function RootLayout() {
       const { readiness, session: readySession } = await waitForWidgetCodexReady(session);
       const ready = readiness;
       if (!ready?.ready) {
-        const message = ready?.reason === 'interactive_prompt'
-          ? 'Codex is waiting for a terminal choice'
-          : `Codex resume did not become ready: ${ready?.reason ?? 'not_ready'}`;
         if (ready?.reason === 'interactive_prompt') {
-          await TerminalEmulator.markScouterWidgetChoicePending?.(message).catch(() => undefined);
+          await TerminalEmulator.markScouterWidgetChoicePending?.('Codex is waiting for a terminal choice').catch(() => undefined);
         } else {
-          await TerminalEmulator.markScouterWidgetPromptFailed?.(message).catch(() => undefined);
+          // Retention: do NOT mark failed here — recordWidgetPromptFailed clears
+          // the pending prompt, losing it permanently. A resumed Codex that is
+          // just slow to become ready (cold post-update boot, rate-limit
+          // handshake) should keep the prompt pending so a subsequent widget
+          // tap / deep link can redeliver within the native 2-minute window.
+          logInfo('DeepLink', `Widget prompt kept pending (not ready: ${ready?.reason ?? 'not_ready'})`);
+          return;
         }
         logInfo('DeepLink', `Widget prompt drain skipped: ${ready?.reason ?? 'not_ready'}`);
         return;
@@ -708,7 +711,15 @@ export default function RootLayout() {
                   if (!outcome) {
                     if (drainWidgetApproval) {
                       await markWidgetApprovalFailed('Codex resume failed');
-                    } else {
+                      return;
+                    }
+                    // No resumable Codex session (fresh install / Codex never
+                    // run). Cold-start a brand-new `codex` and deliver the
+                    // queued widget prompt directly into it.
+                    const coldStarted = await coldStartCodexAndDeliverWidgetPrompt({
+                      addTerminalPane: (tab) => useMultiPaneStore.getState().addPane(tab),
+                    }).catch(() => false);
+                    if (!coldStarted) {
                       await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex resume failed').catch(() => undefined);
                     }
                     return;

@@ -620,7 +620,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
             val label = if (snapshot.source == ScouterSource.LOCAL_LLM) "HEALTH" else "STATE "
             return if (stale) {
-                "STALE ${statusSignal(snapshot.currentStatus, stale)} $status"
+                // Stale = no live updates; the status is last-known, not current.
+                // Frame it as "last:" so e.g. "Thinking in HOME" doesn't imply the
+                // dead session is actively working right now (bug: stale contradiction).
+                "STALE ${statusSignal(snapshot.currentStatus, stale)} last: $status"
             } else {
                 "$label ${statusSignal(snapshot.currentStatus, stale)} $status"
             }
@@ -714,8 +717,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val secondaryRemaining = snapshot.rateLimitSecondaryUsedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
             if (primaryRemaining == null && secondaryRemaining == null) return null
             val parts = mutableListOf("LIMIT")
-            primaryRemaining?.let { parts += "5H ${formatPercent(it)}" }
-            secondaryRemaining?.let { parts += "WK ${formatPercent(it)}" }
+            // These percents are REMAINING quota (100 - used). Tag them so the user
+            // doesn't misread "5H 45%" as "45% used" (the opposite, bug: ambiguity).
+            primaryRemaining?.let { parts += "5H ${formatPercent(it)} $REMAINING_QUOTA_SUFFIX" }
+            secondaryRemaining?.let { parts += "WK ${formatPercent(it)} $REMAINING_QUOTA_SUFFIX" }
             snapshot.rateLimitPrimaryResetAt?.let { parts += "RESET ${formatDeviceTime(it)}" }
             return parts.joinToString(" · ")
         }
@@ -1217,6 +1222,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         private const val CHOICE_SELECT_REQUEST_BASE = 9110
         private val CODEX_SESSION_UUID_SUFFIX_RE =
             Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
+        // Suffix tagging a percent as REMAINING quota (vs used), so structured
+        // rate-limit lines never show a bare ambiguous "5H 45%". Kept short for the
+        // monospace widget. statusWindowLimitLine scrapes USED% from Codex text, so
+        // it intentionally stays untagged (different semantics).
+        private const val REMAINING_QUOTA_SUFFIX = "left"
         private val FIVE_HOUR_LIMIT_RE = Regex("""(?i)\b(?:5\s*h|5-hour|five[- ]hour)\b""")
         private val WEEKLY_LIMIT_RE = Regex("""(?i)\b(?:weekly|week)\b""")
         private val LIMIT_PERCENT_RE = Regex("""(?i)(?:<\s*)?(\d{1,3}(?:\.\d+)?)\s*%""")

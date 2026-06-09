@@ -1450,6 +1450,10 @@ function cleanScouterMessage(message?: string | null): string | null {
   const value = message?.trim();
   if (!value) return null;
   if (value === 'Codex tokens updated') return null;
+  // Defense-in-depth: a JSON-null `last_agent_message` can stringify to the
+  // literal "null"/"undefined" upstream (org.json optString). The Kotlin
+  // parser now guards this, but never render a bare null/undefined bubble.
+  if (value === 'null' || value === 'undefined') return null;
   return value;
 }
 

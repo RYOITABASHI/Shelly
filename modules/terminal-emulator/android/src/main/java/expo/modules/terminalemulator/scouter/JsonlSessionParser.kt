@@ -185,13 +185,13 @@ class JsonlSessionParser(
             inferCodexToolName(payloadType)
         )
         val message = firstNonBlank(
-            payload.optString("last_agent_message"),
-            payload.optString("message"),
-            payload.optString("text"),
-            payload.optString("content"),
-            payload.optString("error"),
-            payload.optString("stderr"),
-            payload.optString("command")
+            payload.optStringOrBlank("last_agent_message"),
+            payload.optStringOrBlank("message"),
+            payload.optStringOrBlank("text"),
+            payload.optStringOrBlank("content"),
+            payload.optStringOrBlank("error"),
+            payload.optStringOrBlank("stderr"),
+            payload.optStringOrBlank("command")
         )
         val role = payload.optString("role").lowercase()
         if (payloadType == "message" && (role == "developer" || role == "system")) return null
@@ -371,9 +371,9 @@ class JsonlSessionParser(
 
     private fun extractCodexContentText(payload: JSONObject): String? {
         val content = payload.opt("content") ?: return firstNonBlank(
-            payload.optString("text"),
-            payload.optString("message"),
-            payload.optString("output")
+            payload.optStringOrBlank("text"),
+            payload.optStringOrBlank("message"),
+            payload.optStringOrBlank("output")
         )
         if (content is String) return content.ifBlank { null }
         val arr = payload.optJSONArray("content") ?: return null
@@ -381,10 +381,10 @@ class JsonlSessionParser(
         for (i in 0 until arr.length()) {
             val item = arr.optJSONObject(i) ?: continue
             val text = firstNonBlank(
-                item.optString("text"),
-                item.optString("message"),
-                item.optString("content"),
-                item.optString("output")
+                item.optStringOrBlank("text"),
+                item.optStringOrBlank("message"),
+                item.optStringOrBlank("content"),
+                item.optStringOrBlank("output")
             )
             if (text != null) parts.add(text)
         }
@@ -677,6 +677,13 @@ class JsonlSessionParser(
             }
             return 0L
         }
+
+        // org.json's optString(key) returns the literal "null" when the key is
+        // present with a JSON-null value. For user-visible message/content text
+        // that survives firstNonBlank() and renders as "null", so read defensively
+        // with the same has(key) && !isNull(key) guard used by optLongAny above.
+        private fun JSONObject.optStringOrBlank(key: String): String =
+            if (has(key) && !isNull(key)) optString(key) else ""
 
         private fun JSONObject.hasNonBlankValue(key: String): Boolean {
             if (!has(key) || isNull(key)) return false

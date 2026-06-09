@@ -88,6 +88,127 @@ export async function resumeCodexSession(
   return { status: 'queued', sessionId: targetSessionId };
 }
 
+// Cold start: launch a brand-new `codex` (NOT `codex resume`) in a terminal
+// pane. Used when a widget prompt arrives but there is no resumable Codex
+// session to fall back on (fresh install / Codex never run). Mirrors the
+// terminal-acquisition logic of resumeCodexSession but runs bare `codex`.
+export async function startFreshCodexSession(
+  options: { addTerminalPane: AddTerminalPane; cwd?: string | null },
+): Promise<CodexSessionResumeResult> {
+  let targetSessionId: string | undefined;
+  let failureReason: CodexSessionResumeFailureReason = 'no_terminal';
+  const hasTerminalPane = visibleSlotEntries().some(({ slot }) => slot.tab === 'terminal');
+
+  targetSessionId = await pickFallbackTerminalSessionId();
+
+  if (!targetSessionId && hasTerminalPane) {
+    targetSessionId = createTerminalSessionForFocusedPane();
+    if (!targetSessionId) failureReason = 'terminal_cap';
+  } else if (!targetSessionId) {
+    const beforeIds = new Set(useTerminalStore.getState().sessions.map((s) => s.id));
+    const addResult = options.addTerminalPane('terminal', { silent: true });
+    if (addResult) {
+      failureReason = addResult;
+    } else {
+      targetSessionId = findNewTerminalSessionId(beforeIds);
+    }
+  }
+
+  if (!targetSessionId) {
+    return { status: 'failed', reason: reasonForMissingResumeTarget(failureReason) };
+  }
+
+  const cwd = options.cwd?.trim();
+  const launchCommand = cwd ? `cd ${shellQuote(cwd)} && clear && codex` : `clear && codex`;
+  focusTerminalSession(targetSessionId);
+  const wroteDirectly = await writeResumeCommandToTerminal(targetSessionId, launchCommand);
+  if (!wroteDirectly) {
+    useTerminalStore.getState().insertCommand(`${launchCommand}\r`, targetSessionId, { durable: true });
+  }
+  return { status: 'queued', sessionId: targetSessionId };
+}
+
+// Full cold-start delivery for a queued widget prompt: spawn a fresh `codex`,
+// wait for it to boot into an active transcript, then write the queued prompt
+// directly to its PTY. Deliberately bypasses the codexSessionId/binding reply
+// machinery — a freshly launched codex has no known session id yet, and the
+// pending widget prompt is recorded with no session ids so it consume-matches
+// any terminal (ScouterStateStore.pendingTargetMatches). Returns true if the
+// cold start was attempted (success OR a reported failure), false if there was
+// nothing to do / no terminal could be created.
+export async function coldStartCodexAndDeliverWidgetPrompt(
+  options: { addTerminalPane: AddTerminalPane; bootTimeoutMs?: number },
+): Promise<boolean> {
+  if (!TerminalEmulator.consumeScouterWidgetPendingPrompt) return false;
+  const pendingTarget = TerminalEmulator.getScouterWidgetPendingPromptTarget
+    ? await TerminalEmulator.getScouterWidgetPendingPromptTarget().catch(() => null)
+    : null;
+  if (!pendingTarget) return false;
+
+  const result = await startFreshCodexSession({ addTerminalPane: options.addTerminalPane, cwd: null })
+    .catch(() => null);
+  if (!result || result.status === 'failed') return false;
+
+  const terminalSession = useTerminalStore.getState().sessions.find((s) => s.id === result.sessionId);
+  const nativeSessionId = terminalSession?.nativeSessionId;
+  if (!nativeSessionId) return false;
+
+  // Wait for `codex` to paint an active transcript (input-ready). Cold boot
+  // after a fresh app update can be slow, so allow a generous window — still
+  // under the native 2-minute pending-prompt expiry.
+  const deadline = Date.now() + (options.bootTimeoutMs ?? 60_000);
+  let ready = false;
+  while (Date.now() < deadline) {
+    const screen = await TerminalEmulator.getScreenText(nativeSessionId).catch(() => null);
+    if (typeof screen === 'string') {
+      if (detectCodexLaunchFailureText(screen)) break;
+      if (detectCodexActiveTranscript(screen)) { ready = true; break; }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 800));
+  }
+  if (!ready) {
+    await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex did not start in time').catch(() => undefined);
+    return true;
+  }
+
+  // Settle: detectCodexActiveTranscript can fire on the welcome banner a beat
+  // before codex's input box actually accepts text. Wait once more and
+  // re-confirm the screen is still an active, non-failed transcript before
+  // pasting, so the prompt is not written into a not-yet-ready input.
+  await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+  const settledScreen = await TerminalEmulator.getScreenText(nativeSessionId).catch(() => null);
+  if (typeof settledScreen === 'string' && detectCodexLaunchFailureText(settledScreen)) {
+    await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex failed to start').catch(() => undefined);
+    return true;
+  }
+
+  // Consume using the pending prompt's OWN recorded ids so it always matches
+  // itself — this handles a stale post-update binding that recorded old session
+  // ids, not just the all-null fresh-install case (ScouterStateStore.
+  // pendingTargetMatches needs the consume args to equal the stored ids). The
+  // prompt is then written to the freshly started codex regardless of those ids.
+  const pending = await TerminalEmulator.consumeScouterWidgetPendingPrompt(
+    pendingTarget.codexSessionId ?? null,
+    pendingTarget.ptySessionId ?? null,
+    pendingTarget.shellySessionId ?? null,
+  ).catch(() => null);
+  if (!pending?.prompt?.trim()) {
+    await TerminalEmulator.markScouterWidgetPromptFailed?.('Widget prompt unavailable after Codex start').catch(() => undefined);
+    return true;
+  }
+  try {
+    await TerminalEmulator.writeToSession(nativeSessionId, '');
+    await TerminalEmulator.pasteToSession(nativeSessionId, pending.prompt);
+    await TerminalEmulator.writeToSession(nativeSessionId, '\r');
+    await TerminalEmulator.markScouterWidgetPromptQueued?.(pending.prompt).catch(() => undefined);
+    await useAgentChatStore.getState().refresh().catch(() => undefined);
+    return true;
+  } catch {
+    await TerminalEmulator.markScouterWidgetPromptFailed?.('Could not write the prompt to Codex').catch(() => undefined);
+    return true;
+  }
+}
+
 export async function bindVisibleCodexTerminalToSession(
   session: AgentChatSession | null | undefined,
   options: { focus?: boolean } = {},
