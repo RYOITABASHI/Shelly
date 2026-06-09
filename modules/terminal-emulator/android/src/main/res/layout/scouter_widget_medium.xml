@@ -115,6 +115,24 @@
       android:lineSpacingExtra="0dp"
       android:includeFontPadding="false" />
 
+    <!-- consumed-token / rate-limit usage line (bound by provider; hidden
+         until a rate/limit line is available) -->
+    <TextView
+      android:id="@+id/scouter_codex_usage"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:ellipsize="end"
+      android:maxLines="1"
+      android:singleLine="true"
+      android:text=""
+      android:textColor="#5FBF7D"
+      android:textSize="9sp"
+      android:typeface="monospace"
+      android:lineSpacingExtra="0dp"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
     <!-- approval pills (shown by provider only while WAITING_PERMISSION) -->
     <LinearLayout
       android:layout_width="match_parent"

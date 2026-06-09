@@ -75,7 +75,12 @@ data class ScouterEvent(
     val rateLimitRemainingRequests: Long? = null,
     val rateLimitRemainingTokens: Long? = null,
     val rateLimitResetAt: Long? = null,
-    val retryAfterSeconds: Long? = null
+    val retryAfterSeconds: Long? = null,
+    // Structured Codex rate_limits snapshot (remaining derived later as 100 - used).
+    val rateLimitPrimaryUsedPercent: Double? = null,
+    val rateLimitSecondaryUsedPercent: Double? = null,
+    val rateLimitPrimaryResetAt: Long? = null,
+    val rateLimitSecondaryResetAt: Long? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("schemaVersion", schemaVersion)
@@ -116,6 +121,10 @@ data class ScouterEvent(
         put("rateLimitRemainingTokens", rateLimitRemainingTokens)
         put("rateLimitResetAt", rateLimitResetAt)
         put("retryAfterSeconds", retryAfterSeconds)
+        put("rateLimitPrimaryUsedPercent", rateLimitPrimaryUsedPercent)
+        put("rateLimitSecondaryUsedPercent", rateLimitSecondaryUsedPercent)
+        put("rateLimitPrimaryResetAt", rateLimitPrimaryResetAt)
+        put("rateLimitSecondaryResetAt", rateLimitSecondaryResetAt)
     }
 
     fun toSnapshot(previous: SessionSnapshot? = null): SessionSnapshot {
@@ -155,7 +164,12 @@ data class ScouterEvent(
             rateLimitRemainingRequests = if (clearsRateLimitDetails) rateLimitRemainingRequests else rateLimitRemainingRequests ?: previous?.rateLimitRemainingRequests,
             rateLimitRemainingTokens = if (clearsRateLimitDetails) rateLimitRemainingTokens else rateLimitRemainingTokens ?: previous?.rateLimitRemainingTokens,
             rateLimitResetAt = if (clearsRateLimitDetails) rateLimitResetAt else rateLimitResetAt ?: previous?.rateLimitResetAt,
-            retryAfterSeconds = if (clearsRateLimitDetails) retryAfterSeconds else retryAfterSeconds ?: previous?.retryAfterSeconds
+            retryAfterSeconds = if (clearsRateLimitDetails) retryAfterSeconds else retryAfterSeconds ?: previous?.retryAfterSeconds,
+            // Carry forward so a later token_count without rate_limits doesn't wipe a prior value.
+            rateLimitPrimaryUsedPercent = rateLimitPrimaryUsedPercent ?: previous?.rateLimitPrimaryUsedPercent,
+            rateLimitSecondaryUsedPercent = rateLimitSecondaryUsedPercent ?: previous?.rateLimitSecondaryUsedPercent,
+            rateLimitPrimaryResetAt = rateLimitPrimaryResetAt ?: previous?.rateLimitPrimaryResetAt,
+            rateLimitSecondaryResetAt = rateLimitSecondaryResetAt ?: previous?.rateLimitSecondaryResetAt
         )
     }
 }
@@ -192,7 +206,12 @@ data class SessionSnapshot(
     val rateLimitRemainingRequests: Long?,
     val rateLimitRemainingTokens: Long?,
     val rateLimitResetAt: Long?,
-    val retryAfterSeconds: Long?
+    val retryAfterSeconds: Long?,
+    // Structured Codex rate_limits snapshot (remaining derived later as 100 - used).
+    val rateLimitPrimaryUsedPercent: Double? = null,
+    val rateLimitSecondaryUsedPercent: Double? = null,
+    val rateLimitPrimaryResetAt: Long? = null,
+    val rateLimitSecondaryResetAt: Long? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("sessionId", sessionId)
@@ -228,6 +247,10 @@ data class SessionSnapshot(
         put("rateLimitRemainingTokens", rateLimitRemainingTokens)
         put("rateLimitResetAt", rateLimitResetAt)
         put("retryAfterSeconds", retryAfterSeconds)
+        put("rateLimitPrimaryUsedPercent", rateLimitPrimaryUsedPercent)
+        put("rateLimitSecondaryUsedPercent", rateLimitSecondaryUsedPercent)
+        put("rateLimitPrimaryResetAt", rateLimitPrimaryResetAt)
+        put("rateLimitSecondaryResetAt", rateLimitSecondaryResetAt)
     }
 
     companion object {
@@ -282,6 +305,18 @@ data class SessionSnapshot(
                 } else null,
                 retryAfterSeconds = if (json.has("retryAfterSeconds") && !json.isNull("retryAfterSeconds")) {
                     json.optLong("retryAfterSeconds")
+                } else null,
+                rateLimitPrimaryUsedPercent = if (json.has("rateLimitPrimaryUsedPercent") && !json.isNull("rateLimitPrimaryUsedPercent")) {
+                    json.optDouble("rateLimitPrimaryUsedPercent")
+                } else null,
+                rateLimitSecondaryUsedPercent = if (json.has("rateLimitSecondaryUsedPercent") && !json.isNull("rateLimitSecondaryUsedPercent")) {
+                    json.optDouble("rateLimitSecondaryUsedPercent")
+                } else null,
+                rateLimitPrimaryResetAt = if (json.has("rateLimitPrimaryResetAt") && !json.isNull("rateLimitPrimaryResetAt")) {
+                    json.optLong("rateLimitPrimaryResetAt")
+                } else null,
+                rateLimitSecondaryResetAt = if (json.has("rateLimitSecondaryResetAt") && !json.isNull("rateLimitSecondaryResetAt")) {
+                    json.optLong("rateLimitSecondaryResetAt")
                 } else null
             )
         }

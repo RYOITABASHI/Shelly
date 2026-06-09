@@ -70,6 +70,16 @@ class JsonlSessionParser(
         updateCodexMetadata(json, payload, info)
         val totalUsage = normalizeCodexUsage(info?.optJSONObject("total_token_usage") ?: info?.optJSONObject("totalTokenUsage"))
         val rateLimit = extractScouterRateLimit(null, payload, info)
+        // Structured rate_limits snapshot. Defensive: read keys with optDouble/optLong,
+        // tolerate missing object/sub-keys (leave fields null), never throw.
+        val rateLimitsSnapshot = parseCodexRateLimits(
+            info?.optJSONObject("rate_limits")
+                ?: info?.optJSONObject("rateLimits")
+                ?: payload.optJSONObject("rate_limits")
+                ?: payload.optJSONObject("rateLimits")
+                ?: json.optJSONObject("rate_limits"),
+            nowMs = parseTimestamp(json.optString("timestamp"))
+        )
         val raw = if (totalUsage != null) {
             val delta = totalUsage.minus(previousCodexTotal)
             previousCodexTotal = totalUsage
@@ -110,8 +120,50 @@ class JsonlSessionParser(
             rateLimitRemainingRequests = rateLimit.remainingRequests,
             rateLimitRemainingTokens = rateLimit.remainingTokens,
             rateLimitResetAt = rateLimit.resetAt,
-            retryAfterSeconds = rateLimit.retryAfterSeconds
+            retryAfterSeconds = rateLimit.retryAfterSeconds,
+            rateLimitPrimaryUsedPercent = rateLimitsSnapshot.primaryUsedPercent,
+            rateLimitSecondaryUsedPercent = rateLimitsSnapshot.secondaryUsedPercent,
+            rateLimitPrimaryResetAt = rateLimitsSnapshot.primaryResetAt,
+            rateLimitSecondaryResetAt = rateLimitsSnapshot.secondaryResetAt
         )
+    }
+
+    private data class CodexRateLimitsSnapshot(
+        val primaryUsedPercent: Double? = null,
+        val secondaryUsedPercent: Double? = null,
+        val primaryResetAt: Long? = null,
+        val secondaryResetAt: Long? = null
+    )
+
+    // Defensive parse of the Codex token_count `rate_limits` object. Real shape is roughly
+    // { primary: { used_percent, window_minutes, resets_in_seconds }, secondary: {...} } but
+    // keys are read tolerantly (camel/snake) and any missing piece degrades to null.
+    private fun parseCodexRateLimits(rateLimits: JSONObject?, nowMs: Long): CodexRateLimitsSnapshot {
+        if (rateLimits == null) return CodexRateLimitsSnapshot()
+        val primary = rateLimits.optJSONObject("primary") ?: rateLimits.optJSONObject("primaryWindow")
+        val secondary = rateLimits.optJSONObject("secondary") ?: rateLimits.optJSONObject("secondaryWindow")
+        return CodexRateLimitsSnapshot(
+            primaryUsedPercent = usedPercentOf(primary),
+            secondaryUsedPercent = usedPercentOf(secondary),
+            primaryResetAt = resetAtOf(primary, nowMs),
+            secondaryResetAt = resetAtOf(secondary, nowMs)
+        )
+    }
+
+    private fun usedPercentOf(window: JSONObject?): Double? {
+        if (window == null) return null
+        val key = listOf("used_percent", "usedPercent", "used_pct", "usedPct")
+            .firstOrNull { window.has(it) && !window.isNull(it) } ?: return null
+        return window.optDouble(key).takeUnless { it.isNaN() }?.coerceIn(0.0, 100.0)
+    }
+
+    private fun resetAtOf(window: JSONObject?, nowMs: Long): Long? {
+        if (window == null) return null
+        val key = listOf("resets_in_seconds", "resetsInSeconds", "reset_in_seconds", "resetInSeconds")
+            .firstOrNull { window.has(it) && !window.isNull(it) } ?: return null
+        val seconds = window.optLong(key, -1L)
+        if (seconds < 0L) return null
+        return nowMs + seconds * 1000L
     }
 
     private fun codexEventFromPayload(json: JSONObject, payload: JSONObject, line: String): ScouterEvent? {

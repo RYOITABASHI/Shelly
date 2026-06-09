@@ -118,7 +118,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val snapshots = if (store.isEnabled()) store.all() else emptyList()
             val binding = if (store.isEnabled()) store.widgetCodexBinding() else null
             val conversation = if (store.isEnabled()) store.widgetConversation(binding?.codexSessionId) else null
-            val load = lightweightLoad()
+            val load = runCatching { ScouterSystemSampler(context).sample() }
+                .getOrElse {
+                    Log.w(TAG, "Scouter widget system sample failed; using lightweight load", it)
+                    lightweightLoad()
+                }
             scheduleWaitExpiryRefresh(context, conversation)
             ids.forEach { id ->
                 runCatching { manager.updateAppWidget(id, render(context, snapshots, binding, conversation, load)) }
@@ -238,6 +242,17 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 views.setTextViewText(R.id.scouter_codex_metrics, codexMetrics(it, conversation))
             }
             val approvalIsActionable = hasActionableApproval(binding, boundCodex, conversation, boundScreen)
+            // Usage/limit line: visible only when there is a rate/limit summary
+            // for a live Codex session and no approval is taking over the bottom
+            // row; hidden (and cleared) otherwise so it never shows stale data.
+            val usageLine = if (approvalIsActionable) null else codex?.let { codexUsageLine(it, conversation) }
+            if (usageLine.isNullOrBlank()) {
+                views.setTextViewText(R.id.scouter_codex_usage, "")
+                views.setViewVisibility(R.id.scouter_codex_usage, View.GONE)
+            } else {
+                views.setTextViewText(R.id.scouter_codex_usage, usageLine)
+                views.setViewVisibility(R.id.scouter_codex_usage, View.VISIBLE)
+            }
             val choiceScreen = when {
                 boundScreen.state == BoundCodexScreenState.INTERACTIVE -> boundScreen
                 !approvalIsActionable && boundScreen.state == BoundCodexScreenState.READY -> storedChoicePendingScreen(conversation)
@@ -306,6 +321,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(R.id.scouter_codex_ask, "CHOICE WAITING")
             views.setTextViewText(R.id.scouter_codex_detail, "STATE [!!] TERMINAL CHOICE WAITING")
             views.setTextViewText(R.id.scouter_codex_metrics, "SELECT 1/2/3 IN TERMINAL · prompt queue blocked")
+            views.setTextViewText(R.id.scouter_codex_usage, "")
+            views.setViewVisibility(R.id.scouter_codex_usage, View.GONE)
             views.setViewVisibility(R.id.scouter_codex_conversation, View.VISIBLE)
             views.setTextColor(R.id.scouter_codex_conversation, HUD_GREEN)
             views.setTextViewText(
@@ -552,51 +569,48 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
         }
 
+        // Clean single line bound to scouter_codex_metrics: the consumed-token
+        // count plus the context gauge and short model name. The noisy
+        // FLOW/REASON/CACHE/SID/TRACE breakdown lives in ScouterDetailModal.
         private fun codexMetrics(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation? = null): String {
-            val lines = mutableListOf<String>()
+            val parts = mutableListOf<String>()
+            if (snapshot.tokensUsed > 0L) parts += "TOK ${formatTokens(snapshot.tokensUsed)}"
+            contextGaugeOnly(snapshot)?.let { parts += it }
+            snapshot.modelName?.takeIf { it.isNotBlank() }?.let { parts += "MODEL ${shortModelName(it)}" }
+            return parts.filter { it.isNotBlank() }.joinToString(" · ")
+        }
+
+        // Usage/limit line bound to scouter_codex_usage. Returns the rate-limit /
+        // status-window summary (e.g. "LIMIT 5H 20% · WK 58% · RESET 14:05" or
+        // "RATE LIMITED · ..."), or null when there is nothing meaningful to show.
+        private fun codexUsageLine(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation? = null): String? {
+            // Prefer the continuous structured rate_limits snapshot when present.
+            structuredRateLimitLine(snapshot)?.let { return it }
             val windowLimitLine = statusWindowLimitLine(
                 snapshot,
                 conversation?.lastAnswer,
                 snapshot.lastMessage,
                 snapshot.lastError
             )
-            if (windowLimitLine != null) {
-                lines += windowLimitLine
-            } else if (needsDedicatedRateLimitLine(snapshot)) {
-                lines += rateLimitLine(snapshot)
-            }
-            val contextParts = mutableListOf<String>()
-            if (windowLimitLine == null && !needsDedicatedRateLimitLine(snapshot)) {
-                contextParts += defaultRateLimitLabel(snapshot)
-            }
-            contextParts += contextGauge(snapshot)
-            snapshot.modelName?.takeIf { it.isNotBlank() }?.let { contextParts += "MODEL ${shortModelName(it)}" }
-            if (snapshot.contextPercentRemaining != null && snapshot.tokensUsed > 0L) {
-                contextParts += "TOK ${formatTokens(snapshot.tokensUsed)}"
-            }
-            contextParts.filter { it.isNotBlank() }.joinToString(" · ")
-                .takeIf { it.isNotBlank() }
-                ?.let { lines += it }
+            if (windowLimitLine != null) return windowLimitLine
+            if (needsDedicatedRateLimitLine(snapshot)) return rateLimitLine(snapshot)
+            return null
+        }
 
-            val flowParts = mutableListOf<String>()
-            if (snapshot.inputTokens > 0L || snapshot.outputTokens > 0L) {
-                flowParts += "FLOW in ${formatTokens(snapshot.inputTokens)} / out ${formatTokens(snapshot.outputTokens)}"
-            }
-            if (snapshot.reasoningOutputTokens > 0L) flowParts += "REASON ${formatTokens(snapshot.reasoningOutputTokens)}"
-            val cacheTokens = snapshot.cacheCreationInputTokens + snapshot.cacheReadInputTokens
-            if (cacheTokens > 0L) flowParts += "CACHE ${formatTokens(cacheTokens)}"
-            if (flowParts.isEmpty()) {
-                flowParts += "TRACE ${formatTime(snapshot.lastEventAt)}"
-                flowParts += "SID ${shortSessionId(snapshot.sessionId)}"
-            }
-            if (!needsDedicatedRateLimitLine(snapshot)) {
-                compactRateLimitLabel(snapshot)?.let { flowParts += it }
-            }
-            flowParts.joinToString(" · ")
-                .takeIf { it.isNotBlank() }
-                ?.let { lines += it }
-
-            return lines.filter { it.isNotBlank() }.take(2).joinToString("\n")
+        // Continuous remaining display from the parsed Codex rate_limits snapshot.
+        // Semantics: 5H/WK show REMAINING percent (100 - used_percent), e.g. "5H 80%"
+        // means 80% of the window is still available. RESET is the wall-clock time the
+        // primary (5H) window refills. Returns null when no structured field is present
+        // so callers fall back to the text-scrape path unchanged.
+        private fun structuredRateLimitLine(snapshot: SessionSnapshot): String? {
+            val primaryRemaining = snapshot.rateLimitPrimaryUsedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
+            val secondaryRemaining = snapshot.rateLimitSecondaryUsedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
+            if (primaryRemaining == null && secondaryRemaining == null) return null
+            val parts = mutableListOf("LIMIT")
+            primaryRemaining?.let { parts += "5H ${formatPercent(it)}" }
+            secondaryRemaining?.let { parts += "WK ${formatPercent(it)}" }
+            snapshot.rateLimitPrimaryResetAt?.let { parts += "RESET ${formatDeviceTime(it)}" }
+            return parts.joinToString(" · ")
         }
 
         private fun bindCodexConversation(
@@ -812,18 +826,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun loadLine(load: ScouterSystemLoad): String {
-            val cpu = load.cpuPercent?.let { String.format(Locale.US, "%.0f%%", it) } ?: "--%"
+            val cpu = load.appCpuPercent?.let { String.format(Locale.US, "%.0f%%", it) } ?: "--%"
             val memory = load.ramAvailableMb?.let { "RAM ${formatMegabytes(it)} free" }
             return listOfNotNull("LOAD CPU $cpu", memory).joinToString(" · ")
         }
 
-        private fun contextGauge(snapshot: SessionSnapshot): String {
-            val remaining = snapshot.contextPercentRemaining
-            if (remaining != null) {
-                val used = (100.0 - remaining).coerceIn(0.0, 100.0)
-                return "CTX ${bar(used)} ${used.toInt()}%"
-            }
-            return if (snapshot.tokensUsed > 0L) "TOK ${formatTokens(snapshot.tokensUsed)}" else ""
+        private fun contextGaugeOnly(snapshot: SessionSnapshot): String? {
+            val remaining = snapshot.contextPercentRemaining ?: return null
+            val used = (100.0 - remaining).coerceIn(0.0, 100.0)
+            return "CTX ${bar(used)} ${used.toInt()}%"
         }
 
         private fun statusSignal(status: ScouterStatus, stale: Boolean): String {
