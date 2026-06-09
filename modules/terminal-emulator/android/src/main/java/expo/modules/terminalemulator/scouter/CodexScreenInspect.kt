@@ -128,28 +128,50 @@ object CodexScreenInspect {
 
     // --- Classifier --------------------------------------------------------
 
+    // True when the bottom non-blank line is a shell prompt — codex has exited and
+    // any menu/approval text above it is stale scrollback, not a live prompt.
+    fun endsInShellPrompt(screenText: String): Boolean {
+        val last = screenText.lines().map { it.trim() }.lastOrNull { it.isNotBlank() } ?: return false
+        return SHELL_PROMPT_RE.matches(last)
+    }
+
     fun classify(screenText: String): Result {
-        if (!isActiveCodexScreen(screenText)) return Result(State.INACTIVE)
+        // Codex exited (shell prompt at the bottom): never surface a stale menu
+        // still visible above it.
+        if (endsInShellPrompt(screenText)) return Result(State.INACTIVE)
         val usageLimited = isUsageLimitScreen(screenText)
-        return when {
-            isApprovalPromptScreen(screenText) -> Result(
+        // Blocking prompts use codex-specific keyword regexes (APPROVAL_KEYWORD_RE
+        // / INTERACTIVE_PROMPT_KEYWORD_RE), so surface them even when the
+        // "OpenAI Codex" banner / "gpt … · /" status line has scrolled off the top.
+        // A long rate-limit / model-switch menu often leaves no banner in view, and
+        // gating on isActiveCodexScreen first would miss exactly the state we must
+        // surface (matches the JS detectCodexInteractivePrompt, which is ungated).
+        if (isApprovalPromptScreen(screenText)) {
+            return Result(
                 state = State.APPROVAL,
                 summary = approvalSummary(screenText),
                 usageLimited = usageLimited
             )
-            isInteractivePromptScreen(screenText) -> Result(
+        }
+        if (isInteractivePromptScreen(screenText)) {
+            return Result(
                 state = State.INTERACTIVE,
                 choices = parseInteractiveChoices(screenText),
                 summary = interactivePromptSummary(screenText),
                 usageLimited = usageLimited
             )
-            usageLimited -> Result(
+        }
+        // No blocking prompt visible: require an active codex screen to claim READY,
+        // otherwise the bound terminal has dropped to a shell / something else.
+        if (!isActiveCodexScreen(screenText)) return Result(State.INACTIVE)
+        if (usageLimited) {
+            return Result(
                 state = State.RATE_LIMITED,
                 summary = usageLimitSummary(screenText),
                 usageLimited = true
             )
-            else -> Result(State.READY)
         }
+        return Result(State.READY)
     }
 
     private fun approvalSummary(screenText: String): String {

@@ -316,7 +316,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 ?: return BoundCodexScreen(BoundCodexScreenState.MISSING)
             if (!session.isAlive()) return BoundCodexScreen(BoundCodexScreenState.STALE)
             val screenText = runCatching { session.getScreenText() }.getOrDefault("")
-            if (!isActiveCodexScreen(screenText)) return BoundCodexScreen(BoundCodexScreenState.STALE)
+            // Codex exited (shell prompt at the bottom): treat as stale even if a
+            // menu is still visible in the scrollback above it.
+            val lastLine = screenText.lines().map { it.trim() }.lastOrNull { it.isNotBlank() }
+            if (lastLine != null && SHELL_PROMPT_RE.matches(lastLine)) {
+                return BoundCodexScreen(BoundCodexScreenState.STALE)
+            }
+            // Detect blocking prompts BEFORE the active-codex gate: the keyword
+            // regexes are codex-specific and the bound terminal is already known to
+            // be codex, so a rate-limit / model-switch menu whose "OpenAI Codex"
+            // banner has scrolled off the top must still surface as INTERACTIVE
+            // (otherwise isActiveCodexScreen returns STALE and the widget never
+            // shows the choice pills/banner). Mirrors the ungated JS detection.
             if (isApprovalPromptScreen(screenText)) return BoundCodexScreen(BoundCodexScreenState.APPROVAL)
             if (isInteractivePromptScreen(screenText)) {
                 return BoundCodexScreen(
@@ -325,6 +336,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                     parseInteractiveChoices(screenText)
                 )
             }
+            if (!isActiveCodexScreen(screenText)) return BoundCodexScreen(BoundCodexScreenState.STALE)
             return BoundCodexScreen(BoundCodexScreenState.READY)
         }
 
