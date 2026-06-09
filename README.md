@@ -216,7 +216,7 @@ No Termux install. No proot. No ttyd. No remote bridge.
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
 | **Local LLM that holds its own** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-4B as the high-end default and Qwen3.5-9B available when quality matters more than responsiveness. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
-| **Scouter home widget** | A translucent Android widget shows Codex state, token flow, model, rate-limit cooldown, local LLM health, and device load without opening the app. |
+| **Scouter home widget** | A translucent Android widget shows Codex state, token flow, model, rate-limit cooldown, local LLM health, and device load without opening the app — and is interactive: tap **ASK** to inject a prompt, or **Allow / Deny** and **1 / 2 / 3** pills to answer Codex straight from the home screen. |
 | **Color themes** | Blue / Red / Purple palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
 
@@ -228,7 +228,34 @@ No Termux install. No proot. No ttyd. No remote bridge.
 
 Scouter is Shelly's home-screen status layer. It keeps the current Codex
 session, local LLM endpoint, token flow, cache, cooldown, and device load
-visible while the phone stays in the launcher or another app.
+visible while the phone stays in the launcher or another app. It is not
+read-only — the widget can drive the bound Codex terminal from the launcher.
+
+<details>
+<summary><strong>What it shows</strong></summary>
+
+- **State-colored status** — the status dot and title track the bound Codex state (idle / thinking / running tool / waiting / error), with the current `DOING` line
+- **USAGE line** — model · tokens used · `$cost`. Codex emits no cost, so the dollar figure is derived from a bundled price table when only token counts are available
+- **Rate-limit quota gauge** — a 5-cell remaining-quota bar per window (`5H` / `WK`), green while healthy and red once it drops to its last cell (~≤25% left)
+- **Rate-limit override** — when the session is throttled the line collapses to `RATE LIMITED` with the reset detail
+- **Reset / session timer** — a self-ticking chronometer counts down to the rate-limit reset, or counts up the running session
+- **Last exchange** — the most recent `YOU` prompt and `CODEX` reply, two lines, redacted
+- **Local LLM row** — endpoint, backend, queue depth, and ping for the local server
+- **Footer** — CPU / RAM load and last-updated time
+
+</details>
+
+<details>
+<summary><strong>Interactive control</strong></summary>
+
+- **ASK** — tap the ASK pill to type a prompt; Shelly writes it into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
+- **Approval pills** — when Codex is waiting for permission, **Allow** / **Deny** pills write `y` / `n` straight to the Codex PTY
+- **Choice pills** — for a numbered interactive prompt, up to three **1 / 2 / 3** pills write the chosen digit to the PTY, each carrying the option label
+- **Stale-tap guard** — Allow / Deny / choice taps re-parse the live terminal screen and only fire if the same approval anchor or numbered option is still on screen; otherwise they no-op
+- **Resume when unbound** — if the bound terminal has exited, ASK (and a pending approval) queue the prompt/decision and open Agent Chat to resume the session, then drain the queued action
+- **How it reaches the terminal** — the widget's tap handler runs inside the app process and writes straight to the live PTY through the in-process terminal session registry — no `am start`, no IPC; when nothing is bound it opens Agent Chat with a `shelly:///agent-chat` deep-link to resume first
+
+</details>
 
 <details>
 <summary><strong>Layout System</strong></summary>
@@ -263,6 +290,20 @@ visible while the phone stays in the launcher or another app.
 </details>
 
 <details>
+<summary><strong>Agent Chat — chat surface for the bound Codex terminal</strong></summary>
+
+- **Chat over the foreground Codex** — a chat-style pane that mirrors the bound Codex session's timeline (user prompts, Codex replies, tool runs, approvals, errors) parsed from the session JSONL and Scouter snapshots
+- **Reply composer** — type a reply and send; it writes to the bound foreground Codex PTY, not a hidden API worker — consistent with Shelly's compliance boundary
+- **READY / LOCKED** — a pill shows whether the bound terminal can accept a reply; when locked, the composer explains why (terminal exited, Codex busy, waiting on a terminal choice, not bound yet)
+- **Approve / Deny** — approval requests surface as bubbles with Allow / Deny buttons that send the decision to the bound Codex terminal; only the latest pending approval is actionable
+- **Interrupt** — a stop button sends a terminal interrupt to the bound Codex while it is working
+- **Resume** — the play button reopens or focuses the bound Codex terminal for the selected session, rebinding it for replies
+- **Session tabs** — recent Codex sessions are shown as tabs (deduped per workspace + model), each with a binding dot; dismiss hides a session from Agent Chat without touching its JSONL on disk
+- **Session strip** — project, status, binding, model, token count, and last-update time for the selected session
+
+</details>
+
+<details>
 <summary><strong>AI Edit — file edit with Accept / Reject</strong></summary>
 
 - **Staged file** — tap a file in the FileTree; it opens in the Preview pane's Code tab. The `[✨ AI]` toolbar button stages the file in the AI pane's context.
@@ -282,6 +323,7 @@ visible while the phone stays in the launcher or another app.
 - **Clickable paths and errors** — tap a file path or stack trace line to jump to it
 - **Inline content blocks** — JSON, markdown, images, and tables rendered inline inside the terminal output (Command Blocks)
 - **CLI notifications** — long-running commands surface a system notification when they complete
+- **Codex notification channels** — Scouter posts per-category Android notifications, each on its own channel so you can tune importance / sound / mute from Android's notification settings: approvals, choices, and errors arrive as heads-up alerts, rate limits at default importance, completions and long-running quietly. Approval notifications carry one-tap **Allow / Deny** buttons and choice notifications carry **1 / 2 / 3** buttons; the expanded view shows the full request or menu text, and resolved cards are deduped and cancelled so nothing stacks or lingers
 - **SmartKeyBar** — 5 context-adaptive key sets (Default / Vim / Git / REPL / Navigate), swipe to switch
 - **Immortal sessions** — tmux keeps your shell alive when the app is backgrounded; resume any session by name
 - **Japanese input in terminal** — compose CJK characters directly in the terminal pane
