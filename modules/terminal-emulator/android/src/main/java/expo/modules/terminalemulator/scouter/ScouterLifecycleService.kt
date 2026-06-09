@@ -138,10 +138,37 @@ class ScouterLifecycleService private constructor(private val context: Context) 
         runCatching { eventSink?.invoke(event, snapshot) }
             .onFailure { Log.w(TAG, "JS Scouter event dispatch failed", it) }
         requestWidgetRefresh(force = forceWidgetRefresh, reason = "event")
-        runCatching { notificationDispatcher.maybeNotify(event, snapshot) }
+        runCatching {
+            // Resolve the bound-Codex conversation only when this event belongs to
+            // the widget-bound session; otherwise the approval/choice notifications
+            // (anchored on that conversation) must not fire. Reply/rate notifications
+            // are driven off the snapshot itself and remain null-safe.
+            val binding = store.widgetCodexBinding()
+            val isBoundEvent = binding != null &&
+                normalizeCodexSessionId(event.sessionId) != null &&
+                normalizeCodexSessionId(event.sessionId) == normalizeCodexSessionId(binding.codexSessionId)
+            val conversation = if (isBoundEvent) {
+                runCatching { store.widgetConversation(binding?.codexSessionId) }.getOrNull()
+            } else null
+            notificationDispatcher.maybeNotify(
+                event = event,
+                snapshot = snapshot,
+                conversation = conversation,
+                boundPtySessionId = if (isBoundEvent) binding?.ptySessionId else null
+            )
+        }
             .onFailure { Log.w(TAG, "Notification dispatch failed after Scouter event", it) }
         runCatching { scheduleLongRunningCheck(snapshot) }
             .onFailure { Log.w(TAG, "Long-running check scheduling failed", it) }
+    }
+
+    // Mirrors ScouterWidgetProvider/PromptActivity: strip a trailing UUID suffix
+    // so codex rollout session ids compare equal to the bound id regardless of
+    // any path/prefix decoration.
+    private fun normalizeCodexSessionId(sessionId: String?): String? {
+        val trimmed = sessionId?.trim().orEmpty()
+        if (trimmed.isBlank()) return null
+        return CODEX_SESSION_UUID_SUFFIX_RE.find(trimmed)?.groupValues?.getOrNull(1) ?: trimmed
     }
 
     private fun requestWidgetRefresh(force: Boolean, reason: String) {
@@ -225,6 +252,8 @@ class ScouterLifecycleService private constructor(private val context: Context) 
     companion object {
         private const val TAG = "Scouter"
         private const val LONG_RUNNING_THRESHOLD_MS = 120_000L
+        private val CODEX_SESSION_UUID_SUFFIX_RE =
+            Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
         @Volatile private var instance: ScouterLifecycleService? = null
 
         fun get(context: Context): ScouterLifecycleService {

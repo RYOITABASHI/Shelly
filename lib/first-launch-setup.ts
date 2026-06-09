@@ -10,6 +10,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import * as Notifications from 'expo-notifications';
 import { logInfo } from '@/lib/debug-logger';
 import { t } from '@/lib/i18n';
 
@@ -49,6 +50,7 @@ export async function runFirstLaunchSetup(sessionId: string): Promise<void> {
     // system settings; we want to surface the request again so the shell
     // isn't silently locked out of /sdcard (bug #92).
     await ensureAllFilesAccess();
+    await ensureNotificationPermission();
     return;
   }
 
@@ -58,6 +60,7 @@ export async function runFirstLaunchSetup(sessionId: string): Promise<void> {
   // so the "adb push a script, source it from the shell" workflow works. See
   // ensureAllFilesAccess below for the non-blocking approach used.
   await ensureAllFilesAccess();
+  await ensureNotificationPermission();
 
   // MOTD is now displayed by .bashrc on first launch (checks ~/.shelly_motd_shown)
   // This function just marks the TS-side flag as complete
@@ -87,6 +90,31 @@ async function ensureAllFilesAccess(): Promise<void> {
     await TerminalEmulator.requestAllFilesAccess();
   } catch (e) {
     logInfo('FirstLaunchSetup', 'ensureAllFilesAccess failed: ' + e);
+  }
+}
+
+/**
+ * Request POST_NOTIFICATIONS (Android 13+) so the Scouter notifications can
+ * actually appear — when the bound Codex needs approval / a choice, hits a
+ * rate limit, or finishes a reply. Without it Android silently suppresses
+ * them. Non-blocking and idempotent (expo-notifications no-ops once granted);
+ * safe to call every launch since the user can revoke from system settings.
+ */
+async function ensureNotificationPermission(): Promise<void> {
+  try {
+    const current = await Notifications.getPermissionsAsync();
+    if (current.granted || current.status === 'granted') {
+      logInfo('FirstLaunchSetup', 'POST_NOTIFICATIONS already granted');
+      return;
+    }
+    if (!current.canAskAgain) {
+      logInfo('FirstLaunchSetup', 'POST_NOTIFICATIONS denied (cannot ask again)');
+      return;
+    }
+    logInfo('FirstLaunchSetup', 'requesting POST_NOTIFICATIONS');
+    await Notifications.requestPermissionsAsync();
+  } catch (e) {
+    logInfo('FirstLaunchSetup', 'ensureNotificationPermission failed: ' + e);
   }
 }
 
