@@ -241,6 +241,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             codex?.let {
                 views.setTextViewText(R.id.scouter_codex_metrics, codexMetrics(it, conversation))
             }
+            // Right-aligned status signal in the title row (reuses the
+            // scouter_codex_badge slot). bindRow set it to the source badge ("CX");
+            // override with the animated/stale status signal for the codex row.
+            run {
+                val codexSignal = codex?.let { statusSignal(it.currentStatus, isStale(it)) } ?: "[--]"
+                views.setTextViewText(R.id.scouter_codex_badge, codexSignal)
+            }
+            // DOING line: current tool/file when running, else idle + last reply.
+            views.setTextViewText(R.id.scouter_codex_doing, codex?.let { codexDoing(it) } ?: "")
             val approvalIsActionable = hasActionableApproval(binding, boundCodex, conversation, boundScreen)
             // Usage/limit line: visible only when there is a rate/limit summary
             // for a live Codex session and no approval is taking over the bottom
@@ -672,10 +681,30 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         // FLOW/REASON/CACHE/SID/TRACE breakdown lives in ScouterDetailModal.
         private fun codexMetrics(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation? = null): String {
             val parts = mutableListOf<String>()
-            if (snapshot.tokensUsed > 0L) parts += "TOK ${formatTokens(snapshot.tokensUsed)}"
-            contextGaugeOnly(snapshot)?.let { parts += it }
+            // Option B USAGE line: MODEL · TOK · $cost · <n>%ctx (skip blanks).
             snapshot.modelName?.takeIf { it.isNotBlank() }?.let { parts += "MODEL ${shortModelName(it)}" }
+            if (snapshot.tokensUsed > 0L) parts += "TOK ${formatTokens(snapshot.tokensUsed)}"
+            snapshot.totalCostUsd.takeIf { it > 0.0 }?.let {
+                parts += "$" + String.format(Locale.US, "%.2f", it)
+            }
+            snapshot.contextPercentRemaining?.let {
+                parts += String.format(Locale.US, "%.0f%%ctx", it.coerceIn(0.0, 100.0))
+            }
             return parts.filter { it.isNotBlank() }.joinToString(" · ")
+        }
+
+        // DOING line bound to scouter_codex_doing. Shows the active tool/file when
+        // Codex is running, otherwise "idle · last <reply time>". One short line.
+        private fun codexDoing(snapshot: SessionSnapshot): String {
+            val tool = snapshot.currentTool?.takeIf { it.isNotBlank() }
+            val line = if (tool != null) {
+                val running = if (snapshot.currentStatus == ScouterStatus.TOOL_RUNNING) "running " else ""
+                val file = snapshot.currentFile?.takeIf { it.isNotBlank() }?.let { " on ${displayPathLeaf(it)}" } ?: ""
+                "DOING $running$tool$file"
+            } else {
+                "DOING idle · last ${formatTime(snapshot.lastEventAt)}"
+            }
+            return shorten(line, 40)
         }
 
         // Usage/limit line bound to scouter_codex_usage. Returns the rate-limit /
@@ -683,8 +712,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         // "RATE LIMITED · ..."), or null when there is nothing meaningful to show.
         private fun codexUsageLine(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation? = null): String? {
             // Rate-limit / status-window summary (ordering unchanged from before).
-            // Computed first so the spent-cost token can be appended alongside it
-            // for a "budget" read: remaining quota + dollars spent this session.
+            // Cost now lives on the USAGE (metrics) line, so this returns the
+            // rate-limit summary only, or null when there is nothing to show.
             val rate: String? = run {
                 // Prefer the continuous structured rate_limits snapshot when present.
                 structuredRateLimitLine(snapshot)?.let { return@run it }
@@ -698,13 +727,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 if (needsDedicatedRateLimitLine(snapshot)) return@run rateLimitLine(snapshot)
                 null
             }
-            // Session cost: totalCostUsd lives in the model but was never surfaced
-            // on the widget. Show it whenever > 0, even when no rate line exists, so
-            // a cost-only usage line still appears. Approval state already forces
-            // this whole line off at the call site, so cost is hidden then too.
-            val cost = snapshot.totalCostUsd.takeIf { it > 0.0 }
-                ?.let { "COST $" + String.format(Locale.US, "%.2f", it) }
-            return listOfNotNull(rate, cost).takeIf { it.isNotEmpty() }?.joinToString(" · ")
+            return rate
         }
 
         // Continuous remaining display from the parsed Codex rate_limits snapshot.

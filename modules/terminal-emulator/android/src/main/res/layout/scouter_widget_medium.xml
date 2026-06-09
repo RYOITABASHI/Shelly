@@ -53,17 +53,20 @@
         android:shadowRadius="7"
         android:includeFontPadding="false" />
 
-      <!-- badge kept for provider binding but hidden in the G2 layout -->
+      <!-- right-aligned status signal (e.g. "[OK]"/"[!!]"/"[..]"); the title's
+           layout_weight pushes this to the end of the row. Id preserved so the
+           provider binding (scouter_codex_badge) needs no rename. -->
       <TextView
         android:id="@+id/scouter_codex_badge"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="CX"
+        android:layout_marginStart="8dp"
+        android:text=""
         android:textColor="#00FF41"
-        android:textSize="9sp"
+        android:textSize="11sp"
         android:typeface="monospace"
-        android:includeFontPadding="false"
-        android:visibility="gone" />
+        android:textStyle="bold"
+        android:includeFontPadding="false" />
     </LinearLayout>
 
     <!-- status line -->
@@ -79,6 +82,20 @@
       android:shadowColor="#6600FF41"
       android:shadowRadius="4"
       android:textSize="12sp"
+      android:typeface="monospace"
+      android:includeFontPadding="false" />
+
+    <!-- DOING line: current tool/file or idle + last reply time -->
+    <TextView
+      android:id="@+id/scouter_codex_doing"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:ellipsize="end"
+      android:singleLine="true"
+      android:text=""
+      android:textColor="#66FF88"
+      android:textSize="11sp"
       android:typeface="monospace"
       android:includeFontPadding="false" />
 
