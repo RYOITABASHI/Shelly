@@ -64,7 +64,35 @@
 2. シンボル付き `libexec_wrapper.so` と一致 build ID の tombstone、または APK 同梱 `strace` 相当の syscall trace を用意する。
 3. native exec-wrapper / linker64 / env scrub の専用デバッグタスクとして再開し、1 仮説 1 証拠で進める。
 
+**→ spec**: `docs/superpowers/specs/2026-06-10-bash-tool-exit1-observability-plan.md` で観測基盤を 3 層 (経路切り分け / syscall trace / symbol 化 tombstone) に具体化。新仮説「exit 1 は extracted Node (Bun polyfill) 経路固有かもしれない」(ferrum が公式 glibc バイナリで Bash tool を S26 Ultra/Knox 上で動かしている状況証拠) を層1 の 3 セル表で最優先検証する。
+
 **Why not now**: Codex / Claude CLI の既存サポート面を壊さずに main を green に戻すことを優先する。未検証の exec-wrapper relay や launcher churn は main に載せない。
+
+### Claude Code パッチ済み公式バイナリ オンデバイス PoC
+
+**優先度**: P2 (v6.x ブラッシュアップ中は着手しない。v7.0.0 Experimental 候補)
+**状態**: 調査完了・PoC 計画策定済み・未着手。
+
+**目的**: 公式 Claude Code バイナリ (Bun SEA) を Shelly の bionic + Knox で動かせるか 1〜2 日級 PoC で白黒つける。現行 extracted Node 経路を置き換える/補完する候補の物理可否判定。
+
+**調査で確定した前提** (3 エージェント並列調査 + 実物検証, 2026-06-10):
+- ferrum/claude-code-android = **glibc バイナリ + `patchelf --set-interpreter` + `unset LD_PRELOAD` 直接 exec**。Samsung S26 Ultra/Knox で Bash tool 込み動作の実証あり (musl ではない)。
+- 公式 docs 明言: **musl 版も `libgcc` + `libstdc++` + `ripgrep` が必要**、`USE_BUILTIN_RIPGREP=0`。「musl は libc 1 ファイル」説は誤り。ただし musl libs は再配置可能で合計 ~5MB (glibc 一式 ~50MB より軽い)。
+- **前例**: bug #117 (2026-04-21 History) で **DNS patch 済み musl** 経由 (`resolvconf.c` patch、素の ld-musl は DNS で hang) で `./ld-musl ./claude --print "OK"` が Termux 実機成功済み (claude 2.1.116)。本 PoC の Track M / 検証B はこの再現 (resolvconf patch が前提)。ただし当時も Bash tool までは未確認、Shelly 本番 route には定着しなかった。
+- AVF は Z Fold6 (Snapdragon) では二重に不可。proot は撤去済み (#139) で性能劣化報告あり。
+
+**PoC が答える問い** (Exit Criteria):
+- Q1 起動: パッチ済バイナリが `$libDir` から `--version` を返すか (Knox app_data_file exec 制約を独自 interpreter で踏み抜けるか)。**最大の関門**。
+- Q2 Bash tool: `claude -p "run echo OK" --allowedTools Bash` が exit 0 か。
+- Q3 認証: `claude setup-token` の `CLAUDE_CODE_OAUTH_TOKEN` で transplant なしに `-p` が通るか。
+- Q4 TUI: 対話 `claude` が JNI PTY 上で描画・入力できるか (任意)。
+
+**認証方針** (API 従量課金 NG 制約と整合): `claude setup-token` (1 年有効 OAuth) を第一候補。credential transplant (`~/.claude.json`, 9h 失効) は次点。**2026-06-15 開始の Agent SDK クレジット制度**で `-p` がサブスク内クレジット消費になる点に注意 (対話 TUI は従来枠)。
+
+**→ spec**: `docs/superpowers/specs/2026-06-10-claude-patched-binary-poc-plan.md` (Track G=glibc / Track M=musl の 2 トラック、検証 A/B/C、意思決定マトリクス)
+**→ 関連**: 調査本体 `2026-06-10-claude-code-on-device-investigation.md`、観測基盤 `2026-06-10-bash-tool-exit1-observability-plan.md` (Q1 が通れば exit 1 の経路切り分けも同時に前進)
+
+**Why not now**: v6.0.0 は Codex 一本化が核のメッセージ。APK サイズ影響 (Track G で +50MB, Track M で +5MB) と CC 2.1.113+ の継続的破壊変更への追従コストがあり、ブラッシュアップフェーズには載せない。Q1 の物理可否が出るまで投資判断を保留。
 
 ## 🟢 現状サマリ (2026-05-08、BASHRC_VERSION 81、PR #34 + #37 着地)
 
@@ -1807,6 +1835,7 @@ claude() {
 - **2026-06-02**: Codex Agent Chat UI 設計を追加。V1 は Shelly 本体の pane-native chat + Type-less など外部入力ツールからの text input に限定し、Galaxy Watch / Shelly-owned STT は P3 deferred。
 - **2026-06-09**: Scouter widget Stage 1 (live rate-limit override + 60s heartbeat + render-time footer + LiteLLM cost, commit `2f06d63b`) を push。Stage 2 (見た目オーバーホール: Chronometer / Spannable ゲージ閾値色 / 状態色分け / used·left 明示) を設計完了・P1 登録 (spec: 2026-06-09-scouter-widget-stage2-visual-overhaul.md)。Stage 1 実機検証 PASS が着手ゲート。RemoteViews の ProgressBar 動的 tint が API24–30 で不可と判明 → ゲージは Spannable ASCII で実装する判断。
 - **2026-06-10 (v6.0.0 後)**: v6.0.0 を実機 (USB scrcpy) で確認中、Agent Chat ペインの不具合3件を観察・P1/P2 登録 — #3 セッションタブ per-workspace 集約 (要design判断), #2 返信プロンプト一瞬重複 (楽観表示フリッカ), #1 キーボード隠せない (一過性, BG化で回復)。セッション検出/バインド自体は動作。次は Agent Chat に絞った focused セッションで対応。
+- **2026-06-10**: Claude Code オンデバイス実装の経緯を 3 エージェント並列調査 (リポジトリ履歴 / Android OSS 検証 / CC アーキ + Codex 連携)。「ネイティブ断念」の正体は Bun SEA 直接実行の断念 (v29-v59) で、CC 自体は extracted Node 経路 (v67+) で稼働中と確認。musl 矛盾を ferrum install.sh + 公式 docs 実取得で解消 (glibc 方式が実証済、musl も C++ ランタイム要・ただし軽量)。パッチ済バイナリ PoC (P2) と Bash tool exit 1 観測基盤 (既存 P1 の次の一手) を spec 化・DEFERRED 登録。実装は未着手。spec: 2026-06-10-claude-code-on-device-investigation / -claude-patched-binary-poc-plan / -bash-tool-exit1-observability-plan。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 
 ---
