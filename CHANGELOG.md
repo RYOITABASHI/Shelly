@@ -6,6 +6,54 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-06-10
+
+### Added
+
+- **Interactive Scouter widget** — the home-screen widget is no longer
+  read-only: tap **ASK** to inject a prompt into the bound Codex PTY, and
+  answer Codex with **Allow / Deny** and numbered **1 / 2 / 3** choice pills
+  that write straight to the terminal, with a stale-tap guard that re-parses the
+  live screen before firing.
+- **Live rate-limit + chronometer** — the widget surfaces a `RATE LIMITED`
+  override the moment a usage limit hits, plus a self-ticking chronometer that
+  counts down to the rate-limit reset (or up the running session) without a
+  widget re-render.
+- **Quota gauge** — a 5-cell remaining-quota bar (`5H` / `WK`) using filled/empty
+  squares, green while healthy and glowing red once it drops to its last cell.
+- **Derived Codex cost** — the USAGE line shows `$cost` derived from a bundled
+  LiteLLM price table, since Codex emits no cost itself.
+- **Per-category Codex notification channels** — approvals, choices, and errors
+  arrive as heads-up alerts on their own Android channels (tunable from system
+  settings), with one-tap **Allow / Deny** and **1 / 2 / 3** action buttons and
+  the full request / menu text in the expanded view.
+- **Two-line conversation + relative idle time** — the widget shows the last
+  `YOU` prompt and `CODEX` reply, and the idle line reads `idle · 3m ago`.
+
+### Changed
+
+- **Release version bumped to 6.0.0** across Expo config, Android versionName,
+  and runtimeVersion (versionCode stays git-derived).
+- **Widget readability** — larger status / usage fonts, the lower row header
+  renamed `MODEL` → `LOCAL` to stop colliding with the Codex `MODEL` token, and
+  the token total labelled `TOK … used` to disambiguate it from rate `… left`.
+- **Idle freshness** — a ~60s poll heartbeat keeps CPU / RAM / clock / footer
+  current while idle, and the footer `updated` time now reflects the actual
+  render, not the last event.
+- **README** documents the interactive widget, the Agent Chat surface for the
+  bound Codex, and the notification channels.
+
+### Fixed
+
+- **Updates screen could hang forever on "Checking…"** — the GitHub fetch body
+  read was unbounded after the response headers arrived; the whole refresh is
+  now bounded by a timeout so it always completes.
+- **LOCAL offline row contradiction** — the health line said "no endpoint" while
+  the metrics line still showed `END :11434`; offline now reads `Offline` +
+  `LOCAL PROBE <ports>`.
+- **Duplicated status signal** — the `[OK]` / `[--]` indicator no longer appears
+  on both the status line and the top-right badge.
+
 ## [5.3.1] - 2026-05-14
 
 ### Changed

@@ -303,9 +303,35 @@ fail-loud する。詳細:
 - 既存 `groqChatStream` を `systemPromptOverride` 経由で流用 — 新規 LLM plumbing ゼロ
 - AddPaneSheet / LayoutAddSheet / PaneSlot の選択肢に統合
 
-### Scouter Widget Stage 2 — 見た目オーバーホール (設計完了、実装未着手)
+### ✅ Scouter Widget Stage 1+2 — データ正確化 + 見た目オーバーホール (実装済・実機検証 PASS、2026-06-10)
 
-**優先度**: P1 (Stage 1 = commit `2f06d63b` / versionCode 1464 の実機検証 PASS が前提ゲート)
+**完了**: Stage 1 (`2f06d63b` live rate-limit override / 60s heartbeat / render-time footer / LiteLLM cost) + Stage 2 (状態色 / LOCAL offline 修正 / 会話2行 YOU+CODEX / [OK]重複解消 / Chronometer / 文字サイズ / `MODEL`→`LOCAL`) + 通知カテゴリ別チャンネル (`306015d2` approvals/choices/errors=HIGH heads-up) + 通知本文フル表示 + 5セル四角ゲージ (緑→critical 全赤, `448eb38a`) + updater ハング修正 (`89a9eb09`) + 相対時刻 idle 行 (`c4bc630e`) + README 反映 (`b42f92cf`)。判断A (ProgressBar 不採用→Spannable) 採用。実機 scrcpy で検証 PASS。
+
+### Scouter Widget — 残ポリッシュ (任意・次セッション以降)
+
+**優先度**: P2 (任意の小ネタ)
+
+- **git ブランチ表示** — `snapshot.gitBranch` を widget に (hook が出していれば)。`CODEX@PROJ` 近傍。
+- **エラー詳細** — status=ERROR 時に STATE 行へ `lastError` を短く (今は "Error in HOME" のみ)。
+- **ctx% ゲージ (3本目)** — Codex が `contextPercentRemaining` をほぼ出さないので出る時だけ。価値低。
+
+### 一過性レイアウト崩れ — Updates モーダル開閉
+
+**優先度**: P2 / 再現条件未確定
+
+**症状**: Updates モーダルを開閉した後、Agent Chat ペイン等のレイアウトが一時的に崩れる。**キーボード表示/非表示で回復**。再現が安定しない (RN の初期レイアウト測定 race 疑い、ハングしたモーダル dismiss との関連も)。updater ハング修正 (`89a9eb09`) でモーダルが「決着状態」で閉じるようになり改善する可能性。再現条件が固まったら `ShellLayout`/`MultiPaneContainer`/`PaneSlot`/AgentChatPane の `flex`/`onLayout`/insets を調査。
+
+### updater `fetchWithTimeout` end-to-end ハードニング
+
+**優先度**: P2
+
+**Why**: `89a9eb09` で `refresh()` の3 fetch を `withTimeout(25s)` で囲って永久ハングは根治したが、`fetchWithTimeout` 自体は依然ヘッダ段階までしか abort timer を保持しない (本文読み取りは圏外)。他の呼び出し元が `.json()`/`.text()` する場合は同じハングが再発しうる。`fetchWithTimeout` を本文消費まで abort 有効にする (or 各呼び出しを `withTimeout` で囲む規約化)。
+
+---
+
+### ✅ (旧) Scouter Widget Stage 2 — 見た目オーバーホール (設計完了 → 上記で実装完了)
+
+**優先度**: ~~P1~~ → 完了 (上記 ✅ エントリ参照)
 
 **設計書**: `docs/superpowers/specs/2026-06-09-scouter-widget-stage2-visual-overhaul.md`
 
@@ -1770,6 +1796,7 @@ claude() {
 - **2026-05-21**: Claude Code Bash tool `Exit code 1` 追跡で 7 ビルドを試したが未解決。証明済みの CI marker / exec-wrapper null-deref hardening のみ main に残し、未検証の relay / launcher / stack-frame churn は deferred 化。
 - **2026-06-02**: Codex Agent Chat UI 設計を追加。V1 は Shelly 本体の pane-native chat + Type-less など外部入力ツールからの text input に限定し、Galaxy Watch / Shelly-owned STT は P3 deferred。
 - **2026-06-09**: Scouter widget Stage 1 (live rate-limit override + 60s heartbeat + render-time footer + LiteLLM cost, commit `2f06d63b`) を push。Stage 2 (見た目オーバーホール: Chronometer / Spannable ゲージ閾値色 / 状態色分け / used·left 明示) を設計完了・P1 登録 (spec: 2026-06-09-scouter-widget-stage2-visual-overhaul.md)。Stage 1 実機検証 PASS が着手ゲート。RemoteViews の ProgressBar 動的 tint が API24–30 で不可と判明 → ゲージは Spannable ASCII で実装する判断。
+- **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 
 ---
 
