@@ -1276,6 +1276,13 @@ function compactSessionTabs(
 }
 
 function sessionTabWorkspaceKey(session: AgentChatSession): string {
+  // A reliably-bound session (a Codex running in a live terminal) gets its own
+  // tab keyed by codexSessionId, so two Codex sessions in the same dir + model
+  // appear side by side instead of collapsing into one. Stale / unbound sessions
+  // still dedup by workspace + model so historical sessions don't flood the tabs.
+  if (session.bindingConfidence === 'reliable' && session.ptySessionId?.trim()) {
+    return `live:${session.codexSessionId}`;
+  }
   const workspace = session.cwd?.trim() || session.projectName?.trim();
   const model = session.modelName?.trim();
   if (!workspace || !model) return `session:${session.codexSessionId}`;

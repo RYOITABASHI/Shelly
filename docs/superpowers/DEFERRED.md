@@ -327,6 +327,16 @@ fail-loud する。詳細:
 
 **Why**: `89a9eb09` で `refresh()` の3 fetch を `withTimeout(25s)` で囲って永久ハングは根治したが、`fetchWithTimeout` 自体は依然ヘッダ段階までしか abort timer を保持しない (本文読み取りは圏外)。他の呼び出し元が `.json()`/`.text()` する場合は同じハングが再発しうる。`fetchWithTimeout` を本文消費まで abort 有効にする (or 各呼び出しを `withTimeout` で囲む規約化)。
 
+### Agent Chat ペイン — 既知の不具合 (実機観察 2026-06-10, USB scrcpy)
+
+**前提**: セッション検出/バインド自体は動作 (起動直後は一時的に "No Codex session observed" になるがすぐ `Bound` する)。以下は v6.0.0 実機で観察した別個の不具合。
+
+- **✅ #3 セッションタブが per-workspace で1つに集約 (修正済・実機検証待ち)** — `sessionTabWorkspaceKey` を「ライブbound (`bindingConfidence==='reliable' && ptySessionId`) なセッションは `live:${codexSessionId}` で独立タブ、stale/unbound は従来通り `${cwd}:${model}` で集約」に変更 (方針A改良版, ユーザー選択)。これで別ターミナルの Codex が同じ dir/model でも並ぶ＋履歴セッションは乱立しない。レビュー GO。次ビルドで実機 (ミラー) 検証。
+- **#2 返信プロンプトの一瞬重複 (P2)** — `localReplyEvents` (楽観表示) + JSONL/store イベントが dedup 一致まで一瞬二重描画。軽微フリッカ。dedup キー (timestamp/text) の窓を詰める。
+- **#1 キーボードが隠せない (P2, 一過性)** — composer/terminal の focus 保持 or softInputMode 起因。**バックグラウンド化で回復**。Updates モーダル開閉のレイアウト崩れと同類の RN/Samsung 一過性 glitch。再現条件未確定。`ShellLayout`/IME 経路調査。
+
+**Why not now**: release (v6.0.0) 直後に Agent Chat (widget とは別領域) を当て推量で同時修正するのはリスク。USB ミラーで検証ループを回せる状態なので、Agent Chat に絞った focused セッションで潰す。#3 は design 判断 (ユーザー意図) が先。
+
 ---
 
 ### ✅ (旧) Scouter Widget Stage 2 — 見た目オーバーホール (設計完了 → 上記で実装完了)
@@ -1796,6 +1806,7 @@ claude() {
 - **2026-05-21**: Claude Code Bash tool `Exit code 1` 追跡で 7 ビルドを試したが未解決。証明済みの CI marker / exec-wrapper null-deref hardening のみ main に残し、未検証の relay / launcher / stack-frame churn は deferred 化。
 - **2026-06-02**: Codex Agent Chat UI 設計を追加。V1 は Shelly 本体の pane-native chat + Type-less など外部入力ツールからの text input に限定し、Galaxy Watch / Shelly-owned STT は P3 deferred。
 - **2026-06-09**: Scouter widget Stage 1 (live rate-limit override + 60s heartbeat + render-time footer + LiteLLM cost, commit `2f06d63b`) を push。Stage 2 (見た目オーバーホール: Chronometer / Spannable ゲージ閾値色 / 状態色分け / used·left 明示) を設計完了・P1 登録 (spec: 2026-06-09-scouter-widget-stage2-visual-overhaul.md)。Stage 1 実機検証 PASS が着手ゲート。RemoteViews の ProgressBar 動的 tint が API24–30 で不可と判明 → ゲージは Spannable ASCII で実装する判断。
+- **2026-06-10 (v6.0.0 後)**: v6.0.0 を実機 (USB scrcpy) で確認中、Agent Chat ペインの不具合3件を観察・P1/P2 登録 — #3 セッションタブ per-workspace 集約 (要design判断), #2 返信プロンプト一瞬重複 (楽観表示フリッカ), #1 キーボード隠せない (一過性, BG化で回復)。セッション検出/バインド自体は動作。次は Agent Chat に絞った focused セッションで対応。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 
 ---
