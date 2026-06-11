@@ -350,7 +350,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.scouter_codex_pet, togglePending)
             views.setOnClickPendingIntent(R.id.scouter_codex_pet_toggle, togglePending)
 
-            if (actionRowHasPriority) {
+            if (actionRowHasPriority || !ScouterCodexPet.hasPet(context)) {
                 views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
                 return
