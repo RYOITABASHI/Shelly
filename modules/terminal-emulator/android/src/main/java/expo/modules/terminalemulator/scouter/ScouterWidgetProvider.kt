@@ -29,6 +29,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ScouterWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
+            ACTION_CYCLE_PET -> {
+                val pending = goAsync()
+                ScouterCodexPet.cycleVisiblePet(context)
+                enqueueUpdate(context, null, pending::finish, force = true)
+            }
             ACTION_TOGGLE_PET -> {
                 val pending = goAsync()
                 ScouterCodexPet.toggleVisible(context)
@@ -347,7 +352,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             actionRowHasPriority: Boolean
         ) {
             val togglePending = petTogglePendingIntent(context)
-            views.setOnClickPendingIntent(R.id.scouter_codex_pet, togglePending)
+            views.setOnClickPendingIntent(R.id.scouter_codex_pet, petCyclePendingIntent(context))
             views.setOnClickPendingIntent(R.id.scouter_codex_pet_toggle, togglePending)
 
             if (actionRowHasPriority || !ScouterCodexPet.hasPet(context)) {
@@ -610,6 +615,17 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             return PendingIntent.getBroadcast(
                 context,
                 9105,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        private fun petCyclePendingIntent(context: Context): PendingIntent {
+            val intent = Intent(context, ScouterWidgetProvider::class.java)
+                .setAction(ACTION_CYCLE_PET)
+            return PendingIntent.getBroadcast(
+                context,
+                9106,
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -1460,6 +1476,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         )
 
         private const val TAG = "ScouterWidget"
+        private const val ACTION_CYCLE_PET =
+            "expo.modules.terminalemulator.scouter.WIDGET_CYCLE_CODEX_PET"
         private const val ACTION_TOGGLE_PET =
             "expo.modules.terminalemulator.scouter.WIDGET_TOGGLE_CODEX_PET"
         private const val ACTION_WAIT_EXPIRY_REFRESH =

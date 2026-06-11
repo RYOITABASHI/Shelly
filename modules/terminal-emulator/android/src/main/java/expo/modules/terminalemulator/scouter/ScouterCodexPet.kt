@@ -40,8 +40,37 @@ internal object ScouterCodexPet {
         preferences.edit().putBoolean(KEY_VISIBLE, !preferences.getBoolean(KEY_VISIBLE, true)).apply()
     }
 
+    fun cycleVisiblePet(context: Context) {
+        val pets = discoverPets(context).filter { atlas(context, it) != null }
+        val preferences = prefs(context)
+        if (pets.isEmpty()) {
+            preferences.edit()
+                .putBoolean(KEY_VISIBLE, false)
+                .remove(KEY_SELECTED_PET_ID)
+                .apply()
+            return
+        }
+
+        val selectedId = preferences.getString(KEY_SELECTED_PET_ID, null)?.takeIf { isSafeId(it) }
+        val currentIndex = selectedId
+            ?.let { id -> pets.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+            ?: 0
+        val editor = preferences.edit()
+        if (pets.size == 1 || currentIndex >= pets.lastIndex) {
+            editor
+                .putString(KEY_SELECTED_PET_ID, pets.first().id)
+                .putBoolean(KEY_VISIBLE, false)
+        } else {
+            editor
+                .putString(KEY_SELECTED_PET_ID, pets[currentIndex + 1].id)
+                .putBoolean(KEY_VISIBLE, true)
+        }
+        editor.apply()
+    }
+
     fun hasPet(context: Context): Boolean =
-        discoverPets(context).any { atlas(context, it) != null }
+        discoverPets(context).isNotEmpty()
 
     fun frameBitmap(context: Context, state: State, timestampMillis: Long): Bitmap? {
         val atlas = atlasForSelectedOrFallback(context) ?: return null
