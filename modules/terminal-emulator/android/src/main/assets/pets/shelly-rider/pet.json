@@ -1,0 +1,6 @@
+{
+  "id": "shelly-rider",
+  "displayName": "Shelly Rider",
+  "description": "A tiny rider-style Codex pet for Shelly.",
+  "spritesheetPath": "spritesheet.webp"
+}

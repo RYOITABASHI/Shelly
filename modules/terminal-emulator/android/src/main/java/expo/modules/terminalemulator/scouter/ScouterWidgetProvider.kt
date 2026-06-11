@@ -29,6 +29,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ScouterWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
+            ACTION_TOGGLE_PET -> {
+                val pending = goAsync()
+                ScouterCodexPet.toggleVisible(context)
+                enqueueUpdate(context, null, pending::finish, force = true)
+            }
             ACTION_WAIT_EXPIRY_REFRESH -> {
                 val pending = goAsync()
                 enqueueUpdate(context, null, pending::finish, force = true)
@@ -307,6 +312,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             // the actionable bottom row.
             val timerSuppressed = approvalIsActionable || livePathAChoices != null || choiceScreen != null
             bindCodexTimer(views, codex, usageLimited, timerSuppressed)
+            bindCodexPet(views, context, codex, boundScreen, timerSuppressed)
             bindRow(
                 views = views,
                 snapshot = local,
@@ -331,6 +337,61 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 "${loadLine(load)} · updated ${formatTime(System.currentTimeMillis())}"
             )
             return views
+        }
+
+        private fun bindCodexPet(
+            views: RemoteViews,
+            context: Context,
+            codex: SessionSnapshot?,
+            boundScreen: BoundCodexScreen,
+            actionRowHasPriority: Boolean
+        ) {
+            val togglePending = petTogglePendingIntent(context)
+            views.setOnClickPendingIntent(R.id.scouter_codex_pet, togglePending)
+            views.setOnClickPendingIntent(R.id.scouter_codex_pet_toggle, togglePending)
+
+            if (actionRowHasPriority) {
+                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
+                views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
+                return
+            }
+
+            if (!ScouterCodexPet.isVisible(context)) {
+                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
+                views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.VISIBLE)
+                return
+            }
+
+            val frame = ScouterCodexPet.frameBitmap(
+                context,
+                codexPetState(codex, boundScreen),
+                System.currentTimeMillis()
+            )
+            if (frame == null) {
+                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
+                views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
+                return
+            }
+
+            views.setImageViewBitmap(R.id.scouter_codex_pet, frame)
+            views.setViewVisibility(R.id.scouter_codex_pet, View.VISIBLE)
+            views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
+        }
+
+        private fun codexPetState(
+            codex: SessionSnapshot?,
+            boundScreen: BoundCodexScreen
+        ): ScouterCodexPet.State {
+            return when {
+                boundScreen.state == BoundCodexScreenState.APPROVAL ||
+                    codex?.currentStatus == ScouterStatus.WAITING_PERMISSION -> ScouterCodexPet.State.WAITING
+                boundScreen.state == BoundCodexScreenState.INTERACTIVE -> ScouterCodexPet.State.WAVING
+                codex?.currentStatus == ScouterStatus.ERROR -> ScouterCodexPet.State.FAILED
+                codex?.currentStatus == ScouterStatus.THINKING ||
+                    codex?.currentStatus == ScouterStatus.TOOL_RUNNING -> ScouterCodexPet.State.RUNNING
+                codex?.currentStatus == ScouterStatus.COMPLETED -> ScouterCodexPet.State.REVIEW
+                else -> ScouterCodexPet.State.IDLE
+            }
         }
 
         private fun inspectBoundCodexScreen(binding: ScouterWidgetCodexBinding?): BoundCodexScreen {
@@ -539,6 +600,17 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 context,
                 9101,
                 launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        private fun petTogglePendingIntent(context: Context): PendingIntent {
+            val intent = Intent(context, ScouterWidgetProvider::class.java)
+                .setAction(ACTION_TOGGLE_PET)
+            return PendingIntent.getBroadcast(
+                context,
+                9105,
+                intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
@@ -1388,6 +1460,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         )
 
         private const val TAG = "ScouterWidget"
+        private const val ACTION_TOGGLE_PET =
+            "expo.modules.terminalemulator.scouter.WIDGET_TOGGLE_CODEX_PET"
         private const val ACTION_WAIT_EXPIRY_REFRESH =
             "expo.modules.terminalemulator.scouter.WIDGET_WAIT_EXPIRY_REFRESH"
         private const val STALE_AFTER_MS = 10 * 60 * 1000L

@@ -349,4 +349,34 @@
       android:typeface="monospace"
       android:includeFontPadding="false" />
   </LinearLayout>
+
+  <ImageView
+    android:id="@+id/scouter_codex_pet"
+    android:layout_width="72dp"
+    android:layout_height="78dp"
+    android:layout_gravity="bottom|end"
+    android:layout_marginEnd="10dp"
+    android:layout_marginBottom="5dp"
+    android:adjustViewBounds="true"
+    android:contentDescription="@string/scouter_codex_pet"
+    android:scaleType="fitCenter"
+    android:visibility="gone" />
+
+  <TextView
+    android:id="@+id/scouter_codex_pet_toggle"
+    android:layout_width="54dp"
+    android:layout_height="28dp"
+    android:layout_gravity="bottom|end"
+    android:layout_marginEnd="13dp"
+    android:layout_marginBottom="8dp"
+    android:background="@drawable/scouter_ask_pill_bg"
+    android:contentDescription="@string/scouter_codex_pet_show"
+    android:gravity="center"
+    android:includeFontPadding="false"
+    android:text="@string/scouter_codex_pet_toggle"
+    android:textColor="#00FF41"
+    android:textSize="11sp"
+    android:textStyle="bold"
+    android:typeface="monospace"
+    android:visibility="gone" />
 </FrameLayout>
