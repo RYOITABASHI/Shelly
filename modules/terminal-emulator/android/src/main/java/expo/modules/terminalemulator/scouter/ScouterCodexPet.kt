@@ -74,6 +74,9 @@ internal object ScouterCodexPet {
     fun hasPet(context: Context): Boolean =
         discoverPets(context).any { atlas(context, it) != null }
 
+    fun hasMultiplePets(context: Context): Boolean =
+        discoverPets(context).count { atlas(context, it) != null } > 1
+
     fun debugJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val preferences = prefs(appContext)

@@ -74,6 +74,7 @@ type ScouterWidgetConversation = {
   widgetStatus?: string | null;
   widgetStatusAt?: number | null;
   widgetError?: string | null;
+  privacySuppressed?: boolean | null;
 };
 
 type ScouterCodexPetDebug = {
@@ -445,6 +446,7 @@ function widgetBindingLine(info?: ScouterDebugInfo | null): string {
 
 function widgetPromptLine(conversation?: ScouterWidgetConversation | null): string {
   const status = conversation?.widgetStatus || 'clear';
+  if (conversation?.privacySuppressed) return `PROMPT ${status} · privacy suppressed`;
   const prompt = conversation?.widgetPrompt || conversation?.lastPrompt || '';
   if (!prompt.trim()) return `PROMPT ${status} · empty`;
   const at = conversation?.widgetPromptAt || conversation?.lastPromptAt;

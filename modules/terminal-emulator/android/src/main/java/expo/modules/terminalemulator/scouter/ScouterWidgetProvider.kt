@@ -280,14 +280,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val approvalIsActionable = hasActionableApproval(binding, boundCodex, conversation, boundScreen)
             // Usage/limit line: show a compact fallback for every bound Codex
             // session, even when the JSONL snapshot has no rate/context fields yet.
-            val usageLine = codex?.let { codexUsageLine(it, conversation, usageLimited) }
-            if (usageLine.isNullOrBlank()) {
-                views.setTextViewText(R.id.scouter_codex_usage, "")
-                views.setViewVisibility(R.id.scouter_codex_usage, View.GONE)
-            } else {
-                views.setTextViewText(R.id.scouter_codex_usage, usageLine)
-                views.setViewVisibility(R.id.scouter_codex_usage, View.VISIBLE)
-            }
+            views.setTextViewText(R.id.scouter_codex_usage, codexUsageLine(codex, conversation, usageLimited))
+            views.setViewVisibility(R.id.scouter_codex_usage, View.VISIBLE)
             // Path A: bound terminal is live and currently showing the
             // interactive numbered prompt. When options parse cleanly, render
             // tappable choice pills that write the chosen digit directly to the
@@ -355,13 +349,16 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             actionRowHasPriority: Boolean
         ) {
             val togglePending = petTogglePendingIntent(context)
+            val cyclePending = petCyclePendingIntent(context)
             views.setOnClickPendingIntent(R.id.scouter_codex_pet, petCyclePendingIntent(context))
             views.setOnClickPendingIntent(R.id.scouter_codex_pet_hide, togglePending)
+            views.setOnClickPendingIntent(R.id.scouter_codex_pet_next, cyclePending)
             views.setOnClickPendingIntent(R.id.scouter_codex_pet_toggle, togglePending)
 
             if (actionRowHasPriority || !ScouterCodexPet.hasPet(context)) {
                 views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_hide, View.GONE)
+                views.setViewVisibility(R.id.scouter_codex_pet_next, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
                 return
             }
@@ -369,6 +366,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             if (!ScouterCodexPet.isVisible(context)) {
                 views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_hide, View.GONE)
+                views.setViewVisibility(R.id.scouter_codex_pet_next, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.VISIBLE)
                 return
             }
@@ -381,6 +379,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             if (frame == null) {
                 views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_hide, View.GONE)
+                views.setViewVisibility(R.id.scouter_codex_pet_next, View.GONE)
                 views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
                 return
             }
@@ -388,6 +387,10 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setImageViewBitmap(R.id.scouter_codex_pet, frame)
             views.setViewVisibility(R.id.scouter_codex_pet, View.VISIBLE)
             views.setViewVisibility(R.id.scouter_codex_pet_hide, View.VISIBLE)
+            views.setViewVisibility(
+                R.id.scouter_codex_pet_next,
+                if (ScouterCodexPet.hasMultiplePets(context)) View.VISIBLE else View.GONE
+            )
             views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
         }
 
@@ -917,11 +920,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         // token/context baseline for a live Codex snapshot, then appends the best
         // available rate/status-window summary.
         private fun codexUsageLine(
-            snapshot: SessionSnapshot,
+            snapshot: SessionSnapshot?,
             conversation: ScouterWidgetConversation? = null,
             usageLimited: ScouterWidgetUsageLimited? = null
         ): CharSequence {
-            val baseLine = codexUsageBaseLine(snapshot)
+            val baseLine = snapshot?.let { codexUsageBaseLine(it) } ?: "TOK -- · CTX --"
             // Live PTS poll saw a usage-limit banner: this is the most authoritative
             // signal (Codex emits no JSONL event for it), so it overrides the stale
             // structured/JSONL percentages that would otherwise read e.g. "WK 4% left".
@@ -930,6 +933,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 val limitedLine = if (detail != null) "RATE LIMITED · ${shorten(detail, 48)}" else "RATE LIMITED"
                 return appendUsageLine(baseLine, limitedLine)
             }
+            if (snapshot == null) return appendUsageLine(baseLine, "LIMIT --")
             // Rate-limit / status-window summary (ordering unchanged from before).
             // Cost now lives on the USAGE (metrics) line, so this returns the
             // rate-limit summary only, or null when there is nothing to show.

@@ -452,6 +452,24 @@
     android:visibility="gone" />
 
   <TextView
+    android:id="@+id/scouter_codex_pet_next"
+    android:layout_width="18dp"
+    android:layout_height="18dp"
+    android:layout_gravity="bottom|end"
+    android:layout_marginEnd="8dp"
+    android:layout_marginBottom="45dp"
+    android:background="@drawable/scouter_ask_pill_bg"
+    android:contentDescription="@string/scouter_codex_pet_next"
+    android:gravity="center"
+    android:includeFontPadding="false"
+    android:text=">"
+    android:textColor="#00FF41"
+    android:textSize="10sp"
+    android:textStyle="bold"
+    android:typeface="monospace"
+    android:visibility="gone" />
+
+  <TextView
     android:id="@+id/scouter_codex_pet_toggle"
     android:layout_width="54dp"
     android:layout_height="28dp"

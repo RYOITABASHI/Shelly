@@ -122,6 +122,7 @@ type ScouterWidgetConversation = {
   widgetStatus?: string | null;
   widgetStatusAt?: number | null;
   widgetError?: string | null;
+  privacySuppressed?: boolean | null;
 };
 
 type ScouterDebugInfo = {
