@@ -64,14 +64,16 @@
 2. シンボル付き `libexec_wrapper.so` と一致 build ID の tombstone、または APK 同梱 `strace` 相当の syscall trace を用意する。
 3. native exec-wrapper / linker64 / env scrub の専用デバッグタスクとして再開し、1 仮説 1 証拠で進める。
 
-**→ spec**: `docs/superpowers/specs/2026-06-10-bash-tool-exit1-observability-plan.md` で観測基盤を 3 層 (経路切り分け / syscall trace / symbol 化 tombstone) に具体化。新仮説「exit 1 は extracted Node (Bun polyfill) 経路固有かもしれない」(ferrum が公式 glibc バイナリで Bash tool を S26 Ultra/Knox 上で動かしている状況証拠) を層1 の 3 セル表で最優先検証する。
+**→ spec**: `docs/superpowers/specs/2026-06-10-bash-tool-exit1-observability-plan.md` で観測基盤を 3 層 (経路切り分け / syscall trace / symbol 化 tombstone) に具体化。
+
+**→ 真因調査 (2026-06-12)**: `docs/superpowers/specs/2026-06-12-bash-tool-exit1-root-cause-investigation.md`。3 エージェント並列調査を一次ソースで突き合わせ、真因を **L6 (CC の shell snapshot 生成パイプライン) × L1 (Shelly の Bun.spawn polyfill 戻り値契約) の複合**に絞り込み。Knox(L5)/bionic(L4) は EACCES→exit126+avc ログという別シグネチャ・同ドメインで TUI の bash が exec 成功している事実から実質除外。「関数シェルが壊す」replay 説は `$libDir` ハードコード + `export -f` で反証。**回帰の証拠**: DEFERRED 履歴 build 693 (claude 2.1.140) では cli.js tier の Bash tool が exit 0 だった → 2.1.143+ の harness 変更による回帰。**最速プローブ**: `ANTHROPIC_LOG=debug claude --debug` のログに「Failed to create shell snapshot」が出るか1点で locus が二分 (APK 変更・root 不要)。CC 全般の snapshot/capture 脆弱性 (#12115 Fedora `/usr/bin/env bash ENOENT`, #41124 CachyOS, #42461 /tmp満杯, #52983 AlmaLinux) を Shelly 環境が踏み抜いている構図。着手は v6.0.0 告知後の専用ブランチ。
 
 **Why not now**: Codex / Claude CLI の既存サポート面を壊さずに main を green に戻すことを優先する。未検証の exec-wrapper relay や launcher churn は main に載せない。
 
 ### Claude Code パッチ済み公式バイナリ オンデバイス PoC
 
-**優先度**: P2 (v6.x ブラッシュアップ中は着手しない。v7.0.0 Experimental 候補)
-**状態**: 調査完了・PoC 計画策定済み・未着手。
+**優先度**: P3 (実機 PoC で Track M が Q1 FAIL。古い claude 版の二分探索という細い道のみ残る)
+**状態**: ✅ 実機 PoC 実施 (2026-06-12, Z Fold6)。**Track M (musl 公式バイナリ) は Q1 で FAIL** — `claude-code-linux-arm64-musl@2.1.174` が起動時 SIGSEGV (出力0)。ld-musl 単体と busybox(musl PIE) は同 ld で正常動作するので、segfault は Bun バイナリ自体の Android 起動不能 ([#50270](https://github.com/anthropics/claude-code/issues/50270) 再現)。packaging/SELinux 以前の問題で、現行 extracted Node 経路の正しさが裏付けられた。spec の「⚡ 実機 PoC 結果」節に全データ。残る前進方向は「古い claude (2.1.116 近辺、bug #117 成功版) を二分探索して Bun 破壊バージョンを特定」のみ＝運用コスト大につき P3 降格。
 
 **目的**: 公式 Claude Code バイナリ (Bun SEA) を Shelly の bionic + Knox で動かせるか 1〜2 日級 PoC で白黒つける。現行 extracted Node 経路を置き換える/補完する候補の物理可否判定。
 

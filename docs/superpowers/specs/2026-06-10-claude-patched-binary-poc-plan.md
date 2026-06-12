@@ -6,12 +6,37 @@
 
 ---
 
+## ⚡ 実機 PoC 結果 (2026-06-12, Galaxy Z Fold6 SM-F956Q / kernel 6.1.128-android14 / 4KB pages) — **Track M は Q1 で FAIL**
+
+実機 (ワイヤレス adb) で Track M の最小プローブを実施。**結論: 公式 musl claude バイナリは起動時に SIGSEGV し、Q1 を通らない。** これは packaging/SELinux ではなく **Bun バイナリ自体が当端末で起動できない**ことが原因 (Shelly が v29-v59 で当たった壁の再現)。
+
+| プローブ | コマンド | 結果 |
+|---|---|---|
+| ELF 実測 | `readelf` on `claude-code-linux-arm64-musl@2.1.174` (242MB) | ET_EXEC / interp=`/lib/ld-musl-aarch64.so.1` / DT_NEEDED=`libc.musl-aarch64.so.1` のみ ✅確定 |
+| ld-musl 単体 | `./ld` (Alpine musl 1.2.6, 723KB) | ✅ loader usage 表示 (musl ローダは健全) |
+| **busybox (musl PIE) via ld** | `./ld ./busybox echo HELLO_MUSL` | ✅ **`HELLO_MUSL` / RC=0** — musl ロード経路も shell ドメイン exec も完全に健全 |
+| claude via ld (検証B) | `./ld ./claude --version` | ❌ **SIGSEGV (RC=139)・出力 0 バイト** |
+| claude 直接 exec + patched interp (検証C) | interp を `/data/local/tmp/ld` に in-place バイトパッチ → `./claude --version` | ❌ **SIGSEGV (RC=139)・出力 0 バイト** |
+| tombstone/logcat | `logcat -b crash -d` | クラッシュが早すぎて tombstone 生成されず (Knox 制限の可能性も) |
+
+**切り分けの確度**: busybox (musl PIE) が同じ ld で動く以上、segfault は (a) musl ローダ不具合でも (b) SELinux exec 拒否でも (c) ライブラリ欠落 (それなら "library not found" エラーで segfault しない) でもない。**Bun ランタイムが起動コードを実行して落ちている** = Bun-on-Android の既知問題 ([#50270](https://github.com/anthropics/claude-code/issues/50270)) を実測再現。検証C (非PIE の canonical exec 経路) でも落ちるので userland-exec ローダ ([#3 候補](#2-2-トラック構成)) でも回避不可と推定。
+
+**この結果が意味すること**:
+1. **Track M / パッチ済み公式バイナリ経路は「現状不可」** — Q1 (起動) で詰む。SELinux (Q1後半) / 認証 (Q3) / Bash tool (Q2) 以前の問題。
+2. **現行 extracted Node 経路 (cli.js を bundled Node で実行、Bun バイナリを完全バイパス) の正しさが実測で裏付けられた。**
+3. **残る唯一の細い望み**: bug #117 (2026-04-21) は **claude 2.1.116 + 自前 patch musl** で `--print OK` 成功と記録。今回は **2.1.174 + stock musl 1.2.6**。差分は (i) claude/Bun バージョン (ii) musl ビルド。→ 次に試すなら **古い claude (2.1.116 近辺) を同手順で**動かし、「Bun のどのバージョンから Android 起動が壊れたか」を二分探索するのが唯一の前進方向。ただし版を古く pin する運用コストは大 (DEFERRED の version pin 議論参照)。
+4. **観測基盤の層1 (経路切り分け) はこの結果で一部前倒し達成**: 「公式バイナリ経路」セルが ❌ で確定 → exit 1 切り分けは「extracted Node vs legacy cli.js」の 2 経路比較に集約してよい。
+
+**再現用アーティファクト** (PoC scratch、リポジトリ非追跡): ホスト `C:\Users\ryoxr\claude-poc\` (claude 242MB patched / ld-musl / busybox)、WSL `~/claude-poc/` (pristine package)、実機 `/data/local/tmp/{claude,ld,busybox}`。
+
+---
+
 ## 0. 調査で確定した前提 (PoC 設計の根拠)
 
 | 事実 | ソース | 設計への影響 |
 |---|---|---|
 | ferrum は **glibc** linux-arm64 バイナリに `patchelf --set-interpreter $PREFIX/glibc/lib/ld-linux-aarch64.so.1` を当て、`unset LD_PRELOAD` して**直接 exec**。`--set-rpath` 不使用 | ferrum install.sh (WebFetch 実取得) | Track G の手順そのもの。Knox/S26 Ultra で実証済 = 最有力 |
-| **musl 版は「1 ファイル」ではない**: 公式 docs が `libgcc` + `libstdc++` + `ripgrep` の同梱と `USE_BUILTIN_RIPGREP=0` を要求 | code.claude.com/docs/en/setup (Alpine 節, 実取得) | エージェント2 の ELF 解析は不完全。musl も C++ ランタイムが要る |
+| **✅ 実物検証済 (2026-06-12, WSL readelf)**: `@anthropic-ai/claude-code-linux-arm64-musl@2.1.174` の `package/claude` (242MB) は **`Type: ET_EXEC` 非PIE / `PT_INTERP=/lib/ld-musl-aarch64.so.1` / DT_NEEDED は `libc.musl-aarch64.so.1` ただ1つ**。libgcc/libstdc++ は **DT_NEEDED に無い** | 実バイナリ readelf -h/-l/-d + dd で interp 文字列確認 | **起動 (Q1) に必要なのは ld-musl 1ファイル (~1MB) のみ**。docs が要求する libgcc/libstdc++/ripgrep は DT_NEEDED 外＝起動時ロードされず、特定 runtime code path (Bun native addon 等) が dlopen する時のみ必要な**漸進的依存**。エージェント2「1ファイル」は*起動には*正、エージェント3/docs「C++要」は*全機能には*正 |
 | musl libs は Termux glibc と違い **prefix ハードコードがなく再配置可能** | termux-packages#5982 (glibc は不可) | musl は Shelly 自前 prefix でそのまま使える = 軽さの源 |
 | Shelly は **arm64-v8a only / minSdk 24** | [app.config.ts:148](../../../app.config.ts), [build.gradle:20](../../../modules/terminal-emulator/android/build.gradle) | 単一 ABI の musl/glibc を 1 本同梱すれば済む |
 | **SELinux**: untrusted_app は app_data_file を直接 execve 不可。`$libDir` (termux-libs) ラベルは exec 許可、`/system/bin/linker64` 経由が必須 | [HomeInitializer.kt:1825](../../../modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt) `_run`、CLAUDE.md Architecture Decisions | パッチ済バイナリも `$libDir` 展開 + linker64 経由で起動する必要あり。**ただしパッチ済バイナリは独自 interpreter を持つので linker64 経由が成立するか自体が PoC の核** |
@@ -57,10 +82,9 @@ PoC は**ホスト PC (WSL/Linux) で patchelf 済みバイナリを作り、adb
 1. ホストで取得: npm の `@anthropic-ai/claude-code-linux-arm64-musl@<VER>` を展開し `package/claude` を取り出す (240MB、ET_EXEC 非 PIE)。
 **前例 (重要)**: bug #117 (DEFERRED.md History 2026-04-21) で **DNS patch 済み musl** (`src/network/resolvconf.c` を patch して cross-build した ld-musl v1.2.4) 経由で `./ld-musl ./claude --print "OK"` が Termux 実機成功済み (claude 2.1.116)。**素の ld-musl は DNS 解決で hang した**点に注意 — Track M / 検証B はこの再現だが、resolvconf patch (または `/etc/resolv.conf` 相当の供給) が前提条件。当時も Bash tool までは未確認、Shelly 本番 route には定着しなかった。
 
-2. **musl ランタイム一式を Alpine arm64 から抽出** (補正後の正確なリスト):
-   - `/lib/ld-musl-aarch64.so.1` (= libc.musl-aarch64.so.1、~1MB)
-   - `libgcc_s.so.1` (musl 版)
-   - `libstdc++.so.6` (musl 版)
+2. **musl ランタイムを Alpine arm64 から抽出** (✅ 実物検証で確定した最小構成):
+   - **起動 (Q1) 必須**: `/lib/ld-musl-aarch64.so.1` (= libc.musl-aarch64.so.1、~1MB) **のみ**。DT_NEEDED がこれ1つだけなので、まずこれだけで `--version` を試す。
+   - **漸進的 (Q2 以降で dlopen された時のみ)**: `libgcc_s.so.1` (musl 版)、`libstdc++.so.6` (musl 版)。Q1 が ld-musl 単体で通れば、Q2 で初めて足す。
    - ripgrep は Shelly 同梱の `rg` を `USE_BUILTIN_RIPGREP=0` で流用
 3. `patchelf --set-interpreter <libDir>/musl/ld-musl-aarch64.so.1 --set-rpath <libDir>/musl claude`
 4. 検証 A/B/C は Track G と同型 (linker64 経由 / ld-musl 直接 / kernel binfmt 直接)。

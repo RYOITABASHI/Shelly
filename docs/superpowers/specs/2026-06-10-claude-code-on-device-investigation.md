@@ -43,12 +43,15 @@
 - **Samsung S26 Ultra (Knox 環境) での動作実績が互換表に記載** → Knox がこのアプローチをブロックしない実例。ただし TUI 動作の直接証拠 (スクショ級) は未取得、状況証拠のみ。
 - **Shelly 移植の壁**: Termux の glibc パッケージは prefix `/data/data/com.termux` がビルド時ハードコードでリロケータブルでない ([termux-packages#5982](https://github.com/termux/termux-packages/issues/5982))。流用不可、自前 prefix での glibc 再ビルドが必要 (工数大)。
 
-### musl 版公式バイナリ — **エージェント間で報告が矛盾 (要解消)**
-- エージェント 2: npm tarball から ELF ヘッダを抽出、`DT_NEEDED` は `libc.musl-aarch64.so.1` の 1 個だけ → ~1MB の ld-musl 同梱 + patchelf で動く可能性。`ET_EXEC` 非 PIE なので直接 execve 不可、`patchelf --set-interpreter <libDir>/ld-musl...` 経由が必要。
-- エージェント 3: 公式 docs が Alpine で libgcc/libstdc++/ripgrep の導入を要求しており「銀の弾丸ではない (動的リンク)」。
-- Shelly 自身の v29 で musl ld 経由起動は一度失敗 (ただし bionic linker64 で musl ld をロードする経路で、patchelf 直接 execve 方式とは別物)。
-- patchelf が Bun 単一ファイル形式に「Could not find a PHDR」で失敗する報告と、ferrum が patchelf-glibc で成功している事実も食い違う (patchelf のバージョン/フォーク差の可能性)。
-- → **位置づけ: 「安い PoC (1 日級) で白黒つく未検証の有望株」**。
+### musl 版公式バイナリ — ✅ **実物検証で矛盾解消済み (2026-06-12)**
+WSL Ubuntu で `npm pack @anthropic-ai/claude-code-linux-arm64-musl@2.1.174` を実取得し `readelf` + `dd` で実バイナリ (`package/claude`, 242MB) を直接解析した結果:
+- **`Type: ET_EXEC`** (非 PIE) → Android が直接 execve を拒否 (`unexpected e_type: 2` の正体)。interpreter 経由起動が必須。
+- **`PT_INTERP = /lib/ld-musl-aarch64.so.1`** (offset 0x270, 26 bytes, null 終端確認)。
+- **`DT_NEEDED = libc.musl-aarch64.so.1` ただ 1 つ**。libgcc_s / libstdc++ は DT_NEEDED に**無い**。
+- → **決着**: 両エージェントが部分的に正しい。**起動 (Q1) に必要なのは ld-musl 1 ファイル (~1MB) のみ** (エージェント2 が起動については正)。docs が要求する libgcc/libstdc++/ripgrep は DT_NEEDED 外で起動時にはロードされず、特定 runtime code path が dlopen する時のみ要る**漸進的依存** (エージェント3 が全機能については正)。
+- 補足: v29 失敗は「bionic linker64 で musl ld をロード」する別経路。今回の PoC は patchelf で interpreter 書換 + ld-musl 直接/kernel binfmt 経由なので別物。bug #117 (DNS patch 済み musl) で `./ld-musl ./claude --print OK` が Termux 実機成功した前例とも整合。
+- → **位置づけが昇格**: 「安い PoC で白黒つく有望株」→ **「ELF 的には起動の障害は ld-musl 1 ファイルと SELinux exec 経路のみ。実機 Q1 を残すだけ」**。
+- ⚡ **実機 Q1 結果 (2026-06-12, Z Fold6): FAIL**。`@2.1.174` musl バイナリは ld-musl 経由でも patched-interp 直接 exec でも起動時 SIGSEGV (出力0)。同じ ld で busybox(musl PIE) は正常動作するので原因は Bun バイナリ自体の Android 起動不能。**Track M は「現状不可」に確定**。詳細・全プローブデータは [claude-patched-binary-poc-plan.md の「⚡ 実機 PoC 結果」節](./2026-06-10-claude-patched-binary-poc-plan.md)。残る道は古い claude 版の二分探索のみ。
 
 ### 死んだ経路 (確定)
 - **AVF (Linux VM)**: Z Fold6 では二重に不可。AVF API は `@SystemApi` + preinstalled アプリ限定で 3rd パーティから使えず、かつ Snapdragon 機は non-protected VM 非対応 (One UI 8.5 の Linux Terminal も Exynos/Tensor 限定)。
