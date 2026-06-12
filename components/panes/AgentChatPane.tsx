@@ -45,7 +45,6 @@ import { fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { logError } from '@/lib/debug-logger';
 
 const MAX_VISIBLE_SESSION_TABS = 4;
 const LOCAL_REPLY_EVENT_TTL_MS = 10 * 60 * 1000;
@@ -123,6 +122,7 @@ export default function AgentChatPane() {
   const agentChatLastUpdatedAt = useAgentChatStore((s) => s.lastUpdatedAt);
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
+  const suspendWidgetBindingForPrivacy = useAgentChatStore((s) => s.suspendWidgetBindingForPrivacy);
   const dismissSession = useAgentChatStore((s) => s.dismissSession);
   const bindCodexSessionToPty = useAgentChatStore((s) => s.bindCodexSessionToPty);
   const terminalReadinessSignature = useTerminalStore((s) =>
@@ -161,12 +161,10 @@ export default function AgentChatPane() {
       stopPolling();
       mountedAgentChatPaneCount = Math.max(0, mountedAgentChatPaneCount - 1);
       if (mountedAgentChatPaneCount === 0) {
-        TerminalEmulator.clearScouterWidgetConversationForPrivacy?.().catch((error) => {
-          logError('AgentChatPane', 'Failed to clear Scouter widget conversation after closing Agent Chat panes', error);
-        });
+        suspendWidgetBindingForPrivacy('closing all Agent Chat panes');
       }
     };
-  }, [startPolling, stopPolling]);
+  }, [startPolling, stopPolling, suspendWidgetBindingForPrivacy]);
 
   const sessionTabs = useMemo(
     () => compactSessionTabs(sessions, MAX_VISIBLE_SESSION_TABS, selectedSessionId),

@@ -85,6 +85,11 @@ type ScouterCodexPetDebug = {
   localRootExists?: boolean;
   localDirectoryCount?: number;
   localDirectories?: string[];
+  petRoots?: Array<{
+    path?: string;
+    exists?: boolean;
+    directoryCount?: number;
+  }>;
   availablePetCount?: number;
   validPetCount?: number;
   availablePets?: Array<{
@@ -466,7 +471,9 @@ function codexPetDetailLine(pet?: ScouterCodexPetDebug | null): string {
   if (!pet) return 'PET root --';
   const directories = pet.localDirectories?.length ? pet.localDirectories.join(', ') : 'none';
   const root = pet.localRootExists ? 'root ok' : 'root missing';
-  return `PET ${root} · local dirs ${pet.localDirectoryCount ?? 0}: ${shorten(directories, 90)}`;
+  const roots = pet.petRoots ?? [];
+  const existingRoots = roots.filter((candidate) => candidate.exists).length;
+  return `PET ${root} · roots ${existingRoots}/${roots.length || 1} · dirs ${pet.localDirectoryCount ?? 0}: ${shorten(directories, 78)}`;
 }
 
 function shortModelName(model: string): string {

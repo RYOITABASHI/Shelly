@@ -99,14 +99,16 @@ class JsonlSessionParser(
             previousCodexTotal = (previousCodexTotal ?: CodexUsage.ZERO).plus(usage)
             usage
         }
-        if (raw.totalTokens <= 0L) return null
-
         modelName = extractCodexModel(payload) ?: extractCodexModel(info) ?: modelName ?: "gpt-5"
-        inputTokens += raw.inputTokens
-        outputTokens += raw.outputTokens
-        cacheReadInputTokens += raw.cachedInputTokens
-        reasoningOutputTokens += raw.reasoningOutputTokens
-        totalTokensObserved += raw.totalTokens
+        val hasRateLimitSignal = rateLimit.hasSignal || rateLimitsSnapshot.hasSignal
+        if (raw.totalTokens <= 0L && !hasRateLimitSignal && contextPercentRemaining == null) return null
+        if (raw.totalTokens > 0L) {
+            inputTokens += raw.inputTokens
+            outputTokens += raw.outputTokens
+            cacheReadInputTokens += raw.cachedInputTokens
+            reasoningOutputTokens += raw.reasoningOutputTokens
+            totalTokensObserved += raw.totalTokens
+        }
         val cwd = codexCwd ?: file.parentFile?.absolutePath.orEmpty()
 
         return ScouterEvent(
@@ -145,7 +147,13 @@ class JsonlSessionParser(
         val secondaryUsedPercent: Double? = null,
         val primaryResetAt: Long? = null,
         val secondaryResetAt: Long? = null
-    )
+    ) {
+        val hasSignal: Boolean
+            get() = primaryUsedPercent != null ||
+                secondaryUsedPercent != null ||
+                primaryResetAt != null ||
+                secondaryResetAt != null
+    }
 
     // Defensive parse of the Codex token_count `rate_limits` object. Real shape is roughly
     // { primary: { used_percent, window_minutes, resets_in_seconds }, secondary: {...} } but

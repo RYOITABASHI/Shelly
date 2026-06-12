@@ -233,8 +233,9 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
             promptPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_codex_ask, it) }
 
-            val boundCodex = latestCodexForBinding(snapshots, binding)
-            val codex = boundCodex ?: latestFor(snapshots, ScouterSource.CODEX)
+            val privacySuppressed = conversation?.privacySuppressed == true
+            val boundCodex = if (privacySuppressed) null else latestCodexForBinding(snapshots, binding)
+            val codex = if (privacySuppressed) null else boundCodex ?: latestFor(snapshots, ScouterSource.CODEX)
             val local = latestFor(snapshots, ScouterSource.LOCAL_LLM)
             val boundScreen = inspectBoundCodexScreen(binding)
             bindCodexApprovalActions(views, context, binding, boundCodex, conversation, boundScreen)
@@ -1059,6 +1060,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 }
                 return null
             }
+            if (conversation.privacySuppressed) return null
             val isApprovalFailure = conversation.widgetStatus == ScouterStateStore.approvalFailedStatus()
             val isChoicePending = conversation.widgetStatus == ScouterStateStore.choicePendingStatus()
             val widgetPromptAt = conversation.widgetPromptAt ?: 0L

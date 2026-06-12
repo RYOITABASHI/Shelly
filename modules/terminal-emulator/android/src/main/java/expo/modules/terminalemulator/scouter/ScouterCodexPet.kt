@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Environment
 import expo.modules.terminalemulator.HomeInitializer
 import org.json.JSONArray
 import org.json.JSONObject
@@ -80,10 +81,14 @@ internal object ScouterCodexPet {
     fun debugJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val preferences = prefs(appContext)
-        val localRoot = File(HomeInitializer.getHomeDir(appContext), ".codex/pets")
-        val localDirectories = localRoot.listFiles { file -> file.isDirectory }
-            ?.sortedBy { it.name.lowercase(Locale.US) }
-            .orEmpty()
+        val roots = petRoots(appContext)
+        val localRoot = roots.firstOrNull() ?: File(HomeInitializer.getHomeDir(appContext), ".codex/pets")
+        val rootDirectories = roots.associateWith { root ->
+            root.listFiles { file -> file.isDirectory }
+                ?.sortedBy { it.name.lowercase(Locale.US) }
+                .orEmpty()
+        }
+        val localDirectories = rootDirectories.values.flatten()
         val selectedKey = preferences.getString(KEY_SELECTED_PET_KEY, null)?.takeIf { it.isNotBlank() }
         val selectedId = preferences.getString(KEY_SELECTED_PET_ID, null)?.takeIf { isSafeId(it) }
         val pets = discoverPets(appContext)
@@ -125,6 +130,15 @@ internal object ScouterCodexPet {
             put("localDirectories", JSONArray().also { arr ->
                 localDirectories.forEach { arr.put(it.name) }
             })
+            put("petRoots", JSONArray().also { arr ->
+                roots.forEach { root ->
+                    arr.put(JSONObject().apply {
+                        put("path", root.absolutePath)
+                        put("exists", root.isDirectory)
+                        put("directoryCount", rootDirectories[root]?.size ?: 0)
+                    })
+                }
+            })
             put("availablePetCount", pets.size)
             put("validPetCount", validCount)
             put("availablePets", petArray)
@@ -163,8 +177,33 @@ internal object ScouterCodexPet {
     private fun discoverPets(context: Context): List<PetSource> =
         localPets(context) + demoPet(context)
 
-    private fun localPets(context: Context): List<PetSource> {
-        val root = File(HomeInitializer.getHomeDir(context), ".codex/pets")
+    private fun localPets(context: Context): List<PetSource> =
+        petRoots(context).flatMap(::petsInRoot).distinctBy { it.selectionKey }
+
+    private fun petRoots(context: Context): List<File> {
+        val roots = mutableListOf<File>()
+        roots += File(HomeInitializer.getHomeDir(context), ".codex/pets")
+        context.getExternalFilesDir(null)?.let { externalFiles ->
+            roots += File(externalFiles, ".codex/pets")
+            roots += File(externalFiles, "Codex/pets")
+            roots += File(externalFiles, "pets")
+        }
+        externalStorageRoot()?.let { external ->
+            roots += File(external, ".codex/pets")
+            roots += File(external, "Codex/pets")
+            roots += File(external, "Codex/.codex/pets")
+            roots += File(external, "Documents/Codex/pets")
+            roots += File(external, "Documents/Codex/.codex/pets")
+            roots += File(external, "Download/Codex/pets")
+            roots += File(external, "Download/.codex/pets")
+            roots += File(external, "Download/codex-pets")
+            roots += File(external, "Shelly/pets")
+            roots += File(external, "Documents/Shelly/pets")
+        }
+        return roots.distinctBy { canonicalKey(it) }
+    }
+
+    private fun petsInRoot(root: File): List<PetSource> {
         val directories = root.listFiles { file -> file.isDirectory } ?: return emptyList()
         return directories
             .sortedBy { it.name.lowercase(Locale.US) }
@@ -189,6 +228,14 @@ internal object ScouterCodexPet {
                 }.getOrNull()
             }
     }
+
+    private fun externalStorageRoot(): File? =
+        runCatching { Environment.getExternalStorageDirectory() }
+            .getOrNull()
+            ?.takeIf { it.absolutePath.isNotBlank() }
+
+    private fun canonicalKey(file: File): String =
+        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
 
     private fun demoPet(context: Context): List<PetSource> {
         return runCatching {

@@ -153,6 +153,7 @@ type AgentChatState = {
   dismissSession: (sessionId: string, options?: DismissSessionOptions) => void;
   renameSession: (sessionId: string, title: string) => void;
   requestComposeFocus: () => void;
+  suspendWidgetBindingForPrivacy: (reason: string) => void;
   refresh: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
@@ -190,6 +191,7 @@ const SESSION_TITLES_STORAGE_KEY = 'shelly_agent_chat_session_titles';
 let pollingRefCount = 0;
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
 let liveSubscription: { remove(): void } | null = null;
+let widgetBindingSuppressedForPrivacy = false;
 let dismissedSessionsHydrated = false;
 let dismissedSessionsHydratePromise: Promise<void> | null = null;
 let sessionTitlesHydrated = false;
@@ -394,6 +396,20 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     set({ composeFocusSignal: Date.now() });
   },
 
+  suspendWidgetBindingForPrivacy: (reason: string) => {
+    widgetBindingSuppressedForPrivacy = true;
+    set({
+      sessions: [],
+      events: [],
+      bindings: {},
+      latestSessionId: null,
+      loading: false,
+      error: null,
+      lastUpdatedAt: Date.now(),
+    });
+    clearScouterWidgetConversationForPrivacy(reason);
+  },
+
   refresh: async () => {
     set({ loading: true, error: null });
     try {
@@ -454,7 +470,11 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
         error: null,
         lastUpdatedAt: Date.now(),
       });
-      persistLatestWidgetCodexBinding(finalBoundSessions);
+      if (widgetBindingSuppressedForPrivacy) {
+        clearScouterWidgetConversationForPrivacy('Agent Chat panes are closed');
+      } else {
+        persistLatestWidgetCodexBinding(finalBoundSessions);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ loading: false, error: message, lastUpdatedAt: Date.now() });
@@ -464,6 +484,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   startPolling: () => {
     pollingRefCount += 1;
+    widgetBindingSuppressedForPrivacy = false;
     void hydrateDismissedSessionIds(set, get);
     void hydrateSessionTitleOverrides(set, get);
     startLiveSubscription();
@@ -509,6 +530,10 @@ function stopLiveSubscription(): void {
 }
 
 function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
+  if (widgetBindingSuppressedForPrivacy) {
+    clearScouterWidgetConversationForPrivacy('Agent Chat panes are closed');
+    return;
+  }
   const session = sessions
     .filter((candidate) => (
       candidate.bindingConfidence === 'reliable' && Boolean(candidate.ptySessionId?.trim())
