@@ -1041,7 +1041,12 @@ patchCodex(libDir);
     //      Codex as the automatic fallback.
     // 219: If app-data codex_tui exits immediately, quarantine its health
     //      marker and retry the bundled APK TUI so widgets can resume Codex.
-    private const val BASHRC_VERSION = 225
+    // 226: re-point $HOME/bin/bash symlink (libbash.so -> shelly_shell native
+    //      launcher) so non-LD_PRELOAD'd processes (e.g. Claude Code's node
+    //      spawning its Bash-tool shell) can directly execve bash, and stop
+    //      cleanupRemovedCliRuntime from wiping claude install dirs. Part of the
+    //      Claude Code re-enable (Bash-tool exit-1 fix).
+    private const val BASHRC_VERSION = 226
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1954,16 +1959,24 @@ patchCodex(libDir);
 
             // Tool functions
             sb.appendLine("# v51: PATH-visible Android-compatible shell/env for AI CLIs")
-            sb.appendLine("__shelly_bash_target=\"\$SHELLY_LIB_DIR/libbash.so\"")
+            sb.appendLine("__shelly_bash_target=\"\$SHELLY_LIB_DIR/shelly_shell\"")
             sb.appendLine("if [ ! -e \"\$HOME/bin/bash\" ] || [ \"\$(__shelly_readlink \"\$HOME/bin/bash\" 2>/dev/null)\" != \"\$__shelly_bash_target\" ]; then")
             sb.appendLine("  __shelly_rm -f \"\$HOME/bin/bash\" 2>/dev/null")
             sb.appendLine("  __shelly_ln -s \"\$__shelly_bash_target\" \"\$HOME/bin/bash\" 2>/dev/null || true")
             sb.appendLine("fi")
             sb.appendLine("unset __shelly_bash_target")
             // v52/v163: re-point $SHELL at $HOME/bin/bash so tools that validate
-            // basename($SHELL) against {sh,bash,zsh,...} accept it. The symlink target is libbash.so;
-            // bionic child execs are redirected through linker64 by
-            // libexec_wrapper.so.
+            // basename($SHELL) against {sh,bash,zsh,...} accept it.
+            // v226: symlink target is now shelly_shell (the native launcher in
+            // $libDir), NOT libbash.so directly. libbash.so is a shared library
+            // and cannot be execve'd directly; the old design relied on
+            // libexec_wrapper.so (LD_PRELOAD) redirecting the exec through
+            // linker64 — but processes started via _run (e.g. node running
+            // Claude Code's cli.js) do NOT carry that preload, so their
+            // child_process.spawn($HOME/bin/bash) hit EACCES (root cause of the
+            // Bash-tool exit-1). shelly_shell is a directly-execable native
+            // binary that internally runs `linker64 libbash.so "$@"`, so raw
+            // spawns work without any LD_PRELOAD.
             sb.appendLine("export SHELL=\"\$HOME/bin/bash\"")
             sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("if [ ! -e \"\$HOME/bin/sh\" ] || [ \"\$(__shelly_readlink \"\$HOME/bin/sh\" 2>/dev/null)\" != \"/system/bin/sh\" ]; then")
@@ -2782,20 +2795,16 @@ patchCodex(libDir);
         val runtime = File(home, ".shelly-runtime")
         val shellyCli = File(home, ".shelly-cli")
         val libRoot = File(libDir)
+        // v226: claude entries removed from this cleanup — Claude Code is being
+        // re-enabled (see specs/2026-06-12-claude-reenable-implementation-plan.md).
+        // gemini stays removed (Codex-only for hosted CLIs); musl artifacts stay
+        // removed (native musl-binary route abandoned, PoC FAIL 2026-06-12).
         val targets = listOf(
-            File(bin, "claude"),
             File(bin, "gemini"),
             File(home, ".bun-tmp"),
-            File(home, ".claude-tmp"),
-            File(runtime, "claude"),
-            File(runtime, "claude-extracted"),
             File(runtime, "gemini"),
-            File(File(shellyCli, "node_modules/@anthropic-ai"), "claude-code"),
             File(File(shellyCli, "node_modules/@google"), "gemini-cli"),
-            File(File(libRoot, "node_modules/@anthropic-ai"), "claude-code"),
-            File(File(libRoot, "node_modules/@anthropic-ai"), "claude-code-extracted"),
             File(File(libRoot, "node_modules/@google"), "gemini-cli"),
-            File(libRoot, "claude"),
             File(libRoot, "shelly_musl_exec"),
             File(libRoot, "ld-musl-aarch64.so.1"),
             File(libRoot, "libexec_wrapper_musl.so")
@@ -2808,9 +2817,7 @@ patchCodex(libDir);
             }
         }
         for (emptyParent in listOf(
-            File(shellyCli, "node_modules/@anthropic-ai"),
             File(shellyCli, "node_modules/@google"),
-            File(libRoot, "node_modules/@anthropic-ai"),
             File(libRoot, "node_modules/@google")
         )) {
             try {
