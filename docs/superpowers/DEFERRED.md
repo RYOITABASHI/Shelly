@@ -66,7 +66,9 @@
 
 **→ spec**: `docs/superpowers/specs/2026-06-10-bash-tool-exit1-observability-plan.md` で観測基盤を 3 層 (経路切り分け / syscall trace / symbol 化 tombstone) に具体化。
 
-**→ 真因調査 (2026-06-12)**: `docs/superpowers/specs/2026-06-12-bash-tool-exit1-root-cause-investigation.md`。3 エージェント並列調査を一次ソースで突き合わせ、真因を **L6 (CC の shell snapshot 生成パイプライン) × L1 (Shelly の Bun.spawn polyfill 戻り値契約) の複合**に絞り込み。Knox(L5)/bionic(L4) は EACCES→exit126+avc ログという別シグネチャ・同ドメインで TUI の bash が exec 成功している事実から実質除外。「関数シェルが壊す」replay 説は `$libDir` ハードコード + `export -f` で反証。**回帰の証拠**: DEFERRED 履歴 build 693 (claude 2.1.140) では cli.js tier の Bash tool が exit 0 だった → 2.1.143+ の harness 変更による回帰。**最速プローブ**: `ANTHROPIC_LOG=debug claude --debug` のログに「Failed to create shell snapshot」が出るか1点で locus が二分 (APK 変更・root 不要)。CC 全般の snapshot/capture 脆弱性 (#12115 Fedora `/usr/bin/env bash ENOENT`, #41124 CachyOS, #42461 /tmp満杯, #52983 AlmaLinux) を Shelly 環境が踏み抜いている構図。着手は v6.0.0 告知後の専用ブランチ。
+**→ 真因調査 (2026-06-12)**: `docs/superpowers/specs/2026-06-12-bash-tool-exit1-root-cause-investigation.md`。真因を **L6 (CC の shell snapshot 生成 spawn) × L1 (Bun.spawn polyfill 戻り値契約)** に絞り込み、Knox(L5)/bionic(L4) は一次ソースで実質除外。
+
+**→ 実機 feasibility 確定 + 実装計画 (2026-06-12) ⚡ fixable=YES**: device node v24.14.1 だけ (claude 不要) で Bash tool の核を再現し、**L6 を OS レベルで CONFIRMED**。CC が spawn する `bash`/`$HOME/bin/bash`(=libbash.so 共有ライブラリへの symlink)/`/usr/bin/env bash` が全て **EACCES/ENOENT** で落ちる一方、`/bin/sh`・`/system/bin/sh` は raw spawn で動く。**修正の核心は `$HOME/bin/bash` の symlink 先を `libbash.so`→既存 native launcher `shelly_shell` ($libDir に展開済み) に張り替えるだけ**。実装計画: `docs/superpowers/specs/2026-06-12-claude-reenable-implementation-plan.md` (専用ブランチ `feat/claude-on-device-reenable`、Step1 symlink 張替 / Step2 cleanup から claude 除外 / Step3 npm install @2.1.112 / Step4 最小 claude() / Step5 polyfill 復活=残る唯一の未知数 L1 / Step6 BASHRC_VERSION bump / Step7 bare REPL+Bash tool 検証ゲート / Step8 agent review + opt-in rollout)。**重要前提**: claude は `3095aa47`(2026-05-29, v5.3.8) で Codex 一本化のため意図的撤去済み。本計画はそれを feasibility-gated で復活させるもの。Codex 非回帰がマージ条件。
 
 **Why not now**: Codex / Claude CLI の既存サポート面を壊さずに main を green に戻すことを優先する。未検証の exec-wrapper relay や launcher churn は main に載せない。
 

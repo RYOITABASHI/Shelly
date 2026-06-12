@@ -6,6 +6,29 @@
 
 ---
 
+## ⚡ 実機 feasibility 確認 (2026-06-12) — L6 を OS レベルで CONFIRMED・Shelly 側で fixable
+
+**重要な追記**: 調査中に、on-device claude は `3095aa47 "remove legacy AI CLI integrations"`(2026-05-29)で `claude()` 関数ごと**意図的に撤去**され、v6.0.0(HEAD)まで未再導入と判明(v5.3.8 で Codex 一本化)。`cleanupRemovedCliRuntime`(HomeInitializer.kt:1083)が毎起動で claude install を wipe するのも撤去済み機能の正常な後始末で、バグではない。したがって live 再現は claude 不在でブロックされるが、**Bash tool の核(`child_process.spawn(shell,['-c',cmd])`)は claude 抜きで device の node v24.14.1 だけで再現でき**、真因を OS レベルで確定できた。
+
+| node `spawnSync` 対象 | 結果 |
+|---|---|
+| `sh` / `/bin/sh` / `/system/bin/sh` | ✅ st:0, out:"OK" |
+| `bash` | ❌ EACCES |
+| `$SHELL` = `$HOME/bin/bash` | ❌ EACCES |
+| `/usr/bin/env bash` | ❌ ENOENT |
+| Node `shell:true`(既定シェル解決) | ❌ ENOENT |
+
+**確定した真因(L6)**: Claude Code の Bash tool / shell-snapshot 生成は `bash` / `$HOME/bin/bash` / `/usr/bin/env bash` を spawn するが Shelly では全滅する。`$HOME/bin/bash` は libDir の **libbash.so(共有ライブラリ)への symlink** で生 execve 不可(linker64 経由が必須、raw spawn は EACCES)。`/usr/bin/env` は `/usr` 不在で ENOENT。→ snapshot 生成 spawn が失敗 → Bash tool が exit 1/127。**一方 `/bin/sh`・`/system/bin/sh`(toybox/mksh)は raw spawn で動く**。OS とローダは健全で、詰まりは「CC が叩く bash が Shelly では直接 exec できない形になっている」一点。
+
+**fix(Shelly 側、Anthropic 依存なし)**:
+- **本命**: CC が spawn する `bash`(= `$HOME/bin/bash`)を、libbash.so への symlink ではなく **libDir 内の直接 exec 可能な native ランチャ binary**(内部で `linker64 libbash.so "$@"` を起動)にする。CLAUDE.md の「PATH-visible shim は native binary 必須(libDir の SELinux label が exec 許可)」パターン。`shelly-shell-launcher.c` が既に同型の処理をしているので、それを `bash` という名前で PATH/`$HOME/bin` に出し、symlink 先を native binary にすればよい。これで CC の bash-snapshot がそのまま機能する見込み。
+- **簡易**: `CLAUDE_CODE_SHELL` / `SHELL=/system/bin/sh` で CC を mksh に向ける。ただし CC の snapshot は `declare -f` 等 bash-ism を使うため mksh では壊れる懸念 → 本命を推奨。
+- **注意**: Node の `shell:true`/既定シェル解決は ENOENT になるので、CC 側でも**明示シェルパス**前提で設定する。
+
+**残る未確認(L1)**: Bun.spawn polyfill が child_process へ忠実に転送するか(戻り値契約)は claude 実物がないと未確認。ただし L6(最大の壁)は崩れた。**評価**: claude を戻し、native bash ランチャ + 明示シェルを当てれば Bash tool が通る公算が高い(中〜高確信)。実装フェーズの最小スコープ = (1) native bash ランチャを `$HOME/bin/bash` に出す (2) `claude()` を専用ブランチで復活 (3) `ANTHROPIC_LOG=debug` で Bash tool 実ログ確認 (4) 残れば L1 polyfill 契約を潰す。
+
+---
+
 ## 1. TL;DR
 
 - **真因は L6(CC の shell snapshot パイプライン)× L1(Shelly の Bun.spawn polyfill 戻り値契約)の複合**に高確度で絞れた。CC の Bash tool は「シェルを spawn → snapshot 生成 → source → 出力捕捉 → exit code 捕捉」のパイプラインで、**このどこが折れても UI 上は一律「Error: Exit code 1, 出力空」に潰れる**(検証済み issue 多数)。
