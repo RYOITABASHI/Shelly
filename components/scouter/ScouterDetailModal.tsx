@@ -58,6 +58,43 @@ type ScouterSystemLoad = {
   ramTotalMb?: number | null;
 };
 
+type ScouterWidgetBinding = {
+  codexSessionId?: string | null;
+  ptySessionId?: string | null;
+  shellySessionId?: string | null;
+  cwd?: string | null;
+  updatedAt?: number | null;
+};
+
+type ScouterWidgetConversation = {
+  lastPrompt?: string | null;
+  lastPromptAt?: number | null;
+  widgetPrompt?: string | null;
+  widgetPromptAt?: number | null;
+  widgetStatus?: string | null;
+  widgetStatusAt?: number | null;
+  widgetError?: string | null;
+};
+
+type ScouterCodexPetDebug = {
+  visible?: boolean;
+  selectedId?: string | null;
+  selectedKey?: string | null;
+  localRoot?: string | null;
+  localRootExists?: boolean;
+  localDirectoryCount?: number;
+  localDirectories?: string[];
+  availablePetCount?: number;
+  validPetCount?: number;
+  availablePets?: Array<{
+    id?: string;
+    source?: string;
+    valid?: boolean;
+    selected?: boolean;
+    spritesheetBytes?: number;
+  }>;
+};
+
 type ScouterDebugInfo = {
   enabled?: boolean;
   port?: number;
@@ -69,6 +106,9 @@ type ScouterDebugInfo = {
   localLlmEndpoints?: string;
   systemLoad?: ScouterSystemLoad;
   sessions?: ScouterSession[];
+  widgetCodexBinding?: ScouterWidgetBinding | null;
+  widgetConversation?: ScouterWidgetConversation | null;
+  codexPet?: ScouterCodexPetDebug | null;
 };
 
 const STALE_MS = 10 * 60 * 1000;
@@ -151,6 +191,13 @@ export function ScouterDetailModal({ visible, onClose }: Props) {
               ) : (
                 sessions.map((session) => <SessionCard key={sessionKey(session)} session={session} />)
               )}
+            </Section>
+
+            <Section title="WIDGET">
+              <Text style={styles.codeLine}>{widgetBindingLine(info)}</Text>
+              <Text style={styles.codeLine}>{widgetPromptLine(info?.widgetConversation)}</Text>
+              <Text style={styles.codeLine}>{codexPetLine(info?.codexPet)}</Text>
+              <Text style={styles.codeLine}>{codexPetDetailLine(info?.codexPet)}</Text>
             </Section>
 
             <Section title="SYSTEM">
@@ -387,6 +434,37 @@ function systemLoadLine(load?: ScouterSystemLoad): string {
     ? `${formatMegabytes(load.ramAvailableMb)} free${typeof load.ramTotalMb === 'number' ? ` / ${formatMegabytes(load.ramTotalMb)}` : ''}`
     : '--';
   return `CPU ${cpu} · APP CPU ${appCpu} · APP ${app} · RAM ${ram} · ${formatTime(load.sampledAt)}`;
+}
+
+function widgetBindingLine(info?: ScouterDebugInfo | null): string {
+  const binding = info?.widgetCodexBinding;
+  if (!binding?.ptySessionId) return 'BIND none';
+  const codex = binding.codexSessionId ? shortSessionId(binding.codexSessionId) : 'codex --';
+  return `BIND ${shortSessionId(binding.ptySessionId)} · ${codex} · ${projectName(binding.cwd || undefined)} · ${formatTime(binding.updatedAt || undefined)}`;
+}
+
+function widgetPromptLine(conversation?: ScouterWidgetConversation | null): string {
+  const status = conversation?.widgetStatus || 'clear';
+  const prompt = conversation?.widgetPrompt || conversation?.lastPrompt || '';
+  if (!prompt.trim()) return `PROMPT ${status} · empty`;
+  const at = conversation?.widgetPromptAt || conversation?.lastPromptAt;
+  return `PROMPT ${status} · ${shorten(prompt, 82)} · ${formatTime(at || undefined)}`;
+}
+
+function codexPetLine(pet?: ScouterCodexPetDebug | null): string {
+  if (!pet) return 'PET debug unavailable';
+  const selected = pet.availablePets?.find((candidate) => candidate.selected);
+  const selectedId = selected?.id || pet.selectedId || 'default';
+  const valid = typeof pet.validPetCount === 'number' ? pet.validPetCount : 0;
+  const total = typeof pet.availablePetCount === 'number' ? pet.availablePetCount : 0;
+  return `PET ${pet.visible === false ? 'hidden' : 'visible'} · selected ${selectedId} · valid ${valid}/${total}`;
+}
+
+function codexPetDetailLine(pet?: ScouterCodexPetDebug | null): string {
+  if (!pet) return 'PET root --';
+  const directories = pet.localDirectories?.length ? pet.localDirectories.join(', ') : 'none';
+  const root = pet.localRootExists ? 'root ok' : 'root missing';
+  return `PET ${root} · local dirs ${pet.localDirectoryCount ?? 0}: ${shorten(directories, 90)}`;
 }
 
 function shortModelName(model: string): string {

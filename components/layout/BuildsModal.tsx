@@ -649,23 +649,65 @@ async function verifyReleaseApkFile(update: AndroidUpdateManifest, apkPath: stri
   return verify.ok;
 }
 
+function codexRuntimeUpdaterCommand(args: string[], env: string[] = []): string {
+  const nodeArgv = [
+    '"$HOME/.shelly-runtime-update.js"',
+    ...args.map(sq),
+  ].join(' ');
+  return [
+    'mkdir -p "$HOME/.tmp" "$HOME/.config" "$HOME/.cache" "$HOME/.local/share"',
+    [
+      '/system/bin/env -i',
+      'HOME="$HOME"',
+      'PWD="${PWD:-$HOME}"',
+      'USER="${USER:-shelly}"',
+      'LOGNAME="${LOGNAME:-shelly}"',
+      'SHELL="${SHELL:-/system/bin/sh}"',
+      'TERM="${TERM:-xterm-256color}"',
+      'COLORTERM="${COLORTERM:-truecolor}"',
+      'LANG="${LANG:-C.UTF-8}"',
+      'LC_ALL="${LC_ALL:-C.UTF-8}"',
+      'PATH="$HOME/bin:$lib:${PATH:-/system/bin:/vendor/bin}"',
+      'LD_LIBRARY_PATH="$lib"',
+      'ANDROID_DATA="${ANDROID_DATA:-/data}"',
+      'ANDROID_ROOT="${ANDROID_ROOT:-/system}"',
+      'TMPDIR="$HOME/.tmp"',
+      'NPM_CONFIG_PREFIX="$HOME/.npm-global"',
+      'XDG_CONFIG_HOME="$HOME/.config"',
+      'XDG_CACHE_HOME="$HOME/.cache"',
+      'XDG_DATA_HOME="$HOME/.local/share"',
+      'TERMUX_VERSION="shelly"',
+      'NO_UPDATE_NOTIFIER=1',
+      'DISABLE_AUTOUPDATER=1',
+      'DISABLE_UPDATE_CHECK=1',
+      'USE_BUILTIN_RIPGREP=0',
+      'DISABLE_INSTALLATION_CHECKS=1',
+      'SHELLY_AUTO_UPDATE_CLIS=0',
+      'SHELLY_LIB_DIR="$lib"',
+      ...env,
+      '/system/bin/linker64 "$lib/node"',
+      nodeArgv,
+    ].join(' '),
+  ].join(' && ');
+}
+
 async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string> {
   const command = [
     'lib="${SHELLY_LIB_DIR:-${LD_LIBRARY_PATH%%:*}}"',
     'test -n "$lib"',
-    [
-      'SHELLY_LIB_DIR="$lib"',
-      `SHELLY_CODEX_RUNTIME_VERSION=${sq(update.version)}`,
-      `SHELLY_CODEX_VERSION=${sq(update.codexVersion || '')}`,
-      `SHELLY_CODEX_TERMUX_VERSION=${sq(update.codexTermuxVersion || update.version)}`,
-      `SHELLY_CODEX_RUNTIME_GIT_SHA=${sq(update.gitSha || '')}`,
-      `SHELLY_CODEX_RUNTIME_RUN_ID=${sq(String(update.runId || ''))}`,
-      `SHELLY_CODEX_RUNTIME_ASSET=${sq(update.assetName)}`,
-      `SHELLY_CODEX_RUNTIME_URL=${sq(update.tarballUrl)}`,
-      `SHELLY_CODEX_RUNTIME_SHA256=${sq(update.sha256)}`,
-      'LD_LIBRARY_PATH="$lib"',
-      '/system/bin/linker64 "$lib/node" "$HOME/.shelly-runtime-update.js" codex --install-runtime',
-    ].join(' '),
+    codexRuntimeUpdaterCommand(
+      ['codex', '--install-runtime'],
+      [
+        `SHELLY_CODEX_RUNTIME_VERSION=${sq(update.version)}`,
+        `SHELLY_CODEX_VERSION=${sq(update.codexVersion || '')}`,
+        `SHELLY_CODEX_TERMUX_VERSION=${sq(update.codexTermuxVersion || update.version)}`,
+        `SHELLY_CODEX_RUNTIME_GIT_SHA=${sq(update.gitSha || '')}`,
+        `SHELLY_CODEX_RUNTIME_RUN_ID=${sq(String(update.runId || ''))}`,
+        `SHELLY_CODEX_RUNTIME_ASSET=${sq(update.assetName)}`,
+        `SHELLY_CODEX_RUNTIME_URL=${sq(update.tarballUrl)}`,
+        `SHELLY_CODEX_RUNTIME_SHA256=${sq(update.sha256)}`,
+      ],
+    ),
   ].join(' && ');
   const r = await execCommand(command, 600_000);
   if (r.exitCode !== 0) {
@@ -678,7 +720,7 @@ async function resetCodexRuntime(): Promise<string> {
   const command = [
     'lib="${SHELLY_LIB_DIR:-${LD_LIBRARY_PATH%%:*}}"',
     'test -n "$lib"',
-    'SHELLY_LIB_DIR="$lib" LD_LIBRARY_PATH="$lib" /system/bin/linker64 "$lib/node" "$HOME/.shelly-runtime-update.js" codex --reset-runtime',
+    codexRuntimeUpdaterCommand(['codex', '--reset-runtime']),
   ].join(' && ');
   const r = await execCommand(command, 60_000);
   if (r.exitCode !== 0) {

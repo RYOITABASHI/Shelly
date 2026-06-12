@@ -6,6 +6,7 @@ import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import expo.modules.terminalemulator.HomeInitializer
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
@@ -72,6 +73,60 @@ internal object ScouterCodexPet {
 
     fun hasPet(context: Context): Boolean =
         discoverPets(context).any { atlas(context, it) != null }
+
+    fun debugJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val preferences = prefs(appContext)
+        val localRoot = File(HomeInitializer.getHomeDir(appContext), ".codex/pets")
+        val localDirectories = localRoot.listFiles { file -> file.isDirectory }
+            ?.sortedBy { it.name.lowercase(Locale.US) }
+            .orEmpty()
+        val selectedKey = preferences.getString(KEY_SELECTED_PET_KEY, null)?.takeIf { it.isNotBlank() }
+        val selectedId = preferences.getString(KEY_SELECTED_PET_ID, null)?.takeIf { isSafeId(it) }
+        val pets = discoverPets(appContext)
+        var validCount = 0
+        val petArray = JSONArray()
+        pets.forEach { pet ->
+            val valid = atlas(appContext, pet) != null
+            if (valid) validCount += 1
+            petArray.put(JSONObject().apply {
+                put("id", pet.id)
+                put("source", when (pet) {
+                    is PetSource.AssetPet -> "asset"
+                    is PetSource.FilePet -> "file"
+                })
+                put("spritesheet", pet.spritesheet)
+                put("selectionKey", pet.selectionKey)
+                put("selected", pet.selectionKey == selectedKey || (selectedKey == null && pet.id == selectedId))
+                put("valid", valid)
+                when (pet) {
+                    is PetSource.AssetPet -> {
+                        put("root", pet.root)
+                    }
+                    is PetSource.FilePet -> {
+                        val spritesheetFile = File(pet.root, pet.spritesheet)
+                        put("root", pet.root.absolutePath)
+                        put("spritesheetExists", spritesheetFile.isFile)
+                        put("spritesheetBytes", spritesheetFile.length())
+                    }
+                }
+            })
+        }
+        return JSONObject().apply {
+            put("visible", preferences.getBoolean(KEY_VISIBLE, true))
+            put("selectedId", selectedId ?: JSONObject.NULL)
+            put("selectedKey", selectedKey ?: JSONObject.NULL)
+            put("localRoot", localRoot.absolutePath)
+            put("localRootExists", localRoot.isDirectory)
+            put("localDirectoryCount", localDirectories.size)
+            put("localDirectories", JSONArray().also { arr ->
+                localDirectories.forEach { arr.put(it.name) }
+            })
+            put("availablePetCount", pets.size)
+            put("validPetCount", validCount)
+            put("availablePets", petArray)
+        }
+    }
 
     fun frameBitmap(context: Context, state: State, timestampMillis: Long): Bitmap? {
         val atlas = atlasForSelectedOrFallback(context) ?: return null

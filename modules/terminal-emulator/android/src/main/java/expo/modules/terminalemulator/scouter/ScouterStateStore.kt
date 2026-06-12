@@ -65,8 +65,9 @@ data class ScouterWidgetUsageLimited(
 )
 
 class ScouterStateStore(context: Context) {
-    private val prefs = context.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
-    private val helperStateFile = File(context.filesDir, "home/.scouter-state.json")
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
+    private val helperStateFile = File(appContext.filesDir, "home/.scouter-state.json")
     private val lock = STORE_LOCK
 
     fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
@@ -141,7 +142,17 @@ class ScouterStateStore(context: Context) {
             put("recentEvents", JSONArray().also { arr ->
                 recentEvents.forEach { arr.put(it) }
             })
+            put("widgetCodexBinding", widgetCodexBinding()?.let { binding ->
+                JSONObject().apply {
+                    put("codexSessionId", binding.codexSessionId)
+                    put("ptySessionId", binding.ptySessionId)
+                    put("shellySessionId", binding.shellySessionId)
+                    put("cwd", binding.cwd)
+                    put("updatedAt", binding.updatedAt)
+                }
+            } ?: JSONObject.NULL)
             put("widgetConversation", widgetConversation().toJson())
+            put("codexPet", ScouterCodexPet.debugJson(appContext))
         }
     }
 
@@ -592,7 +603,7 @@ class ScouterStateStore(context: Context) {
         cwd: String?
     ) {
         if (ptySessionId.isNullOrBlank()) {
-            clearWidgetCodexBinding()
+            clearWidgetConversationForPrivacy()
             return
         }
         prefs.edit()

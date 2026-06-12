@@ -10,6 +10,12 @@
   android:layout_height="match_parent"
   android:padding="2dp">
 
+  <FrameLayout
+    android:id="@+id/scouter_widget_card_layer"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_gravity="top">
+
   <LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
@@ -462,4 +468,5 @@
     android:textStyle="bold"
     android:typeface="monospace"
     android:visibility="gone" />
+  </FrameLayout>
 </FrameLayout>

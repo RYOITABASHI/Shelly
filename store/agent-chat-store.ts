@@ -361,9 +361,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     });
     persistDismissedSessionIds(dismissedSessionIds);
     if (shouldClearWidgetPrivacy) {
-      TerminalEmulator.clearScouterWidgetConversationForPrivacy?.().catch((error) => {
-        logError('AgentChatStore', 'Failed to clear Scouter widget conversation after closing all Agent Chat tabs', error);
-      });
+      clearScouterWidgetConversationForPrivacy('closing all Agent Chat tabs');
     } else {
       persistLatestWidgetCodexBinding(sessions);
     }
@@ -516,14 +514,7 @@ function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
     ))
     .sort((a, b) => (b.lastEventAt ?? 0) - (a.lastEventAt ?? 0))[0];
   if (!session?.ptySessionId) {
-    TerminalEmulator.setScouterCodexBinding?.({
-      codexSessionId: '',
-      ptySessionId: null,
-      shellySessionId: null,
-      cwd: null,
-    }).catch((error) => {
-      logError('AgentChatStore', 'Failed to clear Scouter Codex binding for widget', error);
-    });
+    clearScouterWidgetConversationForPrivacy('no reliable Codex widget binding');
     return;
   }
   TerminalEmulator.setScouterCodexBinding?.({
@@ -533,6 +524,24 @@ function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
     cwd: session.cwd ?? null,
   }).catch((error) => {
     logError('AgentChatStore', 'Failed to persist Scouter Codex binding for widget', error);
+  });
+}
+
+function clearScouterWidgetConversationForPrivacy(reason: string): void {
+  const clearPromise = TerminalEmulator.clearScouterWidgetConversationForPrivacy?.();
+  if (clearPromise) {
+    clearPromise.catch((error) => {
+      logError('AgentChatStore', `Failed to clear Scouter widget conversation after ${reason}`, error);
+    });
+    return;
+  }
+  TerminalEmulator.setScouterCodexBinding?.({
+    codexSessionId: '',
+    ptySessionId: null,
+    shellySessionId: null,
+    cwd: null,
+  }).catch((error) => {
+    logError('AgentChatStore', 'Failed to clear Scouter Codex binding for widget', error);
   });
 }
 
