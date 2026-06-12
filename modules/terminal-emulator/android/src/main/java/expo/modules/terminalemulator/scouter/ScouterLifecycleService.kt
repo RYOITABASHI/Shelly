@@ -50,7 +50,13 @@ class ScouterLifecycleService private constructor(private val context: Context) 
             }
         }
         if (watcher == null) {
-            val newWatcher = JsonlWatcher(HomeInitializer.getHomeDir(appContext)) { handleEvent(it) }
+            val newWatcher = JsonlWatcher(
+                homeDir = HomeInitializer.getHomeDir(appContext),
+                codexBackfillSessionIds = {
+                    setOfNotNull(store.widgetCodexBinding()?.codexSessionId)
+                },
+                onEvent = { handleEvent(it) }
+            )
             runCatching {
                 newWatcher.start()
                 watcher = newWatcher

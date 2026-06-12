@@ -846,7 +846,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 parts += "$" + String.format(Locale.US, "%.2f", it)
             }
             snapshot.contextPercentRemaining?.let {
-                parts += String.format(Locale.US, "%.0f%%ctx", it.coerceIn(0.0, 100.0))
+                val used = (100.0 - it).coerceIn(0.0, 100.0)
+                parts += String.format(Locale.US, "%.0f%%ctx", used)
             }
             return parts.filter { it.isNotBlank() }.joinToString(" · ")
         }
@@ -1441,7 +1442,11 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         }
 
         private fun formatTokens(tokens: Long): String {
-            return if (tokens >= 1000) String.format(Locale.US, "%.1fK", tokens / 1000.0) else tokens.toString()
+            return when {
+                tokens >= 1_000_000L -> String.format(Locale.US, "%.1fM", tokens / 1_000_000.0)
+                tokens >= 1000L -> String.format(Locale.US, "%.1fK", tokens / 1000.0)
+                else -> tokens.toString()
+            }
         }
 
         private fun formatMegabytes(value: Long): String {

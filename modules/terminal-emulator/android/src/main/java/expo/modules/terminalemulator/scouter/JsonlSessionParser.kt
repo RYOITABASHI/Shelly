@@ -18,6 +18,7 @@ class JsonlSessionParser(
     private var totalTokensObserved: Long = 0
     private var totalCostUsd: Double = 0.0
     private var modelName: String? = null
+    private var contextPercentRemaining: Double? = null
     // Effective Codex approval policy as reported by the rollout JSONL
     // (turn_context / session_meta payloads). Normalized to one of
     // "never" | "on-request" | "on-failure" | "untrusted"; null = unknown.
@@ -74,6 +75,10 @@ class JsonlSessionParser(
         val info = payload.optJSONObject("info")
         updateCodexMetadata(json, payload, info)
         val totalUsage = normalizeCodexUsage(info?.optJSONObject("total_token_usage") ?: info?.optJSONObject("totalTokenUsage"))
+        val lastUsage = normalizeCodexUsage(info?.optJSONObject("last_token_usage") ?: info?.optJSONObject("lastTokenUsage"))
+        contextRemainingPercent(info, lastUsage)?.let {
+            contextPercentRemaining = it
+        }
         val rateLimit = extractScouterRateLimit(null, payload, info)
         // Structured rate_limits snapshot. Defensive: read keys with optDouble/optLong,
         // tolerate missing object/sub-keys (leave fields null), never throw.
@@ -90,9 +95,9 @@ class JsonlSessionParser(
             previousCodexTotal = totalUsage
             delta
         } else {
-            val lastUsage = normalizeCodexUsage(info?.optJSONObject("last_token_usage") ?: info?.optJSONObject("lastTokenUsage")) ?: return null
-            previousCodexTotal = (previousCodexTotal ?: CodexUsage.ZERO).plus(lastUsage)
-            lastUsage
+            val usage = lastUsage ?: return null
+            previousCodexTotal = (previousCodexTotal ?: CodexUsage.ZERO).plus(usage)
+            usage
         }
         if (raw.totalTokens <= 0L) return null
 
@@ -120,6 +125,7 @@ class JsonlSessionParser(
             outputTokens = outputTokens,
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
+            contextPercentRemaining = contextPercentRemaining,
             totalCostUsd = totalCostUsd,
             rateLimitStatus = rateLimit.status ?: ScouterRateLimitStatus.OK,
             rateLimitRemainingRequests = rateLimit.remainingRequests,
@@ -165,6 +171,14 @@ class JsonlSessionParser(
 
     private fun resetAtOf(window: JSONObject?, nowMs: Long): Long? {
         if (window == null) return null
+        val absoluteKey = listOf("resets_at", "resetsAt", "reset_at", "resetAt")
+            .firstOrNull { window.has(it) && !window.isNull(it) }
+        if (absoluteKey != null) {
+            val value = window.optLong(absoluteKey, -1L)
+            if (value > 0L) {
+                return if (value < 10_000_000_000L) value * 1000L else value
+            }
+        }
         val key = listOf("resets_in_seconds", "resetsInSeconds", "reset_in_seconds", "resetInSeconds")
             .firstOrNull { window.has(it) && !window.isNull(it) } ?: return null
         val seconds = window.optLong(key, -1L)
@@ -261,6 +275,7 @@ class JsonlSessionParser(
             outputTokens = outputTokens,
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
+            contextPercentRemaining = contextPercentRemaining,
             totalCostUsd = totalCostUsd,
             lastMessage = approvalSummary?.redactForScouter()?.take(240) ?: chatMessage,
             rateLimitStatus = rateLimit.status,
@@ -363,6 +378,7 @@ class JsonlSessionParser(
             outputTokens = outputTokens,
             reasoningOutputTokens = reasoningOutputTokens,
             cacheReadInputTokens = cacheReadInputTokens,
+            contextPercentRemaining = contextPercentRemaining,
             totalCostUsd = totalCostUsd,
             lastMessage = lastMessage?.redactForScouter()?.take(240),
             approvalPolicy = codexApprovalPolicy
@@ -625,6 +641,19 @@ class JsonlSessionParser(
         val total = json.optLongAny("total_tokens", "totalTokens").takeIf { it > 0L } ?: (input + output + reasoning)
         if (input + cached + output + reasoning + total <= 0L) return null
         return CodexUsage(input, cached.coerceAtMost(input), output, reasoning, total)
+    }
+
+    private fun contextRemainingPercent(info: JSONObject?, usage: CodexUsage?): Double? {
+        val window = info.optLongAny(
+            "model_context_window",
+            "modelContextWindow",
+            "context_window",
+            "contextWindow"
+        )
+        val used = usage?.totalTokens ?: 0L
+        if (window <= 0L || used <= 0L) return null
+        val usedPercent = (used.toDouble() / window.toDouble()) * 100.0
+        return (100.0 - usedPercent).coerceIn(0.0, 100.0)
     }
 
     private fun inferCodexToolName(payloadType: String): String? = when {
