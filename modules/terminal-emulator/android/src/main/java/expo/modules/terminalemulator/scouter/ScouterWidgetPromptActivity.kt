@@ -65,6 +65,20 @@ class ScouterWidgetPromptActivity : Activity() {
         imm?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (handlePetCycleAction(intent)) {
+            return
+        }
+        if (handleApprovalAction(intent)) {
+            return
+        }
+        if (handleChoiceAction(intent)) {
+            return
+        }
+    }
+
     override fun onDestroy() {
         promptDialog?.dismiss()
         promptDialog = null

@@ -329,11 +329,33 @@ internal object ScouterCodexPet {
             source.open(context).buffered().use { input ->
                 extractPetZip(input, importDir)
             }
-            val candidates = findPetDirectories(importDir).map(::validatePetDirectory)
-            require(candidates.isNotEmpty()) { "No valid Codex pet found in sidecar ZIP" }
-            val duplicateIds = candidates.groupBy { it.id }.filterValues { it.size > 1 }.keys
-            require(duplicateIds.isEmpty()) {
-                "Duplicate pet id in sidecar ZIP: ${duplicateIds.joinToString(", ")}"
+            val skippedReasons = mutableListOf<String>()
+            val seenIds = mutableSetOf<String>()
+            val candidates = findPetDirectories(importDir).mapNotNull { dir ->
+                runCatching {
+                    validatePetDirectory(dir)
+                }.onFailure { error ->
+                    skippedReasons += "${dir.name}: ${error.message ?: error.javaClass.simpleName}"
+                }.getOrNull()
+            }.filter { candidate ->
+                if (seenIds.add(candidate.id)) {
+                    true
+                } else {
+                    skippedReasons += "${candidate.id}: duplicate pet id"
+                    false
+                }
+            }
+            require(candidates.isNotEmpty()) {
+                buildString {
+                    append("No valid Codex pet found in sidecar ZIP")
+                    if (skippedReasons.isNotEmpty()) {
+                        append(": ")
+                        append(skippedReasons.joinToString("; "))
+                    }
+                }
+            }
+            if (skippedReasons.isNotEmpty()) {
+                Log.w(TAG, "Skipped invalid sidecar Codex pets: ${skippedReasons.joinToString("; ")}")
             }
 
             val targetRoot = privatePetRoot(context)

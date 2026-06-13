@@ -154,7 +154,7 @@
       android:typeface="monospace"
       android:lineSpacingExtra="0dp"
       android:includeFontPadding="false"
-      android:visibility="gone" />
+      android:visibility="invisible" />
 
     <!-- Live timer (Chronometer self-ticks with no widget re-render): shows the
          rate-limit reset countdown while limited, else the active session's

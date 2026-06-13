@@ -698,6 +698,7 @@ class ScouterStateStore(context: Context) {
         val suppressedSessionId = prefs.getString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, null)
             ?.ifBlank { null }
         if (suppressedSessionId == null) return true
+        if (codexSessionId.isNullOrBlank()) return true
         return sameCodexSession(suppressedSessionId, codexSessionId)
     }
 
