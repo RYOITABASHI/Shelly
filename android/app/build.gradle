@@ -5,8 +5,9 @@ apply plugin: "com.facebook.react"
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 def hostArch = System.getProperty("os.arch", "").toLowerCase()
 def useSourceBundleHermesForHost = (findProperty('shelly.useSourceBundleHermes') ?: (hostArch == "aarch64" || hostArch == "arm64").toString()).toBoolean()
-def lastManualAndroidVersionCode = 1501
+def lastManualAndroidVersionCode = 1502
 def fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1
+def androidVersionCodeOffset = 1
 def resolveShellyAndroidVersionCode = {
     def envVersionCode = System.getenv("SHELLY_ANDROID_VERSION_CODE")
     if (envVersionCode != null && envVersionCode.isInteger()) {
@@ -15,7 +16,7 @@ def resolveShellyAndroidVersionCode = {
     try {
         def gitCount = ["git", "rev-list", "--count", "HEAD"].execute(null, rootDir).text.trim()
         if (gitCount.isInteger()) {
-            return Math.max(gitCount.toInteger(), fallbackAndroidVersionCode)
+            return Math.max(gitCount.toInteger() + androidVersionCodeOffset, fallbackAndroidVersionCode)
         }
     } catch (Exception ignored) {
         // Keep direct Gradle builds usable outside a full git checkout.

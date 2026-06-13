@@ -3,8 +3,9 @@ import { execSync } from "node:child_process";
 
 const bundleId = "dev.shelly.terminal";
 const schemeFromBundleId = "shelly";
-const lastManualAndroidVersionCode = 1501;
+const lastManualAndroidVersionCode = 1502;
 const fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1;
+const androidVersionCodeOffset = 1;
 
 function androidVersionCode(): number {
   const envVersionCode = Number.parseInt(process.env.SHELLY_ANDROID_VERSION_CODE || "", 10);
@@ -18,7 +19,7 @@ function androidVersionCode(): number {
       10,
     );
     if (Number.isInteger(gitCount) && gitCount > 0) {
-      return Math.max(gitCount, fallbackAndroidVersionCode);
+      return Math.max(gitCount + androidVersionCodeOffset, fallbackAndroidVersionCode);
     }
   } catch {
     // Keep local config evaluation working outside a full git checkout.
