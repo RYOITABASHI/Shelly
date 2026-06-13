@@ -50,6 +50,7 @@ const MAX_VISIBLE_SESSION_TABS = 4;
 const LOCAL_REPLY_EVENT_TTL_MS = 10 * 60 * 1000;
 const LOCAL_REPLY_EVENT_MATCH_WINDOW_MS = 30 * 1000;
 const MAX_LOCAL_REPLY_EVENTS = 24;
+let mountedAgentChatPaneCount = 0;
 
 type ResumeNotice =
   | { status: 'pending'; sessionId: string }
@@ -121,6 +122,7 @@ export default function AgentChatPane() {
   const agentChatLastUpdatedAt = useAgentChatStore((s) => s.lastUpdatedAt);
   const startPolling = useAgentChatStore((s) => s.startPolling);
   const stopPolling = useAgentChatStore((s) => s.stopPolling);
+  const suspendWidgetBindingForPrivacy = useAgentChatStore((s) => s.suspendWidgetBindingForPrivacy);
   const dismissSession = useAgentChatStore((s) => s.dismissSession);
   const bindCodexSessionToPty = useAgentChatStore((s) => s.bindCodexSessionToPty);
   const terminalReadinessSignature = useTerminalStore((s) =>
@@ -153,9 +155,16 @@ export default function AgentChatPane() {
   const listRef = useRef<FlatList<AgentChatEvent>>(null);
 
   useEffect(() => {
+    mountedAgentChatPaneCount += 1;
     startPolling();
-    return () => stopPolling();
-  }, [startPolling, stopPolling]);
+    return () => {
+      stopPolling();
+      mountedAgentChatPaneCount = Math.max(0, mountedAgentChatPaneCount - 1);
+      if (mountedAgentChatPaneCount === 0) {
+        suspendWidgetBindingForPrivacy('closing all Agent Chat panes');
+      }
+    };
+  }, [startPolling, stopPolling, suspendWidgetBindingForPrivacy]);
 
   const sessionTabs = useMemo(
     () => compactSessionTabs(sessions, MAX_VISIBLE_SESSION_TABS, selectedSessionId),
@@ -424,11 +433,14 @@ export default function AgentChatPane() {
         {
           text: t('common.delete'),
           style: 'destructive',
-          onPress: () => dismissSession(session.codexSessionId),
+          onPress: () => dismissSession(session.codexSessionId, {
+            dismissWorkspace: true,
+            clearWidgetPrivacy: sessionTabs.length <= 1,
+          }),
         },
       ],
     );
-  }, [dismissSession, t]);
+  }, [dismissSession, sessionTabs.length, t]);
 
   const sendReply = useCallback(async () => {
     if (!activeSession || replySending || !draft.trim()) return;

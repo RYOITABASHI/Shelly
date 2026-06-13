@@ -17,6 +17,7 @@ data class ScouterWidgetConversation(
     val widgetStatus: String?,
     val widgetStatusAt: Long?,
     val widgetError: String?,
+    val privacySuppressed: Boolean = false,
     val choiceOptions: List<ChoiceOption> = emptyList()
 )
 
@@ -65,8 +66,9 @@ data class ScouterWidgetUsageLimited(
 )
 
 class ScouterStateStore(context: Context) {
-    private val prefs = context.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
-    private val helperStateFile = File(context.filesDir, "home/.scouter-state.json")
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
+    private val helperStateFile = File(appContext.filesDir, "home/.scouter-state.json")
     private val lock = STORE_LOCK
 
     fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
@@ -141,7 +143,17 @@ class ScouterStateStore(context: Context) {
             put("recentEvents", JSONArray().also { arr ->
                 recentEvents.forEach { arr.put(it) }
             })
+            put("widgetCodexBinding", widgetCodexBinding()?.let { binding ->
+                JSONObject().apply {
+                    put("codexSessionId", binding.codexSessionId)
+                    put("ptySessionId", binding.ptySessionId)
+                    put("shellySessionId", binding.shellySessionId)
+                    put("cwd", binding.cwd)
+                    put("updatedAt", binding.updatedAt)
+                }
+            } ?: JSONObject.NULL)
             put("widgetConversation", widgetConversation().toJson())
+            put("codexPet", ScouterCodexPet.debugJson(appContext))
         }
     }
 
@@ -152,7 +164,6 @@ class ScouterStateStore(context: Context) {
             .putLong(KEY_WIDGET_PROMPT_AT, now)
             .putString(KEY_WIDGET_STATUS, "queued")
             .putLong(KEY_WIDGET_STATUS_AT, now)
-            .remove(KEY_WIDGET_PRIVACY_CLEARED_AT)
             .remove(KEY_WIDGET_PENDING_PROMPT)
             .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
             .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
@@ -161,6 +172,8 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
             .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
             .remove(KEY_WIDGET_ERROR)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
     }
@@ -174,7 +187,6 @@ class ScouterStateStore(context: Context) {
             .putLong(KEY_WIDGET_PROMPT_AT, now)
             .putString(KEY_WIDGET_STATUS, WIDGET_STATUS_PENDING_TERMINAL)
             .putLong(KEY_WIDGET_STATUS_AT, now)
-            .remove(KEY_WIDGET_PRIVACY_CLEARED_AT)
             .putString(KEY_WIDGET_PENDING_CODEX_SESSION_ID, binding?.codexSessionId?.takeIf { it.isNotBlank() })
             .putString(KEY_WIDGET_PENDING_PTY_SESSION_ID, binding?.ptySessionId?.takeIf { it.isNotBlank() })
             .putString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, binding?.shellySessionId?.takeIf { it.isNotBlank() })
@@ -182,6 +194,8 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
             .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
             .remove(KEY_WIDGET_ERROR)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
     }
@@ -198,6 +212,8 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
             .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
             .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
     }
@@ -219,6 +235,8 @@ class ScouterStateStore(context: Context) {
         } else {
             editor.putString(KEY_WIDGET_CHOICE_OPTIONS, ChoiceOption.listToJson(options).toString())
         }
+        editor.remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
         editor.commit()
         writeHelperState()
     }
@@ -238,6 +256,8 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
             .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
             .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
     }
@@ -263,6 +283,8 @@ class ScouterStateStore(context: Context) {
             .putString(KEY_WIDGET_PENDING_SHELLY_SESSION_ID, binding?.shellySessionId?.takeIf { it.isNotBlank() })
             .remove(KEY_WIDGET_PENDING_PROMPT)
             .remove(KEY_WIDGET_ERROR)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
         return true
@@ -281,6 +303,8 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
             .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
             .remove(KEY_WIDGET_ERROR)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+            .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
     }
@@ -510,26 +534,46 @@ class ScouterStateStore(context: Context) {
     fun widgetConversation(codexSessionId: String? = widgetCodexBinding()?.codexSessionId): ScouterWidgetConversation {
         synchronized(lock) {
             expireStaleWidgetPromptLocked()
-            if (codexSessionId.isNullOrBlank() && prefs.getLong(KEY_WIDGET_PRIVACY_CLEARED_AT, 0L) > 0L) {
-                return emptyWidgetConversation()
+            val privacyClearedAt = prefs.getLong(KEY_WIDGET_PRIVACY_CLEARED_AT, 0L)
+            val privacySuppressed = isWidgetConversationPrivacySuppressedLocked(codexSessionId)
+            val recent = if (codexSessionId.isNullOrBlank()) {
+                emptyList()
+            } else if (privacySuppressed) {
+                emptyList()
+            } else {
+                readRecentEventJsons()
+                    .filter { event ->
+                        val timestamp = event.optLong("timestamp", 0L)
+                        matchesCodexSession(event.optString("sessionId"), codexSessionId) &&
+                            (privacyClearedAt <= 0L || timestamp > privacyClearedAt)
+                    }
+                    .sortedBy { it.optLong("timestamp", 0L) }
             }
-            val recent = readRecentEventJsons()
-                .filter { event -> matchesCodexSession(event.optString("sessionId"), codexSessionId) }
-                .sortedBy { it.optLong("timestamp", 0L) }
             val lastPrompt = recent.lastOrNull { event ->
                 event.optString("source") == ScouterSource.CODEX.name &&
                     event.optString("eventType") == ScouterEventType.USER_PROMPT.name &&
                     event.optString("lastMessage").isNotBlank()
             }
+            val lastPromptAt = lastPrompt?.optLong("timestamp", 0L)?.takeIf { it > 0L }
             val lastAnswer = recent.lastOrNull { event ->
-                isCodexAnswerEvent(event)
+                isCodexAnswerEvent(event) &&
+                    (privacyClearedAt <= 0L || (lastPromptAt != null && event.optLong("timestamp", 0L) >= lastPromptAt))
             }
             val lastApproval = recent.lastOrNull { event ->
-                isCodexApprovalEvent(event)
+                isCodexApprovalEvent(event) &&
+                    (privacyClearedAt <= 0L || (lastPromptAt != null && event.optLong("timestamp", 0L) >= lastPromptAt))
             }
+            val widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L }
+            val widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L).takeIf { it > 0L }
+            val widgetPromptVisible = isWidgetValueVisibleAfterPrivacy(widgetPromptAt, privacyClearedAt)
+            val widgetStatusVisible = isWidgetValueVisibleAfterPrivacy(widgetStatusAt, privacyClearedAt)
+            val widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)
+                ?.ifBlank { null }
+                ?.takeIf { widgetStatusVisible }
+                ?.takeUnless { privacySuppressed }
             return ScouterWidgetConversation(
                 lastPrompt = lastPrompt?.optString("lastMessage")?.ifBlank { null },
-                lastPromptAt = lastPrompt?.optLong("timestamp", 0L)?.takeIf { it > 0L },
+                lastPromptAt = lastPromptAt,
                 lastAnswer = lastAnswer?.optString("lastMessage")?.ifBlank { null },
                 lastAnswerAt = lastAnswer?.optLong("timestamp", 0L)?.takeIf { it > 0L },
                 lastApproval = firstNonBlank(
@@ -538,12 +582,15 @@ class ScouterStateStore(context: Context) {
                     lastApproval?.optString("toolName")
                 ),
                 lastApprovalAt = lastApproval?.optLong("timestamp", 0L)?.takeIf { it > 0L },
-                widgetPrompt = prefs.getString(KEY_WIDGET_PROMPT, null)?.ifBlank { null },
-                widgetPromptAt = prefs.getLong(KEY_WIDGET_PROMPT_AT, 0L).takeIf { it > 0L },
-                widgetStatus = prefs.getString(KEY_WIDGET_STATUS, null)?.ifBlank { null },
-                widgetStatusAt = prefs.getLong(KEY_WIDGET_STATUS_AT, 0L).takeIf { it > 0L },
-                widgetError = prefs.getString(KEY_WIDGET_ERROR, null)?.ifBlank { null },
-                choiceOptions = if (prefs.getString(KEY_WIDGET_STATUS, null) == WIDGET_STATUS_CHOICE_PENDING) {
+                widgetPrompt = prefs.getString(KEY_WIDGET_PROMPT, null)?.ifBlank { null }
+                    ?.takeIf { widgetPromptVisible && !privacySuppressed },
+                widgetPromptAt = widgetPromptAt?.takeIf { widgetPromptVisible && !privacySuppressed },
+                widgetStatus = widgetStatus,
+                widgetStatusAt = widgetStatusAt?.takeIf { widgetStatusVisible && !privacySuppressed },
+                widgetError = prefs.getString(KEY_WIDGET_ERROR, null)?.ifBlank { null }
+                    ?.takeIf { widgetStatusVisible && !privacySuppressed },
+                privacySuppressed = privacySuppressed,
+                choiceOptions = if (widgetStatus == WIDGET_STATUS_CHOICE_PENDING) {
                     ChoiceOption.listFromJson(prefs.getString(KEY_WIDGET_CHOICE_OPTIONS, null))
                 } else {
                     emptyList()
@@ -565,8 +612,12 @@ class ScouterStateStore(context: Context) {
             widgetStatus = null,
             widgetStatusAt = null,
             widgetError = null,
+            privacySuppressed = false,
             choiceOptions = emptyList()
         )
+
+    private fun isWidgetValueVisibleAfterPrivacy(timestamp: Long?, privacyClearedAt: Long): Boolean =
+        privacyClearedAt <= 0L || (timestamp != null && timestamp > privacyClearedAt)
 
     fun setWidgetCodexBinding(
         codexSessionId: String?,
@@ -575,17 +626,22 @@ class ScouterStateStore(context: Context) {
         cwd: String?
     ) {
         if (ptySessionId.isNullOrBlank()) {
-            clearWidgetCodexBinding()
+            clearWidgetConversationForPrivacy()
             return
         }
-        prefs.edit()
+        val suppressedSessionId = prefs.getString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, null)
+            ?.ifBlank { null }
+        val editor = prefs.edit()
             .putString(KEY_WIDGET_CODEX_SESSION_ID, codexSessionId?.takeIf { it.isNotBlank() })
             .putString(KEY_WIDGET_PTY_SESSION_ID, ptySessionId)
             .putString(KEY_WIDGET_SHELLY_SESSION_ID, shellySessionId?.takeIf { it.isNotBlank() })
             .putString(KEY_WIDGET_CWD, cwd?.takeIf { it.isNotBlank() })
             .putLong(KEY_WIDGET_BINDING_AT, System.currentTimeMillis())
-            .remove(KEY_WIDGET_PRIVACY_CLEARED_AT)
-            .commit()
+        if (suppressedSessionId != null && !sameCodexSession(suppressedSessionId, codexSessionId)) {
+            editor.remove(KEY_WIDGET_PRIVACY_SUPPRESSED_AT)
+                .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
+        }
+        editor.commit()
         writeHelperState()
     }
 
@@ -601,7 +657,11 @@ class ScouterStateStore(context: Context) {
     }
 
     fun clearWidgetConversationForPrivacy() {
-        prefs.edit()
+        val currentCodexSessionId = prefs.getString(KEY_WIDGET_CODEX_SESSION_ID, null)?.ifBlank { null }
+        val suppressedSessionId = prefs.getString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, null)
+            ?.ifBlank { null }
+        val now = System.currentTimeMillis()
+        val editor = prefs.edit()
             .remove(KEY_WIDGET_PROMPT)
             .remove(KEY_WIDGET_PROMPT_AT)
             .remove(KEY_WIDGET_STATUS)
@@ -620,9 +680,25 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_SHELLY_SESSION_ID)
             .remove(KEY_WIDGET_CWD)
             .remove(KEY_WIDGET_BINDING_AT)
-            .putLong(KEY_WIDGET_PRIVACY_CLEARED_AT, System.currentTimeMillis())
-            .commit()
+            .putLong(KEY_WIDGET_PRIVACY_CLEARED_AT, now)
+            .putLong(KEY_WIDGET_PRIVACY_SUPPRESSED_AT, now)
+        val nextSuppressedSessionId = currentCodexSessionId ?: suppressedSessionId
+        if (nextSuppressedSessionId.isNullOrBlank()) {
+            editor.remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
+        } else {
+            editor.putString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, nextSuppressedSessionId)
+        }
+        editor.commit()
         writeHelperState()
+    }
+
+    private fun isWidgetConversationPrivacySuppressedLocked(codexSessionId: String?): Boolean {
+        val suppressedAt = prefs.getLong(KEY_WIDGET_PRIVACY_SUPPRESSED_AT, 0L)
+        if (suppressedAt <= 0L) return false
+        val suppressedSessionId = prefs.getString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, null)
+            ?.ifBlank { null }
+        if (suppressedSessionId == null) return true
+        return sameCodexSession(suppressedSessionId, codexSessionId)
     }
 
     fun widgetCodexBinding(): ScouterWidgetCodexBinding? {
@@ -934,6 +1010,8 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_ERROR = "widget_error"
         private const val KEY_WIDGET_CHOICE_OPTIONS = "widget_choice_options"
         private const val KEY_WIDGET_PRIVACY_CLEARED_AT = "widget_privacy_cleared_at"
+        private const val KEY_WIDGET_PRIVACY_SUPPRESSED_AT = "widget_privacy_suppressed_at"
+        private const val KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID = "widget_privacy_suppressed_codex_session_id"
         private const val KEY_WIDGET_CODEX_SESSION_ID = "widget_codex_session_id"
         private const val KEY_WIDGET_PTY_SESSION_ID = "widget_pty_session_id"
         private const val KEY_WIDGET_SHELLY_SESSION_ID = "widget_shelly_session_id"
@@ -1008,6 +1086,7 @@ private fun ScouterWidgetConversation.toJson(): JSONObject = JSONObject().apply 
     widgetStatus?.let { put("widgetStatus", it) }
     widgetStatusAt?.let { put("widgetStatusAt", it) }
     widgetError?.let { put("widgetError", it) }
+    put("privacySuppressed", privacySuppressed)
     if (choiceOptions.isNotEmpty()) put("choiceOptions", ChoiceOption.listToJson(choiceOptions))
 }
 

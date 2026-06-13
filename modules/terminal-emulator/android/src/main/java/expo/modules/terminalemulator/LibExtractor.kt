@@ -158,6 +158,14 @@ object LibExtractor {
         // dodges. Codex's raw-syscall rewrite + future bionic-side wrapper
         // fixes both rely on this being force-extracted.
         "libexec_wrapper.so",
+        // Codex and its Node-side update helper are user-visible in Settings.
+        // Always refresh these APK-bundled binaries so a stale filesDir copy
+        // cannot make the update surface report an older "Codex current"
+        // after a successful Shelly APK update.
+        "node",
+        "codex_exec",
+        "codex_tui",
+        "libc++_shared.so",
         "shelly_shell",
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.

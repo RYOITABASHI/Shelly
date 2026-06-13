@@ -8,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -20,8 +21,20 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 import expo.modules.terminalemulator.scouter.ScouterStateStore
 import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
+import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
+import java.util.zip.ZipInputStream
 
 class TerminalEmulatorModule : Module() {
+
+    private data class ScouterPetImportCandidate(
+        val id: String,
+        val manifest: File,
+        val spritesheet: File,
+        val spritesheetName: String,
+    )
 
     companion object {
         /**
@@ -95,6 +108,256 @@ class TerminalEmulatorModule : Module() {
             "Download path escapes Downloads directory"
         }
         return target
+    }
+
+    private fun isSafePetSegment(value: String): Boolean =
+        Regex("^[A-Za-z0-9_-]{1,80}$").matches(value)
+
+    private fun isSafePetFileName(value: String): Boolean =
+        Regex("^[A-Za-z0-9._-]{1,120}$").matches(value)
+
+    private fun openScouterPetZipInput(context: Context, uriString: String): InputStream {
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull()
+        val scheme = uri?.scheme?.lowercase()
+        return when {
+            scheme == "content" || scheme == "android.resource" ->
+                context.contentResolver.openInputStream(uri)
+                    ?: throw IllegalArgumentException("Could not open pet ZIP: $uriString")
+            scheme == "file" -> FileInputStream(File(uri.path ?: throw IllegalArgumentException("Invalid file URI")))
+            scheme.isNullOrBlank() -> FileInputStream(File(uriString))
+            else -> context.contentResolver.openInputStream(uri)
+                ?: FileInputStream(File(uriString))
+        }
+    }
+
+    private fun safeZipRelativePath(name: String): String? {
+        val normalized = name.replace('\\', '/')
+        require(!normalized.startsWith("/") && !Regex("^[A-Za-z]:").containsMatchIn(normalized)) {
+            "Pet ZIP contains an absolute path"
+        }
+        val parts = normalized.split('/').filter { it.isNotBlank() }
+        if (parts.isEmpty()) return null
+        require(parts.none { it == "." || it == ".." }) {
+            "Pet ZIP contains a path traversal entry"
+        }
+        require(parts.all { it.length <= 160 }) {
+            "Pet ZIP entry name is too long"
+        }
+        return parts.joinToString(File.separator)
+    }
+
+    private fun extractScouterPetZip(context: Context, uriString: String, targetDir: File) {
+        val root = targetDir.canonicalFile
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var entryCount = 0
+        var totalBytes = 0L
+        val maxEntryCount = 256
+        val maxTotalBytes = 96L * 1024L * 1024L
+
+        openScouterPetZipInput(context, uriString).use { raw ->
+            ZipInputStream(raw.buffered()).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    try {
+                        entryCount += 1
+                        require(entryCount <= maxEntryCount) { "Pet ZIP has too many entries" }
+                        val relativePath = safeZipRelativePath(entry.name) ?: continue
+                        if (entry.isDirectory) continue
+                        val outFile = File(root, relativePath).canonicalFile
+                        require(outFile.path == root.path || outFile.path.startsWith(root.path + File.separator)) {
+                            "Pet ZIP entry escapes import directory"
+                        }
+                        outFile.parentFile?.mkdirs()
+                        outFile.outputStream().use { output ->
+                            while (true) {
+                                val read = zip.read(buffer)
+                                if (read < 0) break
+                                totalBytes += read.toLong()
+                                require(totalBytes <= maxTotalBytes) { "Pet ZIP is too large" }
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    } finally {
+                        zip.closeEntry()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun findScouterPetDirectories(root: File): List<File> {
+        val found = mutableListOf<File>()
+
+        fun walk(dir: File, depth: Int) {
+            if (File(dir, "pet.json").isFile) {
+                found.add(dir)
+                return
+            }
+            if (depth >= 3) return
+            dir.listFiles()
+                ?.filter { it.isDirectory }
+                ?.forEach { child -> walk(child, depth + 1) }
+        }
+
+        walk(root, 0)
+        return found.distinctBy { it.canonicalPath }
+    }
+
+    private fun privateScouterPetRoot(context: Context): File {
+        val filesRoot = context.filesDir.canonicalFile
+        val expectedHome = File(filesRoot, "home").absoluteFile
+        val home = HomeInitializer.getHomeDir(context).canonicalFile
+        require(home.path == expectedHome.path && home.path.startsWith(filesRoot.path + File.separator)) {
+            "Shelly private home must stay inside app files"
+        }
+        val root = File(home, ".codex/pets").absoluteFile
+        val canonicalRoot = root.canonicalFile
+        require(canonicalRoot.path == root.path && canonicalRoot.path.startsWith(home.path + File.separator)) {
+            "Pet import directory must stay inside Shelly private home"
+        }
+        return root
+    }
+
+    private fun validateScouterPetDirectory(dir: File): ScouterPetImportCandidate {
+        val manifest = File(dir, "pet.json").canonicalFile
+        require(manifest.isFile && manifest.length() in 1..32768) {
+            "Invalid pet manifest in ${dir.name}"
+        }
+
+        val json = JSONObject(manifest.readText(Charsets.UTF_8))
+        val id = json.optString("id").trim()
+        require(isSafePetSegment(id)) {
+            "Invalid pet id: $id"
+        }
+
+        val spritesheetName = json.optString("spritesheetPath", "spritesheet.webp").trim()
+            .ifBlank { "spritesheet.webp" }
+        val lowerSpriteName = spritesheetName.lowercase()
+        require(isSafePetFileName(spritesheetName) && (lowerSpriteName.endsWith(".webp") || lowerSpriteName.endsWith(".png"))) {
+            "Invalid spritesheet path for $id"
+        }
+
+        val spritesheet = File(dir, spritesheetName).canonicalFile
+        val petRoot = dir.canonicalFile
+        require(spritesheet.path == petRoot.path || spritesheet.path.startsWith(petRoot.path + File.separator)) {
+            "Spritesheet escapes pet directory for $id"
+        }
+        require(spritesheet.isFile && spritesheet.length() > 0) {
+            "Missing spritesheet for $id"
+        }
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(spritesheet.absolutePath, bounds)
+        require(bounds.outWidth >= 1536 && bounds.outHeight >= 1872) {
+            "Spritesheet for $id is too small: ${bounds.outWidth}x${bounds.outHeight}"
+        }
+
+        return ScouterPetImportCandidate(
+            id = id,
+            manifest = manifest,
+            spritesheet = spritesheet,
+            spritesheetName = spritesheetName,
+        )
+    }
+
+    private fun installScouterCodexPetZipFromUri(context: Context, uriString: String): Map<String, Any> {
+        val importDir = File(context.cacheDir, "scouter-pet-import-${System.nanoTime()}").canonicalFile
+        val targetRoot = privateScouterPetRoot(context)
+        val installedIds = mutableListOf<String>()
+
+        try {
+            importDir.mkdirs()
+            extractScouterPetZip(context, uriString, importDir)
+
+            val candidates = findScouterPetDirectories(importDir)
+                .map(::validateScouterPetDirectory)
+            require(candidates.isNotEmpty()) {
+                "No valid Codex pet found in ZIP"
+            }
+            val duplicateIds = candidates.groupBy { it.id }.filterValues { it.size > 1 }.keys
+            require(duplicateIds.isEmpty()) {
+                "Duplicate pet id in ZIP: ${duplicateIds.joinToString(", ")}"
+            }
+
+            require(targetRoot.isDirectory || targetRoot.mkdirs()) {
+                "Could not create pet import directory"
+            }
+            val canonicalRoot = targetRoot.canonicalFile
+            val expectedHome = File(context.filesDir.canonicalFile, "home").absoluteFile
+            require(
+                canonicalRoot.path == targetRoot.absolutePath &&
+                    canonicalRoot.path.startsWith(expectedHome.path + File.separator)
+            ) {
+                "Pet import directory must stay inside Shelly private home"
+            }
+            for (candidate in candidates) {
+                val staging = File(canonicalRoot, ".${candidate.id}.import-${System.nanoTime()}").canonicalFile
+                require(staging.path.startsWith(canonicalRoot.path + File.separator)) {
+                    "Import staging path escaped pet directory"
+                }
+                if (staging.exists()) staging.deleteRecursively()
+                require(staging.mkdirs()) {
+                    "Could not create pet import staging directory"
+                }
+
+                candidate.manifest.copyTo(File(staging, "pet.json"), overwrite = true)
+                candidate.spritesheet.copyTo(File(staging, candidate.spritesheetName), overwrite = true)
+
+                val target = File(canonicalRoot, candidate.id).absoluteFile
+                val canonicalTarget = target.canonicalFile
+                require(canonicalTarget.path == target.path && canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) {
+                    "Pet target escaped pet directory"
+                }
+                val backup = File(canonicalRoot, ".${candidate.id}.backup-${System.nanoTime()}").canonicalFile
+                require(backup.path.startsWith(canonicalRoot.path + File.separator)) {
+                    "Pet backup path escaped pet directory"
+                }
+                var backupCreated = false
+                try {
+                    if (target.exists()) {
+                        if (!target.renameTo(backup)) {
+                            throw IllegalStateException("Could not move existing pet aside: ${candidate.id}")
+                        }
+                        backupCreated = true
+                    }
+                    if (!staging.renameTo(target)) {
+                        val copied = staging.copyRecursively(target, overwrite = true)
+                        staging.deleteRecursively()
+                        if (!copied) {
+                            throw IllegalStateException("Could not install pet: ${candidate.id}")
+                        }
+                    }
+                    if (backupCreated) backup.deleteRecursively()
+                } catch (error: Throwable) {
+                    if (target.exists()) target.deleteRecursively()
+                    if (backupCreated && backup.exists()) {
+                        if (!backup.renameTo(target)) {
+                            val restored = backup.copyRecursively(target, overwrite = true)
+                            if (restored) {
+                                backup.deleteRecursively()
+                            } else {
+                                Log.w("TerminalEmulator", "Could not restore previous pet after failed import: ${candidate.id}")
+                            }
+                        }
+                    }
+                    staging.deleteRecursively()
+                    throw error
+                }
+                installedIds.add(candidate.id)
+            }
+
+            runCatching { ScouterLifecycleService.get(context).refreshJson() }
+                .onFailure { Log.w("TerminalEmulator", "Scouter refresh after pet import failed", it) }
+            ScouterWidgetProvider.updateAll(context, force = true)
+
+            return mapOf(
+                "installedCount" to installedIds.size,
+                "installedIds" to installedIds,
+                "targetRoot" to canonicalRoot.absolutePath,
+            )
+        } finally {
+            importDir.deleteRecursively()
+        }
     }
 
     private fun downloadStatusName(status: Int): String =
@@ -736,6 +999,12 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
             ScouterLifecycleService.get(context).refreshJson().toString(2)
+        }
+
+        AsyncFunction("installScouterCodexPetZip") { uriString: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            installScouterCodexPetZipFromUri(context, uriString)
         }
 
         AsyncFunction("getScouterHookTemplate") { source: String ->

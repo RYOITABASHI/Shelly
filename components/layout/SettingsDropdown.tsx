@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { useCosmeticStore } from '@/store/cosmetic-store';
@@ -165,6 +166,7 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
   const [enabled, setEnabled] = useState(false);
   const [port, setPort] = useState(-1);
   const [busy, setBusy] = useState(false);
+  const [petBusy, setPetBusy] = useState(false);
 
   const load = React.useCallback(async () => {
     try {
@@ -226,6 +228,36 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
     }
   }, [enabled, port, t]);
 
+  const importPets = React.useCallback(async () => {
+    if (!TerminalEmulator.installScouterCodexPetZip) {
+      Alert.alert(t('scouter.import_pets_failed'), t('scouter.import_pets_unavailable'));
+      return;
+    }
+    setPetBusy(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+      const installed = await TerminalEmulator.installScouterCodexPetZip(result.assets[0].uri);
+      const ids = installed.installedIds.join(', ');
+      Alert.alert(
+        t('scouter.import_pets_done_title'),
+        t('scouter.import_pets_done_body', {
+          count: installed.installedCount,
+          ids: ids || '-',
+        }),
+      );
+      await load();
+    } catch (e: any) {
+      Alert.alert(t('scouter.import_pets_failed'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to import Scouter Codex pets', e);
+    } finally {
+      setPetBusy(false);
+    }
+  }, [load, t]);
+
   return (
     <Section title={t('scouter.title')}>
       <Row label="Scouter">
@@ -285,6 +317,23 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
         <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.copy_hooks')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="content-copy" size={14} color={C.text3} />
+      </Pressable>
+      <View style={styles.credentialGap} />
+      <Pressable
+        style={[
+          styles.integrationRow,
+          borderedChromeStyle(),
+          petBusy && styles.integrationRowDisabled,
+        ]}
+        onPress={importPets}
+        disabled={petBusy}
+        accessibilityRole="button"
+        accessibilityLabel={t('scouter.import_pets_a11y')}
+      >
+        <MaterialIcons name="pets" size={13} color={C.text2} />
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('scouter.import_pets')}</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="upload-file" size={14} color={C.text3} />
       </Pressable>
     </Section>
   );

@@ -122,6 +122,7 @@ type ScouterWidgetConversation = {
   widgetStatus?: string | null;
   widgetStatusAt?: number | null;
   widgetError?: string | null;
+  privacySuppressed?: boolean | null;
 };
 
 type ScouterDebugInfo = {
@@ -149,12 +150,18 @@ type AgentChatState = {
   ingestNativeEvent: (payload: NativeScouterEventPayload) => void;
   recordCodexPtyCandidate: (candidate: CodexPtyCandidate) => void;
   bindCodexSessionToPty: (sessionId: string, candidate: CodexPtyCandidate) => void;
-  dismissSession: (sessionId: string) => void;
+  dismissSession: (sessionId: string, options?: DismissSessionOptions) => void;
   renameSession: (sessionId: string, title: string) => void;
   requestComposeFocus: () => void;
+  suspendWidgetBindingForPrivacy: (reason: string) => void;
   refresh: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
+};
+
+type DismissSessionOptions = {
+  dismissWorkspace?: boolean;
+  clearWidgetPrivacy?: boolean;
 };
 
 type NativeScouterEventPayload = {
@@ -184,6 +191,7 @@ const SESSION_TITLES_STORAGE_KEY = 'shelly_agent_chat_session_titles';
 let pollingRefCount = 0;
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
 let liveSubscription: { remove(): void } | null = null;
+let widgetBindingSuppressedForPrivacy = false;
 let dismissedSessionsHydrated = false;
 let dismissedSessionsHydratePromise: Promise<void> | null = null;
 let sessionTitlesHydrated = false;
@@ -320,17 +328,32 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     persistLatestWidgetCodexBinding(sessions);
   },
 
-  dismissSession: (sessionId) => {
+  dismissSession: (sessionId, options = {}) => {
     const normalized = normalizeCodexSessionId(sessionId);
     if (!normalized) return;
+    const currentSessions = get().sessions;
+    const targetSession = currentSessions.find((session) => normalizeCodexSessionId(session.codexSessionId) === normalized);
+    const workspaceKey = options.dismissWorkspace && targetSession
+      ? agentSessionWorkspaceKey(targetSession)
+      : null;
+    const idsToDismiss = new Set<string>([normalized]);
+    if (workspaceKey) {
+      currentSessions.forEach((session) => {
+        if (agentSessionWorkspaceKey(session) === workspaceKey) {
+          const id = normalizeCodexSessionId(session.codexSessionId);
+          if (id) idsToDismiss.add(id);
+        }
+      });
+    }
     const dismissedSessionIds = [
-      normalized,
-      ...get().dismissedSessionIds.filter((id) => id !== normalized),
+      ...Array.from(idsToDismiss),
+      ...get().dismissedSessionIds.filter((id) => !idsToDismiss.has(id)),
     ].slice(0, MAX_DISMISSED_SESSIONS);
     const dismissedSet = new Set(dismissedSessionIds);
-    const sessions = get().sessions.filter((session) => !isDismissedSessionId(session.codexSessionId, dismissedSet));
+    const sessions = currentSessions.filter((session) => !isDismissedSessionId(session.codexSessionId, dismissedSet));
     const events = filterDismissedEvents(get().events, dismissedSet);
     const bindings = omitDismissedBindings(get().bindings, dismissedSet);
+    const shouldClearWidgetPrivacy = options.clearWidgetPrivacy || sessions.length === 0;
     set({
       dismissedSessionIds,
       sessions,
@@ -340,10 +363,8 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       lastUpdatedAt: Date.now(),
     });
     persistDismissedSessionIds(dismissedSessionIds);
-    if (sessions.length === 0) {
-      TerminalEmulator.clearScouterWidgetConversationForPrivacy?.().catch((error) => {
-        logError('AgentChatStore', 'Failed to clear Scouter widget conversation after closing all Agent Chat tabs', error);
-      });
+    if (shouldClearWidgetPrivacy) {
+      clearScouterWidgetConversationForPrivacy('closing all Agent Chat tabs');
     } else {
       persistLatestWidgetCodexBinding(sessions);
     }
@@ -375,16 +396,30 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     set({ composeFocusSignal: Date.now() });
   },
 
+  suspendWidgetBindingForPrivacy: (reason: string) => {
+    widgetBindingSuppressedForPrivacy = true;
+    set({
+      sessions: [],
+      events: [],
+      bindings: {},
+      latestSessionId: null,
+      loading: false,
+      error: null,
+      lastUpdatedAt: Date.now(),
+    });
+    clearScouterWidgetConversationForPrivacy(reason);
+  },
+
   refresh: async () => {
     set({ loading: true, error: null });
     try {
       await hydrateDismissedSessionIds(set, get);
       await hydrateSessionTitleOverrides(set, get);
-      const dismissedIds = new Set(get().dismissedSessionIds);
       const raw = await (
         TerminalEmulator.refreshScouter?.()
         ?? TerminalEmulator.getScouterDebugInfo()
       );
+      const dismissedIds = new Set(get().dismissedSessionIds);
       const parsed = JSON.parse(raw) as ScouterDebugInfo;
       const codexSessions = filterDismissedScouterSessions(
         dedupeCodexSessions(parsed.sessions ?? []),
@@ -416,20 +451,30 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
         mergeEvents(filterDismissedEvents(get().events, dismissedIds), newEvents, boundSessions),
         bindings,
       );
+      const finalDismissedIds = new Set(get().dismissedSessionIds);
+      const finalBoundSessions = boundSessions.filter((session) => (
+        !isDismissedSessionId(session.codexSessionId, finalDismissedIds)
+      ));
+      const finalEvents = filterDismissedEvents(events, finalDismissedIds);
+      const finalBindings = omitDismissedBindings(bindings, finalDismissedIds);
 
       set({
         enabled: Boolean(parsed.enabled),
         jsonlWatcherRunning: Boolean(parsed.jsonlWatcherRunning),
-        sessions: boundSessions,
-        events,
-        bindings,
+        sessions: finalBoundSessions,
+        events: finalEvents,
+        bindings: finalBindings,
         codexPtyLaunches: launches,
-        latestSessionId: boundSessions[0]?.codexSessionId ?? null,
+        latestSessionId: finalBoundSessions[0]?.codexSessionId ?? null,
         loading: false,
         error: null,
         lastUpdatedAt: Date.now(),
       });
-      persistLatestWidgetCodexBinding(boundSessions);
+      if (widgetBindingSuppressedForPrivacy) {
+        clearScouterWidgetConversationForPrivacy('Agent Chat panes are closed');
+      } else {
+        persistLatestWidgetCodexBinding(finalBoundSessions);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ loading: false, error: message, lastUpdatedAt: Date.now() });
@@ -439,6 +484,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   startPolling: () => {
     pollingRefCount += 1;
+    widgetBindingSuppressedForPrivacy = false;
     void hydrateDismissedSessionIds(set, get);
     void hydrateSessionTitleOverrides(set, get);
     startLiveSubscription();
@@ -484,20 +530,17 @@ function stopLiveSubscription(): void {
 }
 
 function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
+  if (widgetBindingSuppressedForPrivacy) {
+    clearScouterWidgetConversationForPrivacy('Agent Chat panes are closed');
+    return;
+  }
   const session = sessions
     .filter((candidate) => (
       candidate.bindingConfidence === 'reliable' && Boolean(candidate.ptySessionId?.trim())
     ))
     .sort((a, b) => (b.lastEventAt ?? 0) - (a.lastEventAt ?? 0))[0];
   if (!session?.ptySessionId) {
-    TerminalEmulator.setScouterCodexBinding?.({
-      codexSessionId: '',
-      ptySessionId: null,
-      shellySessionId: null,
-      cwd: null,
-    }).catch((error) => {
-      logError('AgentChatStore', 'Failed to clear Scouter Codex binding for widget', error);
-    });
+    clearScouterWidgetConversationForPrivacy('no reliable Codex widget binding');
     return;
   }
   TerminalEmulator.setScouterCodexBinding?.({
@@ -508,6 +551,34 @@ function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
   }).catch((error) => {
     logError('AgentChatStore', 'Failed to persist Scouter Codex binding for widget', error);
   });
+}
+
+function clearScouterWidgetConversationForPrivacy(reason: string): void {
+  const clearPromise = TerminalEmulator.clearScouterWidgetConversationForPrivacy?.();
+  if (clearPromise) {
+    clearPromise.catch((error) => {
+      logError('AgentChatStore', `Failed to clear Scouter widget conversation after ${reason}`, error);
+    });
+    return;
+  }
+  TerminalEmulator.setScouterCodexBinding?.({
+    codexSessionId: '',
+    ptySessionId: null,
+    shellySessionId: null,
+    cwd: null,
+  }).catch((error) => {
+    logError('AgentChatStore', 'Failed to clear Scouter Codex binding for widget', error);
+  });
+}
+
+function agentSessionWorkspaceKey(session: AgentChatSession): string {
+  if (session.bindingConfidence === 'reliable' && session.ptySessionId?.trim()) {
+    return `live:${session.codexSessionId}`;
+  }
+  const workspace = session.cwd?.trim() || session.projectName?.trim();
+  const model = session.modelName?.trim();
+  if (!workspace || !model) return `session:${session.codexSessionId}`;
+  return `${workspace}:${model}`;
 }
 
 async function hydrateDismissedSessionIds(

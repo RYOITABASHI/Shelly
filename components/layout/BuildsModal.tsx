@@ -650,23 +650,74 @@ async function verifyReleaseApkFile(update: AndroidUpdateManifest, apkPath: stri
 }
 
 async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string> {
+  const manifest = JSON.stringify({
+    schemaVersion: update.schemaVersion || 1,
+    channel: update.channel || CODEX_RUNTIME_TAG,
+    version: update.version,
+    codexVersion: update.codexVersion || '',
+    codexTermuxVersion: update.codexTermuxVersion || update.version,
+    gitSha: update.gitSha || '',
+    runId: update.runId,
+    runNumber: update.runNumber,
+    createdAt: update.createdAt,
+    assetName: update.assetName,
+    tarballUrl: update.tarballUrl,
+    sha256: update.sha256.toLowerCase(),
+    installedAt: new Date().toISOString(),
+  }, null, 2);
   const command = [
+    'set -eu',
+    'toybox=/system/bin/toybox',
     'lib="${SHELLY_LIB_DIR:-${LD_LIBRARY_PATH%%:*}}"',
     'test -n "$lib"',
-    [
-      'SHELLY_LIB_DIR="$lib"',
-      `SHELLY_CODEX_RUNTIME_VERSION=${sq(update.version)}`,
-      `SHELLY_CODEX_VERSION=${sq(update.codexVersion || '')}`,
-      `SHELLY_CODEX_TERMUX_VERSION=${sq(update.codexTermuxVersion || update.version)}`,
-      `SHELLY_CODEX_RUNTIME_GIT_SHA=${sq(update.gitSha || '')}`,
-      `SHELLY_CODEX_RUNTIME_RUN_ID=${sq(String(update.runId || ''))}`,
-      `SHELLY_CODEX_RUNTIME_ASSET=${sq(update.assetName)}`,
-      `SHELLY_CODEX_RUNTIME_URL=${sq(update.tarballUrl)}`,
-      `SHELLY_CODEX_RUNTIME_SHA256=${sq(update.sha256)}`,
-      'LD_LIBRARY_PATH="$lib"',
-      '/system/bin/linker64 "$lib/node" "$HOME/.shelly-runtime-update.js" codex --install-runtime',
-    ].join(' '),
-  ].join(' && ');
+    'test -x "$lib/curl" || { echo "bundled curl is missing at $lib/curl" >&2; exit 127; }',
+    'runtime_root="$HOME/.shelly-runtime/codex"',
+    'versions_dir="$runtime_root/versions"',
+    'current_link="$runtime_root/current"',
+    'tmp_dir="$HOME/.shelly-runtime/.tmp"',
+    `version=${sq(update.version)}`,
+    `run_id=${sq(String(update.runId || 'manual'))}`,
+    `asset_name=${sq(update.assetName)}`,
+    `url=${sq(update.tarballUrl)}`,
+    `expected_sha=${sq(update.sha256.toLowerCase())}`,
+    '"$toybox" mkdir -p "$versions_dir" "$tmp_dir" "$HOME/.tmp" "$HOME/.config" "$HOME/.cache" "$HOME/.local/share"',
+    'install_id="${version}-${run_id}-$("$toybox" date +%s)"',
+    'staging="$tmp_dir/codex-$install_id"',
+    'archive="$tmp_dir/$install_id.tar.gz"',
+    'cleanup() { "$toybox" rm -f "$archive" 2>/dev/null || true; [ -n "${staging:-}" ] && [ -d "$staging" ] && "$toybox" rm -rf "$staging" 2>/dev/null || true; }',
+    'trap cleanup EXIT',
+    '"$toybox" rm -rf "$staging" "$archive"',
+    '"$toybox" mkdir -p "$staging"',
+    'echo "[shelly] downloading $asset_name"',
+    'LD_LIBRARY_PATH="$lib" /system/bin/linker64 "$lib/curl" --fail --location --retry 2 --connect-timeout 20 --max-time 300 --output "$archive" "$url"',
+    'actual_sha="$("$toybox" sha256sum "$archive" | "$toybox" cut -d " " -f 1)"',
+    '[ "$actual_sha" = "$expected_sha" ] || { echo "sha256 mismatch: expected $expected_sha, got $actual_sha" >&2; exit 1; }',
+    '"$toybox" tar -xzf "$archive" -C "$staging"',
+    'for name in codex_exec codex_tui; do test -f "$staging/$name" || { echo "$name missing from Codex runtime" >&2; exit 1; }; "$toybox" chmod 700 "$staging/$name"; done',
+    '[ ! -f "$staging/libc++_shared.so" ] || "$toybox" chmod 600 "$staging/libc++_shared.so"',
+    'extract_version() { printf "%s\\n" "$1" | "$toybox" sed -n "s/.*\\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*[-+A-Za-z0-9.]*\\).*/\\1/p" | "$toybox" head -n 1; }',
+    'run_codex_version() { bin="$1"; label="$2"; out_file="$tmp_dir/$label.version.out"; SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$staging:$lib" /system/bin/linker64 "$bin" --version > "$out_file" 2>&1 & pid=$!; elapsed=0; while kill -0 "$pid" 2>/dev/null; do if [ "$elapsed" -ge 20 ]; then kill "$pid" 2>/dev/null || true; "$toybox" sleep 1; kill -9 "$pid" 2>/dev/null || true; "$toybox" cat "$out_file"; "$toybox" rm -f "$out_file"; return 124; fi; "$toybox" sleep 1; elapsed=$((elapsed + 1)); done; wait "$pid"; code=$?; "$toybox" cat "$out_file"; "$toybox" rm -f "$out_file"; return "$code"; }',
+    'tui_output="$(run_codex_version "$staging/codex_tui" codex_tui)" || { code=$?; echo "codex_tui --version failed: $tui_output" >&2; exit "$code"; }',
+    'exec_output="$(run_codex_version "$staging/codex_exec" codex_exec)" || { code=$?; echo "codex_exec --version failed: $exec_output" >&2; exit "$code"; }',
+    'tui_version="$(extract_version "$tui_output")"',
+    'exec_version="$(extract_version "$exec_output")"',
+    '[ "$tui_version" = "$version" ] || { echo "codex_tui version mismatch: expected $version, got ${tui_version:-none}; output=$tui_output" >&2; exit 1; }',
+    '[ "$exec_version" = "$version" ] || { echo "codex_exec version mismatch: expected $version, got ${exec_version:-none}; output=$exec_output" >&2; exit 1; }',
+    `"$toybox" cat > "$staging/manifest.json" <<'SHELLY_CODEX_RUNTIME_MANIFEST'\n${manifest}\nSHELLY_CODEX_RUNTIME_MANIFEST`,
+    'printf "%s\\n" "$tui_output" > "$staging/codex_tui.version"',
+    'printf "%s\\n" "$exec_output" > "$staging/codex_exec.version"',
+    'printf "%s\\n" "$("$toybox" date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || "$toybox" date +%s)" > "$staging/.healthy"',
+    '"$toybox" chmod 600 "$staging/manifest.json" "$staging/.healthy" "$staging/codex_tui.version" "$staging/codex_exec.version"',
+    'final_dir="$versions_dir/$install_id"',
+    '"$toybox" rm -rf "$final_dir"',
+    '"$toybox" mv "$staging" "$final_dir"',
+    'next_link="$runtime_root/current.next"',
+    '"$toybox" rm -rf "$next_link"',
+    '"$toybox" ln -s "$final_dir" "$next_link"',
+    'if [ -L "$current_link" ]; then "$toybox" rm -f "$current_link"; elif [ -e "$current_link" ]; then "$toybox" mv "$current_link" "$runtime_root/current.backup.$("$toybox" date +%s)"; fi',
+    '"$toybox" mv "$next_link" "$current_link"',
+    'echo "[shelly] Codex runtime $version installed. Open a new terminal tab to use it."',
+  ].join('\n');
   const r = await execCommand(command, 600_000);
   if (r.exitCode !== 0) {
     throw new Error((r.stderr || r.stdout || `Codex runtime install exited ${r.exitCode}`).trim());
@@ -676,10 +727,15 @@ async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string
 
 async function resetCodexRuntime(): Promise<string> {
   const command = [
+    'set -eu',
+    'toybox=/system/bin/toybox',
     'lib="${SHELLY_LIB_DIR:-${LD_LIBRARY_PATH%%:*}}"',
     'test -n "$lib"',
-    'SHELLY_LIB_DIR="$lib" LD_LIBRARY_PATH="$lib" /system/bin/linker64 "$lib/node" "$HOME/.shelly-runtime-update.js" codex --reset-runtime',
-  ].join(' && ');
+    'runtime_root="$HOME/.shelly-runtime/codex"',
+    'current_link="$runtime_root/current"',
+    'if [ -L "$current_link" ]; then "$toybox" rm -f "$current_link"; elif [ -e "$current_link" ]; then "$toybox" mv "$current_link" "$runtime_root/current.disabled.$("$toybox" date +%s)"; fi',
+    'echo "[shelly] Codex runtime reset. Bundled APK runtime will be used in new terminal tabs."',
+  ].join('\n');
   const r = await execCommand(command, 60_000);
   if (r.exitCode !== 0) {
     throw new Error((r.stderr || r.stdout || `Codex runtime reset exited ${r.exitCode}`).trim());
