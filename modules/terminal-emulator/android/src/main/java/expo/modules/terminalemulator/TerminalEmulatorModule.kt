@@ -205,10 +205,10 @@ class TerminalEmulatorModule : Module() {
 
     private fun privateScouterPetRoot(context: Context): File {
         val filesRoot = context.filesDir.canonicalFile
-        val homePath = HomeInitializer.getHomeDir(context).absoluteFile
-        val home = homePath.canonicalFile
-        require(home.path == homePath.path && home.path.startsWith(filesRoot.path + File.separator)) {
-            "Shelly private home must not be a symlink"
+        val expectedHome = File(filesRoot, "home").absoluteFile
+        val home = HomeInitializer.getHomeDir(context).canonicalFile
+        require(home.path == expectedHome.path && home.path.startsWith(filesRoot.path + File.separator)) {
+            "Shelly private home must stay inside app files"
         }
         val root = File(home, ".codex/pets").absoluteFile
         val canonicalRoot = root.canonicalFile
@@ -283,8 +283,12 @@ class TerminalEmulatorModule : Module() {
                 "Could not create pet import directory"
             }
             val canonicalRoot = targetRoot.canonicalFile
-            require(canonicalRoot.path == targetRoot.path) {
-                "Pet import directory must not be a symlink"
+            val expectedHome = File(context.filesDir.canonicalFile, "home").absoluteFile
+            require(
+                canonicalRoot.path == targetRoot.absolutePath &&
+                    canonicalRoot.path.startsWith(expectedHome.path + File.separator)
+            ) {
+                "Pet import directory must stay inside Shelly private home"
             }
             for (candidate in candidates) {
                 val staging = File(canonicalRoot, ".${candidate.id}.import-${System.nanoTime()}").canonicalFile
@@ -301,7 +305,7 @@ class TerminalEmulatorModule : Module() {
 
                 val target = File(canonicalRoot, candidate.id).absoluteFile
                 val canonicalTarget = target.canonicalFile
-                require(canonicalTarget.path == target.path && target.path.startsWith(canonicalRoot.path + File.separator)) {
+                require(canonicalTarget.path == target.path && canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) {
                     "Pet target escaped pet directory"
                 }
                 val backup = File(canonicalRoot, ".${candidate.id}.backup-${System.nanoTime()}").canonicalFile

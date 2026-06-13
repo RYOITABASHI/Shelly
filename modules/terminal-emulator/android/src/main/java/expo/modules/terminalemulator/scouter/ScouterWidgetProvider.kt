@@ -900,7 +900,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             conversation: ScouterWidgetConversation? = null,
             usageLimited: ScouterWidgetUsageLimited? = null
         ): CharSequence {
-            val baseLine = snapshot?.let { codexUsageBaseLine(it) } ?: "TOK -- · CTX --"
+            val baseLine = codexUsageBaseLine(snapshot)
             // Live PTS poll saw a usage-limit banner: this is the most authoritative
             // signal (Codex emits no JSONL event for it), so it overrides the stale
             // structured/JSONL percentages that would otherwise read e.g. "WK 4% left".
@@ -932,19 +932,27 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        private fun codexUsageBaseLine(snapshot: SessionSnapshot): String {
-            val observedTokens = snapshot.tokensUsed.takeIf { it > 0L }
-                ?: (snapshot.inputTokens + snapshot.outputTokens).takeIf { it > 0L }
+        private fun codexUsageBaseLine(snapshot: SessionSnapshot?): String {
+            val observedTokens = snapshot?.tokensUsed?.takeIf { it > 0L }
+                ?: snapshot?.let { (it.inputTokens + it.outputTokens).takeIf { tokens -> tokens > 0L } }
             val tokens = observedTokens?.let { formatTokens(it) } ?: "--"
-            val contextUsed = snapshot.contextPercentRemaining
+            val contextUsed = snapshot?.contextPercentRemaining
                 ?.let { (100.0 - it).coerceIn(0.0, 100.0) }
-                ?.let { String.format(Locale.US, "%.0f%%", it) }
-                ?: "--"
-            return "TOK $tokens · CTX $contextUsed"
+            val contextText = contextUsed?.let { String.format(Locale.US, "%.0f%%", it) } ?: "--%"
+            val contextCells = contextGaugeCells(contextUsed, CONTEXT_GAUGE_CELLS)
+            return "CTX [$contextCells] $contextText · TOK $tokens"
         }
 
         private fun appendUsageLine(baseLine: String, suffix: CharSequence): CharSequence =
             SpannableStringBuilder(baseLine).append(" · ").append(suffix)
+
+        private fun contextGaugeCells(usedPercent: Double?, cells: Int): String {
+            if (usedPercent == null) return ".".repeat(cells)
+            val filled = Math.round(usedPercent.coerceIn(0.0, 100.0) / 100.0 * cells)
+                .toInt()
+                .coerceIn(0, cells)
+            return "#".repeat(filled) + ".".repeat(cells - filled)
+        }
 
         // Continuous remaining display from the parsed Codex rate_limits snapshot.
         // Semantics: 5H/WK show REMAINING percent (100 - used_percent), e.g. "5H 80%"
@@ -1012,8 +1020,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         ) {
             val preview = widgetConversationPreview(codex, conversation, showStoredChoicePending)
             if (preview == null) {
-                views.setViewVisibility(R.id.scouter_codex_conversation, View.GONE)
-                views.setTextViewText(R.id.scouter_codex_conversation, "")
+                views.setViewVisibility(R.id.scouter_codex_conversation, View.INVISIBLE)
+                views.setTextViewText(R.id.scouter_codex_conversation, "\n")
                 return
             }
             views.setViewVisibility(R.id.scouter_codex_conversation, View.VISIBLE)
@@ -1528,6 +1536,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         // count = round(remaining% / 100 * GAUGE_CELLS), so the bar itself is the
         // "remaining" indicator and no "left"/"used" word is needed.
         private const val GAUGE_CELLS = 5
+        private const val CONTEXT_GAUGE_CELLS = 10
         private val FIVE_HOUR_LIMIT_RE = Regex("""(?i)\b(?:5\s*h|5-hour|five[- ]hour)\b""")
         private val WEEKLY_LIMIT_RE = Regex("""(?i)\b(?:weekly|week)\b""")
         private val LIMIT_PERCENT_RE = Regex("""(?i)(?:<\s*)?(\d{1,3}(?:\.\d+)?)\s*%""")

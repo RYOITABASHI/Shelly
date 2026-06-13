@@ -194,9 +194,9 @@ internal object ScouterCodexPet {
 
     private fun petRoots(context: Context): List<File> {
         val filesRoot = context.filesDir.canonicalFile
-        val homePath = HomeInitializer.getHomeDir(context).absoluteFile
-        val home = homePath.canonicalFile
-        if (home.path != homePath.path || !home.path.startsWith(filesRoot.path + File.separator)) {
+        val expectedHome = File(filesRoot, "home").absoluteFile
+        val home = HomeInitializer.getHomeDir(context).canonicalFile
+        if (home.path != expectedHome.path || !home.path.startsWith(filesRoot.path + File.separator)) {
             return emptyList()
         }
         val root = File(home, ".codex/pets").absoluteFile
@@ -210,13 +210,17 @@ internal object ScouterCodexPet {
 
     private fun petsInRoot(root: File): List<PetSource> {
         val directories = root.listFiles { file -> file.isDirectory } ?: return emptyList()
+        val canonicalRootPath = runCatching { root.canonicalPath }.getOrNull() ?: return emptyList()
         return directories
             .sortedBy { it.name.lowercase(Locale.US) }
             .mapNotNull { directory ->
                 runCatching {
                     val petRoot = directory.absoluteFile
                     val canonicalPetRoot = petRoot.canonicalFile
-                    if (canonicalPetRoot.path != petRoot.path) return@runCatching null
+                    if (
+                        canonicalPetRoot.path != petRoot.path ||
+                        !canonicalPetRoot.path.startsWith(canonicalRootPath + File.separator)
+                    ) return@runCatching null
                     val manifestFile = File(directory, "pet.json")
                     if (!manifestFile.isFile || manifestFile.length() > 32_768L) return@runCatching null
                     val manifest = JSONObject(manifestFile.readText(Charsets.UTF_8))
