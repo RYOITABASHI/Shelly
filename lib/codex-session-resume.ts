@@ -13,6 +13,10 @@ type AddTerminalPane = (
   opts?: { silent?: boolean },
 ) => null | 'terminal_cap' | 'layout_full';
 
+const sleep = (ms: number) => new Promise<void>((resolve) => {
+  setTimeout(resolve, ms);
+});
+
 export type CodexSessionResumeResult =
   | { status: 'focused'; sessionId: string }
   | { status: 'queued'; sessionId: string }
@@ -149,22 +153,39 @@ export async function coldStartCodexAndDeliverWidgetPrompt(
     .catch(() => null);
   if (!result || result.status === 'failed') return false;
 
-  const terminalSession = useTerminalStore.getState().sessions.find((s) => s.id === result.sessionId);
+  const terminalSession = await waitForAliveTerminalSession(result.sessionId, 20_000);
   const nativeSessionId = terminalSession?.nativeSessionId;
-  if (!nativeSessionId) return false;
+  if (!nativeSessionId) {
+    await TerminalEmulator.markScouterWidgetPromptFailed?.('Terminal did not start in time').catch(() => undefined);
+    return true;
+  }
 
   // Wait for `codex` to paint an active transcript (input-ready). Cold boot
   // after a fresh app update can be slow, so allow a generous window — still
   // under the native 2-minute pending-prompt expiry.
   const deadline = Date.now() + (options.bootTimeoutMs ?? 60_000);
+  let launchKickSent = false;
   let ready = false;
   while (Date.now() < deadline) {
     const screen = await TerminalEmulator.getScreenText(nativeSessionId).catch(() => null);
     if (typeof screen === 'string') {
       if (detectCodexLaunchFailureText(screen)) break;
       if (detectCodexActiveTranscript(screen)) { ready = true; break; }
+      if (!launchKickSent && detectShellReadyText(screen)) {
+        launchKickSent = true;
+        const command = 'clear && codex';
+        const wrote = await writeResumeCommandToTerminal(result.sessionId, command);
+        if (wrote) {
+          clearPendingCodexLaunchCommandForSession(result.sessionId);
+        } else {
+          useTerminalStore.getState().insertCommand(`${command}\r`, result.sessionId, {
+            durable: true,
+            ttlMs: 2 * 60 * 1000,
+          });
+        }
+      }
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 800));
+    await sleep(800);
   }
   if (!ready) {
     await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex did not start in time').catch(() => undefined);
@@ -175,7 +196,7 @@ export async function coldStartCodexAndDeliverWidgetPrompt(
   // before codex's input box actually accepts text. Wait once more and
   // re-confirm the screen is still an active, non-failed transcript before
   // pasting, so the prompt is not written into a not-yet-ready input.
-  await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+  await sleep(1200);
   const settledScreen = await TerminalEmulator.getScreenText(nativeSessionId).catch(() => null);
   if (typeof settledScreen === 'string' && detectCodexLaunchFailureText(settledScreen)) {
     await TerminalEmulator.markScouterWidgetPromptFailed?.('Codex failed to start').catch(() => undefined);
@@ -207,6 +228,34 @@ export async function coldStartCodexAndDeliverWidgetPrompt(
     await TerminalEmulator.markScouterWidgetPromptFailed?.('Could not write the prompt to Codex').catch(() => undefined);
     return true;
   }
+}
+
+async function waitForAliveTerminalSession(
+  sessionId: string,
+  timeoutMs: number,
+): Promise<TabSession | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const session = useTerminalStore.getState().sessions.find((candidate) => candidate.id === sessionId);
+    if (session?.nativeSessionId && session.sessionStatus === 'alive' && session.isAlive) {
+      return session;
+    }
+    await sleep(250);
+  }
+  return useTerminalStore.getState().sessions.find((candidate) =>
+    candidate.id === sessionId &&
+    Boolean(candidate.nativeSessionId) &&
+    candidate.sessionStatus === 'alive' &&
+    candidate.isAlive
+  );
+}
+
+function clearPendingCodexLaunchCommandForSession(sessionId: string): void {
+  const pending = useTerminalStore.getState().pendingCommand;
+  if (!pending || typeof pending === 'string') return;
+  if (pending.sessionId !== sessionId) return;
+  if (!/\bcodex\b/.test(pending.command)) return;
+  useTerminalStore.getState().clearPendingCommand(pending.id);
 }
 
 export async function bindVisibleCodexTerminalToSession(

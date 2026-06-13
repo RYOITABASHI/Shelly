@@ -212,11 +212,11 @@ No Termux install. No proot. No ttyd. No remote bridge.
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
 | **Native PTY (JNI forkpty)** | Kotlin + C, direct PTY fd, no TCP/socket bridge — an embedded native terminal, not a WebView terminal. |
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
-| **5 pane types** | Terminal, AI, Browser (+ background audio), Markdown, Preview. Split up to 4 live panes freely. |
+| **7 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, and Ask. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
 | **Local LLM that holds its own** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-4B as the high-end default and Qwen3.5-9B available when quality matters more than responsiveness. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
-| **Scouter home widget** | A translucent Android widget shows Codex state, token flow, model, rate-limit cooldown, local LLM health, and device load without opening the app — and is interactive: tap **ASK** to inject a prompt, or **Allow / Deny** and **1 / 2 / 3** pills to answer Codex straight from the home screen. |
+| **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, and device load without opening the app. It is interactive: **ASK** can deliver a prompt to a live, resumed, or freshly-started Codex PTY; **Allow / Deny** and up to six widget choice pills answer Codex straight from the launcher. |
 | **Color themes** | Blue / Red / Purple palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
 
@@ -227,21 +227,24 @@ No Termux install. No proot. No ttyd. No remote bridge.
 </p>
 
 Scouter is Shelly's home-screen status layer. It keeps the current Codex
-session, local LLM endpoint, token flow, cache, cooldown, and device load
-visible while the phone stays in the launcher or another app. It is not
-read-only — the widget can drive the bound Codex terminal from the launcher.
+session, local LLM endpoint, token / context flow, rate-limit windows, and
+device load visible while the phone stays in the launcher or another app.
+It is not read-only — the widget can drive the foreground Codex terminal,
+resume a stale binding, or cold-start a new Codex PTY for a queued prompt.
 
 <details>
 <summary><strong>What it shows</strong></summary>
 
 - **State-colored status** — the status dot and title track the bound Codex state (idle / thinking / running tool / waiting / error), with the current `DOING` line
-- **USAGE line** — model · tokens used · `$cost`. Codex emits no cost, so the dollar figure is derived from a bundled price table when only token counts are available
-- **Rate-limit quota gauge** — a 5-cell remaining-quota bar per window (`5H` / `WK`), green while healthy and red once it drops to its last cell (~≤25% left)
+- **Model / cost line** — the active Codex model plus derived `$cost` when token counts are available
+- **Always-on usage cells** — `CTX`, `TOK`, `LIMIT`, `5H`, and `WK` stay visible even when Codex is not running; live Codex data wins, otherwise Scouter falls back to the latest sanitized usage snapshot or placeholder dashes
+- **Rate-limit quota gauge** — a 5-cell remaining-quota bar per window (`5H` / `WK`), green while healthy and red once it drops to its last cell (~<=25% left)
 - **Rate-limit override** — when the session is throttled the line collapses to `RATE LIMITED` with the reset detail
 - **Reset / session timer** — a self-ticking chronometer counts down to the rate-limit reset, or counts up the running session
-- **Last exchange** — the most recent `YOU` prompt and `CODEX` reply, two lines, redacted
+- **Privacy-safe prompt preview** — only the current widget ASK / approval / choice / error state can occupy the preview; historical JSONL prompts and replies are not surfaced, and closing all Agent Chat tabs blanks the preview area instead of shrinking the widget
 - **Local LLM row** — endpoint, backend, queue depth, and ping for the local server
 - **Footer** — CPU / RAM load and last-updated time
+- **Codex pets** — an optional PET button / pet image renders the bundled demo pet or the user's imported Codex pets without bundling private user pets into the APK
 
 </details>
 
@@ -249,8 +252,11 @@ read-only — the widget can drive the bound Codex terminal from the launcher.
 <summary><strong>Interactive control</strong></summary>
 
 - **ASK** — tap the ASK pill to type a prompt; Shelly writes it into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
+- **Cold-start ASK** — if no Codex or Agent Chat session is available, Shelly queues the widget prompt, opens a terminal, waits for the PTY to become alive, starts `codex`, waits for the Codex input surface, then delivers the queued prompt
 - **Approval pills** — when Codex is waiting for permission, **Allow** / **Deny** pills write `y` / `n` straight to the Codex PTY
-- **Choice pills** — for a numbered interactive prompt, up to three **1 / 2 / 3** pills write the chosen digit to the PTY, each carrying the option label
+- **Choice pills** — for a numbered interactive prompt, up to six widget pills write the chosen digit to the PTY, each carrying the option label; Android notifications expose the first three actions
+- **Pet cycle** — PET starts hidden by default; tap PET to show the first pet, tap the pet image to cycle through available pets, and the cycle hides again after the last pet. Approval / choice action rows take priority over pet controls
+- **Pet import** — Settings -> Scouter -> Import pet ZIP installs user pets into app-private storage. Shelly also discovers `Codex/pets` and `shelly-personal-pets.zip` sidecar files on shared storage for users who manage Codex pets outside the APK
 - **Stale-tap guard** — Allow / Deny / choice taps re-parse the live terminal screen and only fire if the same approval anchor or numbered option is still on screen; otherwise they no-op
 - **Resume when unbound** — if the bound terminal has exited, ASK (and a pending approval) queue the prompt/decision and open Agent Chat to resume the session, then drain the queued action
 - **How it reaches the terminal** — the widget's tap handler runs inside the app process and writes straight to the live PTY through the in-process terminal session registry — no `am start`, no IPC; when nothing is bound it opens Agent Chat with a `shelly:///agent-chat` deep-link to resume first
@@ -261,8 +267,8 @@ read-only — the widget can drive the bound Codex terminal from the launcher.
 <summary><strong>Layout System</strong></summary>
 
 - **Single-screen layout** — AgentBar (top) + Sidebar (left, collapsible) + PaneContainer (center) + ContextBar (bottom)
-- **5 pane types** — Terminal (native PTY), AI (streaming + context injection), Browser (WebView + bookmarks + background audio), Markdown (viewer), Preview (Code / Image / PDF / CSV / Markdown renderers)
-- **Recursive binary split tree** — any leaf can split horizontally or vertically, up to 4 live panes; drag the accent-green grip to resize, double-tap it to restore 50/50
+- **7 pane types** — Terminal (native PTY), Agent Chat (Codex session companion), AI (streaming + context injection), Browser (WebView + bookmarks + background audio), Markdown (viewer), Preview (Code / Image / PDF / CSV / Markdown renderers), and Ask (Shelly help)
+- **Preset slot layout** — up to 4 live panes in single, two-column, three-pane, or four-pane presets; drag the accent-green grip to resize, double-tap it to restore 50/50
 - **Layout presets** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple, all reachable from the Command Palette
 - **Pane-type pill** — header left shows `[TERMINAL ▾]` / `[AI ▾]` / …; tap to change the pane type in place
 - **CLI tab strip inside terminal panes** — multiple shell tabs per pane, `[● SHELL][+]`, close `×` on non-last tabs
@@ -323,7 +329,7 @@ read-only — the widget can drive the bound Codex terminal from the launcher.
 - **Clickable paths and errors** — tap a file path or stack trace line to jump to it
 - **Inline content blocks** — JSON, markdown, images, and tables rendered inline inside the terminal output (Command Blocks)
 - **CLI notifications** — long-running commands surface a system notification when they complete
-- **Codex notification channels** — Scouter posts per-category Android notifications, each on its own channel so you can tune importance / sound / mute from Android's notification settings: approvals, choices, and errors arrive as heads-up alerts, rate limits at default importance, completions and long-running quietly. Approval notifications carry one-tap **Allow / Deny** buttons and choice notifications carry **1 / 2 / 3** buttons; the expanded view shows the full request or menu text, and resolved cards are deduped and cancelled so nothing stacks or lingers
+- **Codex notification channels** — Scouter posts per-category Android notifications, each on its own channel so you can tune importance / sound / mute from Android's notification settings: approvals, choices, and errors arrive as heads-up alerts, rate limits at default importance, completions and long-running quietly. Approval notifications carry one-tap **Allow / Deny** buttons and choice notifications expose the first three numbered actions; the widget itself can show up to six choice pills. The expanded notification view shows the full request or menu text, and resolved cards are deduped and cancelled so nothing stacks or lingers
 - **SmartKeyBar** — 5 context-adaptive key sets (Default / Vim / Git / REPL / Navigate), swipe to switch
 - **Immortal sessions** — tmux keeps your shell alive when the app is backgrounded; resume any session by name
 - **Japanese input in terminal** — compose CJK characters directly in the terminal pane
@@ -711,16 +717,18 @@ The `colors` object is mutable and keeps the same identity, so every `import { c
 
 ## Operational Metrics
 
-Measured on the public **Shelly v5.3.8** Android release artifacts and GitHub
-Actions run [`26792917188`](https://github.com/RYOITABASHI/Shelly/actions/runs/26792917188), unless noted otherwise.
+Measured on the public **Shelly v6.0.0** Android release line. The rolling
+[`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json)
+manifest is the source of truth for the newest APK `versionCode`, commit,
+asset name, size, and SHA-256.
 
 | Metric | Value | Source |
 |---|---:|---|
-| Public APK version | `5.3.8` / `versionCode 1388` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Public APK commit | `aa40a1f4de4473aac0ab13937b5cefab2475727b` | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
-| APK artifact size | `699,829,175` bytes (`699.8 MB`, `667.4 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
-| APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Codex runtime version | `0.135.0` | `.ci-versions/codex.txt` |
+| Public APK version | `6.0.0` / monotonic Android `versionCode` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK commit | CI-published `gitSha` | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
+| APK artifact size | CI-published release asset size | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
+| APK manifest size | CI-published manifest size | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Codex runtime version | `0.139.0` | `.ci-versions/codex.txt` |
 | Codex runtime artifact size | `140,557,745` bytes (`140.6 MB`, `134.0 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
 | Codex runtime manifest size | `613` bytes | [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json) |
 | CI quality job | `48s` | lint, typecheck, unit tests |
@@ -822,7 +830,7 @@ GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo
 
 ## Known Limitations
 
-Shelly v5.3.8 is pre-release Android software. Here's what we know isn't perfect yet.
+Shelly v6.0.0 is pre-release Android software. Here's what we know isn't perfect yet.
 
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-4B Q4_K_M is recommended for high-end foldables, Qwen3.5-9B is the quality-focused option, and Qwen 2.5 1.5B is the low-memory option.
 - **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
