@@ -104,6 +104,9 @@ class ScouterStateStore(context: Context) {
             expireStaleWidgetPromptLocked()
             markWidgetPromptAnsweredLocked(event)
             writeAll(all)
+            if (snapshot.source == ScouterSource.CODEX) {
+                writeLastCodexUsageSnapshotLocked(snapshot)
+            }
             writeHelperStateLocked(all)
             return snapshot
         }
@@ -118,6 +121,12 @@ class ScouterStateStore(context: Context) {
     fun all(): List<SessionSnapshot> {
         synchronized(lock) {
             return readAllMutable().values.sortedByDescending { it.lastEventAt }
+        }
+    }
+
+    fun lastCodexUsageSnapshot(): SessionSnapshot? {
+        synchronized(lock) {
+            return readLastCodexUsageSnapshotLocked()
         }
     }
 
@@ -657,39 +666,49 @@ class ScouterStateStore(context: Context) {
     }
 
     fun clearWidgetConversationForPrivacy() {
-        val currentCodexSessionId = prefs.getString(KEY_WIDGET_CODEX_SESSION_ID, null)?.ifBlank { null }
-        val suppressedSessionId = prefs.getString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, null)
-            ?.ifBlank { null }
-        val now = System.currentTimeMillis()
-        val editor = prefs.edit()
-            .remove(KEY_WIDGET_PROMPT)
-            .remove(KEY_WIDGET_PROMPT_AT)
-            .remove(KEY_WIDGET_STATUS)
-            .remove(KEY_WIDGET_STATUS_AT)
-            .remove(KEY_WIDGET_ERROR)
-            .remove(KEY_WIDGET_CHOICE_OPTIONS)
-            .remove(KEY_WIDGET_PENDING_PROMPT)
-            .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
-            .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
-            .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
-            .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
-            .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
-            .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
-            .remove(KEY_WIDGET_CODEX_SESSION_ID)
-            .remove(KEY_WIDGET_PTY_SESSION_ID)
-            .remove(KEY_WIDGET_SHELLY_SESSION_ID)
-            .remove(KEY_WIDGET_CWD)
-            .remove(KEY_WIDGET_BINDING_AT)
-            .putLong(KEY_WIDGET_PRIVACY_CLEARED_AT, now)
-            .putLong(KEY_WIDGET_PRIVACY_SUPPRESSED_AT, now)
-        val nextSuppressedSessionId = currentCodexSessionId ?: suppressedSessionId
-        if (nextSuppressedSessionId.isNullOrBlank()) {
-            editor.remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
-        } else {
-            editor.putString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, nextSuppressedSessionId)
+        synchronized(lock) {
+            val currentCodexSessionId = prefs.getString(KEY_WIDGET_CODEX_SESSION_ID, null)?.ifBlank { null }
+            val suppressedSessionId = prefs.getString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, null)
+                ?.ifBlank { null }
+            val now = System.currentTimeMillis()
+            val sessionToPurge = currentCodexSessionId ?: suppressedSessionId
+            if (!sessionToPurge.isNullOrBlank()) {
+                val retainedRecentEvents = readRecentEventJsons().filter { event ->
+                    val timestamp = event.optLong("timestamp", 0L)
+                    timestamp > now || !matchesCodexSession(event.optString("sessionId"), sessionToPurge)
+                }
+                writeRecentEventsLocked(retainedRecentEvents)
+            }
+            val editor = prefs.edit()
+                .remove(KEY_WIDGET_PROMPT)
+                .remove(KEY_WIDGET_PROMPT_AT)
+                .remove(KEY_WIDGET_STATUS)
+                .remove(KEY_WIDGET_STATUS_AT)
+                .remove(KEY_WIDGET_ERROR)
+                .remove(KEY_WIDGET_CHOICE_OPTIONS)
+                .remove(KEY_WIDGET_PENDING_PROMPT)
+                .remove(KEY_WIDGET_PENDING_APPROVAL_DECISION)
+                .remove(KEY_WIDGET_PENDING_APPROVAL_AT)
+                .remove(KEY_WIDGET_PENDING_APPROVAL_TEXT)
+                .remove(KEY_WIDGET_PENDING_CODEX_SESSION_ID)
+                .remove(KEY_WIDGET_PENDING_PTY_SESSION_ID)
+                .remove(KEY_WIDGET_PENDING_SHELLY_SESSION_ID)
+                .remove(KEY_WIDGET_CODEX_SESSION_ID)
+                .remove(KEY_WIDGET_PTY_SESSION_ID)
+                .remove(KEY_WIDGET_SHELLY_SESSION_ID)
+                .remove(KEY_WIDGET_CWD)
+                .remove(KEY_WIDGET_BINDING_AT)
+                .putLong(KEY_WIDGET_PRIVACY_CLEARED_AT, now)
+                .putLong(KEY_WIDGET_PRIVACY_SUPPRESSED_AT, now)
+            val nextSuppressedSessionId = currentCodexSessionId ?: suppressedSessionId
+            if (nextSuppressedSessionId.isNullOrBlank()) {
+                editor.remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
+            } else {
+                editor.putString(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID, nextSuppressedSessionId)
+            }
+            editor.commit()
+            writeHelperState()
         }
-        editor.commit()
-        writeHelperState()
     }
 
     private fun isWidgetConversationPrivacySuppressedLocked(codexSessionId: String?): Boolean {
@@ -734,6 +753,33 @@ class ScouterStateStore(context: Context) {
             arr.put(it.toJson())
         }
         prefs.edit().putString(KEY_SNAPSHOTS, arr.toString()).commit()
+    }
+
+    private fun readLastCodexUsageSnapshotLocked(): SessionSnapshot? {
+        val raw = prefs.getString(KEY_LAST_CODEX_USAGE_SNAPSHOT, null)?.ifBlank { null } ?: return null
+        return runCatching { SessionSnapshot.fromJson(JSONObject(raw)) }.getOrNull()
+            ?.takeIf { it.source == ScouterSource.CODEX }
+    }
+
+    private fun writeLastCodexUsageSnapshotLocked(snapshot: SessionSnapshot) {
+        val usageOnly = snapshot.copy(
+            sessionId = "last-codex-usage",
+            projectName = "Codex",
+            gitBranch = null,
+            cwd = "",
+            currentStatus = ScouterStatus.IDLE,
+            currentTool = null,
+            currentFile = null,
+            lastError = null,
+            lastMessage = null,
+            localBackend = null,
+            localEndpoint = null,
+            tokensPerSecond = null,
+            queueSize = null,
+            latencyMs = null,
+            firstTokenLatencyMs = null
+        )
+        prefs.edit().putString(KEY_LAST_CODEX_USAGE_SNAPSHOT, usageOnly.toJson().toString()).commit()
     }
 
     private fun appendRecentEventLocked(event: ScouterEvent) {
@@ -999,6 +1045,7 @@ class ScouterStateStore(context: Context) {
         private const val KEY_TOKEN = "session_token"
         private const val KEY_PORT = "runtime_port"
         private const val KEY_SNAPSHOTS = "snapshots"
+        private const val KEY_LAST_CODEX_USAGE_SNAPSHOT = "last_codex_usage_snapshot"
         private const val KEY_RECENT_EVENTS = "recent_events"
         private const val KEY_WIDGET_PROMPT = "widget_prompt"
         private const val KEY_WIDGET_PENDING_PROMPT = "widget_pending_prompt"

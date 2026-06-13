@@ -124,10 +124,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun updateWidgets(context: Context, manager: AppWidgetManager, ids: IntArray) {
             val store = ScouterStateStore(context)
-            val snapshots = if (store.isEnabled()) store.all() else emptyList()
-            val binding = if (store.isEnabled()) store.widgetCodexBinding() else null
-            val conversation = if (store.isEnabled()) store.widgetConversation(binding?.codexSessionId) else null
-            val usageLimited = if (store.isEnabled()) store.widgetUsageLimited() else null
+            val enabled = store.isEnabled()
+            val snapshots = if (enabled) store.all() else emptyList()
+            val binding = if (enabled) store.widgetCodexBinding() else null
+            val conversation = if (enabled) store.widgetConversation(binding?.codexSessionId) else null
+            val usageLimited = if (enabled) store.widgetUsageLimited() else null
+            val lastCodexUsage = store.lastCodexUsageSnapshot()
             val load = runCatching { ScouterSystemSampler(context).sample() }
                 .getOrElse {
                     Log.w(TAG, "Scouter widget system sample failed; using lightweight load", it)
@@ -135,7 +137,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 }
             scheduleWaitExpiryRefresh(context, conversation)
             ids.forEach { id ->
-                runCatching { manager.updateAppWidget(id, render(context, snapshots, binding, conversation, load, usageLimited)) }
+                runCatching {
+                    manager.updateAppWidget(
+                        id,
+                        render(context, snapshots, binding, conversation, load, usageLimited, lastCodexUsage)
+                    )
+                }
                     .onFailure { Log.w(TAG, "Scouter widget update failed for id=$id", it) }
             }
         }
@@ -222,15 +229,18 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             binding: ScouterWidgetCodexBinding?,
             conversation: ScouterWidgetConversation?,
             load: ScouterSystemLoad,
-            usageLimited: ScouterWidgetUsageLimited? = null
+            usageLimited: ScouterWidgetUsageLimited? = null,
+            lastCodexUsage: SessionSnapshot? = null
         ): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
             promptPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_codex_ask, it) }
 
             val privacySuppressed = conversation?.privacySuppressed == true
+            val latestCodex = latestFor(snapshots, ScouterSource.CODEX)
             val boundCodex = if (privacySuppressed) null else latestCodexForBinding(snapshots, binding)
-            val codex = if (privacySuppressed) null else boundCodex ?: latestFor(snapshots, ScouterSource.CODEX)
+            val codex = if (privacySuppressed) null else boundCodex ?: latestCodex
+            val codexForUsage = codex ?: latestCodex ?: lastCodexUsage
             val local = latestFor(snapshots, ScouterSource.LOCAL_LLM)
             val boundScreen = inspectBoundCodexScreen(binding)
             bindCodexApprovalActions(views, context, binding, boundCodex, conversation, boundScreen)
@@ -276,7 +286,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val approvalIsActionable = hasActionableApproval(binding, boundCodex, conversation, boundScreen)
             // Usage/limit line: show a compact fallback for every bound Codex
             // session, even when the JSONL snapshot has no rate/context fields yet.
-            views.setTextViewText(R.id.scouter_codex_usage, codexUsageLine(codex, conversation, usageLimited))
+            views.setTextViewText(R.id.scouter_codex_usage, codexUsageLine(codexForUsage, conversation, usageLimited))
             views.setViewVisibility(R.id.scouter_codex_usage, View.VISIBLE)
             // Path A: bound terminal is live and currently showing the
             // interactive numbered prompt. When options parse cleanly, render
@@ -904,9 +914,12 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             usageLimited?.let {
                 val detail = it.summary.takeIf { s -> s.isNotBlank() && !s.equals("RATE LIMITED", ignoreCase = true) }
                 val limitedLine = if (detail != null) "RATE LIMITED · ${shorten(detail, 48)}" else "RATE LIMITED"
-                return appendUsageLine(baseLine, limitedLine)
+                return appendUsageLine(
+                    baseLine,
+                    appendLimitDetail(fallbackRateLimitCells(ScouterRateLimitStatus.LIMITED), limitedLine)
+                )
             }
-            if (snapshot == null) return appendUsageLine(baseLine, "LIMIT --")
+            if (snapshot == null) return appendUsageLine(baseLine, fallbackRateLimitCells())
             // Rate-limit / status-window summary (ordering unchanged from before).
             // Cost now lives on the USAGE (metrics) line, so this returns the
             // rate-limit summary only, or null when there is nothing to show.
@@ -920,12 +933,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                     snapshot.lastError
                 )
                 if (windowLimitLine != null) return@run windowLimitLine
-                if (needsDedicatedRateLimitLine(snapshot)) return@run rateLimitLine(snapshot)
+                if (needsDedicatedRateLimitLine(snapshot)) {
+                    val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
+                    return@run appendLimitDetail(fallbackRateLimitCells(status), rateLimitLine(snapshot))
+                }
                 null
             }
             return appendUsageLine(
                 baseLine,
-                rate ?: compactRateLimitLabel(snapshot) ?: defaultRateLimitLabel(snapshot)
+                rate ?: fallbackRateLimitCells(snapshot.rateLimitStatus)
             )
         }
 
@@ -942,6 +958,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
 
         private fun appendUsageLine(baseLine: String, suffix: CharSequence): CharSequence =
             SpannableStringBuilder(baseLine).append(" · ").append(suffix)
+
+        private fun appendLimitDetail(prefix: CharSequence, detail: String): CharSequence {
+            val cleaned = detail
+                .removePrefix("RATE ")
+                .removePrefix("LIMIT ")
+                .takeIf { it.isNotBlank() }
+                ?: return prefix
+            return SpannableStringBuilder(prefix).append(" · ").append(shorten(cleaned, 40))
+        }
 
         private fun contextGaugeCells(usedPercent: Double?, cells: Int): String {
             if (usedPercent == null) return ".".repeat(cells)
@@ -966,8 +991,9 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             // prefix and the dimmed RESET are kept. The bar is the "remaining"
             // indicator (so the "left" word is dropped).
             val sb = SpannableStringBuilder("LIMIT")
-            primaryRemaining?.let { appendQuota(sb, "5H", it) }
-            secondaryRemaining?.let { appendQuota(sb, "WK", it) }
+            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
+            primaryRemaining?.let { appendQuota(sb, "5H", it) } ?: appendUnknownQuota(sb, "5H", status)
+            secondaryRemaining?.let { appendQuota(sb, "WK", it) } ?: appendUnknownQuota(sb, "WK", status)
             snapshot.rateLimitPrimaryResetAt?.let {
                 val start = sb.length
                 sb.append(" · RESET ").append(formatDeviceTime(it))
@@ -975,6 +1001,40 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 sb.setSpan(ForegroundColorSpan(HUD_DIM), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
             return sb
+        }
+
+        private fun fallbackRateLimitCells(status: ScouterRateLimitStatus? = null): CharSequence {
+            val sb = SpannableStringBuilder("LIMIT")
+            appendUnknownQuota(sb, "5H", status)
+            appendUnknownQuota(sb, "WK", status)
+            return sb
+        }
+
+        private fun appendUnknownQuota(
+            sb: SpannableStringBuilder,
+            label: String,
+            status: ScouterRateLimitStatus?
+        ) {
+            val statusText = when (status) {
+                ScouterRateLimitStatus.OK -> "OK"
+                ScouterRateLimitStatus.HOT -> "HOT"
+                ScouterRateLimitStatus.LIMITED -> "LIM"
+                ScouterRateLimitStatus.UNKNOWN,
+                null -> "--"
+            }
+            val color = when (status) {
+                ScouterRateLimitStatus.HOT -> HUD_AMBER
+                ScouterRateLimitStatus.LIMITED -> HUD_RED
+                else -> HUD_DIM
+            }
+            sb.append(" · ").append(label).append(" ")
+            val railStart = sb.length
+            sb.append("□".repeat(GAUGE_CELLS))
+            sb.setSpan(ForegroundColorSpan(color), railStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sb.append(" ")
+            val statusStart = sb.length
+            sb.append(statusText)
+            sb.setSpan(ForegroundColorSpan(color), statusStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
 
         // Appends " · <label> ■■□□□ <pct>%" — a 5-cell remaining-quota bar (filled
@@ -1045,10 +1105,8 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val isChoicePending = conversation.widgetStatus == ScouterStateStore.choicePendingStatus()
             val widgetPromptAt = conversation.widgetPromptAt ?: 0L
             val lastAnswerAt = conversation.lastAnswerAt ?: 0L
-            val lastPromptAt = conversation.lastPromptAt ?: 0L
             val lastApprovalAt = conversation.lastApprovalAt ?: 0L
             val widgetStatusAt = conversation.widgetStatusAt ?: 0L
-            val latestPromptAt = maxOf(widgetPromptAt, lastPromptAt)
             val answer = conversation.lastAnswer?.takeIf { it.isNotBlank() }
             val approval = conversation.lastApproval?.takeIf { it.isNotBlank() }
             val approvalDecision = ScouterStateStore.approvalDecisionFromStatus(conversation.widgetStatus)
@@ -1108,13 +1166,17 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                     HUD_GREEN
                 )
             }
-            // Idle/completed: show BOTH what was asked and what Codex replied, so
-            // the line isn't just an echo of the user's own prompt (item 9). The
-            // conversation TextView allows 2 lines. Blocking states (choice /
-            // approval) are handled above and still take priority over this.
-            val hasAnswer = answer != null && lastAnswerAt >= latestPromptAt
-            val prompt = (if (widgetPromptAt >= lastPromptAt) conversation.widgetPrompt else conversation.lastPrompt)
-                ?.takeIf { it.isNotBlank() }
+            // Only the currently active widget prompt is allowed to occupy this
+            // privacy-sensitive preview. Historical JSONL prompts/answers are
+            // intentionally ignored so closing all Agent Chat tabs leaves a blank
+            // two-line reservation instead of resurrecting old text.
+            val hasAnswer = answer != null && widgetPromptAt > 0L && lastAnswerAt >= widgetPromptAt
+            val prompt = conversation.widgetPrompt
+                ?.takeIf {
+                    it.isNotBlank() &&
+                        widgetPromptAt > 0L &&
+                        (isActiveWidgetWait(conversation, widgetPromptAt, lastAnswerAt) || hasAnswer)
+                }
             if (prompt != null || hasAnswer) {
                 val youLabel = if (isActiveWidgetWait(conversation, widgetPromptAt, lastAnswerAt)) "WAIT " else "YOU  "
                 val lines = mutableListOf<String>()
@@ -1127,10 +1189,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 }
                 return WidgetConversationPreview(lines.joinToString("\n"), HUD_GREEN)
             }
-            return WidgetConversationPreview(
-                "ASK ready when Codex is bound",
-                HUD_GREEN
-            )
+            return null
         }
 
         private fun approvalDecisionLabel(decision: String): String = if (decision == "deny") "NO" else "OK"
@@ -1159,26 +1218,6 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 snapshot.rateLimitRemainingRequests != null ||
                 snapshot.rateLimitRemainingTokens != null ||
                 (cooldownSeconds(snapshot) ?: 0L) > 0L
-        }
-
-        private fun compactRateLimitLabel(snapshot: SessionSnapshot): String? {
-            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
-            return when (status) {
-                ScouterRateLimitStatus.OK -> "RATE OK"
-                ScouterRateLimitStatus.UNKNOWN -> "RATE --"
-                null -> null
-                else -> null
-            }
-        }
-
-        private fun defaultRateLimitLabel(snapshot: SessionSnapshot): String {
-            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
-            return when (status) {
-                ScouterRateLimitStatus.OK -> "LIMIT OK"
-                ScouterRateLimitStatus.UNKNOWN, null -> "LIMIT --"
-                ScouterRateLimitStatus.HOT -> "LIMIT HOT"
-                ScouterRateLimitStatus.LIMITED -> "LIMITED"
-            }
         }
 
         private fun rateLimitLine(snapshot: SessionSnapshot): String {
@@ -1263,7 +1302,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             }
         }
 
-        private fun statusWindowLimitLine(snapshot: SessionSnapshot, vararg texts: String?): String? {
+        private fun statusWindowLimitLine(snapshot: SessionSnapshot, vararg texts: String?): CharSequence? {
             val text = texts.firstOrNull { value ->
                 val lower = value?.lowercase(Locale.US).orEmpty()
                 lower.contains("5h") ||
@@ -1276,11 +1315,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val fiveHour = percentForLimitWindow(text, FIVE_HOUR_LIMIT_RE)
             val weekly = percentForLimitWindow(text, WEEKLY_LIMIT_RE)
             if (fiveHour == null && weekly == null) return null
-            val parts = mutableListOf("LIMIT")
-            fiveHour?.let { parts += "5H ${formatPercent(it)}" }
-            weekly?.let { parts += "WK ${formatPercent(it)}" }
-            rateResetLabel(snapshot)?.let { parts += it }
-            return parts.joinToString(" · ")
+            val sb = SpannableStringBuilder("LIMIT")
+            fiveHour?.let { appendQuota(sb, "5H", it) } ?: appendUnknownQuota(sb, "5H", snapshot.rateLimitStatus)
+            weekly?.let { appendQuota(sb, "WK", it) } ?: appendUnknownQuota(sb, "WK", snapshot.rateLimitStatus)
+            rateResetLabel(snapshot)?.let {
+                val start = sb.length
+                sb.append(" · ").append(it)
+                sb.setSpan(ForegroundColorSpan(HUD_DIM), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            return sb
         }
 
         private fun rateResetLabel(snapshot: SessionSnapshot): String? {
