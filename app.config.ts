@@ -3,7 +3,7 @@ import { execSync } from "node:child_process";
 
 const bundleId = "dev.shelly.terminal";
 const schemeFromBundleId = "shelly";
-const lastManualAndroidVersionCode = 532;
+const lastManualAndroidVersionCode = 1501;
 const fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1;
 
 function androidVersionCode(): number {

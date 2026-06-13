@@ -5,7 +5,7 @@ apply plugin: "com.facebook.react"
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 def hostArch = System.getProperty("os.arch", "").toLowerCase()
 def useSourceBundleHermesForHost = (findProperty('shelly.useSourceBundleHermes') ?: (hostArch == "aarch64" || hostArch == "arm64").toString()).toBoolean()
-def lastManualAndroidVersionCode = 532
+def lastManualAndroidVersionCode = 1501
 def fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1
 def resolveShellyAndroidVersionCode = {
     def envVersionCode = System.getenv("SHELLY_ANDROID_VERSION_CODE")
