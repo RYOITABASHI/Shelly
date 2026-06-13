@@ -32,7 +32,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v217:bti-open-interposer";
+    "shelly-exec-wrapper:v218:open-fallthrough-libc";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -1002,10 +1002,26 @@ typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
 static posix_spawn_impl_t g_posix_spawn_fn;
 static posix_spawn_impl_t g_posix_spawnp_fn;
 
+/* v218: real libc open/openat resolved via RTLD_NEXT. The open/openat
+ * interposers below exist only for the codex /proc/self/exe shim; for every
+ * other open they used to issue a raw openat syscall, bypassing bionic's libc
+ * open path. That broke node v24's internal ReadFileSync: every package.json
+ * read aborted at `CHECK_EQ(0, uv_fs_close(...))` (util.cc) on-device, so the
+ * Claude Code cli.js could not load any module under LD_PRELOAD. Falling
+ * through to the real libc open/openat (only when no codex rewrite is needed)
+ * keeps node's fd bookkeeping intact while preserving both the codex shim and
+ * the execve/posix_spawn redirect. Confirmed root cause 2026-06-12. */
+typedef int (*open_impl_t)(const char *, int, ...);
+typedef int (*openat_impl_t)(int, const char *, int, ...);
+static open_impl_t g_open_fn;
+static openat_impl_t g_openat_fn;
+
 __attribute__((constructor))
 static void shelly_resolve_real_impls(void) {
     g_posix_spawn_fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawn");
     g_posix_spawnp_fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    g_open_fn = (open_impl_t)dlsym(RTLD_NEXT, "open");
+    g_openat_fn = (openat_impl_t)dlsym(RTLD_NEXT, "openat");
 }
 
 static posix_spawn_impl_t real_posix_spawn_impl(void) {
@@ -1164,21 +1180,32 @@ int open(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, mode));
+    if (target) {
+        return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)target, flags, mode));
+    }
+    if (g_open_fn) {
+        return g_open_fn(path, flags, mode);
+    }
+    return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)path, flags, mode));
 }
 
 int openat(int dirfd, const char *path, int flags, ...) {
     char target_buf[PATH_BUF_SIZE];
     const char *target = codex_proc_exe_open_target(path, flags, target_buf, sizeof(target_buf));
     mode_t mode = 0;
-    if (target) dirfd = AT_FDCWD;
     if (flags & O_CREAT) {
         va_list ap;
         va_start(ap, flags);
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, mode));
+    if (target) {
+        return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)target, flags, mode));
+    }
+    if (g_openat_fn) {
+        return g_openat_fn(dirfd, path, flags, mode);
+    }
+    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)path, flags, mode));
 }
 
 ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
