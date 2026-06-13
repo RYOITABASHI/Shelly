@@ -43,12 +43,27 @@ Bash tool exit-1 の根本原因と、各回避策の検証結果。すべて Z 
   → **結論: v218 下で起動・preload(--require 2枚)・モジュール解決は完全に健全。SIGSEGV は `-p` の深い処理(prompt 実行 = shell-snapshot 生成のシェル spawn / agent ループ)に限定**。Chunk 3 の open fall-through も preload 段階では無害(--version が通った)。**segfault locus = Bash-tool の snapshot/spawn 経路**で確定的に絞れた。
 - **切り分けプローブ2(実行済み・2026-06-13)**: `SHELL=/system/bin/sh BASH=/system/bin/sh CLAUDE_CODE_SHELL=/system/bin/sh` + LD_PRELOAD + preload で `cli.js -p "hi"` → **まだ EXIT=139(segfault、出力ゼロ)**。
   → **segfault はシェル種別に依らない**(`$HOME/bin/bash`→shelly_shell の wrapper リダイレクト spawn が原因ではない)。`-p` の深い処理そのもので死ぬ。`--version` は通り `-p` は死ぬ差分 = agent 初期化 / Bash-tool snapshot 生成 / その過程で読む native コード。
-- **残る容疑(優先順)と次の一手**:
-  1. **native .node addon の bionic 非互換(最有力)**: cli.js は元々 Bun 向け。`-p`(フル agent)で読む native addon(.node)が glibc/別 ABI ビルドで bionic node にロードされ segfault、という線。→ `find ~/.shelly-cli/node_modules/@anthropic-ai/claude-code -name '*.node'` で同梱ネイティブを列挙、`file`/`readelf` で ABI 確認。`--version` がそれを読まないことも確認。
-  2. **Bun.spawn polyfill 本体**: `--require` を compat のみ(bun polyfill 無し)で `cli.js -p` → segfault が変わるか。polyfill の `Bun.spawn`(child_process ブリッジ)実装が native を触って落ちる可能性。
-  3. **child_process/posix_spawn の wrapper 経路**: `strace`(同梱要)or `SHELLY_EXEC_TRACE` を仕込み、`-p` 実行で最後に呼ばれた syscall を見る。tombstone が出ないので strace が最有力の観測手段。
-  4. **Chunk 3 の open fall-through を疑うなら**: 一時的に raw syscall に戻した v219 をビルドし `-p` が abort に戻る/segfault のままか(fall-through が segfault 源かの判定)。ただしプローブ1で preload+--version は通っており、fall-through 単体は無害寄り。
-  5. **main の eval-bootstrap 方式**を claude() にも適用(main が同種 ReadFileSync crash を回避した実績手法)。ただし今回の segfault は ReadFileSync 段階より後なので効果は限定的か。
+- **切り分けプローブ3・4(実行済み・2026-06-13)— cheap な容疑は全消し**:
+  - **native addon**: 同梱 `.node` は `vendor/audio-capture/{arm64-linux,arm64-darwin,x64-linux,...}/audio-capture.node` のみ(**android-arm64 版が無い** → compat preload の platform='linux' 詐称で arm64-linux/glibc 版が bionic node にロードされる構図)。だが **`vendor/audio-capture` を退避しても `require(cli.js)` は EXIT=139 のまま**。他に `.node` は**無し**。→ audio-capture は唯一の native だが segfault の主因ではない(cli.js は audio-capture 到達**前**に死ぬ)。
+  - **Bun polyfill**: `--require` を compat のみ(bun polyfill 無し)で `require(cli.js)` → **やはり EXIT=139**(polyfill 由来でもない。かつ Bun.* 未定義なら本来 JS ERR になるはず = segfault は Bun.* 使用**前**)。
+  - **結論**: segfault は **cli.js フル init の極めて早い段階**(Bun.* 使用前・audio-capture 到達前・他 native 無し)で bionic node 上で死ぬ。`cli.js --version`(早期 exit)は通るので、フル init に入った瞬間の何か。**cheap probe では割れない深さ**。
+- **残る次の一手(いずれも重い)**:
+  1. **strace**(非同梱 → static strace を bundle or DL 要)で `require(cli.js)` の最後の syscall を観測。tombstone が出ない以上これが本命の観測手段。
+  2. cli.js のフル init を JS レベルで bisect(巨大 Bun-bundled なので困難)。
+  3. **別アーキ**: glibc-runner で本物の Bun ランタイムを動かす(ferrum 方式)。extracted-Node を捨てる大工事。Bash tool 動作は ferrum でも未確認。
+  4. Chunk 3 の open fall-through を疑うなら raw-syscall に戻した v219 で abort↔segfault の変化を見る(ただし preload+--version は通っており fall-through 単体は無害寄り)。
+
+---
+
+## フィージビリティ評価 & 撤退判断 (2026-06-13)
+
+- **現 extracted-Node 経路で Claude Code が実用(TUI + Bash tool)になる確率 ≈ 40%**(幅 30-55%)。
+  - +材料: 3つの壁(symlink / LD_PRELOAD root cause / uv_fs_close abort)を実機で突破済み。
+  - −材料: 残る segfault は cheap probe 全消しでも残り、cli.js は Bun 向け = 根本非互換の可能性。観測手段(tombstone/strace)が無いのが最大の足枷。Bash tool が動くかは launch のさらに先で未到達。
+  - 確率を上げる手: strace 観測(+10-15%)/ glibc-runner 別アーキ(別途 ~30-40% の道, 数日級)。
+- **判断 (2026-06-13)**: **ここで撤退・bank**。claude は v5.3.8 で意図的に Codex 一本化済みで、本件は「いけたら嬉しい」枠。残作業は「数時間〜数日 + 直る保証なし」で投資対効果が見合わない。**Codex 一本化のまま維持**。
+- **再開条件**: (a) strace 等で観測を1段上げられる時、(b) glibc-runner 別アーキを本腰で検討する時。その際は本 handoff の「残る次の一手」から。branch `feat/claude-on-device-reenable` は破棄せず温存(main は無傷)。
+- **実機 scratch**: `vendor/audio-capture` は `.off` に退避したまま(再開時に戻すか、再インストールで復活)。他の scratch は上記「実機 scratch」節参照。
 
 ---
 
