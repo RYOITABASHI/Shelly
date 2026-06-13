@@ -39,20 +39,16 @@ Bash tool exit-1 の根本原因と、各回避策の検証結果。すべて Z 
 - **症状**: v218 wrapper インストール後、`claude -p "hi"` → `Segmentation fault`(exit 139, 出力ゼロ)。対話 `claude` → TUI に到達せずハング(Ctrl-C 効かず)。npm install(`added 1 package`)は成功し、その後の cli.js 起動で死ぬ。
 - **134 (abort) とは別物**: uv_fs_close abort は v218 で消えた。これは**より深い SIGSEGV**。
 - **tombstone なし**: `adb logcat` に node プロセスの debuggerd tombstone が出ない(Knox 環境の app-spawned crash 共通。原始 Bun SEA crash と同じ挙動)。logcat に出る `execSubprocess+2452` の libsigchain backtrace は **Shelly の execCommand 経路の別 crash**(セッション序盤からアプリ通常動作中に出ており libsigchain が SIG_DFL 処理・概ね無害)で、claude プロセスの crash ではない。
-- **未実行の切り分けプローブ(次の一手)**:
-  ```sh
-  LD_PRELOAD="$SHELLY_LD_LIBRARY_PATH/libexec_wrapper.so" _run $SHELLY_LD_LIBRARY_PATH/node \
-    --require $HOME/.shelly-node-compat-preload.js --require $HOME/.shelly-claude-node-preload.js \
-    $HOME/.shelly-cli/node_modules/@anthropic-ai/claude-code/cli.js --version 2>&1 | tail -6; echo "EXIT=${PIPESTATUS[0]}"
-  ```
-  - `2.1.112`+EXIT=0 なら → segfault は `-p` の深い処理(snapshot 生成のシェル spawn / prompt 処理)。起動・preload は健全。
-  - Segfault なら → preload を LD_PRELOAD 下で読む段階で死ぬ → **Chunk 3 の open fall-through(`g_open_fn`/`g_openat_fn` 変数 ABI 呼び)か Bun polyfill が疑わしい**。
-- **次に試す仮説(優先順)**:
-  1. 上記プローブで segfault locus を二分。
-  2. polyfill 抜き(`--require` を compat のみ、bun polyfill 無し)で `claude -p` → segfault するか。polyfill の `Bun.spawn` stub 等が原因か切り分け。
-  3. Chunk 3 の `g_openat_fn(dirfd, path, flags, mode)` variadic 呼びを疑う → 一時的に open fall-through を無効化(raw syscall に戻す)した v219 wrapper をビルドし、segfault が abort に戻るか確認(fall-through が segfault 源かの判定)。レビューでは ABI 正当と判断済みだが実機未確証。
-  4. main の eval-bootstrap 方式(`node -e "process.argv[1]=...; require(cli)"`)を claude() にも適用してみる(main が同種 crash を回避した実績ある手法)。
-  5. snapshot 生成を疑う場合: `CLAUDE_CODE_SHELL` や snapshot 無効化フラグ、`SHELL=/system/bin/sh` 等で claude のシェル経路を変えて切り分け。
+- **切り分けプローブ(実行済み・2026-06-13)**: `LD_PRELOAD=...wrapper _run node --require compat --require bun cli.js --version` → **`2.1.112 (Claude Code)` + EXIT=0(segfault 無し)**。
+  → **結論: v218 下で起動・preload(--require 2枚)・モジュール解決は完全に健全。SIGSEGV は `-p` の深い処理(prompt 実行 = shell-snapshot 生成のシェル spawn / agent ループ)に限定**。Chunk 3 の open fall-through も preload 段階では無害(--version が通った)。**segfault locus = Bash-tool の snapshot/spawn 経路**で確定的に絞れた。
+- **切り分けプローブ2(実行済み・2026-06-13)**: `SHELL=/system/bin/sh BASH=/system/bin/sh CLAUDE_CODE_SHELL=/system/bin/sh` + LD_PRELOAD + preload で `cli.js -p "hi"` → **まだ EXIT=139(segfault、出力ゼロ)**。
+  → **segfault はシェル種別に依らない**(`$HOME/bin/bash`→shelly_shell の wrapper リダイレクト spawn が原因ではない)。`-p` の深い処理そのもので死ぬ。`--version` は通り `-p` は死ぬ差分 = agent 初期化 / Bash-tool snapshot 生成 / その過程で読む native コード。
+- **残る容疑(優先順)と次の一手**:
+  1. **native .node addon の bionic 非互換(最有力)**: cli.js は元々 Bun 向け。`-p`(フル agent)で読む native addon(.node)が glibc/別 ABI ビルドで bionic node にロードされ segfault、という線。→ `find ~/.shelly-cli/node_modules/@anthropic-ai/claude-code -name '*.node'` で同梱ネイティブを列挙、`file`/`readelf` で ABI 確認。`--version` がそれを読まないことも確認。
+  2. **Bun.spawn polyfill 本体**: `--require` を compat のみ(bun polyfill 無し)で `cli.js -p` → segfault が変わるか。polyfill の `Bun.spawn`(child_process ブリッジ)実装が native を触って落ちる可能性。
+  3. **child_process/posix_spawn の wrapper 経路**: `strace`(同梱要)or `SHELLY_EXEC_TRACE` を仕込み、`-p` 実行で最後に呼ばれた syscall を見る。tombstone が出ないので strace が最有力の観測手段。
+  4. **Chunk 3 の open fall-through を疑うなら**: 一時的に raw syscall に戻した v219 をビルドし `-p` が abort に戻る/segfault のままか(fall-through が segfault 源かの判定)。ただしプローブ1で preload+--version は通っており、fall-through 単体は無害寄り。
+  5. **main の eval-bootstrap 方式**を claude() にも適用(main が同種 ReadFileSync crash を回避した実績手法)。ただし今回の segfault は ReadFileSync 段階より後なので効果は限定的か。
 
 ---
 
