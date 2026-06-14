@@ -45,6 +45,12 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Fixed
 
+- **Widget ASK cold-start hardening (v6.0.0 build 1507)** — when a widget
+  prompt is submitted while no Codex session is running, Shelly now retries the
+  native PTY launch command directly (`clear && codex`) instead of relying only
+  on a pending TerminalPane write. This keeps the no-Codex/no-Agent-Chat widget
+  path from landing in Agent Chat with "No Codex session observed" and no
+  command entered.
 - **Updates modal overflow hotfix (v6.0.0 build 1505)** — fixed horizontal
   right-clipping on Fold layouts by opening Updates as a top-level modal and
   tightening shrink/wrap constraints for long update labels, toolbar buttons,
