@@ -45,6 +45,11 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Fixed
 
+- **Fold display relayout hardening (v6.0.0 build 1509)** — the React safe-area
+  provider no longer seeds stale initial window metrics, and the Android
+  MainActivity now requests a root relayout after configuration, focus, and
+  resume events. This targets the intermittent main-display to cover-display
+  switch where Shelly could remain squeezed into the previous window bounds.
 - **Widget ASK cold-start hardening (v6.0.0 build 1507)** — when a widget
   prompt is submitted while no Codex session is running, Shelly now retries the
   native PTY launch command directly (`clear && codex`) instead of relying only
