@@ -164,46 +164,60 @@ def reactAndroidReleaseAarProvider = providers.provider {
     }.files.toList()
     candidates.isEmpty() ? null : candidates.sort { it.absolutePath }.last()
 }
+def fbjniAarProvider = providers.provider {
+    def candidates = fileTree("${gradle.gradleUserHomeDir}/caches/modules-2/files-2.1/com.facebook.fbjni/fbjni/0.7.0") {
+        include "**/fbjni-0.7.0.aar"
+    }.files.toList()
+    candidates.isEmpty() ? null : candidates.sort { it.absolutePath }.last()
+}
+def hermesAndroidReleaseAarProvider = providers.provider {
+    def candidates = fileTree("${gradle.gradleUserHomeDir}/caches/modules-2/files-2.1/com.facebook.react/hermes-android/0.81.5") {
+        include "**/hermes-android-0.81.5-release.aar"
+    }.files.toList()
+    candidates.isEmpty() ? null : candidates.sort { it.absolutePath }.last()
+}
 def repairReactAndroidPrefabLinks = {
     def transformsDir = file("${gradle.gradleUserHomeDir}/caches/${gradle.gradleVersion}/transforms")
-    def reactAndroidReleaseAar = reactAndroidReleaseAarProvider.getOrNull()
     if (!transformsDir.exists()) {
         return
     }
-    if (reactAndroidReleaseAar == null || !reactAndroidReleaseAar.exists()) {
-        throw new GradleException("Could not find react-android 0.81.5 release AAR in Gradle cache")
-    }
 
     def restored = 0
-    def stream = java.nio.file.Files.walk(transformsDir.toPath())
-    try {
-        stream.each { link ->
-            def normalized = link.toString()
-            def prefabRoot = "/react-android-0.81.5-release/"
-            if (!normalized.endsWith(".so") ||
-                !normalized.contains("${prefabRoot}prefab/modules/")) {
-                return
-            }
-            if (!java.nio.file.Files.isSymbolicLink(link) || java.nio.file.Files.exists(link)) {
-                return
-            }
-
-            def target = java.nio.file.Files.readSymbolicLink(link)
-            if (!target.isAbsolute()) {
-                target = link.parent.resolve(target)
-            }
-
-            def zipPath = normalized.substring(normalized.indexOf(prefabRoot) + prefabRoot.length())
-            def entry = zipTree(reactAndroidReleaseAar).matching { include zipPath }.singleFile
-            java.nio.file.Files.createDirectories(target.parent)
-            java.nio.file.Files.copy(entry.toPath(), target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            restored++
+    def restorePrefabLinks = { prefabRoot, aarProvider, aarLabel ->
+        def aar = aarProvider.getOrNull()
+        if (aar == null || !aar.exists()) {
+            throw new GradleException("Could not find ${aarLabel} AAR in Gradle cache")
         }
-    } finally {
-        stream.close()
+
+        def stream = java.nio.file.Files.walk(transformsDir.toPath())
+        try {
+            stream.each { link ->
+                def normalized = link.toString()
+                if (!normalized.endsWith(".so") ||
+                    !normalized.contains("${prefabRoot}prefab/modules/")) {
+                    return
+                }
+                if (!java.nio.file.Files.isSymbolicLink(link)) {
+                    return
+                }
+
+                def zipPath = normalized.substring(normalized.indexOf(prefabRoot) + prefabRoot.length())
+                def entry = zipTree(aar).matching { include zipPath }.singleFile
+                java.nio.file.Files.delete(link)
+                java.nio.file.Files.copy(entry.toPath(), link, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                restored++
+            }
+        } finally {
+            stream.close()
+        }
     }
+
+    restorePrefabLinks("/react-android-0.81.5-release/", reactAndroidReleaseAarProvider, "react-android 0.81.5 release")
+    restorePrefabLinks("/fbjni-0.7.0/", fbjniAarProvider, "fbjni 0.7.0")
+    restorePrefabLinks("/hermes-android-0.81.5-release/", hermesAndroidReleaseAarProvider, "hermes-android 0.81.5 release")
+
     if (restored > 0) {
-        logger.lifecycle("Restored ${restored} React Android prefab symlink target(s) for proot link2symlink builds.")
+        logger.lifecycle("Materialized ${restored} Android prefab symlink(s) for proot link2symlink builds.")
     }
 }
 
@@ -218,6 +232,9 @@ gradle.projectsEvaluated {
     allprojects {
         tasks.matching { it.name.startsWith("buildCMake") || it.name.startsWith("configureCMake") }.configureEach {
             dependsOn(repairTask)
+            doFirst {
+                repairReactAndroidPrefabLinks()
+            }
         }
     }
 }

@@ -1025,6 +1025,14 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        AsyncFunction("clearScouterWidgetCodexBinding") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).clearWidgetCodexBinding()
+            ScouterWidgetProvider.updateAll(context, force = true)
+            null
+        }
+
         AsyncFunction("consumeScouterWidgetPendingPrompt") {
             codexSessionId: String?,
             ptySessionId: String?,

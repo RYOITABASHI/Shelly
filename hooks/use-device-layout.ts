@@ -28,8 +28,12 @@ export type DeviceLayout = {
  *   Standard : 380-599dp      (most phones)
  *   Wide     : width >= 600dp (tablets, foldable inner, desktop)
  */
-export function useDeviceLayout(): DeviceLayout {
-  const { width, height } = useWindowDimensions();
+export function useDeviceLayout(
+  measuredSize?: { width: number; height: number } | null,
+): DeviceLayout {
+  const windowSize = useWindowDimensions();
+  const width = measuredSize?.width && measuredSize.width > 0 ? measuredSize.width : windowSize.width;
+  const height = measuredSize?.height && measuredSize.height > 0 ? measuredSize.height : windowSize.height;
 
   return useMemo(() => {
     const isLandscape = width > height;

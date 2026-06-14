@@ -92,7 +92,11 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   },
 }));
 
-import { resumeCodexSession, sendTerminalInterruptToCodexSession } from '@/lib/codex-session-resume';
+import {
+  resumeCodexSession,
+  sendTerminalInterruptToCodexSession,
+  startFreshCodexSession,
+} from '@/lib/codex-session-resume';
 
 function terminalSession(
   id: string,
@@ -431,6 +435,47 @@ describe('codex session resume', () => {
       sessionId: 'terminal-new',
     });
     expect(mockMultiPaneState.focusedSlot).toBe(1);
+  });
+
+  it('starts widget cold-start Codex in a fresh terminal when one can be created', async () => {
+    mockCreateTerminalSessionForFocusedPane.mockImplementation(() => {
+      mockTerminalState.sessions = [
+        ...mockTerminalState.sessions,
+        terminalSession('terminal-widget', 'shelly-widget'),
+      ];
+      mockTerminalState.activeSessionId = 'terminal-widget';
+      mockMultiPaneState.slots[0] = {
+        id: 'pane-terminal',
+        tab: 'terminal',
+        sessionId: 'terminal-widget',
+      };
+      return 'terminal-widget';
+    });
+    const addTerminalPane = jest.fn();
+
+    const result = await startFreshCodexSession({
+      addTerminalPane,
+      preferNewTerminal: true,
+    });
+
+    expect(result).toEqual({ status: 'queued', sessionId: 'terminal-widget' });
+    expect(addTerminalPane).not.toHaveBeenCalled();
+    expectResumePasted('shelly-widget', 'clear && codex');
+    expect(mockTerminalState.pendingCommand).toBeNull();
+  });
+
+  it('falls back to a safe visible shell when widget cold-start cannot create a fresh terminal', async () => {
+    mockCreateTerminalSessionForFocusedPane.mockReturnValue(undefined);
+    const addTerminalPane = jest.fn();
+
+    const result = await startFreshCodexSession({
+      addTerminalPane,
+      preferNewTerminal: true,
+    });
+
+    expect(result).toEqual({ status: 'queued', sessionId: 'terminal-a' });
+    expect(addTerminalPane).not.toHaveBeenCalled();
+    expectResumePasted('shelly-1', 'clear && codex');
   });
 
   it('keeps a maximized Agent Chat pane from consuming a newly added resume terminal', async () => {

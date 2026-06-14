@@ -100,13 +100,20 @@ export async function resumeCodexSession(
 // session to fall back on (fresh install / Codex never run). Mirrors the
 // terminal-acquisition logic of resumeCodexSession but runs bare `codex`.
 export async function startFreshCodexSession(
-  options: { addTerminalPane: AddTerminalPane; cwd?: string | null },
+  options: { addTerminalPane: AddTerminalPane; cwd?: string | null; preferNewTerminal?: boolean },
 ): Promise<CodexSessionResumeResult> {
   let targetSessionId: string | undefined;
   let failureReason: CodexSessionResumeFailureReason = 'no_terminal';
   const hasTerminalPane = visibleSlotEntries().some(({ slot }) => slot.tab === 'terminal');
 
-  targetSessionId = await pickFallbackTerminalSessionId();
+  if (options.preferNewTerminal && hasTerminalPane) {
+    targetSessionId = createTerminalSessionForFocusedPane();
+    if (!targetSessionId) failureReason = 'terminal_cap';
+  }
+
+  if (!targetSessionId) {
+    targetSessionId = await pickFallbackTerminalSessionId();
+  }
 
   if (!targetSessionId && hasTerminalPane) {
     targetSessionId = createTerminalSessionForFocusedPane();
@@ -152,9 +159,18 @@ export async function coldStartCodexAndDeliverWidgetPrompt(
     : null;
   if (!pendingTarget) return false;
 
-  const result = await startFreshCodexSession({ addTerminalPane: options.addTerminalPane, cwd: null })
+  const result = await startFreshCodexSession({
+    addTerminalPane: options.addTerminalPane,
+    cwd: null,
+    preferNewTerminal: true,
+  })
     .catch(() => null);
-  if (!result || result.status === 'failed') return false;
+  if (!result || result.status === 'failed') {
+    await TerminalEmulator.markScouterWidgetPromptFailed?.(
+      `Could not start Codex terminal${result?.status === 'failed' ? `: ${result.reason}` : ''}`,
+    ).catch(() => undefined);
+    return true;
+  }
 
   const terminalSession = await waitForAliveTerminalSession(result.sessionId, 20_000);
   const nativeSessionId = terminalSession?.nativeSessionId;

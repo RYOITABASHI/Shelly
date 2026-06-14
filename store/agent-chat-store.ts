@@ -153,6 +153,7 @@ type AgentChatState = {
   dismissSession: (sessionId: string, options?: DismissSessionOptions) => void;
   renameSession: (sessionId: string, title: string) => void;
   requestComposeFocus: () => void;
+  allowWidgetBindingForWidgetAction: () => void;
   suspendWidgetBindingForPrivacy: (reason: string) => void;
   refresh: () => Promise<void>;
   startPolling: () => void;
@@ -396,6 +397,10 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     set({ composeFocusSignal: Date.now() });
   },
 
+  allowWidgetBindingForWidgetAction: () => {
+    widgetBindingSuppressedForPrivacy = false;
+  },
+
   suspendWidgetBindingForPrivacy: (reason: string) => {
     widgetBindingSuppressedForPrivacy = true;
     set({
@@ -540,7 +545,7 @@ function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
     ))
     .sort((a, b) => (b.lastEventAt ?? 0) - (a.lastEventAt ?? 0))[0];
   if (!session?.ptySessionId) {
-    clearScouterWidgetConversationForPrivacy('no reliable Codex widget binding');
+    clearScouterWidgetCodexBinding('no reliable Codex widget binding');
     return;
   }
   TerminalEmulator.setScouterCodexBinding?.({
@@ -551,6 +556,15 @@ function persistLatestWidgetCodexBinding(sessions: AgentChatSession[]): void {
   }).catch((error) => {
     logError('AgentChatStore', 'Failed to persist Scouter Codex binding for widget', error);
   });
+}
+
+function clearScouterWidgetCodexBinding(reason: string): void {
+  const clearPromise = TerminalEmulator.clearScouterWidgetCodexBinding?.();
+  if (clearPromise) {
+    clearPromise.catch((error) => {
+      logError('AgentChatStore', `Failed to clear Scouter Codex binding after ${reason}`, error);
+    });
+  }
 }
 
 function clearScouterWidgetConversationForPrivacy(reason: string): void {

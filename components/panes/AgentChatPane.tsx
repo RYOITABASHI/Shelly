@@ -40,6 +40,7 @@ import {
 import { useTranslation } from '@/lib/i18n';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useTheme } from '@/hooks/use-theme';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import type { ThemeColorPalette } from '@/lib/theme';
 import { fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -160,7 +161,11 @@ export default function AgentChatPane() {
     return () => {
       stopPolling();
       mountedAgentChatPaneCount = Math.max(0, mountedAgentChatPaneCount - 1);
-      if (mountedAgentChatPaneCount === 0) {
+      const agentChatTabStillConfigured = useMultiPaneStore
+        .getState()
+        .slots
+        .some((slot) => slot?.tab === 'agent-chat');
+      if (mountedAgentChatPaneCount === 0 && !agentChatTabStillConfigured) {
         suspendWidgetBindingForPrivacy('closing all Agent Chat panes');
       }
     };

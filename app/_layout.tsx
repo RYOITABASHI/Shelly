@@ -676,17 +676,20 @@ export default function RootLayout() {
             queryValue(parsed.queryParams?.drainWidgetPrompt) === '1' ||
             drainWidgetApproval !== null ||
             queryValue(parsed.queryParams?.returnHome) === '1';
+          if (widgetFlow && (compose === '1' || compose === 'true' || drainWidgetApproval !== null)) {
+            useAgentChatStore.getState().allowWidgetBindingForWidgetAction();
+          }
           const opened = focusPaneByTab('agent-chat');
           if (!opened && widgetFlow) {
             if (drainWidgetApproval) {
-              await markWidgetApprovalFailed('Could not open Agent Chat to resume Codex');
+              logInfo('DeepLink', 'Widget approval continuing without Agent Chat pane');
             } else {
-              await TerminalEmulator.markScouterWidgetPromptFailed?.('Could not open Agent Chat to resume Codex').catch(() => undefined);
+              logInfo('DeepLink', 'Widget prompt continuing without Agent Chat pane');
             }
-            returnHomeFromWidgetFlow();
+          } else if (!opened) {
             return;
           }
-          if (opened && (compose === '1' || compose === 'true')) {
+          if (compose === '1' || compose === 'true') {
             if (!agentChatResumeInFlight) {
               agentChatResumeInFlight = true;
               let widgetTarget: WidgetPromptTarget | null = null;

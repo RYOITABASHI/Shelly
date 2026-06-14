@@ -270,8 +270,9 @@ export function MultiPaneContainer() {
     keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
   const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
   const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
-  const { slotRects, dividers } = getLayout(preset, ratios, size.W, gridHeight);
-  const singlePaneSlot = preset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
+  const renderPreset = size.W > 0 && size.W < 380 ? 'p1' : preset;
+  const { slotRects, dividers } = getLayout(renderPreset, ratios, size.W, gridHeight);
+  const singlePaneSlot = renderPreset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
 
   return (
     <View
@@ -314,7 +315,7 @@ export function MultiPaneContainer() {
         const currentRatio = ratios[d.ratioKey as keyof Ratios];
         return (
           <Divider
-            key={`${preset}-${d.kind}-${d.ratioKey}-${idx}`}
+            key={`${renderPreset}-${d.kind}-${d.ratioKey}-${idx}`}
             kind={d.kind}
             x={d.x}
             y={d.y}

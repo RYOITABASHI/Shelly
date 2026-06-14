@@ -1,7 +1,7 @@
 // components/layout/ShellLayout.tsx
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
-import { View, Platform, StyleSheet, StatusBar } from 'react-native';
+import { View, Platform, StyleSheet, StatusBar, type LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useMultiPaneStore, PRESET_CAPACITY, type PresetId } from '@/hooks/use-multi-pane';
@@ -36,7 +36,8 @@ function isPresetId(value: string | null): value is PresetId {
 }
 
 export function ShellLayout() {
-  const layout = useDeviceLayout();
+  const [rootSize, setRootSize] = useState<{ width: number; height: number } | null>(null);
+  const layout = useDeviceLayout(rootSize);
   const insets = useSafeAreaInsets();
   const { initShell, setMaxPanes } = useMultiPaneStore();
   const currentPreset = useMultiPaneStore((s) => s.preset);
@@ -320,11 +321,21 @@ export function ShellLayout() {
     });
 
   const composed = Gesture.Race(swipeRight, swipeLeft);
-
+  const handleRootLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setRootSize((prev) => {
+      if (prev && Math.abs(prev.width - width) <= 1 && Math.abs(prev.height - height) <= 1) {
+        return prev;
+      }
+      logInfo('ShellLayout', `Root layout measured: ${Math.round(width)}x${Math.round(height)}`);
+      return { width, height };
+    });
+  }, []);
   return (
     <View
       key={`theme-${themeVersion}`}
       style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+      onLayout={handleRootLayout}
     >
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 

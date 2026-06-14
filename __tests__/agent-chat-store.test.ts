@@ -1,6 +1,9 @@
 const mockGetScouterDebugInfo = jest.fn();
 const mockRefreshScouter = jest.fn();
 const mockAddListener = jest.fn();
+const mockSetScouterCodexBinding = jest.fn(() => Promise.resolve());
+const mockClearScouterWidgetCodexBinding = jest.fn(() => Promise.resolve());
+const mockClearScouterWidgetConversationForPrivacy = jest.fn(() => Promise.resolve());
 const mockAsyncStorageValues = new Map<string, string>();
 const mockAsyncStorageGetItem = jest.fn((key: string) => Promise.resolve(mockAsyncStorageValues.get(key) ?? null));
 const mockAsyncStorageSetItem = jest.fn((key: string, value: string) => {
@@ -14,6 +17,9 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
     getScouterDebugInfo: mockGetScouterDebugInfo,
     refreshScouter: mockRefreshScouter,
     addListener: mockAddListener,
+    setScouterCodexBinding: mockSetScouterCodexBinding,
+    clearScouterWidgetCodexBinding: mockClearScouterWidgetCodexBinding,
+    clearScouterWidgetConversationForPrivacy: mockClearScouterWidgetConversationForPrivacy,
   },
 }));
 
@@ -46,6 +52,7 @@ function resetAgentChatStore(): void {
     error: null,
     lastUpdatedAt: null,
   });
+  useAgentChatStore.getState().allowWidgetBindingForWidgetAction();
 }
 
 describe('agent chat store', () => {
@@ -70,6 +77,103 @@ describe('agent chat store', () => {
     expect(mockRefreshScouter).toHaveBeenCalledTimes(1);
     expect(mockGetScouterDebugInfo).not.toHaveBeenCalled();
     expect(useAgentChatStore.getState().loading).toBe(false);
+  });
+
+  it('clears only the Scouter Codex binding when no reliable widget binding exists', async () => {
+    const baseTime = 1_811_110_500_000;
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: 'session-no-binding',
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime,
+        sessionStartAt: baseTime,
+      }],
+      recentEvents: [],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+
+    expect(useAgentChatStore.getState().sessions[0]).toEqual(
+      expect.objectContaining({ bindingConfidence: 'none', ptySessionId: null }),
+    );
+    expect(mockClearScouterWidgetCodexBinding).toHaveBeenCalledTimes(1);
+    expect(mockClearScouterWidgetConversationForPrivacy).not.toHaveBeenCalled();
+    expect(mockSetScouterCodexBinding).not.toHaveBeenCalled();
+  });
+
+  it('persists the latest reliable Scouter Codex binding for widget ASK', async () => {
+    const baseTime = 1_811_110_750_000;
+    const cwd = '/data/data/dev.shelly.terminal/files/home';
+    useAgentChatStore.getState().recordCodexPtyCandidate({
+      ptySessionId: 'pty-widget',
+      shellySessionId: 'terminal-widget',
+      cwd,
+      startedAt: baseTime - 1_000,
+      lastSeenAt: baseTime + 1_000,
+    });
+    mockSetScouterCodexBinding.mockClear();
+    mockClearScouterWidgetCodexBinding.mockClear();
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [{
+        source: 'CODEX',
+        sessionId: 'session-widget',
+        projectName: 'home',
+        currentStatus: 'IDLE',
+        lastEventAt: baseTime + 2_000,
+        sessionStartAt: baseTime,
+        cwd,
+      }],
+      recentEvents: [],
+    }));
+
+    await useAgentChatStore.getState().refresh();
+
+    expect(mockSetScouterCodexBinding).toHaveBeenCalledWith({
+      codexSessionId: 'session-widget',
+      ptySessionId: 'pty-widget',
+      shellySessionId: 'terminal-widget',
+      cwd,
+    });
+    expect(mockClearScouterWidgetCodexBinding).not.toHaveBeenCalled();
+    expect(mockClearScouterWidgetConversationForPrivacy).not.toHaveBeenCalled();
+  });
+
+  it('clears the Scouter widget conversation when Agent Chat is closed for privacy', () => {
+    useAgentChatStore.getState().suspendWidgetBindingForPrivacy('closing all Agent Chat panes');
+
+    expect(mockClearScouterWidgetConversationForPrivacy).toHaveBeenCalledTimes(1);
+    expect(mockClearScouterWidgetCodexBinding).not.toHaveBeenCalled();
+  });
+
+  it('lets a fresh widget action survive a previous Agent Chat privacy clear', async () => {
+    useAgentChatStore.getState().suspendWidgetBindingForPrivacy('closing all Agent Chat panes');
+    mockClearScouterWidgetConversationForPrivacy.mockClear();
+    mockClearScouterWidgetCodexBinding.mockClear();
+    useAgentChatStore.getState().allowWidgetBindingForWidgetAction();
+
+    mockGetScouterDebugInfo.mockResolvedValue(JSON.stringify({
+      enabled: true,
+      jsonlWatcherRunning: true,
+      sessions: [],
+      recentEvents: [],
+      widgetConversation: {
+        widgetPrompt: '新しいウィジェットASK',
+        widgetPromptAt: 1_811_110_900_000,
+        privacySuppressed: false,
+      },
+    }));
+
+    await useAgentChatStore.getState().refresh();
+
+    expect(mockClearScouterWidgetConversationForPrivacy).not.toHaveBeenCalled();
+    expect(mockClearScouterWidgetCodexBinding).toHaveBeenCalledTimes(1);
   });
 
   it('filters synthetic Codex context and collapses duplicate message events', async () => {
