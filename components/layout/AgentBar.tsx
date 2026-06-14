@@ -40,7 +40,6 @@ function OpenPaneTabs() {
   const layout = useDeviceLayout();
   const slots = useMultiPaneStore((s) => s.slots);
   const focusedSlot = useMultiPaneStore((s) => s.focusedSlot);
-  const preset = useMultiPaneStore((s) => s.preset);
   const maximizedSlot = useMultiPaneStore((s) => s.maximizedSlot);
   const openSlots = useMemo(() => (
     slots
@@ -57,9 +56,11 @@ function OpenPaneTabs() {
 
   const hasMaximizedSlot = maximizedSlot !== null && slots[maximizedSlot] !== null;
   const activeSlot = hasMaximizedSlot ? maximizedSlot : focusedSlot;
-  const singlePaneSwitcher = !layout.isWide || preset === 'p1' || hasMaximizedSlot;
-  const visible = openSlots.length > 1 && singlePaneSwitcher;
-  const compact = singlePaneSwitcher && openSlots.length >= 3;
+  // The Add sheet counts all occupied slots, even when the current render path
+  // collapses to a single visible pane. Keep every occupied slot reachable from
+  // the top bar so "layout full" always has an obvious pane to switch/close.
+  const visible = openSlots.length > 1;
+  const compact = openSlots.length >= 3;
   const iconOnly = compact && (layout.isCompact || layout.width < 520);
 
   const switchPane = useCallback((slotIndex: SlotIndex) => {
