@@ -110,7 +110,7 @@ No copy. No paste. No tab switching. Zero friction.
 
 ### Install
 
-Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; older semver tags remain historical snapshots.
+Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1505, commit `4b73ad2c`).
 
 After the first install, Shelly can update itself from inside the app: open the cloud-download button in the top bar or **Settings → Updates**. Shelly reads the public `android-latest/latest.json` manifest, compares Android `versionCode`, enqueues the APK with Android DownloadManager under `/sdcard/Download/shelly-update-<versionCode>/`, verifies SHA-256, then opens Android's package installer. The system download keeps running if Shelly is backgrounded or restarted. Android still asks you to confirm the install because Shelly is distributed outside the Play Store.
 
@@ -724,16 +724,19 @@ asset name, size, and SHA-256.
 
 | Metric | Value | Source |
 |---|---:|---|
-| Public APK version | `6.0.0` / monotonic Android `versionCode` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Public APK commit | CI-published `gitSha` | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
-| APK artifact size | CI-published release asset size | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
-| APK manifest size | CI-published manifest size | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK version | `6.0.0` / Android `versionCode` 1505 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK commit | `4b73ad2c` (`4b73ad2cefa3bc5542bfd3b4f50cd696f28ed17c`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
+| APK artifact | `Shelly-android-v6.0.0-1505-27484264731-1-4b73ad2cefa3.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
+| APK artifact size | `832,649,965` bytes (`832.6 MB`, `794.1 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
+| APK SHA-256 | `4146bad9470802b4f6d4a5d626503dc36ad1a5e7912928028603b63d9b331cae` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
 | Codex runtime version | `0.139.0` | `.ci-versions/codex.txt` |
 | Codex runtime artifact size | `140,557,745` bytes (`140.6 MB`, `134.0 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
 | Codex runtime manifest size | `613` bytes | [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json) |
-| CI quality job | `48s` | lint, typecheck, unit tests |
-| CI Android build job | `13m 28s` | full release build job |
-| Gradle APK step | `9m 36s` | `:terminal-emulator:externalNativeBuildRelease assembleRelease` |
+| CI quality job | `42s` | lint, typecheck, unit tests |
+| CI Android build job | `14m 48s` | full release build job |
+| Gradle APK step | `7m 53s` | `:terminal-emulator:externalNativeBuildRelease assembleRelease` |
+| Release publish step | `41s` | `android-latest` APK + manifest upload |
 | Release update verification | SHA-256 before installer handoff | Updates UI and release manifest |
 | Runtime update verification | SHA-256 plus `codex_tui` / `codex_exec --version` smoke tests | Runtime updater |
 

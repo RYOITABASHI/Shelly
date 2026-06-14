@@ -45,6 +45,10 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Fixed
 
+- **Updates modal overflow hotfix (v6.0.0 build 1505)** — fixed horizontal
+  right-clipping on Fold layouts by opening Updates as a top-level modal and
+  tightening shrink/wrap constraints for long update labels, toolbar buttons,
+  and release action rows.
 - **Updates screen could hang forever on "Checking…"** — the GitHub fetch body
   read was unbounded after the response headers arrived; the whole refresh is
   now bounded by a timeout so it always completes.
