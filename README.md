@@ -110,7 +110,7 @@ No copy. No paste. No tab switching. Zero friction.
 
 ### Install
 
-Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1509, commit `5e120d2d`).
+Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1510, commit `3d6fcfd9`).
 
 After the first install, Shelly can update itself from inside the app: open the cloud-download button in the top bar or **Settings → Updates**. Shelly reads the public `android-latest/latest.json` manifest, compares Android `versionCode`, enqueues the APK with Android DownloadManager under `/sdcard/Download/shelly-update-<versionCode>/`, verifies SHA-256, then opens Android's package installer. The system download keeps running if Shelly is backgrounded or restarted. Android still asks you to confirm the install because Shelly is distributed outside the Play Store.
 
@@ -724,11 +724,11 @@ asset name, size, and SHA-256.
 
 | Metric | Value | Source |
 |---|---:|---|
-| Public APK version | `6.0.0` / Android `versionCode` 1509 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Public APK commit | `5e120d2d` (`5e120d2d22f6de68b70f0e07bcff4ef25cb52fce`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
-| APK artifact | `Shelly-android-v6.0.0-1509-27496478946-1-5e120d2d22f6.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
-| APK artifact size | `832,650,413` bytes (`832.7 MB`, `794.1 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
-| APK SHA-256 | `2412818bc593d7d1462ab119a07456df7c628b56dd590074ff365c12690338ed` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK version | `6.0.0` / Android `versionCode` 1510 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK commit | `3d6fcfd9` (`3d6fcfd932c0524a72bb2a0661132bd6257de596`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
+| APK artifact | `Shelly-android-v6.0.0-1510-27497634003-1-3d6fcfd932c0.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
+| APK artifact size | `832,650,405` bytes (`832.7 MB`, `794.1 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
+| APK SHA-256 | `acfa9f133449002c9c8660d5ada2087f1913f99660c2f9760a85c513dc47b35a` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
 | APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
 | Codex runtime version | `0.139.0` | `.ci-versions/codex.txt` |
 | Codex runtime artifact size | `140,557,745` bytes (`140.6 MB`, `134.0 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |

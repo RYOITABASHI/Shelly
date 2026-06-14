@@ -45,7 +45,7 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Fixed
 
-- **Fold display relayout hardening (v6.0.0 build 1509)** — the React safe-area
+- **Fold display relayout hardening (v6.0.0 build 1510)** — the React safe-area
   provider no longer seeds stale initial window metrics, and the Android
   MainActivity now requests a root relayout after configuration, focus, and
   resume events. This targets the intermittent main-display to cover-display
