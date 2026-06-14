@@ -17,7 +17,7 @@ import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
-import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
 import { PANE_REGISTRY, resolvePaneTitle } from '@/components/multi-pane/pane-registry';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -25,6 +25,15 @@ import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 
 const SHELLY_WORDMARK = 'Shelly';
+const COMPACT_PANE_LABELS: Record<PaneTab, string> = {
+  terminal: 'TERM',
+  ai: 'AI',
+  'agent-chat': 'CHAT',
+  browser: 'WEB',
+  markdown: 'MD',
+  preview: 'PREV',
+  ask: 'ASK',
+};
 
 function OpenPaneTabs() {
   const { t } = useTranslation();
@@ -32,19 +41,32 @@ function OpenPaneTabs() {
   const slots = useMultiPaneStore((s) => s.slots);
   const focusedSlot = useMultiPaneStore((s) => s.focusedSlot);
   const preset = useMultiPaneStore((s) => s.preset);
+  const maximizedSlot = useMultiPaneStore((s) => s.maximizedSlot);
   const openSlots = useMemo(() => (
     slots
       .map((slot, index) => (slot ? { slot, index: index as SlotIndex } : null))
       .filter((item): item is { slot: NonNullable<(typeof slots)[number]>; index: SlotIndex } => item !== null)
   ), [slots]);
+  const tabTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const { slot } of openSlots) {
+      counts.set(slot.tab, (counts.get(slot.tab) ?? 0) + 1);
+    }
+    return counts;
+  }, [openSlots]);
 
-  const visible = openSlots.length > 1 && (!layout.isWide || preset === 'p1');
+  const hasMaximizedSlot = maximizedSlot !== null && slots[maximizedSlot] !== null;
+  const activeSlot = hasMaximizedSlot ? maximizedSlot : focusedSlot;
+  const singlePaneSwitcher = !layout.isWide || preset === 'p1' || hasMaximizedSlot;
+  const visible = openSlots.length > 1 && singlePaneSwitcher;
+  const compact = singlePaneSwitcher && openSlots.length >= 3;
+  const iconOnly = compact && (layout.isCompact || layout.width < 520);
 
   const switchPane = useCallback((slotIndex: SlotIndex) => {
     const state = useMultiPaneStore.getState();
     const slot = state.slots[slotIndex];
     if (!slot) return;
-    state.maximizeSlot(null);
+    state.maximizeSlot(state.maximizedSlot !== null ? slotIndex : null);
     state.focusSlot(slotIndex);
     if (!layout.isWide && state.preset !== 'p1') {
       useMultiPaneStore.getState().setPreset('p1');
@@ -58,6 +80,77 @@ function OpenPaneTabs() {
 
   if (!visible) return <View style={styles.topSpacer} />;
 
+  const renderTabs = () => {
+    const seen = new Map<string, number>();
+    return openSlots.map(({ slot, index }) => {
+      const active = index === activeSlot;
+      const label = resolvePaneTitle(slot.tab, t);
+      const ordinal = (seen.get(slot.tab) ?? 0) + 1;
+      seen.set(slot.tab, ordinal);
+      const duplicate = (tabTypeCounts.get(slot.tab) ?? 0) > 1;
+      const baseDisplayLabel = compact
+        ? COMPACT_PANE_LABELS[slot.tab]
+        : label.toUpperCase();
+      const displayLabel = duplicate
+        ? `${baseDisplayLabel} ${ordinal}`
+        : baseDisplayLabel;
+      return (
+        <Pressable
+          key={slot.id}
+          style={[
+            styles.paneTab,
+            compact && styles.paneTabCompact,
+            iconOnly && styles.paneTabIconOnly,
+            {
+              borderColor: active ? withAlpha(C.accent, 0.8) : withAlpha(C.border, 0.75),
+              backgroundColor: active ? withAlpha(C.accent, 0.14) : withAlpha(C.bgSurface, 0.55),
+            },
+          ]}
+          hitSlop={4}
+          accessibilityRole="button"
+          accessibilityLabel={t('agentbar.switch_pane_a11y', { name: duplicate ? `${label} ${ordinal}` : label })}
+          onPress={() => switchPane(index)}
+        >
+          {!compact ? (
+            <View style={[styles.paneTabDot, { backgroundColor: active ? C.accent : C.text2 }]} />
+          ) : null}
+          <MaterialIcons
+            name={PANE_REGISTRY[slot.tab].icon as any}
+            size={compact ? 12 : 13}
+            color={active ? C.accent : C.text2}
+          />
+          {!iconOnly ? (
+            <Text
+              style={[
+                styles.paneTabText,
+                compact && styles.paneTabTextCompact,
+                { color: active ? C.accent : C.text2 },
+              ]}
+              numberOfLines={1}
+            >
+              {displayLabel}
+            </Text>
+          ) : duplicate ? (
+            <Text
+              style={[styles.paneTabOrdinal, { color: active ? C.accent : C.text2 }]}
+              numberOfLines={1}
+            >
+              {ordinal}
+            </Text>
+          ) : null}
+        </Pressable>
+      );
+    });
+  };
+
+  if (compact) {
+    return (
+      <View style={styles.paneTabsInline}>
+        {renderTabs()}
+      </View>
+    );
+  }
+
   return (
     <ScrollView
       horizontal
@@ -66,39 +159,7 @@ function OpenPaneTabs() {
       contentContainerStyle={styles.paneTabsContent}
       keyboardShouldPersistTaps="handled"
     >
-      {openSlots.map(({ slot, index }) => {
-        const active = index === focusedSlot;
-        const label = resolvePaneTitle(slot.tab, t);
-        return (
-          <Pressable
-            key={slot.id}
-            style={[
-              styles.paneTab,
-              {
-                borderColor: active ? withAlpha(C.accent, 0.8) : withAlpha(C.border, 0.75),
-                backgroundColor: active ? withAlpha(C.accent, 0.14) : withAlpha(C.bgSurface, 0.55),
-              },
-            ]}
-            hitSlop={4}
-            accessibilityRole="button"
-            accessibilityLabel={t('agentbar.switch_pane_a11y', { name: label })}
-            onPress={() => switchPane(index)}
-          >
-            <View style={[styles.paneTabDot, { backgroundColor: active ? C.accent : C.text2 }]} />
-            <MaterialIcons
-              name={PANE_REGISTRY[slot.tab].icon as any}
-              size={13}
-              color={active ? C.accent : C.text2}
-            />
-            <Text
-              style={[styles.paneTabText, { color: active ? C.accent : C.text2 }]}
-              numberOfLines={1}
-            >
-              {label.toUpperCase()}
-            </Text>
-          </Pressable>
-        );
-      })}
+      {renderTabs()}
     </ScrollView>
   );
 }
@@ -292,6 +353,16 @@ const styles = StyleSheet.create({
     marginLeft: 6,
     marginRight: 6,
   },
+  paneTabsInline: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 6,
+    marginRight: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    overflow: 'hidden',
+  },
   paneTabsContent: {
     alignItems: 'center',
     gap: 5,
@@ -308,6 +379,18 @@ const styles = StyleSheet.create({
     borderRadius: R.agentTab,
     borderWidth: 1,
   },
+  paneTabCompact: {
+    flex: 1,
+    minWidth: 0,
+    maxWidth: 70,
+    justifyContent: 'center',
+    gap: 3,
+    paddingHorizontal: 4,
+  },
+  paneTabIconOnly: {
+    maxWidth: 28,
+    paddingHorizontal: 0,
+  },
   paneTabDot: {
     width: 5,
     height: 5,
@@ -318,6 +401,18 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: 8,
     lineHeight: 10,
+    fontWeight: '700',
+    letterSpacing: 0,
+    includeFontPadding: false,
+  },
+  paneTabTextCompact: {
+    fontSize: 7,
+    lineHeight: 9,
+  },
+  paneTabOrdinal: {
+    fontFamily: F.family,
+    fontSize: 7,
+    lineHeight: 9,
     fontWeight: '700',
     letterSpacing: 0,
     includeFontPadding: false,
