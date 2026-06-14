@@ -1225,9 +1225,9 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
           ) : (
             <MaterialIcons name="article" size={13} color={C.accent} />
           )}
-          <Text style={styles.downloadLogTitle}>{title}</Text>
+          <Text style={styles.downloadLogTitle} numberOfLines={1}>{title}</Text>
           {active && (
-            <Text style={styles.downloadLogElapsed}>
+            <Text style={styles.downloadLogElapsed} numberOfLines={1}>
               {t('updates.download_log_elapsed', { seconds: elapsedSec })}
             </Text>
           )}
@@ -1269,13 +1269,13 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         <View style={styles.root}>
           <ModalHeader title={t('updates.title')} onClose={onClose} />
           <View style={styles.toolbar}>
-            <Text style={styles.subtitle}>{t('updates.subtitle')}</Text>
+            <Text style={styles.subtitle} numberOfLines={1}>{t('updates.subtitle')}</Text>
             <Pressable
               style={styles.refreshBtn}
               onPress={() => setAdvancedOpen((v) => !v)}
             >
               <MaterialIcons name={advancedOpen ? 'expand-less' : 'expand-more'} size={15} color={C.accent} />
-              <Text style={styles.refreshText}>{t('updates.advanced')}</Text>
+              <Text style={styles.refreshText} numberOfLines={1}>{t('updates.advanced')}</Text>
             </Pressable>
             <Pressable style={styles.refreshBtn} onPress={refresh} disabled={loading}>
               {loading ? (
@@ -1283,7 +1283,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
               ) : (
                 <MaterialIcons name="refresh" size={15} color={C.accent} />
               )}
-              <Text style={styles.refreshText}>{t('updates.refresh')}</Text>
+              <Text style={styles.refreshText} numberOfLines={1}>{t('updates.refresh')}</Text>
             </Pressable>
           </View>
           <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
@@ -1293,9 +1293,9 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                   <MaterialIcons name={updateIconName as any} size={18} color={C.accent} />
                 </View>
                 <View style={styles.updateCopy}>
-                  <Text style={styles.updateTitle}>{updateStatusText}</Text>
-                  <Text style={styles.updateMeta}>{currentVersionText}</Text>
-                  {latestUpdate && <Text style={styles.updateMeta}>{availableVersionText}</Text>}
+                  <Text style={styles.updateTitle} numberOfLines={2}>{updateStatusText}</Text>
+                  <Text style={styles.updateMeta} numberOfLines={2}>{currentVersionText}</Text>
+                  {latestUpdate && <Text style={styles.updateMeta} numberOfLines={2}>{availableVersionText}</Text>}
                 </View>
                 <Pressable
                   style={[styles.actionBtn, !canInstallUpdate && styles.actionBtnDisabled]}
@@ -1313,16 +1313,19 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                       color={canInstallUpdate ? C.bgDeep : C.text3}
                     />
                   )}
-                  <Text style={[styles.actionText, !canInstallUpdate && styles.actionTextDisabled]}>
+                  <Text
+                    style={[styles.actionText, !canInstallUpdate && styles.actionTextDisabled]}
+                    numberOfLines={1}
+                  >
                     {updateActionLabel}
                   </Text>
                 </Pressable>
               </View>
               {updateIsNewer && (
-                <Text style={styles.updateHint}>{t('updates.android_confirm')}</Text>
+                <Text style={styles.updateHint} numberOfLines={3}>{t('updates.android_confirm')}</Text>
               )}
               {readyToInstallUpdate && !downloadingUpdate && (
-                <Text style={styles.updateHint}>{t('updates.download_install_ready_hint')}</Text>
+                <Text style={styles.updateHint} numberOfLines={3}>{t('updates.download_install_ready_hint')}</Text>
               )}
               {renderProgressLog(
                 t('updates.download_log_title'),
@@ -1339,12 +1342,12 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                   <MaterialIcons name={codexIconName as any} size={18} color={C.accent} />
                 </View>
                 <View style={styles.updateCopy}>
-                  <Text style={styles.updateTitle}>{codexStatusText}</Text>
-                  <Text style={styles.updateMeta}>{currentCodexText}</Text>
-                  {codexSourceText && <Text style={styles.updateMeta}>{codexSourceText}</Text>}
-                  {availableCodexText && <Text style={styles.updateMeta}>{availableCodexText}</Text>}
+                  <Text style={styles.updateTitle} numberOfLines={2}>{codexStatusText}</Text>
+                  <Text style={styles.updateMeta} numberOfLines={2}>{currentCodexText}</Text>
+                  {codexSourceText && <Text style={styles.updateMeta} numberOfLines={2}>{codexSourceText}</Text>}
+                  {availableCodexText && <Text style={styles.updateMeta} numberOfLines={2}>{availableCodexText}</Text>}
                   {(codexRuntimeIsNewer || installedCodexInfo?.source === 'runtime' || codexRuntimeNeedsRepair) && (
-                    <Text style={styles.updateHint}>{t('updates.codex_next_terminal_hint')}</Text>
+                    <Text style={styles.updateHint} numberOfLines={3}>{t('updates.codex_next_terminal_hint')}</Text>
                   )}
                 </View>
                 <View style={styles.actionGroup}>
@@ -1358,7 +1361,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                     ) : (
                       <MaterialIcons name="upgrade" size={13} color={canInstallCodexRuntime ? C.bgDeep : C.text3} />
                     )}
-                    <Text style={[styles.actionText, !canInstallCodexRuntime && styles.actionTextDisabled]}>
+                    <Text
+                      style={[styles.actionText, !canInstallCodexRuntime && styles.actionTextDisabled]}
+                      numberOfLines={1}
+                    >
                       {codexActionLabel}
                     </Text>
                   </Pressable>
@@ -1373,7 +1379,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                       ) : (
                         <MaterialIcons name="restore" size={13} color={canResetCodexRuntime ? C.accent : C.text3} />
                       )}
-                      <Text style={[styles.actionText, styles.secondaryActionText, !canResetCodexRuntime && styles.actionTextDisabled]}>
+                      <Text
+                        style={[styles.actionText, styles.secondaryActionText, !canResetCodexRuntime && styles.actionTextDisabled]}
+                        numberOfLines={1}
+                      >
                         {t('updates.codex_reset')}
                       </Text>
                     </Pressable>
@@ -1417,10 +1426,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                         <View style={[styles.dot, { backgroundColor: buildStatusColor(status) }]} />
                         <Text style={styles.runTitle} numberOfLines={2}>{run.displayTitle || `Run #${run.databaseId}`}</Text>
                       </View>
-                      <Text style={styles.runMeta}>
+                      <Text style={styles.runMeta} numberOfLines={2}>
                         #{run.number || run.databaseId} · {run.status}{run.conclusion ? `/${run.conclusion}` : ''} · {formatDuration(durationSec(run))} · {run.headSha.slice(0, 8)}
                       </Text>
-                      <Text style={styles.runMeta}>{new Date(run.createdAt).toLocaleString()}</Text>
+                      <Text style={styles.runMeta} numberOfLines={1}>{new Date(run.createdAt).toLocaleString()}</Text>
                       <View style={styles.runActions}>
                         {failed && (
                           <Pressable
@@ -1433,7 +1442,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                             ) : (
                               <MaterialIcons name="article" size={13} color={C.accent} />
                             )}
-                            <Text style={[styles.actionText, styles.logText]}>
+                            <Text style={[styles.actionText, styles.logText]} numberOfLines={1}>
                               {logBusy ? t('updates.loading_log') : t('updates.failed_log')}
                             </Text>
                           </Pressable>
@@ -1441,7 +1450,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                         {releaseMatchesRun && (
                           <View style={styles.releaseBadge}>
                             <MaterialIcons name="verified" size={12} color={C.accent} />
-                            <Text style={styles.releaseBadgeText}>{t('updates.release_source')}</Text>
+                            <Text style={styles.releaseBadgeText} numberOfLines={1}>{t('updates.release_source')}</Text>
                           </View>
                         )}
                       </View>
@@ -1477,6 +1486,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    minWidth: 0,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderBottomWidth: S.borderWidth,
@@ -1484,6 +1494,8 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     color: C.text2,
     fontFamily: F.family,
     fontSize: F.badge.size,
@@ -1497,12 +1509,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: withAlpha(C.accent, 0.4),
     borderRadius: R.badge,
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: 132,
   },
   refreshText: {
     color: C.accent,
     fontFamily: F.family,
     fontSize: F.badge.size,
     fontWeight: '700',
+    flexShrink: 1,
   },
   errorBox: {
     margin: 12,
@@ -1523,23 +1539,35 @@ const styles = StyleSheet.create({
   bodyContent: {
     padding: 12,
     gap: 10,
+    flexGrow: 1,
+    alignItems: 'stretch',
   },
   updateBox: {
+    alignSelf: 'stretch',
     borderWidth: 1,
     borderColor: withAlpha(C.accent, 0.45),
     borderRadius: R.badge,
     backgroundColor: withAlpha(C.accent, 0.08),
     padding: 10,
     gap: 4,
+    overflow: 'hidden',
   },
   updateHead: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 10,
+    minWidth: 0,
   },
   actionGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'flex-end',
+    justifyContent: 'flex-end',
     gap: 7,
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: 140,
   },
   statusIcon: {
     width: 28,
@@ -1550,9 +1578,12 @@ const styles = StyleSheet.create({
     backgroundColor: C.bgDeep,
     borderWidth: 1,
     borderColor: withAlpha(C.accent, 0.4),
+    flexShrink: 0,
   },
   updateCopy: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     gap: 4,
   },
   updateTitle: {
@@ -1565,12 +1596,14 @@ const styles = StyleSheet.create({
     color: C.text2,
     fontFamily: F.family,
     fontSize: F.badge.size,
+    flexShrink: 1,
   },
   updateHint: {
     color: C.text3,
     fontFamily: F.family,
     fontSize: F.badge.size,
     marginTop: 4,
+    flexShrink: 1,
   },
   downloadLogBox: {
     marginTop: 8,
@@ -1580,14 +1613,18 @@ const styles = StyleSheet.create({
     borderColor: withAlpha(C.accent, 0.3),
     borderRadius: R.badge,
     backgroundColor: withAlpha(C.bgDeep, 0.7),
+    overflow: 'hidden',
   },
   downloadLogHead: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    minWidth: 0,
   },
   downloadLogTitle: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     color: C.text1,
     fontFamily: F.family,
     fontSize: F.badge.size,
@@ -1597,15 +1634,19 @@ const styles = StyleSheet.create({
     color: C.text3,
     fontFamily: F.family,
     fontSize: F.badge.size,
+    flexShrink: 0,
   },
   downloadLogRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
     minHeight: 16,
+    minWidth: 0,
   },
   downloadLogText: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     color: C.text2,
     fontFamily: F.family,
     fontSize: F.badge.size,
@@ -1634,11 +1675,13 @@ const styles = StyleSheet.create({
     backgroundColor: C.bgSurface,
     padding: 12,
     gap: 6,
+    overflow: 'hidden',
   },
   runHead: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    minWidth: 0,
   },
   dot: {
     width: 9,
@@ -1647,6 +1690,8 @@ const styles = StyleSheet.create({
   },
   runTitle: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     color: C.text1,
     fontFamily: F.family,
     fontSize: F.sidebarItem.size,
@@ -1656,21 +1701,28 @@ const styles = StyleSheet.create({
     color: C.text3,
     fontFamily: F.family,
     fontSize: F.badge.size,
+    flexShrink: 1,
   },
   runActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 4,
+    minWidth: 0,
   },
   actionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 5,
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: R.badge,
     backgroundColor: C.accent,
+    flexShrink: 1,
+    minWidth: 88,
+    maxWidth: 136,
   },
   actionBtnDisabled: {
     backgroundColor: C.bgDeep,
@@ -1687,6 +1739,8 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: F.badge.size,
     fontWeight: '700',
+    flexShrink: 1,
+    textAlign: 'center',
   },
   actionTextDisabled: {
     color: C.text3,
@@ -1712,12 +1766,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: withAlpha(C.accent, 0.45),
     backgroundColor: C.bgDeep,
+    maxWidth: 160,
+    flexShrink: 1,
   },
   releaseBadgeText: {
     color: C.accent,
     fontFamily: F.family,
     fontSize: F.badge.size,
     fontWeight: '700',
+    flexShrink: 1,
   },
   logContent: {
     padding: 12,

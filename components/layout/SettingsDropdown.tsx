@@ -30,7 +30,6 @@ import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
-import { BuildsModal } from '@/components/layout/BuildsModal';
 import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { useAddPane } from '@/hooks/use-add-pane';
@@ -41,6 +40,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 type Props = {
   visible: boolean;
   onClose: () => void;
+  onOpenBuilds?: () => void;
 };
 
 type FontSizePreset = { label: 'S' | 'M' | 'L'; size: number };
@@ -69,11 +69,10 @@ function borderedChromeStyle(alpha = 1) {
   };
 }
 
-export function SettingsDropdown({ visible, onClose }: Props) {
+export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   const { t } = useTranslation();
   const [mcpOpen, setMcpOpen] = useState(false);
   const [llamaOpen, setLlamaOpen] = useState(false);
-  const [buildsOpen, setBuildsOpen] = useState(false);
 
   return (
     <Modal
@@ -106,7 +105,7 @@ export function SettingsDropdown({ visible, onClose }: Props) {
             <LanguageSection />
             <AgentsSection />
             <ApiKeysSection />
-            <UpdatesSection onOpenBuilds={() => setBuildsOpen(true)} />
+            <UpdatesSection onOpenBuilds={() => onOpenBuilds?.()} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CodexLoginSection onClose={onClose} />
             <IntegrationsSection
@@ -133,11 +132,6 @@ export function SettingsDropdown({ visible, onClose }: Props) {
       >
         <LlamaCppSectionWrapper onClose={() => setLlamaOpen(false)} />
       </Modal>
-
-      <BuildsModal
-        visible={buildsOpen}
-        onClose={() => setBuildsOpen(false)}
-      />
     </Modal>
   );
 }

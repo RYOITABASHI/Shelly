@@ -213,7 +213,14 @@ export function AgentBar() {
         </Pressable>
       </View>
 
-      <SettingsDropdown visible={settingsOpen} onClose={closeWithRefocus(setSettingsOpen)} />
+      <SettingsDropdown
+        visible={settingsOpen}
+        onClose={closeWithRefocus(setSettingsOpen)}
+        onOpenBuilds={() => {
+          setSettingsOpen(false);
+          setBuildsOpen(true);
+        }}
+      />
       <BuildsModal
         visible={buildsOpen}
         onClose={closeWithRefocus(setBuildsOpen)}
