@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="Shelly running Codex and a local AI pane side by side on Android" width="800">
+  <img src="docs/images/agent-chat-codex.jpg" alt="Shelly running Codex and Agent Chat side by side on Android" width="800">
 </p>
 
 <p align="center">
@@ -110,7 +110,7 @@ No copy. No paste. No tab switching. Zero friction.
 
 ### Install
 
-Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1510, commit `3d6fcfd9`).
+Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1512, commit `96362598`).
 
 After the first install, Shelly can update itself from inside the app: open the cloud-download button in the top bar or **Settings → Updates**. Shelly reads the public `android-latest/latest.json` manifest, compares Android `versionCode`, enqueues the APK with Android DownloadManager under `/sdcard/Download/shelly-update-<versionCode>/`, verifies SHA-256, then opens Android's package installer. The system download keeps running if Shelly is backgrounded or restarted. Android still asks you to confirm the install because Shelly is distributed outside the Play Store.
 
@@ -724,19 +724,19 @@ asset name, size, and SHA-256.
 
 | Metric | Value | Source |
 |---|---:|---|
-| Public APK version | `6.0.0` / Android `versionCode` 1510 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Public APK commit | `3d6fcfd9` (`3d6fcfd932c0524a72bb2a0661132bd6257de596`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
-| APK artifact | `Shelly-android-v6.0.0-1510-27497634003-1-3d6fcfd932c0.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
-| APK artifact size | `832,650,405` bytes (`832.7 MB`, `794.1 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
-| APK SHA-256 | `acfa9f133449002c9c8660d5ada2087f1913f99660c2f9760a85c513dc47b35a` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK version | `6.0.0` / Android `versionCode` 1512 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK commit | `96362598` (`96362598c5e63bd91da1ce412523b8efa2083f97`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
+| APK artifact | `Shelly-android-v6.0.0-1512-27510653679-1-96362598c5e6.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
+| APK artifact size | `832,651,565` bytes (`832.7 MB`, `794.1 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
+| APK SHA-256 | `e949b15e43ac447165358ce506e665f677f7461be7c981f0c99f2d7d9fdabb4e` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
 | APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
 | Codex runtime version | `0.139.0` | `.ci-versions/codex.txt` |
 | Codex runtime artifact size | `140,557,745` bytes (`140.6 MB`, `134.0 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
 | Codex runtime manifest size | `613` bytes | [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json) |
-| CI quality job | `42s` | lint, typecheck, unit tests |
-| CI Android build job | `14m 48s` | full release build job |
-| Gradle APK step | `7m 53s` | `:terminal-emulator:externalNativeBuildRelease assembleRelease` |
-| Release publish step | `41s` | `android-latest` APK + manifest upload |
+| CI quality job | `43s` | lint, typecheck, unit tests |
+| CI Android build job | `11m 45s` | full release build job |
+| Gradle APK step | `7m 52s` | `:terminal-emulator:externalNativeBuildRelease assembleRelease` |
+| Release publish step | `45s` | `android-latest` APK + manifest upload |
 | Release update verification | SHA-256 before installer handoff | Updates UI and release manifest |
 | Runtime update verification | SHA-256 plus `codex_tui` / `codex_exec --version` smoke tests | Runtime updater |
 
