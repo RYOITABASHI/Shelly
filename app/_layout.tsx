@@ -6,7 +6,7 @@ import { StatusBar } from "expo-status-bar";
 import { AppState, View, Text, Pressable, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-context";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useFonts } from "expo-font";
 import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fonts/jetbrains-mono";
 import { useTerminalStore } from "@/store/terminal-store";
@@ -998,7 +998,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <SafeAreaProvider>
         <Stack key={locale} screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
         </Stack>
