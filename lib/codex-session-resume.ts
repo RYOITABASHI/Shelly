@@ -17,6 +17,9 @@ const sleep = (ms: number) => new Promise<void>((resolve) => {
   setTimeout(resolve, ms);
 });
 
+const CTRL_U = '\u0015';
+const CODEX_LAUNCH_COMMAND = 'clear && codex';
+
 export type CodexSessionResumeResult =
   | { status: 'focused'; sessionId: string }
   | { status: 'queued'; sessionId: string }
@@ -123,7 +126,7 @@ export async function startFreshCodexSession(
   }
 
   const cwd = options.cwd?.trim();
-  const launchCommand = cwd ? `cd ${shellQuote(cwd)} && clear && codex` : `clear && codex`;
+  const launchCommand = cwd ? `cd ${shellQuote(cwd)} && ${CODEX_LAUNCH_COMMAND}` : CODEX_LAUNCH_COMMAND;
   focusTerminalSession(targetSessionId);
   const wroteDirectly = await writeResumeCommandToTerminal(targetSessionId, launchCommand);
   if (!wroteDirectly) {
@@ -164,24 +167,28 @@ export async function coldStartCodexAndDeliverWidgetPrompt(
   // after a fresh app update can be slow, so allow a generous window — still
   // under the native 2-minute pending-prompt expiry.
   const deadline = Date.now() + (options.bootTimeoutMs ?? 60_000);
-  let launchKickSent = false;
+  let launchAttempts = 0;
+  let lastLaunchAttemptAt = 0;
   let ready = false;
   while (Date.now() < deadline) {
     const screen = await TerminalEmulator.getScreenText(nativeSessionId).catch(() => null);
     if (typeof screen === 'string') {
       if (detectCodexLaunchFailureText(screen)) break;
       if (detectCodexActiveTranscript(screen)) { ready = true; break; }
-      if (!launchKickSent && detectShellReadyText(screen)) {
-        launchKickSent = true;
-        const command = 'clear && codex';
-        const wrote = await writeResumeCommandToTerminal(result.sessionId, command);
-        if (wrote) {
-          clearPendingCodexLaunchCommandForSession(result.sessionId);
-        } else {
-          useTerminalStore.getState().insertCommand(`${command}\r`, result.sessionId, {
-            durable: true,
-            ttlMs: 2 * 60 * 1000,
-          });
+      if (detectShellReadyText(screen)) {
+        const now = Date.now();
+        if (launchAttempts < 4 && now - lastLaunchAttemptAt >= 2500) {
+          launchAttempts += 1;
+          lastLaunchAttemptAt = now;
+          const wrote = await writeCommandToNativeSession(nativeSessionId, CODEX_LAUNCH_COMMAND);
+          if (wrote) {
+            clearPendingCodexLaunchCommandForSession(result.sessionId);
+          } else {
+            useTerminalStore.getState().insertCommand(`${CODEX_LAUNCH_COMMAND}\r`, result.sessionId, {
+              durable: true,
+              ttlMs: 2 * 60 * 1000,
+            });
+          }
         }
       }
     }
@@ -505,14 +512,18 @@ async function writeResumeCommandToTerminal(sessionId: string, command: string):
   if (!session) return false;
   if (session.sessionStatus !== 'alive' || !session.isAlive) return false;
   if (!await isNativeSessionAlive(session)) return false;
+  return writeCommandToNativeSession(session.nativeSessionId, command);
+}
+
+async function writeCommandToNativeSession(nativeSessionId: string, command: string): Promise<boolean> {
   try {
-    await TerminalEmulator.writeToSession(session.nativeSessionId, '\u0015');
-    await TerminalEmulator.pasteToSession(session.nativeSessionId, command);
-    await TerminalEmulator.writeToSession(session.nativeSessionId, '\r');
+    await TerminalEmulator.writeToSession(nativeSessionId, CTRL_U);
+    await TerminalEmulator.pasteToSession(nativeSessionId, command);
+    await TerminalEmulator.writeToSession(nativeSessionId, '\r');
     return true;
   } catch {
     try {
-      await TerminalEmulator.writeToSession(session.nativeSessionId, `\u0015${command}\r`);
+      await TerminalEmulator.writeToSession(nativeSessionId, `${CTRL_U}${command}\r`);
       return true;
     } catch {
       return false;
