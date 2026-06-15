@@ -46,4 +46,28 @@ describe('multi-pane single-pane switching', () => {
 
     expect(resolveSinglePaneSlot(state.slots, 3)).toBe(0);
   });
+
+  it('promotes through hidden occupied panes until addPane finds a free slot', () => {
+    useMultiPaneStore.setState({
+      preset: 'p1',
+      slots: [
+        { id: 'pane-terminal', tab: 'terminal', sessionId: 'term-a' },
+        { id: 'pane-agent-chat', tab: 'agent-chat' },
+        null,
+        null,
+      ],
+      focusedSlot: 0,
+      ratios,
+      maximizedSlot: null,
+      _hasHydrated: true,
+    });
+
+    const result = useMultiPaneStore.getState().addPane('ai');
+    const state = useMultiPaneStore.getState();
+
+    expect(result).toBeNull();
+    expect(state.preset).toBe('p3l');
+    expect(state.slots[2]?.tab).toBe('ai');
+    expect(state.focusedSlot).toBe(2);
+  });
 });

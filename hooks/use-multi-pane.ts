@@ -463,8 +463,9 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         let cap = PRESET_CAPACITY[preset];
         let empty = firstEmptyIndex(slots, cap);
 
-        if (empty === null) {
-          // Capacity full — promote preset one level.
+        while (empty === null) {
+          // Capacity full in the current visible preset. Keep promoting until
+          // an occupied-but-hidden layout has a visible empty slot again.
           const next = promotePreset(preset);
           if (!next) {
             logInfo('MultiPane', 'addPane ignored — already at p4');
@@ -473,7 +474,6 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           preset = next;
           cap = PRESET_CAPACITY[preset];
           empty = firstEmptyIndex(slots, cap);
-          if (empty === null) return 'layout_full'; // defensive
         }
 
         const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
