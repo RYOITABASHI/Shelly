@@ -17,7 +17,7 @@ import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
-import { useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
+import { PRESET_CAPACITY, useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
 import { PANE_REGISTRY, resolvePaneTitle } from '@/components/multi-pane/pane-registry';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -67,7 +67,8 @@ function OpenPaneTabs() {
     const state = useMultiPaneStore.getState();
     const slot = state.slots[slotIndex];
     if (!slot) return;
-    state.maximizeSlot(state.maximizedSlot !== null ? slotIndex : null);
+    const hiddenByPreset = slotIndex >= PRESET_CAPACITY[state.preset];
+    state.maximizeSlot(state.maximizedSlot !== null || hiddenByPreset ? slotIndex : null);
     state.focusSlot(slotIndex);
     if (!layout.isWide && state.preset !== 'p1') {
       useMultiPaneStore.getState().setPreset('p1');
@@ -143,14 +144,6 @@ function OpenPaneTabs() {
       );
     });
   };
-
-  if (compact) {
-    return (
-      <View style={styles.paneTabsInline}>
-        {renderTabs()}
-      </View>
-    );
-  }
 
   return (
     <ScrollView
@@ -354,16 +347,6 @@ const styles = StyleSheet.create({
     marginLeft: 6,
     marginRight: 6,
   },
-  paneTabsInline: {
-    flex: 1,
-    minWidth: 0,
-    marginLeft: 6,
-    marginRight: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    overflow: 'hidden',
-  },
   paneTabsContent: {
     alignItems: 'center',
     gap: 5,
@@ -381,8 +364,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   paneTabCompact: {
-    flex: 1,
-    minWidth: 0,
+    minWidth: 44,
     maxWidth: 70,
     justifyContent: 'center',
     gap: 3,

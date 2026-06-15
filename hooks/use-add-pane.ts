@@ -36,7 +36,7 @@ const DEFAULT_MESSAGES: Record<Exclude<AddPaneResult, null>, { title: string; bo
   },
   layout_full: {
     title: 'レイアウト満杯',
-    body: '既に 4 ペイン使用中です。追加するにはいずれかのペインを閉じてください。',
+    body: '既に 4 ペイン使用中です。上部のペインタブ、または ADD 画面の IN USE から切り替えるか、いずれかのペインを閉じてください。',
   },
 };
 

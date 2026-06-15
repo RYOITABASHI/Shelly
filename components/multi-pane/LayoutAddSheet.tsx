@@ -8,14 +8,17 @@
 //
 // Replaces the old AddPaneSheet + LayoutPresetSheet pair in AgentBar.
 
-import React, { useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { LayoutPicker } from './LayoutPicker';
-import type { PaneTab } from '@/hooks/use-multi-pane';
+import { PRESET_CAPACITY, useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
 import { useAddPane } from '@/hooks/use-add-pane';
+import { useFocusStore } from '@/store/focus-store';
+import { usePaneStore } from '@/store/pane-store';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useTerminalStore } from '@/store/terminal-store';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -47,6 +50,41 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('add');
   const { t } = useTranslation();
   const addPane = useAddPane();
+  const slots = useMultiPaneStore((s) => s.slots);
+  const focusedSlot = useMultiPaneStore((s) => s.focusedSlot);
+  const maximizedSlot = useMultiPaneStore((s) => s.maximizedSlot);
+  const activeSlot = maximizedSlot !== null && slots[maximizedSlot] ? maximizedSlot : focusedSlot;
+  const openSlots = useMemo(() => (
+    slots
+      .map((slot, index) => (slot ? { slot, index: index as SlotIndex } : null))
+      .filter((item): item is { slot: NonNullable<(typeof slots)[number]>; index: SlotIndex } => item !== null)
+  ), [slots]);
+  const tabTypeCounts = useMemo(() => {
+    const counts = new Map<PaneTab, number>();
+    for (const { slot } of openSlots) {
+      counts.set(slot.tab, (counts.get(slot.tab) ?? 0) + 1);
+    }
+    return counts;
+  }, [openSlots]);
+
+  const switchToSlot = useCallback((slotIndex: SlotIndex) => {
+    const state = useMultiPaneStore.getState();
+    const slot = state.slots[slotIndex];
+    if (!slot) return;
+    const hiddenByPreset = slotIndex >= PRESET_CAPACITY[state.preset];
+    state.maximizeSlot(state.maximizedSlot !== null || hiddenByPreset ? slotIndex : null);
+    state.focusSlot(slotIndex);
+    usePaneStore.getState().setFocusedPane(slot.id);
+    if (slot.tab === 'terminal' && slot.sessionId) {
+      useTerminalStore.getState().setActiveSession(slot.sessionId);
+    }
+    useFocusStore.getState().requestTerminalRefocus();
+    onClose();
+  }, [onClose]);
+
+  const removeSlot = useCallback((slotId: string) => {
+    useMultiPaneStore.getState().removePane(slotId);
+  }, []);
 
   const handleAdd = (opt: AddOption) => {
     if (opt.kind === 'sidebar') {
@@ -111,23 +149,80 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
             showsVerticalScrollIndicator={false}
           >
             {tab === 'add' ? (
-              ADD_OPTIONS.map((opt) => {
-                const icon = opt.kind === 'pane' ? PANE_REGISTRY[opt.id].icon : opt.icon;
-                const label = opt.kind === 'pane' ? resolvePaneTitle(opt.id, t) : t('sidebar.file_tree');
-                return (
-                  <Pressable
-                    key={`${opt.kind}-${opt.id}`}
-                    style={styles.option}
-                    onPress={() => handleAdd(opt)}
-                  >
-                    <View style={styles.optionIcon}>
-                      <MaterialIcons name={icon as any} size={18} color={C.accent} />
-                    </View>
-                    <Text style={styles.optionLabel}>{label}</Text>
-                    <MaterialIcons name="chevron-right" size={16} color={C.text3} />
-                  </Pressable>
-                );
-              })
+              <>
+                {openSlots.length > 0 ? (
+                  <View style={styles.inUseBlock}>
+                    <Text style={styles.sectionLabel}>IN USE {openSlots.length}/4</Text>
+                    {(() => {
+                      const seen = new Map<PaneTab, number>();
+                      return openSlots.map(({ slot, index }) => {
+                        const label = resolvePaneTitle(slot.tab, t);
+                        const ordinal = (seen.get(slot.tab) ?? 0) + 1;
+                        seen.set(slot.tab, ordinal);
+                        const duplicate = (tabTypeCounts.get(slot.tab) ?? 0) > 1;
+                        const displayLabel = duplicate ? `${label} ${ordinal}` : label;
+                        const active = index === activeSlot;
+                        return (
+                          <Pressable
+                            key={slot.id}
+                            style={[styles.currentPane, active && styles.currentPaneActive]}
+                            onPress={() => switchToSlot(index)}
+                          >
+                            <View style={styles.optionIcon}>
+                              <MaterialIcons
+                                name={PANE_REGISTRY[slot.tab].icon as any}
+                                size={18}
+                                color={active ? C.accent : C.text2}
+                              />
+                            </View>
+                            <View style={styles.currentPaneText}>
+                              <Text style={[styles.currentPaneLabel, active && styles.currentPaneLabelActive]}>
+                                {displayLabel}
+                              </Text>
+                              <Text style={styles.currentPaneHint}>
+                                SLOT {index + 1} · TAP TO SHOW
+                              </Text>
+                            </View>
+                            {openSlots.length > 1 ? (
+                              <Pressable
+                                style={styles.closePaneBtn}
+                                hitSlop={6}
+                                onPress={(event) => {
+                                  event.stopPropagation();
+                                  removeSlot(slot.id);
+                                }}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Close ${displayLabel}`}
+                              >
+                                <MaterialIcons name="close" size={16} color={C.text2} />
+                              </Pressable>
+                            ) : null}
+                          </Pressable>
+                        );
+                      });
+                    })()}
+                  </View>
+                ) : null}
+
+                <Text style={styles.sectionLabel}>ADD PANE</Text>
+                {ADD_OPTIONS.map((opt) => {
+                  const icon = opt.kind === 'pane' ? PANE_REGISTRY[opt.id].icon : opt.icon;
+                  const label = opt.kind === 'pane' ? resolvePaneTitle(opt.id, t) : t('sidebar.file_tree');
+                  return (
+                    <Pressable
+                      key={`${opt.kind}-${opt.id}`}
+                      style={styles.option}
+                      onPress={() => handleAdd(opt)}
+                    >
+                      <View style={styles.optionIcon}>
+                        <MaterialIcons name={icon as any} size={18} color={C.accent} />
+                      </View>
+                      <Text style={styles.optionLabel}>{label}</Text>
+                      <MaterialIcons name="chevron-right" size={16} color={C.text3} />
+                    </Pressable>
+                  );
+                })}
+              </>
             ) : (
               <LayoutPicker onPicked={onClose} />
             )}
@@ -198,6 +293,20 @@ const styles = StyleSheet.create({
   bodyContent: {
     paddingBottom: 8,
   },
+  inUseBlock: {
+    marginBottom: 10,
+  },
+  sectionLabel: {
+    marginTop: 4,
+    marginBottom: 6,
+    paddingHorizontal: 2,
+    fontSize: 10,
+    lineHeight: 12,
+    fontFamily: F.family,
+    fontWeight: '700',
+    color: C.text3,
+    letterSpacing: 0.6,
+  },
   option: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -217,6 +326,57 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: withAlpha(C.accent, 0.10),
+  },
+  currentPane: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: C.border,
+    backgroundColor: withAlpha(C.bgSurface, 0.72),
+    marginBottom: 6,
+  },
+  currentPaneActive: {
+    borderColor: withAlpha(C.accent, 0.75),
+    backgroundColor: withAlpha(C.accent, 0.10),
+  },
+  currentPaneText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  currentPaneLabelActive: {
+    color: C.accent,
+  },
+  currentPaneLabel: {
+    fontSize: 12,
+    lineHeight: 14,
+    fontFamily: F.family,
+    fontWeight: '600',
+    color: C.text1,
+    letterSpacing: 0.3,
+    includeFontPadding: false,
+  },
+  currentPaneHint: {
+    marginTop: 2,
+    fontSize: 8,
+    lineHeight: 10,
+    fontFamily: F.family,
+    color: C.text3,
+    letterSpacing: 0.3,
+    includeFontPadding: false,
+  },
+  closePaneBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: withAlpha(C.border, 0.75),
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: withAlpha(C.bgDeep, 0.35),
   },
   optionLabel: {
     flex: 1,
