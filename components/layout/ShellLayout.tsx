@@ -215,8 +215,6 @@ export function ShellLayout() {
         restoreUnfoldedPreset('Fold initial observation');
       }
       prevFoldInnerRef.current = curr;
-      foldTransitionGuardRef.current = true;
-      setTimeout(() => { foldTransitionGuardRef.current = false; }, 500);
       return;
     }
     if (prev !== curr) {
@@ -236,7 +234,6 @@ export function ShellLayout() {
     }
   }, [
     layout.isFoldInner,
-    layout.width,
     multiPaneHydrated,
     presetHydrated,
     collapseToCoverPreset,

@@ -150,6 +150,7 @@ function relayoutBlock() {
       )
     }
 
+    relayout.run()
     decor.post(relayout)
     decor.postDelayed(relayout, 80L)
     decor.postDelayed(relayout, 160L)

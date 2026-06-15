@@ -213,6 +213,7 @@ export function MultiPaneContainer() {
       const foldTransition = widthChanged && Math.abs(width - keyboardFreeWidthRef.current) > 200;
       if (foldTransition) {
         keyboardFreeWidthRef.current = width;
+        setKeyboardHeight(0);
         return height;
       }
       if (prev <= 0 || height > prev || (kb <= 0 && widthChanged)) {
