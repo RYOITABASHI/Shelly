@@ -142,6 +142,8 @@ export function MultiPaneContainer() {
   // renders at its natural size.
   const insets = useSafeAreaInsets();
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const keyboardHeightRef = useRef(keyboardHeight);
+  useEffect(() => { keyboardHeightRef.current = keyboardHeight; }, [keyboardHeight]);
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const syncKeyboardMetrics = (reason: string) => {
@@ -203,10 +205,17 @@ export function MultiPaneContainer() {
 
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
+    const kb = keyboardHeightRef.current;
     setKeyboardFreeHeight((prev) => {
       const widthChanged = keyboardFreeWidthRef.current > 0 &&
         Math.abs(width - keyboardFreeWidthRef.current) > 2;
-      if (prev <= 0 || height > prev || (keyboardHeight <= 0 && widthChanged)) {
+      // Reset keyboard tracking on fold transition (width change > 200px)
+      const foldTransition = widthChanged && Math.abs(width - keyboardFreeWidthRef.current) > 200;
+      if (foldTransition) {
+        keyboardFreeWidthRef.current = width;
+        return height;
+      }
+      if (prev <= 0 || height > prev || (kb <= 0 && widthChanged)) {
         keyboardFreeWidthRef.current = width;
         return height;
       }
@@ -214,7 +223,7 @@ export function MultiPaneContainer() {
       // reduced layout can arrive while keyboardHeight is still 0. Keep the
       // previous taller baseline so the later keyboard height is not
       // subtracted a second time.
-      if (keyboardHeight <= 0 && height >= prev - 48) {
+      if (kb <= 0 && height >= prev - 48) {
         keyboardFreeWidthRef.current = width;
         return height;
       }
@@ -224,7 +233,7 @@ export function MultiPaneContainer() {
       if (prev.W === width && prev.H === height) return prev;
       return { W: width, H: height };
     });
-  }, [keyboardHeight]);
+  }, []); // stable: uses refs for dynamic values
 
   if (!hasHydrated) {
     return <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout} />;

@@ -98,18 +98,14 @@ function relayoutBlock() {
 
   override fun onConfigurationChanged(newConfig: Configuration) {
     super.onConfigurationChanged(newConfig)
-    val previousDisplayClass = lastDisplayClass
     val nextDisplayClass = displayClass(newConfig)
-    lastDisplayClass = nextDisplayClass
-    if (previousDisplayClass != null && previousDisplayClass != nextDisplayClass) {
+    if (lastDisplayClass != null && lastDisplayClass != nextDisplayClass) {
       Log.d(
         "MainActivity",
-        "Display class changed " + previousDisplayClass + " -> " + nextDisplayClass + "; recreating React root",
+        "Display class changed " + lastDisplayClass + " -> " + nextDisplayClass + "; forcing relayout",
       )
-      forceTopLevelRelayout("configurationChanged-before-recreate")
-      window.decorView.post { recreate() }
-      return
     }
+    lastDisplayClass = nextDisplayClass
     forceTopLevelRelayout("configurationChanged")
   }
 
@@ -144,22 +140,7 @@ function relayoutBlock() {
         it.requestApplyInsets()
         it.invalidate()
       }
-      if (content != null) {
-        for (i in 0 until content.childCount) {
-          content.getChildAt(i)?.let { child ->
-            val lp = child.layoutParams
-            if (lp != null && (lp.width != ViewGroup.LayoutParams.MATCH_PARENT || lp.height != ViewGroup.LayoutParams.MATCH_PARENT)) {
-              lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-              lp.height = ViewGroup.LayoutParams.MATCH_PARENT
-              child.layoutParams = lp
-            }
-            child.forceLayout()
-            child.requestLayout()
-            child.requestApplyInsets()
-            child.invalidate()
-          }
-        }
-      }
+      
       Log.d(
         "MainActivity",
         "Forced top-level relayout after " + reason +

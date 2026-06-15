@@ -79,6 +79,8 @@ export function ShellLayout() {
   const presetHydratedRef = useRef(false);
   const unfoldDeferredUntilHydrateRef = useRef(false);
   const [presetHydrated, setPresetHydrated] = useState(false);
+  // Guards against rapid fold/unfold toggling near threshold boundaries
+  const foldTransitionGuardRef = useRef(false);
 
   const collapseToCoverPreset = useCallback((reason: string) => {
     const state = useMultiPaneStore.getState();
@@ -176,6 +178,17 @@ export function ShellLayout() {
     const curr = layout.isFoldInner;
     if (!multiPaneHydrated) return;
 
+    // Fold transition guard: prevent rapid preset changes when the
+    // device is near a fold/unfold threshold boundary. The guard
+    // blocks a second fold transition while one is already in progress,
+    // which can happen if multiple configuration change events arrive
+    // for a single physical fold/unfold gesture.
+    if (foldTransitionGuardRef.current && prev !== curr) {
+      logInfo('ShellLayout', `Fold transition blocked by guard (${prev} -> ${curr})`);
+      return;
+    }
+
+
     if (presetHydrated && unfoldDeferredUntilHydrateRef.current && curr) {
       unfoldDeferredUntilHydrateRef.current = false;
       if (coverPresetActiveRef.current) {
@@ -202,9 +215,12 @@ export function ShellLayout() {
         restoreUnfoldedPreset('Fold initial observation');
       }
       prevFoldInnerRef.current = curr;
+      foldTransitionGuardRef.current = true;
+      setTimeout(() => { foldTransitionGuardRef.current = false; }, 500);
       return;
     }
     if (prev !== curr) {
+      foldTransitionGuardRef.current = true;
       if (curr) {
         if (coverPresetActiveRef.current) {
           restoreUnfoldedPreset('Fold transition');
@@ -215,9 +231,12 @@ export function ShellLayout() {
         collapseToCoverPreset('Fold transition');
       }
       prevFoldInnerRef.current = curr;
+      // Release the fold guard after a delay to allow layout to stabilize
+      setTimeout(() => { foldTransitionGuardRef.current = false; }, 500);
     }
   }, [
     layout.isFoldInner,
+    layout.width,
     multiPaneHydrated,
     presetHydrated,
     collapseToCoverPreset,
