@@ -12,6 +12,7 @@
  * (route to the human via the existing notification approval). This delivers "no
  * per-step HUMAN approval" while keeping hard-denies and boundary gates intact.
  */
+import type { Agent } from '@/store/types';
 import { redactSecrets } from '@/lib/redact-secrets';
 import {
   AutonomyLevel,
@@ -58,6 +59,17 @@ export function parseAutonomyPolicy(raw: unknown, workspaceRoot: string): Autono
     denyPatterns: strArr(r.denyPatterns, DEFAULT_POLICY.denyPatterns),
     allowPatterns: strArr(r.allowPatterns, DEFAULT_POLICY.allowPatterns),
   };
+}
+
+/**
+ * Build the AutonomyPolicy the B2 driver feeds to the gate for an autonomous
+ * agent run. Level comes from the agent's stored config (human-set; default L2);
+ * `canonicalRoot` is the workspace root resolved at run start; the rest are the
+ * global defaults. The driver holds this object — it is NEVER written to codex's
+ * workspace, so the running agent cannot read or tamper with it (the §6 invariant).
+ */
+export function buildAgentPolicy(agent: Agent, canonicalRoot: string): AutonomyPolicy {
+  return parseAutonomyPolicy({ level: agent.autonomyLevel }, canonicalRoot);
 }
 
 export type AutoAnswer = 'y' | 'n' | 'escalate';
