@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const DEFAULT_GATE_SCRIPT = path.resolve(
   __dirname,
   '../modules/terminal-emulator/android/src/main/assets/shelly-gate-decide.js',
 );
+const DEFAULT_ESCALATION_TIMEOUT_MS = 120000;
+const DEFAULT_ESCALATION_DIR = path.join(os.tmpdir(), 'shelly-agent-escalations');
+const DEFAULT_ESCALATION_REPLY_DIR = path.join(os.tmpdir(), 'shelly-agent-escalation-replies');
+const ESCALATION_POLL_MS = 250;
 
 function usage() {
   process.stdout.write(`Usage:
@@ -24,8 +30,21 @@ Options:
   --audit-log <path>         Append AUDIT/GATE JSON lines to this file.
   --timeout-ms <ms>          Whole turn timeout. Defaults to 300000.
   --gate-timeout-ms <ms>     Gate helper timeout. Defaults to 5000.
+  --escalation-dir <path>    Directory for gray escalation request files.
+  --escalation-reply-dir <path>
+                             Directory for human reply files. Production must be agent-unwritable.
+  --escalation-timeout-ms <ms>
+                             Gray escalation wait timeout. Defaults to ESCALATION_TIMEOUT_MS or 120000.
+  --run-id <id>              Override generated run id.
+  --agent-id <id>            Agent id for escalation requests.
   --help                     Show this help.
 `);
+}
+
+function parsePositiveInt(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw new Error(`invalid ${label}`);
+  return number;
 }
 
 function parseArgs(argv) {
@@ -36,6 +55,14 @@ function parseArgs(argv) {
     approvalPolicy: 'untrusted',
     timeoutMs: 300000,
     gateTimeoutMs: 5000,
+    escalationDir: process.env.SHELLY_AGENT_ESCALATION_DIR || DEFAULT_ESCALATION_DIR,
+    escalationReplyDir: process.env.SHELLY_AGENT_ESCALATION_REPLY_DIR || DEFAULT_ESCALATION_REPLY_DIR,
+    escalationTimeoutMs: parsePositiveInt(
+      process.env.ESCALATION_TIMEOUT_MS || DEFAULT_ESCALATION_TIMEOUT_MS,
+      'ESCALATION_TIMEOUT_MS',
+    ),
+    runId: process.env.SHELLY_AGENT_RUN_ID || crypto.randomUUID(),
+    agentId: process.env.SHELLY_AGENT_ID || 'host',
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -70,7 +97,17 @@ function parseArgs(argv) {
     } else if (arg === '--timeout-ms') {
       args.timeoutMs = Number(next());
     } else if (arg === '--gate-timeout-ms') {
-      args.gateTimeoutMs = Number(next());
+      args.gateTimeoutMs = parsePositiveInt(next(), '--gate-timeout-ms');
+    } else if (arg === '--escalation-dir') {
+      args.escalationDir = next();
+    } else if (arg === '--escalation-reply-dir') {
+      args.escalationReplyDir = next();
+    } else if (arg === '--escalation-timeout-ms') {
+      args.escalationTimeoutMs = parsePositiveInt(next(), '--escalation-timeout-ms');
+    } else if (arg === '--run-id') {
+      args.runId = next();
+    } else if (arg === '--agent-id') {
+      args.agentId = next();
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -104,6 +141,9 @@ function ensureConfig(args) {
   if (!Number.isFinite(args.gateTimeoutMs) || args.gateTimeoutMs <= 0) {
     throw new Error('invalid --gate-timeout-ms');
   }
+  if (!Number.isFinite(args.escalationTimeoutMs) || args.escalationTimeoutMs <= 0) {
+    throw new Error('invalid --escalation-timeout-ms');
+  }
   if (args.approvalPolicy !== 'untrusted') {
     throw new Error('invalid --approval-policy: autonomous driver only allows "untrusted"');
   }
@@ -123,6 +163,10 @@ function ensureConfig(args) {
     prompt,
     policy,
     gateScript: path.resolve(args.gateScript),
+    escalationDir: path.resolve(args.escalationDir),
+    // Security: the temp default is host/dev only. Production Part B must pass a reply
+    // channel the agent cannot write, such as RN app-private storage or a driver-owned FD.
+    escalationReplyDir: path.resolve(args.escalationReplyDir),
   };
 }
 
@@ -195,6 +239,14 @@ function combineGateAnswers(results) {
     return { answer: 'escalate', decision: 'decline' };
   }
   return { answer: 'y', decision: 'accept' };
+}
+
+function safeFilePart(value) {
+  return String(value).replace(/[^A-Za-z0-9_.=-]/g, '_').slice(0, 160);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function rawLine(prefix, line) {
@@ -335,6 +387,184 @@ function mapGateToDecision(answer) {
   if (answer === 'y') return 'accept';
   if (answer === 'n') return 'decline';
   return 'decline';
+}
+
+function isHumanEscalation(result) {
+  const verdict = result.outcome && result.outcome.verdict ? result.outcome.verdict : null;
+  return result.answer === 'escalate' && !result.error && verdict && verdict.decision === 'gray';
+}
+
+function buildEscalationPaths(config, reqId) {
+  const base = `req-${safeFilePart(config.runId)}-${safeFilePart(reqId)}`;
+  return {
+    requestPath: path.join(config.escalationDir, `${base}.json`),
+    replyPath: path.join(config.escalationReplyDir, `${base}.reply.json`),
+  };
+}
+
+function writeJsonAtomic(filePath, payload) {
+  const tmpPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`,
+  );
+  fs.writeFileSync(tmpPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+  fs.renameSync(tmpPath, filePath);
+}
+
+function unlinkIfExists(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return;
+    throw error;
+  }
+}
+
+function cleanupEscalationFiles(paths, audit) {
+  for (const filePath of [paths.requestPath, paths.replyPath]) {
+    try {
+      unlinkIfExists(filePath);
+    } catch (error) {
+      audit('escalation_cleanup_error', { path: filePath, error: error.message });
+    }
+  }
+}
+
+function failClosedEscalation(audit, payload) {
+  audit('escalation_fail_closed', {
+    decision: 'decline',
+    ...payload,
+  });
+  return { decision: 'decline', reason: payload.reason || null };
+}
+
+async function waitForEscalation(config, request, audit) {
+  const paths = buildEscalationPaths(config, request.reqId);
+  const startedAt = Date.now();
+  let wroteRequest = false;
+
+  try {
+    fs.mkdirSync(config.escalationDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(config.escalationReplyDir, { recursive: true, mode: 0o700 });
+    unlinkIfExists(paths.requestPath);
+    unlinkIfExists(paths.replyPath);
+
+    const requestPayload = {
+      runId: config.runId,
+      agentId: config.agentId,
+      reqId: request.reqId,
+      command: request.command,
+      cwd: request.cwd,
+      reason: request.reason,
+      signals: request.signals,
+      level: request.level,
+      ts: new Date().toISOString(),
+    };
+    writeJsonAtomic(paths.requestPath, requestPayload);
+    wroteRequest = true;
+
+    process.stdout.write(
+      `ESCALATE human_required command=${JSON.stringify(request.command)} reqId=${JSON.stringify(request.reqId)} requestPath=${JSON.stringify(paths.requestPath)} replyPath=${JSON.stringify(paths.replyPath)} action=wait\n`,
+    );
+    audit('escalation_requested', {
+      ...requestPayload,
+      requestPath: paths.requestPath,
+      replyPath: paths.replyPath,
+      timeoutMs: config.escalationTimeoutMs,
+    });
+  } catch (error) {
+    cleanupEscalationFiles(paths, audit);
+    return failClosedEscalation(audit, {
+      reqId: request.reqId,
+      reason: `escalation request I/O failed: ${error.message}`,
+      requestPath: paths.requestPath,
+      replyPath: paths.replyPath,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
+
+  const deadline = startedAt + config.escalationTimeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      let replyText = null;
+      try {
+        replyText = fs.readFileSync(paths.replyPath, 'utf8');
+      } catch (error) {
+        if (!error || error.code !== 'ENOENT') {
+          return failClosedEscalation(audit, {
+            reqId: request.reqId,
+            reason: `escalation reply read failed: ${error.message}`,
+            requestPath: paths.requestPath,
+            replyPath: paths.replyPath,
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+      }
+
+      if (replyText !== null) {
+        let reply;
+        try {
+          reply = JSON.parse(replyText);
+        } catch (error) {
+          return failClosedEscalation(audit, {
+            reqId: request.reqId,
+            reason: `escalation reply parse failed: ${error.message}`,
+            rawReply: replyText,
+            requestPath: paths.requestPath,
+            replyPath: paths.replyPath,
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+
+        if (String(reply.reqId) !== String(request.reqId)) {
+          return failClosedEscalation(audit, {
+            reqId: request.reqId,
+            reason: `escalation reply reqId mismatch: ${reply.reqId}`,
+            reply,
+            requestPath: paths.requestPath,
+            replyPath: paths.replyPath,
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+        if (reply.decision !== 'accept' && reply.decision !== 'decline') {
+          return failClosedEscalation(audit, {
+            reqId: request.reqId,
+            reason: `invalid escalation decision: ${reply.decision}`,
+            reply,
+            requestPath: paths.requestPath,
+            replyPath: paths.replyPath,
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+
+        audit('escalation_resolved', {
+          reqId: request.reqId,
+          decision: reply.decision,
+          requestPath: paths.requestPath,
+          replyPath: paths.replyPath,
+          elapsedMs: Date.now() - startedAt,
+        });
+        process.stdout.write(
+          `ESCALATE_RESOLVED reqId=${JSON.stringify(request.reqId)} decision=${JSON.stringify(reply.decision)} elapsedMs=${Date.now() - startedAt}\n`,
+        );
+        return { decision: reply.decision, reason: 'human reply' };
+      }
+
+      await sleep(Math.min(ESCALATION_POLL_MS, Math.max(1, deadline - Date.now())));
+    }
+
+    audit('escalation_timeout', {
+      reqId: request.reqId,
+      decision: 'decline',
+      requestPath: paths.requestPath,
+      replyPath: paths.replyPath,
+      timeoutMs: config.escalationTimeoutMs,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return { decision: 'decline', reason: `escalation timeout after ${config.escalationTimeoutMs}ms` };
+  } finally {
+    if (wroteRequest) cleanupEscalationFiles(paths, audit);
+  }
 }
 
 async function runDriver(config) {
@@ -515,22 +745,60 @@ async function runDriver(config) {
       }
 
       const composite = combineGateAnswers(gateResults);
+      const escalationOutcomes = new Map();
+      let finalDecision = 'accept';
+
+      if (gateResults.some((result) => result.answer === 'n')) {
+        finalDecision = 'decline';
+      } else {
+        for (const result of gateResults.filter((item) => item.answer === 'escalate')) {
+          const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
+          const redactedCommand = redact(result.action.command);
+          const reqId = gateResults.length === 1
+            ? String(message.id)
+            : `${message.id}-${result.action.index}`;
+
+          if (!isHumanEscalation(result)) {
+            finalDecision = 'decline';
+            escalationOutcomes.set(result.action.index, {
+              reqId,
+              decision: 'decline',
+              reason: result.error || auditPayload.reason || 'non-gray escalation fail-closed',
+            });
+            continue;
+          }
+
+          const escalation = await waitForEscalation(config, {
+            reqId,
+            command: auditPayload.command || redactedCommand,
+            cwd: result.action.cwd,
+            reason: auditPayload.reason || null,
+            signals: auditPayload.signals || [],
+            level: auditPayload.level || config.policy.level,
+          }, audit);
+          escalationOutcomes.set(result.action.index, {
+            reqId,
+            ...escalation,
+          });
+          if (escalation.decision === 'decline') {
+            finalDecision = 'decline';
+          }
+        }
+      }
+
       const protocolDecision = legacy
-        ? composite.decision === 'accept' ? 'approved' : 'denied'
-        : composite.decision;
+        ? finalDecision === 'accept' ? 'approved' : 'denied'
+        : finalDecision;
       response = { decision: protocolDecision };
 
       for (const result of gateResults) {
         const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
         const verdict = result.outcome && result.outcome.verdict ? result.outcome.verdict : null;
-        const actionDecision = mapGateToDecision(result.answer);
+        const escalation = escalationOutcomes.get(result.action.index) || null;
+        const actionDecision = result.answer === 'escalate'
+          ? escalation && escalation.decision === 'accept' ? 'accept' : 'decline'
+          : mapGateToDecision(result.answer);
         const redactedCommand = redact(result.action.command);
-
-        if (result.answer === 'escalate') {
-          process.stdout.write(
-            `ESCALATE human_required command=${JSON.stringify(redactedCommand)} requestId=${JSON.stringify(message.id)} actionIndex=${result.action.index} phase=PhaseA action=decline\n`,
-          );
-        }
 
         gateLine(config.auditLog, {
           threadId: params.threadId,
@@ -548,6 +816,9 @@ async function runDriver(config) {
           actionDecision,
           compositeAnswer: composite.answer,
           decision: protocolDecision,
+          escalationReqId: escalation && escalation.reqId,
+          escalationDecision: escalation && escalation.decision,
+          escalationReason: escalation && escalation.reason,
           verdictDecision: verdict && verdict.decision,
           reason: auditPayload.reason || result.error || null,
           signals: auditPayload.signals || [],
@@ -743,6 +1014,12 @@ async function runDriver(config) {
     codexBin: config.codexBin,
     nodeBin: config.nodeBin,
     approvalPolicy: config.approvalPolicy,
+    runId: config.runId,
+    agentId: config.agentId,
+    escalationDir: config.escalationDir,
+    escalationReplyDir: config.escalationReplyDir,
+    escalationTimeoutMs: config.escalationTimeoutMs,
+    escalationReplyChannelRequirement: 'production reply channel must be agent-unwritable; temp defaults are host/dev only',
     policy: {
       ...config.policy,
       workspaceRoot: config.policy.workspaceRoot,
