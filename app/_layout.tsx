@@ -78,11 +78,15 @@ type AgentEscalationRequest = {
   agentId: string;
   reqId: string;
   command: string;
+  commandSha256?: string | null;
+  workspaceRoot?: string | null;
   cwd?: string | null;
   reason?: string | null;
   signals: string[];
   level?: string | null;
   ts?: string | null;
+  state?: string | null;
+  queuedAt?: string | null;
 };
 
 export default function RootLayout() {
@@ -1004,12 +1008,32 @@ export default function RootLayout() {
         command,
         signals,
         agentId: str('agentId') || 'agent',
+        commandSha256: str('commandSha256') || null,
+        workspaceRoot: str('workspaceRoot') || null,
         cwd: str('cwd') || null,
         reason: str('reason') || null,
         level: str('level') || null,
         ts: str('ts') || null,
+        state: str('state') || null,
+        queuedAt: str('queuedAt') || null,
       };
     };
+
+    const escalationKey = (request: AgentEscalationRequest) => JSON.stringify({
+      runId: request.runId,
+      reqId: request.reqId,
+      agentId: request.agentId,
+      command: request.command,
+      commandSha256: request.commandSha256,
+      workspaceRoot: request.workspaceRoot,
+      cwd: request.cwd,
+      reason: request.reason,
+      signals: request.signals,
+      level: request.level,
+      ts: request.ts,
+      state: request.state,
+      queuedAt: request.queuedAt,
+    });
 
     const getEscalationRequestDirUri = async () => {
       if (escalationRequestDirUri) return escalationRequestDirUri;
@@ -1028,9 +1052,9 @@ export default function RootLayout() {
       return escalationRequestDirUri;
     };
 
-    const rememberEscalation = (key: string) => {
+    const rememberEscalation = (key: string, request: AgentEscalationRequest) => {
       const now = Date.now();
-      notifiedEscalations.set(key, { runId: key.split('|')[0] ?? '', reqId: key.split('|')[1] ?? '', seenAt: now });
+      notifiedEscalations.set(key, { runId: request.runId, reqId: request.reqId, seenAt: now });
       for (const [candidate, record] of notifiedEscalations) {
         if (now - record.seenAt > 10 * 60_000) notifiedEscalations.delete(candidate);
       }
@@ -1044,6 +1068,7 @@ export default function RootLayout() {
         const names = await FileSystem.readDirectoryAsync(requestDirUri).catch(() => null);
         if (!names) return;
         const activeKeys = new Set<string>();
+        const activeAnchors = new Set<string>();
         for (const name of names) {
           if (!/^req-[A-Za-z0-9_.=-]+-[A-Za-z0-9_.=-]+\.json$/.test(name)) continue;
           const fileUri = joinFileUri(requestDirUri, name);
@@ -1058,15 +1083,20 @@ export default function RootLayout() {
             logError('AgentEscalation', `rejected invalid request ${name}`);
             continue;
           }
-          const key = `${parsed.runId}|${parsed.reqId}|${parsed.ts ?? ''}`;
+          const key = escalationKey(parsed);
           activeKeys.add(key);
+          activeAnchors.add(`${parsed.runId}|${parsed.reqId}`);
           if (notifiedEscalations.has(key)) continue;
           await TerminalEmulator.notifyAgentEscalationApprovalNeeded(parsed);
-          rememberEscalation(key);
+          rememberEscalation(key, parsed);
           logInfo('AgentEscalation', `approval notification posted run=${parsed.runId} req=${parsed.reqId}`);
         }
         for (const [key, record] of notifiedEscalations) {
           if (activeKeys.has(key)) continue;
+          if (activeAnchors.has(`${record.runId}|${record.reqId}`)) {
+            notifiedEscalations.delete(key);
+            continue;
+          }
           await TerminalEmulator.cancelAgentEscalationApproval?.(record.runId, record.reqId).catch(() => undefined);
           notifiedEscalations.delete(key);
           logInfo('AgentEscalation', `stale approval notification cancelled run=${record.runId} req=${record.reqId}`);

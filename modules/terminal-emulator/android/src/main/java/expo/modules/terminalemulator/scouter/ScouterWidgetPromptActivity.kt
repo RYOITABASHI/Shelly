@@ -362,6 +362,7 @@ class ScouterWidgetPromptActivity : Activity() {
         val runId = intent.getStringExtra(EXTRA_AGENT_ESCALATION_RUN_ID)?.trim().orEmpty()
         val reqId = intent.getStringExtra(EXTRA_AGENT_ESCALATION_REQ_ID)?.trim().orEmpty()
         val actionNonce = intent.getStringExtra(EXTRA_AGENT_ESCALATION_ACTION_NONCE)
+        val expectedRequestSha256 = intent.getStringExtra(EXTRA_AGENT_ESCALATION_REQUEST_SHA256)
         if (runId.isBlank() || reqId.isBlank()) {
             Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
             finishQuietly()
@@ -369,13 +370,24 @@ class ScouterWidgetPromptActivity : Activity() {
         }
 
         runCatching {
-            AgentEscalationBridge.writeHumanReply(this, runId, reqId, decision, actionNonce)
+            AgentEscalationBridge.writeHumanReply(this, runId, reqId, decision, actionNonce, expectedRequestSha256)
+            val queuedGrant = if (decision == "accept") {
+                AgentEscalationBridge.writePreapprovalGrantForQueuedRequest(this, runId, reqId, expectedRequestSha256)
+            } else {
+                null
+            }
+            AgentEscalationBridge.clearRequest(this, runId, reqId)
+            queuedGrant != null
         }.fold(onSuccess = {
             getSystemService(NotificationManager::class.java)
                 ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
             Toast.makeText(
                 this,
-                if (decision == "accept") R.string.scouter_widget_approval_sent else R.string.scouter_widget_approval_denied,
+                when {
+                    it -> R.string.scouter_widget_approval_preapproved
+                    decision == "accept" -> R.string.scouter_widget_approval_sent
+                    else -> R.string.scouter_widget_approval_denied
+                },
                 Toast.LENGTH_SHORT
             ).show()
         }, onFailure = { error ->
@@ -673,6 +685,7 @@ class ScouterWidgetPromptActivity : Activity() {
         const val EXTRA_AGENT_ESCALATION_REQ_ID = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_REQ_ID"
         const val EXTRA_AGENT_ESCALATION_AGENT_ID = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_AGENT_ID"
         const val EXTRA_AGENT_ESCALATION_ACTION_NONCE = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_ACTION_NONCE"
+        const val EXTRA_AGENT_ESCALATION_REQUEST_SHA256 = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_REQUEST_SHA256"
         const val EXTRA_CHOICE_INDEX = "expo.modules.terminalemulator.scouter.CHOICE_INDEX"
         const val EXTRA_CHOICE_LABEL = "expo.modules.terminalemulator.scouter.CHOICE_LABEL"
         private val CODEX_STATUS_RE = Regex("""\b(?:gpt|o\d|codex)[A-Za-z0-9_.-]*\b.*[·•]\s*/""", RegexOption.IGNORE_CASE)

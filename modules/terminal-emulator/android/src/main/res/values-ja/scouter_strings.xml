@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="scouter_widget_prompt_title">Codex に依頼</string>
+  <string name="scouter_widget_prompt_hint">紐づいた Codex ターミナルへ送るプロンプト</string>
+  <string name="scouter_widget_prompt_send">送信</string>
+  <string name="scouter_widget_prompt_cancel">キャンセル</string>
+  <string name="scouter_widget_prompt_close">閉じる</string>
+  <string name="scouter_widget_prompt_empty">プロンプトが空です</string>
+  <string name="scouter_widget_prompt_sent">Codex に送信しました</string>
+  <string name="scouter_widget_prompt_approval_needed">Codex が承認待ちです。ウィジェットの OK / NO を使ってください。</string>
+  <string name="scouter_widget_prompt_interactive">Codex が選択待ちです</string>
+  <string name="scouter_widget_approval_sent">Codex に承認を送信しました</string>
+  <string name="scouter_widget_approval_denied">Codex に拒否を送信しました</string>
+  <string name="scouter_widget_approval_preapproved">次回実行用の一回限り許可を保存しました</string>
+  <string name="scouter_widget_approval_queued_resume">承認をキューしました。Codex を再開します...</string>
+  <string name="scouter_widget_approval_not_ready">Codex の承認は現在使えません</string>
+  <string name="scouter_widget_approval_allow_short">OK</string>
+  <string name="scouter_widget_approval_deny_short">NO</string>
+  <string name="scouter_widget_prompt_queued_resume">キューしました。Codex を再開します...</string>
+  <string name="scouter_widget_prompt_no_codex">先に Codex ターミナルを開くか再開してください</string>
+  <string name="scouter_widget_prompt_stale_codex">紐づいた Codex ターミナルの準備ができていません</string>
+  <string name="scouter_widget_prompt_busy">Codex が処理中です。完了を待ってください。</string>
+  <string name="scouter_widget_choice_sent">選択を Codex に送信しました</string>
+  <string name="scouter_widget_choice_not_ready">Codex の選択はもう使えません</string>
+  <string name="scouter_notification_action_allow">許可</string>
+  <string name="scouter_notification_action_deny">拒否</string>
+  <string name="scouter_notification_codex_approval_title">Codex が承認を求めています</string>
+  <string name="scouter_notification_agent_escalation_title">エージェント %1$s: 境界操作を許可しますか？</string>
+  <string name="scouter_notification_agent_escalation_reason">理由: %1$s</string>
+  <string name="scouter_notification_agent_escalation_signals">シグナル: %1$s</string>
+  <string name="scouter_notification_agent_escalation_cwd">cwd: %1$s</string>
+</resources>

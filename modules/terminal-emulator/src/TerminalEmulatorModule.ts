@@ -122,17 +122,22 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     requestDirUri: string;
     replyDirPath: string;
     verifierPublicKeyPath: string;
+    preapprovalGrantFilePath?: string;
   }>;
   notifyAgentEscalationApprovalNeeded?(request: {
     runId: string;
     agentId?: string | null;
     reqId: string;
     command: string;
+    commandSha256?: string | null;
+    workspaceRoot?: string | null;
     cwd?: string | null;
     reason?: string | null;
     signals?: string[];
     level?: string | null;
     ts?: string | null;
+    state?: string | null;
+    queuedAt?: string | null;
   }): Promise<void>;
   cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
   returnToHome?(): Promise<void>;

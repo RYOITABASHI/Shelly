@@ -1167,13 +1167,16 @@ class TerminalEmulatorModule : Module() {
                 "requestDirUri" to AgentEscalationBridge.requestDirUri(context),
                 "replyDirPath" to replyDir.absolutePath,
                 "verifierPublicKeyPath" to AgentEscalationBridge.verifierPublicKeyPath(context),
+                "preapprovalGrantFilePath" to AgentEscalationBridge.preapprovalGrantFilePath(context),
             )
         }
 
         AsyncFunction("notifyAgentEscalationApprovalNeeded") { request: Map<String, Any?> ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
-            val parsed = AgentEscalationBridge.fromMap(request)
+            val anchor = AgentEscalationBridge.anchorFromMap(request)
+                ?: throw IllegalArgumentException("invalid agent escalation request")
+            val parsed = AgentEscalationBridge.fromRequestFile(context, anchor.first, anchor.second)
                 ?: throw IllegalArgumentException("invalid agent escalation request")
             NotificationDispatcher(context).notifyAgentEscalationNeeded(parsed)
             null

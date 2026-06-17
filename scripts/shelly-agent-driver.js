@@ -11,8 +11,11 @@ const DEFAULT_ESCALATION_TIMEOUT_MS = 120000;
 const DEFAULT_ESCALATION_DIR = defaultEscalationDir();
 const DEFAULT_ESCALATION_REPLY_DIR = defaultEscalationReplyDir();
 const DEFAULT_ESCALATION_PUBLIC_KEY = defaultEscalationPublicKey();
+const DEFAULT_PREAPPROVAL_GRANTS_FILE = defaultPreapprovalGrantsFile();
 const ESCALATION_POLL_MS = 250;
 const ANDROID_LINKER64 = '/system/bin/linker64';
+const GRANTABLE_BOUNDARY_SIGNALS = new Set(['leaves-root', 'network-send']);
+const UNGRANTABLE_BOUNDARY_SIGNALS = new Set(['secret-read', 'destructive', 'policy-write']);
 
 function defaultEscalationDir() {
   return process.env.HOME
@@ -38,6 +41,15 @@ function defaultEscalationPublicKey() {
   return path.join(os.tmpdir(), 'shelly-agent-escalation-public.der');
 }
 
+function defaultPreapprovalGrantsFile() {
+  const home = process.env.HOME || '';
+  const androidHomeSuffix = `${path.sep}files${path.sep}home`;
+  if (home.endsWith(androidHomeSuffix)) {
+    return path.join(home.slice(0, -androidHomeSuffix.length), 'no_backup', 'shelly-agent-preapproval-grants.jsonl');
+  }
+  return path.join(os.tmpdir(), 'shelly-agent-preapproval-grants.jsonl');
+}
+
 function usage() {
   process.stdout.write(`Usage:
   node scripts/shelly-agent-driver.js --cwd <workspace> --prompt <text> [options]
@@ -58,8 +70,13 @@ Options:
                              Directory for signed human reply files.
   --escalation-timeout-ms <ms>
                              Gray escalation wait timeout. Defaults to ESCALATION_TIMEOUT_MS or 120000.
+  --escalation-timeout-action <decline|queue>
+                             On timeout, decline immediately or keep a durable queued request for later grant/resume.
+                             Defaults to decline.
   --escalation-public-key <path>
                              X.509/SPKI public key used to verify human reply signatures.
+  --preapproval-grants-file <path>
+                             Signed human preapproval grant JSONL. Defaults to native no_backup storage on Android.
   --run-id <id>              Override generated run id.
   --agent-id <id>            Agent id for escalation requests.
   --help                     Show this help.
@@ -69,6 +86,12 @@ Options:
 function parsePositiveInt(value, label) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error(`invalid ${label}`);
+  return number;
+}
+
+function parseNonNegativeInt(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) throw new Error(`invalid ${label}`);
   return number;
 }
 
@@ -83,10 +106,12 @@ function parseArgs(argv) {
     escalationDir: process.env.SHELLY_AGENT_ESCALATION_DIR || DEFAULT_ESCALATION_DIR,
     escalationReplyDir: process.env.SHELLY_AGENT_ESCALATION_REPLY_DIR || DEFAULT_ESCALATION_REPLY_DIR,
     escalationPublicKey: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY || DEFAULT_ESCALATION_PUBLIC_KEY,
-    escalationTimeoutMs: parsePositiveInt(
+    preapprovalGrantsFile: process.env.SHELLY_AGENT_PREAPPROVAL_GRANTS_FILE || DEFAULT_PREAPPROVAL_GRANTS_FILE,
+    escalationTimeoutMs: parseNonNegativeInt(
       process.env.ESCALATION_TIMEOUT_MS || DEFAULT_ESCALATION_TIMEOUT_MS,
       'ESCALATION_TIMEOUT_MS',
     ),
+    escalationTimeoutAction: process.env.SHELLY_AGENT_ESCALATION_TIMEOUT_ACTION || 'decline',
     runId: process.env.SHELLY_AGENT_RUN_ID || crypto.randomUUID(),
     agentId: process.env.SHELLY_AGENT_ID || 'host',
   };
@@ -129,9 +154,13 @@ function parseArgs(argv) {
     } else if (arg === '--escalation-reply-dir') {
       args.escalationReplyDir = next();
     } else if (arg === '--escalation-timeout-ms') {
-      args.escalationTimeoutMs = parsePositiveInt(next(), '--escalation-timeout-ms');
+      args.escalationTimeoutMs = parseNonNegativeInt(next(), '--escalation-timeout-ms');
+    } else if (arg === '--escalation-timeout-action') {
+      args.escalationTimeoutAction = next();
     } else if (arg === '--escalation-public-key') {
       args.escalationPublicKey = next();
+    } else if (arg === '--preapproval-grants-file') {
+      args.preapprovalGrantsFile = next();
     } else if (arg === '--run-id') {
       args.runId = next();
     } else if (arg === '--agent-id') {
@@ -169,8 +198,11 @@ function ensureConfig(args) {
   if (!Number.isFinite(args.gateTimeoutMs) || args.gateTimeoutMs <= 0) {
     throw new Error('invalid --gate-timeout-ms');
   }
-  if (!Number.isFinite(args.escalationTimeoutMs) || args.escalationTimeoutMs <= 0) {
+  if (!Number.isFinite(args.escalationTimeoutMs) || args.escalationTimeoutMs < 0) {
     throw new Error('invalid --escalation-timeout-ms');
+  }
+  if (!['decline', 'queue'].includes(args.escalationTimeoutAction)) {
+    throw new Error('invalid --escalation-timeout-action: expected "decline" or "queue"');
   }
   if (args.approvalPolicy !== 'untrusted') {
     throw new Error('invalid --approval-policy: autonomous driver only allows "untrusted"');
@@ -196,6 +228,7 @@ function ensureConfig(args) {
     // Android-Keystore-backed signature before accept is honored.
     escalationReplyDir: path.resolve(args.escalationReplyDir),
     escalationPublicKey: path.resolve(args.escalationPublicKey),
+    preapprovalGrantsFile: path.resolve(args.preapprovalGrantsFile),
   };
 }
 
@@ -638,6 +671,31 @@ function failClosedEscalation(audit, payload) {
   return { decision: 'decline', reason: payload.reason || null };
 }
 
+function markEscalationQueued(paths, requestPayload, timeoutMs, audit) {
+  const { _sha256, ...basePayload } = requestPayload;
+  const queuedPayload = {
+    ...basePayload,
+    state: 'queued',
+    queuedAt: new Date().toISOString(),
+    queueReason: `escalation timeout after ${timeoutMs}ms`,
+  };
+  const requestContent = writeJsonAtomic(paths.requestPath, queuedPayload);
+  queuedPayload._sha256 = sha256Hex(requestContent);
+  audit('escalation_queued', {
+    runId: queuedPayload.runId,
+    agentId: queuedPayload.agentId,
+    reqId: queuedPayload.reqId,
+    command: queuedPayload.command,
+    cwd: queuedPayload.cwd,
+    reason: queuedPayload.reason,
+    signals: queuedPayload.signals,
+    level: queuedPayload.level,
+    requestPath: paths.requestPath,
+    timeoutMs,
+  });
+  return queuedPayload;
+}
+
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -649,6 +707,36 @@ function escalationSignatureMessage(request, decision, requestSha256) {
     String(decision),
     String(request.ts || ''),
     String(requestSha256),
+  ].join('\n');
+}
+
+function commandSha256(command) {
+  return sha256Hex(String(command || ''));
+}
+
+function grantSignals(signals) {
+  return Array.isArray(signals)
+    ? signals.map((item) => String(item || '').trim()).filter(Boolean).sort()
+    : [];
+}
+
+function boundarySignals(signals) {
+  return grantSignals(signals).filter((signal) => signal !== 'write-or-exec');
+}
+
+function preapprovalGrantSignatureMessage(grant) {
+  return [
+    'shelly-agent-preapproval-grant-v1',
+    String(grant.id || ''),
+    String(grant.agentId || ''),
+    String(grant.workspaceRoot || ''),
+    String(grant.commandSha256 || ''),
+    grantSignals(grant.signals).join(','),
+    String(grant.expiresAt || ''),
+    String(grant.createdAt || ''),
+    String(grant.requestSha256 || ''),
+    String(grant.requestTs || ''),
+    String(grant.usesRemaining || 1),
   ].join('\n');
 }
 
@@ -682,12 +770,209 @@ function verifyEscalationReplySignature(config, requestPayload, requestSha256, r
   }
 }
 
+function verifyPreapprovalGrantSignature(config, grant) {
+  if (grant.by !== 'human') return { ok: false, reason: `invalid grant author: ${grant.by}` };
+  if (grant.sigAlg !== 'SHA256withRSA') {
+    return { ok: false, reason: `invalid grant signature algorithm: ${grant.sigAlg}` };
+  }
+  if (typeof grant.signature !== 'string' || grant.signature.length < 32) {
+    return { ok: false, reason: 'missing grant signature' };
+  }
+  const publicKey = config.escalationVerifierPublicKey;
+  if (!publicKey) return { ok: false, reason: 'grant verifier public key unavailable' };
+  try {
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(preapprovalGrantSignatureMessage(grant), 'utf8');
+    verifier.end();
+    if (!verifier.verify(publicKey, Buffer.from(grant.signature, 'base64'))) {
+      return { ok: false, reason: 'grant signature verification failed' };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `grant signature verification error: ${error.message}` };
+  }
+}
+
 function loadEscalationVerifierPublicKey(config) {
   return crypto.createPublicKey({
     key: fs.readFileSync(config.escalationPublicKey),
     format: 'der',
     type: 'spki',
   });
+}
+
+function parseGrantExpiryMs(grant) {
+  if (typeof grant.expiresAt === 'number') return grant.expiresAt;
+  if (typeof grant.expiresAt === 'string' && /^\d+$/.test(grant.expiresAt.trim())) {
+    return Number(grant.expiresAt.trim());
+  }
+  if (typeof grant.expiresAt === 'string') {
+    const parsed = Date.parse(grant.expiresAt);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  return NaN;
+}
+
+function loadPreapprovalGrantRecords(config, audit) {
+  let text = '';
+  try {
+    text = fs.readFileSync(config.preapprovalGrantsFile, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return [];
+    audit('preapproval_grants_read_error', {
+      path: config.preapprovalGrantsFile,
+      error: error.message,
+    });
+    return [];
+  }
+
+  const records = [];
+  const lines = text.split(/\n/).filter((line) => line.trim());
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      const record = JSON.parse(lines[i]);
+      if (record && typeof record === 'object') records.push(record);
+    } catch (error) {
+      audit('preapproval_grant_parse_error', {
+        path: config.preapprovalGrantsFile,
+        line: i + 1,
+        error: error.message,
+      });
+    }
+  }
+  return records;
+}
+
+function appendGrantUse(config, grant, request) {
+  const use = {
+    type: 'used',
+    grantId: grant.id,
+    runId: config.runId,
+    reqId: request.reqId,
+    commandSha256: request.commandSha256,
+    ts: new Date().toISOString(),
+  };
+  fs.mkdirSync(path.dirname(config.preapprovalGrantsFile), { recursive: true, mode: 0o700 });
+  fs.appendFileSync(config.preapprovalGrantsFile, `${JSON.stringify(use)}\n`, { mode: 0o600 });
+}
+
+async function withPreapprovalGrantLock(config, audit, fn) {
+  const lockPath = `${config.preapprovalGrantsFile}.lock`;
+  const deadline = Date.now() + 5000;
+  fs.mkdirSync(path.dirname(config.preapprovalGrantsFile), { recursive: true, mode: 0o700 });
+
+  while (true) {
+    let fd = null;
+    try {
+      fd = fs.openSync(lockPath, 'wx', 0o600);
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }));
+      fs.closeSync(fd);
+      fd = null;
+      try {
+        return fn();
+      } finally {
+        unlinkIfExists(lockPath);
+      }
+    } catch (error) {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {}
+      }
+      if (!error || error.code !== 'EEXIST') {
+        audit('preapproval_grant_lock_error', { path: lockPath, error: error.message });
+        return null;
+      }
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > 30000) unlinkIfExists(lockPath);
+      } catch {}
+      if (Date.now() >= deadline) {
+        audit('preapproval_grant_lock_timeout', { path: lockPath });
+        return null;
+      }
+      await sleep(50);
+    }
+  }
+}
+
+async function consumePreapprovalGrant(config, request, audit) {
+  return withPreapprovalGrantLock(config, audit, () => {
+    const preapproval = findPreapprovalGrant(config, request, audit);
+    if (!preapproval) return null;
+    appendGrantUse(config, preapproval, {
+      reqId: request.reqId,
+      commandSha256: preapproval.commandSha256,
+    });
+    return preapproval;
+  });
+}
+
+function findPreapprovalGrant(config, request, audit) {
+  const signals = boundarySignals(request.signals);
+  if (signals.length === 0) return null;
+  if (signals.some((signal) => UNGRANTABLE_BOUNDARY_SIGNALS.has(signal))) {
+    return null;
+  }
+  if (signals.some((signal) => !GRANTABLE_BOUNDARY_SIGNALS.has(signal))) {
+    return null;
+  }
+
+  try {
+    if (!config.escalationVerifierPublicKey) {
+      config.escalationVerifierPublicKey = loadEscalationVerifierPublicKey(config);
+    }
+  } catch (error) {
+    audit('preapproval_grant_unavailable', {
+      reason: `grant verifier public key unavailable: ${error.message}`,
+      path: config.escalationPublicKey,
+    });
+    return null;
+  }
+
+  const records = loadPreapprovalGrantRecords(config, audit);
+  if (records.length === 0) return null;
+  const usedCounts = new Map();
+  for (const record of records) {
+    if (record.type === 'used' && record.grantId) {
+      usedCounts.set(String(record.grantId), (usedCounts.get(String(record.grantId)) || 0) + 1);
+    }
+  }
+
+  const now = Date.now();
+  const requestCommandSha256 = request.commandSha256 || commandSha256(request.command);
+  for (const record of records) {
+    if (record.type && record.type !== 'grant') continue;
+    const grant = record;
+    const grantId = String(grant.id || '');
+    if (!grantId) continue;
+    const expiresAtMs = parseGrantExpiryMs(grant);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
+    const usesRemaining = Number.isFinite(Number(grant.usesRemaining)) ? Math.max(1, Number(grant.usesRemaining)) : 1;
+    if ((usedCounts.get(grantId) || 0) >= usesRemaining) continue;
+    if (grant.agentId !== config.agentId) continue;
+    if (grant.workspaceRoot !== config.policy.workspaceRoot) continue;
+    if (grant.commandSha256 !== requestCommandSha256) continue;
+    const allowedSignals = new Set(grantSignals(grant.signals));
+    if (signals.some((signal) => !allowedSignals.has(signal))) continue;
+
+    const signature = verifyPreapprovalGrantSignature(config, grant);
+    if (!signature.ok) {
+      audit('preapproval_grant_rejected', {
+        grantId,
+        reason: signature.reason,
+        commandSha256: requestCommandSha256,
+      });
+      continue;
+    }
+    return {
+      id: grantId,
+      expiresAt: grant.expiresAt,
+      signals,
+      commandSha256: requestCommandSha256,
+    };
+  }
+  return null;
 }
 
 async function waitForEscalation(config, request, audit) {
@@ -698,6 +983,7 @@ async function waitForEscalation(config, request, audit) {
   const startedAt = Date.now();
   let wroteRequest = false;
   let requestPayload = null;
+  let preserveRequest = false;
 
   try {
     if (!config.escalationVerifierPublicKey) {
@@ -724,6 +1010,8 @@ async function waitForEscalation(config, request, audit) {
       agentId: config.agentId,
       reqId: request.reqId,
       command: request.command,
+      commandSha256: request.commandSha256 || commandSha256(request.command),
+      workspaceRoot: config.policy.workspaceRoot,
       cwd: request.cwd,
       reason: request.reason,
       signals: request.signals,
@@ -838,6 +1126,10 @@ async function waitForEscalation(config, request, audit) {
       await sleep(Math.min(ESCALATION_POLL_MS, Math.max(1, deadline - Date.now())));
     }
 
+    if (config.escalationTimeoutAction === 'queue' && requestPayload) {
+      preserveRequest = true;
+      markEscalationQueued(paths, requestPayload, config.escalationTimeoutMs, audit);
+    }
     audit('escalation_timeout', {
       reqId: request.reqId,
       decision: 'decline',
@@ -848,7 +1140,7 @@ async function waitForEscalation(config, request, audit) {
     });
     return { decision: 'decline', reason: `escalation timeout after ${config.escalationTimeoutMs}ms` };
   } finally {
-    if (wroteRequest) cleanupEscalationFiles(paths, audit);
+    if (wroteRequest && !preserveRequest) cleanupEscalationFiles(paths, audit);
   }
 }
 
@@ -1056,9 +1348,36 @@ async function runDriver(config) {
             continue;
           }
 
+          const preapproval = await consumePreapprovalGrant(config, {
+            reqId,
+            command: result.action.command,
+            commandSha256: commandSha256(result.action.command),
+            signals: auditPayload.signals || [],
+          }, audit);
+          if (preapproval) {
+            audit('escalation_preapproved', {
+              reqId,
+              grantId: preapproval.id,
+              command: auditPayload.command || redactedCommand,
+              commandSha256: preapproval.commandSha256,
+              cwd: result.action.cwd,
+              signals: preapproval.signals,
+              level: auditPayload.level || config.policy.level,
+              expiresAt: preapproval.expiresAt,
+            });
+            escalationOutcomes.set(result.action.index, {
+              reqId,
+              decision: 'accept',
+              reason: `preapproval grant ${preapproval.id}`,
+            });
+            continue;
+          }
+
           const escalation = await waitForEscalation(config, {
             reqId,
             command: auditPayload.command || redactedCommand,
+            commandSha256: commandSha256(result.action.command),
+            workspaceRoot: config.policy.workspaceRoot,
             cwd: result.action.cwd,
             reason: auditPayload.reason || null,
             signals: auditPayload.signals || [],
@@ -1317,7 +1636,12 @@ async function runDriver(config) {
       : '[native-reply-channel]',
     escalationPublicKey: config.escalationPublicKey,
     escalationTimeoutMs: config.escalationTimeoutMs,
+    escalationTimeoutAction: config.escalationTimeoutAction,
+    preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
+      ? config.preapprovalGrantsFile
+      : '[native-grant-channel]',
     escalationReplyChannelRequirement: 'reply files must carry an Android-Keystore-backed SHA256withRSA human signature; unsigned or invalid replies fail closed',
+    preapprovalGrantRequirement: 'grant JSONL records must be Android-Keystore-signed, exact-command-hash scoped, unexpired, and one-shot by default',
     policy: {
       ...config.policy,
       workspaceRoot: config.policy.workspaceRoot,

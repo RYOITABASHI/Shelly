@@ -15,6 +15,7 @@
   <string name="scouter_widget_prompt_interactive">Codex is waiting for a terminal choice</string>
   <string name="scouter_widget_approval_sent">Approval sent to Codex</string>
   <string name="scouter_widget_approval_denied">Denial sent to Codex</string>
+  <string name="scouter_widget_approval_preapproved">One-time approval saved for the next run</string>
   <string name="scouter_widget_approval_queued_resume">Approval queued. Resuming Codex...</string>
   <string name="scouter_widget_approval_not_ready">Codex approval is not ready</string>
   <string name="scouter_widget_approval_allow">Allow Codex approval request</string>
@@ -31,4 +32,11 @@
   <string name="scouter_widget_prompt_busy">Codex is busy. Wait for it to finish first.</string>
   <string name="scouter_widget_choice_sent">Choice sent to Codex</string>
   <string name="scouter_widget_choice_not_ready">Codex choice is no longer available</string>
+  <string name="scouter_notification_action_allow">Allow</string>
+  <string name="scouter_notification_action_deny">Deny</string>
+  <string name="scouter_notification_codex_approval_title">Codex needs approval</string>
+  <string name="scouter_notification_agent_escalation_title">Agent %1$s: approve boundary op?</string>
+  <string name="scouter_notification_agent_escalation_reason">Reason: %1$s</string>
+  <string name="scouter_notification_agent_escalation_signals">Signals: %1$s</string>
+  <string name="scouter_notification_agent_escalation_cwd">cwd: %1$s</string>
 </resources>

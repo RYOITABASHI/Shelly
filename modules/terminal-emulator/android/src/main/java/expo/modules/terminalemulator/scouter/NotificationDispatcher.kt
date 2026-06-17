@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import expo.modules.terminalemulator.R
 import java.util.Locale
 
 class NotificationDispatcher(private val context: Context) {
@@ -205,12 +206,12 @@ class NotificationDispatcher(private val context: Context) {
         val redacted = approvalText.redactForScouter()
         notify(
             id = ID_APPROVAL,
-            title = "Codex needs approval",
+            title = context.getString(R.string.scouter_notification_codex_approval_title),
             text = truncate(redacted, REPLY_MAX_CHARS),
             bigText = truncate(redacted, APPROVAL_MAX_CHARS),
             actions = listOf(
-                action("Allow", allow),
-                action("Deny", deny)
+                action(context.getString(R.string.scouter_notification_action_allow), allow),
+                action(context.getString(R.string.scouter_notification_action_deny), deny)
             ),
             autoCancel = false
         )
@@ -218,28 +219,48 @@ class NotificationDispatcher(private val context: Context) {
 
     fun notifyAgentEscalationNeeded(request: AgentEscalationRequest) {
         runCatching {
-            if (!shouldFire(KEY_LAST_AGENT_ESCALATION, request.key)) return
+            val needsFreshAction = !AgentEscalationBridge.hasActionNonce(request.runId, request.reqId)
+            val shouldNotify = shouldFire(KEY_LAST_AGENT_ESCALATION, request.key)
+            if (!needsFreshAction && !shouldNotify) return
+            val requestSha256 = request.requestSha256
+                ?.takeIf { HEX_SHA256_RE.matches(it) }
+                ?: return
 
             val actionNonce = AgentEscalationBridge.registerActionNonce(request.runId, request.reqId)
-            val allow = agentEscalationActionPendingIntent(allow = true, request, actionNonce)
-            val deny = agentEscalationActionPendingIntent(allow = false, request, actionNonce)
+            val allow = agentEscalationActionPendingIntent(allow = true, request, actionNonce, requestSha256)
+            val deny = agentEscalationActionPendingIntent(allow = false, request, actionNonce, requestSha256)
             val reason = request.reason?.takeIf { it.isNotBlank() }
             val signalLine = request.signals.takeIf { it.isNotEmpty() }?.joinToString(", ")
             val body = listOfNotNull(
                 request.command.redactForScouter(),
-                reason?.let { "Reason: ${it.redactForScouter()}" },
-                signalLine?.let { "Signals: $it" },
-                request.cwd?.takeIf { it.isNotBlank() }?.let { "cwd: ${it.redactForScouter()}" },
+                reason?.let {
+                    context.getString(
+                        R.string.scouter_notification_agent_escalation_reason,
+                        it.redactForScouter()
+                    )
+                },
+                signalLine?.let {
+                    context.getString(R.string.scouter_notification_agent_escalation_signals, it)
+                },
+                request.cwd?.takeIf { it.isNotBlank() }?.let {
+                    context.getString(
+                        R.string.scouter_notification_agent_escalation_cwd,
+                        it.redactForScouter()
+                    )
+                },
             ).joinToString("\n")
 
             notify(
                 id = AgentEscalationBridge.notificationId(request.runId, request.reqId),
-                title = "Agent ${shorten(request.agentId, 32)}: approve boundary op?",
+                title = context.getString(
+                    R.string.scouter_notification_agent_escalation_title,
+                    shorten(request.agentId, 32)
+                ),
                 text = truncate(request.command.redactForScouter(), REPLY_MAX_CHARS),
                 bigText = truncate(body, APPROVAL_MAX_CHARS),
                 actions = listOf(
-                    action("Allow", allow),
-                    action("Deny", deny)
+                    action(context.getString(R.string.scouter_notification_action_allow), allow),
+                    action(context.getString(R.string.scouter_notification_action_deny), deny)
                 ),
                 autoCancel = false
             )
@@ -408,7 +429,8 @@ class NotificationDispatcher(private val context: Context) {
     private fun agentEscalationActionPendingIntent(
         allow: Boolean,
         request: AgentEscalationRequest,
-        actionNonce: String
+        actionNonce: String,
+        requestSha256: String
     ): PendingIntent {
         val intent = Intent(context, ScouterWidgetPromptActivity::class.java)
             .setAction(
@@ -422,6 +444,7 @@ class NotificationDispatcher(private val context: Context) {
             .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_REQ_ID, request.reqId)
             .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_AGENT_ID, request.agentId)
             .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_ACTION_NONCE, actionNonce)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_REQUEST_SHA256, requestSha256)
             .addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TASK or
@@ -573,5 +596,6 @@ class NotificationDispatcher(private val context: Context) {
         // Allow the assistant message to be counted as "this turn's reply" even
         // when its parsed timestamp slightly precedes the COMPLETED event.
         private const val REPLY_FRESHNESS_SLOP_MS = 30_000L
+        private val HEX_SHA256_RE = Regex("^[0-9a-f]{64}$")
     }
 }

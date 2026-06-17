@@ -14,6 +14,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.Signature
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 data class AgentEscalationRequest(
@@ -21,13 +22,25 @@ data class AgentEscalationRequest(
     val agentId: String,
     val reqId: String,
     val command: String,
+    val commandSha256: String?,
+    val workspaceRoot: String?,
     val cwd: String?,
     val reason: String?,
     val signals: List<String>,
     val level: String?,
-    val ts: String?
+    val ts: String?,
+    val state: String?,
+    val queuedAt: String?,
+    val requestSha256: String?
 ) {
-    val key: String get() = "$runId|$reqId|${ts.orEmpty()}"
+    val key: String get() = listOf(
+        runId,
+        reqId,
+        ts.orEmpty(),
+        state.orEmpty(),
+        queuedAt.orEmpty(),
+        requestSha256.orEmpty()
+    ).joinToString("|")
 }
 
 object AgentEscalationBridge {
@@ -44,11 +57,16 @@ object AgentEscalationBridge {
     fun verifierPublicKeyFile(context: Context): File =
         File(context.noBackupFilesDir, "shelly-agent-escalation-public.der")
 
+    fun preapprovalGrantFile(context: Context): File =
+        File(context.noBackupFilesDir, "shelly-agent-preapproval-grants.jsonl")
+
     fun requestDirUri(context: Context): String = Uri.fromFile(requestDir(context)).toString()
 
     fun replyDirPath(context: Context): String = replyDir(context).absolutePath
 
     fun verifierPublicKeyPath(context: Context): String = ensureVerifierPublicKey(context).absolutePath
+
+    fun preapprovalGrantFilePath(context: Context): String = preapprovalGrantFile(context).absolutePath
 
     fun requestFile(context: Context, runId: String, reqId: String): File =
         File(requestDir(context), "req-${safeFilePart(runId)}-${safeFilePart(reqId)}.json")
@@ -67,34 +85,73 @@ object AgentEscalationBridge {
         return encoded
     }
 
-    fun fromMap(raw: Map<String, Any?>): AgentEscalationRequest? {
+    fun hasActionNonce(runId: String, reqId: String): Boolean =
+        pendingActionNonces.containsKey(actionNonceKey(runId, reqId))
+
+    fun anchorFromMap(raw: Map<String, Any?>): Pair<String, String>? {
         val runId = raw["runId"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: return null
         val reqId = raw["reqId"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: return null
-        val command = raw["command"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: return null
-        val agentId = raw["agentId"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: "agent"
-        val signals = (raw["signals"] as? Iterable<*>)
-            ?.mapNotNull { it?.toString()?.trim()?.takeIf { value -> value.isNotBlank() } }
-            ?: emptyList()
+        return runId to reqId
+    }
+
+    fun fromRequestFile(context: Context, runId: String, reqId: String): AgentEscalationRequest? {
+        val request = requireCanonicalChild(requestFile(context, runId, reqId), requestDir(context))
+        if (!request.isFile) return null
+        val requestBytes = request.readBytes()
+        val json = JSONObject(requestBytes.toString(Charsets.UTF_8))
+        val requestSha256 = sha256Hex(requestBytes)
+        return fromJson(json, requestSha256)?.takeIf {
+            it.runId == runId && it.reqId == reqId
+        }
+    }
+
+    fun fromMap(raw: Map<String, Any?>): AgentEscalationRequest? {
+        val json = JSONObject()
+        for ((key, value) in raw) {
+            when (value) {
+                null -> Unit
+                is Iterable<*> -> json.put(key, org.json.JSONArray(value.toList()))
+                else -> json.put(key, value)
+            }
+        }
+        return fromJson(json, null)
+    }
+
+    private fun fromJson(raw: JSONObject, requestSha256: String?): AgentEscalationRequest? {
+        val runId = raw.optString("runId").trim().takeIf { it.isNotBlank() } ?: return null
+        val reqId = raw.optString("reqId").trim().takeIf { it.isNotBlank() } ?: return null
+        val command = raw.optString("command").trim().takeIf { it.isNotBlank() } ?: return null
+        val agentId = raw.optString("agentId").trim().takeIf { it.isNotBlank() } ?: "agent"
+        val signals = jsonStringArray(raw.optJSONArray("signals"))
         return AgentEscalationRequest(
             runId = runId,
             agentId = agentId,
             reqId = reqId,
             command = command,
-            cwd = raw["cwd"]?.toString()?.trim()?.takeIf { it.isNotBlank() },
-            reason = raw["reason"]?.toString()?.trim()?.takeIf { it.isNotBlank() },
+            commandSha256 = raw.optString("commandSha256").trim().takeIf { it.matches(HEX_SHA256_RE) },
+            workspaceRoot = raw.optString("workspaceRoot").trim().takeIf { it.isNotBlank() },
+            cwd = raw.optString("cwd").trim().takeIf { it.isNotBlank() },
+            reason = raw.optString("reason").trim().takeIf { it.isNotBlank() },
             signals = signals,
-            level = raw["level"]?.toString()?.trim()?.takeIf { it.isNotBlank() },
-            ts = raw["ts"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+            level = raw.optString("level").trim().takeIf { it.isNotBlank() },
+            ts = raw.optString("ts").trim().takeIf { it.isNotBlank() },
+            state = raw.optString("state").trim().takeIf { it.isNotBlank() },
+            queuedAt = raw.optString("queuedAt").trim().takeIf { it.isNotBlank() },
+            requestSha256 = requestSha256
         )
     }
 
-    fun writeHumanReply(context: Context, runId: String, reqId: String, decision: String, actionNonce: String?): File {
+    fun writeHumanReply(
+        context: Context,
+        runId: String,
+        reqId: String,
+        decision: String,
+        actionNonce: String?,
+        expectedRequestSha256: String?
+    ): File {
         require(decision == "accept" || decision == "decline") { "invalid escalation decision" }
         val nonceKey = actionNonceKey(runId, reqId)
-        val expectedNonce = pendingActionNonces.remove(nonceKey)
-        require(!expectedNonce.isNullOrBlank() && expectedNonce == actionNonce) {
-            "escalation approval action is stale or unauthenticated"
-        }
+        val expectedNonce = pendingActionNonces[nonceKey]
         val request = requireCanonicalChild(requestFile(context, runId, reqId), requestDir(context))
         require(request.isFile) { "escalation request is no longer pending" }
         val requestBytes = request.readBytes()
@@ -103,6 +160,15 @@ object AgentEscalationBridge {
             "escalation request anchor mismatch"
         }
         val requestSha256 = sha256Hex(requestBytes)
+        require(expectedRequestSha256?.matches(HEX_SHA256_RE) == true && requestSha256 == expectedRequestSha256) {
+            "escalation approval action no longer matches the displayed request"
+        }
+        require(!expectedNonce.isNullOrBlank() && expectedNonce == actionNonce) {
+            "escalation approval action is stale or unauthenticated"
+        }
+        require(pendingActionNonces.remove(nonceKey, expectedNonce)) {
+            "escalation approval action is stale or unauthenticated"
+        }
         val requestTs = requestJson.optString("ts")
         val signatureMessage = signatureMessage(runId, reqId, decision, requestTs, requestSha256)
         val signature = sign(signatureMessage)
@@ -126,6 +192,71 @@ object AgentEscalationBridge {
             error("failed to publish escalation reply")
         }
         return reply
+    }
+
+    fun writePreapprovalGrantForQueuedRequest(
+        context: Context,
+        runId: String,
+        reqId: String,
+        expectedRequestSha256: String?,
+        ttlMs: Long = DEFAULT_QUEUED_GRANT_TTL_MS
+    ): File? {
+        val request = requireCanonicalChild(requestFile(context, runId, reqId), requestDir(context))
+        if (!request.isFile) return null
+        val requestBytes = request.readBytes()
+        val requestJson = JSONObject(requestBytes.toString(Charsets.UTF_8))
+        val requestSha256 = sha256Hex(requestBytes)
+        require(expectedRequestSha256?.matches(HEX_SHA256_RE) == true && requestSha256 == expectedRequestSha256) {
+            "queued escalation request no longer matches the displayed request"
+        }
+        if (requestJson.optString("state") != "queued") return null
+        require(requestJson.optString("runId") == runId && requestJson.optString("reqId") == reqId) {
+            "queued escalation request anchor mismatch"
+        }
+        val command = requestJson.optString("command").takeIf { it.isNotBlank() } ?: return null
+        val commandSha256 = requestJson.optString("commandSha256")
+            .takeIf { it.matches(HEX_SHA256_RE) }
+            ?: sha256Hex(command.toByteArray(Charsets.UTF_8))
+        val agentId = requestJson.optString("agentId").takeIf { it.isNotBlank() } ?: "agent"
+        val workspaceRoot = requestJson.optString("workspaceRoot").takeIf { it.isNotBlank() }
+            ?: requestJson.optString("cwd").takeIf { it.isNotBlank() }
+            ?: return null
+        val signals = mutableListOf<String>()
+        val rawSignals = requestJson.optJSONArray("signals")
+        if (rawSignals != null) {
+            for (i in 0 until rawSignals.length()) {
+                rawSignals.optString(i).trim().takeIf { it.isNotBlank() }?.let { signals.add(it) }
+            }
+        }
+        val createdAt = Instant.now()
+        val expiresAt = createdAt.plusMillis(ttlMs.coerceAtLeast(1L))
+        val requestTs = requestJson.optString("ts")
+        val grant = JSONObject()
+            .put("type", "grant")
+            .put("id", UUID.randomUUID().toString())
+            .put("agentId", agentId)
+            .put("workspaceRoot", workspaceRoot)
+            .put("commandSha256", commandSha256)
+            .put("signals", org.json.JSONArray(signals))
+            .put("expiresAt", expiresAt.toString())
+            .put("createdAt", createdAt.toString())
+            .put("requestSha256", requestSha256)
+            .put("requestTs", requestTs)
+            .put("usesRemaining", 1)
+            .put("by", "human")
+            .put("sigAlg", SIGNATURE_ALGORITHM)
+        grant.put("signature", sign(preapprovalGrantSignatureMessage(grant)))
+
+        val out = preapprovalGrantFile(context)
+        out.parentFile?.mkdirs()
+        out.appendText(grant.toString() + "\n")
+        return out
+    }
+
+    fun clearRequest(context: Context, runId: String, reqId: String) {
+        runCatching {
+            requireCanonicalChild(requestFile(context, runId, reqId), requestDir(context)).delete()
+        }
     }
 
     fun ensureVerifierPublicKey(context: Context): File {
@@ -202,6 +333,29 @@ object AgentEscalationBridge {
         requestSha256: String
     ): String = listOf(runId, reqId, decision, requestTs, requestSha256).joinToString("\n")
 
+    private fun preapprovalGrantSignatureMessage(grant: JSONObject): String = listOf(
+        "shelly-agent-preapproval-grant-v1",
+        grant.optString("id"),
+        grant.optString("agentId"),
+        grant.optString("workspaceRoot"),
+        grant.optString("commandSha256"),
+        jsonStringArray(grant.optJSONArray("signals")).sorted().joinToString(","),
+        grant.optString("expiresAt"),
+        grant.optString("createdAt"),
+        grant.optString("requestSha256"),
+        grant.optString("requestTs"),
+        grant.optString("usesRemaining").ifBlank { "1" }
+    ).joinToString("\n")
+
+    private fun jsonStringArray(array: org.json.JSONArray?): List<String> {
+        if (array == null) return emptyList()
+        val out = mutableListOf<String>()
+        for (i in 0 until array.length()) {
+            array.optString(i).trim().takeIf { it.isNotBlank() }?.let { out.add(it) }
+        }
+        return out
+    }
+
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256")
             .digest(bytes)
@@ -212,4 +366,6 @@ object AgentEscalationBridge {
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val KEY_ALIAS = "shelly_agent_escalation_reply_v1"
     private const val SIGNATURE_ALGORITHM = "SHA256withRSA"
+    private const val DEFAULT_QUEUED_GRANT_TTL_MS = 24L * 60L * 60L * 1000L
+    private val HEX_SHA256_RE = Regex("^[0-9a-f]{64}$")
 }
