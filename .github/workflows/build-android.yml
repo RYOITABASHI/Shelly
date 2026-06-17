@@ -612,6 +612,25 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Free runner disk space before APK build
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/local/lib/android/sdk/emulator \
+            /usr/local/lib/android/sdk/system-images \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          sudo docker image prune -af || true
+
+          echo "Disk after cleanup:"
+          df -h /
+
       - name: Build Shelly shell launcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         run: |
