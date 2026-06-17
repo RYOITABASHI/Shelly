@@ -11,6 +11,7 @@ const DEFAULT_ESCALATION_TIMEOUT_MS = 120000;
 const DEFAULT_ESCALATION_DIR = path.join(os.tmpdir(), 'shelly-agent-escalations');
 const DEFAULT_ESCALATION_REPLY_DIR = path.join(os.tmpdir(), 'shelly-agent-escalation-replies');
 const ESCALATION_POLL_MS = 250;
+const ANDROID_LINKER64 = '/system/bin/linker64';
 
 function usage() {
   process.stdout.write(`Usage:
@@ -21,7 +22,7 @@ Options:
   --policy-json <json>       AutonomyPolicy JSON. Defaults to L2 + workspace cwd.
   --policy-file <path>       Read AutonomyPolicy JSON from a file.
   --gate-script <path>       Gate helper path. Defaults to $HOME/.shelly-gate-decide.js.
-  --codex-bin <path>         Codex executable. Defaults to "codex".
+  --codex-bin <path>         Codex executable or Android codex_exec override. Defaults to "codex".
   --node-bin <path>          Node executable for the gate helper. Defaults to current node.
   --approval-policy <mode>   Defaults to "untrusted" (B2 Phase A safe config; only untrusted is allowed).
   --audit-log <path>         Append AUDIT/GATE JSON lines to this file.
@@ -167,14 +168,164 @@ function ensureConfig(args) {
   };
 }
 
-function codexAppServerSpawnSpec(config) {
-  const codexArgs = [config.codexBin, 'app-server', '--listen', 'stdio://'];
+function existingPath(candidate) {
+  return Boolean(candidate && fs.existsSync(candidate));
+}
+
+function isLinkerPath(candidate) {
+  return path.basename(candidate || '') === 'linker64';
+}
+
+function resolveShellyLibDir() {
+  const candidates = [];
+  if (process.env.SHELLY_LIB_DIR) candidates.push(process.env.SHELLY_LIB_DIR);
+  if (process.env.SHELLY_LD_LIBRARY_PATH) {
+    candidates.push(...process.env.SHELLY_LD_LIBRARY_PATH.split(':').filter(Boolean));
+  }
+  if (process.env.HOME) candidates.push(path.resolve(process.env.HOME, '../termux-libs'));
+
+  for (const candidate of candidates) {
+    if (existingPath(path.join(candidate, 'node'))) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function androidLauncherContext() {
+  const libDir = resolveShellyLibDir();
+  if (!existingPath(ANDROID_LINKER64) || !libDir) return null;
+  return { libDir };
+}
+
+function runtimeCodexExecPath(home) {
+  if (!home || process.env.SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME === '1') return '';
+  const current = path.join(home, '.shelly-runtime/codex/current');
+  const execPath = path.join(current, 'codex_exec');
+  const tuiPath = path.join(current, 'codex_tui');
+  if (
+    existingPath(path.join(current, '.healthy')) &&
+    existingPath(path.join(current, 'manifest.json')) &&
+    existingPath(execPath) &&
+    existingPath(tuiPath)
+  ) {
+    return execPath;
+  }
+  return '';
+}
+
+function resolveAndroidCodexExec(config, libDir) {
+  if (process.env.SHELLY_CODEX_EXEC_PATH && existingPath(process.env.SHELLY_CODEX_EXEC_PATH)) {
+    return process.env.SHELLY_CODEX_EXEC_PATH;
+  }
+  if (
+    config.codexBin &&
+    config.codexBin !== 'codex' &&
+    path.isAbsolute(config.codexBin) &&
+    existingPath(config.codexBin) &&
+    path.basename(config.codexBin) !== 'codex'
+  ) {
+    return config.codexBin;
+  }
+  return runtimeCodexExecPath(process.env.HOME) || path.join(libDir, 'codex_exec');
+}
+
+function resolveAndroidNode(config, libDir) {
+  if (
+    config.nodeBin &&
+    path.isAbsolute(config.nodeBin) &&
+    existingPath(config.nodeBin) &&
+    !isLinkerPath(config.nodeBin)
+  ) {
+    return config.nodeBin;
+  }
+  return path.join(libDir, 'node');
+}
+
+function androidPathEnv(libDir) {
+  const entries = [];
+  if (process.env.HOME) entries.push(path.join(process.env.HOME, 'bin'));
+  entries.push(libDir);
+  if (process.env.PATH) entries.push(process.env.PATH);
+  entries.push('/system/bin', '/vendor/bin');
+  return Array.from(new Set(entries.filter(Boolean).flatMap((entry) => entry.split(':').filter(Boolean)))).join(':');
+}
+
+function androidBaseEnv(libDir) {
   return {
-    // Android Shelly launches Codex through the login shell so $HOME/bin/codex
-    // can select linker64/codex_exec safely. Keep NDJSON on stdio via exec.
-    command: 'bash',
-    args: ['-lc', 'exec "$@"', 'shelly-agent-driver-codex', ...codexArgs],
-    display: ['bash', '-lc', 'exec "$@"', 'shelly-agent-driver-codex', ...codexArgs],
+    ...process.env,
+    SHELLY_LIB_DIR: libDir,
+    PATH: androidPathEnv(libDir),
+    TMPDIR: process.env.TMPDIR || (process.env.HOME ? path.join(process.env.HOME, 'tmp') : os.tmpdir()),
+  };
+}
+
+function codexAppServerSpawnSpec(config) {
+  const android = androidLauncherContext();
+  if (android) {
+    const codexExec = resolveAndroidCodexExec(config, android.libDir);
+    const codexDir = path.dirname(codexExec);
+    const env = {
+      ...androidBaseEnv(android.libDir),
+      // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_exec.
+      SHELLY_CODEX_EXEC_PATH: codexExec,
+      SHELLY_CODEX_PROC_EXE_SHIM: '1',
+      SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
+      LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
+      LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
+    };
+    const args = [codexExec, 'app-server', '--listen', 'stdio://'];
+    return {
+      mode: 'android-linker64-codex_exec',
+      command: ANDROID_LINKER64,
+      args,
+      env,
+      display: [ANDROID_LINKER64, ...args],
+      codexExec,
+      libDir: android.libDir,
+    };
+  }
+  const args = ['app-server', '--listen', 'stdio://'];
+  return {
+    mode: 'host-path',
+    command: config.codexBin,
+    args,
+    env: process.env,
+    display: [config.codexBin, ...args],
+    codexExec: null,
+    libDir: null,
+  };
+}
+
+function gateSpawnSpec(config) {
+  const android = androidLauncherContext();
+  if (android) {
+    const nodePath = resolveAndroidNode(config, android.libDir);
+    const env = {
+      ...androidBaseEnv(android.libDir),
+      LD_LIBRARY_PATH: android.libDir,
+    };
+    delete env.LD_PRELOAD;
+    const args = [nodePath, config.gateScript];
+    return {
+      mode: 'android-linker64-node',
+      command: ANDROID_LINKER64,
+      args,
+      env,
+      display: [ANDROID_LINKER64, ...args],
+      nodePath,
+      libDir: android.libDir,
+    };
+  }
+  const args = [config.gateScript];
+  return {
+    mode: 'host-path',
+    command: config.nodeBin,
+    args,
+    env: process.env,
+    display: [config.nodeBin, ...args],
+    nodePath: config.nodeBin,
+    libDir: null,
   };
 }
 
@@ -304,9 +455,11 @@ function appendAuditLine(auditLog, line) {
 function runGate(config, command) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    const child = spawn(config.nodeBin, [config.gateScript], {
+    const gateSpawn = gateSpawnSpec(config);
+    const child = spawn(gateSpawn.command, gateSpawn.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: config.cwd,
+      env: gateSpawn.env,
     });
     let stdout = '';
     let stderr = '';
@@ -578,9 +731,11 @@ async function waitForEscalation(config, request, audit) {
 async function runDriver(config) {
   const audit = createAuditWriter(config.auditLog);
   const codexSpawn = codexAppServerSpawnSpec(config);
+  const gateSpawn = gateSpawnSpec(config);
   const child = spawn(codexSpawn.command, codexSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: config.cwd,
+    env: codexSpawn.env,
   });
 
   let buffer = '';
@@ -1021,8 +1176,13 @@ async function runDriver(config) {
     cwd: config.cwd,
     gateScript: config.gateScript,
     codexBin: config.codexBin,
+    codexLaunchMode: codexSpawn.mode,
     codexSpawn: codexSpawn.display,
+    codexExec: codexSpawn.codexExec,
     nodeBin: config.nodeBin,
+    gateLaunchMode: gateSpawn.mode,
+    gateSpawn: gateSpawn.display,
+    gateNode: gateSpawn.nodePath,
     approvalPolicy: config.approvalPolicy,
     runId: config.runId,
     agentId: config.agentId,
