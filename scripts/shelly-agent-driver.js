@@ -167,6 +167,17 @@ function ensureConfig(args) {
   };
 }
 
+function codexAppServerSpawnSpec(config) {
+  const codexArgs = [config.codexBin, 'app-server', '--listen', 'stdio://'];
+  return {
+    // Android Shelly launches Codex through the login shell so $HOME/bin/codex
+    // can select linker64/codex_exec safely. Keep NDJSON on stdio via exec.
+    command: 'bash',
+    args: ['-lc', 'exec "$@"', 'shelly-agent-driver-codex', ...codexArgs],
+    display: ['bash', '-lc', 'exec "$@"', 'shelly-agent-driver-codex', ...codexArgs],
+  };
+}
+
 function redact(value) {
   if (typeof value !== 'string') return value;
   return value
@@ -566,7 +577,8 @@ async function waitForEscalation(config, request, audit) {
 
 async function runDriver(config) {
   const audit = createAuditWriter(config.auditLog);
-  const child = spawn(config.codexBin, ['app-server', '--listen', 'stdio://'], {
+  const codexSpawn = codexAppServerSpawnSpec(config);
+  const child = spawn(codexSpawn.command, codexSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: config.cwd,
   });
@@ -1009,6 +1021,7 @@ async function runDriver(config) {
     cwd: config.cwd,
     gateScript: config.gateScript,
     codexBin: config.codexBin,
+    codexSpawn: codexSpawn.display,
     nodeBin: config.nodeBin,
     approvalPolicy: config.approvalPolicy,
     runId: config.runId,
