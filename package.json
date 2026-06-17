@@ -35,7 +35,8 @@
     "check": "tsc --noEmit",
     "test": "jest --config jest.config.cjs",
     "lint": "expo lint",
-    "bridge": "node server.js"
+    "bridge": "node server.js",
+    "build:gate": "npx --yes esbuild@0.24.0 scripts/gate-decide-entry.ts --bundle --platform=node --format=cjs --tsconfig=tsconfig.json --outfile=modules/terminal-emulator/android/src/main/assets/shelly-gate-decide.js"
   },
   "dependencies": {
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
