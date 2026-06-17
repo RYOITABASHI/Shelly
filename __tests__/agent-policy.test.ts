@@ -1,9 +1,11 @@
 import {
   parseAutonomyPolicy,
   decideAutoAnswer,
+  buildAgentPolicy,
   DEFAULT_POLICY,
   AutonomyPolicy,
 } from '@/lib/agent-policy';
+import { Agent } from '@/store/types';
 
 const ROOT = '/data/user/0/dev.shelly.terminal/files/home/projects/app';
 const policy = (over: Partial<AutonomyPolicy> = {}): AutonomyPolicy => ({
@@ -63,5 +65,25 @@ describe('decideAutoAnswer', () => {
     expect(o.audit.decision).toBe('gray');
     expect(o.audit.signals).toContain('leaves-root');
     expect(o.audit.level).toBe('L2');
+  });
+});
+
+describe('buildAgentPolicy', () => {
+  const mkAgent = (over: Partial<Agent> = {}): Agent => ({
+    id: 'a', name: 'A', description: '', prompt: 'p', schedule: null,
+    tool: { type: 'cli', cli: 'codex' }, outputPath: '~/out', outputTemplate: null,
+    enabled: true, lastRun: null, lastResult: null, createdAt: 0, version: 1, ...over,
+  });
+
+  it('uses the agent level + canonical root, defaults elsewhere', () => {
+    const p = buildAgentPolicy(mkAgent({ autonomyLevel: 'L3' }), ROOT);
+    expect(p.level).toBe('L3');
+    expect(p.workspaceRoot).toBe(ROOT);
+    expect(p.secretPaths).toEqual(DEFAULT_POLICY.secretPaths);
+    expect(p.policyPath).toBe(DEFAULT_POLICY.policyPath);
+  });
+
+  it('defaults to L2 when the agent has no level', () => {
+    expect(buildAgentPolicy(mkAgent(), ROOT).level).toBe('L2');
   });
 });

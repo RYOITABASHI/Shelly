@@ -465,6 +465,12 @@ export interface Agent {
   /** true = runs in autonomous mode (no per-step human approval): OAuth/local only,
    *  gated by the policy engine. Optional; absent/false = today's manual behaviour. */
   autonomous?: boolean;
+  /** autonomy level for autonomous runs: L1 read-only / L2 workspace / L3 full.
+   *  Set by the human (ConfigTUI); absent = L2 default. The B2 driver builds the
+   *  AutonomyPolicy from this and holds it driver-side — never passed to codex. */
+  autonomyLevel?: 'L1' | 'L2' | 'L3';
+  /** workspace root the autonomous run operates in (canonicalised at run start). */
+  workspaceRoot?: string;
   outputPath: string;
   outputTemplate: string | null;
   enabled: boolean;
