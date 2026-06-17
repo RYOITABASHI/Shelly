@@ -4,12 +4,13 @@
  */
 import { Agent, ToolChoice } from '@/store/types';
 import { toolChoiceToLabel } from './agent-tool-router';
+import { requiresApiKeyEnv } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 3;
+const AGENT_SCRIPT_VERSION = 4;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -44,6 +45,9 @@ export function generateRunScript(agent: Agent): string {
   const lockFile = `${locksDir}/${agentId}.pid`;
   const logDir = `${logsDir}/${agentId}`;
   const toolLabel = toolChoiceToLabel(agent.tool);
+  const apiKeyEnvScrub = requiresApiKeyEnv(agent.tool)
+    ? ''
+    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY\n';
 
   const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
@@ -705,6 +709,7 @@ trap finish EXIT
 
 # Source environment
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
+${apiKeyEnvScrub}
 
 PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
 SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-registry.tsv}"
