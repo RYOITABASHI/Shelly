@@ -80,8 +80,13 @@ For an autonomous agent run, Shelly (in the FGS):
 
 This removes the §4 problems wholesale: no screen-scrape, no `y\r` PTY injection, and the full command is structured (the truncation worry in §4/§6 is gone).
 
-### Open question B2 MUST resolve on-device (one more probe)
-The probe used `sandbox: workspace-write`, which **does not work on Android** (the original constraint). With the on-device-forced `sandbox: danger-full-access`, does codex still emit `requestApproval`, or run commands silently? B2 must find the `(approvalPolicy, sandbox)` combo where codex **routes every command's approval to the client gate** on bionic. Probe candidates: `approvalPolicy: on-request`/`untrusted` paired with a sandbox setting that still elicits approvals. Resolve before building the driver.
+### B2 config — RESOLVED `[raw-evidence probe, 2026-06-17]`
+The danger-full-access matrix probe ([2026-06-17-autonomous-mode-A2-B2-danger-full-access-approval-probe.md](./2026-06-17-autonomous-mode-A2-B2-danger-full-access-approval-probe.md)) settled it. **B2 spawns codex app-server with `sandbox: "danger-full-access"`, `approvalPolicy: "on-request"`, `approvalsReviewer: "user"`.** Under this config, even with no OS sandbox, **every write/exec/destructive command still surfaces** as `item/commandExecution/requestApproval` (confirmed: `rm -rf` → request → `decline` → `status:"declined"`, target survived). The control (`approvalPolicy: never`) ran it silently — so `never` must NOT be used.
+
+### Known limitation — read-only commands bypass the gate (documented, bounded)
+codex **auto-runs read-only commands** (`cat`/`ls`/`sed`, tagged `commandActions[].type:"read"`/`"listFiles"`) WITHOUT a `requestApproval`, so the gate cannot pre-block them. Blast radius is bounded: reads don't mutate, exfiltrate, or destroy — and **any exfiltration (network send) or mutation DOES surface** and is gated. Consequences + mitigations for B2:
+- The §6 secret-read boundary (`cat ~/.codex/auth.json`, `cat ~/.shelly/agents/.env`) is **partially bypassed** for the trusted read set — the read isn't pre-gated. But Tier-1 already strips keys from the autonomous env, and the *exfil* step surfaces, so the secret cannot leave the device ungated.
+- The driver **still sees every command via `item/started`** (auto-run reads included) — so it MUST **audit auto-run reads** and MAY react after the fact (escalate / kill the agent) if a read touches a secret path, even though it can't pre-block it.
 
 ### PTY-injection (§4) = fallback only
 Keep §4 as the fallback **iff** app-server proves unusable on bionic / in the FGS. Otherwise app-server is the path.
