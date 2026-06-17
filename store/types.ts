@@ -462,6 +462,9 @@ export interface Agent {
   prompt: string;
   schedule: string | null;     // cron expression, null = manual only
   tool: ToolChoice;
+  /** true = runs in autonomous mode (no per-step human approval): OAuth/local only,
+   *  gated by the policy engine. Optional; absent/false = today's manual behaviour. */
+  autonomous?: boolean;
   outputPath: string;
   outputTemplate: string | null;
   enabled: boolean;
