@@ -602,7 +602,7 @@ ensure_local_llm_server() {
   pid_file="\${LLAMA_SERVER_PID:-$HOME/models/llama-server.pid}"
   mkdir -p "$(dirname "$log_file")" "$(dirname "$pid_file")"
 
-  nohup "$server_bin" --model "$model_path" --host 127.0.0.1 --port "$port" --ctx-size "\${LOCAL_LLM_CTX_SIZE:-4096}" --threads "\${LOCAL_LLM_THREADS:-6}" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+  nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --host 127.0.0.1 --port "$port" --ctx-size "\${LOCAL_LLM_CTX_SIZE:-4096}" --threads "\${LOCAL_LLM_THREADS:-6}" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
   echo $! > "$pid_file"
 
   ready_seconds="\${LOCAL_LLM_START_TIMEOUT_SECONDS:-90}"
