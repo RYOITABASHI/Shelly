@@ -2,6 +2,7 @@ package expo.modules.terminalemulator
 
 import android.app.AlarmManager
 import android.app.DownloadManager
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.ClipboardManager
@@ -18,6 +19,8 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.terminalemulator.scouter.AgentEscalationBridge
+import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 import expo.modules.terminalemulator.scouter.ScouterStateStore
 import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
@@ -1151,6 +1154,36 @@ class TerminalEmulatorModule : Module() {
                 ?: throw IllegalStateException("React context unavailable")
             ScouterStateStore(context).clearWidgetConversationForPrivacy()
             ScouterWidgetProvider.updateAll(context, force = true)
+            null
+        }
+
+        AsyncFunction("getAgentEscalationBridgePaths") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val requestDir = AgentEscalationBridge.requestDir(context)
+            val replyDir = AgentEscalationBridge.replyDir(context)
+            mapOf(
+                "requestDirPath" to requestDir.absolutePath,
+                "requestDirUri" to AgentEscalationBridge.requestDirUri(context),
+                "replyDirPath" to replyDir.absolutePath,
+                "verifierPublicKeyPath" to AgentEscalationBridge.verifierPublicKeyPath(context),
+            )
+        }
+
+        AsyncFunction("notifyAgentEscalationApprovalNeeded") { request: Map<String, Any?> ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val parsed = AgentEscalationBridge.fromMap(request)
+                ?: throw IllegalArgumentException("invalid agent escalation request")
+            NotificationDispatcher(context).notifyAgentEscalationNeeded(parsed)
+            null
+        }
+
+        AsyncFunction("cancelAgentEscalationApproval") { runId: String, reqId: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
             null
         }
 

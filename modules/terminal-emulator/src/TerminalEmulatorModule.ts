@@ -117,6 +117,24 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   markScouterWidgetApprovalResolved?(): Promise<void>;
   markScouterWidgetPromptFailed?(message: string): Promise<void>;
   markScouterWidgetChoicePending?(message: string): Promise<void>;
+  getAgentEscalationBridgePaths?(): Promise<{
+    requestDirPath: string;
+    requestDirUri: string;
+    replyDirPath: string;
+    verifierPublicKeyPath: string;
+  }>;
+  notifyAgentEscalationApprovalNeeded?(request: {
+    runId: string;
+    agentId?: string | null;
+    reqId: string;
+    command: string;
+    cwd?: string | null;
+    reason?: string | null;
+    signals?: string[];
+    level?: string | null;
+    ts?: string | null;
+  }): Promise<void>;
+  cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
   returnToHome?(): Promise<void>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }

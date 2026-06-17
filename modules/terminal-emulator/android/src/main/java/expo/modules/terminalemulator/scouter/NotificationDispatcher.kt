@@ -57,6 +57,7 @@ class NotificationDispatcher(private val context: Context) {
         ID_RATE -> CH_RATE
         ID_REPLY -> CH_COMPLETED
         ID_LONG_RUNNING -> CH_RUNNING
+        in 9400 until 9900 -> CH_APPROVAL
         else -> CH_RATE
     }
 
@@ -213,6 +214,36 @@ class NotificationDispatcher(private val context: Context) {
             ),
             autoCancel = false
         )
+    }
+
+    fun notifyAgentEscalationNeeded(request: AgentEscalationRequest) {
+        runCatching {
+            if (!shouldFire(KEY_LAST_AGENT_ESCALATION, request.key)) return
+
+            val actionNonce = AgentEscalationBridge.registerActionNonce(request.runId, request.reqId)
+            val allow = agentEscalationActionPendingIntent(allow = true, request, actionNonce)
+            val deny = agentEscalationActionPendingIntent(allow = false, request, actionNonce)
+            val reason = request.reason?.takeIf { it.isNotBlank() }
+            val signalLine = request.signals.takeIf { it.isNotEmpty() }?.joinToString(", ")
+            val body = listOfNotNull(
+                request.command.redactForScouter(),
+                reason?.let { "Reason: ${it.redactForScouter()}" },
+                signalLine?.let { "Signals: $it" },
+                request.cwd?.takeIf { it.isNotBlank() }?.let { "cwd: ${it.redactForScouter()}" },
+            ).joinToString("\n")
+
+            notify(
+                id = AgentEscalationBridge.notificationId(request.runId, request.reqId),
+                title = "Agent ${shorten(request.agentId, 32)}: approve boundary op?",
+                text = truncate(request.command.redactForScouter(), REPLY_MAX_CHARS),
+                bigText = truncate(body, APPROVAL_MAX_CHARS),
+                actions = listOf(
+                    action("Allow", allow),
+                    action("Deny", deny)
+                ),
+                autoCancel = false
+            )
+        }.onFailure { Log.w(TAG, "agent escalation notify failed", it) }
     }
 
     // --- Choice waiting -------------------------------------------------------
@@ -374,6 +405,39 @@ class NotificationDispatcher(private val context: Context) {
         )
     }
 
+    private fun agentEscalationActionPendingIntent(
+        allow: Boolean,
+        request: AgentEscalationRequest,
+        actionNonce: String
+    ): PendingIntent {
+        val intent = Intent(context, ScouterWidgetPromptActivity::class.java)
+            .setAction(
+                if (allow) {
+                    ScouterWidgetPromptActivity.ACTION_AGENT_ESCALATION_ALLOW
+                } else {
+                    ScouterWidgetPromptActivity.ACTION_AGENT_ESCALATION_DENY
+                }
+            )
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_RUN_ID, request.runId)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_REQ_ID, request.reqId)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_AGENT_ID, request.agentId)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ESCALATION_ACTION_NONCE, actionNonce)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        val key = "${request.runId}:${request.reqId}:${if (allow) "allow" else "deny"}"
+        val requestCode = REQ_AGENT_ESCALATION_BASE + (key.hashCode() and 0x7fffffff) % REQ_AGENT_ESCALATION_SPAN
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun choiceSelectActionPendingIntent(
         codexSessionId: String?,
         ptySessionId: String?,
@@ -491,9 +555,12 @@ class NotificationDispatcher(private val context: Context) {
         private const val REQ_APPROVAL_ALLOW = 9310
         private const val REQ_APPROVAL_DENY = 9311
         private const val REQ_CHOICE_BASE = 9320
+        private const val REQ_AGENT_ESCALATION_BASE = 9400
+        private const val REQ_AGENT_ESCALATION_SPAN = 500
 
         // Dedup pref keys.
         private const val KEY_LAST_APPROVAL = "last_approval_at"
+        private const val KEY_LAST_AGENT_ESCALATION = "last_agent_escalation"
         private const val KEY_LAST_CHOICE = "last_choice_at"
         private const val KEY_LAST_RATE = "last_rate_onset"
         private const val KEY_LAST_USAGE = "last_usage_onset"

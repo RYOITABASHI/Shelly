@@ -8,10 +8,35 @@ const path = require('path');
 
 const DEFAULT_GATE_SCRIPT = path.join(process.env.HOME || process.cwd(), '.shelly-gate-decide.js');
 const DEFAULT_ESCALATION_TIMEOUT_MS = 120000;
-const DEFAULT_ESCALATION_DIR = path.join(os.tmpdir(), 'shelly-agent-escalations');
-const DEFAULT_ESCALATION_REPLY_DIR = path.join(os.tmpdir(), 'shelly-agent-escalation-replies');
+const DEFAULT_ESCALATION_DIR = defaultEscalationDir();
+const DEFAULT_ESCALATION_REPLY_DIR = defaultEscalationReplyDir();
+const DEFAULT_ESCALATION_PUBLIC_KEY = defaultEscalationPublicKey();
 const ESCALATION_POLL_MS = 250;
 const ANDROID_LINKER64 = '/system/bin/linker64';
+
+function defaultEscalationDir() {
+  return process.env.HOME
+    ? path.join(process.env.HOME, '.shelly/agents/escalations')
+    : path.join(os.tmpdir(), 'shelly-agent-escalations');
+}
+
+function defaultEscalationReplyDir() {
+  const home = process.env.HOME || '';
+  const androidHomeSuffix = `${path.sep}files${path.sep}home`;
+  if (home.endsWith(androidHomeSuffix)) {
+    return path.join(home.slice(0, -androidHomeSuffix.length), 'no_backup', 'shelly-agent-escalation-replies');
+  }
+  return path.join(os.tmpdir(), 'shelly-agent-escalation-replies');
+}
+
+function defaultEscalationPublicKey() {
+  const home = process.env.HOME || '';
+  const androidHomeSuffix = `${path.sep}files${path.sep}home`;
+  if (home.endsWith(androidHomeSuffix)) {
+    return path.join(home.slice(0, -androidHomeSuffix.length), 'no_backup', 'shelly-agent-escalation-public.der');
+  }
+  return path.join(os.tmpdir(), 'shelly-agent-escalation-public.der');
+}
 
 function usage() {
   process.stdout.write(`Usage:
@@ -30,9 +55,11 @@ Options:
   --gate-timeout-ms <ms>     Gate helper timeout. Defaults to 5000.
   --escalation-dir <path>    Directory for gray escalation request files.
   --escalation-reply-dir <path>
-                             Directory for human reply files. Production must be agent-unwritable.
+                             Directory for signed human reply files.
   --escalation-timeout-ms <ms>
                              Gray escalation wait timeout. Defaults to ESCALATION_TIMEOUT_MS or 120000.
+  --escalation-public-key <path>
+                             X.509/SPKI public key used to verify human reply signatures.
   --run-id <id>              Override generated run id.
   --agent-id <id>            Agent id for escalation requests.
   --help                     Show this help.
@@ -55,6 +82,7 @@ function parseArgs(argv) {
     gateTimeoutMs: 5000,
     escalationDir: process.env.SHELLY_AGENT_ESCALATION_DIR || DEFAULT_ESCALATION_DIR,
     escalationReplyDir: process.env.SHELLY_AGENT_ESCALATION_REPLY_DIR || DEFAULT_ESCALATION_REPLY_DIR,
+    escalationPublicKey: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY || DEFAULT_ESCALATION_PUBLIC_KEY,
     escalationTimeoutMs: parsePositiveInt(
       process.env.ESCALATION_TIMEOUT_MS || DEFAULT_ESCALATION_TIMEOUT_MS,
       'ESCALATION_TIMEOUT_MS',
@@ -102,6 +130,8 @@ function parseArgs(argv) {
       args.escalationReplyDir = next();
     } else if (arg === '--escalation-timeout-ms') {
       args.escalationTimeoutMs = parsePositiveInt(next(), '--escalation-timeout-ms');
+    } else if (arg === '--escalation-public-key') {
+      args.escalationPublicKey = next();
     } else if (arg === '--run-id') {
       args.runId = next();
     } else if (arg === '--agent-id') {
@@ -162,9 +192,10 @@ function ensureConfig(args) {
     policy,
     gateScript: path.resolve(args.gateScript),
     escalationDir: path.resolve(args.escalationDir),
-    // Security: the temp default is host/dev only. Production Part B must pass a reply
-    // channel the agent cannot write, such as RN app-private storage or a driver-owned FD.
+    // Security: production replies must verify against the native
+    // Android-Keystore-backed signature before accept is honored.
     escalationReplyDir: path.resolve(args.escalationReplyDir),
+    escalationPublicKey: path.resolve(args.escalationPublicKey),
   };
 }
 
@@ -251,12 +282,23 @@ function androidBaseEnv(libDir) {
   };
 }
 
+function codexChildEnv(input) {
+  const env = { ...input };
+  delete env.SHELLY_AGENT_ESCALATION_DIR;
+  delete env.SHELLY_AGENT_ESCALATION_REPLY_DIR;
+  delete env.SHELLY_AGENT_RUN_ID;
+  delete env.SHELLY_AGENT_ID;
+  delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY;
+  delete env.ESCALATION_TIMEOUT_MS;
+  return env;
+}
+
 function codexAppServerSpawnSpec(config) {
   const android = androidLauncherContext();
   if (android) {
     const codexTui = resolveAndroidCodexTui(android.libDir);
     const codexDir = path.dirname(codexTui);
-    const env = {
+    const env = codexChildEnv({
       ...androidBaseEnv(android.libDir),
       // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_tui.
       // The shell wrapper's native-crash fallback is not duplicated here; this
@@ -266,7 +308,7 @@ function codexAppServerSpawnSpec(config) {
       SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
       LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
       LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
-    };
+    });
     const args = [codexTui, 'app-server', '--listen', 'stdio://'];
     return {
       mode: 'android-linker64-codex_tui',
@@ -284,7 +326,7 @@ function codexAppServerSpawnSpec(config) {
     mode: 'host-path',
     command: config.codexBin,
     args,
-    env: process.env,
+    env: codexChildEnv(process.env),
     display: [config.codexBin, ...args],
     codexBinary: null,
     codexTui: null,
@@ -559,12 +601,14 @@ function buildEscalationPaths(config, reqId) {
 }
 
 function writeJsonAtomic(filePath, payload) {
+  const content = `${JSON.stringify(payload)}\n`;
   const tmpPath = path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`,
   );
-  fs.writeFileSync(tmpPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+  fs.writeFileSync(tmpPath, content, { mode: 0o600 });
   fs.renameSync(tmpPath, filePath);
+  return content;
 }
 
 function unlinkIfExists(filePath) {
@@ -594,10 +638,79 @@ function failClosedEscalation(audit, payload) {
   return { decision: 'decline', reason: payload.reason || null };
 }
 
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function escalationSignatureMessage(request, decision, requestSha256) {
+  return [
+    String(request.runId),
+    String(request.reqId),
+    String(decision),
+    String(request.ts || ''),
+    String(requestSha256),
+  ].join('\n');
+}
+
+function verifyEscalationReplySignature(config, requestPayload, requestSha256, reply) {
+  if (reply.by !== 'human') return { ok: false, reason: `invalid escalation reply author: ${reply.by}` };
+  if (reply.sigAlg !== 'SHA256withRSA') {
+    return { ok: false, reason: `invalid escalation reply signature algorithm: ${reply.sigAlg}` };
+  }
+  if (reply.requestSha256 !== requestSha256) {
+    return { ok: false, reason: 'escalation reply request hash mismatch' };
+  }
+  if (reply.requestTs !== requestPayload.ts) {
+    return { ok: false, reason: 'escalation reply request timestamp mismatch' };
+  }
+  if (typeof reply.signature !== 'string' || reply.signature.length < 32) {
+    return { ok: false, reason: 'missing escalation reply signature' };
+  }
+  const publicKey = config.escalationVerifierPublicKey;
+  if (!publicKey) return { ok: false, reason: 'escalation verifier public key unavailable' };
+  try {
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(escalationSignatureMessage(requestPayload, reply.decision, requestSha256), 'utf8');
+    verifier.end();
+    const signature = Buffer.from(reply.signature, 'base64');
+    if (!verifier.verify(publicKey, signature)) {
+      return { ok: false, reason: 'escalation reply signature verification failed' };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `escalation reply signature verification error: ${error.message}` };
+  }
+}
+
+function loadEscalationVerifierPublicKey(config) {
+  return crypto.createPublicKey({
+    key: fs.readFileSync(config.escalationPublicKey),
+    format: 'der',
+    type: 'spki',
+  });
+}
+
 async function waitForEscalation(config, request, audit) {
   const paths = buildEscalationPaths(config, request.reqId);
+  const replyPathForAudit = process.env.SHELLY_AGENT_DEBUG_REPLY_PATH === '1'
+    ? paths.replyPath
+    : '[native-reply-channel]';
   const startedAt = Date.now();
   let wroteRequest = false;
+
+  try {
+    if (!config.escalationVerifierPublicKey) {
+      config.escalationVerifierPublicKey = loadEscalationVerifierPublicKey(config);
+    }
+  } catch (error) {
+    return failClosedEscalation(audit, {
+      reqId: request.reqId,
+      reason: `escalation verifier public key unavailable: ${error.message}`,
+      requestPath: paths.requestPath,
+      replyPath: replyPathForAudit,
+      elapsedMs: Date.now() - startedAt,
+    });
+  }
 
   try {
     fs.mkdirSync(config.escalationDir, { recursive: true, mode: 0o700 });
@@ -616,16 +729,17 @@ async function waitForEscalation(config, request, audit) {
       level: request.level,
       ts: new Date().toISOString(),
     };
-    writeJsonAtomic(paths.requestPath, requestPayload);
+    const requestContent = writeJsonAtomic(paths.requestPath, requestPayload);
+    requestPayload._sha256 = sha256Hex(requestContent);
     wroteRequest = true;
 
     process.stdout.write(
-      `ESCALATE human_required command=${JSON.stringify(request.command)} reqId=${JSON.stringify(request.reqId)} requestPath=${JSON.stringify(paths.requestPath)} replyPath=${JSON.stringify(paths.replyPath)} action=wait\n`,
+      `ESCALATE human_required command=${JSON.stringify(request.command)} reqId=${JSON.stringify(request.reqId)} requestPath=${JSON.stringify(paths.requestPath)} replyChannel="native" action=wait\n`,
     );
     audit('escalation_requested', {
       ...requestPayload,
       requestPath: paths.requestPath,
-      replyPath: paths.replyPath,
+      replyPath: replyPathForAudit,
       timeoutMs: config.escalationTimeoutMs,
     });
   } catch (error) {
@@ -634,7 +748,7 @@ async function waitForEscalation(config, request, audit) {
       reqId: request.reqId,
       reason: `escalation request I/O failed: ${error.message}`,
       requestPath: paths.requestPath,
-      replyPath: paths.replyPath,
+      replyPath: replyPathForAudit,
       elapsedMs: Date.now() - startedAt,
     });
   }
@@ -651,7 +765,7 @@ async function waitForEscalation(config, request, audit) {
             reqId: request.reqId,
             reason: `escalation reply read failed: ${error.message}`,
             requestPath: paths.requestPath,
-            replyPath: paths.replyPath,
+            replyPath: replyPathForAudit,
             elapsedMs: Date.now() - startedAt,
           });
         }
@@ -667,7 +781,7 @@ async function waitForEscalation(config, request, audit) {
             reason: `escalation reply parse failed: ${error.message}`,
             rawReply: replyText,
             requestPath: paths.requestPath,
-            replyPath: paths.replyPath,
+            replyPath: replyPathForAudit,
             elapsedMs: Date.now() - startedAt,
           });
         }
@@ -678,7 +792,7 @@ async function waitForEscalation(config, request, audit) {
             reason: `escalation reply reqId mismatch: ${reply.reqId}`,
             reply,
             requestPath: paths.requestPath,
-            replyPath: paths.replyPath,
+            replyPath: replyPathForAudit,
             elapsedMs: Date.now() - startedAt,
           });
         }
@@ -688,7 +802,21 @@ async function waitForEscalation(config, request, audit) {
             reason: `invalid escalation decision: ${reply.decision}`,
             reply,
             requestPath: paths.requestPath,
-            replyPath: paths.replyPath,
+            replyPath: replyPathForAudit,
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+        const signature = verifyEscalationReplySignature(config, requestPayload, requestPayload._sha256, reply);
+        if (!signature.ok) {
+          return failClosedEscalation(audit, {
+            reqId: request.reqId,
+            reason: signature.reason,
+            reply: {
+              ...reply,
+              signature: typeof reply.signature === 'string' ? '[present]' : reply.signature,
+            },
+            requestPath: paths.requestPath,
+            replyPath: replyPathForAudit,
             elapsedMs: Date.now() - startedAt,
           });
         }
@@ -697,7 +825,7 @@ async function waitForEscalation(config, request, audit) {
           reqId: request.reqId,
           decision: reply.decision,
           requestPath: paths.requestPath,
-          replyPath: paths.replyPath,
+          replyPath: replyPathForAudit,
           elapsedMs: Date.now() - startedAt,
         });
         process.stdout.write(
@@ -713,7 +841,7 @@ async function waitForEscalation(config, request, audit) {
       reqId: request.reqId,
       decision: 'decline',
       requestPath: paths.requestPath,
-      replyPath: paths.replyPath,
+      replyPath: replyPathForAudit,
       timeoutMs: config.escalationTimeoutMs,
       elapsedMs: Date.now() - startedAt,
     });
@@ -1183,9 +1311,12 @@ async function runDriver(config) {
     runId: config.runId,
     agentId: config.agentId,
     escalationDir: config.escalationDir,
-    escalationReplyDir: config.escalationReplyDir,
+    escalationReplyDir: process.env.SHELLY_AGENT_DEBUG_REPLY_PATH === '1'
+      ? config.escalationReplyDir
+      : '[native-reply-channel]',
+    escalationPublicKey: config.escalationPublicKey,
     escalationTimeoutMs: config.escalationTimeoutMs,
-    escalationReplyChannelRequirement: 'production reply channel must be agent-unwritable; temp defaults are host/dev only',
+    escalationReplyChannelRequirement: 'reply files must carry an Android-Keystore-backed SHA256withRSA human signature; unsigned or invalid replies fail closed',
     policy: {
       ...config.policy,
       workspaceRoot: config.policy.workspaceRoot,

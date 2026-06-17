@@ -2,6 +2,7 @@ package expo.modules.terminalemulator.scouter
 
 import android.app.Activity
 import android.app.Dialog
+import android.app.NotificationManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -31,6 +32,9 @@ class ScouterWidgetPromptActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (handlePetCycleAction(intent)) {
+            return
+        }
+        if (handleAgentEscalationAction(intent)) {
             return
         }
         if (handleApprovalAction(intent)) {
@@ -69,6 +73,9 @@ class ScouterWidgetPromptActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (handlePetCycleAction(intent)) {
+            return
+        }
+        if (handleAgentEscalationAction(intent)) {
             return
         }
         if (handleApprovalAction(intent)) {
@@ -341,6 +348,40 @@ class ScouterWidgetPromptActivity : Activity() {
             Log.i(TAG, "Widget pet cycle state=${ScouterCodexPet.debugJson(this)}")
         }
         ScouterWidgetProvider.updateAll(this, force = true)
+        finishQuietly()
+        return true
+    }
+
+    private fun handleAgentEscalationAction(intent: Intent?): Boolean {
+        val action = intent?.action
+        val decision = when (action) {
+            ACTION_AGENT_ESCALATION_ALLOW -> "accept"
+            ACTION_AGENT_ESCALATION_DENY -> "decline"
+            else -> return false
+        }
+        val runId = intent.getStringExtra(EXTRA_AGENT_ESCALATION_RUN_ID)?.trim().orEmpty()
+        val reqId = intent.getStringExtra(EXTRA_AGENT_ESCALATION_REQ_ID)?.trim().orEmpty()
+        val actionNonce = intent.getStringExtra(EXTRA_AGENT_ESCALATION_ACTION_NONCE)
+        if (runId.isBlank() || reqId.isBlank()) {
+            Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
+            finishQuietly()
+            return true
+        }
+
+        runCatching {
+            AgentEscalationBridge.writeHumanReply(this, runId, reqId, decision, actionNonce)
+        }.fold(onSuccess = {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
+            Toast.makeText(
+                this,
+                if (decision == "accept") R.string.scouter_widget_approval_sent else R.string.scouter_widget_approval_denied,
+                Toast.LENGTH_SHORT
+            ).show()
+        }, onFailure = { error ->
+            Log.w(TAG, "Failed to write agent escalation reply", error)
+            Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
+        })
         finishQuietly()
         return true
     }
@@ -620,12 +661,18 @@ class ScouterWidgetPromptActivity : Activity() {
     companion object {
         const val ACTION_APPROVAL_ALLOW = "expo.modules.terminalemulator.scouter.APPROVAL_ALLOW"
         const val ACTION_APPROVAL_DENY = "expo.modules.terminalemulator.scouter.APPROVAL_DENY"
+        const val ACTION_AGENT_ESCALATION_ALLOW = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_ALLOW"
+        const val ACTION_AGENT_ESCALATION_DENY = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_DENY"
         const val ACTION_CHOICE_SELECT = "expo.modules.terminalemulator.scouter.CHOICE_SELECT"
         const val ACTION_PET_CYCLE = "expo.modules.terminalemulator.scouter.PET_CYCLE"
         const val EXTRA_CODEX_SESSION_ID = "expo.modules.terminalemulator.scouter.CODEX_SESSION_ID"
         const val EXTRA_PTY_SESSION_ID = "expo.modules.terminalemulator.scouter.PTY_SESSION_ID"
         const val EXTRA_APPROVAL_AT = "expo.modules.terminalemulator.scouter.APPROVAL_AT"
         const val EXTRA_APPROVAL_TEXT = "expo.modules.terminalemulator.scouter.APPROVAL_TEXT"
+        const val EXTRA_AGENT_ESCALATION_RUN_ID = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_RUN_ID"
+        const val EXTRA_AGENT_ESCALATION_REQ_ID = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_REQ_ID"
+        const val EXTRA_AGENT_ESCALATION_AGENT_ID = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_AGENT_ID"
+        const val EXTRA_AGENT_ESCALATION_ACTION_NONCE = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_ACTION_NONCE"
         const val EXTRA_CHOICE_INDEX = "expo.modules.terminalemulator.scouter.CHOICE_INDEX"
         const val EXTRA_CHOICE_LABEL = "expo.modules.terminalemulator.scouter.CHOICE_LABEL"
         private val CODEX_STATUS_RE = Regex("""\b(?:gpt|o\d|codex)[A-Za-z0-9_.-]*\b.*[·•]\s*/""", RegexOption.IGNORE_CASE)

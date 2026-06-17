@@ -1,6 +1,7 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
+import expo.modules.terminalemulator.scouter.AgentEscalationBridge
 import org.json.JSONObject
 import java.io.File
 
@@ -1044,7 +1045,11 @@ patchCodex(libDir);
     // 226: Launch the explicit shelly-update-clis Node helper through a small
     //      eval bootstrap. This avoids Node's Android ReadFileSync ESM
     //      main-file detection crash while preserving process.argv shape.
-    private const val BASHRC_VERSION = 226
+    // 227: Export the autonomous escalation request bridge path. The
+    //      request queue is under HOME for RN polling; the reply channel lives
+    //      outside HOME in no_backup and is derived by the driver/native side
+    //      rather than advertised in the shell environment.
+    private const val BASHRC_VERSION = 227
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1186,6 +1191,15 @@ patchCodex(libDir);
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-agent-driver.js extract failed: ${e.message}")
+        }
+        val agentEscalationDir = File(home, ".shelly/agents/escalations")
+        agentEscalationDir.mkdirs()
+        val agentEscalationReplyDir = File(context.noBackupFilesDir, "shelly-agent-escalation-replies")
+        agentEscalationReplyDir.mkdirs()
+        try {
+            AgentEscalationBridge.ensureVerifierPublicKey(context)
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "agent escalation verifier key init failed: ${e.message}")
         }
 
         // v78–v80: extracted a node-based shelly-xdg-open.js helper that
@@ -1349,6 +1363,7 @@ patchCodex(libDir);
             sb.appendLine("export BASH=\"\$SHELL\"")
             sb.appendLine("export BASHRC_VERSION=\"$BASHRC_VERSION\"")
             sb.appendLine("export SHELLY_AUTO_UPDATE_CLIS=0")
+            sb.appendLine("export SHELLY_AGENT_ESCALATION_DIR=\"${agentEscalationDir.absolutePath}\"")
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
             sb.appendLine("unset LD_LIBRARY_PATH")

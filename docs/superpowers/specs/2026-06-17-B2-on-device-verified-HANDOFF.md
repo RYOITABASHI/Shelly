@@ -139,7 +139,7 @@ turn_completed → driver_finish exitCode:0   (clean)
 **Build:**
 1. RN drain (extend `app/_layout.tsx`): poll the escalation **request dir**, parse `{runId, agentId, reqId, command, cwd, reason, signals, level, ts}`, fire the approval notification.
 2. Allow/Deny handler writes `req-<runId>-<reqId>.reply.json` `{decision:"accept"|"decline"}` into the **reply dir**.
-3. The reply dir **MUST be agent-unwritable** (a forged reply file = a forged human accept = full bypass). The driver's default temp dirs are host/dev-only; production needs a path the agent process cannot write. Decide and document this path; pass it via `--escalation-dir` / `--escalation-reply-dir`.
+3. The reply channel **MUST reject agent-forged accepts** (a forged human accept = full bypass). The driver's default temp dirs are host/dev-only; production needs a channel the agent process cannot forge. Current implementation path: request dir under `$HOME`, reply dir under `Context.noBackupFilesDir`, Android-Keystore `SHA256withRSA` signatures over `runId/reqId/decision/request hash`, driver-side public-key pinning before request publication, and a native in-memory one-time PendingIntent nonce; unsigned or mismatched replies fail closed. Decide/document any stronger broker if review requires OS-level separation from arbitrary same-UID helper processes.
 **Acceptance (on-device):** run the §4 command, see a notification, tap **Allow** → audit shows `decision:"accept"`, command executes; tap **Deny** → `decision:"decline"`. Confirm fail-closed still holds on timeout/malformed reply.
 **Reviewer gate:** native + IPC + OAuth-adjacent → CC code-review before push (user preference).
 

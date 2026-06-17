@@ -73,6 +73,18 @@ type WidgetPromptTarget = {
   shellySessionId?: string | null;
 };
 
+type AgentEscalationRequest = {
+  runId: string;
+  agentId: string;
+  reqId: string;
+  command: string;
+  cwd?: string | null;
+  reason?: string | null;
+  signals: string[];
+  level?: string | null;
+  ts?: string | null;
+};
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
@@ -967,6 +979,107 @@ export default function RootLayout() {
     };
     const queueInterval = setInterval(drainQueue, 250);
 
+    const fallbackEscalationRequestDirUri = `${FileSystem.documentDirectory}home/.shelly/agents/escalations`;
+    const notifiedEscalations = new Map<string, { runId: string; reqId: string; seenAt: number }>();
+    let escalationRequestDirUri: string | null = null;
+    let isDrainingEscalations = false;
+
+    const trimFileUri = (uri: string) => uri.replace(/\/+$/, '');
+    const joinFileUri = (dirUri: string, name: string) => `${trimFileUri(dirUri)}/${name}`;
+
+    const parseEscalationRequest = (raw: unknown): AgentEscalationRequest | null => {
+      const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+      if (!value) return null;
+      const str = (field: string) => typeof value[field] === 'string' ? (value[field] as string).trim() : '';
+      const runId = str('runId');
+      const reqId = str('reqId');
+      const command = str('command');
+      if (!runId || !reqId || !command) return null;
+      const signals = Array.isArray(value.signals)
+        ? value.signals.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+      return {
+        runId,
+        reqId,
+        command,
+        signals,
+        agentId: str('agentId') || 'agent',
+        cwd: str('cwd') || null,
+        reason: str('reason') || null,
+        level: str('level') || null,
+        ts: str('ts') || null,
+      };
+    };
+
+    const getEscalationRequestDirUri = async () => {
+      if (escalationRequestDirUri) return escalationRequestDirUri;
+      if (TerminalEmulator.getAgentEscalationBridgePaths) {
+        const paths = await TerminalEmulator.getAgentEscalationBridgePaths().catch((e) => {
+          logError('AgentEscalation', 'bridge path lookup failed', e);
+          return null;
+        });
+        if (paths?.requestDirUri) {
+          escalationRequestDirUri = trimFileUri(paths.requestDirUri);
+          logInfo('AgentEscalation', `watching ${paths.requestDirPath}`);
+          return escalationRequestDirUri;
+        }
+      }
+      escalationRequestDirUri = trimFileUri(fallbackEscalationRequestDirUri);
+      return escalationRequestDirUri;
+    };
+
+    const rememberEscalation = (key: string) => {
+      const now = Date.now();
+      notifiedEscalations.set(key, { runId: key.split('|')[0] ?? '', reqId: key.split('|')[1] ?? '', seenAt: now });
+      for (const [candidate, record] of notifiedEscalations) {
+        if (now - record.seenAt > 10 * 60_000) notifiedEscalations.delete(candidate);
+      }
+    };
+
+    const drainAgentEscalationRequests = async () => {
+      if (isDrainingEscalations || disposed || !TerminalEmulator.notifyAgentEscalationApprovalNeeded) return;
+      isDrainingEscalations = true;
+      try {
+        const requestDirUri = await getEscalationRequestDirUri();
+        const names = await FileSystem.readDirectoryAsync(requestDirUri).catch(() => null);
+        if (!names) return;
+        const activeKeys = new Set<string>();
+        for (const name of names) {
+          if (!/^req-[A-Za-z0-9_.=-]+-[A-Za-z0-9_.=-]+\.json$/.test(name)) continue;
+          const fileUri = joinFileUri(requestDirUri, name);
+          let parsed: AgentEscalationRequest | null = null;
+          try {
+            parsed = parseEscalationRequest(JSON.parse(await FileSystem.readAsStringAsync(fileUri)));
+          } catch (e) {
+            logError('AgentEscalation', `rejected unreadable request ${name}`, e);
+            continue;
+          }
+          if (!parsed) {
+            logError('AgentEscalation', `rejected invalid request ${name}`);
+            continue;
+          }
+          const key = `${parsed.runId}|${parsed.reqId}|${parsed.ts ?? ''}`;
+          activeKeys.add(key);
+          if (notifiedEscalations.has(key)) continue;
+          await TerminalEmulator.notifyAgentEscalationApprovalNeeded(parsed);
+          rememberEscalation(key);
+          logInfo('AgentEscalation', `approval notification posted run=${parsed.runId} req=${parsed.reqId}`);
+        }
+        for (const [key, record] of notifiedEscalations) {
+          if (activeKeys.has(key)) continue;
+          await TerminalEmulator.cancelAgentEscalationApproval?.(record.runId, record.reqId).catch(() => undefined);
+          notifiedEscalations.delete(key);
+          logInfo('AgentEscalation', `stale approval notification cancelled run=${record.runId} req=${record.reqId}`);
+        }
+      } catch (e) {
+        logError('AgentEscalation', 'poll iteration failed', e);
+      } finally {
+        isDrainingEscalations = false;
+      }
+    };
+    const escalationInterval = setInterval(drainAgentEscalationRequests, 500);
+    void drainAgentEscalationRequests();
+
     // Snapshot terminal state before the bridge can be paused or killed.
     const sub = AppState.addEventListener('change', (state) => {
       logInfo('RootLayout', `AppState changed: ${state}`);
@@ -984,6 +1097,7 @@ export default function RootLayout() {
       linkSub.remove();
       clearTimeout(agentLogStartTimer);
       clearInterval(queueInterval);
+      clearInterval(escalationInterval);
       if (agentLogInterval) clearInterval(agentLogInterval);
     };
   }, [loadSettings]);

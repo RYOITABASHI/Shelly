@@ -26,7 +26,9 @@ Reuse the two proven mechanisms (no parallel stack — A2 §1.5):
 driver gate → escalate
   1. driver writes  $HOME/.shelly/agents/escalations/req-<runId>-<reqId>.json
        { runId, agentId, reqId, command, cwd, reason, signals, level, ts }
-     then BLOCKS, polling for  req-<runId>-<reqId>.reply.json  (interval ~250ms)
+     then BLOCKS, polling for
+       <Context.noBackupFilesDir>/shelly-agent-escalation-replies/req-<runId>-<reqId>.reply.json
+     (interval ~250ms)
   2. RN poll (extend the _layout.tsx drain) picks up the request →
        NotificationDispatcher posts an approval notification (reuse channel):
        title "Agent <name>: approve boundary op?", body = redacted command + reason,
@@ -51,6 +53,30 @@ Replace the Phase A escalate stub (`log ESCALATE … action=decline`) with: writ
 ## 6. Security note
 
 The escalation request file is under `$HOME` (agent-readable). It contains a command the agent already proposed (no new secret), redacted. The **decision** must come only from the human-tap handler (RN/Kotlin), never from anything the agent can write — i.e. the driver must distinguish a reply written by the approval handler from a reply file the agent could fabricate. Mitigation: the reply path/name is derived from the runId (not guessable mid-run) AND the driver should treat a reply that appears without a corresponding posted notification as suspect. Simplest robust option: have the **RN side write the reply to a location the agent cannot write** (e.g. app-private storage the run-script's cwd can't reach) and the driver read it via a small RN→driver signal — evaluate vs. the file-queue's simplicity during impl. Flag for the implementer; do not let a self-written reply file forge a human accept.
+
+Implementation note (2026-06-17): request files are queued under
+`$HOME/.shelly/agents/escalations` for the existing RN poll pattern; replies are
+written by `ScouterWidgetPromptActivity` to
+`Context.noBackupFilesDir/shelly-agent-escalation-replies`, outside `$HOME`.
+The driver derives this path from `$HOME` on Android and scrubs escalation env
+vars before launching Codex, and normal audit/stdout output reports only
+`[native-reply-channel]`.
+
+Because Android app-private files are still same-UID storage, the reply JSON is
+also signature-bound: the notification action signs
+`runId + reqId + decision + request timestamp + request sha256` with an Android
+Keystore `SHA256withRSA` private key whose public key is exported to
+`Context.noBackupFilesDir/shelly-agent-escalation-public.der`. The driver
+pins that public key in memory before publishing the request, then verifies the
+signature before accepting a reply; unsigned, malformed, replayed, mismatched,
+or post-request public-key-swapped replies fail closed to `decline`. The
+notification action also carries a native in-memory one-time nonce, so a caller
+that does not possess the actual PendingIntent cannot use
+`ScouterWidgetPromptActivity` as a signing oracle. This is the practical
+production boundary for Phase B. A separate broker/FD channel would be stricter
+against an arbitrary already-running same-UID native process that can inspect
+Shelly process memory or invoke Android Keystore under Shelly's UID, but simple
+file forgery is no longer sufficient to forge human accept.
 
 ## 7. On-device (Codex + CC review; device-gated)
 
