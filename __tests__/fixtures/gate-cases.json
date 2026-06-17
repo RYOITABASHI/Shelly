@@ -1,0 +1,11 @@
+[
+  { "name": "in-root read L2 -> allow", "command": "cat src/a.ts", "policy": { "level": "L2", "workspaceRoot": "/root/app" }, "expectedAnswer": "y" },
+  { "name": "in-root write L2 -> allow", "command": "echo x > src/o.txt", "policy": { "level": "L2", "workspaceRoot": "/root/app" }, "expectedAnswer": "y" },
+  { "name": "in-root write L1 -> escalate", "command": "echo x > src/o.txt", "policy": { "level": "L1", "workspaceRoot": "/root/app" }, "expectedAnswer": "escalate" },
+  { "name": "out-of-root write L2 -> escalate", "command": "cp src/a.ts /sdcard/x", "policy": { "level": "L2", "workspaceRoot": "/root/app" }, "expectedAnswer": "escalate" },
+  { "name": "out-of-root write L3 -> allow (audited)", "command": "cp src/a.ts /sdcard/x", "policy": { "level": "L3", "workspaceRoot": "/root/app" }, "expectedAnswer": "y" },
+  { "name": "rm -rf / any level -> deny", "command": "rm -rf /", "policy": { "level": "L3", "workspaceRoot": "/root/app" }, "expectedAnswer": "n" },
+  { "name": "secret read L2 -> escalate", "command": "cat ~/.codex/auth.json", "policy": { "level": "L2", "workspaceRoot": "/root/app" }, "expectedAnswer": "escalate" },
+  { "name": "operator denyPattern -> deny", "command": "git push origin x", "policy": { "level": "L3", "workspaceRoot": "/root/app", "denyPatterns": ["git\\s+push"] }, "expectedAnswer": "n" },
+  { "name": "operator allowPattern upgrades gray -> allow", "command": "cp src/a.ts /sdcard/x", "policy": { "level": "L2", "workspaceRoot": "/root/app", "allowPatterns": ["/sdcard/x"] }, "expectedAnswer": "y" }
+]
