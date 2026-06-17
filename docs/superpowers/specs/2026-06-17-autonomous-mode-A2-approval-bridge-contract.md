@@ -61,6 +61,31 @@ on WAITING_PERMISSION for a session:
 - The command extraction must capture the **full** proposed command (the classifier needs the whole string). If the screen-scrape only yields a truncated/garbled command, treat as **escalate** (fail-closed), don't guess.
 - Audit log sink: append redacted `out.audit` (one JSON line) to `~/.shelly/agents/logs/<agentId>/audit.jsonl`.
 
+## 4a. B2 architecture DECISION — codex **app-server** JSON-RPC (SUPERSEDES §4's PTY-injection) `[confirmed by raw-evidence probe, 2026-06-17]`
+
+Phase 1.5 probed codex 0.134's `app-server` (raw transcript: [2026-06-17-autonomous-mode-A2-appserver-probe.md](./2026-06-17-autonomous-mode-A2-appserver-probe.md)). It exposes a **structured approval protocol that is strictly better than PTY-injection** — full command + cwd in typed params, clean accept/decline, no screen-scrape, no truncation. **B2 drives codex via app-server, NOT an interactive-codex PTY with y/n screen-injection.** §4 is retained only as a fallback (see end).
+
+### Confirmed protocol (host codex 0.134, NDJSON over stdio — `{id,method,params}`, no `jsonrpc` field)
+1. Start `codex app-server --listen stdio://`.
+2. Handshake: `initialize` → `initialized` → `thread/start` `{cwd, approvalPolicy, sandbox, ...}` → `turn/start` `{threadId, input:[{type:"text",text}]}`.
+3. Per command the agent wants to run, server → client: **`item/commandExecution/requestApproval`** with `params` = `{ threadId, turnId, itemId, command (FULL, e.g. "/bin/bash -lc '…'"), cwd, commandActions:[{command (bare), ...}], proposedExecpolicyAmendment, availableDecisions }`.
+4. Client → server: `{ "id":N, "result":{ "decision":"accept" } }` → runs; `"decline"` → `status:"declined"`, never executed.
+
+### B2 flow (replaces §4)
+For an autonomous agent run, Shelly (in the FGS):
+1. Spawns `codex app-server`, drives the handshake with `cwd` = canonical workspace root + an `approvalPolicy` that surfaces commands for approval.
+2. On each `item/commandExecution/requestApproval`: take the command (prefer `commandActions[].command`, fall back to `command`) + `cwd` → `node $HOME/.shelly-gate-decide.js` (the B1 helper, §3) → map: **allow→`accept`, deny→`decline`, gray→escalate to the human** via the existing notification-approval, then accept/decline per the human's tap.
+3. **Fail-closed:** any helper error / unparseable response / missing command → `decline` (or escalate). Never `accept` on uncertainty.
+4. Append the redacted audit entry per decision (§4 audit sink).
+
+This removes the §4 problems wholesale: no screen-scrape, no `y\r` PTY injection, and the full command is structured (the truncation worry in §4/§6 is gone).
+
+### Open question B2 MUST resolve on-device (one more probe)
+The probe used `sandbox: workspace-write`, which **does not work on Android** (the original constraint). With the on-device-forced `sandbox: danger-full-access`, does codex still emit `requestApproval`, or run commands silently? B2 must find the `(approvalPolicy, sandbox)` combo where codex **routes every command's approval to the client gate** on bionic. Probe candidates: `approvalPolicy: on-request`/`untrusted` paired with a sandbox setting that still elicits approvals. Resolve before building the driver.
+
+### PTY-injection (§4) = fallback only
+Keep §4 as the fallback **iff** app-server proves unusable on bionic / in the FGS. Otherwise app-server is the path.
+
 ## 5. Wiring the autonomy flag + policy into the run
 
 - An autonomous agent run carries an `autonomous: true` marker + its `AutonomyPolicy` (level, workspaceRoot canonicalised at run start, secretPaths, policyPath, deny/allowPatterns). Decide the carrier (run-script env / a sidecar JSON the FGS reads) — must be readable by the Kotlin handler at approval time and **NOT writable by the agent** (policy-file hard-deny already covers writes).
