@@ -1165,6 +1165,18 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
         }
 
+        // A2/B1: bundled node helper for autonomous approval-gate decisions.
+        // Invoked via node, so it only needs to be readable, matching the
+        // shelly-codex-auth.js helper above.
+        val gateDecideScript = File(home, ".shelly-gate-decide.js")
+        try {
+            context.assets.open("shelly-gate-decide.js").use { input ->
+                gateDecideScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-gate-decide.js extract failed: ${e.message}")
+        }
+
         // v78–v80: extracted a node-based shelly-xdg-open.js helper that
         // a bash shim shell-script invoked. v81 abandoned that approach
         // (kernel binfmt_script `file{read}` is denied on app_data_file
