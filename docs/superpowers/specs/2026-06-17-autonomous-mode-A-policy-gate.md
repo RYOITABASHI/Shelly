@@ -64,6 +64,16 @@ Classify **each agent-emitted operation**. **Boundary operations** =
 
 **Policy file is itself boundary-protected `[MUST-FIX #6]`:** the policy file + autonomy level are **read-only to the agent**; any agent-emitted write to the policy path is a **hard-deny** (not gray, not self-approvable). Only the human UI mutates them. A prompt-injected agent must not be able to self-escalate. The §8 scan-hook should flag instruction-file content that names autonomy levels or policy paths.
 
+### Enforcement substrate on Android — the gate runs on codex's approval stream, NOT a syscall sandbox `[grounded 2026-06-17 — corrects the original per-op assumption]`
+
+Hard platform fact (already documented in [HomeInitializer.kt:1030-1035](../../../modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt), bashrc v216): **Codex's native `--sandbox` enforcement does not work on Android** — codex relies on macOS seatbelt / Linux Landlock / Windows sandbox, none of which Android exposes, so codex *rejects* `workspace-write` and the on-device wrapper forces **`--sandbox danger-full-access`**. Consequently `codex exec` (non-interactive, `approval=never`, danger-full-access) is a **black box with ZERO per-op gating**, and with `MANAGE_EXTERNAL_STORAGE` the Android app sandbox spans all of `/sdcard` — too wide to be the workspace boundary. So the original "policy-first gate classifying each agent-emitted operation" is **not enforceable at the syscall level on this platform.**
+
+**The enforceable design — drive INTERACTIVE codex with an approval policy, gate it with the EXISTING approval bridge:**
+- Autonomous execution uses **interactive codex** (codex_tui) with `--ask-for-approval` (untrusted/on-request) + cwd/`--add-dir` roots set to the workspace — **not** `codex exec`. Interactive codex **pauses and emits an approval prompt before each command**, which Shelly's existing bridge already reads (NotificationDispatcher detects `WAITING_PERMISSION`, ScouterWidgetPromptActivity writes `y\r`/`n\r` to the live PTY — verified in the Step-0 audit).
+- The autonomy of "no per-step *human* approval" is delivered by a **policy classifier auto-answering those prompts**: classify the proposed command (command-safety + boundary + credential policy) → allow→inject `y`, hard-deny→inject `n` + audit, gray→route to the human via the existing notification-approval. This is exactly OpenClaw's auto-mode (policy first, gray → human) realized on the bridge that already exists.
+- **The boundary check operates on the command surfaced at each approval prompt** (which IS visible), not on invisible syscalls — that is how the §5 workspace-root module plugs in despite the black-box problem.
+- `codex exec` (danger-full-access, no gating) is therefore **NOT used for autonomous mode**; it stays the manual/foreground path. Trade-off: interactive-codex driving is more work than one-shot exec, but it is the only path that delivers a real per-op gate on Android.
+
 ## 7. Secret isolation & prompt-injection
 
 - No ambient secret access for agent-emitted ops; auth.json/Keystore read = boundary even at L2 (per §6 narrowing).
