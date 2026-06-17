@@ -697,6 +697,7 @@ async function waitForEscalation(config, request, audit) {
     : '[native-reply-channel]';
   const startedAt = Date.now();
   let wroteRequest = false;
+  let requestPayload = null;
 
   try {
     if (!config.escalationVerifierPublicKey) {
@@ -718,7 +719,7 @@ async function waitForEscalation(config, request, audit) {
     unlinkIfExists(paths.requestPath);
     unlinkIfExists(paths.replyPath);
 
-    const requestPayload = {
+    requestPayload = {
       runId: config.runId,
       agentId: config.agentId,
       reqId: request.reqId,
