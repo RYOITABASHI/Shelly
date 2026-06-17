@@ -1177,6 +1177,17 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-gate-decide.js extract failed: ${e.message}")
         }
 
+        // B2: app-server driver for autonomous agents. Invoked via node, so it
+        // only needs to be readable, matching the gate/codex-auth helpers.
+        val agentDriverScript = File(home, ".shelly-agent-driver.js")
+        try {
+            context.assets.open("shelly-agent-driver.js").use { input ->
+                agentDriverScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-agent-driver.js extract failed: ${e.message}")
+        }
+
         // v78–v80: extracted a node-based shelly-xdg-open.js helper that
         // a bash shim shell-script invoked. v81 abandoned that approach
         // (kernel binfmt_script `file{read}` is denied on app_data_file
