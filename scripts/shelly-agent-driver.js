@@ -22,7 +22,7 @@ Options:
   --policy-json <json>       AutonomyPolicy JSON. Defaults to L2 + workspace cwd.
   --policy-file <path>       Read AutonomyPolicy JSON from a file.
   --gate-script <path>       Gate helper path. Defaults to $HOME/.shelly-gate-decide.js.
-  --codex-bin <path>         Codex executable or Android codex_exec override. Defaults to "codex".
+  --codex-bin <path>         Codex executable on host. Android app-server uses codex_tui. Defaults to "codex".
   --node-bin <path>          Node executable for the gate helper. Defaults to current node.
   --approval-policy <mode>   Defaults to "untrusted" (B2 Phase A safe config; only untrusted is allowed).
   --audit-log <path>         Append AUDIT/GATE JSON lines to this file.
@@ -198,7 +198,7 @@ function androidLauncherContext() {
   return { libDir };
 }
 
-function runtimeCodexExecPath(home) {
+function runtimeCodexTuiPath(home) {
   if (!home || process.env.SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME === '1') return '';
   const current = path.join(home, '.shelly-runtime/codex/current');
   const execPath = path.join(current, 'codex_exec');
@@ -209,25 +209,16 @@ function runtimeCodexExecPath(home) {
     existingPath(execPath) &&
     existingPath(tuiPath)
   ) {
-    return execPath;
+    return tuiPath;
   }
   return '';
 }
 
-function resolveAndroidCodexExec(config, libDir) {
-  if (process.env.SHELLY_CODEX_EXEC_PATH && existingPath(process.env.SHELLY_CODEX_EXEC_PATH)) {
-    return process.env.SHELLY_CODEX_EXEC_PATH;
+function resolveAndroidCodexTui(libDir) {
+  if (process.env.SHELLY_CODEX_TUI_PATH && existingPath(process.env.SHELLY_CODEX_TUI_PATH)) {
+    return process.env.SHELLY_CODEX_TUI_PATH;
   }
-  if (
-    config.codexBin &&
-    config.codexBin !== 'codex' &&
-    path.isAbsolute(config.codexBin) &&
-    existingPath(config.codexBin) &&
-    path.basename(config.codexBin) !== 'codex'
-  ) {
-    return config.codexBin;
-  }
-  return runtimeCodexExecPath(process.env.HOME) || path.join(libDir, 'codex_exec');
+  return runtimeCodexTuiPath(process.env.HOME) || path.join(libDir, 'codex_tui');
 }
 
 function resolveAndroidNode(config, libDir) {
@@ -263,25 +254,28 @@ function androidBaseEnv(libDir) {
 function codexAppServerSpawnSpec(config) {
   const android = androidLauncherContext();
   if (android) {
-    const codexExec = resolveAndroidCodexExec(config, android.libDir);
-    const codexDir = path.dirname(codexExec);
+    const codexTui = resolveAndroidCodexTui(android.libDir);
+    const codexDir = path.dirname(codexTui);
     const env = {
       ...androidBaseEnv(android.libDir),
-      // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_exec.
-      SHELLY_CODEX_EXEC_PATH: codexExec,
+      // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_tui.
+      // The shell wrapper's native-crash fallback is not duplicated here; this
+      // selector health-gates app-data runtime before bundled codex_tui fallback.
+      SHELLY_CODEX_EXEC_PATH: codexTui,
       SHELLY_CODEX_PROC_EXE_SHIM: '1',
       SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
       LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
       LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
     };
-    const args = [codexExec, 'app-server', '--listen', 'stdio://'];
+    const args = [codexTui, 'app-server', '--listen', 'stdio://'];
     return {
-      mode: 'android-linker64-codex_exec',
+      mode: 'android-linker64-codex_tui',
       command: ANDROID_LINKER64,
       args,
       env,
       display: [ANDROID_LINKER64, ...args],
-      codexExec,
+      codexBinary: codexTui,
+      codexTui,
       libDir: android.libDir,
     };
   }
@@ -292,7 +286,8 @@ function codexAppServerSpawnSpec(config) {
     args,
     env: process.env,
     display: [config.codexBin, ...args],
-    codexExec: null,
+    codexBinary: null,
+    codexTui: null,
     libDir: null,
   };
 }
@@ -1178,7 +1173,8 @@ async function runDriver(config) {
     codexBin: config.codexBin,
     codexLaunchMode: codexSpawn.mode,
     codexSpawn: codexSpawn.display,
-    codexExec: codexSpawn.codexExec,
+    codexBinary: codexSpawn.codexBinary,
+    codexTui: codexSpawn.codexTui,
     nodeBin: config.nodeBin,
     gateLaunchMode: gateSpawn.mode,
     gateSpawn: gateSpawn.display,
