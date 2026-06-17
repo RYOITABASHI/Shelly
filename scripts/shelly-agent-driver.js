@@ -20,7 +20,7 @@ Options:
   --gate-script <path>       Gate helper path. Defaults to bundled asset.
   --codex-bin <path>         Codex executable. Defaults to "codex".
   --node-bin <path>          Node executable for the gate helper. Defaults to current node.
-  --approval-policy <mode>   Defaults to "untrusted" (B2 Phase A safe config).
+  --approval-policy <mode>   Defaults to "untrusted" (B2 Phase A safe config; only untrusted is allowed).
   --audit-log <path>         Append AUDIT/GATE JSON lines to this file.
   --timeout-ms <ms>          Whole turn timeout. Defaults to 300000.
   --gate-timeout-ms <ms>     Gate helper timeout. Defaults to 5000.
@@ -104,14 +104,17 @@ function ensureConfig(args) {
   if (!Number.isFinite(args.gateTimeoutMs) || args.gateTimeoutMs <= 0) {
     throw new Error('invalid --gate-timeout-ms');
   }
-  if (!['untrusted', 'on-failure', 'on-request', 'never'].includes(args.approvalPolicy)) {
-    throw new Error('invalid --approval-policy');
+  if (args.approvalPolicy !== 'untrusted') {
+    throw new Error('invalid --approval-policy: autonomous driver only allows "untrusted"');
   }
 
-  const cwd = path.resolve(args.cwd);
+  const requestedCwd = path.resolve(args.cwd);
+  if (!fs.existsSync(requestedCwd)) fs.mkdirSync(requestedCwd, { recursive: true });
+  const cwd = fs.realpathSync(requestedCwd);
   const prompt = readPrompt(args);
   const policy = readJsonArg(args);
-  if (!policy.workspaceRoot) policy.workspaceRoot = cwd;
+  // Workspace root is realpathed here; per-argument symlink resolution remains a later hardening gap.
+  policy.workspaceRoot = cwd;
   if (!policy.level) policy.level = 'L2';
 
   return {
@@ -130,15 +133,68 @@ function redact(value) {
     .replace(/\b([A-Za-z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*=)([^\s'"`]+)/gi, '$1[REDACTED]');
 }
 
-function extractCommand(params) {
+function redactDeep(value) {
+  if (typeof value === 'string') return redact(value);
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactDeep(item)]));
+  }
+  return value;
+}
+
+function extractCommandActions(params, fallbackCwd) {
   const actions = Array.isArray(params && params.commandActions) ? params.commandActions : [];
-  const actionCommands = actions
-    .map((action) => (action && typeof action.command === 'string' ? action.command.trim() : ''))
-    .filter(Boolean);
-  if (actionCommands.length === 1) return actionCommands[0];
-  if (actionCommands.length > 1) return actionCommands.join(' && ');
-  if (params && typeof params.command === 'string') return params.command;
-  return '';
+  if (actions.length > 0) {
+    return actions.map((action, index) => ({
+      index,
+      source: 'commandActions',
+      command: action && typeof action.command === 'string' ? action.command.trim() : '',
+      cwd: action && typeof action.cwd === 'string' ? action.cwd : fallbackCwd,
+      action: redactDeep(action || {}),
+    }));
+  }
+  if (params && typeof params.command === 'string') {
+    return [{
+      index: 0,
+      source: 'command',
+      command: params.command.trim(),
+      cwd: fallbackCwd,
+      action: null,
+    }];
+  }
+  return [{
+    index: 0,
+    source: 'missing',
+    command: '',
+    cwd: fallbackCwd,
+    action: null,
+  }];
+}
+
+function extractLegacyCommandActions(params, fallbackCwd) {
+  const rawCommand = params && params.command;
+  const command = Array.isArray(rawCommand)
+    ? rawCommand.map((part) => String(part)).join(' ').trim()
+    : typeof rawCommand === 'string'
+      ? rawCommand.trim()
+      : '';
+  return [{
+    index: 0,
+    source: 'execCommandApproval',
+    command,
+    cwd: params && typeof params.cwd === 'string' ? params.cwd : fallbackCwd,
+    action: null,
+  }];
+}
+
+function combineGateAnswers(results) {
+  if (results.some((result) => result.answer === 'n')) {
+    return { answer: 'n', decision: 'decline' };
+  }
+  if (results.some((result) => result.answer === 'escalate')) {
+    return { answer: 'escalate', decision: 'decline' };
+  }
+  return { answer: 'y', decision: 'accept' };
 }
 
 function rawLine(prefix, line) {
@@ -150,11 +206,11 @@ function createAuditWriter(auditLog) {
     const entry = {
       ts: new Date().toISOString(),
       kind,
-      ...payload,
+      ...redactDeep(payload),
     };
     const line = JSON.stringify(entry);
     process.stdout.write(`AUDIT ${line}\n`);
-    if (auditLog) fs.appendFileSync(auditLog, `${line}\n`);
+    appendAuditLine(auditLog, line);
   };
 }
 
@@ -162,11 +218,27 @@ function gateLine(auditLog, payload) {
   const entry = {
     ts: new Date().toISOString(),
     kind: 'gate_decision',
-    ...payload,
+    ...redactDeep(payload),
   };
   const line = JSON.stringify(entry);
   process.stdout.write(`GATE ${line}\n`);
-  if (auditLog) fs.appendFileSync(auditLog, `${line}\n`);
+  appendAuditLine(auditLog, line);
+}
+
+function appendAuditLine(auditLog, line) {
+  if (!auditLog) return;
+  try {
+    fs.appendFileSync(auditLog, `${line}\n`);
+  } catch (error) {
+    const fallback = {
+      ts: new Date().toISOString(),
+      kind: 'audit_append_failed',
+      auditLog,
+      error: error.message,
+      line,
+    };
+    process.stdout.write(`AUDIT_FALLBACK ${JSON.stringify(redactDeep(fallback))}\n`);
+  }
 }
 
 function runGate(config, command) {
@@ -192,8 +264,15 @@ function runGate(config, command) {
 
     const timer = setTimeout(() => {
       try {
-        child.kill('SIGKILL');
+        child.kill('SIGTERM');
       } catch {}
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+        }
+      }, 250).unref();
       finish({
         answer: 'escalate',
         error: `gate timeout after ${config.gateTimeoutMs}ms`,
@@ -259,9 +338,6 @@ function mapGateToDecision(answer) {
 }
 
 async function runDriver(config) {
-  if (!fs.existsSync(config.cwd)) fs.mkdirSync(config.cwd, { recursive: true });
-  if (!fs.existsSync(config.gateScript)) throw new Error(`gate helper not found: ${config.gateScript}`);
-
   const audit = createAuditWriter(config.auditLog);
   const child = spawn(config.codexBin, ['app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -270,20 +346,30 @@ async function runDriver(config) {
 
   let buffer = '';
   let nextId = 1;
+  const pending = new Map();
+  const respondedIds = new Set();
+  let queue = Promise.resolve();
   let initialized = false;
   let threadId = null;
   let turnStarted = false;
   let completed = false;
   let sawFailure = false;
+  let timeout = null;
 
   const send = (message) => {
     const line = JSON.stringify(message);
     rawLine('C->S', line);
-    child.stdin.write(`${line}\n`);
+    try {
+      child.stdin.write(`${line}\n`);
+    } catch (error) {
+      sawFailure = true;
+      audit('send_error', { error: error.message, message });
+    }
   };
 
-  const request = (method, params) => {
+  const request = (kind, method, params) => {
     const id = nextId++;
+    pending.set(String(id), kind);
     send({ id, method, params });
     return id;
   };
@@ -293,21 +379,57 @@ async function runDriver(config) {
     completed = true;
     clearTimeout(timeout);
     audit('driver_finish', { reason, exitCode, threadId });
-    try {
-      child.kill('SIGTERM');
-    } catch {}
-    setTimeout(() => process.exit(exitCode), 100);
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          audit('codex_sigkill_fallback', { reason });
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+        }
+      }, 1500).unref();
+      setTimeout(() => process.exit(exitCode), 1800);
+    } else {
+      setTimeout(() => process.exit(exitCode), 50);
+    }
   };
 
   const respond = (id, result) => {
+    if (id === undefined || id === null) {
+      audit('response_without_id', { result });
+      return;
+    }
+    const key = String(id);
+    if (respondedIds.has(key)) {
+      audit('duplicate_response_blocked', { requestId: id, result });
+      return;
+    }
+    respondedIds.add(key);
     send({ id, result });
+  };
+
+  const respondError = (id, code, message, data) => {
+    if (id === undefined || id === null) {
+      audit('error_response_without_id', { code, message, data });
+      return;
+    }
+    const key = String(id);
+    if (respondedIds.has(key)) {
+      audit('duplicate_error_response_blocked', { requestId: id, code, message, data });
+      return;
+    }
+    respondedIds.add(key);
+    send({ id, error: { code, message, data: redactDeep(data || null) } });
   };
 
   const handleInitialize = () => {
     if (initialized) return;
     initialized = true;
     send({ method: 'initialized' });
-    request('thread/start', {
+    request('threadStart', 'thread/start', {
       cwd: config.cwd,
       approvalPolicy: config.approvalPolicy,
       approvalsReviewer: 'user',
@@ -331,7 +453,7 @@ async function runDriver(config) {
       approvalPolicy: config.approvalPolicy,
       sandbox: 'danger-full-access',
     });
-    request('turn/start', {
+    request('turnStart', 'turn/start', {
       threadId,
       approvalPolicy: config.approvalPolicy,
       approvalsReviewer: 'user',
@@ -363,69 +485,133 @@ async function runDriver(config) {
     audit('item_started', entry);
   };
 
-  const handleApproval = async (message) => {
-    const params = message.params || {};
-    const command = extractCommand(params);
-    const cwd = typeof params.cwd === 'string' ? params.cwd : config.cwd;
-    const redactedCommand = redact(command);
+  const handleApproval = async (message, approvalKind) => {
+    const legacy = approvalKind === 'execCommandApproval';
+    let response = { decision: legacy ? 'denied' : 'decline' };
 
-    if (!command) {
-      const result = { decision: 'decline' };
+    try {
+      const params = message.params || {};
+      const fallbackCwd = typeof params.cwd === 'string' ? params.cwd : config.cwd;
+      const actions = legacy
+        ? extractLegacyCommandActions(params, fallbackCwd)
+        : extractCommandActions(params, fallbackCwd);
+
+      const gateResults = [];
+      for (const action of actions) {
+        if (!action.command) {
+          gateResults.push({
+            action,
+            answer: 'escalate',
+            error: 'missing command in approval params',
+            elapsedMs: 0,
+            outcome: null,
+            rawStdout: '',
+            rawStderr: '',
+          });
+          continue;
+        }
+        const gate = await runGate(config, action.command);
+        gateResults.push({ action, ...gate });
+      }
+
+      const composite = combineGateAnswers(gateResults);
+      const protocolDecision = legacy
+        ? composite.decision === 'accept' ? 'approved' : 'denied'
+        : composite.decision;
+      response = { decision: protocolDecision };
+
+      for (const result of gateResults) {
+        const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
+        const verdict = result.outcome && result.outcome.verdict ? result.outcome.verdict : null;
+        const actionDecision = mapGateToDecision(result.answer);
+        const redactedCommand = redact(result.action.command);
+
+        if (result.answer === 'escalate') {
+          process.stdout.write(
+            `ESCALATE human_required command=${JSON.stringify(redactedCommand)} requestId=${JSON.stringify(message.id)} actionIndex=${result.action.index} phase=PhaseA action=decline\n`,
+          );
+        }
+
+        gateLine(config.auditLog, {
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          requestId: message.id,
+          approvalKind,
+          actionIndex: result.action.index,
+          actionCount: gateResults.length,
+          actionSource: result.action.source,
+          action: result.action.action,
+          command: auditPayload.command || redactedCommand,
+          cwd: result.action.cwd,
+          answer: result.answer,
+          actionDecision,
+          compositeAnswer: composite.answer,
+          decision: protocolDecision,
+          verdictDecision: verdict && verdict.decision,
+          reason: auditPayload.reason || result.error || null,
+          signals: auditPayload.signals || [],
+          level: auditPayload.level || config.policy.level,
+          gateElapsedMs: result.elapsedMs,
+          gateError: result.error || null,
+          rawGateStdout: result.rawStdout ? redact(result.rawStdout.trim()) : '',
+          rawGateStderr: result.rawStderr ? redact(result.rawStderr.trim()) : '',
+        });
+      }
+    } catch (error) {
+      sawFailure = true;
       gateLine(config.auditLog, {
-        threadId: params.threadId,
-        turnId: params.turnId,
-        itemId: params.itemId,
+        requestId: message.id,
+        approvalKind,
         command: '',
-        cwd,
+        cwd: config.cwd,
         answer: 'escalate',
-        decision: result.decision,
-        reason: 'missing command in approval params',
+        decision: response.decision,
+        reason: `approval handler failed: ${error.message}`,
+        stack: error.stack,
       });
-      respond(message.id, result);
+    } finally {
+      respond(message.id, response);
+    }
+  };
+
+  const handleClientResponse = (message) => {
+    const key = String(message.id);
+    const kind = pending.get(key);
+    if (!kind) {
+      audit('unexpected_client_response', { requestId: message.id, message });
+      return;
+    }
+    pending.delete(key);
+
+    if (message.error) {
+      sawFailure = true;
+      audit('client_request_error', { requestId: message.id, kind, error: message.error });
+      finish(`client_request_error_${kind}`, 1);
       return;
     }
 
-    const gate = await runGate(config, command);
-    const decision = mapGateToDecision(gate.answer);
-    const auditPayload = gate.outcome && gate.outcome.audit ? gate.outcome.audit : {};
-    const verdict = gate.outcome && gate.outcome.verdict ? gate.outcome.verdict : null;
-
-    if (gate.answer === 'escalate') {
-      process.stdout.write(`ESCALATE human_required command=${JSON.stringify(redactedCommand)} phase=PhaseA action=decline\n`);
-    }
-
-    gateLine(config.auditLog, {
-      threadId: params.threadId,
-      turnId: params.turnId,
-      itemId: params.itemId,
-      requestId: message.id,
-      command: auditPayload.command || redactedCommand,
-      cwd,
-      answer: gate.answer,
-      decision,
-      verdictDecision: verdict && verdict.decision,
-      reason: auditPayload.reason || gate.error || null,
-      signals: auditPayload.signals || [],
-      level: auditPayload.level || config.policy.level,
-      gateElapsedMs: gate.elapsedMs,
-      gateError: gate.error || null,
-      rawGateStdout: gate.rawStdout ? gate.rawStdout.trim() : '',
-      rawGateStderr: gate.rawStderr ? gate.rawStderr.trim() : '',
-    });
-
-    respond(message.id, { decision });
-  };
-
-  const handleMessage = async (message) => {
-    if (message.id === 1 && message.result) {
+    if (kind === 'initialize') {
       handleInitialize();
       return;
     }
-    if (message.id === 2 && message.result && message.result.thread) {
+    if (kind === 'threadStart') {
+      if (!message.result || !message.result.thread || !message.result.thread.id) {
+        sawFailure = true;
+        audit('thread_start_malformed', { requestId: message.id, result: message.result || null });
+        finish('thread_start_malformed', 1);
+        return;
+      }
       handleThreadStart(message);
       return;
     }
-    if (message.id === 3 && message.result && message.result.turn) {
+    if (kind === 'turnStart') {
+      if (!message.result || !message.result.turn || !message.result.turn.id) {
+        sawFailure = true;
+        audit('turn_start_malformed', { requestId: message.id, result: message.result || null });
+        finish('turn_start_malformed', 1);
+        return;
+      }
       turnStarted = true;
       audit('turn_started', {
         threadId,
@@ -435,31 +621,59 @@ async function runDriver(config) {
       return;
     }
 
+    audit('unknown_pending_response_kind', { requestId: message.id, kind, message });
+  };
+
+  const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+  const isClientResponse = (message) => (
+    message
+    && hasOwn(message, 'id')
+    && (hasOwn(message, 'result') || hasOwn(message, 'error'))
+  );
+
+  const isServerRequest = (message) => (
+    message
+    && hasOwn(message, 'id')
+    && typeof message.method === 'string'
+  );
+
+  const handleServerRequest = async (message) => {
+    if (message.method === 'item/commandExecution/requestApproval') {
+      await handleApproval(message, 'item/commandExecution/requestApproval');
+      return;
+    }
+    if (message.method === 'execCommandApproval') {
+      await handleApproval(message, 'execCommandApproval');
+      return;
+    }
+    sawFailure = true;
+    audit('unknown_server_request', {
+      requestId: message.id,
+      method: message.method,
+      params: message.params || null,
+    });
+    respondError(
+      message.id,
+      -32000,
+      `unsupported server request: ${message.method}`,
+      { method: message.method },
+    );
+  };
+
+  const handleMessage = async (message) => {
+    if (isClientResponse(message)) {
+      handleClientResponse(message);
+      return;
+    }
+
+    if (isServerRequest(message)) {
+      await handleServerRequest(message);
+      return;
+    }
+
     if (message.method === 'item/started') {
       auditItemStarted(message.params);
-      return;
-    }
-
-    if (message.method === 'item/commandExecution/requestApproval') {
-      await handleApproval(message);
-      return;
-    }
-
-    if (message.method === 'execCommandApproval') {
-      const command = Array.isArray(message.params && message.params.command)
-        ? message.params.command.join(' ')
-        : '';
-      const gate = await runGate(config, command);
-      const decision = gate.answer === 'y' ? 'approved' : 'denied';
-      gateLine(config.auditLog, {
-        requestId: message.id,
-        command: redact(command),
-        cwd: message.params && message.params.cwd,
-        answer: gate.answer,
-        decision,
-        reason: gate.error || (gate.outcome && gate.outcome.audit && gate.outcome.audit.reason) || null,
-      });
-      respond(message.id, { decision });
       return;
     }
 
@@ -493,7 +707,7 @@ async function runDriver(config) {
         audit('parse_error', { error: error.message, line });
         continue;
       }
-      Promise.resolve(handleMessage(message)).catch((error) => {
+      queue = queue.then(() => handleMessage(message)).catch((error) => {
         sawFailure = true;
         audit('handler_error', { error: error.message, stack: error.stack });
       });
@@ -518,7 +732,7 @@ async function runDriver(config) {
     finish('codex_exit', exitCode);
   });
 
-  const timeout = setTimeout(() => {
+  timeout = setTimeout(() => {
     sawFailure = true;
     finish(`timeout_${config.timeoutMs}ms`, 124);
   }, config.timeoutMs);
@@ -534,7 +748,7 @@ async function runDriver(config) {
       workspaceRoot: config.policy.workspaceRoot,
     },
   });
-  request('initialize', {
+  request('initialize', 'initialize', {
     clientInfo: { name: 'shelly-agent-driver', version: '0.1.0' },
     capabilities: {},
   });
