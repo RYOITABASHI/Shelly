@@ -6,7 +6,9 @@
 
 **[docs/superpowers/DEFERRED.md](./docs/superpowers/DEFERRED.md)** — 後回しリストの唯一の真実の情報源。
 
-**[docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md](./docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md)** — 2026-05-14 時点の最新引き継ぎ。v5.3.1 の release surface は Claude Code CLI / Codex CLI を正式対応、Gemini CLI を Experimental、AI Pane / background を明示的 API provider 経路に整理済み。
+**[docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md](./docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md)** — 自律秘書（Autonomous Gate / B2）の最新引き継ぎ。別環境（PC / スマホ Codex）からの再開はまずこれを読む。on-device で launch/gate/fail-closed 立証済み（build 1539）、次は Phase B RN ブリッジ。
+
+**[docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md](./docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md)** — 2026-05-14 時点の release surface 引き継ぎ。v5.3.1 は Claude Code CLI / Codex CLI を正式対応、Gemini CLI を Experimental、AI Pane / background を明示的 API provider 経路に整理済み。
 
 このファイルには「将来実装する」「次リリースで対応」「意図的に descope した」と判断されたすべての項目が、理由と優先度 (P0/P1/P2/P3) 付きで登録されている。過去に README との不整合や機能取りこぼしが発生した反省から 2026-04-14 に導入。
 
