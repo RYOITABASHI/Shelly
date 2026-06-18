@@ -75,6 +75,12 @@ Options:
                              Defaults to decline.
   --escalation-public-key <path>
                              X.509/SPKI public key used to verify human reply signatures.
+  --escalation-public-key-sha256 <hex>
+                             SHA-256 (hex) the public-key DER file MUST hash to. Injected by the
+                             native launcher (the agent cannot alter the driver's argv) to pin the
+                             trust anchor. If set and the on-disk key mismatches, the verifier key is
+                             rejected and every escalation/grant fails closed (decline). Omit only for
+                             host/dev runs (an unpinned key is audited as dev-only).
   --preapproval-grants-file <path>
                              Signed human preapproval grant JSONL. Defaults to native no_backup storage on Android.
   --run-id <id>              Override generated run id.
@@ -106,6 +112,7 @@ function parseArgs(argv) {
     escalationDir: process.env.SHELLY_AGENT_ESCALATION_DIR || DEFAULT_ESCALATION_DIR,
     escalationReplyDir: process.env.SHELLY_AGENT_ESCALATION_REPLY_DIR || DEFAULT_ESCALATION_REPLY_DIR,
     escalationPublicKey: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY || DEFAULT_ESCALATION_PUBLIC_KEY,
+    escalationPublicKeySha256: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256 || null,
     preapprovalGrantsFile: process.env.SHELLY_AGENT_PREAPPROVAL_GRANTS_FILE || DEFAULT_PREAPPROVAL_GRANTS_FILE,
     escalationTimeoutMs: parseNonNegativeInt(
       process.env.ESCALATION_TIMEOUT_MS || DEFAULT_ESCALATION_TIMEOUT_MS,
@@ -159,6 +166,8 @@ function parseArgs(argv) {
       args.escalationTimeoutAction = next();
     } else if (arg === '--escalation-public-key') {
       args.escalationPublicKey = next();
+    } else if (arg === '--escalation-public-key-sha256') {
+      args.escalationPublicKeySha256 = next();
     } else if (arg === '--preapproval-grants-file') {
       args.preapprovalGrantsFile = next();
     } else if (arg === '--run-id') {
@@ -228,8 +237,21 @@ function ensureConfig(args) {
     // Android-Keystore-backed signature before accept is honored.
     escalationReplyDir: path.resolve(args.escalationReplyDir),
     escalationPublicKey: path.resolve(args.escalationPublicKey),
+    // Pin (SHA-256 hex of the DER) injected out-of-band by the native launcher so a same-uid
+    // agent that overwrites the key file cannot substitute its own key. Normalized to lowercase hex.
+    escalationPublicKeySha256: normalizeSha256Hex(args.escalationPublicKeySha256),
     preapprovalGrantsFile: path.resolve(args.preapprovalGrantsFile),
   };
+}
+
+function normalizeSha256Hex(value) {
+  if (typeof value !== 'string') return null;
+  const hex = value.trim().toLowerCase();
+  if (!hex) return null;
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new Error('invalid --escalation-public-key-sha256: expected 64 hex chars');
+  }
+  return hex;
 }
 
 function existingPath(candidate) {
@@ -322,6 +344,7 @@ function codexChildEnv(input) {
   delete env.SHELLY_AGENT_RUN_ID;
   delete env.SHELLY_AGENT_ID;
   delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY;
+  delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256;
   delete env.ESCALATION_TIMEOUT_MS;
   return env;
 }
@@ -793,12 +816,52 @@ function verifyPreapprovalGrantSignature(config, grant) {
   }
 }
 
-function loadEscalationVerifierPublicKey(config) {
-  return crypto.createPublicKey({
-    key: fs.readFileSync(config.escalationPublicKey),
-    format: 'der',
-    type: 'spki',
-  });
+// Load the verifier public key at most once and cache the in-memory key object so a later
+// same-uid overwrite of the DER file cannot swap the trust anchor mid-run. When a pin
+// (--escalation-public-key-sha256) is configured, the on-disk DER MUST hash to it or the key is
+// rejected and left null, so every subsequent verify fails closed (decline). Idempotent: callers
+// invoke it eagerly before spawning codex AND lazily at each escalation/grant check.
+function ensureEscalationVerifierKey(config, audit) {
+  if (config.escalationVerifierLoaded) return;
+  config.escalationVerifierLoaded = true;
+  let der;
+  try {
+    der = fs.readFileSync(config.escalationPublicKey);
+  } catch (error) {
+    config.escalationVerifierPublicKey = null;
+    audit('escalation_verifier_key_unavailable', {
+      path: config.escalationPublicKey,
+      error: error.message,
+    });
+    return;
+  }
+  const actualSha256 = crypto.createHash('sha256').update(der).digest('hex');
+  if (config.escalationPublicKeySha256) {
+    if (actualSha256 !== config.escalationPublicKeySha256) {
+      config.escalationVerifierPublicKey = null;
+      audit('escalation_verifier_key_untrusted', {
+        path: config.escalationPublicKey,
+        expectedSha256: config.escalationPublicKeySha256,
+        actualSha256,
+      });
+      return;
+    }
+  } else {
+    audit('escalation_verifier_key_unpinned', {
+      path: config.escalationPublicKey,
+      actualSha256,
+      note: 'host/dev only: no --escalation-public-key-sha256 pin; a same-uid agent could swap this key',
+    });
+  }
+  try {
+    config.escalationVerifierPublicKey = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+  } catch (error) {
+    config.escalationVerifierPublicKey = null;
+    audit('escalation_verifier_key_parse_error', {
+      path: config.escalationPublicKey,
+      error: error.message,
+    });
+  }
 }
 
 function parseGrantExpiryMs(grant) {
@@ -918,13 +981,11 @@ function findPreapprovalGrant(config, request, audit) {
     return null;
   }
 
-  try {
-    if (!config.escalationVerifierPublicKey) {
-      config.escalationVerifierPublicKey = loadEscalationVerifierPublicKey(config);
-    }
-  } catch (error) {
+  ensureEscalationVerifierKey(config, audit);
+  if (!config.escalationVerifierPublicKey) {
+    // Untrusted/missing verifier key → no grant can be honored (fail closed).
     audit('preapproval_grant_unavailable', {
-      reason: `grant verifier public key unavailable: ${error.message}`,
+      reason: 'grant verifier public key unavailable or untrusted',
       path: config.escalationPublicKey,
     });
     return null;
@@ -985,14 +1046,12 @@ async function waitForEscalation(config, request, audit) {
   let requestPayload = null;
   let preserveRequest = false;
 
-  try {
-    if (!config.escalationVerifierPublicKey) {
-      config.escalationVerifierPublicKey = loadEscalationVerifierPublicKey(config);
-    }
-  } catch (error) {
+  ensureEscalationVerifierKey(config, audit);
+  if (!config.escalationVerifierPublicKey) {
+    // Untrusted/missing verifier key → cannot trust any human reply (fail closed).
     return failClosedEscalation(audit, {
       reqId: request.reqId,
-      reason: `escalation verifier public key unavailable: ${error.message}`,
+      reason: 'escalation verifier public key unavailable or untrusted',
       requestPath: paths.requestPath,
       replyPath: replyPathForAudit,
       elapsedMs: Date.now() - startedAt,
@@ -1146,6 +1205,10 @@ async function waitForEscalation(config, request, audit) {
 
 async function runDriver(config) {
   const audit = createAuditWriter(config.auditLog);
+  // Load + pin-verify the escalation verifier key BEFORE spawning codex, so a same-uid agent can
+  // never overwrite the DER before it is cached in memory. After this the cached key object is used
+  // for all verifies regardless of later on-disk tampering.
+  ensureEscalationVerifierKey(config, audit);
   const codexSpawn = codexAppServerSpawnSpec(config);
   const gateSpawn = gateSpawnSpec(config);
   const child = spawn(codexSpawn.command, codexSpawn.args, {
@@ -1635,6 +1698,8 @@ async function runDriver(config) {
       ? config.escalationReplyDir
       : '[native-reply-channel]',
     escalationPublicKey: config.escalationPublicKey,
+    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
+    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
     escalationTimeoutMs: config.escalationTimeoutMs,
     escalationTimeoutAction: config.escalationTimeoutAction,
     preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
