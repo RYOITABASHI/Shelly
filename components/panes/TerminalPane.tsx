@@ -31,8 +31,6 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
-import { useCosmeticStore } from '@/store/cosmetic-store';
-import { usePanelBackground } from '@/hooks/use-panel-background';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -306,11 +304,10 @@ export default function TerminalScreen() {
   // add/remove/edit, not on every byte append.
   const sessions = useTerminalStore((s) => s.sessions);
   const settings = useTerminalStore((s) => s.settings);
-  // Phase B: when a wallpaper is set, ask the native TerminalView to drop
-  // its opaque background + padding fill so the wallpaper shows through.
-  // Cells with non-default backgrounds still paint, so prompt colours /
-  // syntax highlights stay visible as expected.
-  const wallpaperActive = useCosmeticStore((s) => !!s.wallpaperUri);
+  // Keep terminal panes opaque. Letting the wallpaper/panel background bleed
+  // through the native terminal makes Android IME resize and view re-mounts
+  // show gray washes behind empty cells.
+  const wallpaperActive = false;
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;
@@ -1124,7 +1121,7 @@ export default function TerminalScreen() {
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme]);
-  const terminalPaneBg = usePanelBackground(terminalColorScheme.background);
+  const terminalPaneBg = terminalColorScheme.background;
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -1636,8 +1633,9 @@ const styles = StyleSheet.create({
   // getPaddingLeft/Right before computing cols, so this correctly reduces
   // the reflow width instead of just cropping the rightmost column.
   //
-  // Wallpaper mode: the native TerminalView receives transparentBackground,
-  // and the RN wrapper stays transparent so the shared BackgroundLayer shows.
+  // Terminal panes intentionally stay opaque even when the app wallpaper is
+  // enabled. Transparent terminal backgrounds expose panel/wallpaper blends
+  // during Android IME resize and can leave gray washes behind empty cells.
   terminalView: { paddingHorizontal: 6, paddingVertical: 2 },
 
   // Error state

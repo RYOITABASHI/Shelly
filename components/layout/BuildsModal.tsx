@@ -1099,7 +1099,6 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
 
   const installLatestDevUpdate = useCallback(async () => {
     await installAndroidUpdate(latestDevUpdate, {
-      allowSameVersion: true,
       noReleaseTitle: t('updates.dev_no_release_title'),
       noReleaseBody: t('updates.dev_no_release_body'),
     });
@@ -1169,7 +1168,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const devUpdateIsOlder = Boolean(
     installedVersion && latestDevUpdate && latestDevUpdate.versionCode < installedVersion.versionCode,
   );
-  const devUpdateIsInstallable = Boolean(devUpdateIsNewer || devUpdateIsSameVersion);
+  const devUpdateIsInstallable = Boolean(devUpdateIsNewer);
   const stableDownloadActive = downloadingUpdate && downloadingUpdateChannel === stableUpdateChannel;
   const devDownloadActive = downloadingUpdate && downloadingUpdateChannel === devUpdateChannel;
   const readyToInstallUpdate = Boolean(
@@ -1299,7 +1298,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     ? 'sync'
     : !latestDevUpdate || !installedVersion
       ? 'error-outline'
-      : devUpdateIsInstallable
+      : devUpdateIsNewer
         ? 'system-update-alt'
         : 'check-circle';
   const devUpdateActionLabel = devDownloadActive
@@ -1485,7 +1484,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                   <Text style={styles.updateMeta} numberOfLines={2}>{devUpdateStatusText}</Text>
                   <Text style={styles.updateMeta} numberOfLines={2}>{currentVersionText}</Text>
                   {latestDevUpdate && <Text style={styles.updateMeta} numberOfLines={2}>{devAvailableVersionText}</Text>}
-                  {devUpdateIsSameVersion && (
+                  {devUpdateIsSameVersion && !devUpdateIsNewer && (
                     <Text style={styles.updateHint} numberOfLines={3}>{t('updates.dev_same_hint')}</Text>
                   )}
                 </View>
