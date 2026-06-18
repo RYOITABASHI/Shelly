@@ -26,7 +26,8 @@ import { useTranslation } from '@/lib/i18n';
 
 const REPO = 'RYOITABASHI/Shelly';
 const WORKFLOW = 'build-android.yml';
-const UPDATE_TAG = 'android-latest';
+const STABLE_UPDATE_TAG = 'android-latest';
+const DEV_UPDATE_TAG = 'android-dev';
 const UPDATE_MANIFEST_ASSET = 'latest.json';
 const CODEX_RUNTIME_TAG = 'codex-runtime-latest';
 const CODEX_RUNTIME_MANIFEST_ASSET = 'codex-runtime.json';
@@ -105,6 +106,7 @@ type DownloadApkProgress = {
 };
 
 type PendingApkDownload = {
+  channel: string;
   versionCode: number;
   assetName: string;
   apkPath: string;
@@ -238,6 +240,14 @@ function codexVersionFromUpdate(update?: AndroidUpdateManifest | null): string |
   return version ? version.replace(/^v/, '') : null;
 }
 
+function updateChannel(update?: AndroidUpdateManifest | null): string {
+  return update?.channel || STABLE_UPDATE_TAG;
+}
+
+function safePathSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, '-') || 'android';
+}
+
 function compareSemver(a?: string | null, b?: string | null): number {
   if (!a && !b) return 0;
   if (!a) return -1;
@@ -318,8 +328,8 @@ export async function fetchBuildRuns(): Promise<BuildRun[]> {
   return mapApiRuns(await response.json());
 }
 
-async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null> {
-  const releaseUrl = `https://api.github.com/repos/${REPO}/releases/tags/${UPDATE_TAG}`;
+async function fetchLatestAndroidUpdate(tag = STABLE_UPDATE_TAG): Promise<AndroidUpdateManifest | null> {
+  const releaseUrl = `https://api.github.com/repos/${REPO}/releases/tags/${tag}`;
   const releaseResponse = await fetchWithTimeout(releaseUrl, {
     headers: {
       Accept: 'application/vnd.github+json',
@@ -336,7 +346,7 @@ async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null>
   const assets = Array.isArray(release?.assets) ? release.assets : [];
   const manifestAsset = assets.find((asset: any) => asset?.name === UPDATE_MANIFEST_ASSET);
   if (!manifestAsset?.browser_download_url) {
-    throw new Error(`Release ${UPDATE_TAG} has no ${UPDATE_MANIFEST_ASSET} asset.`);
+    throw new Error(`Release ${tag} has no ${UPDATE_MANIFEST_ASSET} asset.`);
   }
 
   const manifestResponse = await fetchWithTimeout(String(manifestAsset.browser_download_url), {
@@ -379,12 +389,12 @@ async function fetchLatestAndroidUpdate(): Promise<AndroidUpdateManifest | null>
     throw new Error('Release manifest has an invalid sha256.');
   }
   if (!apkAsset?.browser_download_url) {
-    throw new Error(`Release ${UPDATE_TAG} has no APK asset named ${apkAssetName}.`);
+    throw new Error(`Release ${tag} has no APK asset named ${apkAssetName}.`);
   }
 
   return {
     schemaVersion: Number(raw?.schemaVersion || 1),
-    channel: raw?.channel ? String(raw.channel) : undefined,
+    channel: raw?.channel ? String(raw.channel) : tag,
     versionCode,
     versionName: String(raw?.versionName || ''),
     codexVersion: raw?.codexVersion ? String(raw.codexVersion) : undefined,
@@ -494,6 +504,7 @@ async function downloadReleaseApk(
 
   const matchingPending = await readPendingApkDownload().then((pending) => {
     if (!pending) return null;
+    if (pending.channel !== updateChannel(update)) return null;
     if (pending.versionCode !== update.versionCode) return null;
     if (pending.assetName !== update.apkAssetName) return null;
     if (pending.apkPath !== apkPath) return null;
@@ -504,7 +515,7 @@ async function downloadReleaseApk(
   if (!downloadId) {
     const started = await TerminalEmulator.enqueueApkDownload(
       update.apkUrl,
-      `shelly-update-${update.versionCode}`,
+      `shelly-update-${safePathSegment(updateChannel(update))}-${update.versionCode}`,
       update.apkAssetName,
     );
     downloadId = Number(started.downloadId);
@@ -513,6 +524,7 @@ async function downloadReleaseApk(
     }
     try {
       await writePendingApkDownload({
+        channel: updateChannel(update),
         versionCode: update.versionCode,
         assetName: update.apkAssetName,
         apkPath,
@@ -586,6 +598,7 @@ async function readPendingApkDownload(): Promise<PendingApkDownload | null> {
     if (!Number.isFinite(Number(parsed.versionCode))) return null;
     if (!parsed.assetName || !parsed.apkPath) return null;
     return {
+      channel: parsed.channel ? String(parsed.channel) : STABLE_UPDATE_TAG,
       versionCode: Number(parsed.versionCode),
       assetName: String(parsed.assetName),
       apkPath: String(parsed.apkPath),
@@ -636,7 +649,7 @@ function downloadManagerFailureMessage(status: string, reason?: number): string 
 }
 
 function releaseApkDir(update: AndroidUpdateManifest): string {
-  return `/sdcard/Download/shelly-update-${update.versionCode}`;
+  return `/sdcard/Download/shelly-update-${safePathSegment(updateChannel(update))}-${update.versionCode}`;
 }
 
 function releaseApkPath(update: AndroidUpdateManifest): string {
@@ -762,6 +775,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const { t } = useTranslation();
   const [runs, setRuns] = useState<BuildRun[]>([]);
   const [latestUpdate, setLatestUpdate] = useState<AndroidUpdateManifest | null>(null);
+  const [latestDevUpdate, setLatestDevUpdate] = useState<AndroidUpdateManifest | null>(null);
   const [latestCodexRuntime, setLatestCodexRuntime] = useState<CodexRuntimeManifest | null>(null);
   const [installedVersion, setInstalledVersion] = useState<AppVersionInfo | null>(null);
   const [installedCodexInfo, setInstalledCodexInfo] = useState<CodexVersionInfo | null>(null);
@@ -774,7 +788,15 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [logLoadingId, setLogLoadingId] = useState<number | null>(null);
   const [logTitle, setLogTitle] = useState<string | null>(null);
   const [logText, setLogText] = useState<string>('');
-  const [downloadedApk, setDownloadedApk] = useState<{ versionCode: number; path: string } | null>(null);
+  const [downloadedApk, setDownloadedApk] = useState<{
+    channel: string;
+    versionCode: number;
+    assetName: string;
+    sha256: string;
+    path: string;
+  } | null>(null);
+  const [downloadingUpdateChannel, setDownloadingUpdateChannel] = useState<string | null>(null);
+  const [downloadLogChannel, setDownloadLogChannel] = useState<string | null>(null);
   const [downloadLog, setDownloadLog] = useState<DownloadLogEntry[]>([]);
   const [downloadStartedAt, setDownloadStartedAt] = useState<number | null>(null);
   const [downloadTick, setDownloadTick] = useState(0);
@@ -795,9 +817,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       // Promise.allSettled never settles → "Checking…" sticks (bug: updater hang).
       // Wrap EVERY entry (fetches included) in withTimeout so the whole operation
       // — headers + body read — is bounded and refresh() always completes.
-      const [runsResult, updateResult, codexRuntimeResult, versionResult, codexResult] = await Promise.allSettled([
+      const [runsResult, updateResult, devUpdateResult, codexRuntimeResult, versionResult, codexResult] = await Promise.allSettled([
         withTimeout(fetchBuildRuns(), 25_000, 'Build runs'),
         withTimeout(fetchLatestAndroidUpdate(), 25_000, 'Android update'),
+        withTimeout(fetchLatestAndroidUpdate(DEV_UPDATE_TAG), 25_000, 'Dev Android update'),
         withTimeout(fetchLatestCodexRuntime(), 25_000, 'Codex runtime'),
         withTimeout<AppVersionInfo>(TerminalEmulator.getAppVersionInfo(), 10_000, 'App version'),
         withTimeout<CodexVersionInfo | null>(fetchInstalledCodexVersion(), 20_000, 'Codex version probe'),
@@ -821,6 +844,13 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       } else {
         setLatestUpdate(null);
         errors.push(String(updateResult.reason?.message || updateResult.reason));
+      }
+
+      if (devUpdateResult.status === 'fulfilled') {
+        setLatestDevUpdate(devUpdateResult.value);
+      } else {
+        setLatestDevUpdate(null);
+        errors.push(String(devUpdateResult.reason?.message || devUpdateResult.reason));
       }
 
       if (codexRuntimeResult.status === 'fulfilled') {
@@ -948,13 +978,20 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     }
   }, [clearDownloadedApk, openApkInstaller, t]);
 
-  const installLatestUpdate = useCallback(async () => {
+  const installAndroidUpdate = useCallback(async (
+    update: AndroidUpdateManifest | null,
+    options: {
+      allowSameVersion?: boolean;
+      noReleaseTitle: string;
+      noReleaseBody: string;
+    },
+  ) => {
     if (updateInstallInFlight.current) return;
-    const update = latestUpdate;
     if (!update) {
-      Alert.alert(t('updates.no_release_title'), t('updates.no_release_body'));
+      Alert.alert(options.noReleaseTitle, options.noReleaseBody);
       return;
     }
+    const channel = updateChannel(update);
     updateInstallInFlight.current = true;
     setPreparingUpdateInstall(true);
     try {
@@ -963,7 +1000,9 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         Alert.alert(t('updates.verify_failed_title'), t('updates.verify_failed_body'));
         return;
       }
-      if (update.versionCode <= current.versionCode) {
+      const olderThanInstalled = update.versionCode < current.versionCode;
+      const blockedSameVersion = !options.allowSameVersion && update.versionCode === current.versionCode;
+      if (olderThanInstalled || blockedSameVersion) {
         clearDownloadedApk();
         Alert.alert(
           t('updates.up_to_date_title'),
@@ -974,16 +1013,23 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         );
         return;
       }
-      if (downloadedApk?.versionCode === update.versionCode) {
+      if (
+        downloadedApk?.channel === channel &&
+        downloadedApk.versionCode === update.versionCode &&
+        downloadedApk.assetName === update.apkAssetName &&
+        downloadedApk.sha256 === update.sha256
+      ) {
         await openVerifiedApkInstaller(update, downloadedApk.path);
         return;
       }
       setDownloadedApk(null);
       setDownloadLog([]);
+      setDownloadLogChannel(channel);
       setDownloadStartedAt(Date.now());
       setDownloadTick(0);
       setPreparingUpdateInstall(false);
       setDownloadingUpdate(true);
+      setDownloadingUpdateChannel(channel);
       const apkPath = await downloadReleaseApk(update, (progress) => {
         switch (progress.step) {
           case 'prepare':
@@ -1007,7 +1053,13 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
             break;
         }
       });
-      setDownloadedApk({ versionCode: update.versionCode, path: apkPath });
+      setDownloadedApk({
+        channel,
+        versionCode: update.versionCode,
+        assetName: update.apkAssetName,
+        sha256: update.sha256,
+        path: apkPath,
+      });
       Alert.alert(
         t('updates.ready_title'),
         t('updates.download_install_alert_body'),
@@ -1026,17 +1078,32 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       updateInstallInFlight.current = false;
       setPreparingUpdateInstall(false);
       setDownloadingUpdate(false);
+      setDownloadingUpdateChannel(null);
     }
   }, [
     clearDownloadedApk,
     downloadedApk,
     installedVersion,
-    latestUpdate,
     markDownloadFailed,
     openVerifiedApkInstaller,
     pushDownloadLog,
     t,
   ]);
+
+  const installLatestUpdate = useCallback(async () => {
+    await installAndroidUpdate(latestUpdate, {
+      noReleaseTitle: t('updates.no_release_title'),
+      noReleaseBody: t('updates.no_release_body'),
+    });
+  }, [installAndroidUpdate, latestUpdate, t]);
+
+  const installLatestDevUpdate = useCallback(async () => {
+    await installAndroidUpdate(latestDevUpdate, {
+      allowSameVersion: true,
+      noReleaseTitle: t('updates.dev_no_release_title'),
+      noReleaseBody: t('updates.dev_no_release_body'),
+    });
+  }, [installAndroidUpdate, latestDevUpdate, t]);
 
   const installLatestCodexRuntime = useCallback(async () => {
     const update = latestCodexRuntime;
@@ -1088,14 +1155,48 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     }
   }, []);
 
+  const stableUpdateChannel = latestUpdate ? updateChannel(latestUpdate) : STABLE_UPDATE_TAG;
+  const devUpdateChannel = latestDevUpdate ? updateChannel(latestDevUpdate) : DEV_UPDATE_TAG;
   const updateIsNewer = Boolean(
     installedVersion && latestUpdate && latestUpdate.versionCode > installedVersion.versionCode,
   );
+  const devUpdateIsNewer = Boolean(
+    installedVersion && latestDevUpdate && latestDevUpdate.versionCode > installedVersion.versionCode,
+  );
+  const devUpdateIsSameVersion = Boolean(
+    installedVersion && latestDevUpdate && latestDevUpdate.versionCode === installedVersion.versionCode,
+  );
+  const devUpdateIsOlder = Boolean(
+    installedVersion && latestDevUpdate && latestDevUpdate.versionCode < installedVersion.versionCode,
+  );
+  const devUpdateIsInstallable = Boolean(devUpdateIsNewer || devUpdateIsSameVersion);
+  const stableDownloadActive = downloadingUpdate && downloadingUpdateChannel === stableUpdateChannel;
+  const devDownloadActive = downloadingUpdate && downloadingUpdateChannel === devUpdateChannel;
   const readyToInstallUpdate = Boolean(
     updateIsNewer &&
     latestUpdate &&
+    downloadedApk?.channel === stableUpdateChannel &&
     downloadedApk?.versionCode === latestUpdate.versionCode &&
+    downloadedApk.assetName === latestUpdate.apkAssetName &&
+    downloadedApk.sha256 === latestUpdate.sha256 &&
     downloadedApk.path,
+  );
+  const readyToInstallDevUpdate = Boolean(
+    devUpdateIsInstallable &&
+    latestDevUpdate &&
+    downloadedApk?.channel === devUpdateChannel &&
+    downloadedApk?.versionCode === latestDevUpdate.versionCode &&
+    downloadedApk.assetName === latestDevUpdate.apkAssetName &&
+    downloadedApk.sha256 === latestDevUpdate.sha256 &&
+    downloadedApk.path,
+  );
+  const showStableDownloadLog = Boolean(
+    stableDownloadActive ||
+    (downloadLogChannel === stableUpdateChannel && downloadLog.length > 0),
+  );
+  const showDevDownloadLog = Boolean(
+    devDownloadActive ||
+    (downloadLogChannel === devUpdateChannel && downloadLog.length > 0),
   );
   const downloadDots = '.'.repeat((downloadTick % 3) + 1);
   const downloadElapsedSec = downloadStartedAt
@@ -1106,6 +1207,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     ? Math.max(0, Math.floor((Date.now() - codexInstallStartedAt) / 1000))
     : 0;
   const canInstallUpdate = updateIsNewer && !preparingUpdateInstall && !downloadingUpdate;
+  const canInstallDevUpdate = devUpdateIsInstallable && !preparingUpdateInstall && !downloadingUpdate;
   const currentVersionText = installedVersion
     ? t('updates.current_version', {
       versionName: installedVersion.versionName || t('updates.unknown'),
@@ -1116,6 +1218,12 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     ? t('updates.available_version', {
       versionName: latestUpdate.versionName || t('updates.unknown'),
       versionCode: latestUpdate.versionCode,
+    })
+    : t('updates.details_unavailable');
+  const devAvailableVersionText = latestDevUpdate
+    ? t('updates.dev_available_version', {
+      versionName: latestDevUpdate.versionName || t('updates.unknown'),
+      versionCode: latestDevUpdate.versionCode,
     })
     : t('updates.details_unavailable');
   const bundledCodexVersion = codexVersionFromUpdate(latestUpdate);
@@ -1163,19 +1271,50 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       : updateIsNewer
         ? 'system-update-alt'
         : 'check-circle';
-  const updateActionLabel = downloadingUpdate
+  const updateActionLabel = stableDownloadActive
     ? t('updates.downloading')
     : preparingUpdateInstall
       ? t('updates.checking_short')
-    : readyToInstallUpdate
-      ? t('updates.install')
-    : updateIsNewer
-      ? t('updates.update')
-      : loading
-        ? t('updates.checking_short')
-        : latestUpdate && installedVersion
-          ? t('updates.latest')
-          : t('updates.unavailable');
+      : readyToInstallUpdate
+        ? t('updates.install')
+        : updateIsNewer
+          ? t('updates.update')
+          : loading
+            ? t('updates.checking_short')
+            : latestUpdate && installedVersion
+              ? t('updates.latest')
+              : t('updates.unavailable');
+  const devUpdateStatusText = loading
+    ? t('updates.checking')
+    : !latestDevUpdate
+      ? t('updates.dev_status_unavailable')
+      : !installedVersion
+        ? t('updates.verify_failed_title')
+        : devUpdateIsOlder
+          ? t('updates.dev_older_status')
+          : devUpdateIsNewer
+            ? t('updates.dev_available')
+            : t('updates.dev_same_status');
+  const devUpdateIconName = loading
+    ? 'sync'
+    : !latestDevUpdate || !installedVersion
+      ? 'error-outline'
+      : devUpdateIsInstallable
+        ? 'system-update-alt'
+        : 'check-circle';
+  const devUpdateActionLabel = devDownloadActive
+    ? t('updates.downloading')
+    : preparingUpdateInstall
+      ? t('updates.checking_short')
+      : readyToInstallDevUpdate
+        ? t('updates.install')
+        : devUpdateIsInstallable
+          ? t('updates.dev_install')
+          : loading
+            ? t('updates.checking_short')
+            : latestDevUpdate && installedVersion
+              ? t('updates.latest')
+              : t('updates.unavailable');
   const codexStatusText = loading
     ? t('updates.checking')
     : !latestCodexRuntime
@@ -1302,7 +1441,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                   onPress={() => void installLatestUpdate()}
                   disabled={!canInstallUpdate}
                 >
-                  {downloadingUpdate ? (
+                  {stableDownloadActive ? (
                     <ActivityIndicator size="small" color={C.bgDeep} />
                   ) : preparingUpdateInstall ? (
                     <ActivityIndicator size="small" color={C.bgDeep} />
@@ -1327,9 +1466,62 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
               {readyToInstallUpdate && !downloadingUpdate && (
                 <Text style={styles.updateHint} numberOfLines={3}>{t('updates.download_install_ready_hint')}</Text>
               )}
-              {renderProgressLog(
+              {showStableDownloadLog && renderProgressLog(
                 t('updates.download_log_title'),
-                downloadingUpdate,
+                stableDownloadActive,
+                downloadElapsedSec,
+                downloadLog,
+                downloadDots,
+              )}
+            </View>
+
+            <View style={styles.updateBox}>
+              <View style={styles.updateHead}>
+                <View style={styles.statusIcon}>
+                  <MaterialIcons name={devUpdateIconName as any} size={18} color={C.accent} />
+                </View>
+                <View style={styles.updateCopy}>
+                  <Text style={styles.updateTitle} numberOfLines={2}>{t('updates.dev_builds')}</Text>
+                  <Text style={styles.updateMeta} numberOfLines={2}>{devUpdateStatusText}</Text>
+                  <Text style={styles.updateMeta} numberOfLines={2}>{currentVersionText}</Text>
+                  {latestDevUpdate && <Text style={styles.updateMeta} numberOfLines={2}>{devAvailableVersionText}</Text>}
+                  {devUpdateIsSameVersion && (
+                    <Text style={styles.updateHint} numberOfLines={3}>{t('updates.dev_same_hint')}</Text>
+                  )}
+                </View>
+                <Pressable
+                  style={[styles.actionBtn, !canInstallDevUpdate && styles.actionBtnDisabled]}
+                  onPress={() => void installLatestDevUpdate()}
+                  disabled={!canInstallDevUpdate}
+                >
+                  {devDownloadActive ? (
+                    <ActivityIndicator size="small" color={C.bgDeep} />
+                  ) : preparingUpdateInstall ? (
+                    <ActivityIndicator size="small" color={C.bgDeep} />
+                  ) : (
+                    <MaterialIcons
+                      name={(readyToInstallDevUpdate ? 'install-mobile' : 'science') as any}
+                      size={13}
+                      color={canInstallDevUpdate ? C.bgDeep : C.text3}
+                    />
+                  )}
+                  <Text
+                    style={[styles.actionText, !canInstallDevUpdate && styles.actionTextDisabled]}
+                    numberOfLines={1}
+                  >
+                    {devUpdateActionLabel}
+                  </Text>
+                </Pressable>
+              </View>
+              {devUpdateIsInstallable && (
+                <Text style={styles.updateHint} numberOfLines={3}>{t('updates.dev_android_confirm')}</Text>
+              )}
+              {readyToInstallDevUpdate && !downloadingUpdate && (
+                <Text style={styles.updateHint} numberOfLines={3}>{t('updates.download_install_ready_hint')}</Text>
+              )}
+              {showDevDownloadLog && renderProgressLog(
+                t('updates.download_log_title'),
+                devDownloadActive,
                 downloadElapsedSec,
                 downloadLog,
                 downloadDots,
@@ -1412,6 +1604,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                     (latestUpdate && (
                       (latestUpdate.runId && latestUpdate.runId === run.databaseId) ||
                       (!latestUpdate.runId && latestUpdate.gitSha && latestUpdate.gitSha === run.headSha)
+                    )) ||
+                    (latestDevUpdate && (
+                      (latestDevUpdate.runId && latestDevUpdate.runId === run.databaseId) ||
+                      (!latestDevUpdate.runId && latestDevUpdate.gitSha && latestDevUpdate.gitSha === run.headSha)
                     )) ||
                     (latestCodexRuntime && (
                       (latestCodexRuntime.runId && latestCodexRuntime.runId === run.databaseId) ||
