@@ -2755,7 +2755,22 @@ public final class TerminalEmulator {
         // stream sessions where shellPid is unknown).
         boolean shellIsBash = isShellyShellBash();
         if (bracketedMode) {
-            if (forceTuiPaste || tuiMode || !shellIsBash) {
+            if (!forceTuiPaste && !tuiMode && shellIsBash && hasLineBreak(text)) {
+                // Local bash prompt + multiline clipboard paste:
+                //
+                // Shelly's bash/readline bracketed-paste path keeps the
+                // entire payload in one edit buffer. Readline renders
+                // embedded LF as "^J" and horizontally scrolls long lines
+                // with a leading "<", which looks like the paste was
+                // truncated and also breaks Shelly's @agent pseudo-command
+                // interception because the user sees one opaque line.
+                //
+                // For the terminal Paste button, prefer visible shell
+                // semantics: clipboard line breaks become Enter in a single
+                // PTY write, so the paste stays ordered and cannot interleave
+                // with keypresses between pasted lines.
+                pasteMultilineShellTextVisibly(text);
+            } else if (forceTuiPaste || tuiMode || !shellIsBash) {
                 // TUI/CLI app OR non-bash shell: standard bracketed paste.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
@@ -2772,6 +2787,14 @@ public final class TerminalEmulator {
             // don't support bracketed-paste anyway.
             mSession.write(text.replaceAll("\r?\n", "\r"));
         }
+    }
+
+    private boolean hasLineBreak(String text) {
+        return text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0;
+    }
+
+    private void pasteMultilineShellTextVisibly(String text) {
+        mSession.write(text.replace('\r', '\n').replace('\n', '\r'));
     }
 
     private boolean isShellyPasteForceTui() {
