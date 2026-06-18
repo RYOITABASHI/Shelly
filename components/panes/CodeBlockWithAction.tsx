@@ -67,7 +67,8 @@ export function CodeBlockWithAction({ lang, code }: Props) {
 
   const handleInsert = useCallback(async () => {
     const sessionId = useTerminalStore.getState().activeSessionId;
-    if (!sessionId) {
+    const session = useTerminalStore.getState().sessions.find((candidate) => candidate.id === sessionId);
+    if (!session?.nativeSessionId) {
       if (Platform.OS === 'android') {
         ToastAndroid.show('No active terminal', ToastAndroid.SHORT);
       }
@@ -78,7 +79,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
       // command before pressing Enter. For shell-like langs we still drop
       // the snippet inline; for diff / json / other non-executable content
       // we let the user decide whether to keep the inserted text.
-      await TerminalEmulator.writeToSession(sessionId, trimmed);
+      await TerminalEmulator.pasteToSession(session.nativeSessionId, trimmed);
       try { playSound('send'); } catch {}
       if (Platform.OS === 'android') {
         ToastAndroid.show('Inserted into terminal', ToastAndroid.SHORT);

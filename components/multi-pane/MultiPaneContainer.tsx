@@ -249,13 +249,26 @@ export function MultiPaneContainer() {
     );
   }
 
+  // Shrink the usable height by the keyboard size only when the Android
+  // window did not already resize. On One UI with adjustResize, the root
+  // layout height is already reduced; subtracting keyboardHeight again
+  // leaves the panes crushed into the top half with a large empty gap.
+  const alreadyResizedForIme = keyboardHeight > 0 && size.H > 0 &&
+    keyboardFreeHeight > 0 &&
+    keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
+  const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
+  const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
+
   // Maximized path — render the maximized slot full-screen.
   if (maximized !== null && slots[maximized]) {
     const slot = slots[maximized]!;
     return (
-      <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout}>
+      <View
+        style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
+        onLayout={onContainerLayout}
+      >
         <View
-          style={[styles.slotAbs, { left: 0, top: 0, width: size.W, height: size.H }]}
+          style={[styles.slotAbs, { left: 0, top: 0, width: size.W, height: gridHeight }]}
         >
           <PaneSlot
             leafId={slot.id}
@@ -271,15 +284,6 @@ export function MultiPaneContainer() {
     );
   }
 
-  // Shrink the usable height by the keyboard size only when the Android
-  // window did not already resize. On One UI with adjustResize, the root
-  // layout height is already reduced; subtracting keyboardHeight again
-  // leaves the panes crushed into the top half with a large empty gap.
-  const alreadyResizedForIme = keyboardHeight > 0 && size.H > 0 &&
-    keyboardFreeHeight > 0 &&
-    keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
-  const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
-  const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
   const renderPreset = size.W > 0 && size.W < 380 ? 'p1' : preset;
   const { slotRects, dividers } = getLayout(renderPreset, ratios, size.W, gridHeight);
   const singlePaneSlot = renderPreset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;

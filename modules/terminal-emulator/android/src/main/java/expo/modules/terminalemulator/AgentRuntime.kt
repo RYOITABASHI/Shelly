@@ -29,8 +29,15 @@ object AgentRuntime {
     fun runAgent(context: Context, agentId: String): AgentRunResult {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
-        val libDir = LibExtractor.extractAll(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
+        val libDir = try {
+            LibExtractor.extractAll(appContext)
+        } catch (e: Exception) {
+            val message = "runtime extraction failed before script: ${e.javaClass.simpleName}: ${e.message}"
+            Log.e(TAG, message, e)
+            writeReceiverLog(homeDir, agentId, "error", message)
+            return AgentRunResult(agentId, 125, "", message)
+        }
         val bashPath = LibExtractor.getBashPath(appContext)
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
         val script = File(scriptPath)
@@ -51,6 +58,10 @@ object AgentRuntime {
 
         val libPath = libDir.absolutePath
         val escalationPublicKeySha256 = AgentEscalationBridge.verifierPublicKeySha256(appContext)
+        Log.i(
+            TAG,
+            "Agent $agentId starting via Shelly runtime script=$scriptPath version=$scriptVersion pinInjected=${escalationPublicKeySha256.isNotBlank()}"
+        )
         val command = buildString {
             append("export PATH=")
             append(shellQuote("$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin"))

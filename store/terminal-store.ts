@@ -322,8 +322,9 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       connectionMode: connectionMode === 'native' ? 'native' as const : undefined,
     };
 
-    // Truncate overly long commands in history (keep first 500 chars)
-    const historyCmd = command.length > 500 ? command.slice(0, 500) + '…' : command;
+    // Keep command history executable. UI surfaces should truncate for display
+    // only; storing an ellipsis here makes history replay paste a broken command.
+    const historyCmd = command;
     const newHistory = command.trim()
       ? [historyCmd, ...session.commandHistory.filter((c) => c !== command && c !== historyCmd)].slice(0, 100)
       : session.commandHistory;
