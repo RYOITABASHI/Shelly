@@ -14,6 +14,11 @@ const DEFAULT_ESCALATION_PUBLIC_KEY = defaultEscalationPublicKey();
 const DEFAULT_PREAPPROVAL_GRANTS_FILE = defaultPreapprovalGrantsFile();
 const ESCALATION_POLL_MS = 250;
 const ANDROID_LINKER64 = '/system/bin/linker64';
+// A signal here is *eligible* for a grant; it does NOT mean "grantable as expiry-only".
+// network-send (and leaves-root WRITES) are Tier-1-ONLY — they stay in this set so a future
+// keystore-maxuse (hardware-counted) grant can cover them, but isReplayDangerousSignals() is the
+// enforcement point that blocks them from expiry-only (Tier-2). Don't drop network-send here, or
+// the Tier-1 path loses it too.
 const GRANTABLE_BOUNDARY_SIGNALS = new Set(['leaves-root', 'network-send']);
 const UNGRANTABLE_BOUNDARY_SIGNALS = new Set(['secret-read', 'destructive', 'policy-write']);
 
@@ -756,9 +761,12 @@ function boundarySignals(signals) {
   return grantSignals(signals).filter((signal) => signal !== 'write-or-exec');
 }
 
+// v2 binds grantKeyMode + the per-grant key identity (sha256 of its SPKI) into the human
+// signature so a same-uid agent can neither downgrade keystore-maxuse→expiry-only nor swap the
+// per-grant key. (See 2026-06-17-B2-grant-consumption-contract.md.)
 function preapprovalGrantSignatureMessage(grant) {
   return [
-    'shelly-agent-preapproval-grant-v1',
+    'shelly-agent-preapproval-grant-v2',
     String(grant.id || ''),
     String(grant.agentId || ''),
     String(grant.workspaceRoot || ''),
@@ -769,7 +777,20 @@ function preapprovalGrantSignatureMessage(grant) {
     String(grant.requestSha256 || ''),
     String(grant.requestTs || ''),
     String(grant.usesRemaining || 1),
+    String(grant.grantKeyMode || ''),
+    grant.grantKeySpki ? sha256Hex(String(grant.grantKeySpki)) : '',
   ].join('\n');
+}
+
+// Replay-dangerous (non-idempotent / exfiltration-capable) ops may NOT be honored as expiry-only
+// (Tier 2) — they require Tier-1 hardware count enforcement or a fresh human tap each time.
+// Computed from the ORIGINAL request signals (write-or-exec distinguishes a leaves-root write
+// from a read; boundarySignals() strips it, so check the raw signals here).
+function isReplayDangerousSignals(originalSignals) {
+  const set = new Set(grantSignals(originalSignals));
+  if (set.has('network-send')) return true;
+  if (set.has('leaves-root') && set.has('write-or-exec')) return true;
+  return false;
 }
 
 function verifyEscalationReplySignature(config, requestPayload, requestSha256, reply) {
@@ -1012,13 +1033,10 @@ function findPreapprovalGrant(config, request, audit) {
 
   const records = loadPreapprovalGrantRecords(config, audit);
   if (records.length === 0) return null;
-  const usedCounts = new Map();
-  for (const record of records) {
-    if (record.type === 'used' && record.grantId) {
-      usedCounts.set(String(record.grantId), (usedCounts.get(String(record.grantId)) || 0) + 1);
-    }
-  }
 
+  // NOTE: consumption is NOT gated on the file `used`-count anymore (#2). A same-uid agent can
+  // delete those lines, so counting them was security theater. The bound is now expiry (Tier 2)
+  // or a Keystore hardware count via the native spend round-trip (Tier 1, keystore-maxuse).
   const now = Date.now();
   const requestCommandSha256 = request.commandSha256 || commandSha256(request.command);
   for (const record of records) {
@@ -1028,8 +1046,6 @@ function findPreapprovalGrant(config, request, audit) {
     if (!grantId) continue;
     const expiresAtMs = parseGrantExpiryMs(grant);
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
-    const usesRemaining = Number.isFinite(Number(grant.usesRemaining)) ? Math.max(1, Number(grant.usesRemaining)) : 1;
-    if ((usedCounts.get(grantId) || 0) >= usesRemaining) continue;
     if (grant.agentId !== config.agentId) continue;
     if (grant.workspaceRoot !== config.policy.workspaceRoot) continue;
     if (grant.commandSha256 !== requestCommandSha256) continue;
@@ -1045,12 +1061,36 @@ function findPreapprovalGrant(config, request, audit) {
       });
       continue;
     }
-    return {
-      id: grantId,
-      expiresAt: grant.expiresAt,
-      signals,
+
+    const mode = String(grant.grantKeyMode || '');
+    if (mode === 'expiry-only') {
+      // Tier 2: honored within the signed window for the exact command. Replay-dangerous ops are
+      // NOT eligible — they require Tier-1 hardware count or a fresh human tap.
+      if (isReplayDangerousSignals(request.signals)) {
+        audit('preapproval_grant_rejected', {
+          grantId,
+          reason: 'replay-dangerous signal not grantable as expiry-only (tier-1 only)',
+          commandSha256: requestCommandSha256,
+        });
+        continue;
+      }
+      return { id: grantId, grantKeyMode: mode, expiresAt: grant.expiresAt, signals, commandSha256: requestCommandSha256 };
+    }
+    if (mode === 'keystore-maxuse') {
+      // Tier 1: hardware-counted consumption needs the native spend round-trip (Phase 2b). Until
+      // the driver implements it, fail closed rather than honor without count enforcement.
+      audit('preapproval_grant_rejected', {
+        grantId,
+        reason: 'keystore-maxuse consumption not yet supported by driver (tier-1 pending)',
+        commandSha256: requestCommandSha256,
+      });
+      continue;
+    }
+    audit('preapproval_grant_rejected', {
+      grantId,
+      reason: `unknown or missing grantKeyMode: ${mode || '(none)'}`,
       commandSha256: requestCommandSha256,
-    };
+    });
   }
   return null;
 }
@@ -1751,4 +1791,18 @@ async function main() {
   }
 }
 
-main();
+// Run as a CLI (incl. on Android via `node .shelly-agent-driver.js`); require() in tests instead.
+if (require.main === module) {
+  main();
+}
+
+// Exported for unit tests only (no behavior change to the CLI path).
+module.exports = {
+  preapprovalGrantSignatureMessage,
+  verifyPreapprovalGrantSignature,
+  findPreapprovalGrant,
+  isReplayDangerousSignals,
+  normalizeSha256Hex,
+  ensureEscalationVerifierKey,
+  commandSha256,
+};
