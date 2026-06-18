@@ -200,9 +200,22 @@ class ShellyTerminalView(
         }
         inputHandler.clipboardPaste = { session ->
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            val text = clipboard?.primaryClip?.getItemAt(0)?.text?.toString()
+            val text = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
             if (text != null) {
-                session.write(text.toByteArray(Charsets.UTF_8), 0, text.toByteArray(Charsets.UTF_8).size)
+                val shellySession = currentShellySession
+                if (shellySession?.terminalSession == session) {
+                    Log.d("ShellyPaste", "clipboard shortcut via ShellyTerminalSession len=${text.length}")
+                    shellySession.paste(text)
+                } else {
+                    Log.d("ShellyPaste", "clipboard shortcut via TerminalSession emulator len=${text.length}")
+                    val emulator = session.emulator
+                    if (emulator != null) {
+                        emulator.paste(text)
+                    } else {
+                        val bytes = text.replace("\r\n", "\r").replace("\n", "\r").toByteArray(Charsets.UTF_8)
+                        session.write(bytes, 0, bytes.size)
+                    }
+                }
                 true
             } else {
                 false

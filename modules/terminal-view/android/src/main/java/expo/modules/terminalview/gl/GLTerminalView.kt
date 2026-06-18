@@ -135,6 +135,33 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN
 
         return object : BaseInputConnection(this, true) {
+            private var previousCommitAt = 0L
+            private var previousCommitWasPaste = false
+            private val commitBurstWindowMs = 50L
+
+            private fun isPrintableAsciiOnly(text: String): Boolean {
+                for (ch in text) {
+                    if (ch.code < 0x20 || ch.code > 0x7E) return false
+                }
+                return true
+            }
+
+            private fun looksLikePasteChunk(text: String): Boolean {
+                if (text.isEmpty() || text.length == 1) return false
+                if (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) return true
+                if (text.length >= 16) return true
+                if (!isPrintableAsciiOnly(text)) return false
+                if (text.length < 4) return false
+
+                var hasWhitespace = false
+                var hasShellPunctuation = false
+                for (ch in text) {
+                    if (ch.isWhitespace()) hasWhitespace = true
+                    if ("./~^-_=:@<>".indexOf(ch) >= 0) hasShellPunctuation = true
+                }
+                return hasWhitespace && (hasShellPunctuation || text.length >= 8)
+            }
+
             // setComposingText does NOT write to the PTY. The IME owns its
             // in-progress buffer via the BaseInputConnection Editable; the
             // candidate bar above the soft keyboard is the user-visible
@@ -156,11 +183,30 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
             }
 
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-                val session = shellySession?.terminalSession ?: return false
+                val shelly = shellySession ?: return false
+                val session = shelly.terminalSession
                 val s = text?.toString() ?: ""
                 if (s.isNotEmpty()) {
-                    val bytes = s.toByteArray(Charsets.UTF_8)
-                    session.write(bytes, 0, bytes.size)
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val delta = if (previousCommitAt == 0L) -1L else now - previousCommitAt
+                    previousCommitAt = now
+                    val hasNewline = s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0
+                    val singleNewline = s.length == 1 && hasNewline
+                    var looksLikePaste = !singleNewline && looksLikePasteChunk(s)
+                    if (!looksLikePaste && previousCommitWasPaste && delta >= 0 && delta < commitBurstWindowMs) {
+                        looksLikePaste = true
+                        Log.d(TAG, "commitText burst-coalesce len=${s.length} delta=${delta}ms")
+                    }
+                    if (looksLikePaste) {
+                        Log.d(TAG, "commitText paste funnel len=${s.length} nl=$hasNewline delta=${delta}ms")
+                        shelly.paste(s)
+                        previousCommitWasPaste = true
+                    } else {
+                        val outbound = if (singleNewline) "\r" else s
+                        val bytes = outbound.toByteArray(Charsets.UTF_8)
+                        session.write(bytes, 0, bytes.size)
+                        previousCommitWasPaste = false
+                    }
                 }
                 return super.commitText(text, newCursorPosition)
             }

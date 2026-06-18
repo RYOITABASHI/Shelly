@@ -1049,9 +1049,11 @@ patchCodex(libDir);
     //      request queue is under HOME for RN polling; the reply channel lives
     //      outside HOME in no_backup and is derived by the driver/native side
     //      rather than advertised in the shell environment.
-    // 228: Disable readline horizontal-scroll-mode so long pasted shell input
+    // 229: Disable readline horizontal-scroll-mode so long pasted shell input
     //      wraps on screen instead of showing a leading "<" truncation marker.
-    private const val BASHRC_VERSION = 228
+    //      228 was seen on device while an older APK still targeted 227, so
+    //      use 229 to guarantee regeneration on those homes as well.
+    private const val BASHRC_VERSION = 229
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1896,8 +1898,9 @@ patchCodex(libDir);
             // \C-x\C-b garbage to the Ink TUI. Marker file
             // \$HOME/.shelly_paste_force_tui is a reliable explicit
             // signal: the CLI wrapper functions create it on entry,
-            // remove it on exit. paste() prefers standard \e[200~
-            // brackets while marker is present.
+            // remove it on exit, and the prompt command clears any stale
+            // marker left by an abnormal CLI exit. paste() prefers standard
+            // \e[200~ brackets while marker is present.
             sb.appendLine("__shelly_paste_tui_begin() { printf '%s\\n' \"\$\$\" > \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine("__shelly_paste_tui_end() { rm -f \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine("shelly-reset-cli-runtime() {")
@@ -2783,7 +2786,11 @@ patchCodex(libDir);
             sb.appendLine("  # them as PS1 width-hint markers, and \\033 expands to ESC for color.")
             sb.appendLine("  printf -v PS1 '\\[\\033[1;32m\\]%s\\[\\033[0m\\]\\$ ' \"\$d\"")
             sb.appendLine("}")
-            sb.appendLine("PROMPT_COMMAND=__shelly_prompt")
+            sb.appendLine("__shelly_prompt_command() {")
+            sb.appendLine("  __shelly_paste_tui_end")
+            sb.appendLine("  __shelly_prompt")
+            sb.appendLine("}")
+            sb.appendLine("PROMPT_COMMAND=__shelly_prompt_command")
 
             // MOTD — displayed once on first login, then flag file prevents repeat
             sb.appendLine()

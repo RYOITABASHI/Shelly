@@ -1028,7 +1028,7 @@ public class TerminalView extends View {
 
     @Override
     public boolean isOpaque() {
-        return true;
+        return !mTransparentBackground;
     }
 
     /**
