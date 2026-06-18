@@ -151,25 +151,35 @@ jobs:
         # is resolved dynamically from the Packages.xz index so we follow
         # upstream automatically.
         run: |
+          set -euo pipefail
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          REPO_BASE="https://packages-cf.termux.dev/apt/termux-main"
+          TERMUX_REPO_BASES=(
+            "https://packages-cf.termux.dev/apt/termux-main"
+            "https://packages.termux.dev/apt/termux-main"
+          )
+
+          curl_retry() {
+            curl --fail --silent --show-error --location \
+              --retry 4 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 20 --max-time 120 "$@"
+          }
 
           # Fetch the Termux apt index. The mirror at
           # packages-cf.termux.dev historically served Packages.xz, but as of
           # 2026-04-27 only the uncompressed Packages and Packages.gz are
           # reliably present. Try in preference order: .xz → .gz →
-          # uncompressed. The build CI runner has xz-utils + gzip pre-
-          # installed; only the uncompressed fallback would also work
-          # without decoders, so it's the safety net.
+          # uncompressed, across multiple mirrors. The build CI runner has
+          # xz-utils + gzip pre-installed; only the uncompressed fallback would
+          # also work without decoders, so it's the safety net.
           fetch_packages_index() {
             local url="$1" decoder="$2"
             if [ -n "$decoder" ]; then
-              curl -fsSL "$url" | $decoder > /tmp/Packages.tmp 2>/dev/null \
+              curl_retry "$url" | $decoder > /tmp/Packages.tmp 2>/dev/null \
                 && [ -s /tmp/Packages.tmp ] \
                 && mv /tmp/Packages.tmp /tmp/Packages \
                 && return 0
             else
-              curl -fsSL "$url" -o /tmp/Packages.tmp 2>/dev/null \
+              curl_retry -o /tmp/Packages.tmp "$url" 2>/dev/null \
                 && [ -s /tmp/Packages.tmp ] \
                 && mv /tmp/Packages.tmp /tmp/Packages \
                 && return 0
@@ -177,18 +187,33 @@ jobs:
             rm -f /tmp/Packages.tmp
             return 1
           }
-          IDX_BASE="${REPO_BASE}/dists/stable/main/binary-aarch64"
-          if   fetch_packages_index "${IDX_BASE}/Packages.xz" "xz -d"; then
-            echo "[termux-extras] index source: Packages.xz"
-          elif fetch_packages_index "${IDX_BASE}/Packages.gz" "gzip -d"; then
-            echo "[termux-extras] index source: Packages.gz"
-          elif fetch_packages_index "${IDX_BASE}/Packages" ""; then
-            echo "[termux-extras] index source: Packages (uncompressed)"
-          else
-            echo "FATAL: could not fetch Termux Packages index from ${IDX_BASE}" >&2
+          REPO_BASE=""
+          INDEX_SOURCE=""
+          for candidate_repo in "${TERMUX_REPO_BASES[@]}"; do
+            IDX_BASE="${candidate_repo}/dists/stable/main/binary-aarch64"
+            if   fetch_packages_index "${IDX_BASE}/Packages.xz" "xz -d"; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages.xz"
+              break
+            elif fetch_packages_index "${IDX_BASE}/Packages.gz" "gzip -d"; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages.gz"
+              break
+            elif fetch_packages_index "${IDX_BASE}/Packages" ""; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages (uncompressed)"
+              break
+            else
+              echo "[termux-extras] WARN: could not fetch index from ${IDX_BASE}" >&2
+            fi
+          done
+          if [ -z "${REPO_BASE}" ]; then
+            echo "FATAL: could not fetch Termux Packages index from any configured mirror" >&2
             exit 1
           fi
           test -s /tmp/Packages || { echo "FATAL: empty Packages index"; exit 1; }
+          echo "[termux-extras] repo mirror: ${REPO_BASE}"
+          echo "[termux-extras] index source: ${INDEX_SOURCE}"
           echo "[termux-extras] index size: $(wc -c < /tmp/Packages) bytes"
 
           # Filename helper (paragraph-mode awk lookup)
@@ -233,7 +258,7 @@ jobs:
           GIT_FILENAME=$(find_filename git)
           [ -n "$GIT_FILENAME" ] || { echo "FATAL: git package not found in Packages index"; exit 1; }
           echo "[termux-extras] git: ${GIT_FILENAME}"
-          curl -fsSL "${REPO_BASE}/${GIT_FILENAME}" -o /tmp/git.deb
+          curl_retry -o /tmp/git.deb "${REPO_BASE}/${GIT_FILENAME}"
           extract_deb /tmp/git.deb /tmp/git-pkg
           for helper in git-remote-https git-remote-http; do
             src="/tmp/git-pkg/data/data/com.termux/files/usr/libexec/git-core/${helper}"
@@ -261,7 +286,7 @@ jobs:
           SSH_FILENAME=$(find_filename openssh)
           [ -n "$SSH_FILENAME" ] || { echo "FATAL: openssh package not found in Packages index"; exit 1; }
           echo "[termux-extras] openssh: ${SSH_FILENAME}"
-          curl -fsSL "${REPO_BASE}/${SSH_FILENAME}" -o /tmp/openssh.deb
+          curl_retry -o /tmp/openssh.deb "${REPO_BASE}/${SSH_FILENAME}"
           extract_deb /tmp/openssh.deb /tmp/openssh-pkg
           src="/tmp/openssh-pkg/data/data/com.termux/files/usr/bin/ssh-keygen"
           dst="${GITHUB_WORKSPACE}/${JNILIBS}/libssh_keygen.so"
@@ -307,7 +332,7 @@ jobs:
                 echo "[termux-extras] ${pkg}: ${pkg_filename}"
                 pkg_dir="/tmp/${pkg}-pkg"
                 rm -rf "$pkg_dir"
-                curl -fsSL "${REPO_BASE}/${pkg_filename}" -o "/tmp/${pkg}.deb"
+                curl_retry -o "/tmp/${pkg}.deb" "${REPO_BASE}/${pkg_filename}"
                 extract_deb "/tmp/${pkg}.deb" "$pkg_dir"
                 ;;
             esac
