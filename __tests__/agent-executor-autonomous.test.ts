@@ -63,4 +63,15 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     const sDefault = generateRunScript(agent({ type: 'perplexity' })); // autonomous undefined
     expect(sDefault).not.toContain('[REFUSED]');
   });
+
+  it('gates /sdcard audit mirroring behind an explicit env flag for autonomous cli runs', () => {
+    const s = generateRunScript(agent({ type: 'auto' }, true));
+    expect(s).toContain('AUDIT_MIRROR_SDCARD_ELIGIBLE=1');
+    expect(s).toContain('SHELLY_AGENT_AUDIT_MIRROR_SDCARD');
+    expect(s).toContain('case "${SHELLY_AGENT_AUDIT_MIRROR_SDCARD:-}" in');
+    expect(s).toContain('cp "$audit_file" "/sdcard/b2-autonomous-audit-$AGENT_ID.jsonl" 2>/dev/null || true');
+
+    const nonAutonomousCli = generateRunScript(agent({ type: 'cli', cli: 'codex' }, false));
+    expect(nonAutonomousCli).toContain('AUDIT_MIRROR_SDCARD_ELIGIBLE=0');
+  });
 });
