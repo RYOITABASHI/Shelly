@@ -231,8 +231,16 @@ class NotificationDispatcher(private val context: Context) {
             val deny = agentEscalationActionPendingIntent(allow = false, request, actionNonce, requestSha256)
             val reason = request.reason?.takeIf { it.isNotBlank() }
             val signalLine = request.signals.takeIf { it.isNotEmpty() }?.joinToString(", ")
+            val redactedCommand = request.command.redactForScouter()
+            val commandIsTruncated = redactedCommand.length > APPROVAL_MAX_CHARS || redactedCommand.lines().size > 1
             val body = listOfNotNull(
-                request.command.redactForScouter(),
+                redactedCommand,
+                commandIsTruncated.takeIf { it }?.let {
+                    context.getString(
+                        R.string.scouter_notification_agent_escalation_truncated,
+                        redactedCommand.length
+                    )
+                },
                 reason?.let {
                     context.getString(
                         R.string.scouter_notification_agent_escalation_reason,
@@ -256,7 +264,7 @@ class NotificationDispatcher(private val context: Context) {
                     R.string.scouter_notification_agent_escalation_title,
                     shorten(request.agentId, 32)
                 ),
-                text = truncate(request.command.redactForScouter(), REPLY_MAX_CHARS),
+                text = truncate(redactedCommand, REPLY_MAX_CHARS),
                 bigText = truncate(body, APPROVAL_MAX_CHARS),
                 actions = listOf(
                     action(context.getString(R.string.scouter_notification_action_allow), allow),

@@ -27,7 +27,8 @@ const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('codex exec'); // resolved to cli/codex
+    expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
+    expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain(UNSET); // codex path → keys scrubbed
     expect(s).not.toContain('[REFUSED]');
   });
@@ -49,6 +50,7 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
   it('allows autonomous cli/local/ab-article-eval (oauth/local, no key) normally', () => {
     const cli = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));
     expect(cli).not.toContain('[REFUSED]');
+    expect(cli).toContain('.shelly-agent-driver.js');
     expect(cli).toContain(UNSET); // oauth path → keys scrubbed
     expect(generateRunScript(agent({ type: 'local' }, true))).not.toContain('[REFUSED]');
     expect(generateRunScript(agent({ type: 'ab-article-eval' }, true))).not.toContain('[REFUSED]');

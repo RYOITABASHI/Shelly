@@ -902,10 +902,18 @@ function generateToolCommand(tool: ToolChoice, escapedPrompt: string, rawPrompt:
     case 'cli':
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-if command -v codex >/dev/null 2>&1; then
-  timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
+DRIVER_CWD="$PROJECT_DIR"
+[ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
+if command -v node >/dev/null 2>&1 && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+  timeout "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+    --cwd "$DRIVER_CWD" \\
+    --approval-policy untrusted \\
+    --agent-id "$AGENT_ID" \\
+    --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+    --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+    --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1 || true
 else
-  echo 'Codex CLI is not installed or not on PATH. Run shelly-runtime-update codex, then codex-login.' > ${resultVar}
+  echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
 fi
 rm -f "$PROMPT_FILE"`;
     case 'gemini-api':

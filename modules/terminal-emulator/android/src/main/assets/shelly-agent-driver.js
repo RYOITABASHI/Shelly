@@ -670,6 +670,16 @@ function buildEscalationPaths(config, reqId) {
   };
 }
 
+function buildGrantSpendPaths(config, grantId, reqId) {
+  const base = `grant-spend-${safeFilePart(grantId)}-${safeFilePart(reqId)}`;
+  const requestDir = config.escalationDir || path.dirname(config.preapprovalGrantsFile);
+  const replyDir = config.escalationReplyDir || path.dirname(config.preapprovalGrantsFile);
+  return {
+    requestPath: path.join(requestDir, `${base}.json`),
+    replyPath: path.join(replyDir, `${base}.reply.json`),
+  };
+}
+
 function writeJsonAtomic(filePath, payload) {
   const content = `${JSON.stringify(payload)}\n`;
   const tmpPath = path.join(
@@ -846,6 +856,49 @@ function verifyPreapprovalGrantSignature(config, grant) {
   }
 }
 
+function grantUseReceiptSignatureMessage(receipt) {
+  return [
+    String(receipt.grantId || ''),
+    String(receipt.reqId || ''),
+    String(receipt.requestSha256 || ''),
+    String(receipt.ts || ''),
+  ].join('\n');
+}
+
+function verifyGrantUseReceipt(config, grant, request, receipt) {
+  if (!receipt || typeof receipt !== 'object') return { ok: false, reason: 'missing grant use receipt' };
+  if (receipt.type !== 'grant_use_receipt') return { ok: false, reason: `invalid grant receipt type: ${receipt.type}` };
+  if (receipt.grantId !== grant.id) return { ok: false, reason: 'grant receipt id mismatch' };
+  if (receipt.reqId !== request.reqId) return { ok: false, reason: 'grant receipt reqId mismatch' };
+  if (receipt.requestSha256 !== request.requestSha256) return { ok: false, reason: 'grant receipt request hash mismatch' };
+  if (receipt.sigAlg !== 'SHA256withRSA') return { ok: false, reason: `invalid grant receipt signature algorithm: ${receipt.sigAlg}` };
+  if (typeof receipt.signature !== 'string' || receipt.signature.length < 32) {
+    return { ok: false, reason: 'missing grant receipt signature' };
+  }
+  if (!grant.grantKeySpki) return { ok: false, reason: 'grant receipt verifier key missing' };
+  config.acceptedGrantSpendReqIds ||= new Set();
+  if (config.acceptedGrantSpendReqIds.has(receipt.reqId)) {
+    return { ok: false, reason: 'grant receipt reqId replay' };
+  }
+  try {
+    const publicKey = crypto.createPublicKey({
+      key: Buffer.from(String(grant.grantKeySpki), 'base64'),
+      format: 'der',
+      type: 'spki',
+    });
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(grantUseReceiptSignatureMessage(receipt), 'utf8');
+    verifier.end();
+    if (!verifier.verify(publicKey, Buffer.from(receipt.signature, 'base64'))) {
+      return { ok: false, reason: 'grant receipt signature verification failed' };
+    }
+    config.acceptedGrantSpendReqIds.add(receipt.reqId);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `grant receipt signature verification error: ${error.message}` };
+  }
+}
+
 // Load the verifier public key at most once and cache the in-memory key object so a later
 // same-uid overwrite of the DER file cannot swap the trust anchor mid-run. When a pin
 // (--escalation-public-key-sha256) is configured, the on-disk DER MUST hash to it or the key is
@@ -972,7 +1025,7 @@ async function withPreapprovalGrantLock(config, audit, fn) {
       fs.closeSync(fd);
       fd = null;
       try {
-        return fn();
+        return await fn();
       } finally {
         unlinkIfExists(lockPath);
       }
@@ -1000,8 +1053,8 @@ async function withPreapprovalGrantLock(config, audit, fn) {
 }
 
 async function consumePreapprovalGrant(config, request, audit) {
-  return withPreapprovalGrantLock(config, audit, () => {
-    const preapproval = findPreapprovalGrant(config, request, audit);
+  return withPreapprovalGrantLock(config, audit, async () => {
+    const preapproval = await findPreapprovalGrant(config, request, audit);
     if (!preapproval) return null;
     appendGrantUse(config, preapproval, {
       reqId: request.reqId,
@@ -1011,7 +1064,88 @@ async function consumePreapprovalGrant(config, request, audit) {
   });
 }
 
-function findPreapprovalGrant(config, request, audit) {
+function grantSpendRequestSha256(config, request, requestCommandSha256, signals) {
+  return sha256Hex([
+    'shelly-agent-grant-spend-request-v1',
+    String(config.runId),
+    String(config.agentId),
+    String(request.reqId),
+    String(requestCommandSha256),
+    String(config.policy.workspaceRoot),
+    grantSignals(signals).join(','),
+  ].join('\n'));
+}
+
+async function waitForGrantSpend(config, grant, request, requestCommandSha256, signals, audit) {
+  const spendReqId = crypto.randomUUID();
+  const requestSha256 = grantSpendRequestSha256(config, request, requestCommandSha256, signals);
+  const paths = buildGrantSpendPaths(config, grant.id, spendReqId);
+  const timeoutMs = config.grantSpendTimeoutMs ?? 10000;
+  const startedAt = Date.now();
+  const requestPayload = {
+    type: 'grant_spend_request',
+    grantId: grant.id,
+    reqId: spendReqId,
+    requestSha256,
+    ts: new Date().toISOString(),
+  };
+
+  try {
+    fs.mkdirSync(config.escalationDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(config.escalationReplyDir, { recursive: true, mode: 0o700 });
+    unlinkIfExists(paths.requestPath);
+    unlinkIfExists(paths.replyPath);
+    writeJsonAtomic(paths.requestPath, requestPayload);
+    audit('grant_spend_requested', {
+      grantId: grant.id,
+      reqId: spendReqId,
+      requestSha256,
+      requestPath: paths.requestPath,
+      timeoutMs,
+    });
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (fs.existsSync(paths.replyPath)) {
+        let reply;
+        try {
+          reply = JSON.parse(fs.readFileSync(paths.replyPath, 'utf8'));
+        } catch (error) {
+          audit('grant_spend_reply_parse_error', { grantId: grant.id, reqId: spendReqId, error: error.message });
+          return null;
+        }
+        if (reply.type === 'grant_spend_denied') {
+          audit('grant_spend_denied', {
+            grantId: grant.id,
+            reqId: spendReqId,
+            reason: reply.reason || 'unknown',
+          });
+          return null;
+        }
+        const verification = verifyGrantUseReceipt(config, grant, requestPayload, reply);
+        if (!verification.ok) {
+          audit('grant_spend_receipt_rejected', {
+            grantId: grant.id,
+            reqId: spendReqId,
+            reason: verification.reason,
+          });
+          return null;
+        }
+        audit('grant_spend_receipt_accepted', { grantId: grant.id, reqId: spendReqId });
+        return { reqId: spendReqId, requestSha256 };
+      }
+      await sleep(100);
+    }
+    audit('grant_spend_timeout', { grantId: grant.id, reqId: spendReqId, timeoutMs });
+    return null;
+  } catch (error) {
+    audit('grant_spend_error', { grantId: grant.id, reqId: spendReqId, error: error.message });
+    return null;
+  } finally {
+    cleanupEscalationFiles(paths, audit);
+  }
+}
+
+async function findPreapprovalGrant(config, request, audit) {
   const signals = boundarySignals(request.signals);
   if (signals.length === 0) return null;
   if (signals.some((signal) => UNGRANTABLE_BOUNDARY_SIGNALS.has(signal))) {
@@ -1077,14 +1211,23 @@ function findPreapprovalGrant(config, request, audit) {
       return { id: grantId, grantKeyMode: mode, expiresAt: grant.expiresAt, signals, commandSha256: requestCommandSha256 };
     }
     if (mode === 'keystore-maxuse') {
-      // Tier 1: hardware-counted consumption needs the native spend round-trip (Phase 2b). Until
-      // the driver implements it, fail closed rather than honor without count enforcement.
-      audit('preapproval_grant_rejected', {
-        grantId,
-        reason: 'keystore-maxuse consumption not yet supported by driver (tier-1 pending)',
+      const spend = await waitForGrantSpend(config, grant, request, requestCommandSha256, signals, audit);
+      if (!spend) {
+        audit('preapproval_grant_rejected', {
+          grantId,
+          reason: 'keystore-maxuse spend failed',
+          commandSha256: requestCommandSha256,
+        });
+        continue;
+      }
+      return {
+        id: grantId,
+        grantKeyMode: mode,
+        expiresAt: grant.expiresAt,
+        signals,
         commandSha256: requestCommandSha256,
-      });
-      continue;
+        spendReqId: spend.reqId,
+      };
     }
     audit('preapproval_grant_rejected', {
       grantId,
@@ -1804,5 +1947,7 @@ module.exports = {
   isReplayDangerousSignals,
   normalizeSha256Hex,
   ensureEscalationVerifierKey,
+  verifyGrantUseReceipt,
+  grantUseReceiptSignatureMessage,
   commandSha256,
 };

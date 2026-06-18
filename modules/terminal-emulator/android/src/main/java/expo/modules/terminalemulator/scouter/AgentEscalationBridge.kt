@@ -2,12 +2,16 @@ package expo.modules.terminalemulator.scouter
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
 import expo.modules.terminalemulator.HomeInitializer
 import org.json.JSONObject
 import java.io.File
+import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -66,6 +70,9 @@ object AgentEscalationBridge {
 
     fun verifierPublicKeyPath(context: Context): String = ensureVerifierPublicKey(context).absolutePath
 
+    fun verifierPublicKeySha256(context: Context): String =
+        sha256Hex(ensureVerifierPublicKey(context).readBytes())
+
     fun preapprovalGrantFilePath(context: Context): String = preapprovalGrantFile(context).absolutePath
 
     fun requestFile(context: Context, runId: String, reqId: String): File =
@@ -73,6 +80,9 @@ object AgentEscalationBridge {
 
     fun replyFile(context: Context, runId: String, reqId: String): File =
         File(replyDir(context), "req-${safeFilePart(runId)}-${safeFilePart(reqId)}.reply.json")
+
+    fun grantSpendReplyFile(context: Context, grantId: String, reqId: String): File =
+        File(replyDir(context), "grant-spend-${safeFilePart(grantId)}-${safeFilePart(reqId)}.reply.json")
 
     fun notificationId(runId: String, reqId: String): Int =
         NOTIFICATION_ID_BASE + (("$runId:$reqId".hashCode() and 0x7fffffff) % NOTIFICATION_ID_SPAN)
@@ -231,9 +241,21 @@ object AgentEscalationBridge {
         val createdAt = Instant.now()
         val expiresAt = createdAt.plusMillis(ttlMs.coerceAtLeast(1L))
         val requestTs = requestJson.optString("ts")
+        val usesRemaining = 1
+        val grantId = UUID.randomUUID().toString()
+        val replayDangerous = isReplayDangerousSignals(signals)
+        val grantKey = if (replayDangerous) {
+            createStrongBoxGrantKey(grantId, usesRemaining)
+        } else {
+            null
+        }
+        if (replayDangerous && grantKey == null) {
+            return null
+        }
+        val grantKeyMode = if (grantKey != null) "keystore-maxuse" else "expiry-only"
         val grant = JSONObject()
             .put("type", "grant")
-            .put("id", UUID.randomUUID().toString())
+            .put("id", grantId)
             .put("agentId", agentId)
             .put("workspaceRoot", workspaceRoot)
             .put("commandSha256", commandSha256)
@@ -242,15 +264,53 @@ object AgentEscalationBridge {
             .put("createdAt", createdAt.toString())
             .put("requestSha256", requestSha256)
             .put("requestTs", requestTs)
-            .put("usesRemaining", 1)
+            .put("usesRemaining", usesRemaining)
+            .put("grantKeyMode", grantKeyMode)
             .put("by", "human")
             .put("sigAlg", SIGNATURE_ALGORITHM)
+        if (grantKey != null) {
+            grant
+                .put("grantKeyAlias", grantKey.first)
+                .put("grantKeySpki", Base64.encodeToString(grantKey.second.encoded, Base64.NO_WRAP))
+        }
         grant.put("signature", sign(preapprovalGrantSignatureMessage(grant)))
 
         val out = preapprovalGrantFile(context)
         out.parentFile?.mkdirs()
         out.appendText(grant.toString() + "\n")
         return out
+    }
+
+    fun writeGrantSpendReply(context: Context, raw: Map<String, Any?>): File {
+        val grantId = raw["grantId"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+            ?: error("missing grantId")
+        val reqId = raw["reqId"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+            ?: error("missing reqId")
+        val requestSha256 = raw["requestSha256"]?.toString()?.trim()?.takeIf { it.matches(HEX_SHA256_RE) }
+            ?: error("invalid requestSha256")
+        val reply = requireCanonicalChild(grantSpendReplyFile(context, grantId, reqId), replyDir(context))
+        reply.parentFile?.mkdirs()
+        val alias = grantKeyAlias(grantId)
+        val payload = try {
+            if (!loadKeyStore().containsAlias(alias)) {
+                grantSpendDenied(grantId, reqId, "unknown")
+            } else {
+                val ts = Instant.now().toString()
+                val message = grantUseReceiptMessage(grantId, reqId, requestSha256, ts)
+                JSONObject()
+                    .put("type", "grant_use_receipt")
+                    .put("grantId", grantId)
+                    .put("reqId", reqId)
+                    .put("requestSha256", requestSha256)
+                    .put("ts", ts)
+                    .put("sigAlg", SIGNATURE_ALGORITHM)
+                    .put("signature", signWithAlias(alias, message))
+            }
+        } catch (error: Throwable) {
+            grantSpendDenied(grantId, reqId, grantSpendDenyReason(error))
+        }
+        writeJsonAtomic(reply, payload)
+        return reply
     }
 
     fun clearRequest(context: Context, runId: String, reqId: String) {
@@ -309,9 +369,13 @@ object AgentEscalationBridge {
     }
 
     private fun sign(message: String): String {
+        return signWithAlias(KEY_ALIAS, message)
+    }
+
+    private fun signWithAlias(alias: String, message: String): String {
         ensureKeyExists()
         val keyStore = loadKeyStore()
-        val entry = keyStore.getEntry(KEY_ALIAS, null) as KeyStore.PrivateKeyEntry
+        val entry = keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry
         val signer = Signature.getInstance(SIGNATURE_ALGORITHM)
         signer.initSign(entry.privateKey)
         signer.update(message.toByteArray(Charsets.UTF_8))
@@ -334,7 +398,7 @@ object AgentEscalationBridge {
     ): String = listOf(runId, reqId, decision, requestTs, requestSha256).joinToString("\n")
 
     private fun preapprovalGrantSignatureMessage(grant: JSONObject): String = listOf(
-        "shelly-agent-preapproval-grant-v1",
+        "shelly-agent-preapproval-grant-v2",
         grant.optString("id"),
         grant.optString("agentId"),
         grant.optString("workspaceRoot"),
@@ -344,8 +408,89 @@ object AgentEscalationBridge {
         grant.optString("createdAt"),
         grant.optString("requestSha256"),
         grant.optString("requestTs"),
-        grant.optString("usesRemaining").ifBlank { "1" }
+        grant.optString("usesRemaining").ifBlank { "1" },
+        grant.optString("grantKeyMode"),
+        grant.optString("grantKeySpki").takeIf { it.isNotBlank() }?.let {
+            sha256Hex(it.toByteArray(Charsets.UTF_8))
+        } ?: ""
     ).joinToString("\n")
+
+    private fun grantUseReceiptMessage(
+        grantId: String,
+        reqId: String,
+        requestSha256: String,
+        ts: String
+    ): String = listOf(grantId, reqId, requestSha256, ts).joinToString("\n")
+
+    private fun isReplayDangerousSignals(signals: List<String>): Boolean {
+        val set = signals.toSet()
+        return set.contains("network-send") || (set.contains("leaves-root") && set.contains("write-or-exec"))
+    }
+
+    private fun createStrongBoxGrantKey(grantId: String, usesRemaining: Int): Pair<String, java.security.PublicKey>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        val alias = grantKeyAlias(grantId)
+        return try {
+            val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, ANDROID_KEYSTORE)
+            generator.initialize(
+                KeyGenParameterSpec.Builder(
+                    alias,
+                    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+                )
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                    .setUserAuthenticationRequired(false)
+                    .setIsStrongBoxBacked(true)
+                    .setMaxUsageCount(usesRemaining.coerceAtLeast(1))
+                    .build()
+            )
+            val pair = generator.generateKeyPair()
+            val keyStore = loadKeyStore()
+            val entry = keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry
+            val keyInfo = KeyFactory.getInstance(entry.privateKey.algorithm, ANDROID_KEYSTORE)
+                .getKeySpec(entry.privateKey, KeyInfo::class.java) as KeyInfo
+            if (!keyInfo.isInsideSecureHardware) {
+                keyStore.deleteEntry(alias)
+                null
+            } else {
+                alias to pair.public
+            }
+        } catch (_: StrongBoxUnavailableException) {
+            null
+        } catch (_: Throwable) {
+            runCatching { loadKeyStore().deleteEntry(alias) }
+            null
+        }
+    }
+
+    private fun grantKeyAlias(grantId: String): String =
+        "$GRANT_KEY_ALIAS_PREFIX${safeFilePart(grantId)}"
+
+    private fun grantSpendDenied(grantId: String, reqId: String, reason: String): JSONObject =
+        JSONObject()
+            .put("type", "grant_spend_denied")
+            .put("grantId", grantId)
+            .put("reqId", reqId)
+            .put("reason", reason)
+            .put("ts", Instant.now().toString())
+
+    private fun grantSpendDenyReason(error: Throwable): String {
+        val text = (error.message ?: error.javaClass.simpleName).lowercase()
+        return when {
+            "exhaust" in text || "max" in text || "usage" in text -> "exhausted"
+            "expire" in text -> "expired"
+            else -> "error"
+        }
+    }
+
+    private fun writeJsonAtomic(file: File, payload: JSONObject) {
+        val tmp = File(file.parentFile, ".${file.name}.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
+        tmp.writeText(payload.toString() + "\n")
+        if (!tmp.renameTo(file)) {
+            tmp.delete()
+            error("failed to publish ${file.name}")
+        }
+    }
 
     private fun jsonStringArray(array: org.json.JSONArray?): List<String> {
         if (array == null) return emptyList()
@@ -365,6 +510,7 @@ object AgentEscalationBridge {
     private const val NOTIFICATION_ID_SPAN = 500
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val KEY_ALIAS = "shelly_agent_escalation_reply_v1"
+    private const val GRANT_KEY_ALIAS_PREFIX = "shelly_agent_grant_use_v1_"
     private const val SIGNATURE_ALGORITHM = "SHA256withRSA"
     private const val DEFAULT_QUEUED_GRANT_TTL_MS = 24L * 60L * 60L * 1000L
     private val HEX_SHA256_RE = Regex("^[0-9a-f]{64}$")
