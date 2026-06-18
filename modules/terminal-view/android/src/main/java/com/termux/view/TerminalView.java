@@ -184,6 +184,8 @@ public class TerminalView extends View {
 
     public TerminalView(Context context, AttributeSet attributes) { // NO_UCD (unused code)
         super(context, attributes);
+        setWillNotDraw(false);
+        setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND);
         mGestureRecognizer = new GestureAndScaleRecognizer(context, new GestureAndScaleRecognizer.Listener() {
 
             boolean scrolledWithFinger;

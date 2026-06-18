@@ -186,17 +186,18 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         GLES30.glEnableVertexAttribArray(2) // color
         GLES30.glVertexAttribPointer(2, 4, GLES30.GL_FLOAT, false, stride, 16)
 
-        val indicesPerRow = cols * INDICES_PER_QUAD
         for (row in 0 until rows) {
             if (isRowCollapsed(row)) continue
-            val offset = row * cols * QUADS_PER_CELL * INDICES_PER_QUAD
-            val quadOffset = if (pass == 0) 0 else cols * INDICES_PER_QUAD
-            GLES30.glDrawElements(
-                GLES30.GL_TRIANGLES,
-                indicesPerRow,
-                GLES30.GL_UNSIGNED_SHORT,
-                (offset + quadOffset) * 2
-            )
+            for (col in 0 until cols) {
+                val cellIndex = row * cols + col
+                val quadIndex = cellIndex * QUADS_PER_CELL + if (pass == 0) 0 else 1
+                GLES30.glDrawElements(
+                    GLES30.GL_TRIANGLES,
+                    INDICES_PER_QUAD,
+                    GLES30.GL_UNSIGNED_SHORT,
+                    quadIndex * INDICES_PER_QUAD * 2
+                )
+            }
         }
     }
 

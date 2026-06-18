@@ -42,6 +42,7 @@ public final class TerminalRenderer {
 
     final int mTextSize;
     final Typeface mTypeface;
+    private static final int OPAQUE_TERMINAL_BACKGROUND = 0xFF000000;
     private final Paint mTextPaint = new Paint();
 
     /** The width of a single mono spaced character obtained by {@link Paint#measureText(String)} on a single 'X'. */
@@ -210,6 +211,7 @@ public final class TerminalRenderer {
         int foreColor = TextStyle.decodeForeColor(textStyle);
         final int effect = TextStyle.decodeEffect(textStyle);
         int backColor = TextStyle.decodeBackColor(textStyle);
+        final boolean usesDefaultBackground = backColor == TextStyle.COLOR_INDEX_BACKGROUND;
         final boolean bold = (effect & (TextStyle.CHARACTER_ATTRIBUTE_BOLD | TextStyle.CHARACTER_ATTRIBUTE_BLINK)) != 0;
         final boolean underline = (effect & TextStyle.CHARACTER_ATTRIBUTE_UNDERLINE) != 0;
         final boolean italic = (effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0;
@@ -224,6 +226,9 @@ public final class TerminalRenderer {
 
         if ((backColor & 0xff000000) != 0xff000000) {
             backColor = palette[backColor];
+        }
+        if (usesDefaultBackground) {
+            backColor = OPAQUE_TERMINAL_BACKGROUND;
         }
 
         // Reverse video here if _one and only one_ of the reverse flags are set:
@@ -247,11 +252,14 @@ public final class TerminalRenderer {
             savedMatrix = true;
         }
 
-        if (backColor != palette[TextStyle.COLOR_INDEX_BACKGROUND]) {
-            // Only draw non-default background.
-            mTextPaint.setColor(backColor);
-            canvas.drawRect(left, y - mFontLineSpacingAndAscent + mFontAscent, right, y, mTextPaint);
-        }
+        // Always paint the cell run background, including the default
+        // terminal background. The outer TerminalView also clears to black,
+        // but relying on that single clear lets Android/RN dirty-region
+        // clipping expose stale parent layers during new-session attach and
+        // IME resize. Painting every run makes the terminal grid itself
+        // opaque.
+        mTextPaint.setColor(backColor);
+        canvas.drawRect(left, y - mFontLineSpacingAndAscent + mFontAscent, right, y, mTextPaint);
 
         if (cursor != 0) {
             mTextPaint.setColor(cursor);

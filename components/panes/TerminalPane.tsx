@@ -1278,6 +1278,7 @@ export default function TerminalScreen() {
             styles.terminalBody,
             {
               flexDirection: showSplitPreview ? 'row' : 'column',
+              backgroundColor: terminalPaneBg,
               paddingBottom: terminalBottomInset,
             },
           ]}
@@ -1312,7 +1313,6 @@ export default function TerminalScreen() {
               {
                 flex: showSplitPreview ? splitRatio : 1,
                 backgroundColor: wallpaperActive ? 'transparent' : terminalColorScheme.background,
-                paddingBottom: terminalBottomInset,
               },
             ]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
