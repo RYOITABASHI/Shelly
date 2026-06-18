@@ -105,7 +105,7 @@ class TerminalEmulatorModule : Module() {
         require(apkNameRe.matches(fileName)) { "Invalid APK file name: $fileName" }
 
         val downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val target = java.io.File(java.io.File(downloadsRoot, downloadSubdir), fileName).canonicalFile
+        val target = java.io.File(downloadsRoot, fileName).canonicalFile
         val root = downloadsRoot.canonicalFile
         require(target.path == root.path || target.path.startsWith(root.path + java.io.File.separator)) {
             "Download path escapes Downloads directory"
@@ -869,7 +869,7 @@ class TerminalEmulatorModule : Module() {
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
                 setDestinationInExternalPublicDir(
                     Environment.DIRECTORY_DOWNLOADS,
-                    "$downloadSubdir/$fileName",
+                    fileName,
                 )
             }
             val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager

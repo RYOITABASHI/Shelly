@@ -1469,6 +1469,7 @@ const ja: Record<string, string> = {
   'updates.download_log_prepare': '保存先を準備中',
   'updates.download_log_download': '{{name}} をダウンロード中',
   'updates.download_log_download_progress': '{{name}} をダウンロード中 - {{progress}}',
+  'updates.download_log_paused': 'ダウンロード一時停止 - {{progress}} - {{reason}}',
   'updates.download_log_verify': 'SHA-256 を検証中',
   'updates.download_log_ready': 'APK の準備ができました',
   'updates.download_log_error': 'ダウンロードに失敗しました',

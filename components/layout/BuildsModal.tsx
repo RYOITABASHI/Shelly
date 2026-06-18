@@ -96,13 +96,14 @@ type CodexVersionInfo = {
   runtimeHealthy: boolean;
 };
 
-type DownloadApkStep = 'prepare' | 'download' | 'verify' | 'ready';
+type DownloadApkStep = 'prepare' | 'download' | 'paused' | 'verify' | 'ready';
 
 type DownloadApkProgress = {
   step: DownloadApkStep;
   downloadedBytes?: number;
   totalBytes?: number;
   speedBytesPerSec?: number;
+  reason?: number;
 };
 
 type PendingApkDownload = {
@@ -195,6 +196,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 const NETWORK_TIMEOUT_MS = 15_000;
+const APK_DOWNLOAD_TIMEOUT_MS = 1_800_000;
+const APK_DOWNLOAD_PAUSED_TIMEOUT_MS = 60_000;
 
 // fetch() in React Native has no default timeout: a stalled TLS/connection
 // (or a throttled GitHub response held open) never settles, which hangs the
@@ -495,21 +498,26 @@ async function downloadReleaseApk(
   const apkPath = releaseApkPath(update);
 
   onProgress?.({ step: 'prepare' });
+  const pendingDownload = await readPendingApkDownload();
+  const matchingPending =
+    pendingDownload &&
+    pendingDownload.channel === updateChannel(update) &&
+    pendingDownload.versionCode === update.versionCode &&
+    pendingDownload.assetName === update.apkAssetName &&
+    pendingDownload.apkPath === apkPath
+      ? pendingDownload
+      : null;
+  if (pendingDownload && !matchingPending) {
+    await TerminalEmulator.removeApkDownload(pendingDownload.downloadId).catch(() => undefined);
+    await clearPendingApkDownload();
+  }
+
   const existingValid = await verifyReleaseApkFile(update, apkPath).catch(() => false);
   if (existingValid) {
     await clearPendingApkDownload();
     onProgress?.({ step: 'ready' });
     return apkPath;
   }
-
-  const matchingPending = await readPendingApkDownload().then((pending) => {
-    if (!pending) return null;
-    if (pending.channel !== updateChannel(update)) return null;
-    if (pending.versionCode !== update.versionCode) return null;
-    if (pending.assetName !== update.apkAssetName) return null;
-    if (pending.apkPath !== apkPath) return null;
-    return pending;
-  });
 
   let downloadId = matchingPending?.downloadId;
   if (!downloadId) {
@@ -545,6 +553,7 @@ async function downloadReleaseApk(
   const startedAt = Date.now();
   let lastBytes = 0;
   let lastAt = startedAt;
+  let pausedSince: number | null = null;
   while (true) {
     await sleep(1000);
     const status = await TerminalEmulator.getApkDownloadStatus(downloadId);
@@ -555,22 +564,34 @@ async function downloadReleaseApk(
     const speedBytesPerSec = Math.max(0, downloadedBytes - lastBytes) / elapsedSinceLast;
     lastBytes = downloadedBytes;
     lastAt = now;
+    const downloadStatus = String(status.status || 'unknown');
     onProgress?.({
-      step: 'download',
+      step: downloadStatus === 'paused' ? 'paused' : 'download',
       downloadedBytes,
       totalBytes,
       speedBytesPerSec,
+      reason: Number(status.reason) || 0,
     });
 
-    if (status.status === 'successful') {
+    if (downloadStatus === 'successful') {
       break;
     }
-    if (status.status === 'failed' || status.status === 'missing' || status.status === 'unknown') {
+    if (downloadStatus === 'failed' || downloadStatus === 'missing' || downloadStatus === 'unknown') {
       await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
       await clearPendingApkDownload();
-      throw new Error(downloadManagerFailureMessage(status.status, status.reason));
+      throw new Error(downloadManagerFailureMessage(downloadStatus, status.reason));
     }
-    if (Date.now() - startedAt > 1_800_000) {
+    if (downloadStatus === 'paused') {
+      pausedSince ??= now;
+      if (now - pausedSince > APK_DOWNLOAD_PAUSED_TIMEOUT_MS) {
+        await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
+        await clearPendingApkDownload();
+        throw new Error(downloadManagerFailureMessage(downloadStatus, status.reason));
+      }
+    } else {
+      pausedSince = null;
+    }
+    if (Date.now() - startedAt > APK_DOWNLOAD_TIMEOUT_MS) {
       await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
       await clearPendingApkDownload();
       throw new Error('APK download timed out.');
@@ -648,12 +669,12 @@ function downloadManagerFailureMessage(status: string, reason?: number): string 
   return `Android DownloadManager ${status}: ${reasonText}`;
 }
 
-function releaseApkDir(update: AndroidUpdateManifest): string {
-  return `/sdcard/Download/shelly-update-${safePathSegment(updateChannel(update))}-${update.versionCode}`;
+function releaseApkDir(): string {
+  return '/sdcard/Download';
 }
 
 function releaseApkPath(update: AndroidUpdateManifest): string {
-  return `${releaseApkDir(update)}/${update.apkAssetName}`;
+  return `${releaseApkDir()}/${update.apkAssetName}`;
 }
 
 async function verifyReleaseApkFile(update: AndroidUpdateManifest, apkPath: string): Promise<boolean> {
@@ -1043,6 +1064,16 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                 progress.totalBytes,
                 progress.speedBytesPerSec,
               ),
+            }));
+            break;
+          case 'paused':
+            pushDownloadLog('download', t('updates.download_log_paused', {
+              progress: formatDownloadProgress(
+                progress.downloadedBytes,
+                progress.totalBytes,
+                progress.speedBytesPerSec,
+              ),
+              reason: downloadManagerFailureMessage('paused', progress.reason),
             }));
             break;
           case 'verify':
