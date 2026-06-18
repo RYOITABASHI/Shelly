@@ -1049,7 +1049,9 @@ patchCodex(libDir);
     //      request queue is under HOME for RN polling; the reply channel lives
     //      outside HOME in no_backup and is derived by the driver/native side
     //      rather than advertised in the shell environment.
-    private const val BASHRC_VERSION = 227
+    // 228: Disable readline horizontal-scroll-mode so long pasted shell input
+    //      wraps on screen instead of showing a leading "<" truncation marker.
+    private const val BASHRC_VERSION = 228
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1842,6 +1844,7 @@ patchCodex(libDir);
             // payload is inserted atomically as one edit event.
             sb.appendLine("# bug #91/#97: enable bracketed-paste + ESC-free trigger for Shelly's paste")
             sb.appendLine("bind 'set enable-bracketed-paste on' 2>/dev/null")
+            sb.appendLine("bind 'set horizontal-scroll-mode off' 2>/dev/null")
             // Bind in all three keymaps (emacs is default; vi-insert and
             // vi-command fire when the user flips editing-mode via `set -o vi`
             // or .inputrc). Without the vi-mode binds, `\C-x\C-b` stays
