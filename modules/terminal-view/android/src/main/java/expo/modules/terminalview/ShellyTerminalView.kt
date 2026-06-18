@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Canvas
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -121,11 +122,10 @@ class ShellyTerminalView(
     private var lastWidth = -1
     private var lastHeight = -1
 
-    // Phase B: when a wallpaper is set on the JS side, this flips on and
-    // both this ExpoView wrapper and the inner TerminalView stop painting
-    // an opaque background behind the terminal content. The Termux
-    // renderer already skips the default-bg cell fill (TerminalRenderer
-    // line 231), so transparency propagates through for free.
+    // Terminal panes stay opaque even when the app has a wallpaper. Letting
+    // the native terminal become transparent exposes the React panel/wallpaper
+    // layers during session attach and IME resize, which shows up as a gray
+    // wash behind otherwise-empty terminal cells.
     private var transparentBackground = false
 
     // Event callbacks set by the Expo module
@@ -149,8 +149,9 @@ class ShellyTerminalView(
     private val linkDetector = LinkDetector
 
     init {
-        // Black background like a real terminal. Flipped off in
-        // setTransparentBackground(true) when the user picks a wallpaper.
+        // Black background like a real terminal. setTransparentBackground()
+        // now reasserts this instead of allowing terminal transparency.
+        setWillNotDraw(false)
         setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
 
@@ -260,6 +261,13 @@ class ShellyTerminalView(
         // to NOT intercept touch events meant for the terminal
         parent?.requestDisallowInterceptTouchEvent(true)
         return super.dispatchTouchEvent(ev)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        if (!transparentBackground) {
+            canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND)
+        }
+        super.onDraw(canvas)
     }
 
     // ===== Layout — debounce Yoga's rapid layout passes =====
@@ -436,34 +444,23 @@ class ShellyTerminalView(
     }
 
     /**
-     * Phase B wallpaper support. When `enabled`, both this ExpoView
-     * wrapper and the inner Termux TerminalView drop their opaque black
-     * background so the wallpaper behind the whole ShellLayout tree can
-     * show through. Cells with a non-default background still paint
-     * normally (TerminalRenderer guards default-bg cells at line 231),
-     * so prompt colours / syntax highlights stay visible as expected.
-     *
-     * We also flip the inner TerminalView's `transparentBackground`
-     * flag so its padding-region paint at onDraw is skipped in the
-     * transparent path. Without that, the padding under mode-line-ish
-     * prompts would fill with solid black over the wallpaper.
+     * Keep terminal panes opaque. The prop remains for JS/native ABI
+     * compatibility, but terminals no longer honor true here.
      */
     fun setTransparentBackground(enabled: Boolean) {
-        transparentBackground = enabled
-        val color = if (enabled) {
-            0x00000000
-        } else {
-            OPAQUE_TERMINAL_BACKGROUND
+        if (enabled) {
+            Log.i(TAG, "setTransparentBackground(true) ignored for terminal pane")
         }
-        setBackgroundColor(color)
-        terminalView.setBackgroundColor(color)
-        terminalView.setTransparentBackground(enabled)
+        transparentBackground = false
+        setWillNotDraw(false)
+        setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        terminalView.setTransparentBackground(false)
         terminalView.invalidate()
-        // GPU path (when gpuRendering=true): flip the GLSurfaceView's
-        // own background AND the renderer's clearColor. Without the
-        // renderer forward, glClear would still paint opaque black
-        // every frame and hide the wallpaper.
-        glTerminalView?.setTransparentBackground(enabled)
+        // GPU path (when gpuRendering=true): keep the GLSurfaceView and
+        // renderer clearColor opaque black as well.
+        glTerminalView?.setTransparentBackground(false)
+        invalidate()
     }
 
     /**
@@ -487,15 +484,11 @@ class ShellyTerminalView(
             TerminalColors.COLOR_SCHEME.updateWith(props)
             // Reset current session colors to apply the new scheme
             terminalView.mEmulator?.mColors?.reset()
-            // Update background color of the view — but only when we are
-            // NOT in wallpaper-transparent mode. In transparent mode the
-            // view has to stay fully see-through regardless of scheme
-            // swaps, otherwise picking a new theme would repaint opaque
-            // over the user's wallpaper.
-            if (!transparentBackground) {
-                setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
-                terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
-            }
+            // Reassert opaque black after theme swaps. Terminal panes keep
+            // their native surfaces opaque even when other pane types allow
+            // wallpaper transparency.
+            setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+            terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
             terminalView.invalidate()
             Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")
         } catch (e: Exception) {

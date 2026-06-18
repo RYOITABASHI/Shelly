@@ -89,17 +89,14 @@ public class TerminalView extends View {
     public static final int TERMINAL_CURSOR_BLINK_RATE_MAX = 2000;
 
     /**
-     * Phase B (2026-04-21): when true, the padding-region bg fill and
-     * the "no emulator" fallback black wash in onDraw() are skipped so
-     * a wallpaper behind the view shows through. Cells with the default
-     * scheme bg are already skipped by TerminalRenderer.render (see the
-     * `backColor != palette[BG]` guard); this flag covers the remaining
-     * two paint sites.
+     * Kept for ABI compatibility. Shelly's terminal panes force this false
+     * from the wrapper so the native terminal surface remains opaque black
+     * during first paint, prompt startup, tab switches, and IME resize.
      */
     private boolean mTransparentBackground;
 
     public void setTransparentBackground(boolean enabled) {
-        mTransparentBackground = enabled;
+        mTransparentBackground = false;
         invalidate();
     }
 
@@ -1650,31 +1647,20 @@ public class TerminalView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        if (!mTransparentBackground) {
+            canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND);
+        }
         if (mEmulator == null) {
-            // Phase B: skip the black fallback when transparent mode is on so
-            // a wallpaper under the view can show while PTY state is still
-            // spinning up (typically 50-100ms on first mount).
-            if (!mTransparentBackground) {
-                canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND);
-            }
+            // No emulator yet; the opaque clear above is the whole frame.
         } else {
-            // bug #82: paint the padding region in the terminal background
-            // so it visually merges with the content, then translate so the
-            // renderer still draws from origin. The columns/rows count was
-            // already computed against the padding-shrunk width in
-            // updateSize(), so this keeps the text away from the pane edge.
-            //
-            // Phase B: in transparent mode we skip the padding drawColor so
-            // the wallpaper bleeds through the gutters too — otherwise we'd
-            // paint an opaque strip around every terminal pane.
+            // bug #82: translate by the padding so the renderer still draws
+            // from origin. The opaque clear above already covers both the
+            // content and gutter regions.
             int padL = getPaddingLeft();
             int padT = getPaddingTop();
             int padR = getPaddingRight();
             int padB = getPaddingBottom();
             if (padL != 0 || padT != 0 || padR != 0 || padB != 0) {
-                if (!mTransparentBackground) {
-                    canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND);
-                }
                 canvas.save();
                 canvas.translate(padL, padT);
             }

@@ -68,11 +68,9 @@ export interface NativeTerminalViewProps extends ViewProps {
   colorScheme?: Record<string, string>;
   gpuRendering?: boolean;
   /**
-   * Phase B (2026-04-21). When true, the underlying Android view drops
-   * its opaque background + the padding-region bg fill so a wallpaper
-   * behind the ShellLayout can show through. Cells with non-default
-   * backgrounds still paint, so prompt / syntax colours stay visible.
-   * Default false preserves the pre-Phase-B opaque look.
+   * Kept for native ABI compatibility. Android terminal panes are forced
+   * opaque black so session attach, prompt paint, and IME resize cannot
+   * expose panel or wallpaper layers behind empty terminal cells.
    */
   transparentBackground?: boolean;
   onOutput?: (event: OutputEvent) => void;

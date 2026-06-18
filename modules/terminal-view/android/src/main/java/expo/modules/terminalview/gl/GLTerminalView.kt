@@ -3,6 +3,7 @@ package expo.modules.terminalview.gl
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.PixelFormat
 import android.opengl.GLSurfaceView
 import android.text.InputType
 import android.util.Log
@@ -44,16 +45,16 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
 
     init {
         setEGLContextClientVersion(3)
-        // Transparent background — prevent white flash before first draw
-        setEGLConfigChooser(8, 8, 8, 8, 0, 0)
-        holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+        // Terminal GPU surfaces must be opaque. A translucent SurfaceView can
+        // expose React/panel layers before the first GL frame or during IME
+        // resize compositor churn, which appears as a gray terminal wash.
+        setEGLConfigChooser(8, 8, 8, 0, 0, 0)
+        holder.setFormat(PixelFormat.OPAQUE)
         setZOrderOnTop(false)  // Stay below other views but render properly
         setRenderer(renderer)
         renderMode = RENDERMODE_WHEN_DIRTY
         preserveEGLContextOnPause = true
 
-        // Black background to match terminal. Flipped to transparent by
-        // setTransparentBackground() when the user picks a wallpaper.
         setBackgroundColor(0xFF000000.toInt())
 
         isFocusable = true
@@ -88,15 +89,15 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
     }
 
     /**
-     * Phase B (2026-04-21): forward the transparency flag to the GL
-     * renderer (so its glClearColor flips) AND the SurfaceView's own
-     * background (so the pre-first-frame pixel is see-through). A
-     * requestRender() forces the new clear colour to land on the next
-     * draw without waiting for an idle tick.
+     * Kept for native API compatibility. Terminal GL surfaces are now
+     * fail-closed opaque black.
      */
     fun setTransparentBackground(enabled: Boolean) {
-        setBackgroundColor(if (enabled) 0x00000000 else 0xFF000000.toInt())
-        renderer.transparentBackground = enabled
+        if (enabled) {
+            Log.i(TAG, "setTransparentBackground(true) ignored for terminal GL surface")
+        }
+        setBackgroundColor(0xFF000000.toInt())
+        renderer.transparentBackground = false
         requestRender()
     }
 

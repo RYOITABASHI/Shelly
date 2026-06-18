@@ -23,7 +23,6 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         private const val QUADS_PER_CELL = 2     // background + glyph
         private const val INDICES_PER_QUAD = 6   // 2 triangles
         private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
-        private const val TRANSPARENT_TERMINAL_BACKGROUND = 0x00000000
     }
 
     private var vboId = 0
@@ -38,6 +37,9 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
     // Default ANSI 16 colors (updated from theme)
     private val ansiColors = IntArray(256) { defaultAnsiColor(it) }
     var transparentBackground = false
+        set(value) {
+            field = false
+        }
 
     fun init() {
         totalCells = cols * rows
@@ -262,11 +264,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
     private fun resolveBackgroundColor(colorIndex: Int): Int {
         if (colorIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
-            return if (transparentBackground) {
-                TRANSPARENT_TERMINAL_BACKGROUND
-            } else {
-                OPAQUE_TERMINAL_BACKGROUND
-            }
+            return OPAQUE_TERMINAL_BACKGROUND
         }
         return resolveColor(colorIndex)
     }
