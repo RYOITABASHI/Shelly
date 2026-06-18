@@ -79,6 +79,7 @@ const NATIVE_SESSION_CREATE_RETRY_MAX_WAIT_MS = NATIVE_SESSION_CREATE_TIMEOUT_MS
 const NATIVE_SESSION_CREATE_MAX_AUTO_RETRIES = 1;
 const NATIVE_SESSION_EARLY_EXIT_RETRY_WINDOW_MS = 2_500;
 const NATIVE_SESSION_EARLY_EXIT_ALIVE_GRACE_MS = 500;
+const TERMINAL_SURFACE_BACKGROUND = '#000000';
 
 const nativeCreateAutoRetryCounts = new Map<string, number>();
 const nativeSessionCreateStartedAtMs = new Map<string, number>();
@@ -1117,11 +1118,11 @@ export default function TerminalScreen() {
       color8: theme.brightBlack,  color9: theme.brightRed,    color10: theme.brightGreen,  color11: theme.brightYellow,
       color12: theme.brightBlue,  color13: theme.brightMagenta, color14: theme.brightCyan, color15: theme.brightWhite,
       foreground: theme.foreground,
-      background: theme.background,
+      background: TERMINAL_SURFACE_BACKGROUND,
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme]);
-  const terminalPaneBg = terminalColorScheme.background;
+  const terminalPaneBg = TERMINAL_SURFACE_BACKGROUND;
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
