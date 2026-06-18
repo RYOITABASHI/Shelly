@@ -36,18 +36,22 @@ describe('shelly-agent-driver escalation verifier-key pin', () => {
 
   type AuditObj = { kind?: string; escalationKeyPinned?: boolean; escalationKeyTrusted?: boolean };
 
-  function runDriver(pin: string | null): { events: string[]; driverStart: AuditObj } {
+  function runDriver(
+    pin: string | null,
+    opts: { allowUnpinned?: boolean; keyPath?: string } = {},
+  ): { events: string[]; driverStart: AuditObj } {
     const auditLog = path.join(dir, `audit-${pin ?? 'none'}-${Math.random().toString(36).slice(2)}.jsonl`);
     const args = [
       driver,
       '--cwd', dir,
       '--prompt', 'x',
       '--codex-bin', 'shelly-nonexistent-codex-bin',
-      '--escalation-public-key', keyPath,
+      '--escalation-public-key', opts.keyPath ?? keyPath,
       '--audit-log', auditLog,
       '--timeout-ms', '4000',
     ];
     if (pin) args.push('--escalation-public-key-sha256', pin);
+    if (opts.allowUnpinned) args.push('--allow-unpinned-verifier-key');
     try {
       execFileSync(process.execPath, args, { timeout: 20000, stdio: 'ignore' });
     } catch {
@@ -83,11 +87,24 @@ describe('shelly-agent-driver escalation verifier-key pin', () => {
     expect(driverStart.escalationKeyTrusted).toBe(false);
   });
 
-  it('audits an unpinned key as dev-only (loads, but flagged)', () => {
+  it('refuses an unpinned key by default → fails closed (production-safe)', () => {
     const { events, driverStart } = runDriver(null);
+    expect(events).toContain('escalation_verifier_key_unpinned_refused');
+    expect(driverStart.escalationKeyPinned).toBe(false);
+    expect(driverStart.escalationKeyTrusted).toBe(false);
+  });
+
+  it('allows an unpinned key only with the explicit dev flag (loads, but flagged)', () => {
+    const { events, driverStart } = runDriver(null, { allowUnpinned: true });
     expect(events).toContain('escalation_verifier_key_unpinned');
     expect(driverStart.escalationKeyPinned).toBe(false);
     expect(driverStart.escalationKeyTrusted).toBe(true);
+  });
+
+  it('fails closed when pinned but the DER file is missing', () => {
+    const { events, driverStart } = runDriver(realSha, { keyPath: path.join(dir, 'no-such.der') });
+    expect(events).toContain('escalation_verifier_key_unavailable');
+    expect(driverStart.escalationKeyTrusted).toBe(false);
   });
 
   it('rejects a malformed pin at arg-parse time', () => {

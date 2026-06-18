@@ -80,7 +80,12 @@ Options:
                              native launcher (the agent cannot alter the driver's argv) to pin the
                              trust anchor. If set and the on-disk key mismatches, the verifier key is
                              rejected and every escalation/grant fails closed (decline). Omit only for
-                             host/dev runs (an unpinned key is audited as dev-only).
+                             host/dev runs (see --allow-unpinned-verifier-key).
+  --allow-unpinned-verifier-key
+                             Permit running WITHOUT a pin (host/dev only). Without this flag and
+                             without --escalation-public-key-sha256, the verifier key is refused and
+                             every escalation/grant fails closed — so a launcher that forgets the pin
+                             degrades safely instead of silently trusting a swappable key.
   --preapproval-grants-file <path>
                              Signed human preapproval grant JSONL. Defaults to native no_backup storage on Android.
   --run-id <id>              Override generated run id.
@@ -113,6 +118,7 @@ function parseArgs(argv) {
     escalationReplyDir: process.env.SHELLY_AGENT_ESCALATION_REPLY_DIR || DEFAULT_ESCALATION_REPLY_DIR,
     escalationPublicKey: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY || DEFAULT_ESCALATION_PUBLIC_KEY,
     escalationPublicKeySha256: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256 || null,
+    allowUnpinnedVerifierKey: process.env.SHELLY_AGENT_ALLOW_UNPINNED_VERIFIER_KEY === '1',
     preapprovalGrantsFile: process.env.SHELLY_AGENT_PREAPPROVAL_GRANTS_FILE || DEFAULT_PREAPPROVAL_GRANTS_FILE,
     escalationTimeoutMs: parseNonNegativeInt(
       process.env.ESCALATION_TIMEOUT_MS || DEFAULT_ESCALATION_TIMEOUT_MS,
@@ -168,6 +174,8 @@ function parseArgs(argv) {
       args.escalationPublicKey = next();
     } else if (arg === '--escalation-public-key-sha256') {
       args.escalationPublicKeySha256 = next();
+    } else if (arg === '--allow-unpinned-verifier-key') {
+      args.allowUnpinnedVerifierKey = true;
     } else if (arg === '--preapproval-grants-file') {
       args.preapprovalGrantsFile = next();
     } else if (arg === '--run-id') {
@@ -345,6 +353,7 @@ function codexChildEnv(input) {
   delete env.SHELLY_AGENT_ID;
   delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY;
   delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256;
+  delete env.SHELLY_AGENT_ALLOW_UNPINNED_VERIFIER_KEY;
   delete env.ESCALATION_TIMEOUT_MS;
   return env;
 }
@@ -846,12 +855,22 @@ function ensureEscalationVerifierKey(config, audit) {
       });
       return;
     }
-  } else {
+  } else if (config.allowUnpinnedVerifierKey) {
     audit('escalation_verifier_key_unpinned', {
       path: config.escalationPublicKey,
       actualSha256,
-      note: 'host/dev only: no --escalation-public-key-sha256 pin; a same-uid agent could swap this key',
+      note: 'host/dev only (--allow-unpinned-verifier-key): a same-uid agent could swap this key',
     });
+  } else {
+    // Production default: no pin AND not explicitly allowed → refuse the key so a launcher that
+    // forgot to inject the pin fails closed instead of silently trusting a swappable key.
+    config.escalationVerifierPublicKey = null;
+    audit('escalation_verifier_key_unpinned_refused', {
+      path: config.escalationPublicKey,
+      actualSha256,
+      note: 'no --escalation-public-key-sha256 pin and --allow-unpinned-verifier-key not set; key refused, escalations/grants fail closed',
+    });
+    return;
   }
   try {
     config.escalationVerifierPublicKey = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
