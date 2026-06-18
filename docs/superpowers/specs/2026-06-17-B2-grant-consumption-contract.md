@@ -1,7 +1,7 @@
 # B2 Contract — Tamper-Resistant Pre-Approval Grant Consumption (review finding #2)
 
 **Created:** 2026-06-17
-**Status:** Contract / design — CC-defined (driver side), Codex implements native side.
+**Status:** Contract / design. **Driver side Phase 2a LANDED** on branch `fix/b2-escalation-pubkey-pin` (`fix(agent): root grant consumption in time/Keystore, drop file used-count`): signature **v2** (binds `grantKeyMode` + `sha256(grantKeySpki)`), file used-count gate removed, `expiry-only` (Tier 2) honored, replay-dangerous carve-out, `keystore-maxuse` fails closed pending the native round-trip. **Phase 2b (the Tier-1 spend round-trip) is NOT yet in the driver** — keystore-maxuse grants currently decline → fresh escalation. Codex implements the native side.
 **Parent:** [B2 handoff](./2026-06-17-B2-on-device-verified-HANDOFF.md) · [Phase B escalation bridge](./2026-06-17-autonomous-mode-B2-phaseB-escalation-bridge.md)
 **Companion fix:** branch `fix/b2-escalation-pubkey-pin` (finding #1, verifier-key pin).
 
@@ -59,7 +59,7 @@ The grant's trust is rooted in finding #1's pinned escalation key: the grant rec
   "sigAlg": "SHA256withRSA", "signature": "<base64>"
 }
 ```
-The signed message (extend `preapprovalGrantSignatureMessage`) MUST include `grantKeyMode` and `sha256(grantKeySpki)` so the agent can neither swap the per-grant key nor downgrade `keystore-maxuse`→`expiry-only`.
+The signed message is **v2** (`preapprovalGrantSignatureMessage`): the existing v1 lines, then `String(grantKeyMode)`, then `grantKeySpki ? sha256Hex(grantKeySpki) : ''`, joined by `\n`, with the first line the domain tag `shelly-agent-preapproval-grant-v2`. Native MUST produce exactly this (same field order) or the driver rejects the grant. This binds the mode + per-grant key so the agent can neither swap the key nor downgrade `keystore-maxuse`→`expiry-only`.
 
 **Use-receipt** (Tier 1; signed by `grant-<id>`, returned by native on spend):
 ```jsonc
