@@ -22,6 +22,8 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         private const val VERTICES_PER_QUAD = 4
         private const val QUADS_PER_CELL = 2     // background + glyph
         private const val INDICES_PER_QUAD = 6   // 2 triangles
+        private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
+        private const val TRANSPARENT_TERMINAL_BACKGROUND = 0x00000000
     }
 
     private var vboId = 0
@@ -35,6 +37,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
     // Default ANSI 16 colors (updated from theme)
     private val ansiColors = IntArray(256) { defaultAnsiColor(it) }
+    var transparentBackground = false
 
     fun init() {
         totalCells = cols * rows
@@ -131,7 +134,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
                 val effectiveFg = if (highlightFg >= 0) highlightFg else fg
                 val fgColor = resolveColor(effectiveFg)
-                val bgColor = resolveColor(bg)
+                val bgColor = resolveBackgroundColor(bg)
 
                 val x = col * cellW
                 val y = row * cellH
@@ -255,6 +258,17 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
     private fun resolveColor(colorIndex: Int): Int {
         return if (colorIndex in 0..255) ansiColors[colorIndex]
         else 0xFFFFFFFF.toInt() // default white
+    }
+
+    private fun resolveBackgroundColor(colorIndex: Int): Int {
+        if (colorIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
+            return if (transparentBackground) {
+                TRANSPARENT_TERMINAL_BACKGROUND
+            } else {
+                OPAQUE_TERMINAL_BACKGROUND
+            }
+        }
+        return resolveColor(colorIndex)
     }
 
     private fun defaultAnsiColor(index: Int): Int {

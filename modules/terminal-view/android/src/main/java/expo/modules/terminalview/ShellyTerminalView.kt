@@ -20,7 +20,6 @@ import expo.modules.terminalview.gl.GLTerminalView
 import expo.modules.terminalview.gl.GLTerminalRenderer
 import com.termux.terminal.TerminalColors
 import com.termux.terminal.TerminalSession
-import com.termux.terminal.TextStyle
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import expo.modules.kotlin.AppContext
@@ -49,6 +48,7 @@ class ShellyTerminalView(
     companion object {
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
+        private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
         private const val RESIZE_DEBOUNCE_MS = 150L
         // bug #116 follow-up 5: a single tap on a pane body fires
         // showKeyboardWhenServed three times within the same frame —
@@ -151,8 +151,8 @@ class ShellyTerminalView(
     init {
         // Black background like a real terminal. Flipped off in
         // setTransparentBackground(true) when the user picks a wallpaper.
-        setBackgroundColor(0xFF000000.toInt())
-        terminalView.setBackgroundColor(0xFF000000.toInt())
+        setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
 
         val padPx = (4 * context.resources.displayMetrics.density).toInt()
         terminalView.setPadding(padPx, 0, padPx, 0)
@@ -453,7 +453,7 @@ class ShellyTerminalView(
         val color = if (enabled) {
             0x00000000
         } else {
-            TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
+            OPAQUE_TERMINAL_BACKGROUND
         }
         setBackgroundColor(color)
         terminalView.setBackgroundColor(color)
@@ -493,9 +493,8 @@ class ShellyTerminalView(
             // swaps, otherwise picking a new theme would repaint opaque
             // over the user's wallpaper.
             if (!transparentBackground) {
-                val bgColor = TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
-                setBackgroundColor(bgColor)
-                terminalView.setBackgroundColor(bgColor)
+                setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+                terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
             }
             terminalView.invalidate()
             Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")

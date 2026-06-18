@@ -20,6 +20,7 @@ import { getAiPaneAgentMeta, getEnabledAiPaneAgents, isAiPaneAgent } from '@/lib
 import { useTranslation } from '@/lib/i18n';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
+const TERMINAL_PANE_BACKGROUND = '#000000';
 
 /** Context to let child screens know their pane width/height */
 export const MultiPaneContext = createContext<{ paneWidth: number; paneHeight: number } | null>(null);
@@ -141,7 +142,8 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   // uses bgDeep (which is the root BackgroundLayer colour), so when a
   // wallpaper is set we take it to transparent so the image shows. The
   // header keeps its bgSurface tint so pane chrome is always legible.
-  const paneBg = usePanelBackground(C.bgDeep);
+  const panelPaneBg = usePanelBackground(C.bgDeep);
+  const paneBg = tab === 'terminal' ? TERMINAL_PANE_BACKGROUND : panelPaneBg;
   const headerBg = usePanelBackground(C.bgSurface);
 
   return (
@@ -295,7 +297,12 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         </View>
       </View>
 
-      <View style={styles.content}>
+      <View
+        style={[
+          styles.content,
+          tab === 'terminal' && { backgroundColor: TERMINAL_PANE_BACKGROUND },
+        ]}
+      >
         <SafeAreaInsetsContext.Provider value={ZERO_INSETS}>
           <MultiPaneContext.Provider value={ctxValue}>
             <PaneIdContext.Provider value={leafId}>

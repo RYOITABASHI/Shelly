@@ -68,6 +68,7 @@ public class TerminalView extends View {
 
     /** Log terminal view key and IME events. */
     private static boolean TERMINAL_VIEW_KEY_LOGGING_ENABLED = false;
+    private static final int OPAQUE_TERMINAL_BACKGROUND = 0xFF000000;
 
     /** The currently displayed terminal session, whose emulator is {@link #mEmulator}. */
     public TerminalSession mTermSession;
@@ -1654,7 +1655,7 @@ public class TerminalView extends View {
             // a wallpaper under the view can show while PTY state is still
             // spinning up (typically 50-100ms on first mount).
             if (!mTransparentBackground) {
-                canvas.drawColor(0XFF000000);
+                canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND);
             }
         } else {
             // bug #82: paint the padding region in the terminal background
@@ -1672,8 +1673,7 @@ public class TerminalView extends View {
             int padB = getPaddingBottom();
             if (padL != 0 || padT != 0 || padR != 0 || padB != 0) {
                 if (!mTransparentBackground) {
-                    int bg = mEmulator.mColors.mCurrentColors[com.termux.terminal.TextStyle.COLOR_INDEX_BACKGROUND];
-                    canvas.drawColor(bg);
+                    canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND);
                 }
                 canvas.save();
                 canvas.translate(padL, padT);

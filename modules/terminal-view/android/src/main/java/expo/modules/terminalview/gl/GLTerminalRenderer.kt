@@ -126,6 +126,15 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
      * until the surface is recreated.
      */
     var transparentBackground: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (::cellBatcher.isInitialized) {
+                cellBatcher.transparentBackground = value
+                cellBatcher.markAllDirty()
+                markDirty(DirtyFlags.ALL)
+            }
+        }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         Log.i(TAG, "onSurfaceCreated")
@@ -155,6 +164,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
         // Init batcher
         cellBatcher = CellBatcher(cols, rows, atlas)
+        cellBatcher.transparentBackground = transparentBackground
         cellBatcher.init()
 
         // Init highlight worker

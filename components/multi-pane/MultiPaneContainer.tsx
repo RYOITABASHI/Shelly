@@ -34,7 +34,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
-import { colors as C, fonts as F } from '@/theme.config';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
@@ -62,6 +62,22 @@ function EmptyState() {
         ))}
       </View>
     </View>
+  );
+}
+
+function EmptyPresetSlot() {
+  const bg = usePanelBackground(C.bgDeep);
+  return (
+    <View
+      pointerEvents="none"
+      style={[
+        styles.emptyPresetSlot,
+        {
+          backgroundColor: bg,
+          borderColor: withAlpha(C.border, 0.75),
+        },
+      ]}
+    />
   );
 }
 
@@ -294,7 +310,6 @@ export function MultiPaneContainer() {
       onLayout={onContainerLayout}
     >
       {slots.map((slot, i) => {
-        if (!slot) return null;
         if (singlePaneSlot !== null && i !== singlePaneSlot) return null;
         const rect = singlePaneSlot !== null
           ? { x: 0, y: 0, w: size.W, h: gridHeight }
@@ -302,6 +317,20 @@ export function MultiPaneContainer() {
         // Skip render until we have a real size — first frame would place
         // every slot at (0,0,0,0) which the children don't like.
         if (rect.w <= 0 || rect.h <= 0) return null;
+        if (!slot) {
+          if (i >= PRESET_CAPACITY[renderPreset]) return null;
+          return (
+            <View
+              key={`empty-${renderPreset}-${i}`}
+              style={[
+                styles.slotAbs,
+                { left: rect.x, top: rect.y, width: rect.w, height: rect.h },
+              ]}
+            >
+              <EmptyPresetSlot />
+            </View>
+          );
+        }
         return (
           <View
             key={slot.id}
@@ -356,5 +385,9 @@ const styles = StyleSheet.create({
   },
   slotAbs: {
     position: 'absolute',
+  },
+  emptyPresetSlot: {
+    flex: 1,
+    borderWidth: S.borderWidth,
   },
 });
