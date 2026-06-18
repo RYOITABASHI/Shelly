@@ -275,16 +275,18 @@ export function useAIPaneDispatch(paneId: string) {
             const firstWord = promptText.split(/\s+/)[0] || 'agent';
             const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
             const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
+            const autonomous = agentResult.data?.autonomous === true;
             const created = createAgent({
               name,
               description: promptText.slice(0, 120),
               prompt: promptText,
               schedule: null,
               tool: suggestion.tool,
+              autonomous,
               outputPath: `$HOME/.shelly/agents/${name}/output.md`,
             });
             await installAgent(created, runAgentShellCommand);
-            resultMessage = `✅ Agent "${created.name}" installed (${suggestion.label}). Run it with: @agent run ${created.name}`;
+            resultMessage = `✅ Agent "${created.name}" installed (${suggestion.label}${autonomous ? ', autonomous' : ''}). Run it with: @agent run ${created.name}`;
           } else if (agentResult.type === 'run') {
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;

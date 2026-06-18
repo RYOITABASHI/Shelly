@@ -21,7 +21,9 @@ import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
 import { useAgentStore } from '@/store/agent-store';
-import { deleteAgent, runAgentNow, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
+import type { Agent, ToolChoice } from '@/store/types';
+import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
+import { toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
@@ -56,6 +58,10 @@ const QUICK_FOLDERS = [
   { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description' },
   { label: 'MUSIC',    path: '/sdcard/Music',      icon: 'music-note' },
 ] as const;
+
+function isUiAutonomousTool(tool: ToolChoice): boolean {
+  return tool.type === 'cli' || tool.type === 'local';
+}
 
 export function Sidebar() {
   const { t } = useTranslation();
@@ -295,6 +301,56 @@ export function Sidebar() {
     }
   }, [refreshRunningAgents, runCommandForAgentSync, t]);
 
+  const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
+    const updated = { ...agent, ...partial };
+    useAgentStore.getState().updateAgent(agent.id, partial);
+    try {
+      await installAgent(updated, runCommandForAgentSync);
+    } catch (error) {
+      useAgentStore.getState().updateAgent(agent.id, {
+        autonomous: agent.autonomous,
+        autonomyLevel: agent.autonomyLevel,
+        workspaceRoot: agent.workspaceRoot,
+        tool: agent.tool,
+      });
+      Alert.alert(t('sidebar.agent_update_failed_title'), error instanceof Error ? error.message : String(error));
+    }
+  }, [runCommandForAgentSync, t]);
+
+  const applyAutonomousMode = React.useCallback(async (agent: Agent, enabled: boolean, forceCodex = false) => {
+    const nextTool: ToolChoice = forceCodex ? { type: 'cli', cli: 'codex' } : agent.tool;
+    await persistAgentUpdate(agent, {
+      autonomous: enabled || undefined,
+      autonomyLevel: enabled ? (agent.autonomyLevel ?? 'L2') : undefined,
+      tool: nextTool,
+    });
+  }, [persistAgentUpdate]);
+
+  const handleToggleAutonomous = React.useCallback((agent: Agent) => {
+    const enabled = !agent.autonomous;
+    if (!enabled) {
+      void applyAutonomousMode(agent, false);
+      return;
+    }
+
+    if (isUiAutonomousTool(agent.tool)) {
+      void applyAutonomousMode(agent, true);
+      return;
+    }
+
+    Alert.alert(
+      t('sidebar.autonomous_tool_restricted_title'),
+      t('sidebar.autonomous_tool_restricted_body', { tool: toolChoiceToLabel(agent.tool) }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('sidebar.autonomous_use_codex'),
+          onPress: () => void applyAutonomousMode(agent, true, true),
+        },
+      ],
+    );
+  }, [applyAutonomousMode, t]);
+
   useEffect(() => {
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -426,18 +482,21 @@ export function Sidebar() {
               )}
             </Pressable>
           ))}
-          {agents.some((a) => a.enabled && a.schedule) && (
+          {agents.length > 0 && (
             <>
               {(runningAgents.length > 0 || recentTasks.length > 0) && (
                 <View style={styles.tasksSeparator} />
               )}
-              <Text style={styles.tasksSubheader}>{t('sidebar.scheduled')}</Text>
-              {agents.filter((a) => a.enabled && a.schedule).map((agent) => (
-                <View key={`sched-${agent.id}`} style={styles.taskRow}>
-                  <View style={[styles.taskDot, { backgroundColor: C.text3 }]} />
+              <Text style={styles.tasksSubheader}>{t('sidebar.agents')}</Text>
+              {agents.map((agent) => (
+                <View key={`agent-${agent.id}`} style={[styles.taskRow, styles.agentRow]}>
+                  <View style={[styles.taskDot, { backgroundColor: agent.autonomous ? C.accent : C.text3 }]} />
                   <View style={styles.taskInfo}>
                     <Text style={styles.taskName} numberOfLines={1}>
                       {agent.name.toUpperCase()}
+                    </Text>
+                    <Text style={styles.taskMeta} numberOfLines={1}>
+                      {agent.schedule || 'manual'} · {toolChoiceToLabel(agent.tool)}
                     </Text>
                   </View>
                   <Pressable
@@ -448,6 +507,24 @@ export function Sidebar() {
                     accessibilityLabel={t('sidebar.run_agent_now_a11y', { name: agent.name })}
                   >
                     <MaterialIcons name="play-arrow" size={12} color={C.accent} />
+                  </Pressable>
+                  <Pressable
+                    onPress={() => handleToggleAutonomous(agent)}
+                    hitSlop={8}
+                    style={[
+                      styles.agentModePill,
+                      agent.autonomous && styles.agentModePillOn,
+                    ]}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: !!agent.autonomous }}
+                    accessibilityLabel={t('sidebar.autonomous_toggle_a11y', { name: agent.name })}
+                  >
+                    <Text style={[
+                      styles.agentModeText,
+                      agent.autonomous && styles.agentModeTextOn,
+                    ]}>
+                      AUTO
+                    </Text>
                   </Pressable>
                   <Pressable
                     onPress={() => {
@@ -736,6 +813,11 @@ const styles = StyleSheet.create({
   taskRowPressed: {
     backgroundColor: withAlpha(C.accent, 0.08),
   },
+  agentRow: {
+    minHeight: 34,
+    height: 'auto',
+    paddingVertical: 4,
+  },
   tasksSeparator: {
     height: 1,
     backgroundColor: C.border,
@@ -795,6 +877,39 @@ const styles = StyleSheet.create({
     fontWeight: F.sidebarItem.weight,
     color: C.text1,
     letterSpacing: 0.3,
+  },
+  taskMeta: {
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: F.sidebarItem.weight,
+    color: C.text3,
+    letterSpacing: 0.2,
+    marginTop: 1,
+  },
+  agentModePill: {
+    minWidth: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    borderRadius: R.badge,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
+    backgroundColor: 'transparent',
+  },
+  agentModePillOn: {
+    borderColor: C.accent,
+    backgroundColor: withAlpha(C.accent, 0.18),
+  },
+  agentModeText: {
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+    color: C.text3,
+    letterSpacing: 0.3,
+  },
+  agentModeTextOn: {
+    color: C.accent,
   },
   statusBadge: {
     paddingHorizontal: P.statusBadge.px,

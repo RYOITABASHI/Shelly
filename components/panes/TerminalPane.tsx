@@ -1319,12 +1319,14 @@ export default function TerminalScreen() {
                       const firstWord = promptText.split(/\s+/)[0] || 'agent';
                       const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
                       const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
+                      const autonomous = agentResult.data?.autonomous === true;
                       const agent = createAgent({
                         name,
                         description: promptText.slice(0, 120),
                         prompt: promptText,
                         schedule: null,
                         tool: suggestion.tool,
+                        autonomous,
                         outputPath: `~/.shelly/agents/${name}/output`,
                       });
                       await installAgent(agent, async (cmd) => {
@@ -1332,7 +1334,7 @@ export default function TerminalScreen() {
                         if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
                         return result.stdout;
                       });
-                      resultMessage = `✅ Agent "${agent.name}" installed (${suggestion.label}). Run it with: @agent run ${agent.name}`;
+                      resultMessage = `✅ Agent "${agent.name}" installed (${suggestion.label}${autonomous ? ', autonomous' : ''}). Run it with: @agent run ${agent.name}`;
                     } else if (agentResult.type === 'run') {
                       await runAgentNow(agentResult.data.agentId, async (cmd) => {
                         const result = await execCommand(cmd, 120_000);

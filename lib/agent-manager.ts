@@ -5,6 +5,7 @@
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { resolveForAutonomous } from './agent-credential-policy';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
 import { getHomePath } from '@/lib/home-path';
@@ -80,6 +81,21 @@ export function parseAgentCommand(input: string): AgentCommandResult {
       return statusAll(store.agents);
 
     default:
+      if (isAutonomousCreateCommand(parts[0] ?? '')) {
+        const prompt = parts.slice(1).join(' ').trim();
+        if (!prompt) {
+          return { type: 'error', message: 'Describe the autonomous agent task after "autonomous".' };
+        }
+        return {
+          type: 'create',
+          message: prompt,
+          data: {
+            autonomous: true,
+            suggestion: autonomousSuggestion(prompt),
+          },
+        };
+      }
+
       // Natural language — trigger creation flow
       return {
         type: 'create',
@@ -96,7 +112,8 @@ function listAgents(agents: Agent[]): AgentCommandResult {
   const lines = agents.map((a) => {
     const status = a.lastResult === 'success' ? '✅' : a.lastResult === 'error' ? '❌' : '⏸️';
     const schedule = a.schedule || 'manual';
-    return `${status} **${a.name}** — ${schedule} — ${toolChoiceToLabel(a.tool)}`;
+    const mode = a.autonomous ? ' — autonomous' : '';
+    return `${status} **${a.name}** — ${schedule} — ${toolChoiceToLabel(a.tool)}${mode}`;
   });
   return { type: 'list', message: lines.join('\n') };
 }
@@ -133,6 +150,9 @@ export function createAgent(params: {
   prompt: string;
   schedule: string | null;
   tool: ToolChoice;
+  autonomous?: boolean;
+  autonomyLevel?: Agent['autonomyLevel'];
+  workspaceRoot?: string;
   outputPath: string;
   outputTemplate?: string;
 }): Agent {
@@ -143,6 +163,9 @@ export function createAgent(params: {
     prompt: params.prompt,
     schedule: params.schedule,
     tool: params.tool,
+    autonomous: params.autonomous || undefined,
+    autonomyLevel: params.autonomous ? (params.autonomyLevel ?? 'L2') : undefined,
+    workspaceRoot: params.workspaceRoot,
     outputPath: params.outputPath,
     outputTemplate: params.outputTemplate || null,
     enabled: true,
@@ -154,6 +177,29 @@ export function createAgent(params: {
 
   useAgentStore.getState().addAgent(agent);
   return agent;
+}
+
+function isAutonomousCreateCommand(word: string): boolean {
+  return ['autonomous', 'auto', '自律', '自律モード'].includes(word.toLowerCase());
+}
+
+function autonomousSuggestion(prompt: string) {
+  const suggestion = suggestTool(prompt);
+  const resolved = resolveForAutonomous(suggestion.tool);
+  if (resolved && (resolved.type === 'cli' || resolved.type === 'local')) {
+    return {
+      ...suggestion,
+      tool: resolved,
+      label: toolChoiceToLabel(resolved),
+    };
+  }
+
+  const tool: ToolChoice = { type: 'cli', cli: 'codex' };
+  return {
+    tool,
+    label: toolChoiceToLabel(tool),
+    reason: 'Autonomous mode is limited to Codex OAuth or Local LLM; using Codex for this task.',
+  };
 }
 
 /**
