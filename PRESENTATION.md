@@ -207,7 +207,7 @@ Target Execution
 - Local LLM enabled → Local LLM handles chat, delegates code/research to CLI
 - Local LLM disabled → Gemini CLI (free tier, easy setup, natural language)
 
-**Recommended Local LLM:** Gemma 3 4B IT (Q4_K_M) — best Japanese instruction-following in the 3-4B class.
+**Recommended Local LLM:** Qwen3.5 2B Q4_K_M — balanced on-device default; use Qwen3 1.7B or Qwen3.5 0.8B when memory pressure matters.
 
 ---
 

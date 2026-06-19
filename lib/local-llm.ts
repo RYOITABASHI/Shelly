@@ -116,7 +116,7 @@ export function detectApiType(baseUrl: string): 'openai' | 'ollama' {
 
 export interface LocalLlmConfig {
   baseUrl: string;   // e.g. "http://127.0.0.1:11434"
-  model: string;     // e.g. "llama3.2:3b"
+  model: string;     // e.g. "Qwen3.5-2B-Q4_K_M"
   enabled: boolean;
 }
 

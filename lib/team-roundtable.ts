@@ -14,6 +14,8 @@
  * - 各回答が返ってきた順にコールバックで通知（ストリーミング的UI）
  */
 
+const DEFAULT_LOCAL_LLM_MODEL = 'Qwen3.5-2B-Q4_K_M';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TeamMemberId =
@@ -229,7 +231,7 @@ export async function runTeamMember(
         prompt,
         {
           baseUrl: opts.localLlmUrl ?? 'http://127.0.0.1:11434',
-          model: opts.localLlmModel ?? 'llama3.2:3b',
+          model: opts.localLlmModel ?? DEFAULT_LOCAL_LLM_MODEL,
           enabled: true,
         },
         (chunk: string, _done: boolean) => { accumulated += chunk; },
@@ -361,7 +363,7 @@ Reply in English.`;
         facilitatorPrompt,
         {
           baseUrl: opts.localLlmUrl ?? 'http://127.0.0.1:11434',
-          model: opts.localLlmModel ?? 'llama3.2:3b',
+          model: opts.localLlmModel ?? DEFAULT_LOCAL_LLM_MODEL,
           enabled: true,
         },
         (chunk: string, _done: boolean) => {

@@ -2891,7 +2891,7 @@ patchCodex(libDir);
                 """
 PERPLEXITY_API_KEY=
 LOCAL_LLM_URL=http://127.0.0.1:8080
-LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M
+LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M
 LOCAL_LLM_INSTALL_LLAMA_SERVER=1
 OBSIDIAN_VAULT_PATH=/sdcard/Documents/ObsidianVault
 """.trimIndent() + "\n"
@@ -2913,7 +2913,7 @@ AI-era STEAM education is not primarily about introducing AI tools into classroo
 - Substack: academic papers, journals, conference material, public documents, and recent primary sources. Avoid duplicate sources.
 - X: local development logs, Git history, Obsidian notes, and agent run logs. Do not use Perplexity for X.
 - Source collection: Perplexity only for academic Substack work.
-- X drafting and short-form reasoning: local Qwen3.5-4B-Q4_K_M first, Codex CLI only when explicitly selected.
+- X drafting and short-form reasoning: local Qwen3.5-2B-Q4_K_M first, Codex CLI only when explicitly selected.
 - Image prompts: use the available local or external image tooling only when needed.
 """.trimIndent() + "\n"
             )
@@ -2988,7 +2988,7 @@ Return 3 variants:
             writeIfMissing(
                 File(project, "templates/qwen-vs-codex-eval.md"),
                 """
-# Qwen3.5-4B-Q4_K_M vs Codex Article Evaluation
+# Qwen3.5-2B-Q4_K_M vs Codex Article Evaluation
 
 Use the same source context and prompt for both models.
 
@@ -3014,7 +3014,7 @@ Write outputs and metrics under evals/YYYY-MM-DD-topic/.
 # Fill values here or sync them from Settings.
 PERPLEXITY_API_KEY=
 LOCAL_LLM_URL=http://127.0.0.1:8080
-LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M
+LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M
 LOCAL_LLM_INSTALL_LLAMA_SERVER=1
 OBSIDIAN_VAULT_PATH=/sdcard/Documents/ObsidianVault
 """.trimIndent() + "\n"
@@ -3066,7 +3066,7 @@ Prioritize:
 
 Do not use Perplexity, X API, paid APIs, or web scraping. Return short Japanese notes explaining why each item could become a post.
 """.trimIndent(),
-                toolJson = """{"type":"local","model":"Qwen3.5-4B-Q4_K_M"}""",
+                toolJson = """{"type":"local","model":"Qwen3.5-2B-Q4_K_M"}""",
                 outputPath = File(project, "sources/x").absolutePath,
                 schedule = "0 7 * * *",
                 inheritedState = oldXTrendState,
@@ -3107,7 +3107,7 @@ Return:
 
 Keep it casual, useful, and not overclaiming.
 """.trimIndent(),
-                toolJson = """{"type":"local","model":"Qwen3.5-4B-Q4_K_M"}""",
+                toolJson = """{"type":"local","model":"Qwen3.5-2B-Q4_K_M"}""",
                 outputPath = File(project, "drafts/x").absolutePath,
                 schedule = "0 8 * * *",
             )
@@ -3145,7 +3145,7 @@ Visual direction:
 
 Return 3 prompt variants in Japanese and English.
 """.trimIndent(),
-                toolJson = """{"type":"local","model":"Qwen3.5-4B-Q4_K_M"}""",
+                toolJson = """{"type":"local","model":"Qwen3.5-2B-Q4_K_M"}""",
                 outputPath = File(project, "images/prompts").absolutePath,
             )
 
@@ -3153,15 +3153,15 @@ Return 3 prompt variants in Japanese and English.
                 agentsDir,
                 id = "qwen-codex-article-eval",
                 name = "Qwen Codex Article Eval",
-                description = "Compares Qwen3.5-4B-Q4_K_M local output against Codex CLI for article drafting.",
+                description = "Compares Qwen3.5-2B-Q4_K_M local output against Codex CLI for article drafting.",
                 prompt = """
 Run an A/B article evaluation.
 
-Use the same context and prompt for Qwen3.5-4B-Q4_K_M and Codex. Compare which output is more publishable for the STEAM x AI Substack thesis.
+Use the same context and prompt for Qwen3.5-2B-Q4_K_M and Codex. Compare which output is more publishable for the STEAM x AI Substack thesis.
 
 Focus on thesis alignment, source faithfulness, Japanese readability, structure, originality, and publishability.
 """.trimIndent(),
-                toolJson = """{"type":"ab-article-eval","localModel":"Qwen3.5-4B-Q4_K_M","codexCmd":"codex"}""",
+                toolJson = """{"type":"ab-article-eval","localModel":"Qwen3.5-2B-Q4_K_M","codexCmd":"codex"}""",
                 outputPath = File(project, "evals").absolutePath,
             )
         } catch (e: Exception) {
@@ -3206,7 +3206,8 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
             var hasUrl = false
             var hasModel = false
             var hasInstallLlamaServer = false
-            val migrated = lines.map { line ->
+            val legacyModelPathPattern = Regex("(Qwen3\\.5-(4B|9B)-Q4_K_M|Qwen3-(8B-Q4_K_M|4B-Instruct-2507-Q4_K_M))", RegexOption.IGNORE_CASE)
+            val migrated = lines.mapNotNull { line ->
                 val trimmed = line.trimStart()
                 val assignment = if (trimmed.startsWith("export ")) trimmed.removePrefix("export ").trimStart() else trimmed
                 when {
@@ -3214,23 +3215,32 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
                         hasUrl = true
                         line
                     }
+                    assignment.startsWith("LOCAL_LLM_MODEL_PATH=") && legacyModelPathPattern.containsMatchIn(assignment) -> {
+                        null
+                    }
                     assignment == "LOCAL_LLM_MODEL=Qwen3-8B" -> {
                         hasModel = true
-                        line.replace("LOCAL_LLM_MODEL=Qwen3-8B", "LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M")
+                        line.replace("LOCAL_LLM_MODEL=Qwen3-8B", "LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M")
                     }
                     assignment == "LOCAL_LLM_MODEL=\"Qwen3-8B\"" || assignment == "LOCAL_LLM_MODEL='Qwen3-8B'" -> {
                         hasModel = true
-                        line.replace("LOCAL_LLM_MODEL=\"Qwen3-8B\"", "LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M")
-                            .replace("LOCAL_LLM_MODEL='Qwen3-8B'", "LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M")
+                        line.replace("LOCAL_LLM_MODEL=\"Qwen3-8B\"", "LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M")
+                            .replace("LOCAL_LLM_MODEL='Qwen3-8B'", "LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M")
                     }
                     assignment == "LOCAL_LLM_MODEL=Qwen3-8B-Q4_K_M" ||
+                        assignment == "LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M" ||
+                        assignment == "LOCAL_LLM_MODEL=Qwen3.5-9B-Q4_K_M" ||
                         assignment == "LOCAL_LLM_MODEL=Qwen3-4B-Instruct-2507-Q4_K_M" ||
                         assignment == "LOCAL_LLM_MODEL=\"Qwen3-8B-Q4_K_M\"" ||
                         assignment == "LOCAL_LLM_MODEL='Qwen3-8B-Q4_K_M'" ||
+                        assignment == "LOCAL_LLM_MODEL=\"Qwen3.5-4B-Q4_K_M\"" ||
+                        assignment == "LOCAL_LLM_MODEL='Qwen3.5-4B-Q4_K_M'" ||
+                        assignment == "LOCAL_LLM_MODEL=\"Qwen3.5-9B-Q4_K_M\"" ||
+                        assignment == "LOCAL_LLM_MODEL='Qwen3.5-9B-Q4_K_M'" ||
                         assignment == "LOCAL_LLM_MODEL=\"Qwen3-4B-Instruct-2507-Q4_K_M\"" ||
                         assignment == "LOCAL_LLM_MODEL='Qwen3-4B-Instruct-2507-Q4_K_M'" -> {
                         hasModel = true
-                        line.replace(Regex("LOCAL_LLM_MODEL=(['\"]?)Qwen3-(8B-Q4_K_M|4B-Instruct-2507-Q4_K_M)\\1"), "LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M")
+                        line.replace(Regex("LOCAL_LLM_MODEL=(['\"]?)(Qwen3-(8B-Q4_K_M|4B-Instruct-2507-Q4_K_M)|Qwen3\\.5-(4B|9B)-Q4_K_M)\\1"), "LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M")
                     }
                     assignment.startsWith("LOCAL_LLM_MODEL=") -> {
                         hasModel = true
@@ -3244,7 +3254,7 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
                 }
             }.toMutableList()
             if (!hasUrl) migrated.add("LOCAL_LLM_URL=http://127.0.0.1:8080")
-            if (!hasModel) migrated.add("LOCAL_LLM_MODEL=Qwen3.5-4B-Q4_K_M")
+            if (!hasModel) migrated.add("LOCAL_LLM_MODEL=Qwen3.5-2B-Q4_K_M")
             if (!hasInstallLlamaServer) migrated.add("LOCAL_LLM_INSTALL_LLAMA_SERVER=1")
             envFile.writeText(migrated.joinToString("\n") + "\n")
         } catch (e: Exception) {
@@ -3259,7 +3269,7 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
         }
     }
 
-    private val CONTENT_AGENT_VERSION = 4
+    private val CONTENT_AGENT_VERSION = 5
 
     private fun seedAgent(
         agentsDir: File,

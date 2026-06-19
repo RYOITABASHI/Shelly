@@ -21,9 +21,11 @@ function dotenvValue(value: string): string {
   return `'${normalized.replace(/'/g, "'\\''")}'`;
 }
 
-export const DEFAULT_LOCAL_LLM_MODEL = 'Qwen3.5-4B-Q4_K_M';
+export const DEFAULT_LOCAL_LLM_MODEL = 'Qwen3.5-2B-Q4_K_M';
 
 const LEGACY_LOCAL_LLM_MODELS = new Set([
+  'Qwen3.5-4B-Q4_K_M',
+  'Qwen3.5-9B-Q4_K_M',
   'Qwen3-4B-Instruct-2507-Q4_K_M',
   'Qwen3-8B-Q4_K_M',
 ]);
@@ -174,6 +176,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       let shouldPersist = false;
       if (LEGACY_LOCAL_LLM_MODELS.has(settings.localLlmModel)) {
         settings.localLlmModel = DEFAULT_LOCAL_LLM_MODEL;
+        settings.localLlmModelPath = '';
         shouldPersist = true;
       }
       const sanitized = sanitizeRemovedAgents(settings);

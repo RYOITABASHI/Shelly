@@ -36,7 +36,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
   // Priority 1: Qwen/Codex article drafting evaluation
   if (ARTICLE_EVAL_KEYWORDS.some((kw) => lower.includes(kw))) {
     return {
-      tool: { type: 'ab-article-eval', localModel: 'Qwen3.5-4B-Q4_K_M', codexCmd: 'codex' },
+      tool: { type: 'ab-article-eval', localModel: 'Qwen3.5-2B-Q4_K_M', codexCmd: 'codex' },
       label: 'Qwen/Codex A/B Eval',
       reason: 'Article drafting comparison — runs local Qwen and Codex against the same source context',
     };

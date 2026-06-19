@@ -402,6 +402,7 @@ export function useAIPaneDispatch(paneId: string) {
             geminiApiKey: settings.geminiApiKey,
             geminiModel: settings.geminiModel,
             localLlmUrl: settings.localLlmUrl,
+            localLlmModel: settings.localLlmModel,
             cerebrasApiKey: settings.cerebrasApiKey,
             groqApiKey: settings.groqApiKey,
             onMemberResult: (m) => {
