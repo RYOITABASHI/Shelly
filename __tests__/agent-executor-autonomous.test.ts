@@ -27,10 +27,21 @@ const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=5');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
+    expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
     expect(s).toContain(UNSET); // codex path → keys scrubbed
     expect(s).not.toContain('[REFUSED]');
+  });
+
+  it('does not depend on python3 for JSON helper escaping before the driver path', () => {
+    const s = generateRunScript(agent({ type: 'auto' }, true));
+    expect(s).toContain('node_usable()');
+    expect(s).toContain('json_escape_text()');
+    expect(s).toContain('json_string_file()');
+    expect(s).not.toContain("python3 -c 'import json");
+    expect(s).not.toContain('python3 -c "import json');
   });
 
   it('refuses an autonomous api-key backend (perplexity), fail-closed', () => {

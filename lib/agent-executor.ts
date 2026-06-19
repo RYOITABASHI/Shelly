@@ -10,7 +10,7 @@ import { getHomePath } from '@/lib/home-path';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 4;
+const AGENT_SCRIPT_VERSION = 5;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -104,13 +104,22 @@ cleanup() {
   fi
   rm -f "$LOCK_FILE"
 }
+node_usable() {
+  command -v node >/dev/null 2>&1 || return 1
+  node -e 'process.exit(0)' >/dev/null 2>&1 || return 1
+}
+python3_usable() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c 'import sys' >/dev/null 2>&1 || return 1
+}
 json_escape_text() {
   text="$1"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=False)[1:-1], end="")' "$text"
-  else
-    printf '%s' "$text" | tr '\\n\\r\\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+  if node_usable; then
+    if SHELLY_JSON_TEXT="$text" node -e 'const s = process.env.SHELLY_JSON_TEXT || ""; process.stdout.write(JSON.stringify(s).slice(1, -1));' 2>/dev/null; then
+      return 0
+    fi
   fi
+  printf '%s' "$text" | tr '\\n\\r\\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 write_failure_log() {
   code="$1"
@@ -150,13 +159,14 @@ mirror_driver_audit_to_sdcard() {
 
 json_string_file() {
   file="$1"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1], "r", encoding="utf-8", errors="replace").read(), ensure_ascii=False), end="")' "$file"
-  else
-    printf '"'
-    sed 's/\r/ /g; s/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$file" | tr -d '\\n'
-    printf '"'
+  if node_usable; then
+    if node -e 'const fs = require("fs"); const file = process.argv[1]; process.stdout.write(JSON.stringify(fs.readFileSync(file, "utf8")));' "$file" 2>/dev/null; then
+      return 0
+    fi
   fi
+  printf '"'
+  sed 's/\r/ /g; s/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$file" | tr -d '\\n'
+  printf '"'
 }
 
 http_post_json() {
@@ -380,8 +390,8 @@ extract_zip_file() {
     unzip -o "$zip_file" -d "$dest_dir" > /dev/null 2> "$err_file"
     return $?
   fi
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$zip_file" "$dest_dir" > /dev/null 2> "$err_file" <<'PYEOF'
+  if python3_usable; then
+    if python3 - "$zip_file" "$dest_dir" > /dev/null 2> "$err_file" <<'PYEOF'
 import sys
 import zipfile
 
@@ -389,7 +399,11 @@ zip_file, dest_dir = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(zip_file) as z:
     z.extractall(dest_dir)
 PYEOF
-    return $?
+    then
+      return 0
+    else
+      return $?
+    fi
   fi
   echo "unzip or python3 is required to extract llama-server" > "$err_file"
   return 127
@@ -407,8 +421,8 @@ extract_archive_file() {
     tar -xzf "$archive_file" -C "$dest_dir" > /dev/null 2> "$err_file"
     return $?
   fi
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$archive_file" "$dest_dir" > /dev/null 2> "$err_file" <<'PYEOF'
+  if python3_usable; then
+    if python3 - "$archive_file" "$dest_dir" > /dev/null 2> "$err_file" <<'PYEOF'
 import sys
 import tarfile
 
@@ -416,7 +430,11 @@ archive_file, dest_dir = sys.argv[1], sys.argv[2]
 with tarfile.open(archive_file, "r:*") as t:
     t.extractall(dest_dir)
 PYEOF
-    return $?
+    then
+      return 0
+    else
+      return $?
+    fi
   fi
   echo "tar or python3 is required to extract llama-server archive" > "$err_file"
   return 127
@@ -661,8 +679,57 @@ ensure_local_llm_server() {
 
 extract_ai_content() {
   file="$1"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$file" <<'PYEOF'
+  if node_usable; then
+    if node - "$file" <<'NODEEOF'
+const fs = require('fs');
+
+const file = process.argv[2];
+const text = fs.readFileSync(file, 'utf8');
+let data;
+try {
+  data = JSON.parse(text);
+} catch (_) {
+  process.stdout.write(text);
+  process.exit(0);
+}
+
+let content;
+try {
+  content = data?.choices?.[0]?.message?.content;
+} catch (_) {}
+if (!content) {
+  try {
+    content = data?.choices?.[0]?.text;
+  } catch (_) {}
+}
+if (!content) {
+  try {
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    content = parts.map((part) => part && part.text ? part.text : '').filter(Boolean).join('\\n');
+  } catch (_) {}
+}
+
+const err = data?.error || data?.message;
+if (content) {
+  process.stdout.write(content);
+} else if (err) {
+  process.stdout.write('API error: ' + (typeof err === 'string' ? err : JSON.stringify(err)));
+  process.exit(2);
+} else {
+  process.stdout.write(text);
+}
+NODEEOF
+    then
+      return 0
+    else
+      rc=$?
+      if [ "$rc" -eq 2 ]; then
+        return 2
+      fi
+    fi
+  fi
+  if python3_usable; then
+    if python3 - "$file" <<'PYEOF'
 import json
 import sys
 
@@ -700,14 +767,21 @@ elif err:
 else:
     sys.stdout.write(text)
 PYEOF
-  else
-    if grep -q '"error"' "$file" 2>/dev/null; then
-      printf 'API error response: '
-      head -c 4000 "$file"
-      return 2
+    then
+      return 0
+    else
+      rc=$?
+      if [ "$rc" -eq 2 ]; then
+        return 2
+      fi
     fi
-    cat "$file"
   fi
+  if grep -q '"error"' "$file" 2>/dev/null; then
+    printf 'API error response: '
+    head -c 4000 "$file"
+    return 2
+  fi
+  cat "$file"
 }
 local_context_fallback() {
   local reason="$1"
@@ -921,7 +995,7 @@ function generateToolCommand(tool: ToolChoice, escapedPrompt: string, rawPrompt:
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 DRIVER_CWD="$PROJECT_DIR"
 [ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
-if command -v node >/dev/null 2>&1 && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   timeout "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
     --cwd "$DRIVER_CWD" \\
     --approval-policy untrusted \\
