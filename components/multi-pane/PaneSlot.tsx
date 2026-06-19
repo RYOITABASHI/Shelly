@@ -21,6 +21,7 @@ import { useTranslation } from '@/lib/i18n';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 const TERMINAL_PANE_BACKGROUND = '#000000';
+const TERMINAL_HEADER_BACKGROUND = '#020302';
 
 /** Context to let child screens know their pane width/height */
 export const MultiPaneContext = createContext<{ paneWidth: number; paneHeight: number } | null>(null);
@@ -145,6 +146,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const panelPaneBg = usePanelBackground(C.bgDeep);
   const paneBg = tab === 'terminal' ? TERMINAL_PANE_BACKGROUND : panelPaneBg;
   const headerBg = usePanelBackground(C.bgSurface);
+  const resolvedHeaderBg = tab === 'terminal' ? TERMINAL_HEADER_BACKGROUND : headerBg;
 
   return (
     <View
@@ -172,7 +174,9 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           {
             borderTopColor: isFocusedPane ? C.accent : agentColor,
             borderBottomColor: isFocusedPane ? withAlpha(C.accent, 0.75) : C.border,
-            backgroundColor: isFocusedPane ? withAlpha(C.accent, 0.14) : headerBg,
+            backgroundColor: isFocusedPane && tab !== 'terminal'
+              ? withAlpha(C.accent, 0.14)
+              : resolvedHeaderBg,
           },
         ]}
       >

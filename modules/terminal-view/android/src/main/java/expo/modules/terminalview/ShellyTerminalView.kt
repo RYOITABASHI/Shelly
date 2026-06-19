@@ -21,6 +21,7 @@ import expo.modules.terminalview.gl.GLTerminalView
 import expo.modules.terminalview.gl.GLTerminalRenderer
 import com.termux.terminal.TerminalColors
 import com.termux.terminal.TerminalSession
+import com.termux.terminal.TextStyle
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import expo.modules.kotlin.AppContext
@@ -451,11 +452,21 @@ class ShellyTerminalView(
         if (enabled) {
             Log.i(TAG, "setTransparentBackground(true) ignored for terminal pane")
         }
+        applyOpaqueTerminalSurface()
+    }
+
+    private fun applyOpaqueTerminalSurface() {
         transparentBackground = false
         setWillNotDraw(false)
+        TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+        terminalView.mEmulator?.mColors?.mCurrentColors?.let { colors ->
+            colors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+        }
         setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setTransparentBackground(false)
+        glTerminalView?.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        glTerminalView?.renderer?.updateAnsiColors(terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors)
         terminalView.invalidate()
         // GPU path (when gpuRendering=true): keep the GLSurfaceView and
         // renderer clearColor opaque black as well.
@@ -482,14 +493,10 @@ class ShellyTerminalView(
                 }
             }
             TerminalColors.COLOR_SCHEME.updateWith(props)
+            TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
             // Reset current session colors to apply the new scheme
             terminalView.mEmulator?.mColors?.reset()
-            // Reassert opaque black after theme swaps. Terminal panes keep
-            // their native surfaces opaque even when other pane types allow
-            // wallpaper transparency.
-            setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
-            terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
-            terminalView.invalidate()
+            applyOpaqueTerminalSurface()
             Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")
         } catch (e: Exception) {
             Log.w(TAG, "applyThemeColors failed", e)

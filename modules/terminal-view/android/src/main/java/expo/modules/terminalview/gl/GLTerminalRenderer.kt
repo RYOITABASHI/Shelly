@@ -110,6 +110,12 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         highlightWorker.highlightRows(emulator.screen, topRow, topRow + rows)
     }
 
+    fun updateAnsiColors(colors: IntArray) {
+        if (!::cellBatcher.isInitialized) return
+        cellBatcher.updateAnsiColors(colors)
+        markDirty(DirtyFlags.ALL)
+    }
+
     // === GLSurfaceView.Renderer ===
 
     /**
