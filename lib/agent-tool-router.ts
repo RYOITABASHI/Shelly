@@ -63,7 +63,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
   // Priority 4: Text transformation
   if (TRANSFORM_KEYWORDS.some((kw) => lower.includes(kw))) {
     return {
-      tool: { type: 'local' },
+      tool: { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' },
       label: 'Local LLM',
       reason: 'Text processing — local LLM is free and fast for transformation tasks',
     };

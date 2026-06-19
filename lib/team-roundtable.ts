@@ -14,7 +14,7 @@
  * - 各回答が返ってきた順にコールバックで通知（ストリーミング的UI）
  */
 
-const DEFAULT_LOCAL_LLM_MODEL = 'Qwen3.5-2B-Q4_K_M';
+const DEFAULT_LOCAL_LLM_MODEL = 'Qwen3.5-0.8B-Q4_K_M';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

@@ -88,19 +88,39 @@ async function ensureLocalLlmServerRunningOnce(
   }
 
   const current = await checkOllamaConnection(baseUrl, 750);
-  if (current.available) {
+  const currentMatches = current.available
+    ? localLlmModelsMatch(current.models, settings.localLlmModel, settings.localLlmModelPath)
+    : false;
+  const shouldRestartForModelMismatch = current.available && !currentMatches;
+  if (currentMatches) {
     return { ok: true, status: 'ready', model: settings.localLlmModel };
   }
 
   const status = await readLlamaServerStatus();
-  if (status === 'running') {
-    return { ok: true, status: 'ready', model: settings.localLlmModel };
-  }
-  if (status === 'starting_or_unreachable') {
+  if (status === 'running' && !current.available) {
     if (!options.waitForReady) {
       return { ok: true, status: 'starting', model: settings.localLlmModel };
     }
-    const ready = await waitForConnection(baseUrl, 60_000);
+    const ready = await waitForConnection(
+      baseUrl,
+      60_000,
+      settings.localLlmModel,
+      settings.localLlmModelPath,
+    );
+    if (ready) {
+      return { ok: true, status: 'ready', model: settings.localLlmModel };
+    }
+  }
+  if (status === 'starting_or_unreachable' && !shouldRestartForModelMismatch) {
+    if (!options.waitForReady) {
+      return { ok: true, status: 'starting', model: settings.localLlmModel };
+    }
+    const ready = await waitForConnection(
+      baseUrl,
+      60_000,
+      settings.localLlmModel,
+      settings.localLlmModelPath,
+    );
     if (ready) {
       return { ok: true, status: 'ready', model: settings.localLlmModel };
     }
@@ -135,7 +155,12 @@ async function ensureLocalLlmServerRunningOnce(
   }
 
   if (options.waitForReady) {
-    const ready = await waitForConnection(baseUrl, 30_000);
+    const ready = await waitForConnection(
+      baseUrl,
+      30_000,
+      resolution.model.name,
+      resolution.modelPath,
+    );
     if (!ready) {
       return {
         ok: false,
@@ -282,6 +307,25 @@ function pathMatchesSelectedModel(path: string, selected: string): boolean {
   return pathToken === selectedToken || pathToken.includes(selectedToken) || selectedToken.includes(pathToken);
 }
 
+function localLlmModelsMatch(models: string[], selected: string, explicitPath?: string): boolean {
+  const explicitPathToken = explicitPath && pathMatchesSelectedModel(explicitPath, selected)
+    ? explicitPath
+    : '';
+  const expectedTokens = [
+    selected,
+    explicitPathToken,
+    looksLikeModelPath(selected) ? selected : '',
+    matchCatalog(selected)?.filename ?? '',
+  ].map(normalizedToken).filter(Boolean);
+  if (expectedTokens.length === 0) return true;
+  if (models.length === 0) return false;
+
+  return models
+    .map(normalizedToken)
+    .filter(Boolean)
+    .some((actual) => expectedTokens.some((expected) => actual === expected));
+}
+
 function createCustomModel(modelPath: string, selected: string): LlamaCppModel {
   const filename = basename(modelPath) || basename(selected) || 'local-model.gguf';
   const name = filename.replace(/\.gguf$/i, '') || selected || 'Local GGUF';
@@ -323,11 +367,16 @@ function normalizedToken(value: string): string {
     .replace(/[^a-z0-9]+/g, '');
 }
 
-async function waitForConnection(baseUrl: string, timeoutMs: number): Promise<boolean> {
+async function waitForConnection(
+  baseUrl: string,
+  timeoutMs: number,
+  selected?: string,
+  explicitPath?: string,
+): Promise<boolean> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const current = await checkOllamaConnection(baseUrl, 1_000);
-    if (current.available) return true;
+    if (current.available && localLlmModelsMatch(current.models, selected ?? '', explicitPath)) return true;
     await sleep(1_000);
   }
   return false;

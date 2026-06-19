@@ -3,7 +3,7 @@ jest.mock('@/lib/home-path', () => ({
 }));
 
 import { execFileSync } from 'node:child_process';
-import { generateRunScript } from '@/lib/agent-executor';
+import { generateRunScript, selectAutonomousLocalModel } from '@/lib/agent-executor';
 import { Agent, ToolChoice } from '@/store/types';
 
 const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
@@ -28,7 +28,7 @@ const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=6');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=7');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -61,6 +61,23 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).toContain('shelly_node - "$url" "$out_file"');
     expect(s).toContain('shelly_node - > "$TMP_DIR/llama-server-url-$AGENT_ID.txt"');
     expect(s).toContain('if shelly_node - "$file"');
+    expect(s).toContain('local_llm_start_idle_watcher');
+    expect(s).toContain('SHELLY_AGENT_LOCAL_MODEL:-Qwen3.5-0.8B-Q4_K_M');
+    expect(s).toContain('if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then');
+    expect(s).toContain('local_llm_start_activity_heartbeat 10');
+    expect(s).toContain('local_llm_stop_activity_heartbeat');
+    expect(s).toContain('llama-server.active');
+    expect(s).toContain('active_count="$(find "$active_dir" -type f -name');
+    expect(s).toContain('id === expected');
+    expect(s).not.toContain('id.includes(expected)');
+    expect(s).not.toContain('expected.includes(id)');
+    expect(s).toContain('--alias "$alias_name"');
+    expect(s).not.toContain('ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL" || true');
+    expect(s).not.toContain('HEARTBEAT_PID="$(local_llm_start_activity_heartbeat 10)"');
+    expect(s).toContain('exec /system/bin/linker64 "$installed_binary" "\\$@"');
+    expect(s).toContain('exec "$installed_binary" "\\$@"');
+    expect(s).not.toContain('exec /system/bin/linker64 "$installed_binary" "$@"');
+    expect(s).not.toContain('LOCAL_LLM_MODEL:-Qwen3.5-0.8B-Q4_K_M');
     expect(s).not.toContain(' node - "$url"');
     expect(s).not.toContain(' node - "$file"');
     expect(s).not.toContain(' command -v node');
@@ -97,6 +114,12 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(cli).toContain(UNSET); // oauth path → keys scrubbed
     expect(generateRunScript(agent({ type: 'local' }, true))).not.toContain('[REFUSED]');
     expect(generateRunScript(agent({ type: 'ab-article-eval' }, true))).not.toContain('[REFUSED]');
+  });
+
+  it('selects a light local model for simple autonomous local work and 2B for heavier text work', () => {
+    expect(selectAutonomousLocalModel('short classify this')).toBe('Qwen3.5-0.8B-Q4_K_M');
+    expect(selectAutonomousLocalModel('この記事を比較して下書きにして')).toBe('Qwen3.5-2B-Q4_K_M');
+    expect(selectAutonomousLocalModel('高品質に推敲して')).toBe('Qwen3.5-4B-Q4_K_M');
   });
 
   it('leaves NON-autonomous agents unchanged (perplexity still runs, keys kept)', () => {

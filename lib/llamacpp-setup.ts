@@ -26,6 +26,7 @@ export interface LlamaCppModel {
   downloadUrl: string;
   recommended?: boolean;
   badge?: string;
+  hidden?: boolean;
 }
 
 export interface LlamaCppSetupStep {
@@ -42,6 +43,12 @@ export interface LlamaCppServerConfig {
   contextSize: number;
   threads: number;
   gpuLayers: number; // Snapdragon GPU offload（0=CPU only）
+}
+
+export interface LlamaCppRuntimeProfile {
+  contextSize: number;
+  threads: number;
+  idleTimeoutSeconds: number;
 }
 
 export type SetupPhase =
@@ -63,7 +70,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
   {
     id: 'qwen3.5-2b-q4',
     name: 'Qwen3.5-2B Q4_K_M',
-    description: '推奨。Shellyのローカル常用、短い判断、ルーター、ベリファイア向けの標準モデル。',
+    description: '標準。短い下書き、軽い推論、ベリファイア向け。常時起動よりオンデマンド利用向け。',
     sizeGb: 1.3,
     ramRequiredGb: 3.2,
     language: 'ja',
@@ -73,13 +80,12 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'Qwen3.5-2B-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf',
-    recommended: true,
-    badge: '推奨',
+    badge: '標準',
   },
   {
     id: 'qwen3-1.7b-q4',
     name: 'Qwen3 1.7B Q4_K_M',
-    description: '安定重視の軽量fallback。2Bでも端末が重い時やバックグラウンド共存を優先する時に使う。',
+    description: 'Legacy optional fallback. Kept only so already-installed files can be detected and removed.',
     sizeGb: 1.1,
     ramRequiredGb: 2.9,
     language: 'ja',
@@ -90,11 +96,12 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     downloadUrl:
       'https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf',
     badge: '軽量',
+    hidden: true,
   },
   {
     id: 'qwen3.5-0.8b-q4',
     name: 'Qwen3.5-0.8B Q4_K_M',
-    description: '最軽量。分類、ルーティング、スキーマ検証、短文補助に限定して使う。',
+    description: '推奨。分類、ルーティング、スキーマ検証、短文補助向け。自律エージェントの常用起点。',
     sizeGb: 0.6,
     ramRequiredGb: 1.8,
     language: 'ja',
@@ -104,7 +111,8 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'Qwen3.5-0.8B-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
-    badge: '最軽量',
+    recommended: true,
+    badge: '推奨',
   },
   {
     id: 'qwen3.5-4b-q4',
@@ -124,7 +132,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
   {
     id: 'qwen3.5-9b-q4',
     name: 'Qwen3.5-9B Q4_K_M',
-    description: '高品質実験用。端末単体の常用ではなく、品質比較や短時間検証に限定する。',
+    description: 'Legacy removal target. Too heavy for Shelly on-device autonomous use.',
     sizeGb: 5.3,
     ramRequiredGb: 9.0,
     language: 'ja',
@@ -134,7 +142,8 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'Qwen3.5-9B-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
-    badge: '実験',
+    badge: '削除推奨',
+    hidden: true,
   },
   {
     id: 'gemma3-4b-q4',
@@ -149,6 +158,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'gemma-3-4b-it-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf',
+    hidden: true,
   },
   {
     id: 'qwen2.5-1.5b-q4',
@@ -164,6 +174,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     downloadUrl:
       'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
     badge: '軽量',
+    hidden: true,
   },
   {
     id: 'qwen2.5-3b-q4',
@@ -178,6 +189,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'qwen2.5-3b-instruct-q4_k_m.gguf',
     downloadUrl:
       'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
+    hidden: true,
   },
   {
     id: 'phi4-mini-q4',
@@ -193,6 +205,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     downloadUrl:
       'https://huggingface.co/microsoft/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf',
     badge: 'Microsoft',
+    hidden: true,
   },
   {
     id: 'llama3.2-3b-q4',
@@ -208,6 +221,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     downloadUrl:
       'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     badge: 'Meta',
+    hidden: true,
   },
 ];
 
@@ -253,6 +267,30 @@ const HEALTH_CHECK_CMD = [
   `command -v wget >/dev/null 2>&1 && wget -q -T 2 -O - http://127.0.0.1:8080/v1/models >/dev/null 2>&1`,
   `command -v toybox >/dev/null 2>&1 && printf 'GET /v1/models HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' | toybox nc -w 2 127.0.0.1 8080 2>/dev/null | grep -q 'HTTP/1\\.[01] 200'`,
 ].join(' || ');
+
+function normalizedModelText(model: LlamaCppModel): string {
+  return `${model.id} ${model.name} ${model.filename}`.toLowerCase();
+}
+
+export function getModelRuntimeProfile(model: LlamaCppModel): LlamaCppRuntimeProfile {
+  const text = normalizedModelText(model);
+  if (text.includes('0.8b') || text.includes('0-8b')) {
+    return { contextSize: 1024, threads: 2, idleTimeoutSeconds: 600 };
+  }
+  if (text.includes('1.7b') || text.includes('1-7b')) {
+    return { contextSize: 1024, threads: 3, idleTimeoutSeconds: 300 };
+  }
+  if (text.includes('2b')) {
+    return { contextSize: 1024, threads: 4, idleTimeoutSeconds: 180 };
+  }
+  if (text.includes('4b')) {
+    return { contextSize: 768, threads: 4, idleTimeoutSeconds: 60 };
+  }
+  if (text.includes('9b') || text.includes('8b')) {
+    return { contextSize: 512, threads: 3, idleTimeoutSeconds: 30 };
+  }
+  return { contextSize: 1024, threads: 3, idleTimeoutSeconds: 180 };
+}
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -520,8 +558,10 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
  * OpenAI互換エンドポイント（/v1/chat/completions）を提供。
  */
 export function buildServerStartCommand(config: LlamaCppServerConfig): string {
+  const alias = basenameOfPath(config.modelPath).replace(/\.gguf$/i, '');
   const args = [
     `--model "${config.modelPath}"`,
+    `--alias "${shellDoubleQuoteContent(alias)}"`,
     `--port ${config.port}`,
     `--ctx-size ${config.contextSize}`,
     `--threads ${config.threads}`,
@@ -541,16 +581,98 @@ export function buildRecommendedStartCommand(
   model: LlamaCppModel,
   modelPath = `${MODELS_DIR}/${model.filename}`,
 ): string {
+  const profile = getModelRuntimeProfile(model);
   const config: LlamaCppServerConfig = {
     port: 8080,
     modelPath,
-    // Z Fold6 has enough big-core headroom for a short interactive burst. Four
-    // threads keeps local chat responsive without monopolizing the UI thread.
-    contextSize: 1024,
-    threads: 4,
+    contextSize: profile.contextSize,
+    threads: profile.threads,
     gpuLayers: 0, // Adreno GPU offloadは現状不安定なためCPU only
   };
   return buildServerStartCommand(config);
+}
+
+function buildIdleWatcherStartLines(
+  pidFile: string,
+  watcherPidFile: string,
+  activityFile: string,
+  logFile: string,
+  defaultTimeoutSeconds: number,
+): string[] {
+  return [
+    `ACTIVITY_FILE="${activityFile}"`,
+    `ACTIVE_DIR="$(dirname "$ACTIVITY_FILE")/llama-server.active"`,
+    `WATCHER_PID_FILE="${watcherPidFile}"`,
+    `IDLE_TIMEOUT_SECONDS="\${LLAMA_SERVER_IDLE_TIMEOUT_SECONDS:-${defaultTimeoutSeconds}}"`,
+    `case "$IDLE_TIMEOUT_SECONDS" in ''|*[!0-9]*) IDLE_TIMEOUT_SECONDS=0 ;; esac`,
+    `touch "$ACTIVITY_FILE" 2>/dev/null || true`,
+    `if [ "$IDLE_TIMEOUT_SECONDS" -gt 0 ]; then`,
+    `  SERVER_PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
+    `  if [ -n "$SERVER_PID" ]; then`,
+    `    (`,
+    `      while kill -0 "$SERVER_PID" 2>/dev/null; do`,
+    `        find "$ACTIVE_DIR" -type f -name '*.active' -mmin +5 -delete 2>/dev/null || true`,
+    `        ACTIVE_COUNT="$(find "$ACTIVE_DIR" -type f -name '*.active' 2>/dev/null | wc -l | tr -d ' ')"`,
+    `        if [ "\${ACTIVE_COUNT:-0}" != "0" ]; then`,
+    `          sleep 15`,
+    `          continue`,
+    `        fi`,
+    `        NOW="$(date +%s)"`,
+    `        LAST="$(stat -c %Y "$ACTIVITY_FILE" 2>/dev/null || echo "$NOW")"`,
+    `        case "$LAST" in ''|*[!0-9]*) LAST="$NOW" ;; esac`,
+    `        if [ $((NOW - LAST)) -ge "$IDLE_TIMEOUT_SECONDS" ]; then`,
+    `          echo "llama-server idle timeout after ${defaultTimeoutSeconds}s profile / $IDLE_TIMEOUT_SECONDS effective seconds" >> "${logFile}" 2>/dev/null || true`,
+    `          kill "$SERVER_PID" 2>/dev/null || true`,
+    `          sleep 1`,
+    `          kill -0 "$SERVER_PID" 2>/dev/null && kill -9 "$SERVER_PID" 2>/dev/null || true`,
+    `          rm -f "${pidFile}"`,
+    `          break`,
+    `        fi`,
+    `        sleep 15`,
+    `      done`,
+    `    ) >/dev/null 2>&1 &`,
+    `    echo $! > "$WATCHER_PID_FILE"`,
+    `    echo "Idle auto-stop: ${defaultTimeoutSeconds}s profile / $IDLE_TIMEOUT_SECONDS effective seconds"`,
+    `  fi`,
+    `fi`,
+  ];
+}
+
+function buildStopWatcherLines(watcherPidFile: string): string[] {
+  return [
+    `if [ -f "${watcherPidFile}" ]; then`,
+    `  WATCHER_PID="$(cat "${watcherPidFile}" 2>/dev/null || true)"`,
+    `  if [ -n "$WATCHER_PID" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then`,
+    `    kill "$WATCHER_PID" 2>/dev/null || true`,
+    `  fi`,
+    `  rm -f "${watcherPidFile}"`,
+    `fi`,
+  ];
+}
+
+function buildWaitForNoActiveUsersLines(activeDir: string): string[] {
+  return [
+    `ACTIVE_DIR="${activeDir}"`,
+    `RESTART_WAIT_SECONDS="\${LLAMA_SERVER_RESTART_WAIT_SECONDS:-120}"`,
+    `case "$RESTART_WAIT_SECONDS" in ''|*[!0-9]*) RESTART_WAIT_SECONDS=0 ;; esac`,
+    `if [ -d "$ACTIVE_DIR" ] && [ "$RESTART_WAIT_SECONDS" -gt 0 ]; then`,
+    `  WAIT_I=0`,
+    `  while [ "$WAIT_I" -lt "$RESTART_WAIT_SECONDS" ]; do`,
+    `    find "$ACTIVE_DIR" -type f -name '*.active' -mmin +5 -delete 2>/dev/null || true`,
+    `    ACTIVE_COUNT="$(find "$ACTIVE_DIR" -type f -name '*.active' 2>/dev/null | wc -l | tr -d ' ')"`,
+    `    [ "\${ACTIVE_COUNT:-0}" = "0" ] && break`,
+    `    echo "Waiting for active local LLM request to finish... ($WAIT_I/$RESTART_WAIT_SECONDS)"`,
+    `    sleep 1`,
+    `    WAIT_I=$((WAIT_I + 1))`,
+    `  done`,
+    `  find "$ACTIVE_DIR" -type f -name '*.active' -mmin +5 -delete 2>/dev/null || true`,
+    `  ACTIVE_COUNT="$(find "$ACTIVE_DIR" -type f -name '*.active' 2>/dev/null | wc -l | tr -d ' ')"`,
+    `  if [ "\${ACTIVE_COUNT:-0}" != "0" ]; then`,
+    `    echo "Active local LLM request is still running; refusing to restart llama-server."`,
+    `    exit 1`,
+    `  fi`,
+    `fi`,
+  ];
 }
 
 /**
@@ -559,7 +681,11 @@ export function buildRecommendedStartCommand(
 export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string): string {
   const logFile = `${MODELS_DIR}/llama-server.log`;
   const pidFile = `${MODELS_DIR}/llama-server.pid`;
+  const watcherPidFile = `${MODELS_DIR}/llama-server-watcher.pid`;
+  const activityFile = `${MODELS_DIR}/llama-server.activity`;
+  const activeDir = `${MODELS_DIR}/llama-server.active`;
   const resolvedModelPath = modelPath ?? `${MODELS_DIR}/${model.filename}`;
+  const profile = getModelRuntimeProfile(model);
   const startCmd = buildRecommendedStartCommand(model, resolvedModelPath);
 
   return [
@@ -576,6 +702,8 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
     `echo "llama-server binary: $REAL_LLAMA_SERVER_BIN"`,
     `echo "llama-server dir: $REAL_LLAMA_SERVER_DIR"`,
     `echo "model: $MODEL_PATH"`,
+    ...buildWaitForNoActiveUsersLines(activeDir),
+    ...buildStopWatcherLines(watcherPidFile),
     `if [ -f "${pidFile}" ]; then`,
     `  OLD_PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
     `  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then`,
@@ -613,6 +741,9 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
     `for i in $(seq 1 180); do`,
     `  if ${HEALTH_CHECK_CMD}; then`,
     `    echo "llama-server ready"`,
+    ...buildIdleWatcherStartLines(pidFile, watcherPidFile, activityFile, logFile, profile.idleTimeoutSeconds).map(
+      (line) => `    ${line}`,
+    ),
     `    exit 0`,
     `  fi`,
     `  if ! kill -0 "$(cat "${pidFile}")" 2>/dev/null; then`,
@@ -634,8 +765,10 @@ export function buildDaemonStartScript(model: LlamaCppModel, modelPath?: string)
  */
 export function buildStopCommand(): string {
   const pidFile = `${MODELS_DIR}/llama-server.pid`;
+  const watcherPidFile = `${MODELS_DIR}/llama-server-watcher.pid`;
   return [
     `STOPPED=0`,
+    ...buildStopWatcherLines(watcherPidFile),
     `if [ -f "${pidFile}" ]; then`,
     `  PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
     `  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then`,
@@ -755,7 +888,11 @@ export function estimateTotalSetupTime(steps: LlamaCppSetupStep[]): number {
 export function buildStartAllScript(model: LlamaCppModel): string {
   const logFile = `${MODELS_DIR}/llama-server.log`;
   const pidFile = `${MODELS_DIR}/llama-server.pid`;
+  const watcherPidFile = `${MODELS_DIR}/llama-server-watcher.pid`;
+  const activityFile = `${MODELS_DIR}/llama-server.activity`;
+  const activeDir = `${MODELS_DIR}/llama-server.active`;
   const resolvedModelPath = `${MODELS_DIR}/${model.filename}`;
+  const profile = getModelRuntimeProfile(model);
   const startCmd = buildRecommendedStartCommand(model, resolvedModelPath);
 
   return [
@@ -775,6 +912,8 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     `echo "model: $MODEL_PATH"`,
     ``,
     `# 1. 既存プロセスを停止`,
+    ...buildWaitForNoActiveUsersLines(activeDir),
+    ...buildStopWatcherLines(watcherPidFile),
     `if [ -f "${pidFile}" ]; then`,
     `  OLD_PID="$(cat "${pidFile}" 2>/dev/null || true)"`,
     `  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then`,
@@ -811,6 +950,9 @@ export function buildStartAllScript(model: LlamaCppModel): string {
     `for i in $(seq 1 180); do`,
     `  if ${HEALTH_CHECK_CMD}; then`,
     `    echo "llama-server ready!"`,
+    ...buildIdleWatcherStartLines(pidFile, watcherPidFile, activityFile, logFile, profile.idleTimeoutSeconds).map(
+      (line) => `    ${line}`,
+    ),
     `    exit 0`,
     `  fi`,
     `  if ! kill -0 "$(cat "${pidFile}")" 2>/dev/null; then`,

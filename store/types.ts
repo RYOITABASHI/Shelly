@@ -351,7 +351,7 @@ export type AppSettings = {
   localLlmEnabled: boolean;
   /** Ollama API base URL (default: http://127.0.0.1:11434) */
   localLlmUrl: string;
-  /** Model name to use (default: Qwen3.5-2B-Q4_K_M) */
+  /** Model name to use (default: Qwen3.5-0.8B-Q4_K_M) */
   localLlmModel: string;
   /** Optional selected GGUF path for llama-server auto-start */
   localLlmModelPath?: string;

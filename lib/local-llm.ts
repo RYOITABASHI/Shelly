@@ -43,6 +43,13 @@ export interface OllamaChatRequest {
 const DEFAULT_LOCAL_MAX_TOKENS = 384;
 const DEFAULT_LOCAL_CONTEXT_TOKENS = 1024;
 const XHR_PROGRESS_FLUSH_MS = 50;
+const LOCAL_LLM_ACTIVITY_TOUCH_INTERVAL_MS = 10_000;
+
+let lastLocalLlmActivityTouchAt = 0;
+
+function localLlmActiveMarkerName(): string {
+  return `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}.active`;
+}
 
 export interface OllamaChatResponse {
   model: string;
@@ -159,6 +166,77 @@ function safeEmitChunk(
   } catch {
     // Keep provider stream parsing from taking down the app UI.
   }
+}
+
+function isLoopbackLlamaServer(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    const host = parsed.hostname.toLowerCase();
+    return (host === '127.0.0.1' || host === 'localhost') && parsed.port === '8080';
+  } catch {
+    return baseUrl.includes('127.0.0.1:8080') || baseUrl.includes('localhost:8080');
+  }
+}
+
+function localLlmActivityCommand(activeMarker?: string): string {
+  const markerTouch = activeMarker
+    ? ` && mkdir -p "$HOME/models/llama-server.active" && touch "$HOME/models/llama-server.active/${activeMarker}"`
+    : '';
+  return `mkdir -p "$HOME/models" && touch "$HOME/models/llama-server.activity"${markerTouch}`;
+}
+
+async function execLocalLlmActivityCommand(command: string): Promise<void> {
+  try {
+    const { execCommand } = await import('@/hooks/use-native-exec');
+    await execCommand(command, 5_000);
+  } catch {
+    // Activity markers are best-effort; requests should still proceed if native exec is unavailable.
+  }
+}
+
+function touchLocalLlmActivity(baseUrl: string, force = false, activeMarker?: string): void {
+  if (!isLoopbackLlamaServer(baseUrl)) return;
+  const isTest = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test';
+  if (isTest) return;
+  const now = Date.now();
+  if (!force && now - lastLocalLlmActivityTouchAt < LOCAL_LLM_ACTIVITY_TOUCH_INTERVAL_MS) return;
+  lastLocalLlmActivityTouchAt = now;
+  void execLocalLlmActivityCommand(localLlmActivityCommand(activeMarker));
+}
+
+async function touchLocalLlmActivityAsync(baseUrl: string, force = false, activeMarker?: string): Promise<void> {
+  if (!isLoopbackLlamaServer(baseUrl)) return;
+  const isTest = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test';
+  if (isTest) return;
+  const now = Date.now();
+  if (!force && now - lastLocalLlmActivityTouchAt < LOCAL_LLM_ACTIVITY_TOUCH_INTERVAL_MS) return;
+  lastLocalLlmActivityTouchAt = now;
+  await execLocalLlmActivityCommand(localLlmActivityCommand(activeMarker));
+}
+
+function removeLocalLlmActiveMarker(baseUrl: string, activeMarker: string): void {
+  if (!isLoopbackLlamaServer(baseUrl) || !activeMarker) return;
+  const isTest = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test';
+  if (isTest) return;
+  void execLocalLlmActivityCommand(
+    `rm -f "$HOME/models/llama-server.active/${activeMarker}" && mkdir -p "$HOME/models" && touch "$HOME/models/llama-server.activity"`,
+  );
+}
+
+async function startLocalLlmActivityHeartbeat(baseUrl: string): Promise<() => void> {
+  if (!isLoopbackLlamaServer(baseUrl)) return () => {};
+  const isTest = typeof process !== 'undefined' && process.env?.NODE_ENV === 'test';
+  if (isTest) return () => {};
+  const activeMarker = localLlmActiveMarkerName();
+  await touchLocalLlmActivityAsync(baseUrl, true, activeMarker);
+  const timer = setInterval(
+    () => touchLocalLlmActivity(baseUrl, true, activeMarker),
+    LOCAL_LLM_ACTIVITY_TOUCH_INTERVAL_MS,
+  );
+  return () => {
+    clearInterval(timer);
+    removeLocalLlmActiveMarker(baseUrl, activeMarker);
+  };
 }
 
 export interface OrchestrationResult {
@@ -336,29 +414,35 @@ export async function ollamaChat(
       body = JSON.stringify(req);
     }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
+    const stopActivityHeartbeat = await startLocalLlmActivityHeartbeat(config.baseUrl);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => res.statusText);
-      return { success: false, content: '', error: `HTTP ${res.status}: ${errText}` };
-    }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.statusText);
+        return { success: false, content: '', error: `HTTP ${res.status}: ${errText}` };
+      }
 
-    const data = await res.json();
+      const data = await res.json();
 
-    if (apiType === 'openai') {
-      const openAiData = data as OpenAIChatResponse;
-      const content = openAiData.choices?.[0]?.message?.content ?? '';
-      if (!content) return { success: false, content: '', error: 'Empty response' };
-      return { success: true, content };
-    } else {
-      const ollamaData = data as OllamaChatResponse;
-      return { success: true, content: ollamaData.message.content };
+      if (apiType === 'openai') {
+        const openAiData = data as OpenAIChatResponse;
+        const content = openAiData.choices?.[0]?.message?.content ?? '';
+        if (!content) return { success: false, content: '', error: 'Empty response' };
+        return { success: true, content };
+      } else {
+        const ollamaData = data as OllamaChatResponse;
+        return { success: true, content: ollamaData.message.content };
+      }
+    } finally {
+      stopActivityHeartbeat();
+      clearTimeout(timer);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -435,12 +519,18 @@ export async function ollamaChatStream(
 
   // React Native: XMLHttpRequest でストリーミング
   if (isReactNative) {
-    return xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried, maxTokens);
+    const stopActivityHeartbeat = await startLocalLlmActivityHeartbeat(config.baseUrl);
+    try {
+      return await xhrStream(url, body, apiType, onChunk, timeoutMs, externalSignal, config.baseUrl, _retried, maxTokens);
+    } finally {
+      stopActivityHeartbeat();
+    }
   }
 
   // Web: fetch + ReadableStream
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const stopActivityHeartbeat = await startLocalLlmActivityHeartbeat(config.baseUrl);
   try {
     if (externalSignal) {
       if (externalSignal.aborted) { clearTimeout(timer); controller.abort(); }
@@ -545,6 +635,9 @@ export async function ollamaChatStream(
     }
 
     return { success: false, error: message };
+  } finally {
+    stopActivityHeartbeat();
+    clearTimeout(timer);
   }
 }
 

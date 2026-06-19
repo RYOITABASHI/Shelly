@@ -287,7 +287,7 @@ export function LlamaCppSection({
   // ── Render ────────────────────────────────────────────────────────────────
 
   const installedModels = MODEL_CATALOG.filter((m) => installedModelIds.has(m.id));
-  const notInstalledModels = MODEL_CATALOG.filter((m) => !installedModelIds.has(m.id));
+  const notInstalledModels = MODEL_CATALOG.filter((m) => !m.hidden && !installedModelIds.has(m.id));
 
   return (
     <View>

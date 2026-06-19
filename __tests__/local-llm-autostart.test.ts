@@ -88,4 +88,52 @@ describe('local LLM auto-start', () => {
     expect(result.status).toBe('ready');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
+
+  it('does not mark a running process ready when the model endpoint was not verified', async () => {
+    mockExecCommand.mockReset();
+    mockExecCommand.mockResolvedValueOnce({ exitCode: 0, stdout: 'running\n', stderr: '' });
+
+    const result = await ensureLocalLlmServerRunning({ waitForReady: false, reason: 'test' });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('starting');
+    expect(mockExecCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts a ready llama-server when it is serving a different model', async () => {
+    mockSettings.localLlmModel = 'Qwen3.5-0.8B-Q4_K_M';
+    mockSettings.localLlmModelPath = '/sdcard/models/Qwen3.5-0.8B-Q4_K_M.gguf';
+    mockCheckOllamaConnection
+      .mockResolvedValueOnce({ available: true, models: ['Qwen3.5-2B-Q4_K_M'] });
+    mockExecCommand.mockReset();
+    mockExecCommand
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'running\n', stderr: '' })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'llama-server ready\n', stderr: '' });
+
+    const result = await ensureLocalLlmServerRunning({ waitForReady: false, reason: 'test' });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('started');
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+    const startScript = mockExecCommand.mock.calls[1][0] as string;
+    expect(startScript).toContain('/sdcard/models/Qwen3.5-0.8B-Q4_K_M.gguf');
+    expect(startScript).not.toContain('Qwen3.5-2B-Q4_K_M.gguf');
+  });
+
+  it('does not accept a short llama-server alias as the selected model', async () => {
+    mockSettings.localLlmModel = 'Qwen3.5-0.8B-Q4_K_M';
+    mockSettings.localLlmModelPath = '/sdcard/models/Qwen3.5-0.8B-Q4_K_M.gguf';
+    mockCheckOllamaConnection
+      .mockResolvedValueOnce({ available: true, models: ['qwen3'] });
+    mockExecCommand.mockReset();
+    mockExecCommand
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'running\n', stderr: '' })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'llama-server ready\n', stderr: '' });
+
+    const result = await ensureLocalLlmServerRunning({ waitForReady: false, reason: 'test' });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('started');
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
+  });
 });

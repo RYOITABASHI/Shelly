@@ -10,7 +10,14 @@ import { getHomePath } from '@/lib/home-path';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 6;
+const AGENT_SCRIPT_VERSION = 7;
+const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
+const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
+const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
+
+type ToolCommandOptions = {
+  autonomous: boolean;
+};
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -32,6 +39,23 @@ function paths() {
     logsDir,
     envFile: `${agentsDir}/.env`,
   };
+}
+
+export function selectAutonomousLocalModel(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  if (/\b4b\b|高品質|品質確認|quality|deep|精査|推敲/.test(lower)) {
+    return LOCAL_MODEL_QUALITY;
+  }
+  if (
+    /記事|下書き|draft|essay|longform|要約|summarize|比較|compare|評価|eval|検証|review/.test(lower) ||
+    prompt.length > 1200
+  ) {
+    return LOCAL_MODEL_BALANCED;
+  }
+  if (/fallback|安定|軽量/.test(lower)) {
+    return LOCAL_MODEL_LIGHT;
+  }
+  return LOCAL_MODEL_LIGHT;
 }
 
 /**
@@ -56,6 +80,9 @@ export function generateRunScript(agent: Agent): string {
     }
     tool = resolved;
   }
+  if (agent.autonomous && tool.type === 'local' && !tool.model) {
+    tool = { ...tool, model: selectAutonomousLocalModel(agent.prompt) };
+  }
 
   const toolLabel = toolChoiceToLabel(tool);
   const apiKeyEnvScrub = requiresApiKeyEnv(tool)
@@ -67,7 +94,9 @@ export function generateRunScript(agent: Agent): string {
 
   const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
 
-  const toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt);
+  const toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
+    autonomous: agent.autonomous === true,
+  });
   const auditMirrorSdcardEligible = agent.autonomous === true && tool.type === 'cli';
 
   return `#!/bin/bash
@@ -92,6 +121,8 @@ AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 REGISTRY_LOCK=""
 REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
+LOCAL_LLM_HEARTBEAT_PID=""
+LOCAL_LLM_ACTIVE_MARKER=""
 
 START_TIME=$(date +%s)
 
@@ -99,6 +130,7 @@ export HOME="${home}"
 export PATH="$HOME/.local/bin:$PATH"
 
 cleanup() {
+  local_llm_stop_activity_heartbeat 2>/dev/null || true
   if [ "\${REGISTRY_LOCK_ACQUIRED:-0}" = "1" ] && [ -n "\${REGISTRY_LOCK:-}" ] && [ -d "$REGISTRY_LOCK" ]; then
     rmdir "$REGISTRY_LOCK" 2>/dev/null || true
   fi
@@ -342,6 +374,51 @@ NODEEOF
   return 127
 }
 
+http_get_text() {
+  url="$1"
+  out_file="$2"
+  err_file="$3"
+  timeout_seconds="\${4:-5}"
+  if node_usable; then
+    HTTP_TIMEOUT_SECONDS="$timeout_seconds" shelly_node - "$url" > "$out_file" 2> "$err_file" <<'NODEEOF'
+const http = require('http');
+const https = require('https');
+
+const url = new URL(process.argv[2]);
+const isHttps = url.protocol === 'https:';
+const client = isHttps ? https : http;
+const timeoutSeconds = Number(process.env.HTTP_TIMEOUT_SECONDS || '5');
+
+const req = client.request({
+  method: 'GET',
+  protocol: url.protocol,
+  hostname: url.hostname,
+  port: url.port || (isHttps ? 443 : 80),
+  path: url.pathname + url.search,
+}, (res) => {
+  res.setEncoding('utf8');
+  res.on('data', (chunk) => process.stdout.write(chunk));
+  res.on('end', () => {
+    process.exitCode = res.statusCode && res.statusCode < 500 ? 0 : 22;
+  });
+});
+
+req.on('error', (err) => {
+  console.error(err && err.message ? err.message : String(err));
+  process.exitCode = 1;
+});
+req.setTimeout(timeoutSeconds * 1000, () => {
+  req.destroy(new Error('request timed out'));
+});
+req.end();
+NODEEOF
+    return $?
+  fi
+
+  echo "No HTTP client available: node is missing or unavailable." > "$err_file"
+  return 127
+}
+
 local_llm_is_loopback_url() {
   case "$1" in
     http://127.0.0.1|http://127.0.0.1:*|http://localhost|http://localhost:*) return 0 ;;
@@ -358,10 +435,202 @@ local_llm_ready() {
   return 1
 }
 
+local_llm_server_matches_model() {
+  base_url="$1"
+  expected_model="$2"
+  timeout_seconds="\${3:-5}"
+  err_file="\${4:-$TMP_DIR/local-llm-models.err}"
+  out_file="$TMP_DIR/local-llm-models-$AGENT_ID.json"
+  [ -n "$expected_model" ] || return 1
+  if ! http_get_text "\${base_url%/}/v1/models" "$out_file" "$err_file" "$timeout_seconds"; then
+    return 1
+  fi
+  EXPECTED_MODEL="$expected_model" shelly_node - "$out_file" <<'NODEEOF'
+const fs = require('fs');
+
+function normalize(value) {
+  const base = String(value || '').split(/[\\/]/).pop() || '';
+  return base.replace(/\.gguf$/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+const expected = normalize(process.env.EXPECTED_MODEL);
+if (!expected) process.exit(1);
+
+let parsed;
+try {
+  parsed = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+} catch (_) {
+  process.exit(1);
+}
+
+const ids = [];
+if (Array.isArray(parsed?.data)) {
+  for (const item of parsed.data) {
+    if (item?.id) ids.push(item.id);
+    if (item?.root) ids.push(item.root);
+    if (item?.name) ids.push(item.name);
+  }
+}
+if (parsed?.model) ids.push(parsed.model);
+
+const ok = ids
+  .map(normalize)
+  .filter(Boolean)
+  .some((id) => id === expected);
+process.exit(ok ? 0 : 1);
+NODEEOF
+}
+
 local_llm_port() {
   base_url="$1"
   port=$(printf '%s\\n' "$base_url" | sed -n 's#^http://127\\.0\\.0\\.1:\\([0-9][0-9]*\\).*#\\1#p; s#^http://localhost:\\([0-9][0-9]*\\).*#\\1#p' | head -n 1)
   printf '%s' "\${port:-8080}"
+}
+
+local_llm_touch_activity() {
+  activity_file="\${LLAMA_SERVER_ACTIVITY:-$HOME/models/llama-server.activity}"
+  mkdir -p "$(dirname "$activity_file")" 2>/dev/null || true
+  touch "$activity_file" 2>/dev/null || true
+}
+
+local_llm_start_activity_heartbeat() {
+  interval="\${1:-10}"
+  case "$interval" in ''|*[!0-9]*) interval=10 ;; esac
+  active_dir="\${LLAMA_SERVER_ACTIVE_DIR:-$HOME/models/llama-server.active}"
+  mkdir -p "$active_dir" 2>/dev/null || true
+  LOCAL_LLM_ACTIVE_MARKER="$active_dir/agent-$AGENT_ID-$$-$RANDOM.active"
+  : > "$LOCAL_LLM_ACTIVE_MARKER" 2>/dev/null || true
+  local_llm_touch_activity
+  (
+    parent_pid=$$
+    trap 'rm -f "$LOCAL_LLM_ACTIVE_MARKER" 2>/dev/null || true' EXIT INT TERM
+    while kill -0 "$parent_pid" 2>/dev/null; do
+      touch "$LOCAL_LLM_ACTIVE_MARKER" 2>/dev/null || true
+      local_llm_touch_activity
+      sleep "$interval"
+    done
+  ) >/dev/null 2>&1 &
+  LOCAL_LLM_HEARTBEAT_PID=$!
+}
+
+local_llm_stop_activity_heartbeat() {
+  heartbeat_pid="\${1:-\${LOCAL_LLM_HEARTBEAT_PID:-}}"
+  active_marker="\${2:-\${LOCAL_LLM_ACTIVE_MARKER:-}}"
+  if [ -n "$heartbeat_pid" ] && kill -0 "$heartbeat_pid" 2>/dev/null; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+  fi
+  [ -n "$active_marker" ] && rm -f "$active_marker" 2>/dev/null || true
+  LOCAL_LLM_HEARTBEAT_PID=""
+  LOCAL_LLM_ACTIVE_MARKER=""
+  local_llm_touch_activity
+}
+
+local_llm_cleanup_stale_active_users() {
+  active_dir="\${LLAMA_SERVER_ACTIVE_DIR:-$HOME/models/llama-server.active}"
+  [ -d "$active_dir" ] || return 0
+  find "$active_dir" -type f -name '*.active' -mmin +5 -delete 2>/dev/null || true
+}
+
+local_llm_wait_for_no_active_users() {
+  active_dir="\${LLAMA_SERVER_ACTIVE_DIR:-$HOME/models/llama-server.active}"
+  wait_seconds="\${LOCAL_LLM_RESTART_WAIT_SECONDS:-120}"
+  case "$wait_seconds" in ''|*[!0-9]*) wait_seconds=0 ;; esac
+  [ "$wait_seconds" -gt 0 ] || return 0
+  [ -d "$active_dir" ] || return 0
+  _wait_i=0
+  while [ "$_wait_i" -lt "$wait_seconds" ]; do
+    local_llm_cleanup_stale_active_users
+    active_count="$(find "$active_dir" -type f -name '*.active' 2>/dev/null | wc -l | tr -d ' ')"
+    [ "\${active_count:-0}" = "0" ] && return 0
+    sleep 1
+    _wait_i=$((_wait_i + 1))
+  done
+  local_llm_cleanup_stale_active_users
+  active_count="$(find "$active_dir" -type f -name '*.active' 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "\${active_count:-0}" != "0" ]; then
+    return 1
+  fi
+  return 0
+}
+
+local_llm_runtime_profile() {
+  model_name="$(printf '%s' "\${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$model_name" in
+    *0.8b*|*0-8b*) printf '1024 2 600\\n' ;;
+    *1.7b*|*1-7b*) printf '1024 3 300\\n' ;;
+    *2b*) printf '1024 4 180\\n' ;;
+    *4b*) printf '768 4 60\\n' ;;
+    *9b*|*8b*) printf '512 3 30\\n' ;;
+    *) printf '1024 3 180\\n' ;;
+  esac
+}
+
+local_llm_stop_watcher() {
+  watcher_pid_file="\${LLAMA_SERVER_WATCHER_PID:-$HOME/models/llama-server-watcher.pid}"
+  if [ -f "$watcher_pid_file" ]; then
+    watcher_pid="$(cat "$watcher_pid_file" 2>/dev/null || true)"
+    if [ -n "$watcher_pid" ] && kill -0 "$watcher_pid" 2>/dev/null; then
+      kill "$watcher_pid" 2>/dev/null || true
+    fi
+    rm -f "$watcher_pid_file"
+  fi
+}
+
+local_llm_stop_server() {
+  pid_file="\${1:-$HOME/models/llama-server.pid}"
+  local_llm_wait_for_no_active_users || return 1
+  local_llm_stop_watcher
+  if [ -f "$pid_file" ]; then
+    server_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; then
+      kill "$server_pid" 2>/dev/null || true
+      sleep 1
+      kill -0 "$server_pid" 2>/dev/null && kill -9 "$server_pid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file"
+  fi
+  old_pid="$(ps -Af 2>/dev/null | grep -F llama-server | grep -v grep | awk '{print $2}' | head -n1)"
+  if [ -n "$old_pid" ]; then
+    kill "$old_pid" 2>/dev/null || true
+    sleep 1
+    kill -0 "$old_pid" 2>/dev/null && kill -9 "$old_pid" 2>/dev/null || true
+  fi
+}
+
+local_llm_start_idle_watcher() {
+  server_pid="$1"
+  idle_timeout="$2"
+  pid_file="$3"
+  log_file="$4"
+  activity_file="\${LLAMA_SERVER_ACTIVITY:-$HOME/models/llama-server.activity}"
+  active_dir="\${LLAMA_SERVER_ACTIVE_DIR:-$HOME/models/llama-server.active}"
+  watcher_pid_file="\${LLAMA_SERVER_WATCHER_PID:-$HOME/models/llama-server-watcher.pid}"
+  case "$idle_timeout" in ''|*[!0-9]*) idle_timeout=0 ;; esac
+  [ "$idle_timeout" -gt 0 ] || return 0
+  local_llm_touch_activity
+  (
+    while kill -0 "$server_pid" 2>/dev/null; do
+      find "$active_dir" -type f -name '*.active' -mmin +5 -delete 2>/dev/null || true
+      active_count="$(find "$active_dir" -type f -name '*.active' 2>/dev/null | wc -l | tr -d ' ')"
+      if [ "\${active_count:-0}" != "0" ]; then
+        sleep 15
+        continue
+      fi
+      now="$(date +%s)"
+      last="$(stat -c %Y "$activity_file" 2>/dev/null || echo "$now")"
+      case "$last" in ''|*[!0-9]*) last="$now" ;; esac
+      if [ $((now - last)) -ge "$idle_timeout" ]; then
+        echo "llama-server idle timeout after $idle_timeout seconds" >> "$log_file" 2>/dev/null || true
+        kill "$server_pid" 2>/dev/null || true
+        sleep 1
+        kill -0 "$server_pid" 2>/dev/null && kill -9 "$server_pid" 2>/dev/null || true
+        rm -f "$pid_file"
+        break
+      fi
+      sleep 15
+    done
+  ) >/dev/null 2>&1 &
+  echo $! > "$watcher_pid_file"
 }
 
 find_llama_server_bin() {
@@ -379,6 +648,24 @@ find_llama_server_bin() {
       return 0
     fi
   done
+  return 1
+}
+
+local_llm_normalize_model_token() {
+  value="\${1:-}"
+  value="\${value##*/}"
+  value="\${value%.gguf}"
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g'
+}
+
+local_llm_path_matches_model() {
+  path_token="$(local_llm_normalize_model_token "\${1:-}")"
+  model_token="$(local_llm_normalize_model_token "\${2:-}")"
+  [ -n "$path_token" ] || return 1
+  [ -n "$model_token" ] || return 0
+  [ "$path_token" = "$model_token" ] && return 0
+  case "$path_token" in *"$model_token"*) return 0 ;; esac
+  case "$model_token" in *"$path_token"*) return 0 ;; esac
   return 1
 }
 
@@ -602,18 +889,25 @@ install_llama_server_bin() {
   binary_dir=$(dirname "$installed_binary")
   lib_dirs=$(find "$install_dir" -type f -name '*.so*' -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':' || true)
 
-  cat > "$HOME/.local/bin/llama-server" <<WRAPPEREOF
-#!/bin/sh
-export LD_LIBRARY_PATH="\${lib_dirs}\${binary_dir}:\${install_dir}:\${install_dir}/lib:\${LD_LIBRARY_PATH:-}"
-exec "$installed_binary" "$@"
+cat > "$HOME/.local/bin/llama-server" <<WRAPPEREOF
+#!/system/bin/sh
+cd "$binary_dir" || exit 1
+export LD_LIBRARY_PATH="\${lib_dirs}\${binary_dir}:\${install_dir}:\${install_dir}/lib:\\\${LD_LIBRARY_PATH:-}"
+unset LD_PRELOAD
+if [ -x /system/bin/linker64 ]; then
+  exec /system/bin/linker64 "$installed_binary" "\\$@"
+fi
+exec "$installed_binary" "\\$@"
 WRAPPEREOF
   chmod +x "$HOME/.local/bin/llama-server"
   printf '%s\\n' "$HOME/.local/bin/llama-server"
 }
 
 find_local_llm_model() {
-  model_name="\${1:-Qwen3.5-2B-Q4_K_M}"
-  if [ -n "\${LOCAL_LLM_MODEL_PATH:-}" ] && [ -f "$LOCAL_LLM_MODEL_PATH" ]; then
+  model_name="\${1:-Qwen3.5-0.8B-Q4_K_M}"
+  if [ -n "\${LOCAL_LLM_MODEL_PATH:-}" ] &&
+    [ -f "$LOCAL_LLM_MODEL_PATH" ] &&
+    local_llm_path_matches_model "$LOCAL_LLM_MODEL_PATH" "$model_name"; then
     printf '%s\\n' "$LOCAL_LLM_MODEL_PATH"
     return 0
   fi
@@ -631,7 +925,7 @@ find_local_llm_model() {
     fi
   done
 
-  search_pattern='Qwen3.*2B.*Q4_K_M\\|Qwen3.*Q4_K_M.*2B'
+  search_pattern='Qwen3.*0[._-]*8B.*Q4_K_M\\|Qwen3.*Q4_K_M.*0[._-]*8B'
   case "$(printf '%s' "$model_name" | tr '[:upper:]' '[:lower:]')" in
     *0.8b*) search_pattern='Qwen3.*0[._-]*8B.*Q4_K_M\\|Qwen3.*Q4_K_M.*0[._-]*8B' ;;
     *1.7b*) search_pattern='Qwen3.*1[._-]*7B.*Q4_K_M\\|Qwen3.*Q4_K_M.*1[._-]*7B' ;;
@@ -654,11 +948,17 @@ find_local_llm_model() {
 
 ensure_local_llm_server() {
   base_url="$1"
-  model_name="\${2:-Qwen3.5-2B-Q4_K_M}"
+  model_name="\${2:-Qwen3.5-0.8B-Q4_K_M}"
   reason_file="$TMP_DIR/local-llm-start-$AGENT_ID.reason"
   : > "$reason_file"
 
-  local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" && return 0
+  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+    if local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+      local_llm_touch_activity
+      return 0
+    fi
+    echo "auto-start will restart llama-server: active model does not match $model_name" > "$reason_file"
+  fi
 
   if ! local_llm_is_loopback_url "$base_url"; then
     echo "auto-start skipped: LOCAL_LLM_URL is not loopback ($base_url)" > "$reason_file"
@@ -672,21 +972,30 @@ ensure_local_llm_server() {
   lock_dir="$LOCKS_DIR/local-llm-server-start.lock"
   lock_acquired=0
   _i=0
-  while [ "$_i" -lt 30 ]; do
-    if mkdir "$lock_dir" 2>/dev/null; then
-      lock_acquired=1
-      break
-    fi
-    local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" && return 0
-    sleep 1
-    _i=$((_i + 1))
-  done
+	while [ "$_i" -lt 30 ]; do
+	  if mkdir "$lock_dir" 2>/dev/null; then
+	    lock_acquired=1
+	    break
+	  fi
+	  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
+	    local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+	    local_llm_touch_activity
+	    return 0
+	  fi
+	  sleep 1
+	  _i=$((_i + 1))
+	done
   if [ "$lock_acquired" != "1" ]; then
     echo "auto-start skipped: could not acquire start lock $lock_dir" > "$reason_file"
     return 1
   fi
 
-  local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" && { rmdir "$lock_dir" 2>/dev/null || true; return 0; }
+  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
+    local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+    local_llm_touch_activity
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
 
   server_bin=$(find_llama_server_bin || true)
   if [ -z "$server_bin" ]; then
@@ -715,14 +1024,33 @@ ensure_local_llm_server() {
   log_file="\${LLAMA_SERVER_LOG:-$HOME/models/llama-server.log}"
   pid_file="\${LLAMA_SERVER_PID:-$HOME/models/llama-server.pid}"
   mkdir -p "$(dirname "$log_file")" "$(dirname "$pid_file")"
+  if ! local_llm_stop_server "$pid_file"; then
+    echo "auto-start skipped: another local LLM request is still active; refusing to restart llama-server" > "$reason_file"
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 1
+  fi
+  alias_name="\${model_path##*/}"
+  alias_name="\${alias_name%.gguf}"
+  profile="$(local_llm_runtime_profile "$model_name")"
+  set -- $profile
+  default_ctx_size="$1"
+  default_threads="$2"
+  default_idle_timeout="$3"
+  ctx_size="\${LOCAL_LLM_CTX_SIZE:-$default_ctx_size}"
+  threads="\${LOCAL_LLM_THREADS:-$default_threads}"
+  idle_timeout="\${LOCAL_LLM_IDLE_TIMEOUT_SECONDS:-$default_idle_timeout}"
+  local_llm_touch_activity
 
-  nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --host 127.0.0.1 --port "$port" --ctx-size "\${LOCAL_LLM_CTX_SIZE:-1024}" --threads "\${LOCAL_LLM_THREADS:-4}" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+  nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
   echo $! > "$pid_file"
 
   ready_seconds="\${LOCAL_LLM_START_TIMEOUT_SECONDS:-90}"
   _i=0
   while [ "$_i" -lt "$ready_seconds" ]; do
-    if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+    if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
+      local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+      local_llm_touch_activity
+      local_llm_start_idle_watcher "$(cat "$pid_file" 2>/dev/null || true)" "$idle_timeout" "$pid_file" "$log_file"
       rmdir "$lock_dir" 2>/dev/null || true
       return 0
     fi
@@ -1053,7 +1381,12 @@ exit 1
 `;
 }
 
-function generateToolCommand(tool: ToolChoice, escapedPrompt: string, rawPrompt: string): string {
+function generateToolCommand(
+  tool: ToolChoice,
+  escapedPrompt: string,
+  rawPrompt: string,
+  options: ToolCommandOptions = { autonomous: false },
+): string {
   const resultVar = '"$RESULT_FILE"';
   switch (tool.type) {
     case 'cli':
@@ -1076,27 +1409,36 @@ rm -f "$PROMPT_FILE"`;
     case 'gemini-api':
       return geminiApiCommand(escapedPrompt, resultVar, tool.model);
     case 'local':
-      const localModel = (tool.model || 'Qwen3.5-2B-Q4_K_M').replace(/"/g, '\\"');
+      const localModel = (tool.model || (options.autonomous ? selectAutonomousLocalModel(rawPrompt) : LOCAL_MODEL_LIGHT)).replace(/"/g, '\\"');
+      const localModelAssignment = options.autonomous
+        ? `LOCAL_MODEL="\${SHELLY_AGENT_LOCAL_MODEL:-${localModel}}"`
+        : `LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"
+	${localModelAssignment}
 	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
-	ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL" || true
-	set +e
-	HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "\${LOCAL_URL%/}/v1/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
-	LOCAL_EXIT=$?
-	set -e
-	if [ "$LOCAL_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-	  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
-	  local_context_fallback "http exit=$LOCAL_EXIT $START_REASON $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
-	else
-	  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
-	fi
-	rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
-	rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
+		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
+		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
+		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
+		else
+		  local_llm_start_activity_heartbeat 10
+		  set +e
+		  HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "\${LOCAL_URL%/}/v1/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+		  LOCAL_EXIT=$?
+		  set -e
+		  local_llm_stop_activity_heartbeat
+		  if [ "$LOCAL_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
+		    START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
+		    local_context_fallback "http exit=$LOCAL_EXIT $START_REASON $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+		  else
+		    extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+		  fi
+		fi
+		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
     case 'perplexity':
       const perplexityModel = tool.model || 'sonar';
 		      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
@@ -1140,11 +1482,11 @@ fi`;
 
 function articleEvalCommand(rawPrompt: string, resultVar: string, localModel?: string, codexCmd?: string): string {
   const promptMarker = `SHELLY_AB_PROMPT_${Math.random().toString(36).slice(2)}`;
-  const localModelValue = (localModel || 'Qwen3.5-2B-Q4_K_M').replace(/"/g, '\\"');
+  const localModelValue = (localModel || LOCAL_MODEL_BALANCED).replace(/"/g, '\\"');
   const codexCmdValue = (codexCmd || 'codex').replace(/"/g, '\\"');
   return `PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
 LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModelValue}}"
+LOCAL_MODEL="\${SHELLY_AGENT_ARTICLE_EVAL_LOCAL_MODEL:-${localModelValue}}"
 CODEX_CMD="\${CODEX_CMD:-${codexCmdValue}}"
 RUN_TS=$(date +%Y%m%d-%H%M%S)
 RUN_DIR="$PROJECT_DIR/evals/$RUN_TS-$SLUG"
@@ -1203,11 +1545,18 @@ LOCAL_REQUEST_FILE="$RUN_DIR/local-request.json"
 printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
 
 LOCAL_START=$(date +%s)
-ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL" || true
-set +e
-HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "\${LOCAL_URL%/}/v1/chat/completions" "$LOCAL_REQUEST_FILE" "$RUN_DIR/local.response.json" "$RUN_DIR/local.stderr.log"
-LOCAL_EXIT=$?
-set -e
+if ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
+  local_llm_start_activity_heartbeat 10
+  set +e
+  HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "\${LOCAL_URL%/}/v1/chat/completions" "$LOCAL_REQUEST_FILE" "$RUN_DIR/local.response.json" "$RUN_DIR/local.stderr.log"
+  LOCAL_EXIT=$?
+  set -e
+  local_llm_stop_activity_heartbeat
+else
+  LOCAL_EXIT=127
+  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
+  echo "Local LLM start failed: $START_REASON" > "$RUN_DIR/local.stderr.log"
+fi
 LOCAL_END=$(date +%s)
 if [ "$LOCAL_EXIT" -eq 0 ]; then
   extract_ai_content "$RUN_DIR/local.response.json" > "$RUN_DIR/local-qwen.md" 2>> "$RUN_DIR/local.stderr.log" || true
