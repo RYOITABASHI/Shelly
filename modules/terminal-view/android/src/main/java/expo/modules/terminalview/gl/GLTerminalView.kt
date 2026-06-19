@@ -97,7 +97,9 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
             Log.i(TAG, "setTransparentBackground(true) ignored for terminal GL surface")
         }
         setBackgroundColor(0xFF000000.toInt())
-        renderer.transparentBackground = false
+        queueEvent {
+            renderer.transparentBackground = false
+        }
         requestRender()
     }
 

@@ -465,8 +465,13 @@ class ShellyTerminalView(
         setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setTransparentBackground(false)
-        glTerminalView?.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
-        glTerminalView?.renderer?.updateAnsiColors(terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors)
+        val colorsForGl = (terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors).copyOf()
+        glTerminalView?.let { glView ->
+            glView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+            glView.queueEvent {
+                glView.renderer.updateAnsiColors(colorsForGl)
+            }
+        }
         terminalView.invalidate()
         // GPU path (when gpuRendering=true): keep the GLSurfaceView and
         // renderer clearColor opaque black as well.
