@@ -183,6 +183,8 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         viewWidth = width
         viewHeight = height
 
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(0, 0, width, height)
 
         // Orthographic projection: (0,0) top-left, (width, height) bottom-right
@@ -193,7 +195,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         rows = (height / atlas.cellHeight).toInt().coerceAtLeast(1)
         cellBatcher.resize(cols, rows)
 
-        dirtyFlags = DirtyFlags.ALL
+        markDirty(DirtyFlags.ALL)
     }
 
     override fun onDrawFrame(gl: GL10?) {

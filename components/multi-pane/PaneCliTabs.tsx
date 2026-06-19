@@ -225,13 +225,16 @@ export default function PaneCliTabs({ paneSessionId, leafId }: Props = {}) {
 const styles = StyleSheet.create({
   scroll: {
     flexGrow: 0,
-    flexShrink: 1,
-    minWidth: 72,
-    maxWidth: 260,
+    flexShrink: 0,
+    width: '100%',
+    height: 22,
+    minHeight: 22,
+    alignSelf: 'center',
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
+    minHeight: 22,
     gap: 3,
     paddingHorizontal: 2,
   },

@@ -276,11 +276,18 @@ class ShellyTerminalView(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w == 0 || h == 0) return
+        applyOpaqueTerminalSurface()
         if (w == lastWidth && h == lastHeight) return
         lastWidth = w
         lastHeight = h
         Log.i(TAG, "onSizeChanged: ${w}x${h} (was ${oldw}x${oldh})")
         scheduleTerminalResize()
+    }
+
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        val applied = super.onApplyWindowInsets(insets)
+        applyOpaqueTerminalSurface()
+        return applied
     }
 
     /**
@@ -293,7 +300,11 @@ class ShellyTerminalView(
         resizeHandler.postDelayed({
             if (terminalView.width > 0 && terminalView.height > 0) {
                 Log.i(TAG, "terminalResize: ${terminalView.width}x${terminalView.height}")
+                applyOpaqueTerminalSurface()
                 terminalView.updateSize()
+                terminalView.invalidate()
+                glTerminalView?.requestRender()
+                invalidate()
             }
         }, RESIZE_DEBOUNCE_MS)
     }
@@ -513,6 +524,7 @@ class ShellyTerminalView(
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
         isViewVisible = (visibility == View.VISIBLE)
+        applyOpaqueTerminalSurface()
         if (!isViewVisible) {
             setTerminalCursorBlinkerRate(0)
         }
@@ -521,6 +533,7 @@ class ShellyTerminalView(
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         isViewVisible = hasWindowFocus
+        applyOpaqueTerminalSurface()
     }
 
     // ===== Output Processing =====
@@ -587,6 +600,7 @@ class ShellyTerminalView(
             terminalView.visibility = View.VISIBLE
             glTerminalView?.visibility = View.GONE
         }
+        applyOpaqueTerminalSurface()
     }
 
     private fun checkGLES30Support(): Boolean {
@@ -728,6 +742,7 @@ class ShellyTerminalView(
     }
 
     fun refreshScreenCommand() {
+        applyOpaqueTerminalSurface()
         if (useGPU && glTerminalView != null) {
             glTerminalView?.post { glTerminalView?.renderer?.onScreenUpdated() }
         } else {
@@ -827,7 +842,7 @@ class ShellyTerminalView(
      * Sends resize command directly to pty-helper via Unix Domain Socket.
      */
     override fun onEmulatorSet() {
-        terminalView.invalidate()
+        applyOpaqueTerminalSurface()
         val emulator = terminalView.mEmulator ?: return
         val cols = emulator.mColumns
         val rows = emulator.mRows

@@ -138,6 +138,12 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   // edge always stay tappable.
   const isNarrow = paneWidth > 0 && paneWidth < 360;
   const isVeryNarrow = paneWidth > 0 && paneWidth < 260;
+  const terminalTabsWidth =
+    paneWidth <= 0 ? 180
+      : paneWidth >= 720 ? 260
+        : paneWidth >= 520 ? 220
+          : paneWidth >= 380 ? 160
+            : 96;
 
   // Phase B: pane body + header honour wallpaper transparency. The body
   // uses bgDeep (which is the root BackgroundLayer colour), so when a
@@ -215,7 +221,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           )}
           <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
         </Pressable>
-        {cwdDisplay && !isNarrow ? (
+        {cwdDisplay && !isNarrow && tab !== 'terminal' ? (
           <Text style={[styles.headerPath, { color: C.text2 }]} numberOfLines={1}>
             {cwdDisplay}
           </Text>
@@ -247,7 +253,9 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
           </Pressable>
         ) : tab === 'terminal' ? (
-          <PaneCliTabs paneSessionId={paneSessionId} leafId={leafId} />
+          <View style={[styles.terminalTabsHost, { width: terminalTabsWidth }]}>
+            <PaneCliTabs paneSessionId={paneSessionId} leafId={leafId} />
+          </View>
         ) : null}
 
         {notification && (
@@ -537,6 +545,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderRadius: R.paneHeader,
     gap: 4,
+    zIndex: 10,
+    elevation: 10,
   },
   focusRail: {
     alignSelf: 'stretch',
@@ -603,6 +613,15 @@ const styles = StyleSheet.create({
     fontWeight: F.sidebarItem.weight,
     flexShrink: 1,
   },
+  terminalTabsHost: {
+    height: 22,
+    minWidth: 72,
+    maxWidth: 260,
+    flexGrow: 0,
+    flexShrink: 1,
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
   headerCenter: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -657,6 +676,7 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+    zIndex: 0,
   },
   fill: {
     flex: 1,
