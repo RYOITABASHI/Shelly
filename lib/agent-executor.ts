@@ -10,7 +10,7 @@ import { getHomePath } from '@/lib/home-path';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 5;
+const AGENT_SCRIPT_VERSION = 6;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -104,9 +104,61 @@ cleanup() {
   fi
   rm -f "$LOCK_FILE"
 }
+shelly_app_binary_path() {
+  name="$1"
+  if [ -n "\${SHELLY_LIB_DIR:-}" ] && [ -f "$SHELLY_LIB_DIR/$name" ]; then
+    printf '%s\\n' "$SHELLY_LIB_DIR/$name"
+    return 0
+  fi
+  resolved=$(command -v "$name" 2>/dev/null || true)
+  case "$resolved" in
+    /*)
+      printf '%s\\n' "$resolved"
+      return 0
+      ;;
+  esac
+  return 1
+}
+shelly_run_app_binary() {
+  name="$1"
+  shift
+  binary=$(shelly_app_binary_path "$name") || return 127
+  binary_dir="\${binary%/*}"
+  if [ -x /system/bin/linker64 ]; then
+    LD_LIBRARY_PATH="\${SHELLY_LD_LIBRARY_PATH:-\${SHELLY_LIB_DIR:-$binary_dir}}" /system/bin/linker64 "$binary" "$@"
+    return $?
+  fi
+  "$binary" "$@"
+}
+shelly_timeout_app_binary() {
+  seconds="$1"
+  shift
+  name="$1"
+  shift
+  binary=$(shelly_app_binary_path "$name") || return 127
+  binary_dir="\${binary%/*}"
+  if [ -x /system/bin/linker64 ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      LD_LIBRARY_PATH="\${SHELLY_LD_LIBRARY_PATH:-\${SHELLY_LIB_DIR:-$binary_dir}}" timeout "$seconds" /system/bin/linker64 "$binary" "$@"
+    else
+      LD_LIBRARY_PATH="\${SHELLY_LD_LIBRARY_PATH:-\${SHELLY_LIB_DIR:-$binary_dir}}" /system/bin/linker64 "$binary" "$@"
+    fi
+    return $?
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$binary" "$@"
+  else
+    "$binary" "$@"
+  fi
+}
+shelly_node() {
+  shelly_run_app_binary node "$@"
+}
+shelly_curl() {
+  shelly_run_app_binary curl "$@"
+}
 node_usable() {
-  command -v node >/dev/null 2>&1 || return 1
-  node -e 'process.exit(0)' >/dev/null 2>&1 || return 1
+  shelly_node -e 'process.exit(0)' >/dev/null 2>&1 || return 1
 }
 python3_usable() {
   command -v python3 >/dev/null 2>&1 || return 1
@@ -115,11 +167,16 @@ python3_usable() {
 json_escape_text() {
   text="$1"
   if node_usable; then
-    if SHELLY_JSON_TEXT="$text" node -e 'const s = process.env.SHELLY_JSON_TEXT || ""; process.stdout.write(JSON.stringify(s).slice(1, -1));' 2>/dev/null; then
+    if SHELLY_JSON_TEXT="$text" shelly_node -e 'const s = process.env.SHELLY_JSON_TEXT || ""; process.stdout.write(JSON.stringify(s).slice(1, -1));' 2>/dev/null; then
       return 0
     fi
   fi
-  printf '%s' "$text" | tr '\\n\\r\\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+  text=\${text//\\\\/\\\\\\\\}
+  text=\${text//\\"/\\\\\\"}
+  text=\${text//$'\\n'/ }
+  text=\${text//$'\\r'/ }
+  text=\${text//$'\\t'/ }
+  printf '%s' "$text"
 }
 write_failure_log() {
   code="$1"
@@ -160,12 +217,18 @@ mirror_driver_audit_to_sdcard() {
 json_string_file() {
   file="$1"
   if node_usable; then
-    if node -e 'const fs = require("fs"); const file = process.argv[1]; process.stdout.write(JSON.stringify(fs.readFileSync(file, "utf8")));' "$file" 2>/dev/null; then
+    if shelly_node -e 'const fs = require("fs"); const file = process.argv[1]; process.stdout.write(JSON.stringify(fs.readFileSync(file, "utf8")));' "$file" 2>/dev/null; then
       return 0
     fi
   fi
   printf '"'
-  sed 's/\r/ /g; s/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' "$file" | tr -d '\\n'
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=\${line//$'\\r'/ }
+    line=\${line//$'\\t'/ }
+    line=\${line//\\\\/\\\\\\\\}
+    line=\${line//\\"/\\\\\\"}
+    printf '%s\\\\n' "$line"
+  done < "$file"
   printf '"'
 }
 
@@ -174,8 +237,8 @@ http_post_json() {
   body_file="$2"
   out_file="$3"
   err_file="$4"
-  if command -v node >/dev/null 2>&1; then
-    node - "$url" "$body_file" > "$out_file" 2> "$err_file" <<'NODEEOF'
+  if node_usable; then
+    shelly_node - "$url" "$body_file" > "$out_file" 2> "$err_file" <<'NODEEOF'
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
@@ -240,8 +303,8 @@ http_get_ok() {
   url="$1"
   err_file="$2"
   timeout_seconds="\${3:-5}"
-  if command -v node >/dev/null 2>&1; then
-    HTTP_TIMEOUT_SECONDS="$timeout_seconds" node - "$url" > /dev/null 2> "$err_file" <<'NODEEOF'
+  if node_usable; then
+    HTTP_TIMEOUT_SECONDS="$timeout_seconds" shelly_node - "$url" > /dev/null 2> "$err_file" <<'NODEEOF'
 const http = require('http');
 const https = require('https');
 
@@ -323,11 +386,11 @@ download_file_node() {
   url="$1"
   out_file="$2"
   err_file="$3"
-  if ! command -v node >/dev/null 2>&1; then
+  if ! node_usable; then
     echo "node is required for download" > "$err_file"
     return 127
   fi
-  node - "$url" "$out_file" > /dev/null 2> "$err_file" <<'NODEEOF'
+  shelly_node - "$url" "$out_file" > /dev/null 2> "$err_file" <<'NODEEOF'
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
@@ -446,11 +509,11 @@ resolve_llama_server_download_url() {
     printf '%s\\n' "$LLAMA_SERVER_DOWNLOAD_URL"
     return 0
   fi
-  if ! command -v node >/dev/null 2>&1; then
+  if ! node_usable; then
     echo "node is required to resolve latest llama-server release" > "$err_file"
     return 127
   fi
-  node - > "$TMP_DIR/llama-server-url-$AGENT_ID.txt" 2> "$err_file" <<'NODEEOF'
+  shelly_node - > "$TMP_DIR/llama-server-url-$AGENT_ID.txt" 2> "$err_file" <<'NODEEOF'
 const https = require('https');
 
 const req = https.get('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest', {
@@ -680,7 +743,7 @@ ensure_local_llm_server() {
 extract_ai_content() {
   file="$1"
   if node_usable; then
-    if node - "$file" <<'NODEEOF'
+    if shelly_node - "$file" <<'NODEEOF'
 const fs = require('fs');
 
 const file = process.argv[2];
@@ -996,7 +1059,7 @@ printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 DRIVER_CWD="$PROJECT_DIR"
 [ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
 if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
-  timeout "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+  shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
     --cwd "$DRIVER_CWD" \\
     --approval-policy untrusted \\
     --agent-id "$AGENT_ID" \\

@@ -2,6 +2,7 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
+import { execFileSync } from 'node:child_process';
 import { generateRunScript } from '@/lib/agent-executor';
 import { Agent, ToolChoice } from '@/store/types';
 
@@ -27,10 +28,18 @@ const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=5');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=6');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
+    expect(s).toContain('shelly_run_app_binary()');
+    expect(s).toContain('shelly_timeout_app_binary()');
+    expect(s).toContain('shelly_node()');
+    expect(s).toContain('shelly_curl()');
+    expect(s).toContain('shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js"');
+    expect(s).toContain('/system/bin/linker64 "$binary" "$@"');
+    expect(s).not.toContain('timeout "$TIMEOUT" node');
+    expect(s).not.toContain('command -v node >/dev/null');
     expect(s).toContain(UNSET); // codex path → keys scrubbed
     expect(s).not.toContain('[REFUSED]');
   });
@@ -42,6 +51,29 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).toContain('json_string_file()');
     expect(s).not.toContain("python3 -c 'import json");
     expect(s).not.toContain('python3 -c "import json');
+    expect(s).not.toContain("sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'");
+  });
+
+  it('routes generated node helpers through Shelly linker64 wrappers', () => {
+    const s = generateRunScript(agent({ type: 'local' }, true));
+    expect(s).toContain('shelly_node - "$url" "$body_file"');
+    expect(s).toContain('HTTP_TIMEOUT_SECONDS="$timeout_seconds" shelly_node - "$url"');
+    expect(s).toContain('shelly_node - "$url" "$out_file"');
+    expect(s).toContain('shelly_node - > "$TMP_DIR/llama-server-url-$AGENT_ID.txt"');
+    expect(s).toContain('if shelly_node - "$file"');
+    expect(s).not.toContain(' node - "$url"');
+    expect(s).not.toContain(' node - "$file"');
+    expect(s).not.toContain(' command -v node');
+  });
+
+  it('emits shell that parses after wrapper and fallback changes', () => {
+    for (const s of [
+      generateRunScript(agent({ type: 'auto' }, true)),
+      generateRunScript(agent({ type: 'local' }, true)),
+      generateRunScript(agent({ type: 'perplexity' }, true)),
+    ]) {
+      expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+    }
   });
 
   it('refuses an autonomous api-key backend (perplexity), fail-closed', () => {
