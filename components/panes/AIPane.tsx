@@ -24,6 +24,7 @@ import { formatContextBadge } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
+import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
@@ -90,17 +91,36 @@ type BubbleProps = {
   message: ChatMessage;
   isStreaming: boolean;
   maxWidth?: number;
+  onConfirmAgentDraft?: (messageId: string, confirmed: ConfirmedAgentDraft) => void;
+  onCancelAgentDraft?: (messageId: string) => void;
 };
 
 const MessageBubble = React.memo(function MessageBubble({
   message,
   isStreaming,
   maxWidth,
+  onConfirmAgentDraft,
+  onCancelAgentDraft,
 }: BubbleProps) {
   const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
   const displayText = message.streamingText ?? message.content;
+
+  // NL-self-registration confirm card (Phase 0 §2.1). While pending, the card
+  // replaces the bubble text; once confirmed/cancelled it falls through to the
+  // normal assistant text render (which now holds the result line).
+  if (message.agentDraft && message.agentCardState === 'pending') {
+    return (
+      <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+        <AgentConfirmCard
+          draft={message.agentDraft}
+          onConfirm={(c) => onConfirmAgentDraft?.(message.id, c)}
+          onCancel={() => onCancelAgentDraft?.(message.id)}
+        />
+      </View>
+    );
+  }
 
   if (message.role === 'system') {
     return (
@@ -247,7 +267,8 @@ export default function AIPane() {
   // noUnusedLocals compiler option.
   void ph;
 
-  const { dispatch, cancelStreaming, isStreaming: dispatchStreaming } = useAIPaneDispatch(paneId);
+  const { dispatch, cancelStreaming, isStreaming: dispatchStreaming, confirmAgentDraft, cancelAgentDraft } =
+    useAIPaneDispatch(paneId);
 
   const handleSubmit = useCallback(
     (text: string) => {
@@ -350,9 +371,11 @@ export default function AIPane() {
         message={item}
         isStreaming={isStreaming}
         maxWidth={bubbleMaxWidth}
+        onConfirmAgentDraft={confirmAgentDraft}
+        onCancelAgentDraft={cancelAgentDraft}
       />
     ),
-    [isStreaming, bubbleMaxWidth],
+    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);

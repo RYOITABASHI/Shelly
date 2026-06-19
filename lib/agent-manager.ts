@@ -5,6 +5,7 @@
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
@@ -155,10 +156,16 @@ export function createAgent(params: {
   workspaceRoot?: string;
   outputPath: string;
   outputTemplate?: string;
+  action?: Agent['action'];
+  runOn?: Agent['runOn'];
 }): Agent {
+  // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
+  // confirm-card free-text, autonomous, terminal @agent) is safe — see
+  // sanitize-agent-name.ts for why (shell-comment breakout via interior newline).
+  const safeName = sanitizeAgentName(params.name, `agent-${Date.now().toString(36)}`);
   const agent: Agent = {
     id: `agent-${Date.now().toString(36)}`,
-    name: params.name,
+    name: safeName,
     description: params.description,
     prompt: params.prompt,
     schedule: params.schedule,
@@ -168,6 +175,8 @@ export function createAgent(params: {
     workspaceRoot: params.workspaceRoot,
     outputPath: params.outputPath,
     outputTemplate: params.outputTemplate || null,
+    action: params.action,
+    runOn: params.runOn,
     enabled: true,
     lastRun: null,
     lastResult: null,

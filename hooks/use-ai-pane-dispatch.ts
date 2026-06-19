@@ -38,6 +38,8 @@ import {
   stopAgent,
 } from '@/lib/agent-manager';
 import { suggestTool } from '@/lib/agent-tool-router';
+import { parseAgentNL } from '@/lib/agent-nl-parser';
+import type { ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
 import { tryAutoStageFromTerminal, getStagedEdit } from '@/lib/ai-edit';
 import { useTerminalStore } from '@/store/terminal-store';
 import { playSound } from '@/lib/sounds';
@@ -272,21 +274,41 @@ export function useAIPaneDispatch(paneId: string) {
           const agentResult = parseAgentCommand(parsed.prompt);
           if (agentResult.type === 'create') {
             const promptText = agentResult.message;
-            const firstWord = promptText.split(/\s+/)[0] || 'agent';
-            const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
-            const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
             const autonomous = agentResult.data?.autonomous === true;
-            const created = createAgent({
-              name,
-              description: promptText.slice(0, 120),
-              prompt: promptText,
-              schedule: null,
-              tool: suggestion.tool,
-              autonomous,
-              outputPath: `$HOME/.shelly/agents/${name}/output.md`,
-            });
-            await installAgent(created, runAgentShellCommand);
-            resultMessage = `✅ Agent "${created.name}" installed (${suggestion.label}${autonomous ? ', autonomous' : ''}). Run it with: @agent run ${created.name}`;
+            if (autonomous) {
+              // Autonomous agents keep the existing (gate-verified) immediate
+              // launch path — the confirm card is the scheduled-agent surface.
+              const firstWord = promptText.split(/\s+/)[0] || 'agent';
+              const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
+              const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
+              const created = createAgent({
+                name,
+                description: promptText.slice(0, 120),
+                prompt: promptText,
+                schedule: null,
+                tool: suggestion.tool,
+                autonomous,
+                outputPath: `$HOME/.shelly/agents/${name}/output.md`,
+              });
+              await installAgent(created, runAgentShellCommand);
+              resultMessage = `✅ Agent "${created.name}" installed (${suggestion.label}, autonomous). Run it with: @agent run ${created.name}`;
+            } else {
+              // NL self-registration → a reviewable preview card (Phase 0 §2.1).
+              // NEVER a live agent: the agent is created+installed only on Confirm
+              // (see confirmAgentDraft below). We push a card-bearing message and
+              // return early so the LLM never sees the utterance.
+              const draft = parseAgentNL(promptText);
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: '',
+                timestamp: Date.now(),
+                agent: agent as ChatMessage['agent'],
+                agentDraft: draft,
+                agentCardState: 'pending',
+              });
+              return;
+            }
           } else if (agentResult.type === 'run') {
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;
@@ -970,9 +992,53 @@ export function useAIPaneDispatch(paneId: string) {
     useAIPaneStore.getState().setStreaming(paneId, false);
   }, [paneId]);
 
+  // Confirm a pending NL-self-registration card: NOW create + install the agent
+  // (Phase 0 §2.1 — registration happens only on explicit human confirm). The
+  // card already guaranteed a valid whitelisted schedule, so this never registers
+  // a never-firing agent. The card message flips to 'confirmed' with a result line.
+  const confirmAgentDraft = useCallback(
+    async (messageId: string, confirmed: ConfirmedAgentDraft) => {
+      const store = useAIPaneStore.getState();
+      const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+        || `agent-${Date.now().toString(36)}`;
+      try {
+        const created = createAgent({
+          name: confirmed.name,
+          description: confirmed.prompt.slice(0, 120),
+          prompt: confirmed.prompt,
+          schedule: confirmed.schedule,
+          tool: confirmed.tool,
+          action: confirmed.action,
+          runOn: confirmed.runOn,
+          outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
+        });
+        await installAgent(created, runAgentShellCommand);
+        store.updateMessage(paneId, messageId, {
+          agentCardState: 'confirmed',
+          content: `✅ Agent "${created.name}" registered — ${confirmed.schedule}. Manage it with: @agent list`,
+        });
+      } catch (err) {
+        store.updateMessage(paneId, messageId, {
+          content: `[@agent] failed to register: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    },
+    [paneId],
+  );
+
+  const cancelAgentDraft = useCallback(
+    (messageId: string) => {
+      useAIPaneStore.getState().updateMessage(paneId, messageId, {
+        agentCardState: 'cancelled',
+        content: 'Registration cancelled.',
+      });
+    },
+    [paneId],
+  );
+
   const isStreaming = useAIPaneStore(
     (s) => s.conversations[paneId]?.isStreaming ?? false,
   );
 
-  return { dispatch, cancelStreaming, isStreaming };
+  return { dispatch, cancelStreaming, isStreaming, confirmAgentDraft, cancelAgentDraft };
 }
