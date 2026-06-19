@@ -541,6 +541,59 @@ jobs:
           cd ../..
           ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
 
+      - name: Compute monotonic Android version code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git_version_code="$(git rev-list --count HEAD)"
+          desired_version_code="$((git_version_code + 1))"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+
+          for update_tag in android-latest android-dev; do
+            tag_dir="${tmp_dir}/${update_tag}"
+            mkdir -p "${tag_dir}"
+            release_view_error="${tag_dir}/release-view.err"
+            if ! manifest_asset="$(gh release view "${update_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json assets \
+              --jq '.assets[] | select(.name == "latest.json") | .name' 2>"${release_view_error}")"; then
+              if grep -qiE 'not found|HTTP 404' "${release_view_error}"; then
+                echo "No ${update_tag} release found; ignoring for versionCode floor."
+                continue
+              fi
+              cat "${release_view_error}" >&2
+              exit 1
+            fi
+            if [ -z "${manifest_asset}" ]; then
+              echo "No ${update_tag}/latest.json asset found; ignoring for versionCode floor."
+              continue
+            fi
+            gh release download "${update_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern latest.json \
+              --dir "${tag_dir}" >/dev/null
+
+            published_version_code="$(node -e '
+              const fs = require("fs");
+              const manifestPath = process.argv[1];
+              const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+              if (!Number.isInteger(manifest.versionCode)) {
+                console.error(`FATAL: ${manifestPath} is missing an integer versionCode`);
+                process.exit(1);
+              }
+              process.stdout.write(String(manifest.versionCode));
+            ' "${tag_dir}/latest.json")"
+
+            if [ -n "${published_version_code}" ] && [ "${published_version_code}" -ge "${desired_version_code}" ]; then
+              desired_version_code="$((published_version_code + 1))"
+            fi
+          done
+
+          echo "SHELLY_ANDROID_VERSION_CODE=${desired_version_code}" >> "${GITHUB_ENV}"
+          echo "Using SHELLY_ANDROID_VERSION_CODE=${desired_version_code}"
+
       - name: Validate Android config version code
         run: |
           GIT_VERSION_CODE="$(git rev-list --count HEAD)"
