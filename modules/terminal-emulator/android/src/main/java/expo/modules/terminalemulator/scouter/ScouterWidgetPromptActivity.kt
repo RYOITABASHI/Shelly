@@ -370,14 +370,9 @@ class ScouterWidgetPromptActivity : Activity() {
         }
 
         runCatching {
-            AgentEscalationBridge.writeHumanReply(this, runId, reqId, decision, actionNonce, expectedRequestSha256)
-            val queuedGrant = if (decision == "accept") {
-                AgentEscalationBridge.writePreapprovalGrantForQueuedRequest(this, runId, reqId, expectedRequestSha256)
-            } else {
-                null
-            }
+            val reply = AgentEscalationBridge.writeHumanReply(this, runId, reqId, decision, actionNonce, expectedRequestSha256)
             AgentEscalationBridge.clearRequest(this, runId, reqId)
-            queuedGrant != null
+            reply.preapprovalGrant != null
         }.fold(onSuccess = {
             getSystemService(NotificationManager::class.java)
                 ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))

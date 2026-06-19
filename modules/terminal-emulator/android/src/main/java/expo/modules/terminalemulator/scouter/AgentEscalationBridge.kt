@@ -47,6 +47,11 @@ data class AgentEscalationRequest(
     ).joinToString("|")
 }
 
+data class AgentEscalationReplyResult(
+    val reply: File,
+    val preapprovalGrant: File?
+)
+
 object AgentEscalationBridge {
     private val unsafeFilePart = Regex("[^A-Za-z0-9_.=-]")
     private val pendingActionNonces = ConcurrentHashMap<String, String>()
@@ -158,7 +163,7 @@ object AgentEscalationBridge {
         decision: String,
         actionNonce: String?,
         expectedRequestSha256: String?
-    ): File {
+    ): AgentEscalationReplyResult {
         require(decision == "accept" || decision == "decline") { "invalid escalation decision" }
         val nonceKey = actionNonceKey(runId, reqId)
         val expectedNonce = pendingActionNonces[nonceKey]
@@ -201,7 +206,18 @@ object AgentEscalationBridge {
             tmp.delete()
             error("failed to publish escalation reply")
         }
-        return reply
+        val preapprovalGrant = if (decision == "accept") {
+            writePreapprovalGrantFromRequest(
+                context = context,
+                requestJson = requestJson,
+                requestSha256 = requestSha256,
+                allowLiveRequest = true,
+                requireHardwareOneShot = true
+            )
+        } else {
+            null
+        }
+        return AgentEscalationReplyResult(reply, preapprovalGrant)
     }
 
     fun writePreapprovalGrantForQueuedRequest(
@@ -219,10 +235,30 @@ object AgentEscalationBridge {
         require(expectedRequestSha256?.matches(HEX_SHA256_RE) == true && requestSha256 == expectedRequestSha256) {
             "queued escalation request no longer matches the displayed request"
         }
-        if (requestJson.optString("state") != "queued") return null
         require(requestJson.optString("runId") == runId && requestJson.optString("reqId") == reqId) {
             "queued escalation request anchor mismatch"
         }
+        return writePreapprovalGrantFromRequest(
+            context = context,
+            requestJson = requestJson,
+            requestSha256 = requestSha256,
+            allowLiveRequest = false,
+            requireHardwareOneShot = false,
+            ttlMs = ttlMs
+        )
+    }
+
+    private fun writePreapprovalGrantFromRequest(
+        context: Context,
+        requestJson: JSONObject,
+        requestSha256: String,
+        allowLiveRequest: Boolean,
+        requireHardwareOneShot: Boolean,
+        ttlMs: Long = DEFAULT_QUEUED_GRANT_TTL_MS
+    ): File? {
+        val state = requestJson.optString("state")
+        if (state.isNotBlank() && state != "queued") return null
+        if (!allowLiveRequest && state != "queued") return null
         val command = requestJson.optString("command").takeIf { it.isNotBlank() } ?: return null
         val commandSha256 = requestJson.optString("commandSha256")
             .takeIf { it.matches(HEX_SHA256_RE) }
@@ -244,12 +280,13 @@ object AgentEscalationBridge {
         val usesRemaining = 1
         val grantId = UUID.randomUUID().toString()
         val replayDangerous = isReplayDangerousSignals(signals)
-        val grantKey = if (replayDangerous) {
+        val requiresGrantKey = requireHardwareOneShot || replayDangerous
+        val grantKey = if (requiresGrantKey) {
             createStrongBoxGrantKey(grantId, usesRemaining)
         } else {
             null
         }
-        if (replayDangerous && grantKey == null) {
+        if (requiresGrantKey && grantKey == null) {
             return null
         }
         val grantKeyMode = if (grantKey != null) "keystore-maxuse" else "expiry-only"
