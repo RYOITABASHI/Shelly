@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Canvas
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -49,6 +50,7 @@ class ShellyTerminalView(
     companion object {
         private const val TAG = "ShellyTerminalView"
         private const val DEFAULT_FONT_SIZE = 14
+        private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
         private const val RESIZE_DEBOUNCE_MS = 150L
         // bug #116 follow-up 5: a single tap on a pane body fires
         // showKeyboardWhenServed three times within the same frame —
@@ -121,11 +123,10 @@ class ShellyTerminalView(
     private var lastWidth = -1
     private var lastHeight = -1
 
-    // Phase B: when a wallpaper is set on the JS side, this flips on and
-    // both this ExpoView wrapper and the inner TerminalView stop painting
-    // an opaque background behind the terminal content. The Termux
-    // renderer already skips the default-bg cell fill (TerminalRenderer
-    // line 231), so transparency propagates through for free.
+    // Terminal panes stay opaque even when the app has a wallpaper. Letting
+    // the native terminal become transparent exposes the React panel/wallpaper
+    // layers during session attach and IME resize, which shows up as a gray
+    // wash behind otherwise-empty terminal cells.
     private var transparentBackground = false
 
     // Event callbacks set by the Expo module
@@ -149,10 +150,11 @@ class ShellyTerminalView(
     private val linkDetector = LinkDetector
 
     init {
-        // Black background like a real terminal. Flipped off in
-        // setTransparentBackground(true) when the user picks a wallpaper.
-        setBackgroundColor(0xFF000000.toInt())
-        terminalView.setBackgroundColor(0xFF000000.toInt())
+        // Black background like a real terminal. setTransparentBackground()
+        // now reasserts this instead of allowing terminal transparency.
+        setWillNotDraw(false)
+        setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
 
         val padPx = (4 * context.resources.displayMetrics.density).toInt()
         terminalView.setPadding(padPx, 0, padPx, 0)
@@ -200,9 +202,22 @@ class ShellyTerminalView(
         }
         inputHandler.clipboardPaste = { session ->
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            val text = clipboard?.primaryClip?.getItemAt(0)?.text?.toString()
+            val text = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
             if (text != null) {
-                session.write(text.toByteArray(Charsets.UTF_8), 0, text.toByteArray(Charsets.UTF_8).size)
+                val shellySession = currentShellySession
+                if (shellySession?.terminalSession == session) {
+                    Log.d("ShellyPaste", "clipboard shortcut via ShellyTerminalSession len=${text.length}")
+                    shellySession.paste(text)
+                } else {
+                    Log.d("ShellyPaste", "clipboard shortcut via TerminalSession emulator len=${text.length}")
+                    val emulator = session.emulator
+                    if (emulator != null) {
+                        emulator.paste(text)
+                    } else {
+                        val bytes = text.replace("\r\n", "\r").replace("\n", "\r").toByteArray(Charsets.UTF_8)
+                        session.write(bytes, 0, bytes.size)
+                    }
+                }
                 true
             } else {
                 false
@@ -249,16 +264,30 @@ class ShellyTerminalView(
         return super.dispatchTouchEvent(ev)
     }
 
+    override fun onDraw(canvas: Canvas) {
+        if (!transparentBackground) {
+            canvas.drawColor(OPAQUE_TERMINAL_BACKGROUND)
+        }
+        super.onDraw(canvas)
+    }
+
     // ===== Layout — debounce Yoga's rapid layout passes =====
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w == 0 || h == 0) return
+        applyOpaqueTerminalSurface()
         if (w == lastWidth && h == lastHeight) return
         lastWidth = w
         lastHeight = h
         Log.i(TAG, "onSizeChanged: ${w}x${h} (was ${oldw}x${oldh})")
         scheduleTerminalResize()
+    }
+
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        val applied = super.onApplyWindowInsets(insets)
+        applyOpaqueTerminalSurface()
+        return applied
     }
 
     /**
@@ -271,7 +300,11 @@ class ShellyTerminalView(
         resizeHandler.postDelayed({
             if (terminalView.width > 0 && terminalView.height > 0) {
                 Log.i(TAG, "terminalResize: ${terminalView.width}x${terminalView.height}")
+                applyOpaqueTerminalSurface()
                 terminalView.updateSize()
+                terminalView.invalidate()
+                glTerminalView?.requestRender()
+                invalidate()
             }
         }, RESIZE_DEBOUNCE_MS)
     }
@@ -423,34 +456,38 @@ class ShellyTerminalView(
     }
 
     /**
-     * Phase B wallpaper support. When `enabled`, both this ExpoView
-     * wrapper and the inner Termux TerminalView drop their opaque black
-     * background so the wallpaper behind the whole ShellLayout tree can
-     * show through. Cells with a non-default background still paint
-     * normally (TerminalRenderer guards default-bg cells at line 231),
-     * so prompt colours / syntax highlights stay visible as expected.
-     *
-     * We also flip the inner TerminalView's `transparentBackground`
-     * flag so its padding-region paint at onDraw is skipped in the
-     * transparent path. Without that, the padding under mode-line-ish
-     * prompts would fill with solid black over the wallpaper.
+     * Keep terminal panes opaque. The prop remains for JS/native ABI
+     * compatibility, but terminals no longer honor true here.
      */
     fun setTransparentBackground(enabled: Boolean) {
-        transparentBackground = enabled
-        val color = if (enabled) {
-            0x00000000
-        } else {
-            TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
+        if (enabled) {
+            Log.i(TAG, "setTransparentBackground(true) ignored for terminal pane")
         }
-        setBackgroundColor(color)
-        terminalView.setBackgroundColor(color)
-        terminalView.setTransparentBackground(enabled)
+        applyOpaqueTerminalSurface()
+    }
+
+    private fun applyOpaqueTerminalSurface() {
+        transparentBackground = false
+        setWillNotDraw(false)
+        TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+        terminalView.mEmulator?.mColors?.mCurrentColors?.let { colors ->
+            colors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+        }
+        setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        terminalView.setTransparentBackground(false)
+        val colorsForGl = (terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors).copyOf()
+        glTerminalView?.let { glView ->
+            glView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+            glView.queueEvent {
+                glView.renderer.updateAnsiColors(colorsForGl)
+            }
+        }
         terminalView.invalidate()
-        // GPU path (when gpuRendering=true): flip the GLSurfaceView's
-        // own background AND the renderer's clearColor. Without the
-        // renderer forward, glClear would still paint opaque black
-        // every frame and hide the wallpaper.
-        glTerminalView?.setTransparentBackground(enabled)
+        // GPU path (when gpuRendering=true): keep the GLSurfaceView and
+        // renderer clearColor opaque black as well.
+        glTerminalView?.setTransparentBackground(false)
+        invalidate()
     }
 
     /**
@@ -472,19 +509,10 @@ class ShellyTerminalView(
                 }
             }
             TerminalColors.COLOR_SCHEME.updateWith(props)
+            TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
             // Reset current session colors to apply the new scheme
             terminalView.mEmulator?.mColors?.reset()
-            // Update background color of the view — but only when we are
-            // NOT in wallpaper-transparent mode. In transparent mode the
-            // view has to stay fully see-through regardless of scheme
-            // swaps, otherwise picking a new theme would repaint opaque
-            // over the user's wallpaper.
-            if (!transparentBackground) {
-                val bgColor = TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]
-                setBackgroundColor(bgColor)
-                terminalView.setBackgroundColor(bgColor)
-            }
-            terminalView.invalidate()
+            applyOpaqueTerminalSurface()
             Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")
         } catch (e: Exception) {
             Log.w(TAG, "applyThemeColors failed", e)
@@ -496,6 +524,7 @@ class ShellyTerminalView(
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
         isViewVisible = (visibility == View.VISIBLE)
+        applyOpaqueTerminalSurface()
         if (!isViewVisible) {
             setTerminalCursorBlinkerRate(0)
         }
@@ -504,6 +533,7 @@ class ShellyTerminalView(
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         isViewVisible = hasWindowFocus
+        applyOpaqueTerminalSurface()
     }
 
     // ===== Output Processing =====
@@ -570,6 +600,7 @@ class ShellyTerminalView(
             terminalView.visibility = View.VISIBLE
             glTerminalView?.visibility = View.GONE
         }
+        applyOpaqueTerminalSurface()
     }
 
     private fun checkGLES30Support(): Boolean {
@@ -711,6 +742,7 @@ class ShellyTerminalView(
     }
 
     fun refreshScreenCommand() {
+        applyOpaqueTerminalSurface()
         if (useGPU && glTerminalView != null) {
             glTerminalView?.post { glTerminalView?.renderer?.onScreenUpdated() }
         } else {
@@ -810,7 +842,7 @@ class ShellyTerminalView(
      * Sends resize command directly to pty-helper via Unix Domain Socket.
      */
     override fun onEmulatorSet() {
-        terminalView.invalidate()
+        applyOpaqueTerminalSurface()
         val emulator = terminalView.mEmulator ?: return
         val cols = emulator.mColumns
         val rows = emulator.mRows

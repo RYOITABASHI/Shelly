@@ -14,6 +14,11 @@ const DEFAULT_ESCALATION_PUBLIC_KEY = defaultEscalationPublicKey();
 const DEFAULT_PREAPPROVAL_GRANTS_FILE = defaultPreapprovalGrantsFile();
 const ESCALATION_POLL_MS = 250;
 const ANDROID_LINKER64 = '/system/bin/linker64';
+// A signal here is *eligible* for a grant; it does NOT mean "grantable as expiry-only".
+// network-send (and leaves-root WRITES) are Tier-1-ONLY — they stay in this set so a future
+// keystore-maxuse (hardware-counted) grant can cover them, but isReplayDangerousSignals() is the
+// enforcement point that blocks them from expiry-only (Tier-2). Don't drop network-send here, or
+// the Tier-1 path loses it too.
 const GRANTABLE_BOUNDARY_SIGNALS = new Set(['leaves-root', 'network-send']);
 const UNGRANTABLE_BOUNDARY_SIGNALS = new Set(['secret-read', 'destructive', 'policy-write']);
 
@@ -75,6 +80,17 @@ Options:
                              Defaults to decline.
   --escalation-public-key <path>
                              X.509/SPKI public key used to verify human reply signatures.
+  --escalation-public-key-sha256 <hex>
+                             SHA-256 (hex) the public-key DER file MUST hash to. Injected by the
+                             native launcher (the agent cannot alter the driver's argv) to pin the
+                             trust anchor. If set and the on-disk key mismatches, the verifier key is
+                             rejected and every escalation/grant fails closed (decline). Omit only for
+                             host/dev runs (see --allow-unpinned-verifier-key).
+  --allow-unpinned-verifier-key
+                             Permit running WITHOUT a pin (host/dev only). Without this flag and
+                             without --escalation-public-key-sha256, the verifier key is refused and
+                             every escalation/grant fails closed — so a launcher that forgets the pin
+                             degrades safely instead of silently trusting a swappable key.
   --preapproval-grants-file <path>
                              Signed human preapproval grant JSONL. Defaults to native no_backup storage on Android.
   --run-id <id>              Override generated run id.
@@ -106,6 +122,8 @@ function parseArgs(argv) {
     escalationDir: process.env.SHELLY_AGENT_ESCALATION_DIR || DEFAULT_ESCALATION_DIR,
     escalationReplyDir: process.env.SHELLY_AGENT_ESCALATION_REPLY_DIR || DEFAULT_ESCALATION_REPLY_DIR,
     escalationPublicKey: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY || DEFAULT_ESCALATION_PUBLIC_KEY,
+    escalationPublicKeySha256: process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256 || null,
+    allowUnpinnedVerifierKey: process.env.SHELLY_AGENT_ALLOW_UNPINNED_VERIFIER_KEY === '1',
     preapprovalGrantsFile: process.env.SHELLY_AGENT_PREAPPROVAL_GRANTS_FILE || DEFAULT_PREAPPROVAL_GRANTS_FILE,
     escalationTimeoutMs: parseNonNegativeInt(
       process.env.ESCALATION_TIMEOUT_MS || DEFAULT_ESCALATION_TIMEOUT_MS,
@@ -159,6 +177,10 @@ function parseArgs(argv) {
       args.escalationTimeoutAction = next();
     } else if (arg === '--escalation-public-key') {
       args.escalationPublicKey = next();
+    } else if (arg === '--escalation-public-key-sha256') {
+      args.escalationPublicKeySha256 = next();
+    } else if (arg === '--allow-unpinned-verifier-key') {
+      args.allowUnpinnedVerifierKey = true;
     } else if (arg === '--preapproval-grants-file') {
       args.preapprovalGrantsFile = next();
     } else if (arg === '--run-id') {
@@ -228,8 +250,21 @@ function ensureConfig(args) {
     // Android-Keystore-backed signature before accept is honored.
     escalationReplyDir: path.resolve(args.escalationReplyDir),
     escalationPublicKey: path.resolve(args.escalationPublicKey),
+    // Pin (SHA-256 hex of the DER) injected out-of-band by the native launcher so a same-uid
+    // agent that overwrites the key file cannot substitute its own key. Normalized to lowercase hex.
+    escalationPublicKeySha256: normalizeSha256Hex(args.escalationPublicKeySha256),
     preapprovalGrantsFile: path.resolve(args.preapprovalGrantsFile),
   };
+}
+
+function normalizeSha256Hex(value) {
+  if (typeof value !== 'string') return null;
+  const hex = value.trim().toLowerCase();
+  if (!hex) return null;
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new Error('invalid --escalation-public-key-sha256: expected 64 hex chars');
+  }
+  return hex;
 }
 
 function existingPath(candidate) {
@@ -322,6 +357,8 @@ function codexChildEnv(input) {
   delete env.SHELLY_AGENT_RUN_ID;
   delete env.SHELLY_AGENT_ID;
   delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY;
+  delete env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256;
+  delete env.SHELLY_AGENT_ALLOW_UNPINNED_VERIFIER_KEY;
   delete env.ESCALATION_TIMEOUT_MS;
   return env;
 }
@@ -633,6 +670,16 @@ function buildEscalationPaths(config, reqId) {
   };
 }
 
+function buildGrantSpendPaths(config, grantId, reqId) {
+  const base = `grant-spend-${safeFilePart(grantId)}-${safeFilePart(reqId)}`;
+  const requestDir = config.escalationDir || path.dirname(config.preapprovalGrantsFile);
+  const replyDir = config.escalationReplyDir || path.dirname(config.preapprovalGrantsFile);
+  return {
+    requestPath: path.join(requestDir, `${base}.json`),
+    replyPath: path.join(replyDir, `${base}.reply.json`),
+  };
+}
+
 function writeJsonAtomic(filePath, payload) {
   const content = `${JSON.stringify(payload)}\n`;
   const tmpPath = path.join(
@@ -724,9 +771,12 @@ function boundarySignals(signals) {
   return grantSignals(signals).filter((signal) => signal !== 'write-or-exec');
 }
 
+// v2 binds grantKeyMode + the per-grant key identity (sha256 of its SPKI) into the human
+// signature so a same-uid agent can neither downgrade keystore-maxuse→expiry-only nor swap the
+// per-grant key. (See 2026-06-17-B2-grant-consumption-contract.md.)
 function preapprovalGrantSignatureMessage(grant) {
   return [
-    'shelly-agent-preapproval-grant-v1',
+    'shelly-agent-preapproval-grant-v2',
     String(grant.id || ''),
     String(grant.agentId || ''),
     String(grant.workspaceRoot || ''),
@@ -737,7 +787,20 @@ function preapprovalGrantSignatureMessage(grant) {
     String(grant.requestSha256 || ''),
     String(grant.requestTs || ''),
     String(grant.usesRemaining || 1),
+    String(grant.grantKeyMode || ''),
+    grant.grantKeySpki ? sha256Hex(String(grant.grantKeySpki)) : '',
   ].join('\n');
+}
+
+// Replay-dangerous (non-idempotent / exfiltration-capable) ops may NOT be honored as expiry-only
+// (Tier 2) — they require Tier-1 hardware count enforcement or a fresh human tap each time.
+// Computed from the ORIGINAL request signals (write-or-exec distinguishes a leaves-root write
+// from a read; boundarySignals() strips it, so check the raw signals here).
+function isReplayDangerousSignals(originalSignals) {
+  const set = new Set(grantSignals(originalSignals));
+  if (set.has('network-send')) return true;
+  if (set.has('leaves-root') && set.has('write-or-exec')) return true;
+  return false;
 }
 
 function verifyEscalationReplySignature(config, requestPayload, requestSha256, reply) {
@@ -793,12 +856,105 @@ function verifyPreapprovalGrantSignature(config, grant) {
   }
 }
 
-function loadEscalationVerifierPublicKey(config) {
-  return crypto.createPublicKey({
-    key: fs.readFileSync(config.escalationPublicKey),
-    format: 'der',
-    type: 'spki',
-  });
+function grantUseReceiptSignatureMessage(receipt) {
+  return [
+    String(receipt.grantId || ''),
+    String(receipt.reqId || ''),
+    String(receipt.requestSha256 || ''),
+    String(receipt.ts || ''),
+  ].join('\n');
+}
+
+function verifyGrantUseReceipt(config, grant, request, receipt) {
+  if (!receipt || typeof receipt !== 'object') return { ok: false, reason: 'missing grant use receipt' };
+  if (receipt.type !== 'grant_use_receipt') return { ok: false, reason: `invalid grant receipt type: ${receipt.type}` };
+  if (receipt.grantId !== grant.id) return { ok: false, reason: 'grant receipt id mismatch' };
+  if (receipt.reqId !== request.reqId) return { ok: false, reason: 'grant receipt reqId mismatch' };
+  if (receipt.requestSha256 !== request.requestSha256) return { ok: false, reason: 'grant receipt request hash mismatch' };
+  if (receipt.sigAlg !== 'SHA256withRSA') return { ok: false, reason: `invalid grant receipt signature algorithm: ${receipt.sigAlg}` };
+  if (typeof receipt.signature !== 'string' || receipt.signature.length < 32) {
+    return { ok: false, reason: 'missing grant receipt signature' };
+  }
+  if (!grant.grantKeySpki) return { ok: false, reason: 'grant receipt verifier key missing' };
+  config.acceptedGrantSpendReqIds ||= new Set();
+  if (config.acceptedGrantSpendReqIds.has(receipt.reqId)) {
+    return { ok: false, reason: 'grant receipt reqId replay' };
+  }
+  try {
+    const publicKey = crypto.createPublicKey({
+      key: Buffer.from(String(grant.grantKeySpki), 'base64'),
+      format: 'der',
+      type: 'spki',
+    });
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(grantUseReceiptSignatureMessage(receipt), 'utf8');
+    verifier.end();
+    if (!verifier.verify(publicKey, Buffer.from(receipt.signature, 'base64'))) {
+      return { ok: false, reason: 'grant receipt signature verification failed' };
+    }
+    config.acceptedGrantSpendReqIds.add(receipt.reqId);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `grant receipt signature verification error: ${error.message}` };
+  }
+}
+
+// Load the verifier public key at most once and cache the in-memory key object so a later
+// same-uid overwrite of the DER file cannot swap the trust anchor mid-run. When a pin
+// (--escalation-public-key-sha256) is configured, the on-disk DER MUST hash to it or the key is
+// rejected and left null, so every subsequent verify fails closed (decline). Idempotent: callers
+// invoke it eagerly before spawning codex AND lazily at each escalation/grant check.
+function ensureEscalationVerifierKey(config, audit) {
+  if (config.escalationVerifierLoaded) return;
+  config.escalationVerifierLoaded = true;
+  let der;
+  try {
+    der = fs.readFileSync(config.escalationPublicKey);
+  } catch (error) {
+    config.escalationVerifierPublicKey = null;
+    audit('escalation_verifier_key_unavailable', {
+      path: config.escalationPublicKey,
+      error: error.message,
+    });
+    return;
+  }
+  const actualSha256 = crypto.createHash('sha256').update(der).digest('hex');
+  if (config.escalationPublicKeySha256) {
+    if (actualSha256 !== config.escalationPublicKeySha256) {
+      config.escalationVerifierPublicKey = null;
+      audit('escalation_verifier_key_untrusted', {
+        path: config.escalationPublicKey,
+        expectedSha256: config.escalationPublicKeySha256,
+        actualSha256,
+      });
+      return;
+    }
+  } else if (config.allowUnpinnedVerifierKey) {
+    audit('escalation_verifier_key_unpinned', {
+      path: config.escalationPublicKey,
+      actualSha256,
+      note: 'host/dev only (--allow-unpinned-verifier-key): a same-uid agent could swap this key',
+    });
+  } else {
+    // Production default: no pin AND not explicitly allowed → refuse the key so a launcher that
+    // forgot to inject the pin fails closed instead of silently trusting a swappable key.
+    config.escalationVerifierPublicKey = null;
+    audit('escalation_verifier_key_unpinned_refused', {
+      path: config.escalationPublicKey,
+      actualSha256,
+      note: 'no --escalation-public-key-sha256 pin and --allow-unpinned-verifier-key not set; key refused, escalations/grants fail closed',
+    });
+    return;
+  }
+  try {
+    config.escalationVerifierPublicKey = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+  } catch (error) {
+    config.escalationVerifierPublicKey = null;
+    audit('escalation_verifier_key_parse_error', {
+      path: config.escalationPublicKey,
+      error: error.message,
+    });
+  }
 }
 
 function parseGrantExpiryMs(grant) {
@@ -869,7 +1025,7 @@ async function withPreapprovalGrantLock(config, audit, fn) {
       fs.closeSync(fd);
       fd = null;
       try {
-        return fn();
+        return await fn();
       } finally {
         unlinkIfExists(lockPath);
       }
@@ -897,8 +1053,8 @@ async function withPreapprovalGrantLock(config, audit, fn) {
 }
 
 async function consumePreapprovalGrant(config, request, audit) {
-  return withPreapprovalGrantLock(config, audit, () => {
-    const preapproval = findPreapprovalGrant(config, request, audit);
+  return withPreapprovalGrantLock(config, audit, async () => {
+    const preapproval = await findPreapprovalGrant(config, request, audit);
     if (!preapproval) return null;
     appendGrantUse(config, preapproval, {
       reqId: request.reqId,
@@ -908,7 +1064,88 @@ async function consumePreapprovalGrant(config, request, audit) {
   });
 }
 
-function findPreapprovalGrant(config, request, audit) {
+function grantSpendRequestSha256(config, request, requestCommandSha256, signals) {
+  return sha256Hex([
+    'shelly-agent-grant-spend-request-v1',
+    String(config.runId),
+    String(config.agentId),
+    String(request.reqId),
+    String(requestCommandSha256),
+    String(config.policy.workspaceRoot),
+    grantSignals(signals).join(','),
+  ].join('\n'));
+}
+
+async function waitForGrantSpend(config, grant, request, requestCommandSha256, signals, audit) {
+  const spendReqId = crypto.randomUUID();
+  const requestSha256 = grantSpendRequestSha256(config, request, requestCommandSha256, signals);
+  const paths = buildGrantSpendPaths(config, grant.id, spendReqId);
+  const timeoutMs = config.grantSpendTimeoutMs ?? 10000;
+  const startedAt = Date.now();
+  const requestPayload = {
+    type: 'grant_spend_request',
+    grantId: grant.id,
+    reqId: spendReqId,
+    requestSha256,
+    ts: new Date().toISOString(),
+  };
+
+  try {
+    fs.mkdirSync(config.escalationDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(config.escalationReplyDir, { recursive: true, mode: 0o700 });
+    unlinkIfExists(paths.requestPath);
+    unlinkIfExists(paths.replyPath);
+    writeJsonAtomic(paths.requestPath, requestPayload);
+    audit('grant_spend_requested', {
+      grantId: grant.id,
+      reqId: spendReqId,
+      requestSha256,
+      requestPath: paths.requestPath,
+      timeoutMs,
+    });
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (fs.existsSync(paths.replyPath)) {
+        let reply;
+        try {
+          reply = JSON.parse(fs.readFileSync(paths.replyPath, 'utf8'));
+        } catch (error) {
+          audit('grant_spend_reply_parse_error', { grantId: grant.id, reqId: spendReqId, error: error.message });
+          return null;
+        }
+        if (reply.type === 'grant_spend_denied') {
+          audit('grant_spend_denied', {
+            grantId: grant.id,
+            reqId: spendReqId,
+            reason: reply.reason || 'unknown',
+          });
+          return null;
+        }
+        const verification = verifyGrantUseReceipt(config, grant, requestPayload, reply);
+        if (!verification.ok) {
+          audit('grant_spend_receipt_rejected', {
+            grantId: grant.id,
+            reqId: spendReqId,
+            reason: verification.reason,
+          });
+          return null;
+        }
+        audit('grant_spend_receipt_accepted', { grantId: grant.id, reqId: spendReqId });
+        return { reqId: spendReqId, requestSha256 };
+      }
+      await sleep(100);
+    }
+    audit('grant_spend_timeout', { grantId: grant.id, reqId: spendReqId, timeoutMs });
+    return null;
+  } catch (error) {
+    audit('grant_spend_error', { grantId: grant.id, reqId: spendReqId, error: error.message });
+    return null;
+  } finally {
+    cleanupEscalationFiles(paths, audit);
+  }
+}
+
+async function findPreapprovalGrant(config, request, audit) {
   const signals = boundarySignals(request.signals);
   if (signals.length === 0) return null;
   if (signals.some((signal) => UNGRANTABLE_BOUNDARY_SIGNALS.has(signal))) {
@@ -918,13 +1155,11 @@ function findPreapprovalGrant(config, request, audit) {
     return null;
   }
 
-  try {
-    if (!config.escalationVerifierPublicKey) {
-      config.escalationVerifierPublicKey = loadEscalationVerifierPublicKey(config);
-    }
-  } catch (error) {
+  ensureEscalationVerifierKey(config, audit);
+  if (!config.escalationVerifierPublicKey) {
+    // Untrusted/missing verifier key → no grant can be honored (fail closed).
     audit('preapproval_grant_unavailable', {
-      reason: `grant verifier public key unavailable: ${error.message}`,
+      reason: 'grant verifier public key unavailable or untrusted',
       path: config.escalationPublicKey,
     });
     return null;
@@ -932,13 +1167,10 @@ function findPreapprovalGrant(config, request, audit) {
 
   const records = loadPreapprovalGrantRecords(config, audit);
   if (records.length === 0) return null;
-  const usedCounts = new Map();
-  for (const record of records) {
-    if (record.type === 'used' && record.grantId) {
-      usedCounts.set(String(record.grantId), (usedCounts.get(String(record.grantId)) || 0) + 1);
-    }
-  }
 
+  // NOTE: consumption is NOT gated on the file `used`-count anymore (#2). A same-uid agent can
+  // delete those lines, so counting them was security theater. The bound is now expiry (Tier 2)
+  // or a Keystore hardware count via the native spend round-trip (Tier 1, keystore-maxuse).
   const now = Date.now();
   const requestCommandSha256 = request.commandSha256 || commandSha256(request.command);
   for (const record of records) {
@@ -948,8 +1180,6 @@ function findPreapprovalGrant(config, request, audit) {
     if (!grantId) continue;
     const expiresAtMs = parseGrantExpiryMs(grant);
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
-    const usesRemaining = Number.isFinite(Number(grant.usesRemaining)) ? Math.max(1, Number(grant.usesRemaining)) : 1;
-    if ((usedCounts.get(grantId) || 0) >= usesRemaining) continue;
     if (grant.agentId !== config.agentId) continue;
     if (grant.workspaceRoot !== config.policy.workspaceRoot) continue;
     if (grant.commandSha256 !== requestCommandSha256) continue;
@@ -965,12 +1195,45 @@ function findPreapprovalGrant(config, request, audit) {
       });
       continue;
     }
-    return {
-      id: grantId,
-      expiresAt: grant.expiresAt,
-      signals,
+
+    const mode = String(grant.grantKeyMode || '');
+    if (mode === 'expiry-only') {
+      // Tier 2: honored within the signed window for the exact command. Replay-dangerous ops are
+      // NOT eligible — they require Tier-1 hardware count or a fresh human tap.
+      if (isReplayDangerousSignals(request.signals)) {
+        audit('preapproval_grant_rejected', {
+          grantId,
+          reason: 'replay-dangerous signal not grantable as expiry-only (tier-1 only)',
+          commandSha256: requestCommandSha256,
+        });
+        continue;
+      }
+      return { id: grantId, grantKeyMode: mode, expiresAt: grant.expiresAt, signals, commandSha256: requestCommandSha256 };
+    }
+    if (mode === 'keystore-maxuse') {
+      const spend = await waitForGrantSpend(config, grant, request, requestCommandSha256, signals, audit);
+      if (!spend) {
+        audit('preapproval_grant_rejected', {
+          grantId,
+          reason: 'keystore-maxuse spend failed',
+          commandSha256: requestCommandSha256,
+        });
+        continue;
+      }
+      return {
+        id: grantId,
+        grantKeyMode: mode,
+        expiresAt: grant.expiresAt,
+        signals,
+        commandSha256: requestCommandSha256,
+        spendReqId: spend.reqId,
+      };
+    }
+    audit('preapproval_grant_rejected', {
+      grantId,
+      reason: `unknown or missing grantKeyMode: ${mode || '(none)'}`,
       commandSha256: requestCommandSha256,
-    };
+    });
   }
   return null;
 }
@@ -985,14 +1248,12 @@ async function waitForEscalation(config, request, audit) {
   let requestPayload = null;
   let preserveRequest = false;
 
-  try {
-    if (!config.escalationVerifierPublicKey) {
-      config.escalationVerifierPublicKey = loadEscalationVerifierPublicKey(config);
-    }
-  } catch (error) {
+  ensureEscalationVerifierKey(config, audit);
+  if (!config.escalationVerifierPublicKey) {
+    // Untrusted/missing verifier key → cannot trust any human reply (fail closed).
     return failClosedEscalation(audit, {
       reqId: request.reqId,
-      reason: `escalation verifier public key unavailable: ${error.message}`,
+      reason: 'escalation verifier public key unavailable or untrusted',
       requestPath: paths.requestPath,
       replyPath: replyPathForAudit,
       elapsedMs: Date.now() - startedAt,
@@ -1146,6 +1407,10 @@ async function waitForEscalation(config, request, audit) {
 
 async function runDriver(config) {
   const audit = createAuditWriter(config.auditLog);
+  // Load + pin-verify the escalation verifier key BEFORE spawning codex, so a same-uid agent can
+  // never overwrite the DER before it is cached in memory. After this the cached key object is used
+  // for all verifies regardless of later on-disk tampering.
+  ensureEscalationVerifierKey(config, audit);
   const codexSpawn = codexAppServerSpawnSpec(config);
   const gateSpawn = gateSpawnSpec(config);
   const child = spawn(codexSpawn.command, codexSpawn.args, {
@@ -1635,6 +1900,8 @@ async function runDriver(config) {
       ? config.escalationReplyDir
       : '[native-reply-channel]',
     escalationPublicKey: config.escalationPublicKey,
+    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
+    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
     escalationTimeoutMs: config.escalationTimeoutMs,
     escalationTimeoutAction: config.escalationTimeoutAction,
     preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
@@ -1667,4 +1934,20 @@ async function main() {
   }
 }
 
-main();
+// Run as a CLI (incl. on Android via `node .shelly-agent-driver.js`); require() in tests instead.
+if (require.main === module) {
+  main();
+}
+
+// Exported for unit tests only (no behavior change to the CLI path).
+module.exports = {
+  preapprovalGrantSignatureMessage,
+  verifyPreapprovalGrantSignature,
+  findPreapprovalGrant,
+  isReplayDangerousSignals,
+  normalizeSha256Hex,
+  ensureEscalationVerifierKey,
+  verifyGrantUseReceipt,
+  grantUseReceiptSignatureMessage,
+  commandSha256,
+};

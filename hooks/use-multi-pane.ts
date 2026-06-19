@@ -633,17 +633,14 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
               'MultiPane',
               `setPreset ${preset} — hiding ${used - cap} surplus pane(s) without deleting`,
             );
-            const { focusedSlot, maximizedSlot } = get();
+            const { focusedSlot } = get();
             const safeFocus: SlotIndex = preset === 'p1'
               ? resolveSinglePaneSlot(compacted, focusedSlot)
               : (focusedSlot < cap ? focusedSlot : 0) as SlotIndex;
-            const safeMax = preset === 'p1'
-              ? null
-              : maximizedSlot !== null && maximizedSlot < cap ? maximizedSlot : null;
-            set({ preset, slots: compacted, focusedSlot: safeFocus, maximizedSlot: safeMax });
+            set({ preset, slots: compacted, focusedSlot: safeFocus, maximizedSlot: null });
             return;
           }
-          set({ preset, slots: compacted });
+          set({ preset, slots: compacted, maximizedSlot: null });
         },
 
         focusSlot: (slot) => {

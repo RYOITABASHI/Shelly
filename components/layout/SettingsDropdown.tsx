@@ -36,6 +36,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   visible: boolean;
@@ -73,6 +74,8 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   const { t } = useTranslation();
   const [mcpOpen, setMcpOpen] = useState(false);
   const [llamaOpen, setLlamaOpen] = useState(false);
+  const panelBg = usePanelBackground(C.bgSurface);
+  const headerBg = usePanelBackground(C.bgSidebar);
 
   return (
     <Modal
@@ -83,8 +86,8 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
       statusBarTranslucent
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={[styles.panel, panelChromeStyle()]} onPress={(e) => e.stopPropagation()}>
-          <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
+        <Pressable style={[styles.panel, panelChromeStyle(), { backgroundColor: panelBg }]} onPress={(e) => e.stopPropagation()}>
+          <View style={[styles.header, { backgroundColor: headerBg, borderBottomColor: C.border }]}>
             <MaterialIcons name="settings" size={13} color={C.accent} />
             <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('settings.title')}</Text>
             <View style={{ flex: 1 }} />
@@ -1071,7 +1074,7 @@ const PANEL_WIDTH = 260;
 const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'transparent',
     zIndex: 300,
     justifyContent: 'flex-start',
     alignItems: 'flex-end',

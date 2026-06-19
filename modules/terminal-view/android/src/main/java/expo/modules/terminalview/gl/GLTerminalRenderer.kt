@@ -110,29 +110,38 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         highlightWorker.highlightRows(emulator.screen, topRow, topRow + rows)
     }
 
+    fun updateAnsiColors(colors: IntArray) {
+        if (!::cellBatcher.isInitialized) return
+        cellBatcher.updateAnsiColors(colors)
+        markDirty(DirtyFlags.ALL)
+    }
+
     // === GLSurfaceView.Renderer ===
 
     /**
-     * Phase B (2026-04-21): when true, the GL clear colour flips to
-     * (0,0,0,0) so the SurfaceView composites over the underlying
-     * wallpaper. Cells with non-default backgrounds still paint via the
-     * bg shader so prompt / syntax colours remain visible.
-     *
-     * Propagated from ShellyTerminalView.setTransparentBackground which
-     * mirrors the CPU path's behaviour. We re-issue glClearColor in
-     * onDrawFrame so a flag toggled AFTER onSurfaceCreated still takes
-     * effect on the next frame — without this, a user who enables
-     * GPU rendering AFTER picking a wallpaper wouldn't see the change
-     * until the surface is recreated.
+     * Kept for API compatibility. Terminal GL rendering is fail-closed
+     * opaque black; transparent clears expose panel layers during surface
+     * creation and IME resize.
      */
     var transparentBackground: Boolean = false
+        set(value) {
+            if (value) {
+                Log.i(TAG, "transparentBackground=true ignored for terminal GL renderer")
+            }
+            if (!field && !value) return
+            field = false
+            if (::cellBatcher.isInitialized) {
+                cellBatcher.transparentBackground = false
+                cellBatcher.markAllDirty()
+                markDirty(DirtyFlags.ALL)
+            }
+        }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         Log.i(TAG, "onSurfaceCreated")
         startTime = System.nanoTime()
 
-        val a = if (transparentBackground) 0f else 1f
-        GLES30.glClearColor(0f, 0f, 0f, a)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
@@ -155,6 +164,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
         // Init batcher
         cellBatcher = CellBatcher(cols, rows, atlas)
+        cellBatcher.transparentBackground = false
         cellBatcher.init()
 
         // Init highlight worker
@@ -173,6 +183,8 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         viewWidth = width
         viewHeight = height
 
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(0, 0, width, height)
 
         // Orthographic projection: (0,0) top-left, (width, height) bottom-right
@@ -183,7 +195,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         rows = (height / atlas.cellHeight).toInt().coerceAtLeast(1)
         cellBatcher.resize(cols, rows)
 
-        dirtyFlags = DirtyFlags.ALL
+        markDirty(DirtyFlags.ALL)
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -195,11 +207,9 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
             return
         }
 
-        // Re-apply the clear colour every frame so a transparentBackground
-        // toggle after onSurfaceCreated takes effect without surface
-        // recreation (Phase B).
-        val a = if (transparentBackground) 0f else 1f
-        GLES30.glClearColor(0f, 0f, 0f, a)
+        // Always clear opaque black. The SurfaceView itself is also opaque,
+        // so no panel/wallpaper layer can show through between frames.
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
         if (emulator != null) {

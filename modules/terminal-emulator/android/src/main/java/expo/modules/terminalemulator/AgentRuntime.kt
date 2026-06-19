@@ -2,6 +2,7 @@ package expo.modules.terminalemulator
 
 import android.content.Context
 import android.util.Log
+import expo.modules.terminalemulator.scouter.AgentEscalationBridge
 import java.io.File
 
 data class AgentRunResult(
@@ -23,13 +24,20 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
-    private const val CURRENT_SCRIPT_VERSION = 3
+    private const val CURRENT_SCRIPT_VERSION = 6
 
     fun runAgent(context: Context, agentId: String): AgentRunResult {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
-        val libDir = LibExtractor.extractAll(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
+        val libDir = try {
+            LibExtractor.extractAll(appContext)
+        } catch (e: Exception) {
+            val message = "runtime extraction failed before script: ${e.javaClass.simpleName}: ${e.message}"
+            Log.e(TAG, message, e)
+            writeReceiverLog(homeDir, agentId, "error", message)
+            return AgentRunResult(agentId, 125, "", message)
+        }
         val bashPath = LibExtractor.getBashPath(appContext)
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
         val script = File(scriptPath)
@@ -49,6 +57,11 @@ object AgentRuntime {
         }
 
         val libPath = libDir.absolutePath
+        val escalationPublicKeySha256 = AgentEscalationBridge.verifierPublicKeySha256(appContext)
+        Log.i(
+            TAG,
+            "Agent $agentId starting via Shelly runtime script=$scriptPath version=$scriptVersion pinInjected=${escalationPublicKeySha256.isNotBlank()}"
+        )
         val command = buildString {
             append("export PATH=")
             append(shellQuote("$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin"))
@@ -56,6 +69,9 @@ object AgentRuntime {
             append(shellQuote(libPath))
             append(" && export HOME=")
             append(shellQuote(homeDir.absolutePath))
+            append(" && export SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256=")
+            append(shellQuote(escalationPublicKeySha256))
+            append(" && readonly SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256")
             append(" && { [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\" || true; }")
             append(" && . ")
             append(shellQuote(scriptPath))

@@ -89,6 +89,14 @@ type AgentEscalationRequest = {
   queuedAt?: string | null;
 };
 
+type AgentGrantSpendRequest = {
+  type: 'grant_spend_request';
+  grantId: string;
+  reqId: string;
+  requestSha256: string;
+  ts?: string | null;
+};
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
@@ -985,6 +993,7 @@ export default function RootLayout() {
 
     const fallbackEscalationRequestDirUri = `${FileSystem.documentDirectory}home/.shelly/agents/escalations`;
     const notifiedEscalations = new Map<string, { runId: string; reqId: string; seenAt: number }>();
+    const processedGrantSpends = new Map<string, { seenAt: number }>();
     let escalationRequestDirUri: string | null = null;
     let isDrainingEscalations = false;
 
@@ -1016,6 +1025,23 @@ export default function RootLayout() {
         ts: str('ts') || null,
         state: str('state') || null,
         queuedAt: str('queuedAt') || null,
+      };
+    };
+
+    const parseGrantSpendRequest = (raw: unknown): AgentGrantSpendRequest | null => {
+      const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+      if (!value || value.type !== 'grant_spend_request') return null;
+      const str = (field: string) => typeof value[field] === 'string' ? (value[field] as string).trim() : '';
+      const grantId = str('grantId');
+      const reqId = str('reqId');
+      const requestSha256 = str('requestSha256');
+      if (!grantId || !reqId || !/^[0-9a-f]{64}$/i.test(requestSha256)) return null;
+      return {
+        type: 'grant_spend_request',
+        grantId,
+        reqId,
+        requestSha256: requestSha256.toLowerCase(),
+        ts: str('ts') || null,
       };
     };
 
@@ -1069,9 +1095,32 @@ export default function RootLayout() {
         if (!names) return;
         const activeKeys = new Set<string>();
         const activeAnchors = new Set<string>();
+        const activeGrantSpendKeys = new Set<string>();
         for (const name of names) {
-          if (!/^req-[A-Za-z0-9_.=-]+-[A-Za-z0-9_.=-]+\.json$/.test(name)) continue;
           const fileUri = joinFileUri(requestDirUri, name);
+          if (/^grant-spend-[A-Za-z0-9_.=-]+-[A-Za-z0-9_.=-]+\.json$/.test(name)) {
+            if (!TerminalEmulator.processAgentGrantSpendRequest) continue;
+            let parsedSpend: AgentGrantSpendRequest | null = null;
+            try {
+              parsedSpend = parseGrantSpendRequest(JSON.parse(await FileSystem.readAsStringAsync(fileUri)));
+            } catch (e) {
+              logError('AgentEscalation', `rejected unreadable grant spend request ${name}`, e);
+              continue;
+            }
+            if (!parsedSpend) {
+              logError('AgentEscalation', `rejected invalid grant spend request ${name}`);
+              continue;
+            }
+            const spendKey = `${parsedSpend.grantId}|${parsedSpend.reqId}|${parsedSpend.requestSha256}`;
+            activeGrantSpendKeys.add(spendKey);
+            if (!processedGrantSpends.has(spendKey)) {
+              await TerminalEmulator.processAgentGrantSpendRequest(parsedSpend);
+              processedGrantSpends.set(spendKey, { seenAt: Date.now() });
+              logInfo('AgentEscalation', `grant spend processed grant=${parsedSpend.grantId} req=${parsedSpend.reqId}`);
+            }
+            continue;
+          }
+          if (!/^req-[A-Za-z0-9_.=-]+-[A-Za-z0-9_.=-]+\.json$/.test(name)) continue;
           let parsed: AgentEscalationRequest | null = null;
           try {
             parsed = parseEscalationRequest(JSON.parse(await FileSystem.readAsStringAsync(fileUri)));
@@ -1090,6 +1139,10 @@ export default function RootLayout() {
           await TerminalEmulator.notifyAgentEscalationApprovalNeeded(parsed);
           rememberEscalation(key, parsed);
           logInfo('AgentEscalation', `approval notification posted run=${parsed.runId} req=${parsed.reqId}`);
+        }
+        for (const [key, record] of processedGrantSpends) {
+          if (activeGrantSpendKeys.has(key)) continue;
+          if (Date.now() - record.seenAt > 10 * 60_000) processedGrantSpends.delete(key);
         }
         for (const [key, record] of notifiedEscalations) {
           if (activeKeys.has(key)) continue;

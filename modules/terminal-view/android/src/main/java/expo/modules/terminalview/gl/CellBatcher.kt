@@ -22,6 +22,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         private const val VERTICES_PER_QUAD = 4
         private const val QUADS_PER_CELL = 2     // background + glyph
         private const val INDICES_PER_QUAD = 6   // 2 triangles
+        private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
     }
 
     private var vboId = 0
@@ -35,6 +36,10 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
     // Default ANSI 16 colors (updated from theme)
     private val ansiColors = IntArray(256) { defaultAnsiColor(it) }
+    var transparentBackground = false
+        set(value) {
+            field = false
+        }
 
     fun init() {
         totalCells = cols * rows
@@ -131,7 +136,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
                 val effectiveFg = if (highlightFg >= 0) highlightFg else fg
                 val fgColor = resolveColor(effectiveFg)
-                val bgColor = resolveColor(bg)
+                val bgColor = resolveBackgroundColor(bg)
 
                 val x = col * cellW
                 val y = row * cellH
@@ -181,17 +186,18 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         GLES30.glEnableVertexAttribArray(2) // color
         GLES30.glVertexAttribPointer(2, 4, GLES30.GL_FLOAT, false, stride, 16)
 
-        val indicesPerRow = cols * INDICES_PER_QUAD
         for (row in 0 until rows) {
             if (isRowCollapsed(row)) continue
-            val offset = row * cols * QUADS_PER_CELL * INDICES_PER_QUAD
-            val quadOffset = if (pass == 0) 0 else cols * INDICES_PER_QUAD
-            GLES30.glDrawElements(
-                GLES30.GL_TRIANGLES,
-                indicesPerRow,
-                GLES30.GL_UNSIGNED_SHORT,
-                (offset + quadOffset) * 2
-            )
+            for (col in 0 until cols) {
+                val cellIndex = row * cols + col
+                val quadIndex = cellIndex * QUADS_PER_CELL + if (pass == 0) 0 else 1
+                GLES30.glDrawElements(
+                    GLES30.GL_TRIANGLES,
+                    INDICES_PER_QUAD,
+                    GLES30.GL_UNSIGNED_SHORT,
+                    quadIndex * INDICES_PER_QUAD * 2
+                )
+            }
         }
     }
 
@@ -255,6 +261,13 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
     private fun resolveColor(colorIndex: Int): Int {
         return if (colorIndex in 0..255) ansiColors[colorIndex]
         else 0xFFFFFFFF.toInt() // default white
+    }
+
+    private fun resolveBackgroundColor(colorIndex: Int): Int {
+        if (colorIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
+            return OPAQUE_TERMINAL_BACKGROUND
+        }
+        return resolveColor(colorIndex)
     }
 
     private fun defaultAnsiColor(index: Int): Int {

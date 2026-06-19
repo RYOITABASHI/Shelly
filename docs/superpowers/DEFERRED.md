@@ -1815,6 +1815,13 @@ claude() {
 - Terminal + Chat の GPU シェーダー実装
 - MEMORY.md の「やりたいことリスト」参照
 
+### Terminal pane wallpaper transparency re-enable
+- **優先度**: P3
+- **現状**: build 1560–1565 の実機確認で、Terminal pane の native surface / Termux color default / GL surface が wallpaper や panel tint を拾い、プロンプト表示・新規タブ・IME resize・設定パネル表示時に全面グレー化する回帰を確認。安定性優先で Terminal pane は opaque black に fail-closed した。
+- **Why not now**: ターミナルの主機能は文字の視認性と IME/PTY 安定性。wallpaper 透過を維持すると Android compositor / RN panel / Termux palette / GL renderer の境界で再発しやすく、B2 検証の本線も妨げる。
+- **戻す条件**: TerminalView(Canvas) と GLTerminalView の両方で first frame / theme apply / new tab / split layout / IME resize / settings modal 背面の実機スクショを取り、黒以外の背景が出ないことを証明する。戻す場合も設定フラグで既定 OFF から開始。
+- → sync: Terminal pane は当面 wallpaper 透過対象外。Browser/AI/Markdown pane の wallpaper 表示は維持。
+
 ---
 
 ## History
@@ -1839,6 +1846,7 @@ claude() {
 - **2026-06-10 (v6.0.0 後)**: v6.0.0 を実機 (USB scrcpy) で確認中、Agent Chat ペインの不具合3件を観察・P1/P2 登録 — #3 セッションタブ per-workspace 集約 (要design判断), #2 返信プロンプト一瞬重複 (楽観表示フリッカ), #1 キーボード隠せない (一過性, BG化で回復)。セッション検出/バインド自体は動作。次は Agent Chat に絞った focused セッションで対応。
 - **2026-06-10**: Claude Code オンデバイス実装の経緯を 3 エージェント並列調査 (リポジトリ履歴 / Android OSS 検証 / CC アーキ + Codex 連携)。「ネイティブ断念」の正体は Bun SEA 直接実行の断念 (v29-v59) で、CC 自体は extracted Node 経路 (v67+) で稼働中と確認。musl 矛盾を ferrum install.sh + 公式 docs 実取得で解消 (glibc 方式が実証済、musl も C++ ランタイム要・ただし軽量)。パッチ済バイナリ PoC (P2) と Bash tool exit 1 観測基盤 (既存 P1 の次の一手) を spec 化・DEFERRED 登録。実装は未着手。spec: 2026-06-10-claude-code-on-device-investigation / -claude-patched-binary-poc-plan / -bash-tool-exit1-observability-plan。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
+- **2026-06-19**: Terminal pane の wallpaper 透過が native/GL 描画面のグレー化回帰を誘発したため、当面 opaque black に固定。再有効化条件を P3 として登録。
 
 ---
 

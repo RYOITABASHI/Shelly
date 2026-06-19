@@ -1049,7 +1049,11 @@ patchCodex(libDir);
     //      request queue is under HOME for RN polling; the reply channel lives
     //      outside HOME in no_backup and is derived by the driver/native side
     //      rather than advertised in the shell environment.
-    private const val BASHRC_VERSION = 227
+    // 229: Disable readline horizontal-scroll-mode so long pasted shell input
+    //      wraps on screen instead of showing a leading "<" truncation marker.
+    //      228 was seen on device while an older APK still targeted 227, so
+    //      use 229 to guarantee regeneration on those homes as well.
+    private const val BASHRC_VERSION = 229
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1842,6 +1846,7 @@ patchCodex(libDir);
             // payload is inserted atomically as one edit event.
             sb.appendLine("# bug #91/#97: enable bracketed-paste + ESC-free trigger for Shelly's paste")
             sb.appendLine("bind 'set enable-bracketed-paste on' 2>/dev/null")
+            sb.appendLine("bind 'set horizontal-scroll-mode off' 2>/dev/null")
             // Bind in all three keymaps (emacs is default; vi-insert and
             // vi-command fire when the user flips editing-mode via `set -o vi`
             // or .inputrc). Without the vi-mode binds, `\C-x\C-b` stays
@@ -1893,8 +1898,9 @@ patchCodex(libDir);
             // \C-x\C-b garbage to the Ink TUI. Marker file
             // \$HOME/.shelly_paste_force_tui is a reliable explicit
             // signal: the CLI wrapper functions create it on entry,
-            // remove it on exit. paste() prefers standard \e[200~
-            // brackets while marker is present.
+            // remove it on exit, and the prompt command clears any stale
+            // marker left by an abnormal CLI exit. paste() prefers standard
+            // \e[200~ brackets while marker is present.
             sb.appendLine("__shelly_paste_tui_begin() { printf '%s\\n' \"\$\$\" > \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine("__shelly_paste_tui_end() { rm -f \"\$HOME/.shelly_paste_force_tui\" 2>/dev/null || true; }")
             sb.appendLine("shelly-reset-cli-runtime() {")
@@ -2780,7 +2786,11 @@ patchCodex(libDir);
             sb.appendLine("  # them as PS1 width-hint markers, and \\033 expands to ESC for color.")
             sb.appendLine("  printf -v PS1 '\\[\\033[1;32m\\]%s\\[\\033[0m\\]\\$ ' \"\$d\"")
             sb.appendLine("}")
-            sb.appendLine("PROMPT_COMMAND=__shelly_prompt")
+            sb.appendLine("__shelly_prompt_command() {")
+            sb.appendLine("  __shelly_paste_tui_end")
+            sb.appendLine("  __shelly_prompt")
+            sb.appendLine("}")
+            sb.appendLine("PROMPT_COMMAND=__shelly_prompt_command")
 
             // MOTD — displayed once on first login, then flag file prevents repeat
             sb.appendLine()

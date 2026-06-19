@@ -151,25 +151,35 @@ jobs:
         # is resolved dynamically from the Packages.xz index so we follow
         # upstream automatically.
         run: |
+          set -euo pipefail
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          REPO_BASE="https://packages-cf.termux.dev/apt/termux-main"
+          TERMUX_REPO_BASES=(
+            "https://packages-cf.termux.dev/apt/termux-main"
+            "https://packages.termux.dev/apt/termux-main"
+          )
+
+          curl_retry() {
+            curl --fail --silent --show-error --location \
+              --retry 4 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 20 --max-time 120 "$@"
+          }
 
           # Fetch the Termux apt index. The mirror at
           # packages-cf.termux.dev historically served Packages.xz, but as of
           # 2026-04-27 only the uncompressed Packages and Packages.gz are
           # reliably present. Try in preference order: .xz → .gz →
-          # uncompressed. The build CI runner has xz-utils + gzip pre-
-          # installed; only the uncompressed fallback would also work
-          # without decoders, so it's the safety net.
+          # uncompressed, across multiple mirrors. The build CI runner has
+          # xz-utils + gzip pre-installed; only the uncompressed fallback would
+          # also work without decoders, so it's the safety net.
           fetch_packages_index() {
             local url="$1" decoder="$2"
             if [ -n "$decoder" ]; then
-              curl -fsSL "$url" | $decoder > /tmp/Packages.tmp 2>/dev/null \
+              curl_retry "$url" | $decoder > /tmp/Packages.tmp 2>/dev/null \
                 && [ -s /tmp/Packages.tmp ] \
                 && mv /tmp/Packages.tmp /tmp/Packages \
                 && return 0
             else
-              curl -fsSL "$url" -o /tmp/Packages.tmp 2>/dev/null \
+              curl_retry -o /tmp/Packages.tmp "$url" 2>/dev/null \
                 && [ -s /tmp/Packages.tmp ] \
                 && mv /tmp/Packages.tmp /tmp/Packages \
                 && return 0
@@ -177,18 +187,33 @@ jobs:
             rm -f /tmp/Packages.tmp
             return 1
           }
-          IDX_BASE="${REPO_BASE}/dists/stable/main/binary-aarch64"
-          if   fetch_packages_index "${IDX_BASE}/Packages.xz" "xz -d"; then
-            echo "[termux-extras] index source: Packages.xz"
-          elif fetch_packages_index "${IDX_BASE}/Packages.gz" "gzip -d"; then
-            echo "[termux-extras] index source: Packages.gz"
-          elif fetch_packages_index "${IDX_BASE}/Packages" ""; then
-            echo "[termux-extras] index source: Packages (uncompressed)"
-          else
-            echo "FATAL: could not fetch Termux Packages index from ${IDX_BASE}" >&2
+          REPO_BASE=""
+          INDEX_SOURCE=""
+          for candidate_repo in "${TERMUX_REPO_BASES[@]}"; do
+            IDX_BASE="${candidate_repo}/dists/stable/main/binary-aarch64"
+            if   fetch_packages_index "${IDX_BASE}/Packages.xz" "xz -d"; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages.xz"
+              break
+            elif fetch_packages_index "${IDX_BASE}/Packages.gz" "gzip -d"; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages.gz"
+              break
+            elif fetch_packages_index "${IDX_BASE}/Packages" ""; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages (uncompressed)"
+              break
+            else
+              echo "[termux-extras] WARN: could not fetch index from ${IDX_BASE}" >&2
+            fi
+          done
+          if [ -z "${REPO_BASE}" ]; then
+            echo "FATAL: could not fetch Termux Packages index from any configured mirror" >&2
             exit 1
           fi
           test -s /tmp/Packages || { echo "FATAL: empty Packages index"; exit 1; }
+          echo "[termux-extras] repo mirror: ${REPO_BASE}"
+          echo "[termux-extras] index source: ${INDEX_SOURCE}"
           echo "[termux-extras] index size: $(wc -c < /tmp/Packages) bytes"
 
           # Filename helper (paragraph-mode awk lookup)
@@ -233,7 +258,7 @@ jobs:
           GIT_FILENAME=$(find_filename git)
           [ -n "$GIT_FILENAME" ] || { echo "FATAL: git package not found in Packages index"; exit 1; }
           echo "[termux-extras] git: ${GIT_FILENAME}"
-          curl -fsSL "${REPO_BASE}/${GIT_FILENAME}" -o /tmp/git.deb
+          curl_retry -o /tmp/git.deb "${REPO_BASE}/${GIT_FILENAME}"
           extract_deb /tmp/git.deb /tmp/git-pkg
           for helper in git-remote-https git-remote-http; do
             src="/tmp/git-pkg/data/data/com.termux/files/usr/libexec/git-core/${helper}"
@@ -261,7 +286,7 @@ jobs:
           SSH_FILENAME=$(find_filename openssh)
           [ -n "$SSH_FILENAME" ] || { echo "FATAL: openssh package not found in Packages index"; exit 1; }
           echo "[termux-extras] openssh: ${SSH_FILENAME}"
-          curl -fsSL "${REPO_BASE}/${SSH_FILENAME}" -o /tmp/openssh.deb
+          curl_retry -o /tmp/openssh.deb "${REPO_BASE}/${SSH_FILENAME}"
           extract_deb /tmp/openssh.deb /tmp/openssh-pkg
           src="/tmp/openssh-pkg/data/data/com.termux/files/usr/bin/ssh-keygen"
           dst="${GITHUB_WORKSPACE}/${JNILIBS}/libssh_keygen.so"
@@ -307,7 +332,7 @@ jobs:
                 echo "[termux-extras] ${pkg}: ${pkg_filename}"
                 pkg_dir="/tmp/${pkg}-pkg"
                 rm -rf "$pkg_dir"
-                curl -fsSL "${REPO_BASE}/${pkg_filename}" -o "/tmp/${pkg}.deb"
+                curl_retry -o "/tmp/${pkg}.deb" "${REPO_BASE}/${pkg_filename}"
                 extract_deb "/tmp/${pkg}.deb" "$pkg_dir"
                 ;;
             esac
@@ -748,19 +773,36 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
 
       - name: Publish Android update release
-        if: ${{ github.ref == 'refs/heads/main' }}
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          UPDATE_TAG: android-latest
+          STABLE_UPDATE_TAG: android-latest
+          DEV_UPDATE_TAG: android-dev
           UPDATE_MANIFEST_NAME: latest.json
           CODEX_RUNTIME_TAG: codex-runtime-latest
           CODEX_RUNTIME_MANIFEST_NAME: codex-runtime.json
         run: |
           set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            update_tag="${DEV_UPDATE_TAG}"
+            update_title="Shelly Android dev"
+            release_note_heading="Workflow dispatch Android dev build."
+            android_release_extra_args=(--prerelease)
+            publish_codex_runtime=0
+          else
+            update_tag="${STABLE_UPDATE_TAG}"
+            update_title="Shelly Android latest"
+            release_note_heading="Rolling Android update build."
+            android_release_extra_args=()
+            publish_codex_runtime=1
+          fi
+
           apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
           test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
           codex_runtime_tar="${RUNNER_TEMP}/codex-runtime.tar.gz"
-          test -s "${codex_runtime_tar}" || { echo "FATAL: Codex runtime tarball not found" >&2; exit 1; }
+          if [ "${publish_codex_runtime}" = "1" ]; then
+            test -s "${codex_runtime_tar}" || { echo "FATAL: Codex runtime tarball not found" >&2; exit 1; }
+          fi
 
           config_json="$(npx expo config --json)"
           version_code="$(printf '%s' "${config_json}" | node -e '
@@ -787,17 +829,13 @@ jobs:
           created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           short_sha="${GITHUB_SHA:0:12}"
           run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
-          codex_runtime_asset_name="Shelly-codex-runtime-v${codex_termux_version#v}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.tar.gz"
-          codex_runtime_asset="${RUNNER_TEMP}/${codex_runtime_asset_name}"
-          cp "${codex_runtime_tar}" "${codex_runtime_asset}"
-          codex_runtime_sha256="$(sha256sum "${codex_runtime_asset}" | awk '{print $1}')"
-          codex_runtime_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_RUNTIME_TAG}/${codex_runtime_asset_name}"
           update_apk_name="Shelly-android-v${version_name}-${version_code}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.apk"
           release_apk="${RUNNER_TEMP}/${update_apk_name}"
           cp "${apk}" "${release_apk}"
-          apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${UPDATE_TAG}/${update_apk_name}"
+          apk_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${update_tag}/${update_apk_name}"
           apk_size_bytes="$(wc -c < "${release_apk}" | tr -d '[:space:]')"
 
+          UPDATE_CHANNEL="${update_tag}" \
           VERSION_CODE="${version_code}" \
           VERSION_NAME="${version_name}" \
           SHA256="${sha256}" \
@@ -810,7 +848,7 @@ jobs:
           node <<'NODE' > "${UPDATE_MANIFEST_NAME}"
           const manifest = {
             schemaVersion: 1,
-            channel: "android-latest",
+            channel: process.env.UPDATE_CHANNEL,
             versionCode: Number(process.env.VERSION_CODE),
             versionName: process.env.VERSION_NAME,
             gitSha: process.env.GITHUB_SHA,
@@ -828,16 +866,25 @@ jobs:
           NODE
 
           cat > /tmp/shelly-android-update-release.md <<EOF
-          Rolling Android update build.
+          ${release_note_heading}
 
+          - channel: ${update_tag}
           - versionName: ${version_name}
           - versionCode: ${version_code}
           - codex: ${codex_version}
           - codex-termux: ${codex_termux_version}
+          - ref: ${GITHUB_REF_NAME}
           - commit: ${GITHUB_SHA}
           - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           - sha256: ${sha256}
           EOF
+
+          if [ "${publish_codex_runtime}" = "1" ]; then
+            codex_runtime_asset_name="Shelly-codex-runtime-v${codex_termux_version#v}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.tar.gz"
+            codex_runtime_asset="${RUNNER_TEMP}/${codex_runtime_asset_name}"
+            cp "${codex_runtime_tar}" "${codex_runtime_asset}"
+            codex_runtime_sha256="$(sha256sum "${codex_runtime_asset}" | awk '{print $1}')"
+            codex_runtime_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_RUNTIME_TAG}/${codex_runtime_asset_name}"
 
           CODEX_RUNTIME_VERSION="${codex_termux_version#v}" \
           CODEX_VERSION="${codex_version}" \
@@ -874,68 +921,71 @@ jobs:
           - sha256: ${codex_runtime_sha256}
           EOF
 
-          if gh release view "${CODEX_RUNTIME_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${CODEX_RUNTIME_TAG}" \
+            if gh release view "${CODEX_RUNTIME_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              gh release edit "${CODEX_RUNTIME_TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --target "${GITHUB_SHA}" \
+                --title "Shelly Codex runtime latest" \
+                --notes-file /tmp/shelly-codex-runtime-release.md
+            else
+              gh release create "${CODEX_RUNTIME_TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --target "${GITHUB_SHA}" \
+                --title "Shelly Codex runtime latest" \
+                --notes-file /tmp/shelly-codex-runtime-release.md \
+                --latest=false
+            fi
+
+            gh release upload "${CODEX_RUNTIME_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "Shelly Codex runtime latest" \
-              --notes-file /tmp/shelly-codex-runtime-release.md
-          else
-            gh release create "${CODEX_RUNTIME_TAG}" \
+              "${codex_runtime_asset}"
+
+            uploaded_runtime_asset="$(gh release view "${CODEX_RUNTIME_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "Shelly Codex runtime latest" \
-              --notes-file /tmp/shelly-codex-runtime-release.md \
-              --latest=false
+              --json assets \
+              --jq ".assets[] | select(.name == \"${codex_runtime_asset_name}\")")"
+            test -n "${uploaded_runtime_asset}" || { echo "FATAL: uploaded Codex runtime asset not visible in release" >&2; exit 1; }
+            uploaded_runtime_digest="$(printf '%s' "${uploaded_runtime_asset}" | node -e '
+              let input = "";
+              process.stdin.on("data", chunk => input += chunk);
+              process.stdin.on("end", () => {
+                const asset = JSON.parse(input);
+                process.stdout.write(String(asset.digest || ""));
+              });
+            ')"
+            if [ -n "${uploaded_runtime_digest}" ] && [ "${uploaded_runtime_digest}" != "sha256:${codex_runtime_sha256}" ]; then
+              echo "FATAL: Codex runtime digest mismatch: ${uploaded_runtime_digest}" >&2
+              exit 1
+            fi
+
+            gh release upload "${CODEX_RUNTIME_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              "${CODEX_RUNTIME_MANIFEST_NAME}" \
+              --clobber
           fi
 
-          gh release upload "${CODEX_RUNTIME_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            "${codex_runtime_asset}"
-
-          uploaded_runtime_asset="$(gh release view "${CODEX_RUNTIME_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --json assets \
-            --jq ".assets[] | select(.name == \"${codex_runtime_asset_name}\")")"
-          test -n "${uploaded_runtime_asset}" || { echo "FATAL: uploaded Codex runtime asset not visible in release" >&2; exit 1; }
-          uploaded_runtime_digest="$(printf '%s' "${uploaded_runtime_asset}" | node -e '
-            let input = "";
-            process.stdin.on("data", chunk => input += chunk);
-            process.stdin.on("end", () => {
-              const asset = JSON.parse(input);
-              process.stdout.write(String(asset.digest || ""));
-            });
-          ')"
-          if [ -n "${uploaded_runtime_digest}" ] && [ "${uploaded_runtime_digest}" != "sha256:${codex_runtime_sha256}" ]; then
-            echo "FATAL: Codex runtime digest mismatch: ${uploaded_runtime_digest}" >&2
-            exit 1
-          fi
-
-          gh release upload "${CODEX_RUNTIME_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            "${CODEX_RUNTIME_MANIFEST_NAME}" \
-            --clobber
-
-          if gh release view "${UPDATE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${UPDATE_TAG}" \
+          if gh release view "${update_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${update_tag}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}" \
-              --title "Shelly Android latest" \
-              --notes-file /tmp/shelly-android-update-release.md
-          else
-            gh release create "${UPDATE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "Shelly Android latest" \
+              --title "${update_title}" \
               --notes-file /tmp/shelly-android-update-release.md \
-              --latest=false
+              "${android_release_extra_args[@]}"
+          else
+            gh release create "${update_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "${update_title}" \
+              --notes-file /tmp/shelly-android-update-release.md \
+              --latest=false \
+              "${android_release_extra_args[@]}"
           fi
 
-          gh release upload "${UPDATE_TAG}" \
+          gh release upload "${update_tag}" \
             --repo "${GITHUB_REPOSITORY}" \
             "${release_apk}"
 
-          uploaded_asset="$(gh release view "${UPDATE_TAG}" \
+          uploaded_asset="$(gh release view "${update_tag}" \
             --repo "${GITHUB_REPOSITORY}" \
             --json assets \
             --jq ".assets[] | select(.name == \"${update_apk_name}\")")"
@@ -953,7 +1003,7 @@ jobs:
             exit 1
           fi
 
-          gh release upload "${UPDATE_TAG}" \
+          gh release upload "${update_tag}" \
             --repo "${GITHUB_REPOSITORY}" \
             "${UPDATE_MANIFEST_NAME}" \
             --clobber

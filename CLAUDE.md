@@ -41,6 +41,7 @@
 - **AI CLIs**: v5.3.1 の正式 CLI surface は Claude Code と Codex。Shelly 管理 updater が staging に取得し、`--version` probe を通したものだけを live/current に昇格する。Claude/Codex runtime は `~/.shelly-runtime/*/current` と `$HOME/bin` wrapper で管理する。Gemini CLI は bundle/patched investigation 用の Experimental 扱いで、Worktrees / Quick Launch には出さない。Gemini は AI Pane/background の API provider として使う。
 - **Local LLM**: 高品質推奨は Qwen 3 8B Q4_K_M。低メモリ端末では Qwen 2.5 1.5B Q4_K_M を fallback とする。
 - **bash wrapper**: `$HOME/bin/bash` に linker64 経由の shim を配置して `bash script.sh` や `#!/usr/bin/env bash` shebang を動作させる（bug #93）
+- **Terminal pane background**: Terminal pane は wallpaper 透過対象外。native Canvas / GL terminal surface と Termux default background は opaque black 固定にしている。build 1560–1565 で wallpaper/panel tint がグレー化として露出したため、再有効化は `docs/superpowers/DEFERRED.md` の P3 条件を満たすまで行わない。
 
 ---
 

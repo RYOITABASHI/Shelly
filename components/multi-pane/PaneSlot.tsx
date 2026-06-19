@@ -20,6 +20,8 @@ import { getAiPaneAgentMeta, getEnabledAiPaneAgents, isAiPaneAgent } from '@/lib
 import { useTranslation } from '@/lib/i18n';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
+const TERMINAL_PANE_BACKGROUND = '#000000';
+const TERMINAL_HEADER_BACKGROUND = '#020302';
 
 /** Context to let child screens know their pane width/height */
 export const MultiPaneContext = createContext<{ paneWidth: number; paneHeight: number } | null>(null);
@@ -136,13 +138,21 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   // edge always stay tappable.
   const isNarrow = paneWidth > 0 && paneWidth < 360;
   const isVeryNarrow = paneWidth > 0 && paneWidth < 260;
+  const terminalTabsWidth =
+    paneWidth <= 0 ? 180
+      : paneWidth >= 720 ? 260
+        : paneWidth >= 520 ? 220
+          : paneWidth >= 380 ? 160
+            : 96;
 
   // Phase B: pane body + header honour wallpaper transparency. The body
   // uses bgDeep (which is the root BackgroundLayer colour), so when a
   // wallpaper is set we take it to transparent so the image shows. The
   // header keeps its bgSurface tint so pane chrome is always legible.
-  const paneBg = usePanelBackground(C.bgDeep);
+  const panelPaneBg = usePanelBackground(C.bgDeep);
+  const paneBg = tab === 'terminal' ? TERMINAL_PANE_BACKGROUND : panelPaneBg;
   const headerBg = usePanelBackground(C.bgSurface);
+  const resolvedHeaderBg = tab === 'terminal' ? TERMINAL_HEADER_BACKGROUND : headerBg;
 
   return (
     <View
@@ -170,7 +180,9 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           {
             borderTopColor: isFocusedPane ? C.accent : agentColor,
             borderBottomColor: isFocusedPane ? withAlpha(C.accent, 0.75) : C.border,
-            backgroundColor: isFocusedPane ? withAlpha(C.accent, 0.14) : headerBg,
+            backgroundColor: isFocusedPane && tab !== 'terminal'
+              ? withAlpha(C.accent, 0.14)
+              : resolvedHeaderBg,
           },
         ]}
       >
@@ -209,7 +221,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           )}
           <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
         </Pressable>
-        {cwdDisplay && !isNarrow ? (
+        {cwdDisplay && !isNarrow && tab !== 'terminal' ? (
           <Text style={[styles.headerPath, { color: C.text2 }]} numberOfLines={1}>
             {cwdDisplay}
           </Text>
@@ -241,7 +253,9 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             <MaterialIcons name="arrow-drop-down" size={12} color={C.text2} />
           </Pressable>
         ) : tab === 'terminal' ? (
-          <PaneCliTabs paneSessionId={paneSessionId} leafId={leafId} />
+          <View style={[styles.terminalTabsHost, { width: terminalTabsWidth }]}>
+            <PaneCliTabs paneSessionId={paneSessionId} leafId={leafId} />
+          </View>
         ) : null}
 
         {notification && (
@@ -295,7 +309,12 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         </View>
       </View>
 
-      <View style={styles.content}>
+      <View
+        style={[
+          styles.content,
+          tab === 'terminal' && { backgroundColor: TERMINAL_PANE_BACKGROUND },
+        ]}
+      >
         <SafeAreaInsetsContext.Provider value={ZERO_INSETS}>
           <MultiPaneContext.Provider value={ctxValue}>
             <PaneIdContext.Provider value={leafId}>
@@ -526,6 +545,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderRadius: R.paneHeader,
     gap: 4,
+    zIndex: 10,
+    elevation: 10,
   },
   focusRail: {
     alignSelf: 'stretch',
@@ -592,6 +613,15 @@ const styles = StyleSheet.create({
     fontWeight: F.sidebarItem.weight,
     flexShrink: 1,
   },
+  terminalTabsHost: {
+    height: 22,
+    minWidth: 72,
+    maxWidth: 260,
+    flexGrow: 0,
+    flexShrink: 1,
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
   headerCenter: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -646,6 +676,7 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+    zIndex: 0,
   },
   fill: {
     flex: 1,

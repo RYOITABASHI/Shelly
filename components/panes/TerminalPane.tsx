@@ -6,6 +6,7 @@ import React, { useRef, useState, useCallback, useEffect, useMemo, useContext } 
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   AppState,
   findNodeHandle,
   Keyboard,
@@ -30,8 +31,6 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
-import { useCosmeticStore } from '@/store/cosmetic-store';
-import { usePanelBackground } from '@/hooks/use-panel-background';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -80,6 +79,7 @@ const NATIVE_SESSION_CREATE_RETRY_MAX_WAIT_MS = NATIVE_SESSION_CREATE_TIMEOUT_MS
 const NATIVE_SESSION_CREATE_MAX_AUTO_RETRIES = 1;
 const NATIVE_SESSION_EARLY_EXIT_RETRY_WINDOW_MS = 2_500;
 const NATIVE_SESSION_EARLY_EXIT_ALIVE_GRACE_MS = 500;
+const TERMINAL_SURFACE_BACKGROUND = '#000000';
 
 const nativeCreateAutoRetryCounts = new Map<string, number>();
 const nativeSessionCreateStartedAtMs = new Map<string, number>();
@@ -305,11 +305,10 @@ export default function TerminalScreen() {
   // add/remove/edit, not on every byte append.
   const sessions = useTerminalStore((s) => s.sessions);
   const settings = useTerminalStore((s) => s.settings);
-  // Phase B: when a wallpaper is set, ask the native TerminalView to drop
-  // its opaque background + padding fill so the wallpaper shows through.
-  // Cells with non-default backgrounds still paint, so prompt colours /
-  // syntax highlights stay visible as expected.
-  const wallpaperActive = useCosmeticStore((s) => !!s.wallpaperUri);
+  // Keep terminal panes opaque. Letting the wallpaper/panel background bleed
+  // through the native terminal makes Android IME resize and view re-mounts
+  // show gray washes behind empty cells.
+  const wallpaperActive = false;
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;
@@ -365,21 +364,50 @@ export default function TerminalScreen() {
     return () => timers.forEach(clearTimeout);
   }, [focusTerminalViewNow]);
 
-  // Keyboard height tracking for terminal resize (same pattern as Chat screen)
-  const [, setKeyboardHeight] = useState(0);
+  // Keyboard height tracking for single-pane terminal rendering. MultiPaneContainer
+  // owns IME avoidance for pane-grid children; the tab-side terminal still needs
+  // its own inset so the key bar and prompt do not disappear behind the keyboard.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
     if (Platform.OS !== 'android') return;
+    const scrollToBottomSoon = () => {
+      requestAnimationFrame(() => {
+        const tag = findNodeHandle(terminalViewRef.current);
+        if (tag) TerminalViewModule.scrollToBottom(tag).catch(() => undefined);
+      });
+    };
+    const syncKeyboardMetrics = () => {
+      if (isRenderedInMultiPane) return;
+      const metrics = (Keyboard as any).metrics?.();
+      const screenHeight = Dimensions.get('screen').height;
+      const inferredFromY =
+        typeof metrics?.screenY === 'number'
+          ? Math.max(0, screenHeight - metrics.screenY)
+          : 0;
+      const raw = Math.max(metrics?.height ?? 0, inferredFromY);
+      const adjusted = Math.max(0, raw - insets.bottom);
+      setKeyboardHeight((prev) => (Math.abs(prev - adjusted) <= 2 ? prev : adjusted));
+      if (adjusted > 0) scrollToBottomSoon();
+    };
     const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
       // Subtract navigation bar inset to avoid double-padding
       const raw = e.endCoordinates.height;
       const adjusted = Math.max(0, raw - insets.bottom);
       setKeyboardHeight(adjusted);
+      scrollToBottomSoon();
+      requestAnimationFrame(syncKeyboardMetrics);
     });
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardHeight(0);
     });
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, [insets.bottom]);
+    const interval = isRenderedInMultiPane ? null : setInterval(syncKeyboardMetrics, 250);
+    requestAnimationFrame(syncKeyboardMetrics);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      if (interval) clearInterval(interval);
+    };
+  }, [insets.bottom, isRenderedInMultiPane]);
 
   // Recovery state — shown while session re-creates
   const [isRecovering, setIsRecovering] = useState(false);
@@ -1029,12 +1057,23 @@ export default function TerminalScreen() {
 
     const target = activeSession.nativeSessionId;
     markNativeSessionUserActivity(activeSession.id, target);
-    TerminalEmulator.writeToSession(target, command)
+    const body = command.replace(/(?:\r\n|\r|\n)+$/, '');
+    const trailing = command.slice(body.length);
+    const trailingEnter = trailing.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+    const writePromise = (async () => {
+      if (body) {
+        await TerminalEmulator.pasteToSession(target, body);
+      }
+      if (trailingEnter) {
+        await TerminalEmulator.writeToSession(target, trailingEnter);
+      }
+    })();
+    writePromise
       .then(() => {
         useTerminalStore.getState().clearPendingCommand(pendingId);
       })
       .catch((err) => {
-        console.warn('[Terminal] pendingCommand writeToSession failed:', err);
+        console.warn('[Terminal] pendingCommand pasteToSession failed:', err);
         useTerminalStore.setState((state) => ({
           sessions: state.sessions.map((session) =>
             session.id === activeSession.id
@@ -1079,11 +1118,11 @@ export default function TerminalScreen() {
       color8: theme.brightBlack,  color9: theme.brightRed,    color10: theme.brightGreen,  color11: theme.brightYellow,
       color12: theme.brightBlue,  color13: theme.brightMagenta, color14: theme.brightCyan, color15: theme.brightWhite,
       foreground: theme.foreground,
-      background: theme.background,
+      background: TERMINAL_SURFACE_BACKGROUND,
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme]);
-  const terminalPaneBg = usePanelBackground(terminalColorScheme.background);
+  const terminalPaneBg = TERMINAL_SURFACE_BACKGROUND;
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -1108,7 +1147,8 @@ export default function TerminalScreen() {
     if (pw > 0 && pw < 480) return Math.max(10, adjusted - 1);
     return adjusted;
   })();
-  const terminalBottomInset = isConnected ? KEY_BAR_HEIGHT + 10 : 10;
+  const terminalKeyboardInset = Platform.OS === 'android' && !isRenderedInMultiPane ? keyboardHeight : 0;
+  const terminalBottomInset = (isConnected ? KEY_BAR_HEIGHT + 10 : 10) + terminalKeyboardInset;
 
   // Send text to terminal via native PTY
   const sendToTerminal = useCallback((text: string) => {
@@ -1233,7 +1273,16 @@ export default function TerminalScreen() {
 
       {/* Terminal + Preview Split View */}
       {activeSession && isConnected && !isHiddenBehindMultiPane && (
-        <View style={[styles.terminalBody, { flexDirection: showSplitPreview ? 'row' : 'column' }]}>
+        <View
+          style={[
+            styles.terminalBody,
+            {
+              flexDirection: showSplitPreview ? 'row' : 'column',
+              backgroundColor: terminalPaneBg,
+              paddingBottom: terminalBottomInset,
+            },
+          ]}
+        >
           {/* Native Terminal View */}
           <NativeTerminalView
             ref={terminalViewRef}
@@ -1264,7 +1313,6 @@ export default function TerminalScreen() {
               {
                 flex: showSplitPreview ? splitRatio : 1,
                 backgroundColor: wallpaperActive ? 'transparent' : terminalColorScheme.background,
-                paddingBottom: terminalBottomInset,
               },
             ]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
@@ -1319,12 +1367,14 @@ export default function TerminalScreen() {
                       const firstWord = promptText.split(/\s+/)[0] || 'agent';
                       const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
                       const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
+                      const autonomous = agentResult.data?.autonomous === true;
                       const agent = createAgent({
                         name,
                         description: promptText.slice(0, 120),
                         prompt: promptText,
                         schedule: null,
                         tool: suggestion.tool,
+                        autonomous,
                         outputPath: `~/.shelly/agents/${name}/output`,
                       });
                       await installAgent(agent, async (cmd) => {
@@ -1332,7 +1382,7 @@ export default function TerminalScreen() {
                         if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
                         return result.stdout;
                       });
-                      resultMessage = `✅ Agent "${agent.name}" installed (${suggestion.label}). Run it with: @agent run ${agent.name}`;
+                      resultMessage = `✅ Agent "${agent.name}" installed (${suggestion.label}${autonomous ? ', autonomous' : ''}). Run it with: @agent run ${agent.name}`;
                     } else if (agentResult.type === 'run') {
                       await runAgentNow(agentResult.data.agentId, async (cmd) => {
                         const result = await execCommand(cmd, 120_000);
@@ -1479,7 +1529,7 @@ export default function TerminalScreen() {
 
       {/* Command Key Bar (Ctrl+C, Tab, up, down, Paste) + Attach/Voice */}
       {isConnected && (
-        <View style={styles.keyBarDock} pointerEvents="box-none">
+        <View style={[styles.keyBarDock, { bottom: terminalKeyboardInset }]} pointerEvents="box-none">
           <CommandKeyBar
             sendKey={sendKey}
             sendText={sendToTerminal}
@@ -1505,7 +1555,7 @@ export default function TerminalScreen() {
       {/* Scroll to bottom FAB */}
       {isScrolledUp && isConnected && (
         <TouchableOpacity
-          style={styles.scrollToBottomFab}
+          style={[styles.scrollToBottomFab, { bottom: 120 + terminalKeyboardInset }]}
           onPress={() => {
             const tag = findNodeHandle(terminalViewRef.current);
             if (tag) TerminalViewModule.scrollToBottom(tag);
@@ -1584,8 +1634,9 @@ const styles = StyleSheet.create({
   // getPaddingLeft/Right before computing cols, so this correctly reduces
   // the reflow width instead of just cropping the rightmost column.
   //
-  // Wallpaper mode: the native TerminalView receives transparentBackground,
-  // and the RN wrapper stays transparent so the shared BackgroundLayer shows.
+  // Terminal panes intentionally stay opaque even when the app wallpaper is
+  // enabled. Transparent terminal backgrounds expose panel/wallpaper blends
+  // during Android IME resize and can leave gray washes behind empty cells.
   terminalView: { paddingHorizontal: 6, paddingVertical: 2 },
 
   // Error state

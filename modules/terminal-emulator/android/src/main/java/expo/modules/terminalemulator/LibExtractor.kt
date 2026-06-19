@@ -178,6 +178,50 @@ object LibExtractor {
     fun getBashPath(context: Context): String =
         File(getLibDir(context), "libbash.so").absolutePath
 
+    private fun newTempFile(libDir: File, fileName: String): File =
+        File(libDir, "$fileName.${android.os.Process.myPid()}.${Thread.currentThread().id}.${System.nanoTime()}.new")
+
+    private fun targetIsUsable(file: File): Boolean =
+        file.exists() && file.length() > 0
+
+    private fun replaceExtractedFile(tmpFile: File, outFile: File, fileName: String) {
+        tmpFile.setExecutable(true, false)
+        if (tmpFile.renameTo(outFile)) {
+            outFile.setExecutable(true, false)
+            return
+        }
+
+        if (!tmpFile.exists() && targetIsUsable(outFile)) {
+            Log.w(TAG, "rename reported failure for $fileName but target exists; continuing")
+            outFile.setExecutable(true, false)
+            return
+        }
+
+        if (outFile.exists() && !outFile.delete()) {
+            Log.w(TAG, "could not delete existing $fileName before replace")
+        }
+        if (tmpFile.renameTo(outFile)) {
+            outFile.setExecutable(true, false)
+            return
+        }
+
+        if (!tmpFile.exists()) {
+            if (targetIsUsable(outFile)) {
+                Log.w(TAG, "rename reported failure for $fileName after delete but target exists; continuing")
+                outFile.setExecutable(true, false)
+                return
+            }
+            throw java.io.FileNotFoundException("${tmpFile.absolutePath} disappeared while replacing $fileName")
+        }
+
+        Log.w(TAG, "atomic rename failed for $fileName; copying in place")
+        tmpFile.inputStream().use { input ->
+            outFile.outputStream().use { output -> input.copyTo(output) }
+        }
+        tmpFile.delete()
+        outFile.setExecutable(true, false)
+    }
+
     fun extractAll(context: Context): File {
         val libDir = getLibDir(context)
         val markerFile = File(libDir, EXTRACT_MARKER)
@@ -202,28 +246,13 @@ object LibExtractor {
                 // race truncated the mapping's backing and crashed codex with
                 // SIGBUS/BUS_ADRERR at open+0. rename(2) is atomic and leaves any
                 // existing mapping pinned to the complete old inode until unmapped.
-                val tmpFile = File(libDir, "$fileName.new")
+                val tmpFile = newTempFile(libDir, fileName)
                 zipFile.getInputStream(entry).use { input ->
                     tmpFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
-                tmpFile.setExecutable(true, false)
-                if (!tmpFile.renameTo(outFile)) {
-                    // Rare: rename-over-existing unsupported. Fall back to delete +
-                    // rename (the old inode still survives in any live mapping; only
-                    // the directory entry changes), then an in-place copy as a last
-                    // resort if even that fails.
-                    if (outFile.exists()) outFile.delete()
-                    if (!tmpFile.renameTo(outFile)) {
-                        Log.w(TAG, "atomic rename failed for $fileName; copying in place")
-                        tmpFile.inputStream().use { input ->
-                            outFile.outputStream().use { output -> input.copyTo(output) }
-                        }
-                        tmpFile.delete()
-                        outFile.setExecutable(true, false)
-                    }
-                }
+                replaceExtractedFile(tmpFile, outFile, fileName)
             }
         } finally {
             zipFile.close()

@@ -16,9 +16,8 @@ import { withAlpha } from '@/lib/theme-utils';
 import { useTerminalStore } from '@/store/terminal-store';
 import { KEY_BAR_HEIGHT, BORDER_WIDTH } from '@/lib/layout-constants';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
-import { colors as C, fonts as F } from '@/theme.config';
+import { fonts as F } from '@/theme.config';
 import { themePresets, type ThemePresetId } from '@/lib/theme-presets';
-import { usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   sendKey: (keyCode: string) => void;
@@ -47,6 +46,8 @@ type KeyConfig = {
 };
 
 export type KeySetId = 'default' | 'vim' | 'git' | 'repl' | 'navigate';
+
+const TERMINAL_KEY_BAR_BACKGROUND = '#000000';
 
 const KEY_SETS: Record<KeySetId, { label: string; icon: string; keys: KeyConfig[] }> = {
   default: {
@@ -132,7 +133,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   const foreground = presetColors?.text1 ?? c.foreground;
   const muted = presetColors?.text2 ?? c.muted;
   const border = presetColors?.border ?? c.border;
-  const barBg = usePanelBackground(C.bgDeep);
+  const barBg = TERMINAL_KEY_BAR_BACKGROUND;
   const keyChrome = useMemo(() => {
     if (visualPreset === 'blue') {
       return {

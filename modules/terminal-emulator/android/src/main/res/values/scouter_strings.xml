@@ -36,6 +36,7 @@
   <string name="scouter_notification_action_deny">Deny</string>
   <string name="scouter_notification_codex_approval_title">Codex needs approval</string>
   <string name="scouter_notification_agent_escalation_title">Agent %1$s: approve boundary op?</string>
+  <string name="scouter_notification_agent_escalation_truncated">Long command: %1$d characters; review the full request in Shelly before allowing.</string>
   <string name="scouter_notification_agent_escalation_reason">Reason: %1$s</string>
   <string name="scouter_notification_agent_escalation_signals">Signals: %1$s</string>
   <string name="scouter_notification_agent_escalation_cwd">cwd: %1$s</string>

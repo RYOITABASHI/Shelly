@@ -34,10 +34,12 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
-import { colors as C, fonts as F } from '@/theme.config';
+import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
+
+const TERMINAL_ROOT_BACKGROUND = '#000000';
 
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
@@ -62,6 +64,22 @@ function EmptyState() {
         ))}
       </View>
     </View>
+  );
+}
+
+function EmptyPresetSlot() {
+  const bg = usePanelBackground(C.bgDeep);
+  return (
+    <View
+      pointerEvents="none"
+      style={[
+        styles.emptyPresetSlot,
+        {
+          backgroundColor: bg,
+          borderColor: withAlpha(C.border, 0.75),
+        },
+      ]}
+    />
   );
 }
 
@@ -249,13 +267,27 @@ export function MultiPaneContainer() {
     );
   }
 
+  // Shrink the usable height by the keyboard size only when the Android
+  // window did not already resize. On One UI with adjustResize, the root
+  // layout height is already reduced; subtracting keyboardHeight again
+  // leaves the panes crushed into the top half with a large empty gap.
+  const alreadyResizedForIme = keyboardHeight > 0 && size.H > 0 &&
+    keyboardFreeHeight > 0 &&
+    keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
+  const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
+  const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
+
   // Maximized path — render the maximized slot full-screen.
   if (maximized !== null && slots[maximized]) {
     const slot = slots[maximized]!;
+    const maximizedBg = slot.tab === 'terminal' ? TERMINAL_ROOT_BACKGROUND : containerBg;
     return (
-      <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout}>
+      <View
+        style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: maximizedBg }]}
+        onLayout={onContainerLayout}
+      >
         <View
-          style={[styles.slotAbs, { left: 0, top: 0, width: size.W, height: size.H }]}
+          style={[styles.slotAbs, { left: 0, top: 0, width: size.W, height: gridHeight }]}
         >
           <PaneSlot
             leafId={slot.id}
@@ -271,26 +303,21 @@ export function MultiPaneContainer() {
     );
   }
 
-  // Shrink the usable height by the keyboard size only when the Android
-  // window did not already resize. On One UI with adjustResize, the root
-  // layout height is already reduced; subtracting keyboardHeight again
-  // leaves the panes crushed into the top half with a large empty gap.
-  const alreadyResizedForIme = keyboardHeight > 0 && size.H > 0 &&
-    keyboardFreeHeight > 0 &&
-    keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
-  const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
-  const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
   const renderPreset = size.W > 0 && size.W < 380 ? 'p1' : preset;
   const { slotRects, dividers } = getLayout(renderPreset, ratios, size.W, gridHeight);
   const singlePaneSlot = renderPreset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
+  const hasVisibleTerminal =
+    singlePaneSlot !== null
+      ? slots[singlePaneSlot]?.tab === 'terminal'
+      : slots.some((slot, index) => index < PRESET_CAPACITY[renderPreset] && slot?.tab === 'terminal');
+  const rootBg = hasVisibleTerminal ? TERMINAL_ROOT_BACKGROUND : containerBg;
 
   return (
     <View
-      style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
+      style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: rootBg }]}
       onLayout={onContainerLayout}
     >
       {slots.map((slot, i) => {
-        if (!slot) return null;
         if (singlePaneSlot !== null && i !== singlePaneSlot) return null;
         const rect = singlePaneSlot !== null
           ? { x: 0, y: 0, w: size.W, h: gridHeight }
@@ -298,6 +325,20 @@ export function MultiPaneContainer() {
         // Skip render until we have a real size — first frame would place
         // every slot at (0,0,0,0) which the children don't like.
         if (rect.w <= 0 || rect.h <= 0) return null;
+        if (!slot) {
+          if (i >= PRESET_CAPACITY[renderPreset]) return null;
+          return (
+            <View
+              key={`empty-${renderPreset}-${i}`}
+              style={[
+                styles.slotAbs,
+                { left: rect.x, top: rect.y, width: rect.w, height: rect.h },
+              ]}
+            >
+              <EmptyPresetSlot />
+            </View>
+          );
+        }
         return (
           <View
             key={slot.id}
@@ -352,5 +393,9 @@ const styles = StyleSheet.create({
   },
   slotAbs: {
     position: 'absolute',
+  },
+  emptyPresetSlot: {
+    flex: 1,
+    borderWidth: S.borderWidth,
   },
 });

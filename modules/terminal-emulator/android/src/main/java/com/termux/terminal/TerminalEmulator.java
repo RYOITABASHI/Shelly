@@ -2755,7 +2755,22 @@ public final class TerminalEmulator {
         // stream sessions where shellPid is unknown).
         boolean shellIsBash = isShellyShellBash();
         if (bracketedMode) {
-            if (forceTuiPaste || tuiMode || !shellIsBash) {
+            if (!forceTuiPaste && !tuiMode && shellIsBash && hasLineBreak(text)) {
+                // Local bash prompt + multiline clipboard paste:
+                //
+                // Shelly's bash/readline bracketed-paste path keeps the
+                // entire payload in one edit buffer. Readline renders
+                // embedded LF as "^J" and horizontally scrolls long lines
+                // with a leading "<", which looks like the paste was
+                // truncated and also breaks Shelly's @agent pseudo-command
+                // interception because the user sees one opaque line.
+                //
+                // For the terminal Paste button, prefer visible shell
+                // semantics: clipboard line breaks become Enter in a single
+                // PTY write, so the paste stays ordered and cannot interleave
+                // with keypresses between pasted lines.
+                pasteMultilineShellTextVisibly(text);
+            } else if (forceTuiPaste || tuiMode || !shellIsBash) {
                 // TUI/CLI app OR non-bash shell: standard bracketed paste.
                 mSession.write("\u001B[200~" + text + "\u001B[201~");
             } else {
@@ -2772,6 +2787,14 @@ public final class TerminalEmulator {
             // don't support bracketed-paste anyway.
             mSession.write(text.replaceAll("\r?\n", "\r"));
         }
+    }
+
+    private boolean hasLineBreak(String text) {
+        return text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0;
+    }
+
+    private void pasteMultilineShellTextVisibly(String text) {
+        mSession.write(text.replace('\r', '\n').replace('\n', '\r'));
     }
 
     private boolean isShellyPasteForceTui() {
@@ -2825,17 +2848,25 @@ public final class TerminalEmulator {
         if (pid <= 0) return true;
         String comm = readProcText("/proc/" + pid + "/comm");
         if (comm == null) return true;
-        return "bash".equals(comm);
+        if ("bash".equals(comm)) return true;
+        // Shelly launches bash through Android's dynamic linker because
+        // SELinux blocks direct execve() from app-private storage. In that
+        // case /proc/<pid>/comm is "linker64", while cmdline still names the
+        // actual payload: ".../libbash.so --rcfile .bashrc -i".
+        String cmdline = readProcText("/proc/" + pid + "/cmdline");
+        return cmdline != null && (cmdline.contains("libbash.so") || cmdline.contains("shelly_shell"));
     }
 
     private String shellyPasteProcProbe() {
         int shellPid = shellyShellPid();
         if (shellPid <= 0) return "shellPid=unknown";
         String shellComm = readProcText("/proc/" + shellPid + "/comm");
+        String shellCmdline = readProcText("/proc/" + shellPid + "/cmdline");
         String children = readProcText("/proc/" + shellPid + "/task/" + shellPid + "/children");
         StringBuilder sb = new StringBuilder();
         sb.append("shellPid=").append(shellPid)
             .append(", shellComm=").append(safeLogToken(shellComm))
+            .append(", shellCmdline=").append(safeLogToken(shellCmdline))
             .append(", children=").append(safeLogToken(children));
         if (children != null) {
             String trimmed = children.trim();
@@ -2911,7 +2942,7 @@ public final class TerminalEmulator {
 
     private static String safeLogToken(String value) {
         if (value == null) return "null";
-        String compact = value.replace('\n', ' ').replace('\r', ' ').trim();
+        String compact = value.replace('\u0000', ' ').replace('\n', ' ').replace('\r', ' ').trim();
         return compact.isEmpty() ? "(empty)" : compact;
     }
 

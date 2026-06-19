@@ -122,6 +122,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     requestDirUri: string;
     replyDirPath: string;
     verifierPublicKeyPath: string;
+    verifierPublicKeySha256?: string;
     preapprovalGrantFilePath?: string;
   }>;
   notifyAgentEscalationApprovalNeeded?(request: {
@@ -138,6 +139,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
     state?: string | null;
     queuedAt?: string | null;
+  }): Promise<void>;
+  processAgentGrantSpendRequest?(request: {
+    type: 'grant_spend_request';
+    grantId: string;
+    reqId: string;
+    requestSha256: string;
+    ts?: string | null;
   }): Promise<void>;
   cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
   returnToHome?(): Promise<void>;
