@@ -98,6 +98,10 @@ function basenameMatchesCatalog(basename: string, catalogFilename: string): bool
   return stemA.includes(stemB) || stemB.includes(stemA);
 }
 
+function basenameEqualsCatalog(basename: string, catalogFilename: string): boolean {
+  return basename.toLowerCase() === catalogFilename.toLowerCase();
+}
+
 function basenameOf(path: string): string {
   const i = path.lastIndexOf('/');
   return i >= 0 ? path.slice(i + 1) : path;
@@ -148,13 +152,12 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
       const found = new Set<string>();
       const paths: Record<string, string> = {};
       for (const model of MODEL_CATALOG) {
-        for (const path of fullPaths) {
-          const base = basenameOf(path);
-          if (basenameMatchesCatalog(base, model.filename)) {
-            found.add(model.id);
-            paths[model.id] = path;
-            break;
-          }
+        const exactPath = fullPaths.find((path) => basenameEqualsCatalog(basenameOf(path), model.filename));
+        const matchedPath =
+          exactPath ?? fullPaths.find((path) => basenameMatchesCatalog(basenameOf(path), model.filename));
+        if (matchedPath) {
+          found.add(model.id);
+          paths[model.id] = matchedPath;
         }
       }
 

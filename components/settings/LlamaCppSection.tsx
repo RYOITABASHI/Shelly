@@ -8,7 +8,7 @@
  * - llama-serverの起動/停止
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -75,9 +75,20 @@ export function LlamaCppSection({
   const [expandedModelId, setExpandedModelId] = useState<string | null>(recommended?.id ?? null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus>('unknown');
+  const [serverActionModelId, setServerActionModelId] = useState<string | null>(null);
   const [isSettingUp, setIsSettingUp] = useState(false);
   const [setupLog, setSetupLog] = useState<string[]>([]);
   const [showSetupLog, setShowSetupLog] = useState(false);
+  const deleteGuardRef = useRef<{
+    activeModelId: string | null;
+    operationInProgress: boolean;
+    deleteBlockedByServer: boolean;
+    installedModelPaths?: Record<string, string>;
+  }>({
+    activeModelId: null,
+    operationInProgress: false,
+    deleteBlockedByServer: false,
+  });
 
   // ── Re-check server status while this settings sheet is open ───────────────
   useEffect(() => {
@@ -187,6 +198,7 @@ export function LlamaCppSection({
       Alert.alert(t('common.not_connected'), t('common.terminal_not_connected'));
       return;
     }
+    setServerActionModelId(model.id);
     const script = buildDaemonStartScript(model, installedModelPaths?.[model.id]);
     let result: { success: boolean; output?: string };
     try {
@@ -196,6 +208,8 @@ export function LlamaCppSection({
         success: false,
         output: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      setServerActionModelId(null);
     }
     if (result.success) {
       setServerStatus('running');
@@ -210,12 +224,17 @@ export function LlamaCppSection({
 
   const handleStopServer = useCallback(async () => {
     if (!isConnected) return;
+    setServerActionModelId(activeModelId ?? '__server__');
     const cmd = buildStopCommand();
-    const result = await onRunCommand(cmd, t('llama.stop_server'));
-    if (result.success) {
-      setServerStatus('stopped');
+    try {
+      const result = await onRunCommand(cmd, t('llama.stop_server'));
+      if (result.success) {
+        setServerStatus('stopped');
+      }
+    } finally {
+      setServerActionModelId(null);
     }
-  }, [isConnected, onRunCommand, t]);
+  }, [activeModelId, isConnected, onRunCommand, t]);
 
   const handleCheckStatus = useCallback(async () => {
     if (!isConnected) return;
@@ -224,7 +243,26 @@ export function LlamaCppSection({
     setServerStatus(resolveServerStatus(result));
   }, [isConnected, onRunCommand, t]);
 
+  const operationInProgress = isSettingUp || loadingModelId !== null || serverActionModelId !== null;
+  const deleteBlockedByServer = serverStatus === 'starting';
+  deleteGuardRef.current = {
+    activeModelId,
+    operationInProgress,
+    deleteBlockedByServer,
+    installedModelPaths,
+  };
+
+  const isDeleteBlocked = useCallback((modelId: string) => {
+    const guard = deleteGuardRef.current;
+    return guard.operationInProgress || guard.deleteBlockedByServer || guard.activeModelId === modelId;
+  }, []);
+
   const handleDeleteModel = useCallback(async (model: LlamaCppModel) => {
+    if (isDeleteBlocked(model.id)) {
+      Alert.alert(t('llama.delete_blocked_title'), t('llama.delete_blocked_body'));
+      return;
+    }
+
     Alert.alert(
       t('llama.delete_model_title'),
       t('llama.delete_model_body', { name: model.name }),
@@ -234,19 +272,22 @@ export function LlamaCppSection({
           text: t('common.delete'),
           style: 'destructive',
           onPress: async () => {
-            const cmd = buildDeleteModelCommand(model);
+            if (isDeleteBlocked(model.id)) {
+              Alert.alert(t('llama.delete_blocked_title'), t('llama.delete_blocked_body'));
+              return;
+            }
+            const cmd = buildDeleteModelCommand(model, deleteGuardRef.current.installedModelPaths?.[model.id]);
             await onRunCommand(cmd, `${model.name} delete`);
           },
         },
       ]
     );
-  }, [onRunCommand, t]);
+  }, [isDeleteBlocked, onRunCommand, t]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   const installedModels = MODEL_CATALOG.filter((m) => installedModelIds.has(m.id));
   const notInstalledModels = MODEL_CATALOG.filter((m) => !installedModelIds.has(m.id));
-  const operationInProgress = isSettingUp || loadingModelId !== null;
 
   return (
     <View>
@@ -307,6 +348,7 @@ export function LlamaCppSection({
           <Text style={styles.catalogLabel}>{t('llama.installed')}</Text>
           {installedModels.map((model) => {
             const isActive = activeModelId === model.id;
+            const canDelete = !operationInProgress && !deleteBlockedByServer && !isActive;
             const canStart =
               !operationInProgress &&
               serverStatus !== 'starting' &&
@@ -331,9 +373,9 @@ export function LlamaCppSection({
                       </TouchableOpacity>
                     )}
                     <TouchableOpacity
-                      style={[styles.actionBtn, styles.actionBtnDanger]}
+                      style={[styles.actionBtn, styles.actionBtnDanger, !canDelete && styles.actionBtnDisabled]}
                       onPress={() => handleDeleteModel(model)}
-                      disabled={operationInProgress}
+                      disabled={!canDelete}
                     >
                       <MaterialIcons name="delete-outline" size={14} color="#F87171" />
                     </TouchableOpacity>
@@ -488,6 +530,7 @@ const styles = StyleSheet.create({
   modelDesc: { color: '#9CA3AF', fontSize: 12, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 18, marginTop: 8, marginBottom: 10 },
   modelActions: { flexDirection: 'row', gap: 8 },
   actionBtn: { borderRadius: 6, paddingVertical: 7, paddingHorizontal: 14 },
+  actionBtnDisabled: { opacity: 0.45 },
   actionBtnPrimary: { backgroundColor: '#00D4AA' },
   actionBtnPrimaryText: { color: '#0A0A0A', fontSize: 12, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
   actionBtnDanger: { backgroundColor: '#1A0A0A', borderWidth: 1, borderColor: '#F87171' },

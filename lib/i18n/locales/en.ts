@@ -1327,6 +1327,8 @@ const en: Record<string, string> = {
   'llama.stop_server': 'Stop server',
   'llama.delete_model_title': 'Delete model',
   'llama.delete_model_body': 'Delete {{name}}?',
+  'llama.delete_blocked_title': 'Cannot delete model',
+  'llama.delete_blocked_body': 'Models cannot be deleted while the server is starting or while the model is active. Stop the server and try again.',
   'llama.setting_up': 'Setting up...',
   'llama.setup_button': 'llama.cpp Setup',
   'llama.running': 'Running',

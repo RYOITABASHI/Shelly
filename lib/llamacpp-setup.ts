@@ -258,6 +258,15 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function shellDoubleQuoteContent(value: string): string {
+  return value.replace(/(["\\$`])/g, '\\$1');
+}
+
+function basenameOfPath(value: string): string {
+  const i = value.lastIndexOf('/');
+  return i >= 0 ? value.slice(i + 1) : value;
+}
+
 const TLS_ENV_PRELUDE = [
   'SHELLY_CA="$HOME/.shelly-ssl/ca-certificates.crt"',
   'SHELLY_OPENSSL_CONF="$HOME/.shelly-ssl/openssl.cnf"',
@@ -674,8 +683,23 @@ export function buildStatusCommand(): string {
 /**
  * モデルの削除コマンドを生成する。
  */
-export function buildDeleteModelCommand(model: LlamaCppModel): string {
-  return `rm -f "${MODELS_DIR}/${model.filename}" && echo "Deleted: ${model.filename}"`;
+export function buildDeleteModelCommand(model: LlamaCppModel, installedPath?: string): string {
+  const trimmedPath = installedPath?.trim();
+  const hasExactInstalledPath =
+    !!trimmedPath &&
+    basenameOfPath(trimmedPath).toLowerCase() === model.filename.toLowerCase();
+  const targetAssignment = hasExactInstalledPath
+    ? `target=${shellQuote(trimmedPath)}`
+    : `target="${MODELS_DIR}/${shellDoubleQuoteContent(model.filename)}"`;
+  return [
+    targetAssignment,
+    `rm -f -- "$target"`,
+    `if [ -e "$target" ]; then`,
+    `  echo "Failed to delete: $target" >&2`,
+    `  exit 1`,
+    `fi`,
+    `echo "Deleted: $target"`,
+  ].join('\n');
 }
 
 /**

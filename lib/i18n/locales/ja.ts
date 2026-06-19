@@ -1326,6 +1326,8 @@ const ja: Record<string, string> = {
   'llama.stop_server': 'サーバー停止',
   'llama.delete_model_title': 'モデルを削除',
   'llama.delete_model_body': '{{name}} を削除しますか？',
+  'llama.delete_blocked_title': '削除できません',
+  'llama.delete_blocked_body': 'サーバー起動中または使用中のモデルは削除できません。サーバーを停止してからもう一度試してください。',
   'llama.setting_up': 'セットアップ中...',
   'llama.setup_button': 'llama.cppセットアップ',
   'llama.running': '稼働中',
