@@ -455,6 +455,26 @@ export type ToolChoice =
   | { type: 'ab-article-eval'; localModel?: string; codexCmd?: string }
   | { type: 'auto' };
 
+/**
+ * What an agent does with its run result — the MVP action layer (Phase 0 §2.3).
+ * The capability boundary lives here, NOT as a Codex-prompt convention: a future
+ * NL-parsed "post to X" must not silently inherit publish. `publish` is deliberately
+ * NOT a member — draft-only is a hard capability guarantee for the MVP.
+ *
+ * Approval tiering by blast radius (Phase 0 §2.6) is enforced at the approval layer,
+ * keyed off `type`: draft/notify = one-tap; webhook = one-tap with host+payload shown;
+ * cli = never one-tap (in-app confirm, routed through command-safety).
+ */
+export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli';
+
+export interface AgentAction {
+  type: AgentActionType;
+  /** webhook: destination URL (https required for one-tap approval). */
+  webhookUrl?: string;
+  /** cli: command template run with the result. Highest privilege — never one-tap. */
+  command?: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -473,6 +493,13 @@ export interface Agent {
   workspaceRoot?: string;
   outputPath: string;
   outputTemplate: string | null;
+  /** What to do with the run result (Phase 0 §2.3). Absent = 'draft' (write to
+   *  outputPath) — today's behaviour made explicit, so legacy agents keep working. */
+  action?: AgentAction;
+  /** Manual routing pin set in the confirm card (Phase 0 §2.4). 'auto' = default
+   *  local-first routing (hard-guards + keyword). 'on-device' / 'cloud' override it.
+   *  Absent = 'auto'. The escape hatch for bad local quality — widen control, not default. */
+  runOn?: 'auto' | 'on-device' | 'cloud';
   enabled: boolean;
   lastRun: number | null;
   lastResult: 'success' | 'error' | null;

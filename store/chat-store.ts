@@ -76,6 +76,11 @@ export type ChatMessage = {
   };
   /** Arena Mode 対決ID */
   arenaId?: string;
+  /** NL-self-registration confirm card (Phase 0 §2.1). When present with
+   *  agentCardState==='pending', AIPane renders an AgentConfirmCard instead of
+   *  text; on confirm the agent is created+installed. JSON-serializable. */
+  agentDraft?: import('@/lib/agent-nl-parser').ParsedAgentDraft;
+  agentCardState?: 'pending' | 'confirmed' | 'cancelled';
 };
 
 export type ChatSession = {
