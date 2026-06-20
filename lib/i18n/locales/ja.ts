@@ -1160,6 +1160,7 @@ const ja: Record<string, string> = {
   'sidebar.resume_agent_a11y': 'エージェント {{name}} を再開',
   'sidebar.delete_agent_title': 'エージェントを削除',
   'sidebar.delete_agent_body': '"{{name}}" を削除しますか？',
+  'sidebar.delete_agent_failed': '削除に失敗しました',
   'sidebar.delete_agent_a11y': 'エージェント {{name}} を削除',
   'sidebar.agent_update_failed_title': 'エージェントを更新できません',
   'sidebar.autonomous_toggle_a11y': '{{name}} の自律モードを切り替え',

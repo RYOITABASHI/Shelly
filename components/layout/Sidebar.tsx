@@ -434,8 +434,15 @@ export function Sidebar() {
                             text: t('common.delete'),
                             style: 'destructive',
                             onPress: async () => {
-                              await deleteAgent(agent.id);
-                              useAgentStore.getState().removeAgent(agent.id);
+                              // deleteAgent removes the store entry only on a
+                              // confirmed on-disk delete; surface failures instead
+                              // of dropping the row while the json survives (which
+                              // would reappear on restart).
+                              try {
+                                await deleteAgent(agent.id);
+                              } catch (e) {
+                                Alert.alert(t('sidebar.delete_agent_failed'), String(e));
+                              }
                             },
                           },
                         ],

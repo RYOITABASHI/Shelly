@@ -1161,6 +1161,7 @@ const en: Record<string, string> = {
   'sidebar.resume_agent_a11y': 'Resume agent {{name}}',
   'sidebar.delete_agent_title': 'Delete agent',
   'sidebar.delete_agent_body': 'Delete "{{name}}"?',
+  'sidebar.delete_agent_failed': 'Delete failed',
   'sidebar.delete_agent_a11y': 'Delete agent {{name}}',
   'sidebar.agent_update_failed_title': 'Could not update agent',
   'sidebar.autonomous_toggle_a11y': 'Toggle autonomous mode for {{name}}',
