@@ -87,9 +87,6 @@ class TerminalViewModule : Module() {
                 }
             }
 
-            // Kept for ABI compatibility. Terminal panes are forced opaque
-            // black so prompt paint, new-tab attach, and IME resize cannot
-            // expose panel or wallpaper layers behind empty cells.
             Prop("transparentBackground") { view: ShellyTerminalView, enabled: Boolean? ->
                 view.setTransparentBackground(enabled ?: false)
             }

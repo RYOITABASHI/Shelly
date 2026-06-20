@@ -118,30 +118,24 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
     // === GLSurfaceView.Renderer ===
 
-    /**
-     * Kept for API compatibility. Terminal GL rendering is fail-closed
-     * opaque black; transparent clears expose panel layers during surface
-     * creation and IME resize.
-     */
     var transparentBackground: Boolean = false
         set(value) {
-            if (value) {
-                Log.i(TAG, "transparentBackground=true ignored for terminal GL renderer")
-            }
-            if (!field && !value) return
-            field = false
+            if (field == value) return
+            field = value
             if (::cellBatcher.isInitialized) {
-                cellBatcher.transparentBackground = false
+                cellBatcher.transparentBackground = value
                 cellBatcher.markAllDirty()
                 markDirty(DirtyFlags.ALL)
             }
         }
 
+    private fun clearAlpha(): Float = if (transparentBackground) 0f else 1f
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         Log.i(TAG, "onSurfaceCreated")
         startTime = System.nanoTime()
 
-        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClearColor(0f, 0f, 0f, clearAlpha())
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
@@ -164,7 +158,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
 
         // Init batcher
         cellBatcher = CellBatcher(cols, rows, atlas)
-        cellBatcher.transparentBackground = false
+        cellBatcher.transparentBackground = transparentBackground
         cellBatcher.init()
 
         // Init highlight worker
@@ -183,7 +177,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         viewWidth = width
         viewHeight = height
 
-        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClearColor(0f, 0f, 0f, clearAlpha())
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glViewport(0, 0, width, height)
 
@@ -207,9 +201,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
             return
         }
 
-        // Always clear opaque black. The SurfaceView itself is also opaque,
-        // so no panel/wallpaper layer can show through between frames.
-        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClearColor(0f, 0f, 0f, clearAlpha())
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
         if (emulator != null) {

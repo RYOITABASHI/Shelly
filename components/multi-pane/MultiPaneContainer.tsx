@@ -36,10 +36,8 @@ import { Divider } from './Divider';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
-import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
-
-const TERMINAL_ROOT_BACKGROUND = '#000000';
 
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
@@ -131,7 +129,7 @@ const emptyStyles = StyleSheet.create({
 });
 
 export function MultiPaneContainer() {
-  const containerBg = usePanelBackground(C.bgDeep);
+  const containerBg = usePaneContentBackground(C.bgDeep);
   // Bug #64 — wait for persist rehydration before rendering any pane chrome.
   // Without this, a force-stop/relaunch cycle can briefly flash the
   // EmptyState (or stale slots) before restored state arrives, which in
@@ -280,10 +278,9 @@ export function MultiPaneContainer() {
   // Maximized path — render the maximized slot full-screen.
   if (maximized !== null && slots[maximized]) {
     const slot = slots[maximized]!;
-    const maximizedBg = slot.tab === 'terminal' ? TERMINAL_ROOT_BACKGROUND : containerBg;
     return (
       <View
-        style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: maximizedBg }]}
+        style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
         onLayout={onContainerLayout}
       >
         <View
@@ -306,15 +303,9 @@ export function MultiPaneContainer() {
   const renderPreset = size.W > 0 && size.W < 380 ? 'p1' : preset;
   const { slotRects, dividers } = getLayout(renderPreset, ratios, size.W, gridHeight);
   const singlePaneSlot = renderPreset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
-  const hasVisibleTerminal =
-    singlePaneSlot !== null
-      ? slots[singlePaneSlot]?.tab === 'terminal'
-      : slots.some((slot, index) => index < PRESET_CAPACITY[renderPreset] && slot?.tab === 'terminal');
-  const rootBg = hasVisibleTerminal ? TERMINAL_ROOT_BACKGROUND : containerBg;
-
   return (
     <View
-      style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: rootBg }]}
+      style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
       onLayout={onContainerLayout}
     >
       {slots.map((slot, i) => {

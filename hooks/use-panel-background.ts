@@ -19,3 +19,8 @@ export function usePanelBackground(solidHex: string): string {
   if (!uri) return solidHex;
   return withAlpha(solidHex, panelOpacity);
 }
+
+export function usePaneContentBackground(solidHex: string): string {
+  const uri = useCosmeticStore((s) => s.wallpaperUri);
+  return uri ? 'transparent' : solidHex;
+}

@@ -33,7 +33,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { VoiceChat } from '@/components/VoiceChat';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
-import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { logError } from '@/lib/debug-logger';
 import {
   getAiPaneAgentMeta,
@@ -247,7 +247,7 @@ const bubbleStyles = StyleSheet.create({
 
 export default function AIPane() {
   const paneId = useContext(PaneIdContext);
-  const paneBg = usePanelBackground(C.bgDeep);
+  const paneBg = usePaneContentBackground(C.bgDeep);
   // Bug #56 — narrow grid layouts (2×2 or 1+2) drop pane width below
   // ~360dp. Shrink horizontal padding so bubble content does not get
   // clipped by the pane chrome.
@@ -379,6 +379,7 @@ export default function AIPane() {
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
+  const voiceBarBg = usePanelBackground(C.bgSurface);
 
   return (
     // Keyboard avoidance moved to MultiPaneContainer — in a split
@@ -417,7 +418,7 @@ export default function AIPane() {
 
       {/* Voice mode indicator */}
       {(isRecording || isTranscribing) && (
-        <View style={paneStyles.voiceBar}>
+        <View style={[paneStyles.voiceBar, { backgroundColor: voiceBarBg }]}>
           <VoiceWaveform active={isRecording} />
           <Text style={paneStyles.voiceLabel}>
             {isTranscribing ? 'Transcribing...' : 'Listening...'}
@@ -511,7 +512,6 @@ const paneStyles = StyleSheet.create({
     paddingVertical: 6,
     borderTopWidth: 1,
     borderTopColor: C.border,
-    backgroundColor: C.bgSurface,
     gap: 8,
   },
   voiceLabel: {

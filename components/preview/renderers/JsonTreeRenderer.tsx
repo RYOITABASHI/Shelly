@@ -1,6 +1,7 @@
 import React, { memo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
+import { usePaneContentBackground } from '@/hooks/use-panel-background';
 
 type Props = { content: string };
 
@@ -44,6 +45,7 @@ function JsonLeaf({ keyName, value, color }: { keyName?: string; value: string; 
 
 export const JsonTreeRenderer = memo(function JsonTreeRenderer({ content }: Props) {
   const { colors } = useTheme();
+  const bg = usePaneContentBackground('#0D0D0D');
   let parsed: any;
   try {
     parsed = JSON.parse(content);
@@ -52,14 +54,14 @@ export const JsonTreeRenderer = memo(function JsonTreeRenderer({ content }: Prop
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={[styles.container, { backgroundColor: bg }]} contentContainerStyle={styles.content}>
       <JsonNode value={parsed} depth={0} />
     </ScrollView>
   );
 });
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0D0D0D' },
+  container: { flex: 1 },
   content: { padding: 12 },
   nodeText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, lineHeight: 20 },
   errorText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 13, padding: 16 },

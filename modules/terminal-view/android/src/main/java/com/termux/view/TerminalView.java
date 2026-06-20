@@ -88,15 +88,10 @@ public class TerminalView extends View {
     public static final int TERMINAL_CURSOR_BLINK_RATE_MIN = 100;
     public static final int TERMINAL_CURSOR_BLINK_RATE_MAX = 2000;
 
-    /**
-     * Kept for ABI compatibility. Shelly's terminal panes force this false
-     * from the wrapper so the native terminal surface remains opaque black
-     * during first paint, prompt startup, tab switches, and IME resize.
-     */
     private boolean mTransparentBackground;
 
     public void setTransparentBackground(boolean enabled) {
-        mTransparentBackground = false;
+        mTransparentBackground = enabled;
         invalidate();
     }
 
@@ -1673,7 +1668,7 @@ public class TerminalView extends View {
                 mTextSelectionCursorController.getSelectors(sel);
             }
 
-            mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3]);
+            mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3], mTransparentBackground);
 
             // Draw composing (pre-edit) text overlay at cursor position
             if (mComposingText != null && !mComposingText.isEmpty()) {

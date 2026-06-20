@@ -17,6 +17,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { getStagedEdit, applyStagedEdit } from '@/lib/ai-edit';
 import { playSound } from '@/lib/sounds';
 import { colors as C, fonts as F } from '@/theme.config';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   lang?: string;
@@ -56,6 +57,8 @@ function langMatchesFile(lang: string | undefined, path: string): boolean {
 
 export function CodeBlockWithAction({ lang, code }: Props) {
   const trimmed = code.replace(/\s+$/, '');
+  const rootBg = usePanelBackground(C.bgDeep);
+  const headerBg = usePanelBackground(C.bgSidebar);
 
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(trimmed);
@@ -117,8 +120,8 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   }, [staged, trimmed]);
 
   return (
-    <View style={styles.root}>
-      <View style={styles.header}>
+    <View style={[styles.root, { backgroundColor: rootBg }]}>
+      <View style={[styles.header, { backgroundColor: headerBg }]}>
         <Text style={styles.lang}>
           {lang ? lang.toLowerCase() : 'code'}
           {canApplyToFile && staged ? `  ·  ${staged.path.split('/').pop()}` : ''}
@@ -150,24 +153,22 @@ export function CodeBlockWithAction({ lang, code }: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: {
-    borderWidth: 1,
-    borderColor: C.border,
-    borderRadius: 6,
-    backgroundColor: C.bgDeep,
-    marginVertical: 6,
-    overflow: 'hidden',
+	  root: {
+	    borderWidth: 1,
+	    borderColor: C.border,
+	    borderRadius: 6,
+	    marginVertical: 6,
+	    overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-    backgroundColor: C.bgSidebar,
-  },
+	    paddingVertical: 4,
+	    borderBottomWidth: 1,
+	    borderBottomColor: C.border,
+	  },
   lang: {
     fontSize: 8,
     fontFamily: F.family,

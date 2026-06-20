@@ -43,6 +43,11 @@ public final class TerminalRenderer {
     final int mTextSize;
     final Typeface mTypeface;
     private static final int OPAQUE_TERMINAL_BACKGROUND = 0xFF000000;
+    private static final long NORMAL_STYLE = TextStyle.encode(
+        TextStyle.COLOR_INDEX_FOREGROUND,
+        TextStyle.COLOR_INDEX_BACKGROUND,
+        0
+    );
     private final Paint mTextPaint = new Paint();
 
     /** The width of a single mono spaced character obtained by {@link Paint#measureText(String)} on a single 'X'. */
@@ -95,7 +100,8 @@ public final class TerminalRenderer {
 
     /** Render the terminal to a canvas with at a specified row scroll, and an optional rectangular selection. */
     public final void render(TerminalEmulator mEmulator, Canvas canvas, int topRow,
-                             int selectionY1, int selectionY2, int selectionX1, int selectionX2) {
+                             int selectionY1, int selectionY2, int selectionX1, int selectionX2,
+                             boolean transparentBackground) {
         final boolean reverseVideo = mEmulator.isReverseVideo();
         final int endRow = topRow + mEmulator.mRows;
         final int columns = mEmulator.mColumns;
@@ -142,7 +148,8 @@ public final class TerminalRenderer {
                 final int codePointWcWidth = WcWidth.width(codePoint);
                 final boolean insideCursor = (cursorX == column || (codePointWcWidth == 2 && cursorX == column + 1));
                 final boolean insideSelection = column >= selx1 && column <= selx2;
-                final long style = lineObject.getStyle(column);
+                final long rawStyle = lineObject.getStyle(column);
+                final long style = (codePoint == ' ' && rawStyle == 0L) ? NORMAL_STYLE : rawStyle;
 
                 // Check if the measured text width for this code point is not the same as that expected by wcwidth().
                 // This could happen for some fonts which are not truly monospace, or for more exotic characters such as
@@ -164,7 +171,8 @@ public final class TerminalRenderer {
                         }
                         drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun,
                             lastRunStartIndex, charsSinceLastRun, measuredWidthForRun,
-                            cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection);
+                            cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection,
+                            transparentBackground);
                     }
                     measuredWidthForRun = 0.f;
                     lastRunStyle = style;
@@ -192,7 +200,8 @@ public final class TerminalRenderer {
                 invertCursorTextColor = true;
             }
             drawTextRun(canvas, line, palette, heightOffset, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
-                measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection);
+                measuredWidthForRun, cursorColor, cursorShape, lastRunStyle, reverseVideo || invertCursorTextColor || lastRunInsideSelection,
+                transparentBackground);
         }
     }
 
@@ -207,7 +216,7 @@ public final class TerminalRenderer {
 
     private void drawTextRun(Canvas canvas, char[] text, int[] palette, float y, int startColumn, int runWidthColumns,
                              int startCharIndex, int runWidthChars, float mes, int cursor, int cursorStyle,
-                             long textStyle, boolean reverseVideo) {
+                             long textStyle, boolean reverseVideo, boolean transparentBackground) {
         int foreColor = TextStyle.decodeForeColor(textStyle);
         final int effect = TextStyle.decodeEffect(textStyle);
         int backColor = TextStyle.decodeBackColor(textStyle);
@@ -252,14 +261,11 @@ public final class TerminalRenderer {
             savedMatrix = true;
         }
 
-        // Always paint the cell run background, including the default
-        // terminal background. The outer TerminalView also clears to black,
-        // but relying on that single clear lets Android/RN dirty-region
-        // clipping expose stale parent layers during new-session attach and
-        // IME resize. Painting every run makes the terminal grid itself
-        // opaque.
-        mTextPaint.setColor(backColor);
-        canvas.drawRect(left, y - mFontLineSpacingAndAscent + mFontAscent, right, y, mTextPaint);
+        final boolean paintDefaultBackground = !(transparentBackground && usesDefaultBackground && !reverseVideoHere);
+        if (paintDefaultBackground) {
+            mTextPaint.setColor(backColor);
+            canvas.drawRect(left, y - mFontLineSpacingAndAscent + mFontAscent, right, y, mTextPaint);
+        }
 
         if (cursor != 0) {
             mTextPaint.setColor(cursor);

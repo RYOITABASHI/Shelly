@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   placeholder?: string;
@@ -40,6 +41,9 @@ export default function PaneInputBar({
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
+  const containerBg = usePanelBackground(C.bgSidebar);
+  const pillBg = usePanelBackground(C.bgSurface);
+  const disabledBg = usePanelBackground(C.bgSidebar);
 
   const handleSubmit = useCallback(() => {
     const trimmed = text.trim();
@@ -51,8 +55,8 @@ export default function PaneInputBar({
   const hasText = text.trim().length > 0;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.pill}>
+    <View style={[styles.container, { backgroundColor: containerBg }]}>
+      <View style={[styles.pill, { backgroundColor: pillBg }]}>
         <Text style={styles.promptGlyph}>{'>'}</Text>
         <TextInput
           ref={inputRef}
@@ -98,7 +102,7 @@ export default function PaneInputBar({
         <TouchableOpacity
           onPress={handleSubmit}
           disabled={!hasText}
-          style={[styles.sendBtn, !hasText && styles.sendBtnDisabled]}
+          style={[styles.sendBtn, !hasText && styles.sendBtnDisabled, !hasText && { backgroundColor: disabledBg }]}
           hitSlop={6}
           accessibilityLabel="Send"
           accessibilityRole="button"
@@ -116,7 +120,6 @@ export default function PaneInputBar({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: C.bgSidebar,
     borderTopWidth: S.borderWidth,
     borderTopColor: C.border,
     paddingHorizontal: 8,
@@ -125,7 +128,6 @@ const styles = StyleSheet.create({
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: C.bgSurface,
     borderWidth: 1,
     borderColor: C.border,
     borderRadius: 16,
@@ -169,6 +171,5 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   sendBtnDisabled: {
-    backgroundColor: C.bgSidebar,
   },
 });

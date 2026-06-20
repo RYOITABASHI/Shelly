@@ -44,7 +44,7 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import type { ThemeColorPalette } from '@/lib/theme';
 import { fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
-import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 const MAX_VISIBLE_SESSION_TABS = 4;
@@ -108,7 +108,10 @@ export default function AgentChatPane() {
   const addPane = useAddPane();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const paneBg = usePanelBackground(colors.background);
+  const paneBg = usePaneContentBackground(colors.background);
+  const headerBg = usePanelBackground(colors.surface);
+  const footerBg = usePanelBackground(colors.surface);
+  const replyBarBg = usePanelBackground(colors.background);
   const mp = useContext(MultiPaneContext);
   const paneWidth = mp?.paneWidth ?? 0;
   const bubbleMaxWidth = paneWidth > 0 ? Math.max(Math.floor(paneWidth * 0.82), 180) : 0;
@@ -558,7 +561,7 @@ export default function AgentChatPane() {
 
   return (
     <View style={[styles.root, { backgroundColor: paneBg }]}>
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: headerBg }]}>
         <View style={styles.titleRow}>
           <MaterialIcons name="forum" size={15} color={colors.accent} />
           <Text style={styles.title}>{t('agent_chat.title')}</Text>
@@ -672,7 +675,7 @@ export default function AgentChatPane() {
         </View>
       ) : null}
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { backgroundColor: footerBg }]}>
         <MaterialIcons name="lock-outline" size={13} color={colors.muted} />
         <Text style={styles.footerText}>{t('agent_chat.operational_hint')}</Text>
       </View>
@@ -687,6 +690,7 @@ export default function AgentChatPane() {
         composeFocusSignal={composeFocusSignal}
         styles={styles}
         colors={colors}
+        replyBarBackground={replyBarBg}
         t={t}
       />
     </View>
@@ -704,6 +708,7 @@ function AgentChatReplyComposer({
   composeFocusSignal,
   styles,
   colors,
+  replyBarBackground,
   t,
 }: {
   draft: string;
@@ -716,6 +721,7 @@ function AgentChatReplyComposer({
   composeFocusSignal: number;
   styles: ReturnType<typeof makeStyles>;
   colors: ThemeColorPalette;
+  replyBarBackground: string;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
   const inputRef = useRef<TextInput>(null);
@@ -731,7 +737,7 @@ function AgentChatReplyComposer({
   }, [composeFocusSignal]);
 
   return (
-    <View style={styles.replyBar}>
+    <View style={[styles.replyBar, { backgroundColor: replyBarBackground }]}>
       <TextInput
         ref={inputRef}
         style={[styles.replyInput, !hasSession && styles.replyInputDisabled]}

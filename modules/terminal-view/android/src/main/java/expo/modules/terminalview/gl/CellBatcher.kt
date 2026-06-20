@@ -23,6 +23,11 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         private const val QUADS_PER_CELL = 2     // background + glyph
         private const val INDICES_PER_QUAD = 6   // 2 triangles
         private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
+        private val NORMAL_STYLE: Long = TextStyle.encode(
+            TextStyle.COLOR_INDEX_FOREGROUND,
+            TextStyle.COLOR_INDEX_BACKGROUND,
+            0
+        )
     }
 
     private var vboId = 0
@@ -38,7 +43,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
     private val ansiColors = IntArray(256) { defaultAnsiColor(it) }
     var transparentBackground = false
         set(value) {
-            field = false
+            field = value
         }
 
     fun init() {
@@ -127,7 +132,16 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
                         } else ' '.code
                     } catch (_: Exception) { ' '.code }
                 } else ' '.code
-                val style = if (termRow != null && col < bufCols) { try { termRow.getStyle(col) } catch (_: Exception) { 0L } } else 0L
+                val rawStyle = if (termRow != null && col < bufCols) {
+                    try {
+                        termRow.getStyle(col)
+                    } catch (_: Exception) {
+                        NORMAL_STYLE
+                    }
+                } else {
+                    NORMAL_STYLE
+                }
+                val style = if (codepoint == ' '.code && rawStyle == 0L) NORMAL_STYLE else rawStyle
 
                 // Decode colors from style (pass directly — matches existing SyntaxHighlighter usage)
                 val fg = TextStyle.decodeForeColor(style)
@@ -208,6 +222,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
     fun updateAnsiColors(colors: IntArray) {
         colors.copyInto(ansiColors, 0, 0, minOf(colors.size, 256))
+        ansiColors[0] = OPAQUE_TERMINAL_BACKGROUND
         markAllDirty()
     }
 
@@ -265,7 +280,7 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
 
     private fun resolveBackgroundColor(colorIndex: Int): Int {
         if (colorIndex == TextStyle.COLOR_INDEX_BACKGROUND) {
-            return OPAQUE_TERMINAL_BACKGROUND
+            return if (transparentBackground) 0x00000000 else OPAQUE_TERMINAL_BACKGROUND
         }
         return resolveColor(colorIndex)
     }

@@ -33,7 +33,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '@/lib/theme-engine';
 import { colors as C } from '@/theme.config';
-import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { useSettingsStore } from '@/store/settings-store';
 import { getApiKey } from '@/lib/secure-store';
 import { buildAskSystemPrompt, extractStatus, stripStatusTag, type AskStatus } from '@/lib/ask-context';
@@ -138,7 +138,8 @@ export default function AskPane() {
   }, [question, busy, groqModel]);
 
   const styles = React.useMemo(() => makeStyles(theme), [theme]);
-  const paneBg = usePanelBackground(C.bgDeep);
+  const paneBg = usePaneContentBackground(C.bgDeep);
+  const inputBg = usePanelBackground(theme.colors.surface ?? C.bgSurface);
 
   return (
     <KeyboardAvoidingView
@@ -214,7 +215,7 @@ export default function AskPane() {
 
         <View style={styles.inputRow}>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { backgroundColor: inputBg }]}
             value={question}
             onChangeText={setQuestion}
             placeholder="Shelly の機能について質問…"
@@ -363,7 +364,6 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     input: {
       flex: 1,
       color: c.foreground ?? '#eee',
-      backgroundColor: c.surface ?? '#1a1a1a',
       borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,

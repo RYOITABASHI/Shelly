@@ -31,6 +31,7 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -65,6 +66,7 @@ import {
 } from '@/lib/terminal-native-session-reservations';
 import { colors as C } from '@/theme.config';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
+import { usePaneContentBackground } from '@/hooks/use-panel-background';
 
 logInfo('Terminal', 'module loaded');
 
@@ -305,10 +307,7 @@ export default function TerminalScreen() {
   // add/remove/edit, not on every byte append.
   const sessions = useTerminalStore((s) => s.sessions);
   const settings = useTerminalStore((s) => s.settings);
-  // Keep terminal panes opaque. Letting the wallpaper/panel background bleed
-  // through the native terminal makes Android IME resize and view re-mounts
-  // show gray washes behind empty cells.
-  const wallpaperActive = false;
+  const wallpaperActive = !!useCosmeticStore((s) => s.wallpaperUri);
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;
@@ -1113,7 +1112,7 @@ export default function TerminalScreen() {
     const themeName = settings.terminalTheme ?? 'shelly';
     const theme = getTerminalTheme(themeName);
     return {
-      color0: theme.black,    color1: theme.red,      color2: theme.green,     color3: theme.yellow,
+      color0: TERMINAL_SURFACE_BACKGROUND, color1: theme.red,      color2: theme.green,     color3: theme.yellow,
       color4: theme.blue,     color5: theme.magenta,  color6: theme.cyan,      color7: theme.white,
       color8: theme.brightBlack,  color9: theme.brightRed,    color10: theme.brightGreen,  color11: theme.brightYellow,
       color12: theme.brightBlue,  color13: theme.brightMagenta, color14: theme.brightCyan, color15: theme.brightWhite,
@@ -1122,7 +1121,7 @@ export default function TerminalScreen() {
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme]);
-  const terminalPaneBg = TERMINAL_SURFACE_BACKGROUND;
+  const terminalPaneBg = usePaneContentBackground(C.bgDeep);
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -1497,7 +1496,7 @@ export default function TerminalScreen() {
 
       {/* Block History Panel — toggleable overlay over terminal */}
       {showBlockHistory && activeSession && (
-        <View style={[StyleSheet.absoluteFill, { zIndex: 20, backgroundColor: c.background }]}>
+        <View style={[StyleSheet.absoluteFill, { zIndex: 20, backgroundColor: terminalPaneBg }]}>
           {/* Panel Header */}
           <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.surface }}>
             <Text style={{ color: c.foreground, fontFamily: 'JetBrainsMono_400Regular', fontSize: 13, fontWeight: '700', flex: 1 }}>

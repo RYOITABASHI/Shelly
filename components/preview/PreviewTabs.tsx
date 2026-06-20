@@ -6,6 +6,7 @@ import { usePreviewStore, type PreviewTabId } from '@/store/preview-store';
 import { WebTab } from '@/components/preview/WebTab';
 import { CodeTab } from '@/components/preview/CodeTab';
 import { FilesTab } from '@/components/preview/FilesTab';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   /** Hide the tab bar close button when omitted (used by standalone PreviewPane) */
@@ -24,11 +25,13 @@ export const PreviewTabs = memo(function PreviewTabs({ onClose, onEditSubmit }: 
   const activeTab = usePreviewStore((s) => s.activeTab);
   const setActiveTab = usePreviewStore((s) => s.setActiveTab);
   const previewUrl = usePreviewStore((s) => s.previewUrl);
+  const containerBg = usePaneContentBackground(colors.background);
+  const tabBarBg = usePanelBackground(colors.surfaceHigh);
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View style={[styles.container, { backgroundColor: containerBg }]}>
       {/* Tab bar */}
-      <View style={[styles.tabBar, { backgroundColor: colors.surfaceHigh, borderBottomColor: colors.border }]}>
+      <View style={[styles.tabBar, { backgroundColor: tabBarBg, borderBottomColor: colors.border }]}>
         {TABS.map((tab) => (
           <TouchableOpacity
             key={tab.id}

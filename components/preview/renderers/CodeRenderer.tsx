@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { tokenizeLine, TOKEN_COLORS } from '@/lib/syntax-highlight';
+import { usePaneContentBackground } from '@/hooks/use-panel-background';
 
 type Props = {
   content: string;
@@ -11,13 +12,14 @@ type Props = {
 
 export const CodeRenderer = memo(function CodeRenderer({ content, language, maxLines }: Props) {
   const { colors } = useTheme();
+  const bg = usePaneContentBackground('#0D0D0D');
   const lines = content.split('\n');
   const displayLines = maxLines ? lines.slice(0, maxLines) : lines;
   const truncated = maxLines && lines.length > maxLines;
   const gutterWidth = String(displayLines.length).length * 9 + 16;
 
   return (
-    <ScrollView style={styles.container} horizontal={false}>
+    <ScrollView style={[styles.container, { backgroundColor: bg }]} horizontal={false}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
         <View style={styles.codeBlock}>
           {displayLines.map((line, i) => {
@@ -49,7 +51,7 @@ export const CodeRenderer = memo(function CodeRenderer({ content, language, maxL
 });
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0D0D0D' },
+  container: { flex: 1 },
   codeBlock: { padding: 8 },
   lineRow: { flexDirection: 'row', minHeight: 18 },
   lineNumber: {

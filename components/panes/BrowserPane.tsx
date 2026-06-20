@@ -17,7 +17,7 @@ import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlo
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
-import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 
 // JS injected before the page loads so our fullscreen hooks are in place
 // before YouTube or any other video app tries to go fullscreen.
@@ -512,14 +512,16 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     setInputUrl(url);
     setCurrentUrl(url);
   }, []);
-  const paneBg = usePanelBackground(C.bgDeep);
+  const paneBg = usePaneContentBackground(C.bgDeep);
+  const toolbarBg = usePanelBackground(C.bgSurface);
+  const bookmarksBg = usePanelBackground(C.bgSidebar);
 
   return (
     <View
       style={[styles.root, { backgroundColor: paneBg }]}
     >
       {/* URL bar */}
-      <View style={[styles.toolbar, compactChrome && styles.toolbarCompact]}>
+      <View style={[styles.toolbar, compactChrome && styles.toolbarCompact, { backgroundColor: toolbarBg }]}>
         <TouchableOpacity
           onPress={handleBack}
           disabled={!canGoBack}
@@ -598,7 +600,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          style={[styles.bookmarksBar, compactChrome && styles.bookmarksBarCompact]}
+          style={[styles.bookmarksBar, compactChrome && styles.bookmarksBarCompact, { backgroundColor: bookmarksBg }]}
           contentContainerStyle={[styles.bookmarksContent, compactChrome && styles.bookmarksContentCompact]}
         >
           {bookmarks.map((bm, idx) => {
@@ -653,7 +655,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
 
       {/* WebView */}
       {currentUrl === 'about:blank' ? (
-        <View style={styles.blankScreen}>
+        <View style={[styles.blankScreen, { backgroundColor: paneBg }]}>
           <Text style={styles.blankText}>Enter a URL above to browse</Text>
         </View>
       ) : (
@@ -716,7 +718,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           }}
           startInLoadingState
           renderLoading={() => (
-            <View style={styles.loadingOverlay}>
+            <View style={[styles.loadingOverlay, { backgroundColor: paneBg }]}>
               <Text style={styles.blankText}>Loading...</Text>
             </View>
           )}
@@ -749,7 +751,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
-    backgroundColor: C.bgSurface,
     gap: 4,
   },
   toolbarCompact: {
@@ -795,7 +796,6 @@ const styles = StyleSheet.create({
     height: 32,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
-    backgroundColor: C.bgSidebar,
     flexGrow: 0,
   },
   bookmarksBarCompact: {
@@ -855,7 +855,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: C.bgDeep,
   },
   blankText: {
     fontFamily: F.family,
@@ -870,6 +869,5 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: C.bgDeep,
   },
 });

@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors as C } from '@/theme.config';
-import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { useTheme } from '@/lib/theme-engine';
 import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
@@ -109,11 +109,13 @@ export default function MarkdownPane() {
     ToastAndroid.show('Edit with vim in terminal', ToastAndroid.SHORT);
   }, []);
 
-  const handleSearch = useCallback((_text: string) => {
-    // Future: search within document
-    ToastAndroid.show('Search within document — coming soon', ToastAndroid.SHORT);
-  }, []);
-  const paneBg = usePanelBackground(C.bgDeep);
+	  const handleSearch = useCallback((_text: string) => {
+	    // Future: search within document
+	    ToastAndroid.show('Search within document — coming soon', ToastAndroid.SHORT);
+	  }, []);
+  const paneBg = usePaneContentBackground(C.bgDeep);
+	  const codeBg = usePanelBackground('#1A1A1A');
+	  const quoteBg = usePanelBackground('#111111');
 
   // ── Markdown style rules keyed to current theme ──────────────────────────
   const markdownStyles = StyleSheet.create({
@@ -176,22 +178,22 @@ export default function MarkdownPane() {
       marginVertical: 6,
       maxWidth: proseMaxWidth,
     },
-    code_inline: {
-      backgroundColor: '#1A1A1A',
-      color: theme.colors.ansiCyan,
+	    code_inline: {
+	      backgroundColor: codeBg,
+	      color: theme.colors.ansiCyan,
       fontSize: sf(13),
       paddingHorizontal: 4,
       paddingVertical: 1,
       borderRadius: 3,
     },
-    fence: {
-      backgroundColor: '#1A1A1A',
+	    fence: {
+	      backgroundColor: codeBg,
       borderRadius: 6,
       padding: 12,
       marginVertical: 8,
     },
-    code_block: {
-      backgroundColor: '#1A1A1A',
+	    code_block: {
+	      backgroundColor: codeBg,
       color: '#ECEDEE',
       fontSize: sf(13),
       lineHeight: sf(20),
@@ -203,8 +205,8 @@ export default function MarkdownPane() {
       color: theme.colors.accent,
       textDecorationLine: 'underline',
     },
-    blockquote: {
-      backgroundColor: '#111111',
+	    blockquote: {
+	      backgroundColor: quoteBg,
       borderLeftWidth: 3,
       borderLeftColor: theme.colors.accent,
       paddingLeft: 12,
@@ -234,8 +236,8 @@ export default function MarkdownPane() {
       borderColor: theme.colors.border,
       marginVertical: 8,
     },
-    th: {
-      backgroundColor: '#1A1A1A',
+	    th: {
+	      backgroundColor: codeBg,
       color: theme.colors.accent,
       fontWeight: '700',
       padding: 8,

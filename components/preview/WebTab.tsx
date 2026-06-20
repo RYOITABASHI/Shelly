@@ -8,6 +8,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { getClickToEditScript, buildSetEditModeMessage, type SelectedElement } from '@/lib/click-to-edit';
 import { EditSheet } from '@/components/preview/EditSheet';
+import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 
 interface WebTabProps {
   url: string | null;
@@ -22,6 +23,8 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   const [error, setError] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
+  const paneBg = usePaneContentBackground(c.background);
+  const headerBg = usePanelBackground(c.surfaceHigh);
 
   const shortUrl = url ? url.replace(/^https?:\/\//, '') : '';
 
@@ -71,7 +74,7 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   // Empty state when no URL
   if (!url) {
     return (
-      <View style={[styles.container, { backgroundColor: c.background }]}>
+      <View style={[styles.container, { backgroundColor: paneBg }]}>
         <View style={styles.placeholder}>
           <MaterialIcons name="language" size={32} color={c.muted} />
           <Text style={[styles.placeholderText, { color: c.muted }]}>
@@ -83,9 +86,9 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: c.background }]}>
+    <View style={[styles.container, { backgroundColor: paneBg }]}>
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: c.surfaceHigh, borderBottomColor: c.border }]}>
+      <View style={[styles.header, { backgroundColor: headerBg, borderBottomColor: c.border }]}>
         <MaterialIcons name="language" size={14} color={c.accent} />
         <Text style={[styles.headerUrl, { color: c.foreground }]} numberOfLines={1}>
           {shortUrl}
@@ -146,7 +149,7 @@ export function WebTab({ url, onClose, onEditSubmit }: WebTabProps) {
           domStorageEnabled
           startInLoadingState
           renderLoading={() => (
-            <View style={[StyleSheet.absoluteFill, styles.loadingContainer, { backgroundColor: c.background }]}>
+            <View style={[StyleSheet.absoluteFill, styles.loadingContainer, { backgroundColor: paneBg }]}>
               <ActivityIndicator size="small" color={c.accent} />
             </View>
           )}

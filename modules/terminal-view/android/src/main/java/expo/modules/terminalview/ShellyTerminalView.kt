@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Color
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -150,8 +151,6 @@ class ShellyTerminalView(
     private val linkDetector = LinkDetector
 
     init {
-        // Black background like a real terminal. setTransparentBackground()
-        // now reasserts this instead of allowing terminal transparency.
         setWillNotDraw(false)
         setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
@@ -276,7 +275,7 @@ class ShellyTerminalView(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w == 0 || h == 0) return
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
         if (w == lastWidth && h == lastHeight) return
         lastWidth = w
         lastHeight = h
@@ -286,7 +285,7 @@ class ShellyTerminalView(
 
     override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
         val applied = super.onApplyWindowInsets(insets)
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
         return applied
     }
 
@@ -300,7 +299,7 @@ class ShellyTerminalView(
         resizeHandler.postDelayed({
             if (terminalView.width > 0 && terminalView.height > 0) {
                 Log.i(TAG, "terminalResize: ${terminalView.width}x${terminalView.height}")
-                applyOpaqueTerminalSurface()
+                applyTerminalSurface()
                 terminalView.updateSize()
                 terminalView.invalidate()
                 glTerminalView?.requestRender()
@@ -455,22 +454,42 @@ class ShellyTerminalView(
         setTerminalCursorBlinkerRate(if (enabled) 500 else 0)
     }
 
-    /**
-     * Keep terminal panes opaque. The prop remains for JS/native ABI
-     * compatibility, but terminals no longer honor true here.
-     */
     fun setTransparentBackground(enabled: Boolean) {
-        if (enabled) {
-            Log.i(TAG, "setTransparentBackground(true) ignored for terminal pane")
+        transparentBackground = enabled
+        applyTerminalSurface()
+    }
+
+    private fun applyTerminalSurface() {
+        if (!transparentBackground) {
+            applyOpaqueTerminalSurface()
+            return
         }
-        applyOpaqueTerminalSurface()
+
+        setWillNotDraw(false)
+        setBackgroundColor(Color.TRANSPARENT)
+        terminalView.setBackgroundColor(Color.TRANSPARENT)
+        terminalView.setTransparentBackground(true)
+        val colorsForGl = (terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors).copyOf()
+        glTerminalView?.let { glView ->
+            glView.setBackgroundColor(Color.TRANSPARENT)
+            glView.setTransparentBackground(true)
+            glView.queueEvent {
+                glView.renderer.updateAnsiColors(colorsForGl)
+            }
+        }
+        terminalView.invalidate()
+        invalidate()
     }
 
     private fun applyOpaqueTerminalSurface() {
         transparentBackground = false
+        alpha = 1f
+        terminalView.alpha = 1f
         setWillNotDraw(false)
+        TerminalColors.COLOR_SCHEME.mDefaultColors[0] = OPAQUE_TERMINAL_BACKGROUND
         TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
         terminalView.mEmulator?.mColors?.mCurrentColors?.let { colors ->
+            colors[0] = OPAQUE_TERMINAL_BACKGROUND
             colors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
         }
         setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
@@ -478,6 +497,7 @@ class ShellyTerminalView(
         terminalView.setTransparentBackground(false)
         val colorsForGl = (terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors).copyOf()
         glTerminalView?.let { glView ->
+            glView.alpha = 1f
             glView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
             glView.queueEvent {
                 glView.renderer.updateAnsiColors(colorsForGl)
@@ -509,10 +529,11 @@ class ShellyTerminalView(
                 }
             }
             TerminalColors.COLOR_SCHEME.updateWith(props)
+            TerminalColors.COLOR_SCHEME.mDefaultColors[0] = OPAQUE_TERMINAL_BACKGROUND
             TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
             // Reset current session colors to apply the new scheme
             terminalView.mEmulator?.mColors?.reset()
-            applyOpaqueTerminalSurface()
+            applyTerminalSurface()
             Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")
         } catch (e: Exception) {
             Log.w(TAG, "applyThemeColors failed", e)
@@ -524,7 +545,7 @@ class ShellyTerminalView(
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
         isViewVisible = (visibility == View.VISIBLE)
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
         if (!isViewVisible) {
             setTerminalCursorBlinkerRate(0)
         }
@@ -533,7 +554,7 @@ class ShellyTerminalView(
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         isViewVisible = hasWindowFocus
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
     }
 
     // ===== Output Processing =====
@@ -600,7 +621,7 @@ class ShellyTerminalView(
             terminalView.visibility = View.VISIBLE
             glTerminalView?.visibility = View.GONE
         }
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
     }
 
     private fun checkGLES30Support(): Boolean {
@@ -742,7 +763,7 @@ class ShellyTerminalView(
     }
 
     fun refreshScreenCommand() {
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
         if (useGPU && glTerminalView != null) {
             glTerminalView?.post { glTerminalView?.renderer?.onScreenUpdated() }
         } else {
@@ -842,7 +863,7 @@ class ShellyTerminalView(
      * Sends resize command directly to pty-helper via Unix Domain Socket.
      */
     override fun onEmulatorSet() {
-        applyOpaqueTerminalSurface()
+        applyTerminalSurface()
         val emulator = terminalView.mEmulator ?: return
         val cols = emulator.mColumns
         val rows = emulator.mRows
