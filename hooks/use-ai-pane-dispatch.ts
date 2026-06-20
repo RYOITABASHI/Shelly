@@ -36,7 +36,10 @@ import {
   parseAgentCommand,
   runAgentNow,
   stopAgent,
+  deleteAgent,
 } from '@/lib/agent-manager';
+import { useAgentStore } from '@/store/agent-store';
+import type { ToolChoice } from '@/store/types';
 import { suggestTool } from '@/lib/agent-tool-router';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
@@ -273,42 +276,23 @@ export function useAIPaneDispatch(paneId: string) {
         try {
           const agentResult = parseAgentCommand(parsed.prompt);
           if (agentResult.type === 'create') {
+            // Unified entry (Phase 0 §2.1 / A5): EVERY `@agent <NL>` goes through the
+            // confirm card — one-shot, scheduled, and autonomous alike. The legacy
+            // `@agent autonomous …` alias just pre-sets the card's Autonomous toggle.
+            // Nothing is created/run until the human taps Confirm (see confirmAgentDraft).
             const promptText = agentResult.message;
-            const autonomous = agentResult.data?.autonomous === true;
-            if (autonomous) {
-              // Autonomous agents keep the existing (gate-verified) immediate
-              // launch path — the confirm card is the scheduled-agent surface.
-              const firstWord = promptText.split(/\s+/)[0] || 'agent';
-              const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
-              const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
-              const created = createAgent({
-                name,
-                description: promptText.slice(0, 120),
-                prompt: promptText,
-                schedule: null,
-                tool: suggestion.tool,
-                autonomous,
-                outputPath: `$HOME/.shelly/agents/${name}/output.md`,
-              });
-              await installAgent(created, runAgentShellCommand);
-              resultMessage = `✅ Agent "${created.name}" installed (${suggestion.label}, autonomous). Run it with: @agent run ${created.name}`;
-            } else {
-              // NL self-registration → a reviewable preview card (Phase 0 §2.1).
-              // NEVER a live agent: the agent is created+installed only on Confirm
-              // (see confirmAgentDraft below). We push a card-bearing message and
-              // return early so the LLM never sees the utterance.
-              const draft = parseAgentNL(promptText);
-              store.addMessage(paneId, {
-                id: generateId(),
-                role: 'assistant',
-                content: '',
-                timestamp: Date.now(),
-                agent: agent as ChatMessage['agent'],
-                agentDraft: draft,
-                agentCardState: 'pending',
-              });
-              return;
-            }
+            const draft = parseAgentNL(promptText);
+            draft.autonomous = agentResult.data?.autonomous === true;
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: '',
+              timestamp: Date.now(),
+              agent: agent as ChatMessage['agent'],
+              agentDraft: draft,
+              agentCardState: 'pending',
+            });
+            return;
           } else if (agentResult.type === 'run') {
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;
@@ -1002,25 +986,50 @@ export function useAIPaneDispatch(paneId: string) {
       const store = useAIPaneStore.getState();
       const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
         || `agent-${Date.now().toString(36)}`;
+      // Autonomous (B2 gate) can only run Codex OAuth / local — never an api-key
+      // backend. Force Codex for an autonomous task whose router picked an api tool.
+      const tool: ToolChoice =
+        confirmed.autonomous && confirmed.tool.type !== 'local' && confirmed.tool.type !== 'cli'
+          ? { type: 'cli', cli: 'codex' }
+          : confirmed.tool;
       try {
         const created = createAgent({
           name: confirmed.name,
           description: confirmed.prompt.slice(0, 120),
           prompt: confirmed.prompt,
           schedule: confirmed.schedule,
-          tool: confirmed.tool,
+          tool,
           action: confirmed.action,
           runOn: confirmed.runOn,
+          autonomous: confirmed.autonomous || undefined,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
         await installAgent(created, runAgentShellCommand);
-        store.updateMessage(paneId, messageId, {
-          agentCardState: 'confirmed',
-          content: `✅ Agent "${created.name}" registered — ${confirmed.schedule}. Manage it with: @agent list`,
-        });
+
+        if (confirmed.schedule === null) {
+          // One-shot (§A5): run immediately, surface the result, then discard the
+          // agent so the list isn't cluttered with throwaway tasks (ephemeral).
+          store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
+          try {
+            await runAgentNow(created.id, runAgentShellCommand);
+            const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
+            const preview = (log?.outputPreview || '').trim();
+            const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
+            store.updateMessage(paneId, messageId, {
+              content: preview ? `${icon} ${created.name}\n\n${preview}` : `${icon} ${created.name} — done.`,
+            });
+          } finally {
+            await deleteAgent(created.id).catch(() => {});
+          }
+        } else {
+          store.updateMessage(paneId, messageId, {
+            agentCardState: 'confirmed',
+            content: `✅ Agent "${created.name}" registered — ${confirmed.schedule}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
+          });
+        }
       } catch (err) {
         store.updateMessage(paneId, messageId, {
-          content: `[@agent] failed to register: ${err instanceof Error ? err.message : String(err)}`,
+          content: `[@agent] failed: ${err instanceof Error ? err.message : String(err)}`,
         });
       }
     },

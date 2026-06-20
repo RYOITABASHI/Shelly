@@ -26,13 +26,18 @@ import { AgentAction, AgentActionType, ToolChoice } from '@/store/types';
 export interface ConfirmedAgentDraft {
   name: string;
   prompt: string;
-  schedule: string; // a valid, whitelisted cron — guaranteed non-null on confirm
+  /** A valid whitelisted cron for a scheduled agent, or null = run ONCE now
+   *  (the card executed immediately on Confirm — no separate @agent run). */
+  schedule: string | null;
   tool: ToolChoice;
   action: AgentAction;
   runOn: 'auto' | 'on-device' | 'cloud';
+  /** true = run via the B2 autonomous gate (driver/escalation), no per-step approval. */
+  autonomous: boolean;
 }
 
-type Frequency = 'daily' | 'weekly' | 'interval';
+// 'once' = run immediately on Confirm (no schedule). The others register a schedule.
+type Frequency = 'once' | 'daily' | 'weekly' | 'interval';
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
@@ -67,6 +72,7 @@ function decodeCron(cron: string | null): {
 
 /** Build a whitelisted cron from selector state, or null when the selection is invalid. */
 function buildCron(f: Frequency, hour: number, minute: number, weekday: number, interval: number): string | null {
+  if (f === 'once') return null; // one-shot: no schedule
   if (f === 'interval') {
     if (!Number.isInteger(interval) || interval < 1 || interval > 59) return null;
     return `*/${interval} * * * *`;
@@ -99,7 +105,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const decoded = useMemo(() => decodeCron(draft.schedule), [draft.schedule]);
 
   const [name, setName] = useState(draft.name);
-  const [frequency, setFrequency] = useState<Frequency>(decoded.frequency);
+  // No confident schedule parsed ⇒ default to a one-shot "run now" (the user can
+  // still switch to Daily/Weekly/Every-N-min). A confident parse keeps its shape.
+  const [frequency, setFrequency] = useState<Frequency>(
+    draft.scheduleConfident ? decoded.frequency : 'once',
+  );
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
   const [weekday, setWeekday] = useState(decoded.weekday);
@@ -108,29 +118,32 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
   const [command, setCommand] = useState(draft.action.command ?? '');
   const [runOn, setRunOn] = useState<RunOn>('auto');
+  const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
 
+  const isOnce = frequency === 'once';
   const cron = useMemo(
     () => buildCron(frequency, hour, minute, weekday, interval),
     [frequency, hour, minute, weekday, interval],
   );
 
-  // Confirm gating: valid schedule + a usable destination for the chosen action.
+  // Confirm gating: a one-shot needs no schedule; otherwise a valid cron is required.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
   const commandValid = actionType !== 'cli' || command.trim().length > 0;
-  const canConfirm = !!cron && name.trim().length > 0 && webhookValid && commandValid;
+  const canConfirm = (isOnce || !!cron) && name.trim().length > 0 && webhookValid && commandValid;
 
   const handleConfirm = () => {
-    if (!cron || !canConfirm) return;
+    if (!canConfirm) return;
     const action: AgentAction = { type: actionType };
     if (actionType === 'webhook') action.webhookUrl = webhookUrl.trim();
     if (actionType === 'cli') action.command = command.trim();
     onConfirm({
       name: name.trim(),
       prompt: draft.prompt,
-      schedule: cron,
+      schedule: isOnce ? null : cron,
       tool: draft.tool,
       action,
       runOn,
+      autonomous,
     });
   };
 
@@ -143,8 +156,12 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       <Text style={[styles.summary, { color: colors.foreground }]}>
         {t('agentcard.summary', {
           action: t(`agentcard.action_${actionType}`),
-          schedule: cron ? scheduleHuman(frequency, hour, minute, weekday, interval, t) : t('agentcard.schedule_unset'),
-          route: t(`agentcard.runon_${runOn}`),
+          schedule: isOnce
+            ? t('agentcard.sched_once')
+            : cron
+            ? scheduleHuman(frequency, hour, minute, weekday, interval, t)
+            : t('agentcard.schedule_unset'),
+          route: autonomous ? t('agentcard.autonomous') : t(`agentcard.runon_${runOn}`),
         })}
       </Text>
 
@@ -160,11 +177,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
 
       {/* Schedule */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.schedule')}</Text>
-      {!draft.scheduleConfident && (
-        <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.schedule_required')}</Text>
-      )}
       <Segmented
         options={[
+          { key: 'once', label: t('agentcard.freq_once') },
           { key: 'daily', label: t('agentcard.freq_daily') },
           { key: 'weekly', label: t('agentcard.freq_weekly') },
           { key: 'interval', label: t('agentcard.freq_interval') },
@@ -173,7 +188,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         onChange={(k) => setFrequency(k as Frequency)}
         colors={colors}
       />
-      {frequency === 'interval' ? (
+      {isOnce ? (
+        <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.once_hint')}</Text>
+      ) : frequency === 'interval' ? (
         <View style={styles.row}>
           <TextInput
             value={String(interval)}
@@ -261,6 +278,28 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         colors={colors}
       />
 
+      {/* Autonomous — replaces the old `@agent autonomous` keyword (B2 gated execution). */}
+      <View style={styles.autoRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.label, { color: colors.muted, marginTop: 0 }]}>{t('agentcard.autonomous')}</Text>
+          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.autonomous_hint')}</Text>
+        </View>
+        <TouchableOpacity
+          onPress={() => setAutonomous((v) => !v)}
+          style={[
+            styles.toggle,
+            { borderColor: autonomous ? colors.accent : colors.border, backgroundColor: autonomous ? colors.accent : 'transparent' },
+          ]}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: autonomous }}
+          activeOpacity={0.7}
+        >
+          <Text style={{ color: autonomous ? colors.background : colors.muted, fontSize: 11, fontWeight: '700' }}>
+            {autonomous ? 'ON' : 'OFF'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {/* Buttons */}
       <View style={styles.actions}>
         <TouchableOpacity onPress={onCancel} style={[styles.btn, { borderColor: colors.border }]} activeOpacity={0.7}>
@@ -276,7 +315,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           activeOpacity={0.7}
         >
           <Text style={[styles.btnText, { color: canConfirm ? colors.background : colors.inactive, fontWeight: '700' }]}>
-            {t('agentcard.confirm')}
+            {t(isOnce ? 'agentcard.run_now' : 'agentcard.confirm')}
           </Text>
         </TouchableOpacity>
       </View>
@@ -349,6 +388,8 @@ const styles = StyleSheet.create({
   weekDay: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, overflow: 'hidden', marginTop: 4 },
   segment: { flex: 1, paddingVertical: 7, alignItems: 'center' },
+  autoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  toggle: { minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 14 },
   btn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 18, paddingVertical: 8 },
   btnText: { fontSize: 13 },

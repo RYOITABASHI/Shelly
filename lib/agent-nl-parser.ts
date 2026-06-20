@@ -36,6 +36,9 @@ export interface ParsedAgentDraft {
   /** Routed tool (reuses the keyword router). */
   tool: ToolChoice;
   toolLabel: string;
+  /** Default for the card's Autonomous toggle (set true when the `@agent autonomous`
+   *  alias was used). The card is the source of truth; this is just the initial value. */
+  autonomous?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
