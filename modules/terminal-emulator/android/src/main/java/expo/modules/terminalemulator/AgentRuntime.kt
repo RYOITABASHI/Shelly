@@ -2,7 +2,9 @@ package expo.modules.terminalemulator
 
 import android.content.Context
 import android.util.Log
+import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import expo.modules.terminalemulator.scouter.AgentEscalationBridge
+import org.json.JSONObject
 import java.io.File
 
 data class AgentRunResult(
@@ -24,7 +26,7 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
-    private const val CURRENT_SCRIPT_VERSION = 6
+    private const val CURRENT_SCRIPT_VERSION = 8
 
     fun runAgent(context: Context, agentId: String): AgentRunResult {
         val appContext = context.applicationContext
@@ -53,6 +55,11 @@ object AgentRuntime {
             val message = "stale script: $scriptPath version=$scriptVersion expected=$CURRENT_SCRIPT_VERSION. Open Shelly or run the agent manually once to regenerate it."
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
+            NotificationDispatcher(appContext).notifyAgentResult(
+                agentId = agentId,
+                status = "error",
+                preview = message
+            )
             return AgentRunResult(agentId, 126, "", message)
         }
 
@@ -89,10 +96,18 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
+        val notificationPosted = postAgentResultNotificationIfRequested(appContext, homeDir, agentId)
         if (exitCode == 0) {
             Log.i(TAG, "Agent $agentId completed via Shelly runtime")
         } else {
             Log.e(TAG, "Agent $agentId failed via Shelly runtime: exit=$exitCode stderr=${stderr.take(300)}")
+            if (!notificationPosted) {
+                NotificationDispatcher(appContext).notifyAgentResult(
+                    agentId = agentId,
+                    status = "error",
+                    preview = "Agent script failed. exit=$exitCode stderr=${stderr.take(300)}"
+                )
+            }
             writeReceiverLog(
                 homeDir,
                 agentId,
@@ -102,6 +117,25 @@ object AgentRuntime {
         }
 
         return AgentRunResult(agentId, exitCode, stdout, stderr)
+    }
+
+    private fun postAgentResultNotificationIfRequested(context: Context, homeDir: File, agentId: String): Boolean {
+        val request = File(homeDir, ".shelly/agents/logs/$agentId/native-result-notification.json")
+        if (!request.isFile) return false
+        try {
+            val json = JSONObject(request.readText())
+            NotificationDispatcher(context).notifyAgentResult(
+                agentId = json.optString("agentId", agentId).ifBlank { agentId },
+                status = json.optString("status", "success"),
+                preview = json.optString("preview", "")
+            )
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to post agent result notification for $agentId", e)
+            return false
+        } finally {
+            runCatching { request.delete() }
+        }
     }
 
     private fun readScriptVersion(script: File): Int {

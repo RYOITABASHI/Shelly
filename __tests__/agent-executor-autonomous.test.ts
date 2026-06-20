@@ -28,7 +28,7 @@ const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=7');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=8');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -139,5 +139,35 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
 
     const nonAutonomousCli = generateRunScript(agent({ type: 'cli', cli: 'codex' }, false));
     expect(nonAutonomousCli).toContain('AUDIT_MIRROR_SDCARD_ELIGIBLE=0');
+  });
+
+  it('dispatches saved results by action without auto-running cli actions', () => {
+    const notifyAgent: Agent = { ...agent({ type: 'local' }, true), action: { type: 'notify' } };
+    const webhookAgent: Agent = {
+      ...agent({ type: 'local' }, true),
+      action: { type: 'webhook', webhookUrl: 'https://example.com/hook' },
+    };
+    const cliAgent: Agent = {
+      ...agent({ type: 'local' }, true),
+      action: { type: 'cli', command: 'rm -rf ~/tmp/example' },
+    };
+
+    const notify = generateRunScript(notifyAgent);
+    expect(notify).toContain("ACTION_TYPE='notify'");
+    expect(notify).toContain('native-result-notification.json');
+    expect(notify).toContain('write_native_notification_request "success" "$preview"');
+
+    const webhook = generateRunScript(webhookAgent);
+    expect(webhook).toContain("ACTION_TYPE='webhook'");
+    expect(webhook).toContain("ACTION_WEBHOOK_URL='https://example.com/hook'");
+    expect(webhook).toContain('Webhook action requires an https URL.');
+    expect(webhook).toContain('http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload"');
+    expect(webhook).toContain('write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true');
+
+    const cli = generateRunScript(cliAgent);
+    expect(cli).toContain("ACTION_TYPE='cli'");
+    expect(cli).toContain("ACTION_COMMAND='rm -rf ~/tmp/example'");
+    expect(cli).toContain('CLI action requires in-app confirmation and was not auto-executed');
+    expect(cli).not.toContain('eval "$ACTION_COMMAND"');
   });
 });
