@@ -198,6 +198,9 @@ function sleep(ms: number): Promise<void> {
 const NETWORK_TIMEOUT_MS = 15_000;
 const APK_DOWNLOAD_TIMEOUT_MS = 1_800_000;
 const APK_DOWNLOAD_PAUSED_TIMEOUT_MS = 60_000;
+// Kill a running/pending download whose bytes never advance (phantom enqueue)
+// instead of spinning to the 30-min hard timeout.
+const APK_DOWNLOAD_STALL_TIMEOUT_MS = 45_000;
 
 // fetch() in React Native has no default timeout: a stalled TLS/connection
 // (or a throttled GitHub response held open) never settles, which hangs the
@@ -520,6 +523,23 @@ async function downloadReleaseApk(
   }
 
   let downloadId = matchingPending?.downloadId;
+  if (downloadId) {
+    // A persisted id can be dead (downloads cleared, reboot, prior failed enqueue).
+    // Probe it; if it isn't a live download, drop it and enqueue fresh instead of
+    // polling a ghost id (which would only throw a "failed" alert a second later).
+    const probe = await TerminalEmulator.getApkDownloadStatus(downloadId).catch(() => null);
+    const live =
+      probe != null &&
+      (probe.status === 'pending' ||
+        probe.status === 'running' ||
+        probe.status === 'paused' ||
+        probe.status === 'successful');
+    if (!live) {
+      await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
+      await clearPendingApkDownload();
+      downloadId = undefined;
+    }
+  }
   if (!downloadId) {
     const started = await TerminalEmulator.enqueueApkDownload(
       update.apkUrl,
@@ -554,6 +574,8 @@ async function downloadReleaseApk(
   let lastBytes = 0;
   let lastAt = startedAt;
   let pausedSince: number | null = null;
+  let maxBytes = 0;
+  let lastProgressAt = startedAt;
   while (true) {
     await sleep(1000);
     const status = await TerminalEmulator.getApkDownloadStatus(downloadId);
@@ -590,6 +612,18 @@ async function downloadReleaseApk(
       }
     } else {
       pausedSince = null;
+    }
+    // Stall watchdog: a 'running'/'pending' download whose bytes never advance
+    // (e.g. a phantom enqueue) would otherwise spin until the 30-min hard timeout
+    // with the UI frozen at 0 B. Surface a retryable error after a bounded window.
+    if (downloadedBytes > maxBytes) {
+      maxBytes = downloadedBytes;
+      lastProgressAt = now;
+    }
+    if (downloadStatus !== 'paused' && now - lastProgressAt > APK_DOWNLOAD_STALL_TIMEOUT_MS) {
+      await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
+      await clearPendingApkDownload();
+      throw new Error('APK download stalled (no progress). Tap update again to retry.');
     }
     if (Date.now() - startedAt > APK_DOWNLOAD_TIMEOUT_MS) {
       await TerminalEmulator.removeApkDownload(downloadId).catch(() => undefined);
@@ -670,7 +704,11 @@ function downloadManagerFailureMessage(status: string, reason?: number): string 
 }
 
 function releaseApkDir(): string {
-  return '/sdcard/Download';
+  // App-specific external files dir — must stay string-identical to the native
+  // enqueueApkDownload destination (getExternalFilesDir(DIRECTORY_DOWNLOADS)), so
+  // the post-download verify/install path comparison matches. The public
+  // /sdcard/Download throws SecurityException in DownloadManager on targetSdk>=29.
+  return '/storage/emulated/0/Android/data/dev.shelly.terminal/files/Download';
 }
 
 function releaseApkPath(update: AndroidUpdateManifest): string {
