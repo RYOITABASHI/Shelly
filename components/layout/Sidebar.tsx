@@ -23,14 +23,13 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
-import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
 import { QuickLaunchSection } from './QuickLaunchSection';
 import { CodexSessionsSection } from './CodexSessionsSection';
-import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
@@ -59,7 +58,6 @@ export function Sidebar() {
   const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo } =
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
-  const runHistory = useAgentStore((s) => s.runHistory);
   const agentsHalted = useAgentStore((s) => s.halted);
   const [runningAgentIds, setRunningAgentIds] = useState<Set<string>>(new Set());
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(new Set());
