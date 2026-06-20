@@ -113,6 +113,7 @@ const en: Record<string, string> = {
 
   // ── Common UI ───────────────────────────────────────────────────
   'common.cancel': 'Cancel',
+  'common.close': 'Close',
   'common.add': 'ADD',
   'common.clear': 'Clear',
   'common.cannot_undo': 'This cannot be undone.',
@@ -167,7 +168,7 @@ const en: Record<string, string> = {
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',
   'agentcard.summary': "I'll run {{action}} {{schedule}} via {{route}}.",
-  'agentcard.name': 'Name',
+  'agentcard.name': 'Project name',
   'agentcard.schedule': 'Schedule',
   'agentcard.schedule_unset': '(not set)',
   'agentcard.schedule_required': 'Pick a schedule — this agent won’t run until you do.',
@@ -1129,6 +1130,14 @@ const en: Record<string, string> = {
   'sidebar.log': 'LOG',
   'sidebar.scheduled': 'SCHEDULED',
   'sidebar.agents': 'AGENTS',
+  'sidebar.agent_manual': 'manual',
+  'sidebar.agent_autonomous': 'autonomous',
+  'sidebar.agent_paused': 'paused',
+  'sidebar.agent_last': 'Last',
+  'sidebar.agent_run_now': 'Run now',
+  'sidebar.agent_pause': 'Pause',
+  'sidebar.agent_resume': 'Resume',
+  'sidebar.agent_detail_a11y': 'Open {{name}} details',
   'sidebar.repositories': 'REPOSITORIES',
   'sidebar.file_tree': 'FILE TREE',
   'sidebar.device': 'DEVICE',

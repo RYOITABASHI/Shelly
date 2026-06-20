@@ -200,6 +200,29 @@ export function Sidebar() {
     }
   }, [runCommandForAgentSync, t]);
 
+  // Tap an agent row → full detail popup (the row only has room for the name).
+  const showAgentDetail = React.useCallback((agent: Agent) => {
+    const lastLog = useAgentStore.getState().getRunHistory(agent.id).at(-1);
+    const meta = [
+      agent.schedule || t('sidebar.agent_manual'),
+      agent.action?.type ?? 'draft',
+      toolChoiceToLabel(agent.tool),
+      agent.autonomous ? t('sidebar.agent_autonomous') : null,
+      agent.enabled ? null : t('sidebar.agent_paused'),
+    ].filter(Boolean).join(' · ');
+    const body = [
+      (agent.prompt || agent.description || '').trim(),
+      '',
+      meta,
+      lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
+    ].filter(Boolean).join('\n');
+    Alert.alert(agent.name, body, [
+      { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
+      { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
+      { text: t('common.close'), style: 'cancel' },
+    ]);
+  }, [t, handleRunScheduledAgent, handleTogglePause]);
+
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
     useAgentStore.getState().updateAgent(agent.id, partial);
@@ -362,14 +385,19 @@ export function Sidebar() {
                   style={[styles.taskRow, styles.agentRow, (!agent.enabled || agentsHalted) && styles.agentRowDisabled]}
                 >
                   <View style={[styles.taskDot, { backgroundColor: agent.autonomous ? C.accent : C.text3 }]} />
-                  <View style={styles.taskInfo}>
+                  <Pressable
+                    style={styles.taskInfo}
+                    onPress={() => showAgentDetail(agent)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
+                  >
                     <Text style={styles.taskName} numberOfLines={1}>
                       {agent.name.toUpperCase()}
                     </Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
-                      {agent.schedule || 'manual'} · {toolChoiceToLabel(agent.tool)}
+                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'}
                     </Text>
-                  </View>
+                  </Pressable>
                   <Pressable
                     onPress={() => void handleRunScheduledAgent(agent.id, agent.name)}
                     hitSlop={8}
@@ -396,15 +424,6 @@ export function Sidebar() {
                     ]}>
                       AUTO
                     </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void handleTogglePause(agent)}
-                    hitSlop={8}
-                    style={styles.tasksAction}
-                    accessibilityRole="button"
-                    accessibilityLabel={t(agent.enabled ? 'sidebar.pause_agent_a11y' : 'sidebar.resume_agent_a11y', { name: agent.name })}
-                  >
-                    <MaterialIcons name={agent.enabled ? 'pause' : 'play-circle-outline'} size={12} color={C.text2} />
                   </Pressable>
                   <Pressable
                     onPress={() => {

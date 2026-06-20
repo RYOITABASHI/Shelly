@@ -286,6 +286,28 @@ export async function deleteAgent(agentId: string): Promise<void> {
   useAgentStore.getState().removeAgent(agentId);
 }
 
+/**
+ * Remove orphan agent artifacts — run scripts (`run-agent-<id>.sh`) and log dirs
+ * whose `<id>.json` no longer exists (e.g. left by an interrupted deleteAgent whose
+ * rm threw and was swallowed). Best-effort; called on load so a stray script can't
+ * accumulate or zombie-fire. The schedule is already cancelled at delete time, but
+ * removing the script also neutralises any leftover alarm (missing-script no-op).
+ */
+export async function cleanupOrphanAgentFiles(
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const dir = agentsDir();
+  const cmd =
+    `cd ${shellQuote(dir)} 2>/dev/null || exit 0\n` +
+    `for s in run-agent-*.sh; do [ -e "\$s" ] || continue; id="\${s#run-agent-}"; id="\${id%.sh}"; [ -f "\$id.json" ] || rm -f "\$s"; done\n` +
+    `for d in logs/*/; do [ -e "\$d" ] || continue; id="\$(basename "\$d")"; [ -f "\$id.json" ] || rm -rf "\$d"; done`;
+  try {
+    await runCommand(cmd);
+  } catch {
+    // best-effort cleanup; never block startup
+  }
+}
+
 const haltSentinelPath = () => `${agentsDir()}/.halted`;
 
 /**
@@ -420,6 +442,8 @@ export async function loadAgentsFromDisk(
 
     if (agents.length === 0) {
       useAgentStore.getState().setAgents([]);
+      // Still sweep — "deleted every agent" can leave orphan scripts/logs.
+      if (syncLogs) void cleanupOrphanAgentFiles(runCommand);
       return;
     }
     const runHistory = syncLogs
@@ -440,6 +464,10 @@ export async function loadAgentsFromDisk(
       useAgentStore.getState().setRunHistory(runHistory);
     }
     useAgentStore.getState().setAgents(agentsWithStatus);
+    if (syncLogs) {
+      // Sweep orphan scripts/logs left by past deletes (best-effort, non-blocking).
+      void cleanupOrphanAgentFiles(runCommand);
+    }
     if (repairSchedules) {
       scheduleAgentStartupRepair(agentsWithStatus, runCommand, repairDelayMs, shouldRepair);
     }
