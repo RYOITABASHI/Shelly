@@ -59,6 +59,7 @@ class NotificationDispatcher(private val context: Context) {
         ID_REPLY -> CH_COMPLETED
         ID_LONG_RUNNING -> CH_RUNNING
         in 9400 until 9900 -> CH_APPROVAL
+        in 9900 until 9950 -> CH_COMPLETED
         else -> CH_RATE
     }
 
@@ -96,6 +97,24 @@ class NotificationDispatcher(private val context: Context) {
 
     fun notifyLongRunning(snapshot: SessionSnapshot) {
         notify(ID_LONG_RUNNING, "Agent still running", "${snapshot.currentTool ?: "Tool"} · ${snapshot.projectName}")
+    }
+
+    fun notifyAgentResult(agentId: String, status: String, preview: String) {
+        val normalizedStatus = status.trim().lowercase(Locale.US).ifBlank { "success" }
+        val title = when (normalizedStatus) {
+            "success" -> "Agent completed"
+            "skipped" -> "Agent skipped"
+            else -> "Agent failed"
+        }
+        val body = preview.ifBlank { "No preview" }
+        val id = ID_AGENT_RESULT_BASE + (agentId.hashCode() and 0x7fffffff) % ID_AGENT_RESULT_SPAN
+        notify(
+            id = id,
+            title = title,
+            text = truncate(body, REPLY_MAX_CHARS),
+            bigText = truncate(body, APPROVAL_MAX_CHARS),
+            subText = shorten(agentId, 40)
+        )
     }
 
     // --- Live-poll entry points (additive) -----------------------------------
@@ -588,6 +607,8 @@ class NotificationDispatcher(private val context: Context) {
         private const val REQ_CHOICE_BASE = 9320
         private const val REQ_AGENT_ESCALATION_BASE = 9400
         private const val REQ_AGENT_ESCALATION_SPAN = 500
+        private const val ID_AGENT_RESULT_BASE = 9900
+        private const val ID_AGENT_RESULT_SPAN = 50
 
         // Dedup pref keys.
         private const val KEY_LAST_APPROVAL = "last_approval_at"

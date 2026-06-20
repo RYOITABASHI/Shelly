@@ -10,7 +10,7 @@ import { getHomePath } from '@/lib/home-path';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 7;
+const AGENT_SCRIPT_VERSION = 8;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -91,6 +91,9 @@ export function generateRunScript(agent: Agent): string {
 
   const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
+  const actionType = agent.action?.type ?? 'draft';
+  const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
+  const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
 
   const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
 
@@ -118,6 +121,12 @@ LOCKS_DIR=${shellQuote(locksDir)}
 TMP_DIR=${shellQuote(tmpDir)}
 MAX_CONCURRENT=${MAX_CONCURRENT}
 AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
+ACTION_TYPE=${shellQuote(actionType)}
+ACTION_WEBHOOK_URL=${shellQuote(actionWebhookUrl)}
+ACTION_COMMAND=${shellQuote(actionCommand)}
+ACTION_NOTIFY_FILE="$LOG_DIR/native-result-notification.json"
+ACTION_DISPATCH_STATUS=""
+ACTION_DISPATCH_MESSAGE=""
 REGISTRY_LOCK=""
 REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
@@ -262,6 +271,171 @@ json_string_file() {
     printf '%s\\\\n' "$line"
   done < "$file"
   printf '"'
+}
+
+write_native_notification_request() {
+  status="$1"
+  preview="$2"
+  status_json=$(json_escape_text "$status")
+  preview_json=$(json_escape_text "$preview")
+  agent_json=$(json_escape_text "$AGENT_ID")
+  tmp="$ACTION_NOTIFY_FILE.tmp"
+  cat > "$tmp" << NOTIFYEOF
+{"agentId":"$agent_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
+NOTIFYEOF
+  mv "$tmp" "$ACTION_NOTIFY_FILE"
+}
+
+write_webhook_payload() {
+  out_file="$1"
+  status="$2"
+  preview="$3"
+  result_file="$4"
+  agent_json=$(json_escape_text "$AGENT_ID")
+  status_json=$(json_escape_text "$status")
+  preview_json=$(json_escape_text "$preview")
+  tool_json=$(json_escape_text "$TOOL_LABEL")
+  result_json=$(json_string_file "$result_file")
+  cat > "$out_file" << PAYLOADEOF
+{"agentId":"$agent_json","status":"$status_json","preview":"$preview_json","toolUsed":"$tool_json","timestamp":$(date +%s),"result":$result_json}
+PAYLOADEOF
+}
+
+webhook_destination_host() {
+  url="$1"
+  if node_usable; then
+    if SHELLY_WEBHOOK_URL="$url" shelly_node -e 'try { const u = new URL(process.env.SHELLY_WEBHOOK_URL || ""); if (u.protocol !== "https:" || !u.hostname) process.exit(1); process.stdout.write(u.host || u.hostname); } catch (_) { process.exit(1); }' 2>/dev/null; then
+      return 0
+    fi
+  fi
+  case "$url" in
+    https://*) ;;
+    *) return 1 ;;
+  esac
+  host=$(printf '%s' "$url" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*$##')
+  [ -n "$host" ] || return 1
+  printf '%s' "$host"
+}
+
+register_source_urls() {
+  result_file="$1"
+  REGISTRY_LOCK="$SOURCE_REGISTRY_FILE.lock"
+  REGISTRY_LOCK_ACQUIRED=0
+  lock_attempt=0
+  until mkdir "$REGISTRY_LOCK" 2>/dev/null; do
+    lock_attempt=$((lock_attempt + 1))
+    if [ "$lock_attempt" -ge 30 ]; then
+      break
+    fi
+    sleep 1
+  done
+  if [ "$lock_attempt" -lt 30 ]; then
+    REGISTRY_LOCK_ACQUIRED=1
+  fi
+  { grep -Eo 'https?://[^][ )<>"'"'"']+' "$result_file" 2>/dev/null || true; } | sed 's/[.,;)]$//' | sort -u | while read -r url; do
+    [ -n "$url" ] || continue
+    if ! awk -F '\\t' -v url="$url" '$4 == url { found=1 } END { exit found ? 0 : 1 }' "$SOURCE_REGISTRY_FILE"; then
+      printf '%s\\t%s\\t%s\\t%s\\n' "$(date -Iseconds)" "$AGENT_ID" "$TOOL_LABEL" "$url" >> "$SOURCE_REGISTRY_FILE"
+    fi
+  done
+  if [ "$REGISTRY_LOCK_ACQUIRED" = "1" ] && [ -d "$REGISTRY_LOCK" ]; then
+    rmdir "$REGISTRY_LOCK" 2>/dev/null || true
+    REGISTRY_LOCK_ACQUIRED=0
+    REGISTRY_LOCK=""
+  fi
+}
+
+save_draft_result() {
+  result_file="$1"
+  mkdir -p "$OUTPUT_DIR"
+  DATE=$(date +%Y-%m-%d)
+  SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"
+  cp "$result_file" "$SAVED_FILE"
+
+  if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
+    OBSIDIAN_TARGET="90_Log/Agent_Output"
+    case "$OUTPUT_DIR" in
+      *drafts/substack*) OBSIDIAN_TARGET="50_Drafts/Substack" ;;
+      *drafts/x*) OBSIDIAN_TARGET="50_Drafts/X" ;;
+      *drafts/articles*) OBSIDIAN_TARGET="50_Drafts/Substack" ;;
+      *sources*) OBSIDIAN_TARGET="20_Literature/Papers" ;;
+      *images/prompts*) OBSIDIAN_TARGET="60_Experiments/Image_Prompts" ;;
+      *evals*) OBSIDIAN_TARGET="90_Log/Agent_Evals" ;;
+    esac
+    mkdir -p "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET"
+    cp "$SAVED_FILE" "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$DATE-$SLUG.md"
+  fi
+
+  register_source_urls "$result_file"
+}
+
+dispatch_agent_action() {
+  result_file="$1"
+  preview="$2"
+  ACTION_DISPATCH_STATUS=""
+  ACTION_DISPATCH_MESSAGE=""
+
+  case "$ACTION_TYPE" in
+    ""|draft)
+      save_draft_result "$result_file"
+      return 0
+      ;;
+    notify)
+      write_native_notification_request "success" "$preview"
+      return 0
+      ;;
+    webhook)
+      if [ -z "$ACTION_WEBHOOK_URL" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Webhook action is missing an https URL."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      case "$ACTION_WEBHOOK_URL" in
+        https://*) ;;
+        *)
+          ACTION_DISPATCH_STATUS="error"
+          ACTION_DISPATCH_MESSAGE="Webhook action requires an https URL."
+          write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+          return 1
+          ;;
+      esac
+      if ! webhook_host="$(webhook_destination_host "$ACTION_WEBHOOK_URL" 2>/dev/null)"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Webhook action URL is invalid."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      webhook_payload="$LOG_DIR/webhook-payload-$(date +%s).json"
+      webhook_response="$LOG_DIR/webhook-response-$(date +%s).txt"
+      webhook_error="$LOG_DIR/webhook-error-$(date +%s).txt"
+      write_webhook_payload "$webhook_payload" "success" "$preview" "$result_file"
+      set +e
+      HTTP_TIMEOUT_SECONDS="\${WEBHOOK_TIMEOUT_SECONDS:-30}" http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload" "$webhook_response" "$webhook_error"
+      webhook_rc=$?
+      set -e
+      if [ "$webhook_rc" -ne 0 ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Webhook dispatch failed with exit $webhook_rc: $(head -c 240 "$webhook_error" 2>/dev/null | tr '\\n' ' ')"
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      ACTION_DISPATCH_MESSAGE="Webhook delivered to $webhook_host"
+      return 0
+      ;;
+    cli)
+      ACTION_DISPATCH_STATUS="skipped"
+      ACTION_DISPATCH_MESSAGE="CLI action requires in-app confirmation and was not auto-executed: $(printf '%s' "$ACTION_COMMAND" | head -c 240 | tr '\\n' ' ')"
+      write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
+      return 1
+      ;;
+    *)
+      ACTION_DISPATCH_STATUS="error"
+      ACTION_DISPATCH_MESSAGE="Unknown agent action: $ACTION_TYPE"
+      write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+      return 1
+      ;;
+  esac
 }
 
 http_post_json() {
@@ -1293,49 +1467,10 @@ if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE
   STATUS="success"
   ERROR_MESSAGE=""
 
-  # Copy to output directory
-  mkdir -p "$OUTPUT_DIR"
-  DATE=$(date +%Y-%m-%d)
-  SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"
-  cp "$RESULT_FILE" "$SAVED_FILE"
-
-  if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
-    OBSIDIAN_TARGET="90_Log/Agent_Output"
-    case "$OUTPUT_DIR" in
-      *drafts/substack*) OBSIDIAN_TARGET="50_Drafts/Substack" ;;
-      *drafts/x*) OBSIDIAN_TARGET="50_Drafts/X" ;;
-      *drafts/articles*) OBSIDIAN_TARGET="50_Drafts/Substack" ;;
-      *sources*) OBSIDIAN_TARGET="20_Literature/Papers" ;;
-      *images/prompts*) OBSIDIAN_TARGET="60_Experiments/Image_Prompts" ;;
-      *evals*) OBSIDIAN_TARGET="90_Log/Agent_Evals" ;;
-    esac
-    mkdir -p "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET"
-    cp "$SAVED_FILE" "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$DATE-$SLUG.md"
-  fi
-
-  REGISTRY_LOCK="$SOURCE_REGISTRY_FILE.lock"
-  REGISTRY_LOCK_ACQUIRED=0
-  lock_attempt=0
-  until mkdir "$REGISTRY_LOCK" 2>/dev/null; do
-    lock_attempt=$((lock_attempt + 1))
-    if [ "$lock_attempt" -ge 30 ]; then
-      break
-    fi
-    sleep 1
-  done
-  if [ "$lock_attempt" -lt 30 ]; then
-    REGISTRY_LOCK_ACQUIRED=1
-  fi
-  { grep -Eo 'https?://[^][ )<>"'"'"']+' "$RESULT_FILE" 2>/dev/null || true; } | sed 's/[.,;)]$//' | sort -u | while read -r url; do
-    [ -n "$url" ] || continue
-    if ! awk -F '\\t' -v url="$url" '$4 == url { found=1 } END { exit found ? 0 : 1 }' "$SOURCE_REGISTRY_FILE"; then
-      printf '%s\\t%s\\t%s\\t%s\\n' "$(date -Iseconds)" "$AGENT_ID" "$TOOL_LABEL" "$url" >> "$SOURCE_REGISTRY_FILE"
-    fi
-  done
-  if [ "$REGISTRY_LOCK_ACQUIRED" = "1" ] && [ -d "$REGISTRY_LOCK" ]; then
-    rmdir "$REGISTRY_LOCK" 2>/dev/null || true
-    REGISTRY_LOCK_ACQUIRED=0
-    REGISTRY_LOCK=""
+  if ! dispatch_agent_action "$RESULT_FILE" "$PREVIEW"; then
+    STATUS="\${ACTION_DISPATCH_STATUS:-error}"
+    ERROR_MESSAGE="\${ACTION_DISPATCH_MESSAGE:-agent action dispatch failed}"
+    PREVIEW="$ERROR_MESSAGE"
   fi
 else
   if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
@@ -1345,6 +1480,7 @@ else
   fi
   ERROR_MESSAGE="$PREVIEW"
   STATUS="error"
+  write_native_notification_request "error" "$PREVIEW" || true
 fi
 
 # Log run result
