@@ -36,6 +36,20 @@ describe('generateRunScript credential isolation (Tier-1)', () => {
     expect(generateRunScript(agent({ type: 'auto' }))).not.toContain(UNSET);
   });
 
+  it('forces secret-bearing task text to local and disables cloud fallback', () => {
+    const s = generateRunScript({
+      ...agent({ type: 'gemini-api' }),
+      prompt: 'Summarize this config: api_key=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+    });
+
+    expect(s).toContain(UNSET);
+    expect(s).toContain('Secret guard matched task text');
+    expect(s).toContain('"guard":"secret"');
+    expect(s).toContain('"noCloudFallback":true');
+    expect(s).toContain('Qwen3.5-0.8B-Q4_K_M');
+    expect(s).not.toContain('generativelanguage.googleapis.com');
+  });
+
   it('never unsets non-secret config', () => {
     const s = generateRunScript(agent({ type: 'cli', cli: 'codex' }));
     expect(s).not.toMatch(/unset[^\n]*LOCAL_LLM/);

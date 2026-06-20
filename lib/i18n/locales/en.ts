@@ -1134,6 +1134,12 @@ const en: Record<string, string> = {
   'sidebar.agent_autonomous': 'autonomous',
   'sidebar.agent_paused': 'paused',
   'sidebar.agent_last': 'Last',
+  'sidebar.agent_route': 'Route',
+  'sidebar.agent_route_guard': 'Guard',
+  'sidebar.agent_route_keyword': 'Keyword',
+  'sidebar.agent_route_secret': 'Secret guard',
+  'sidebar.agent_route_no_cloud': 'Cloud fallback disabled',
+  'sidebar.agent_route_why': 'Why',
   'sidebar.agent_run_now': 'Run now',
   'sidebar.agent_pause': 'Pause',
   'sidebar.agent_resume': 'Resume',
@@ -1551,6 +1557,14 @@ const en: Record<string, string> = {
   'sidebar.add_repo_add': 'ADD',
   'sidebar.cloud_coming_soon': 'Cloud storage integration coming soon. Configure in Settings.',
   'sidebar.cloud_open_settings': 'Open Settings',
+  'agent_action_confirm_title': 'Confirm CLI action',
+  'agent_action_confirm_body': 'This autonomous agent is requesting a shell command. Review the exact command before allowing it.',
+  'agent_action_confirm_command': 'Command',
+  'agent_action_confirm_safety': 'Safety',
+  'agent_action_confirm_allow': 'Allow',
+  'agent_action_confirm_decline': 'Decline',
+  'agent_action_confirm_not_ready': 'The action approval request is no longer available.',
+  'agent_action_confirm_expired': 'The action approval request has expired.',
 };
 
 export default en;

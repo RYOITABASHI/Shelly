@@ -1133,6 +1133,12 @@ const ja: Record<string, string> = {
   'sidebar.agent_autonomous': '自律',
   'sidebar.agent_paused': '一時停止中',
   'sidebar.agent_last': '直近',
+  'sidebar.agent_route': '実行経路',
+  'sidebar.agent_route_guard': '判定ガード',
+  'sidebar.agent_route_keyword': 'キーワード',
+  'sidebar.agent_route_secret': '秘密検出',
+  'sidebar.agent_route_no_cloud': 'クラウドフォールバック無効',
+  'sidebar.agent_route_why': '理由',
   'sidebar.agent_run_now': '今すぐ実行',
   'sidebar.agent_pause': '一時停止',
   'sidebar.agent_resume': '再開',
@@ -1550,6 +1556,14 @@ const ja: Record<string, string> = {
   'sidebar.add_repo_add': '追加',
   'sidebar.cloud_coming_soon': 'クラウドストレージ連携は近日対応予定です。設定で確認してください。',
   'sidebar.cloud_open_settings': '設定を開く',
+  'agent_action_confirm_title': 'CLI アクション確認',
+  'agent_action_confirm_body': '自律エージェントがシェルコマンドの実行を要求しています。許可する前に正確なコマンドを確認してください。',
+  'agent_action_confirm_command': 'コマンド',
+  'agent_action_confirm_safety': '安全判定',
+  'agent_action_confirm_allow': '許可',
+  'agent_action_confirm_decline': '拒否',
+  'agent_action_confirm_not_ready': 'アクション承認リクエストを利用できません。',
+  'agent_action_confirm_expired': 'アクション承認リクエストの期限が切れています。',
 };
 
 export default ja;

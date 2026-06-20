@@ -148,6 +148,46 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
   }): Promise<void>;
   cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
+  getAgentActionApprovalBridgePaths?(): Promise<{
+    requestDirPath: string;
+    requestDirUri: string;
+    replyDirPath: string;
+  }>;
+  readAgentActionApprovalRequest?(runId: string): Promise<{
+    runId: string;
+    agentId: string;
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+    preview?: string | null;
+    destinationHost?: string | null;
+    command?: string | null;
+    safetyLevel?: string | null;
+    safetyReason?: string | null;
+    payloadPath?: string | null;
+    resultPath?: string | null;
+    ts?: string | null;
+    expiresAt?: number | null;
+    requestSha256?: string | null;
+  }>;
+  notifyAgentActionApprovalNeeded?(request: {
+    runId: string;
+    agentId?: string | null;
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+    preview?: string | null;
+    destinationHost?: string | null;
+    command?: string | null;
+    safetyLevel?: string | null;
+    safetyReason?: string | null;
+    payloadPath?: string | null;
+    resultPath?: string | null;
+    ts?: string | null;
+    expiresAt?: number | null;
+  }): Promise<void>;
+  resolveAgentActionApproval?(
+    runId: string,
+    decision: 'accept' | 'decline',
+    expectedRequestSha256?: string | null
+  ): Promise<void>;
+  cancelAgentActionApproval?(runId: string): Promise<void>;
   returnToHome?(): Promise<void>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }

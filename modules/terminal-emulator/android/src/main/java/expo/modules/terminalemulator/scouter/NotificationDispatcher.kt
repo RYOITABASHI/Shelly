@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import expo.modules.terminalemulator.R
+import java.security.MessageDigest
 import java.util.Locale
 
 class NotificationDispatcher(private val context: Context) {
@@ -58,6 +60,8 @@ class NotificationDispatcher(private val context: Context) {
         ID_RATE -> CH_RATE
         ID_REPLY -> CH_COMPLETED
         ID_LONG_RUNNING -> CH_RUNNING
+        in ID_AGENT_ACTION_MIN..ID_AGENT_ACTION_MAX -> CH_APPROVAL
+        in 9350 until 9400 -> CH_APPROVAL
         in 9400 until 9900 -> CH_APPROVAL
         in 9900 until 9950 -> CH_COMPLETED
         else -> CH_RATE
@@ -115,6 +119,57 @@ class NotificationDispatcher(private val context: Context) {
             bigText = truncate(body, APPROVAL_MAX_CHARS),
             subText = shorten(agentId, 40)
         )
+    }
+
+    fun notifyAgentActionApprovalNeeded(request: AgentActionApprovalRequest) {
+        runCatching {
+            val shouldNotify = shouldFire(KEY_LAST_AGENT_ACTION, request.key)
+            if (!shouldNotify) return
+            val requestSha256 = request.requestSha256
+                ?.takeIf { HEX_SHA256_RE.matches(it) }
+                ?: return
+            val preview = request.preview.takeIf { it.isNotBlank() } ?: request.actionType
+            val actionLabel = request.actionType.replaceFirstChar {
+                if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString()
+            }
+            val body = when (request.actionType) {
+                "webhook" -> listOfNotNull(
+                    context.getString(R.string.scouter_notification_agent_action_webhook_host, request.destinationHost ?: "unknown"),
+                    context.getString(R.string.scouter_notification_agent_action_preview, preview.redactForScouter()),
+                    request.payloadPath?.let { context.getString(R.string.scouter_notification_agent_action_payload, it.redactForScouter()) },
+                ).joinToString("\n")
+                "cli" -> listOfNotNull(
+                    request.command?.redactForScouter(),
+                    request.safetyLevel?.let { context.getString(R.string.scouter_notification_agent_action_safety, it) },
+                    request.safetyReason?.let { context.getString(R.string.scouter_notification_agent_action_reason, it.redactForScouter()) },
+                    context.getString(R.string.scouter_notification_agent_action_cli_review_required),
+                ).joinToString("\n")
+                else -> context.getString(R.string.scouter_notification_agent_action_preview, preview.redactForScouter())
+            }
+            val actions = if (request.actionType == "cli") {
+                listOf(
+                    action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
+                    action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, requestSha256)),
+                )
+            } else {
+                listOf(
+                    action(context.getString(R.string.scouter_notification_action_allow), agentActionApprovalPendingIntent(true, request, requestSha256)),
+                    action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, requestSha256)),
+                )
+            }
+            notify(
+                id = AgentActionApprovalBridge.notificationId(request.runId),
+                title = context.getString(
+                    R.string.scouter_notification_agent_action_title,
+                    shorten(request.agentId, 32),
+                    actionLabel
+                ),
+                text = truncate(body, REPLY_MAX_CHARS),
+                bigText = truncate(body, APPROVAL_MAX_CHARS),
+                actions = actions,
+                autoCancel = false
+            )
+        }.onFailure { Log.w(TAG, "agent action approval notify failed", it) }
     }
 
     // --- Live-poll entry points (additive) -----------------------------------
@@ -488,6 +543,61 @@ class NotificationDispatcher(private val context: Context) {
         )
     }
 
+    private fun agentActionApprovalPendingIntent(
+        allow: Boolean,
+        request: AgentActionApprovalRequest,
+        requestSha256: String
+    ): PendingIntent {
+        val decision = if (allow) "allow" else "deny"
+        val intent = Intent(context, ScouterWidgetPromptActivity::class.java)
+            .setAction(
+                if (allow) {
+                    ScouterWidgetPromptActivity.ACTION_AGENT_ACTION_ALLOW
+                } else {
+                    ScouterWidgetPromptActivity.ACTION_AGENT_ACTION_DENY
+                }
+            )
+            .setData(
+                Uri.parse(
+                    "shelly://agent-action-approval/${Uri.encode(request.runId)}/$decision/$requestSha256"
+                )
+            )
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ACTION_RUN_ID, request.runId)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ACTION_REQUEST_SHA256, requestSha256)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        val requestCode = agentActionRequestCode("${request.runId}:$decision:$requestSha256")
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun agentActionReviewPendingIntent(
+        request: AgentActionApprovalRequest,
+        requestSha256: String
+    ): PendingIntent {
+        val intent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("shelly:///agent-action-confirm?runId=${Uri.encode(request.runId)}&requestSha256=$requestSha256")
+        )
+            .setPackage(context.packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val requestCode = agentActionRequestCode("${request.runId}:review:$requestSha256")
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun choiceSelectActionPendingIntent(
         codexSessionId: String?,
         ptySessionId: String?,
@@ -579,6 +689,17 @@ class NotificationDispatcher(private val context: Context) {
     private fun formatDuration(seconds: Long): String =
         if (seconds >= 60L) "${seconds / 60L}m" else "${seconds}s"
 
+    private fun agentActionRequestCode(key: String): Int =
+        REQ_AGENT_ACTION_PREFIX or (stableHash("agent-action-pending-intent:$key") and REQ_AGENT_ACTION_MASK)
+
+    private fun stableHash(value: String): Int {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return ((digest[0].toInt() and 0xff) shl 24) or
+            ((digest[1].toInt() and 0xff) shl 16) or
+            ((digest[2].toInt() and 0xff) shl 8) or
+            (digest[3].toInt() and 0xff)
+    }
+
     companion object {
         private const val TAG = "ScouterNotification"
         // Legacy single channel (pre-2026-06), deleted on init now that each
@@ -599,12 +720,16 @@ class NotificationDispatcher(private val context: Context) {
         private const val ID_CHOICE = 9302
         private const val ID_RATE = 9303
         private const val ID_REPLY = 9304
+        private const val ID_AGENT_ACTION_MIN = 0x31000000
+        private const val ID_AGENT_ACTION_MAX = 0x31ffffff
 
         // Action PendingIntent request codes, distinct from the widget's
         // 9100-9110 so notification actions never clobber the widget's intents.
         private const val REQ_APPROVAL_ALLOW = 9310
         private const val REQ_APPROVAL_DENY = 9311
         private const val REQ_CHOICE_BASE = 9320
+        private const val REQ_AGENT_ACTION_PREFIX = 0x32000000
+        private const val REQ_AGENT_ACTION_MASK = 0x00ffffff
         private const val REQ_AGENT_ESCALATION_BASE = 9400
         private const val REQ_AGENT_ESCALATION_SPAN = 500
         private const val ID_AGENT_RESULT_BASE = 9900
@@ -612,6 +737,7 @@ class NotificationDispatcher(private val context: Context) {
 
         // Dedup pref keys.
         private const val KEY_LAST_APPROVAL = "last_approval_at"
+        private const val KEY_LAST_AGENT_ACTION = "last_agent_action"
         private const val KEY_LAST_AGENT_ESCALATION = "last_agent_escalation"
         private const val KEY_LAST_CHOICE = "last_choice_at"
         private const val KEY_LAST_RATE = "last_rate_onset"

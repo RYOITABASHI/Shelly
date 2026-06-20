@@ -155,19 +155,26 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     const notify = generateRunScript(notifyAgent);
     expect(notify).toContain("ACTION_TYPE='notify'");
     expect(notify).toContain('native-result-notification.json');
+    expect(notify).toContain('write_action_approval_request "notify" "$preview" "$result_file"');
+    expect(notify).toContain('wait_action_approval "notify" || return 1');
     expect(notify).toContain('write_native_notification_request "success" "$preview"');
 
     const webhook = generateRunScript(webhookAgent);
     expect(webhook).toContain("ACTION_TYPE='webhook'");
     expect(webhook).toContain("ACTION_WEBHOOK_URL='https://example.com/hook'");
     expect(webhook).toContain('Webhook action requires an https URL.');
+    expect(webhook).toContain('write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload"');
+    expect(webhook).toContain('wait_action_approval "webhook" || return 1');
     expect(webhook).toContain('http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload"');
     expect(webhook).toContain('write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true');
 
     const cli = generateRunScript(cliAgent);
     expect(cli).toContain("ACTION_TYPE='cli'");
     expect(cli).toContain("ACTION_COMMAND='rm -rf ~/tmp/example'");
-    expect(cli).toContain('CLI action requires in-app confirmation and was not auto-executed');
+    expect(cli).toContain("ACTION_COMMAND_SAFETY_LEVEL='HIGH'");
+    expect(cli).toContain('write_action_approval_request "cli" "$preview" "$result_file"');
+    expect(cli).toContain('wait_action_approval "cli" || return 1');
+    expect(cli).toContain('bash -lc "$ACTION_COMMAND" > "$cli_output" 2>&1');
     expect(cli).not.toContain('eval "$ACTION_COMMAND"');
   });
 });

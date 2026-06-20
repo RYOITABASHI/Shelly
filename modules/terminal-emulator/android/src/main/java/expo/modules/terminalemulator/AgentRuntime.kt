@@ -2,10 +2,12 @@ package expo.modules.terminalemulator
 
 import android.content.Context
 import android.util.Log
-import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import expo.modules.terminalemulator.scouter.AgentEscalationBridge
+import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
+import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class AgentRunResult(
     val agentId: String,
@@ -84,14 +86,21 @@ object AgentRuntime {
             append(shellQuote(scriptPath))
         }
 
-        val result = ShellyJNI.execSubprocess(
-            "/system/bin/linker64",
-            bashPath,
-            libPath,
-            homeDir.absolutePath,
-            command,
-            DEFAULT_TIMEOUT_MS
-        )
+        val actionApprovalNotifierStop = AtomicBoolean(false)
+        val actionApprovalNotifier = startActionApprovalNotifier(appContext, actionApprovalNotifierStop)
+        val result = try {
+            ShellyJNI.execSubprocess(
+                "/system/bin/linker64",
+                bashPath,
+                libPath,
+                homeDir.absolutePath,
+                command,
+                DEFAULT_TIMEOUT_MS
+            )
+        } finally {
+            actionApprovalNotifierStop.set(true)
+            runCatching { actionApprovalNotifier.join(1000) }
+        }
 
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
@@ -135,6 +144,42 @@ object AgentRuntime {
             return false
         } finally {
             runCatching { request.delete() }
+        }
+    }
+
+    private fun startActionApprovalNotifier(context: Context, stop: AtomicBoolean): Thread {
+        val appContext = context.applicationContext
+        return Thread {
+            val dispatcher = NotificationDispatcher(appContext)
+            val seen = mutableSetOf<String>()
+            while (!stop.get()) {
+                try {
+                    val dir = AgentActionApprovalBridge.requestDir(appContext)
+                    val now = System.currentTimeMillis()
+                    dir.listFiles { file ->
+                        file.isFile && file.name.startsWith("action-") && file.name.endsWith(".json")
+                    }?.forEach { file ->
+                        val request = AgentActionApprovalBridge.fromRequestFile(appContext, file)
+                            ?: return@forEach
+                        val expiresAt = request.expiresAt
+                        if (expiresAt != null && now > expiresAt) return@forEach
+                        if (seen.add(request.key)) {
+                            dispatcher.notifyAgentActionApprovalNeeded(request)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "agent action approval notifier iteration failed", e)
+                }
+                try {
+                    Thread.sleep(500)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }.apply {
+            name = "ShellyAgentActionApprovalNotifier"
+            isDaemon = true
+            start()
         }
     }
 

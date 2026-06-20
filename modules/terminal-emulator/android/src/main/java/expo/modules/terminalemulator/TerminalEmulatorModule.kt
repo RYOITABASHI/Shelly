@@ -19,6 +19,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
 import expo.modules.terminalemulator.scouter.AgentEscalationBridge
 import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
@@ -1210,6 +1211,55 @@ class TerminalEmulatorModule : Module() {
                 ?: throw IllegalStateException("React context unavailable")
             context.getSystemService(NotificationManager::class.java)
                 ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
+            null
+        }
+
+        AsyncFunction("getAgentActionApprovalBridgePaths") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val requestDir = AgentActionApprovalBridge.requestDir(context)
+            val replyDir = AgentActionApprovalBridge.replyDir(context)
+            mapOf(
+                "requestDirPath" to requestDir.absolutePath,
+                "requestDirUri" to AgentActionApprovalBridge.requestDirUri(context),
+                "replyDirPath" to replyDir.absolutePath,
+            )
+        }
+
+        AsyncFunction("readAgentActionApprovalRequest") { runId: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val parsed = AgentActionApprovalBridge.fromRequestFile(context, runId)
+                ?: throw IllegalArgumentException("invalid agent action approval request")
+            AgentActionApprovalBridge.toMap(parsed)
+        }
+
+        AsyncFunction("notifyAgentActionApprovalNeeded") { request: Map<String, Any?> ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val runId = AgentActionApprovalBridge.anchorFromMap(request)
+                ?: throw IllegalArgumentException("invalid agent action approval request")
+            val parsed = AgentActionApprovalBridge.fromRequestFile(context, runId)
+                ?: throw IllegalArgumentException("invalid agent action approval request")
+            NotificationDispatcher(context).notifyAgentActionApprovalNeeded(parsed)
+            null
+        }
+
+        AsyncFunction("resolveAgentActionApproval") { runId: String, decision: String, expectedRequestSha256: String? ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            AgentActionApprovalBridge.writeHumanReply(context, runId, decision, expectedRequestSha256)
+            AgentActionApprovalBridge.clearRequest(context, runId)
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentActionApprovalBridge.notificationId(runId))
+            null
+        }
+
+        AsyncFunction("cancelAgentActionApproval") { runId: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentActionApprovalBridge.notificationId(runId))
             null
         }
 
