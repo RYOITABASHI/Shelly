@@ -344,7 +344,7 @@ function Segmented({
   onChange,
   colors,
 }: {
-  options: Array<{ key: string; label: string }>;
+  options: { key: string; label: string }[];
   value: string;
   onChange: (key: string) => void;
   colors: any;

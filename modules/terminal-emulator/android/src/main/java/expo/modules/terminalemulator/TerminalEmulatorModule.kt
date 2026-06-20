@@ -98,17 +98,24 @@ class TerminalEmulatorModule : Module() {
         }
     }
 
-    private fun validateDownloadPath(downloadSubdir: String, fileName: String): java.io.File {
+    private fun validateDownloadPath(context: Context, downloadSubdir: String, fileName: String): java.io.File {
         val subdirRe = Regex("^[A-Za-z0-9._-]+$")
         val apkNameRe = Regex("^[A-Za-z0-9._-]+\\.apk$", RegexOption.IGNORE_CASE)
         require(subdirRe.matches(downloadSubdir)) { "Invalid download directory: $downloadSubdir" }
         require(apkNameRe.matches(fileName)) { "Invalid APK file name: $fileName" }
 
-        val downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        // App-specific external files dir — DownloadManager can always write here
+        // with NO storage permission. The public Downloads dir throws
+        // SecurityException on targetSdk>=29 (legacy WRITE_EXTERNAL_STORAGE is
+        // ineffective and DownloadManager does NOT honor MANAGE_EXTERNAL_STORAGE),
+        // so enqueue() created zero download rows and the updater hung. Must stay
+        // string-identical to BuildsModal.releaseApkDir().
+        val downloadsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: throw IllegalStateException("External files dir unavailable")
         val target = java.io.File(downloadsRoot, fileName).canonicalFile
         val root = downloadsRoot.canonicalFile
         require(target.path == root.path || target.path.startsWith(root.path + java.io.File.separator)) {
-            "Download path escapes Downloads directory"
+            "Download path escapes app download directory"
         }
         return target
     }
@@ -854,7 +861,7 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("enqueueApkDownload") { url: String, downloadSubdir: String, fileName: String ->
             val context = requireReactContext()
-            val target = validateDownloadPath(downloadSubdir, fileName)
+            val target = validateDownloadPath(context, downloadSubdir, fileName)
             target.parentFile?.mkdirs()
             if (target.exists() && !target.delete()) {
                 throw IllegalStateException("Could not replace existing APK: ${target.absolutePath}")
@@ -867,13 +874,21 @@ class TerminalEmulatorModule : Module() {
                 setAllowedOverMetered(true)
                 setAllowedOverRoaming(true)
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-                setDestinationInExternalPublicDir(
+                setDestinationInExternalFilesDir(
+                    context,
                     Environment.DIRECTORY_DOWNLOADS,
                     fileName,
                 )
             }
             val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val downloadId = manager.enqueue(request)
+            val downloadId = try {
+                manager.enqueue(request)
+            } catch (e: Exception) {
+                // Surface a precise error instead of a silent no-op enqueue that
+                // leaves the JS poll loop spinning with no DownloadManager row.
+                Log.e("TerminalEmulator", "enqueueApkDownload: enqueue failed", e)
+                throw IllegalStateException("DownloadManager.enqueue failed: ${e.message}", e)
+            }
             Log.i("TerminalEmulator", "enqueueApkDownload: id=$downloadId target=${target.absolutePath}")
             mapOf(
                 "downloadId" to downloadId,

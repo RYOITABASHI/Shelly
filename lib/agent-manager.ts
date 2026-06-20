@@ -270,20 +270,55 @@ export async function stopAgent(
  * Delete an agent and clean up.
  */
 export async function deleteAgent(agentId: string): Promise<void> {
+  // ids are generated slugs (`agent-<ts>`) or sanitized names; refuse anything
+  // with shell metacharacters so the $HOME-relative rm below is injection-safe.
+  if (!/^[A-Za-z0-9._-]+$/.test(agentId)) {
+    throw new Error(`refusing to delete agent with unsafe id: ${agentId}`);
+  }
   await uninstallSchedule(agentId);
-  const dir = agentsDir();
-  const command = [
-    `rm -f ${shellQuote(`${dir}/${agentId}.json`)}`,
-    `rm -f ${shellQuote(`${dir}/run-agent-${agentId}.sh`)}`,
-    `rm -f ${shellQuote(`${dir}/locks/${agentId}.pid`)}`,
-    `rm -rf ${shellQuote(`${dir}/logs/${agentId}`)}`,
-  ].join(' && ');
-  try {
-    await TerminalEmulator.execCommand(command, 30_000);
-  } catch {
-    // Deleting store state should not be blocked by filesystem cleanup.
+  // Delete via the live shell $HOME — NOT the JS getHomePath() cache. The cache
+  // can hold an unresolved /data/user/0 alias that doesn't resolve to the real
+  // files dir on some OEM builds, so `rm -f <alias>` silently exits 0 while the
+  // real <id>.json survives and the agent resurrects on next loadAgentsFromDisk
+  // (bug: deleted agents reappear after restart). `$HOME` is the same home the
+  // interactive shell uses, so it always hits the real files. `set -e` + a
+  // post-rm existence check + an exitCode assertion make a failed delete LOUD
+  // instead of swallowed, so the store entry is only dropped on confirmed removal.
+  const command =
+    `set -e\n` +
+    `d="$HOME/.shelly/agents"\n` +
+    `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/locks/${agentId}.pid"\n` +
+    `rm -rf "$d/logs/${agentId}"\n` +
+    `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }`;
+  const result = await TerminalEmulator.execCommand(command, 30_000);
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `deleteAgent(${agentId}) failed (exit ${result.exitCode}): ${(result.stderr || result.stdout || '').trim()}`
+    );
   }
   useAgentStore.getState().removeAgent(agentId);
+}
+
+/**
+ * Remove orphan agent artifacts — run scripts (`run-agent-<id>.sh`) and log dirs
+ * whose `<id>.json` no longer exists (e.g. left by an interrupted deleteAgent whose
+ * rm threw and was swallowed). Best-effort; called on load so a stray script can't
+ * accumulate or zombie-fire. The schedule is already cancelled at delete time, but
+ * removing the script also neutralises any leftover alarm (missing-script no-op).
+ */
+export async function cleanupOrphanAgentFiles(
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const dir = agentsDir();
+  const cmd =
+    `cd ${shellQuote(dir)} 2>/dev/null || exit 0\n` +
+    `for s in run-agent-*.sh; do [ -e "\$s" ] || continue; id="\${s#run-agent-}"; id="\${id%.sh}"; [ -f "\$id.json" ] || rm -f "\$s"; done\n` +
+    `for d in logs/*/; do [ -e "\$d" ] || continue; id="\$(basename "\$d")"; [ -f "\$id.json" ] || rm -rf "\$d"; done`;
+  try {
+    await runCommand(cmd);
+  } catch {
+    // best-effort cleanup; never block startup
+  }
 }
 
 const haltSentinelPath = () => `${agentsDir()}/.halted`;
@@ -420,6 +455,8 @@ export async function loadAgentsFromDisk(
 
     if (agents.length === 0) {
       useAgentStore.getState().setAgents([]);
+      // Still sweep — "deleted every agent" can leave orphan scripts/logs.
+      if (syncLogs) void cleanupOrphanAgentFiles(runCommand);
       return;
     }
     const runHistory = syncLogs
@@ -440,6 +477,10 @@ export async function loadAgentsFromDisk(
       useAgentStore.getState().setRunHistory(runHistory);
     }
     useAgentStore.getState().setAgents(agentsWithStatus);
+    if (syncLogs) {
+      // Sweep orphan scripts/logs left by past deletes (best-effort, non-blocking).
+      void cleanupOrphanAgentFiles(runCommand);
+    }
     if (repairSchedules) {
       scheduleAgentStartupRepair(agentsWithStatus, runCommand, repairDelayMs, shouldRepair);
     }
@@ -465,6 +506,9 @@ function scheduleAgentStartupRepair(
       for (const agent of scheduledAgents) {
         if (shouldRun && !shouldRun()) return;
         if (useAgentStore.getState().halted) return;
+        // Skip agents deleted during the repair-delay window — re-materializing a
+        // captured snapshot would rewrite its <id>.json + alarm and resurrect it.
+        if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
         try {
           await materializeAgent(agent, runCommand, true);
           await new Promise((resolve) => setTimeout(resolve, 250));

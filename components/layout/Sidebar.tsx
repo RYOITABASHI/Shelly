@@ -23,14 +23,13 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
-import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
 import { QuickLaunchSection } from './QuickLaunchSection';
 import { CodexSessionsSection } from './CodexSessionsSection';
-import { colors as C, fonts as F, sizes as S, padding as P, radii as R, icons as I } from '@/theme.config';
+import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
@@ -59,7 +58,6 @@ export function Sidebar() {
   const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo } =
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
-  const runHistory = useAgentStore((s) => s.runHistory);
   const agentsHalted = useAgentStore((s) => s.halted);
   const [runningAgentIds, setRunningAgentIds] = useState<Set<string>>(new Set());
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(new Set());
@@ -199,6 +197,29 @@ export function Sidebar() {
       Alert.alert(t('sidebar.agent_update_failed_title'), String((error as Error)?.message || error));
     }
   }, [runCommandForAgentSync, t]);
+
+  // Tap an agent row → full detail popup (the row only has room for the name).
+  const showAgentDetail = React.useCallback((agent: Agent) => {
+    const lastLog = useAgentStore.getState().getRunHistory(agent.id).at(-1);
+    const meta = [
+      agent.schedule || t('sidebar.agent_manual'),
+      agent.action?.type ?? 'draft',
+      toolChoiceToLabel(agent.tool),
+      agent.autonomous ? t('sidebar.agent_autonomous') : null,
+      agent.enabled ? null : t('sidebar.agent_paused'),
+    ].filter(Boolean).join(' · ');
+    const body = [
+      (agent.prompt || agent.description || '').trim(),
+      '',
+      meta,
+      lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
+    ].filter(Boolean).join('\n');
+    Alert.alert(agent.name, body, [
+      { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
+      { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
+      { text: t('common.close'), style: 'cancel' },
+    ]);
+  }, [t, handleRunScheduledAgent, handleTogglePause]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
@@ -362,14 +383,19 @@ export function Sidebar() {
                   style={[styles.taskRow, styles.agentRow, (!agent.enabled || agentsHalted) && styles.agentRowDisabled]}
                 >
                   <View style={[styles.taskDot, { backgroundColor: agent.autonomous ? C.accent : C.text3 }]} />
-                  <View style={styles.taskInfo}>
+                  <Pressable
+                    style={styles.taskInfo}
+                    onPress={() => showAgentDetail(agent)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
+                  >
                     <Text style={styles.taskName} numberOfLines={1}>
                       {agent.name.toUpperCase()}
                     </Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
-                      {agent.schedule || 'manual'} · {toolChoiceToLabel(agent.tool)}
+                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'}
                     </Text>
-                  </View>
+                  </Pressable>
                   <Pressable
                     onPress={() => void handleRunScheduledAgent(agent.id, agent.name)}
                     hitSlop={8}
@@ -398,15 +424,6 @@ export function Sidebar() {
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => void handleTogglePause(agent)}
-                    hitSlop={8}
-                    style={styles.tasksAction}
-                    accessibilityRole="button"
-                    accessibilityLabel={t(agent.enabled ? 'sidebar.pause_agent_a11y' : 'sidebar.resume_agent_a11y', { name: agent.name })}
-                  >
-                    <MaterialIcons name={agent.enabled ? 'pause' : 'play-circle-outline'} size={12} color={C.text2} />
-                  </Pressable>
-                  <Pressable
                     onPress={() => {
                       Alert.alert(
                         t('sidebar.delete_agent_title'),
@@ -417,8 +434,15 @@ export function Sidebar() {
                             text: t('common.delete'),
                             style: 'destructive',
                             onPress: async () => {
-                              await deleteAgent(agent.id);
-                              useAgentStore.getState().removeAgent(agent.id);
+                              // deleteAgent removes the store entry only on a
+                              // confirmed on-disk delete; surface failures instead
+                              // of dropping the row while the json survives (which
+                              // would reappear on restart).
+                              try {
+                                await deleteAgent(agent.id);
+                              } catch (e) {
+                                Alert.alert(t('sidebar.delete_agent_failed'), String(e));
+                              }
                             },
                           },
                         ],
