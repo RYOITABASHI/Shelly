@@ -4,6 +4,8 @@
 
 ## ⚠️ セッション開始時に必ず読むもの
 
+**[docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md](./docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md)** — 🎯 自律秘書フル実装 2 日スプリント（Codex 用）。`/goal` チャンクを順に貼って「実装→プッシュ前エージェントレビュー必須→ビルド→実機テスト→次の /goal」を回す。Phase 0 残り（G1）→ 記憶層 → スキル → ルーター → inbound → orchestration。踏んだ地雷（agent-store no-persist / `$HOME` vs getHomePath / DownloadManager 公開dir / Knox bridge）と build/install/verify 手順を内蔵。**現環境からの再開はまずこれ。**
+
 **[docs/superpowers/DEFERRED.md](./docs/superpowers/DEFERRED.md)** — 後回しリストの唯一の真実の情報源。
 
 **[docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md](./docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md)** — 自律秘書（Autonomous Gate / B2）の最新引き継ぎ。別環境（PC / スマホ Codex）からの再開はまずこれを読む。on-device で launch/gate/fail-closed 立証済み（build 1539）、次は Phase B RN ブリッジ。
