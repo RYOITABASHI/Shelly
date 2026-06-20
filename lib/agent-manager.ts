@@ -16,6 +16,16 @@ import * as Notifications from 'expo-notifications';
 import * as FileSystem from 'expo-file-system/legacy';
 
 const agentsDir = () => `${getHomePath()}/.shelly/agents`;
+export const DELETED_AGENT_MARKER_DIR = '.deleted';
+const deletedAgentsDir = () => `${agentsDir()}/${DELETED_AGENT_MARKER_DIR}`;
+
+export function filterDeletedAgentMetadata(
+  agents: Agent[],
+  deletedIds: ReadonlySet<string>
+): Agent[] {
+  if (deletedIds.size === 0) return agents;
+  return agents.filter((agent) => !deletedIds.has(agent.id));
+}
 
 /**
  * Parse @agent commands from chat input.
@@ -232,6 +242,8 @@ async function materializeAgent(
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
   const commands = [
     `mkdir -p ${shellQuote(agentsDir())}`,
+    `rm -f ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)}`,
+    `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
     writeFileCommand(scriptPath, generateRunScript(agent)),
     ...generateInstallCommands(agent),
@@ -275,7 +287,12 @@ export async function deleteAgent(agentId: string): Promise<void> {
   if (!/^[A-Za-z0-9._-]+$/.test(agentId)) {
     throw new Error(`refusing to delete agent with unsafe id: ${agentId}`);
   }
-  await uninstallSchedule(agentId);
+  try {
+    await uninstallSchedule(agentId);
+  } catch (error) {
+    console.warn('deleteAgent: failed to cancel schedule before file cleanup', agentId, error);
+    // Best-effort: deleting the run script below still neutralizes any leftover alarm.
+  }
   // Delete via the live shell $HOME — NOT the JS getHomePath() cache. The cache
   // can hold an unresolved /data/user/0 alias that doesn't resolve to the real
   // files dir on some OEM builds, so `rm -f <alias>` silently exits 0 while the
@@ -287,6 +304,8 @@ export async function deleteAgent(agentId: string): Promise<void> {
   const command =
     `set -e\n` +
     `d="$HOME/.shelly/agents"\n` +
+    `mkdir -p "$d/${DELETED_AGENT_MARKER_DIR}"\n` +
+    `printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" > "$d/${DELETED_AGENT_MARKER_DIR}/${agentId}"\n` +
     `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/locks/${agentId}.pid"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
     `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }`;
@@ -534,6 +553,7 @@ async function readAgentMetadataViaFileSystem(): Promise<Agent[] | null> {
     const info = await FileSystem.getInfoAsync(dirUri);
     if (!info.exists || !info.isDirectory) return [];
     const names = await FileSystem.readDirectoryAsync(dirUri);
+    const deletedIds = await readDeletedAgentIdsViaFileSystem(dirUri);
     const agents: Agent[] = [];
     for (const name of names.filter((entry) => entry.endsWith('.json'))) {
       try {
@@ -543,9 +563,21 @@ async function readAgentMetadataViaFileSystem(): Promise<Agent[] | null> {
         // Skip malformed or concurrently-written metadata files.
       }
     }
-    return agents;
+    return filterDeletedAgentMetadata(agents, deletedIds);
   } catch {
     return null;
+  }
+}
+
+async function readDeletedAgentIdsViaFileSystem(dirUri: string): Promise<Set<string>> {
+  try {
+    const deletedUri = `${dirUri}/${DELETED_AGENT_MARKER_DIR}`;
+    const info = await FileSystem.getInfoAsync(deletedUri);
+    if (!info.exists || !info.isDirectory) return new Set();
+    const names = await FileSystem.readDirectoryAsync(deletedUri);
+    return new Set(names.filter((name) => /^[A-Za-z0-9._-]+$/.test(name)));
+  } catch {
+    return new Set();
   }
 }
 
@@ -553,7 +585,17 @@ async function readAgentMetadataViaShell(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<Agent[]> {
   const output = await runCommand(
-    `ls ${shellQuote(agentsDir())}/*.json 2>/dev/null | while read f; do cat "$f"; echo "---SEPARATOR---"; done`
+    `d=${shellQuote(agentsDir())}\n` +
+      `[ -d "$d" ] || exit 0\n` +
+      `deleted="$d/${DELETED_AGENT_MARKER_DIR}"\n` +
+      `for f in "$d"/*.json; do\n` +
+      `  [ -f "$f" ] || continue\n` +
+      `  id="\${f##*/}"\n` +
+      `  id="\${id%.json}"\n` +
+      `  [ -e "$deleted/$id" ] && continue\n` +
+      `  cat "$f"\n` +
+      `  echo "---SEPARATOR---"\n` +
+      `done`
   );
   if (!output.trim()) return [];
   const agents: Agent[] = [];
