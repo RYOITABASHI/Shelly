@@ -22,7 +22,7 @@ import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
-import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
+import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { useBrowserStore } from '@/store/browser-store';
 import { SidebarSection } from './SidebarSection';
@@ -69,6 +69,7 @@ export function Sidebar() {
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
   const runHistory = useAgentStore((s) => s.runHistory);
+  const agentsHalted = useAgentStore((s) => s.halted);
   const [runningAgentIds, setRunningAgentIds] = useState<Set<string>>(new Set());
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(new Set());
   const mountedAtRef = React.useRef(Date.now());
@@ -301,6 +302,27 @@ export function Sidebar() {
     }
   }, [refreshRunningAgents, runCommandForAgentSync, t]);
 
+  const handleTogglePause = React.useCallback(async (agent: Agent) => {
+    try {
+      await setAgentEnabled(agent.id, !agent.enabled, runCommandForAgentSync);
+    } catch (error) {
+      Alert.alert(t('sidebar.agent_update_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runCommandForAgentSync, t]);
+
+  const handleToggleHalt = React.useCallback(async () => {
+    const halted = useAgentStore.getState().halted;
+    try {
+      if (halted) {
+        await resumeAllAgents(runCommandForAgentSync);
+      } else {
+        await haltAllAgents(runCommandForAgentSync);
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.agent_update_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runCommandForAgentSync, t]);
+
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
     useAgentStore.getState().updateAgent(agent.id, partial);
@@ -487,9 +509,31 @@ export function Sidebar() {
               {(runningAgents.length > 0 || recentTasks.length > 0) && (
                 <View style={styles.tasksSeparator} />
               )}
-              <Text style={styles.tasksSubheader}>{t('sidebar.agents')}</Text>
+              <View style={styles.agentsSubheaderRow}>
+                <Text style={styles.tasksSubheader}>{t('sidebar.agents')}</Text>
+                <Pressable
+                  onPress={() => void handleToggleHalt()}
+                  hitSlop={8}
+                  style={[styles.agentModePill, styles.agentHaltPillBase, agentsHalted && styles.agentHaltPillOn]}
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: agentsHalted }}
+                  accessibilityLabel={t(agentsHalted ? 'sidebar.resume_all_a11y' : 'sidebar.stop_all_a11y')}
+                >
+                  <MaterialIcons
+                    name={agentsHalted ? 'play-arrow' : 'stop'}
+                    size={11}
+                    color={agentsHalted ? C.bgDeep : C.errorText}
+                  />
+                  <Text style={[styles.agentModeText, agentsHalted && styles.agentHaltTextOn]}>
+                    {t(agentsHalted ? 'sidebar.resume_all' : 'sidebar.stop_all')}
+                  </Text>
+                </Pressable>
+              </View>
               {agents.map((agent) => (
-                <View key={`agent-${agent.id}`} style={[styles.taskRow, styles.agentRow]}>
+                <View
+                  key={`agent-${agent.id}`}
+                  style={[styles.taskRow, styles.agentRow, (!agent.enabled || agentsHalted) && styles.agentRowDisabled]}
+                >
                   <View style={[styles.taskDot, { backgroundColor: agent.autonomous ? C.accent : C.text3 }]} />
                   <View style={styles.taskInfo}>
                     <Text style={styles.taskName} numberOfLines={1}>
@@ -525,6 +569,15 @@ export function Sidebar() {
                     ]}>
                       AUTO
                     </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void handleTogglePause(agent)}
+                    hitSlop={8}
+                    style={styles.tasksAction}
+                    accessibilityRole="button"
+                    accessibilityLabel={t(agent.enabled ? 'sidebar.pause_agent_a11y' : 'sidebar.resume_agent_a11y', { name: agent.name })}
+                  >
+                    <MaterialIcons name={agent.enabled ? 'pause' : 'play-circle-outline'} size={12} color={C.text2} />
                   </Pressable>
                   <Pressable
                     onPress={() => {
@@ -900,6 +953,26 @@ const styles = StyleSheet.create({
   agentModePillOn: {
     borderColor: C.accent,
     backgroundColor: withAlpha(C.accent, 0.18),
+  },
+  agentsSubheaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  agentHaltPillBase: {
+    flexDirection: 'row',
+    gap: 3,
+    paddingHorizontal: 6,
+  },
+  agentHaltPillOn: {
+    borderColor: C.errorText,
+    backgroundColor: withAlpha(C.errorText, 0.85),
+  },
+  agentHaltTextOn: {
+    color: C.bgDeep,
+  },
+  agentRowDisabled: {
+    opacity: 0.5,
   },
   agentModeText: {
     fontSize: F.badge.size,

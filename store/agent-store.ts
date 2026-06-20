@@ -11,8 +11,12 @@ interface AgentState {
   runHistory: Record<string, AgentRunLog[]>;  // agentId → last 30 logs
   isLoaded: boolean;
   pendingEnvSync: string | null;
+  /** Global kill-switch (Phase 0 §2.5). When true, all schedules are uninstalled
+   *  and manual runs are blocked. Persisted to a sentinel file via agent-manager. */
+  halted: boolean;
 
   setAgents: (agents: Agent[]) => void;
+  setHalted: (halted: boolean) => void;
   addAgent: (agent: Agent) => void;
   updateAgent: (id: string, partial: Partial<Agent>) => void;
   removeAgent: (id: string) => void;
@@ -32,8 +36,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   runHistory: {},
   isLoaded: false,
   pendingEnvSync: null,
+  halted: false,
 
   setAgents: (agents) => set({ agents, isLoaded: true }),
+  setHalted: (halted) => set({ halted }),
 
   addAgent: (agent) =>
     set((state) => ({ agents: [...state.agents, agent] })),

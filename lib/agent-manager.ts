@@ -9,6 +9,7 @@ import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
+import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import { getHomePath } from '@/lib/home-path';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
@@ -246,6 +247,10 @@ export async function runAgentNow(
   agentId: string,
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
+  // Global kill-switch: while halted, refuse manual runs too (not just scheduled).
+  if (useAgentStore.getState().halted) {
+    throw new Error('All agents are stopped (global kill-switch is on). Resume agents to run.');
+  }
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (agent) {
     await materializeAgent(agent, runCommand, false);
@@ -279,6 +284,84 @@ export async function deleteAgent(agentId: string): Promise<void> {
     // Deleting store state should not be blocked by filesystem cleanup.
   }
   useAgentStore.getState().removeAgent(agentId);
+}
+
+const haltSentinelPath = () => `${agentsDir()}/.halted`;
+
+/**
+ * Pause / resume a single agent (Phase 0 §2.5). Persists `enabled` to the agent's
+ * JSON metadata (survives restart) and installs/uninstalls its AlarmManager
+ * schedule accordingly. Manual-only agents (schedule === null) just flip the flag.
+ */
+export async function setAgentEnabled(
+  agentId: string,
+  enabled: boolean,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const store = useAgentStore.getState();
+  const agent = store.agents.find((a) => a.id === agentId);
+  if (!agent) return;
+  const updated: Agent = { ...agent, enabled };
+  store.updateAgent(agentId, { enabled });
+  // Persist the flag so a restart doesn't silently re-enable a paused agent.
+  await runCommand(
+    `set -e\n${writeFileCommand(`${agentsDir()}/${agentId}.json`, JSON.stringify(updated, null, 2))}`
+  );
+  if (!agent.schedule) return; // manual-only: nothing to (un)install
+  if (enabled && !store.halted) {
+    await installSchedule(updated);
+  } else {
+    await uninstallSchedule(agentId);
+  }
+}
+
+/**
+ * Global kill-switch ON (Phase 0 §2.5): uninstall every agent's schedule so
+ * nothing fires, and drop a sentinel so the halt survives a restart and manual
+ * runs stay blocked. Per-agent `enabled` is preserved so resume can restore it.
+ */
+export async function haltAllAgents(
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const store = useAgentStore.getState();
+  for (const a of store.agents) {
+    if (a.schedule) {
+      try {
+        await uninstallSchedule(a.id);
+      } catch {
+        // best-effort: keep halting the rest even if one uninstall fails
+      }
+    }
+  }
+  store.setHalted(true);
+  try {
+    await runCommand(`set -e\n${writeFileCommand(haltSentinelPath(), 'halted\n')}`);
+  } catch {
+    // store flag is the source of truth this session; sentinel is for persistence
+  }
+}
+
+/** Global kill-switch OFF: clear the sentinel and re-install schedules for every
+ *  still-enabled, scheduled agent. */
+export async function resumeAllAgents(
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const store = useAgentStore.getState();
+  store.setHalted(false);
+  try {
+    await runCommand(`rm -f ${shellQuote(haltSentinelPath())}`);
+  } catch {
+    // ignore
+  }
+  for (const a of store.agents) {
+    if (a.enabled && a.schedule) {
+      try {
+        await installSchedule(a);
+      } catch {
+        // best-effort
+      }
+    }
+  }
 }
 
 /**
@@ -321,6 +404,16 @@ export async function loadAgentsFromDisk(
   } = options;
 
   try {
+    // Restore the global kill-switch (§2.5) from its sentinel so a halt survives restart.
+    try {
+      const haltedOut = await runCommand(
+        `[ -f ${shellQuote(haltSentinelPath())} ] && echo HALTED_YES || echo HALTED_NO`
+      );
+      useAgentStore.getState().setHalted(haltedOut.includes('HALTED_YES'));
+    } catch {
+      // ignore — default not halted
+    }
+
     const agents = syncLogs
       ? await readAgentMetadataViaShell(runCommand)
       : await readAgentMetadataLightweight(runCommand);
@@ -366,9 +459,12 @@ function scheduleAgentStartupRepair(
 
   setTimeout(() => {
     if (shouldRun && !shouldRun()) return;
+    // Don't re-install schedules while the global kill-switch is on.
+    if (useAgentStore.getState().halted) return;
     void (async () => {
       for (const agent of scheduledAgents) {
         if (shouldRun && !shouldRun()) return;
+        if (useAgentStore.getState().halted) return;
         try {
           await materializeAgent(agent, runCommand, true);
           await new Promise((resolve) => setTimeout(resolve, 250));
@@ -438,18 +534,61 @@ export async function syncAgentRunLogsFromDisk(
     ? { ...store.runHistory, [agentId]: runHistory[agentId] || [] }
     : runHistory;
 
+  // Agents auto-disabled by the circuit breaker this sync — side effects fire below.
+  const tripped: Agent[] = [];
   const agents = store.agents.map((agent) => {
-    const latest = mergedHistory[agent.id]?.at(-1);
-    if (!latest) return agent;
-    return {
-      ...agent,
-      lastRun: latest.timestamp,
-      lastResult: latest.status === 'success' ? 'success' as const : latest.status === 'error' ? 'error' as const : agent.lastResult,
-    };
+    const logs = mergedHistory[agent.id];
+    const latest = logs?.at(-1);
+    let next: Agent = latest
+      ? {
+          ...agent,
+          lastRun: latest.timestamp,
+          lastResult:
+            latest.status === 'success'
+              ? ('success' as const)
+              : latest.status === 'error'
+              ? ('error' as const)
+              : agent.lastResult,
+        }
+      : agent;
+    // Circuit breaker (§2.5): auto-disable a still-enabled agent after N
+    // consecutive failed runs so a misfiring agent can't loop forever.
+    if (next.enabled && shouldTripCircuitBreaker(logs)) {
+      next = { ...next, enabled: false };
+      tripped.push(next);
+    }
+    return next;
   });
 
   store.setRunHistory(mergedHistory);
   store.setAgents(agents);
+
+  for (const a of tripped) {
+    if (a.schedule) {
+      try {
+        await uninstallSchedule(a.id);
+      } catch {
+        // best-effort
+      }
+    }
+    try {
+      // Persist enabled=false so the disable survives a restart.
+      await runCommand(
+        `set -e\n${writeFileCommand(`${agentsDir()}/${a.id}.json`, JSON.stringify(a, null, 2))}`
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      await notifyAgentResult(
+        a,
+        'error',
+        `Auto-disabled after ${DEFAULT_CIRCUIT_BREAKER_THRESHOLD} consecutive failures. Fix the issue, then re-enable it.`
+      );
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function readAgentRunLogs(
