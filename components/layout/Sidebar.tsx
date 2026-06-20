@@ -1,7 +1,6 @@
 // components/layout/Sidebar.tsx
 import React, { useState, useEffect } from 'react';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { usePortsStore, parseProcNet, portLabel } from '@/store/ports-store';
 import { useFocusStore } from '@/store/focus-store';
 import {
   View,
@@ -42,14 +41,6 @@ const TIMING_MS = 200;
 const AGENT_RUNNING_POLL_START_DELAY_MS = 15_000;
 const AGENT_RUNNING_POLL_INTERVAL_MS = 15_000;
 const AGENT_RUNNING_BACKGROUND_POLL_INTERVAL_MS = 60_000;
-
-function formatTimeAgo(ts: number, t: (key: string, params?: Record<string, string | number>) => string): string {
-  const diff = Math.floor((Date.now() - ts) / 1000);
-  if (diff < 60) return t('time.seconds_ago_short', { count: diff });
-  if (diff < 3600) return t('time.minutes_ago_short', { count: Math.floor(diff / 60) });
-  if (diff < 86400) return t('time.hours_ago_short', { count: Math.floor(diff / 3600) });
-  return t('time.days_ago_short', { count: Math.floor(diff / 86400) });
-}
 
 const QUICK_FOLDERS = [
   { label: '~',        path: '~/',                 icon: 'home' },
@@ -129,80 +120,9 @@ export function Sidebar() {
     useFocusStore.getState().requestTerminalRefocus();
   };
 
-  const openUrl = useBrowserStore((s) => s.openUrl);
-  const portsSectionOpen = useSidebarStore((s) => s.openSections.ports);
-  const portsPollingDisabled = usePortsStore((s) => s.pollingDisabled);
   const agentsSectionOpen = mode === 'expanded' && openSections.tasks;
   const pendingAgentCount = pendingAgentIds.size;
   const shouldPollRunningAgents = agents.length > 0 || pendingAgentCount > 0;
-
-  // Poll active localhost listeners every 15s. Single-writer pattern
-  // (Sidebar owns the interval, usePortsStore is the one state source)
-  // so the list stays stable across renders without duplicate work.
-  //
-  // Plan B does not bundle ss / netstat / lsof, so we read
-  // /proc/net/tcp and /proc/net/tcp6 directly and decode the hex
-  // columns in JS. Those files are world-readable on Android — the
-  // kernel filters rows by uid so we only see sockets owned by this
-  // app, which is exactly what the Sidebar needs.
-  const portEntries = usePortsStore((s) => s.entries);
-  useEffect(() => {
-    const setEntries = usePortsStore.getState().setEntries;
-    const setPollingDisabled = usePortsStore.getState().setPollingDisabled;
-    let cancelled = false;
-    const refresh = async () => {
-      if (usePortsStore.getState().pollingDisabled) return;
-      // bug #99: Android 10+ SELinux denies app_data_file reads of
-      // /proc/net/tcp{,6}, so the Plan B fopen path (readProcNetFile)
-      // returns EACCES silently. Primary path is now NETLINK_SOCK_DIAG
-      // (queryListenSockets) which kernel-filters by caller uid — no
-      // policy blocks it and it only returns sockets this app owns.
-      // readProcNetFile is kept as a fallback for pre-Android-10
-      // devices where the file is still readable.
-      const [nlV4, nlV6] = await Promise.all([
-        TerminalEmulator.queryListenSockets(4).catch(() => ''),
-        TerminalEmulator.queryListenSockets(6).catch(() => ''),
-      ]);
-      let v4 = nlV4 ?? '';
-      let v6 = nlV6 ?? '';
-      if (!v4 && !v6) {
-        const [pV4, pV6] = await Promise.all([
-          TerminalEmulator.readProcNetFile('/proc/net/tcp').catch(() => ''),
-          TerminalEmulator.readProcNetFile('/proc/net/tcp6').catch(() => ''),
-        ]);
-        v4 = pV4 ?? '';
-        v6 = pV6 ?? '';
-      }
-      if (cancelled) return;
-      if (!v4 && !v6) {
-        setEntries([]);
-        setPollingDisabled(true);
-        return;
-      }
-      setEntries(parseProcNet(v4, v6));
-    };
-    // bug #103: actually pause polling while backgrounded. Earlier revision
-    // kept the setInterval running and only added an extra refresh on
-    // resume, which defeated the purpose. Track the timer in a ref-style
-    // holder and tear it down on blur / rebuild on focus.
-    let ivHandle: ReturnType<typeof setInterval> | null = null;
-    const startPolling = () => {
-      if (ivHandle !== null) return;
-      ivHandle = setInterval(refresh, 15_000);
-    };
-    const stopPolling = () => {
-      if (ivHandle !== null) { clearInterval(ivHandle); ivHandle = null; }
-    };
-    if (portsSectionOpen && !portsPollingDisabled) {
-      refresh();
-      startPolling();
-    }
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && portsSectionOpen && !usePortsStore.getState().pollingDisabled) { refresh(); startPolling(); }
-      else { stopPolling(); }
-    });
-    return () => { cancelled = true; stopPolling(); sub.remove(); };
-  }, [portsSectionOpen, portsPollingDisabled]);
 
   // Git dirty-count polling removed 2026-04-21. The count was run against
   // `$HOME` which is not a sane repo context — CLI bg updates, install
@@ -213,49 +133,6 @@ export function Sidebar() {
   // porcelain line count.
 
   // Derive latest completed task per agent from run history
-  const recentTasks = React.useMemo(() => {
-    const activeAgentIds = new Set([...runningAgentIds, ...pendingAgentIds]);
-    const latestByAgent = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        timestamp: number;
-        status: 'success' | 'error';
-        outputPreview: string;
-        errorMessage?: string;
-        toolUsed: string;
-      }
-    >();
-    for (const [agentId, logs] of Object.entries(runHistory)) {
-      if (activeAgentIds.has(agentId)) continue;
-      const agent = agents.find((a) => a.id === agentId);
-      for (const log of logs) {
-        if (log.status === 'success' || log.status === 'error') {
-          const current = latestByAgent.get(agentId);
-          if (!current || log.timestamp > current.timestamp) {
-            latestByAgent.set(agentId, {
-              id: `${agentId}-${log.timestamp}`,
-              name: agent?.name ?? agentId,
-              timestamp: log.timestamp,
-              status: log.status,
-              outputPreview: log.outputPreview,
-              errorMessage: log.errorMessage,
-              toolUsed: log.toolUsed,
-            });
-          }
-        }
-      }
-    }
-    return Array.from(latestByAgent.values())
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, 5)
-      .map((log) => ({
-        ...log,
-        age: formatTimeAgo(log.timestamp, t),
-      }));
-  }, [runHistory, agents, runningAgentIds, pendingAgentIds, t]);
-
   const refreshRunningAgents = React.useCallback(async () => {
     const result = await TerminalEmulator.execCommand(
       `for f in "$HOME"/.shelly/agents/locks/*.pid; do ` +
@@ -457,58 +334,8 @@ export function Sidebar() {
           badge={runningAgents.length}
           iconsOnly={iconsOnly}
         >
-          {runningAgents.map((agent) => (
-            <View key={`running-${agent.id}`} style={styles.taskRow}>
-              <View style={[styles.taskDot, { backgroundColor: C.accent }]} />
-              <View style={styles.taskInfo}>
-                <Text style={styles.taskName} numberOfLines={1}>
-                  {agent.name.toUpperCase()}
-                </Text>
-              </View>
-              <View style={[styles.statusBadge, { backgroundColor: withAlpha(C.accent, 0.12) }]}>
-                <Text style={[styles.statusBadgeText, { color: C.accent }]}>{t('sidebar.running')}</Text>
-              </View>
-            </View>
-          ))}
-          {recentTasks.map((task) => (
-            <Pressable
-              key={`recent-${task.id}`}
-              style={({ pressed }) => [styles.taskRow, pressed && styles.taskRowPressed]}
-              onPress={() => {
-                const preview = task.errorMessage || task.outputPreview || t('sidebar.no_log_preview');
-                Alert.alert(
-                  task.status === 'success' ? t('sidebar.agent_completed_title') : t('sidebar.agent_failed_title'),
-                  `${task.name}\n${task.age}${task.toolUsed ? `\n${t('sidebar.tool')}: ${task.toolUsed}` : ''}\n\n${preview}`,
-                );
-              }}
-              hitSlop={4}
-              accessibilityRole="button"
-              accessibilityLabel={t('sidebar.show_result_a11y', { name: task.name })}
-            >
-              <MaterialIcons
-                name={task.status === 'success' ? 'check-circle' : 'error'}
-                size={10}
-                color={task.status === 'error' ? '#F87171' : C.text2}
-              />
-              <View style={styles.taskInfo}>
-                <Text style={styles.taskName} numberOfLines={1}>
-                  {task.name.toUpperCase()}
-                </Text>
-              </View>
-              {task.status === 'error' ? (
-                <View style={styles.taskLogBadge}>
-                  <Text style={styles.taskLogBadgeText}>{t('sidebar.log')}</Text>
-                </View>
-              ) : (
-                <Text style={styles.taskAge}>{task.age}</Text>
-              )}
-            </Pressable>
-          ))}
           {agents.length > 0 && (
             <>
-              {(runningAgents.length > 0 || recentTasks.length > 0) && (
-                <View style={styles.tasksSeparator} />
-              )}
               <View style={styles.agentsSubheaderRow}>
                 <Text style={styles.tasksSubheader}>{t('sidebar.agents')}</Text>
                 <Pressable
@@ -608,7 +435,7 @@ export function Sidebar() {
               ))}
             </>
           )}
-          {runningAgents.length === 0 && recentTasks.length === 0 && agents.length === 0 && (
+          {agents.length === 0 && (
             <Text style={styles.tasksEmpty}>
               {t('sidebar.tasks_empty')}
             </Text>
@@ -739,41 +566,6 @@ export function Sidebar() {
         </SidebarSection>
 
         {/* PORTS — live /proc/net/tcp{,6} scan every 15s (see useEffect above) */}
-        <SidebarSection
-          title={t('sidebar.ports')}
-          icon="hub"
-          isOpen={openSections.ports}
-          onToggle={() => toggleSection('ports')}
-          iconsOnly={iconsOnly}
-        >
-          {portEntries.length === 0 ? (
-            // Android 10+ SELinux denies BOTH /proc/net/tcp reads AND
-            // NETLINK_SOCK_DIAG from untrusted_app, so this panel is
-            // permanently empty on modern phones until bug #99 gets a
-            // privileged-helper path. Say so plainly.
-            <Text style={styles.portEmpty}>
-              {t('sidebar.ports_unavailable')}
-            </Text>
-          ) : (
-            portEntries.map((entry) => {
-              const label = portLabel(entry);
-              return (
-                <Pressable
-                  key={entry.port}
-                  style={styles.portRow}
-                  onPress={() => openUrl(`http://localhost:${entry.port}`)}
-                >
-                  <View style={[styles.portDot, { backgroundColor: C.accent }]} />
-                  <Text style={styles.portLabel}>{`${entry.address}:${entry.port}`}</Text>
-                  {label ? <Text style={styles.portName}>{label}</Text> : null}
-                  <View style={{ flex: 1 }} />
-                  <MaterialIcons name="open-in-new" size={I.externalLink} color={C.text2} />
-                </Pressable>
-              );
-            })
-          )}
-        </SidebarSection>
-
         {/* PROFILES */}
         <SidebarSection
           title={t('sidebar.profiles')}
