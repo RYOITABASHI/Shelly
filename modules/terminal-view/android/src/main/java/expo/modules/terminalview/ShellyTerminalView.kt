@@ -471,8 +471,14 @@ class ShellyTerminalView(
         terminalView.setTransparentBackground(true)
         val colorsForGl = (terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors).copyOf()
         glTerminalView?.let { glView ->
-            glView.setBackgroundColor(Color.TRANSPARENT)
-            glView.setTransparentBackground(true)
+            // GLSurfaceView transparency does not reliably reveal RN wallpaper
+            // content beneath it. Keep GPU terminals opaque until the GL
+            // compositor path is verified on-device.
+            colorsForGl[0] = OPAQUE_TERMINAL_BACKGROUND
+            colorsForGl[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+            glView.alpha = 1f
+            glView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+            glView.setTransparentBackground(false)
             glView.queueEvent {
                 glView.renderer.updateAnsiColors(colorsForGl)
             }
