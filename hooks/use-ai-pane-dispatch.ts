@@ -1019,21 +1019,34 @@ export function useAIPaneDispatch(paneId: string) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
+          let runFinished = false;
+          let finalContent: string | null = null;
           try {
             await runAgentNow(created.id, runAgentShellCommand);
+            runFinished = true;
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
             const auditPath = confirmed.autonomous && tool.type === 'cli'
               ? `\n\nAudit: ~/.shelly/agents/audits/${created.id}-agent-driver-audit.jsonl`
               : '';
+            finalContent = preview
+              ? `${icon} ${created.name}\n\n${preview}${auditPath}`
+              : `${icon} ${created.name} — done.${auditPath}`;
             store.updateMessage(paneId, messageId, {
-              content: preview
-                ? `${icon} ${created.name}\n\n${preview}${auditPath}`
-                : `${icon} ${created.name} — done.${auditPath}`,
+              content: finalContent,
             });
           } finally {
-            await deleteAgent(created.id).catch(() => {});
+            if (runFinished) {
+              try {
+                await deleteAgent(created.id);
+              } catch (cleanupError) {
+                const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+                store.updateMessage(paneId, messageId, {
+                  content: `${finalContent ?? `✅ ${created.name} — done.`}\n\nCleanup warning: temporary agent was not removed. ${detail}`,
+                });
+              }
+            }
           }
         } else {
           store.updateMessage(paneId, messageId, {

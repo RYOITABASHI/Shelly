@@ -154,6 +154,7 @@ REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
 LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
+FINISH_RAN=0
 
 START_TIME=$(date +%s)
 
@@ -262,13 +263,19 @@ LOGEOF
   fi
 }
 finish() {
-  code=$?
+  code="\${1:-$?}"
+  if [ "\${FINISH_RAN:-0}" = "1" ]; then
+    return 0
+  fi
+  FINISH_RAN=1
+  trap - EXIT
   if [ "$code" -ne 0 ]; then
     write_failure_log "$code" "\${BASH_LINENO[0]:-unknown}" || true
   fi
   mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
   cleanup
+  return 0
 }
 
 mirror_driver_audit_to_app_private() {
@@ -1666,6 +1673,7 @@ ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || t
 
 # Cleanup temp
 rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"
+finish 0
 `;
 }
 
@@ -1721,6 +1729,8 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
     --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1 || true
+  mirror_driver_audit_to_app_private || true
+  mirror_driver_audit_to_sdcard || true
 else
   echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
 fi

@@ -141,6 +141,16 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(nonAutonomousCli).toContain('AUDIT_MIRROR_SDCARD_ELIGIBLE=0');
   });
 
+  it('persists driver audit before one-shot cleanup can remove the log dir', () => {
+    const s = generateRunScript(agent({ type: 'auto' }, true));
+    expect(s).toContain('FINISH_RAN=0');
+    expect(s).toContain('code="${1:-$?}"');
+    expect(s).toContain('trap - EXIT');
+    expect(s).toContain('--audit-log "$LOG_DIR/agent-driver-audit.jsonl"');
+    expect(s).toContain('mirror_driver_audit_to_app_private || true\n  mirror_driver_audit_to_sdcard || true\nelse');
+    expect(s).toContain('rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"\nfinish 0');
+  });
+
   it('dispatches saved results by action without auto-running cli actions', () => {
     const notifyAgent: Agent = { ...agent({ type: 'local' }, true), action: { type: 'notify' } };
     const webhookAgent: Agent = {
