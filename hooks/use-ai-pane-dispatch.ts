@@ -283,6 +283,10 @@ export function useAIPaneDispatch(paneId: string) {
             const promptText = agentResult.message;
             const draft = parseAgentNL(promptText);
             draft.autonomous = agentResult.data?.autonomous === true;
+            if (draft.autonomous && agentResult.data?.suggestion?.tool) {
+              draft.tool = agentResult.data.suggestion.tool;
+              draft.toolLabel = agentResult.data.suggestion.label ?? draft.toolLabel;
+            }
             store.addMessage(paneId, {
               id: generateId(),
               role: 'assistant',
@@ -987,11 +991,16 @@ export function useAIPaneDispatch(paneId: string) {
       const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
         || `agent-${Date.now().toString(36)}`;
       // Autonomous (B2 gate) can only run Codex OAuth / local — never an api-key
-      // backend. Force Codex for an autonomous task whose router picked an api tool.
+      // backend. The AI chat confirmation card presents autonomous as the B2
+      // gated Codex path; keep the submit boundary defensive in case a stale card
+      // or another caller sends an api-key tool.
       const tool: ToolChoice =
-        confirmed.autonomous && confirmed.tool.type !== 'local' && confirmed.tool.type !== 'cli'
+        confirmed.autonomous && confirmed.tool.type !== 'local'
           ? { type: 'cli', cli: 'codex' }
           : confirmed.tool;
+      const runOn = confirmed.autonomous
+        ? tool.type === 'local' ? 'on-device' : 'auto'
+        : confirmed.runOn;
       try {
         const created = createAgent({
           name: confirmed.name,
@@ -1000,7 +1009,7 @@ export function useAIPaneDispatch(paneId: string) {
           schedule: confirmed.schedule,
           tool,
           action: confirmed.action,
-          runOn: confirmed.runOn,
+          runOn,
           autonomous: confirmed.autonomous || undefined,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
@@ -1015,8 +1024,13 @@ export function useAIPaneDispatch(paneId: string) {
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
+            const auditPath = confirmed.autonomous && tool.type === 'cli'
+              ? `\n\nAudit: ~/.shelly/agents/audits/${created.id}-agent-driver-audit.jsonl`
+              : '';
             store.updateMessage(paneId, messageId, {
-              content: preview ? `${icon} ${created.name}\n\n${preview}` : `${icon} ${created.name} — done.`,
+              content: preview
+                ? `${icon} ${created.name}\n\n${preview}${auditPath}`
+                : `${icon} ${created.name} — done.${auditPath}`,
             });
           } finally {
             await deleteAgent(created.id).catch(() => {});

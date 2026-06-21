@@ -266,8 +266,17 @@ finish() {
   if [ "$code" -ne 0 ]; then
     write_failure_log "$code" "\${BASH_LINENO[0]:-unknown}" || true
   fi
+  mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
   cleanup
+}
+
+mirror_driver_audit_to_app_private() {
+  audit_file="$LOG_DIR/agent-driver-audit.jsonl"
+  [ -s "$audit_file" ] || return 0
+  audit_dir="$HOME/.shelly/agents/audits"
+  mkdir -p "$audit_dir" 2>/dev/null || true
+  cp "$audit_file" "$audit_dir/$AGENT_ID-agent-driver-audit.jsonl" 2>/dev/null || true
 }
 
 mirror_driver_audit_to_sdcard() {

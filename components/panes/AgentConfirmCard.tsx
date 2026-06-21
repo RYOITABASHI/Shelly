@@ -136,13 +136,14 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     const action: AgentAction = { type: actionType };
     if (actionType === 'webhook') action.webhookUrl = webhookUrl.trim();
     if (actionType === 'cli') action.command = command.trim();
+    const finalTool: ToolChoice = autonomous ? { type: 'cli', cli: 'codex' } : draft.tool;
     onConfirm({
       name: name.trim(),
       prompt: draft.prompt,
       schedule: isOnce ? null : cron,
-      tool: draft.tool,
+      tool: finalTool,
       action,
-      runOn,
+      runOn: autonomous ? 'auto' : runOn,
       autonomous,
     });
   };
@@ -161,7 +162,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             : cron
             ? scheduleHuman(frequency, hour, minute, weekday, interval, t)
             : t('agentcard.schedule_unset'),
-          route: autonomous ? t('agentcard.autonomous') : t(`agentcard.runon_${runOn}`),
+          route: autonomous ? t('agentcard.autonomous_route') : t(`agentcard.runon_${runOn}`),
         })}
       </Text>
 
@@ -189,7 +190,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         colors={colors}
       />
       {isOnce ? (
-        <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.once_hint')}</Text>
+        <Text style={[styles.warn, { color: colors.muted }]}>
+          {t(autonomous ? 'agentcard.once_autonomous_hint' : 'agentcard.once_hint')}
+        </Text>
       ) : frequency === 'interval' ? (
         <View style={styles.row}>
           <TextInput
@@ -270,13 +273,22 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       )}
 
       {/* Run on */}
-      <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.runon')}</Text>
-      <Segmented
-        options={RUN_ON.map((r) => ({ key: r, label: t(`agentcard.runon_${r}`) }))}
-        value={runOn}
-        onChange={(k) => setRunOn(k as RunOn)}
-        colors={colors}
-      />
+      {autonomous ? (
+        <>
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.runon')}</Text>
+          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.autonomous_route_hint')}</Text>
+        </>
+      ) : (
+        <>
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.runon')}</Text>
+          <Segmented
+            options={RUN_ON.map((r) => ({ key: r, label: t(`agentcard.runon_${r}`) }))}
+            value={runOn}
+            onChange={(k) => setRunOn(k as RunOn)}
+            colors={colors}
+          />
+        </>
+      )}
 
       {/* Autonomous — replaces the old `@agent autonomous` keyword (B2 gated execution). */}
       <View style={styles.autoRow}>
