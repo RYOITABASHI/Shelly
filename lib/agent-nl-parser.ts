@@ -43,6 +43,9 @@ export interface ParsedAgentDraft {
    *  ("覚えておいて" / "remember that …"). Absent = no memory write. Recall is
    *  always attempted at run time regardless of this flag. */
   memory?: AgentMemoryConfig;
+  /** Phase 2a: a matching reusable skill surfaced for gated reuse in the confirm
+   *  card. Set by the dispatcher (async skill match), not the pure parser. */
+  matchedSkill?: { id: string; name: string; successCount: number };
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }

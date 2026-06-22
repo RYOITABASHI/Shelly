@@ -533,6 +533,10 @@ export interface Agent {
   /** Phase 1 persistent memory. Absent = no memory writes (recall is always
    *  attempted but is a no-op when the agent has no saved notes). */
   memory?: AgentMemoryConfig;
+  /** Phase 2a: id of a reused skill recipe (lib/agent-skills.ts) attached at
+   *  creation after a user-gated "use skill X?" confirm. Its recipe is injected
+   *  into the run prompt and its success-count bumps on a successful run. */
+  skillId?: string;
   enabled: boolean;
   lastRun: number | null;
   lastResult: 'success' | 'error' | null;

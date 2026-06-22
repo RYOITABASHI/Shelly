@@ -42,6 +42,7 @@ import { useAgentStore } from '@/store/agent-store';
 import type { ToolChoice } from '@/store/types';
 import { suggestTool } from '@/lib/agent-tool-router';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
+import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import type { ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
 import { tryAutoStageFromTerminal, getStagedEdit } from '@/lib/ai-edit';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -286,6 +287,16 @@ export function useAIPaneDispatch(paneId: string) {
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;
               draft.toolLabel = agentResult.data.suggestion.label ?? draft.toolLabel;
+            }
+            // Phase 2a: surface a matching reusable skill so the confirm card can
+            // offer gated reuse ("use skill X?"). Best-effort; never blocks the card.
+            try {
+              const matched = matchSkillRecipes(promptText, await readSkillRecipes(), 1)[0];
+              if (matched) {
+                draft.matchedSkill = { id: matched.id, name: matched.name, successCount: matched.successCount };
+              }
+            } catch {
+              // skill match is best-effort
             }
             store.addMessage(paneId, {
               id: generateId(),
@@ -1012,6 +1023,7 @@ export function useAIPaneDispatch(paneId: string) {
           runOn,
           autonomous: confirmed.autonomous || undefined,
           memory: confirmed.memory,
+          skillId: confirmed.skillId,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
         await installAgent(created, runAgentShellCommand);

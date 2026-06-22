@@ -24,6 +24,13 @@ import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
+import {
+  deleteSkillRecipe,
+  distillSkillFromRun,
+  readSkillRecipes,
+  writeSkillRecipe,
+  type SkillRecipe,
+} from '@/lib/agent-skills';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
@@ -152,10 +159,82 @@ export function Sidebar() {
     return result.stdout;
   }, []);
 
+  // Phase 2a skill registry: list of saved skills (loaded from disk).
+  const [skills, setSkills] = React.useState<SkillRecipe[]>([]);
+  const loadSkills = React.useCallback(async () => {
+    try {
+      setSkills(await readSkillRecipes());
+    } catch {
+      setSkills([]);
+    }
+  }, []);
+  React.useEffect(() => {
+    void loadSkills();
+  }, [loadSkills]);
+
+  // Gated skill creation: after a successful run, offer to distill it into a
+  // reusable skill (user-visible — never silent). Skipped for agents that are
+  // already reusing a skill, so we don't re-offer the same recipe.
+  const offerSkillSave = React.useCallback((agentId: string) => {
+    const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+    if (!agent || agent.skillId) return;
+    const latest = useAgentStore.getState().getRunHistory(agentId).at(-1);
+    if (!latest || latest.status !== 'success') return;
+    Alert.alert(t('sidebar.skill_save_title'), t('sidebar.skill_save_body', { name: agent.name }), [
+      {
+        text: t('sidebar.skill_save_yes'),
+        onPress: () => {
+          void (async () => {
+            try {
+              const recipe = distillSkillFromRun({
+                name: agent.name,
+                taskText: agent.prompt,
+                prompt: agent.prompt,
+                routeDecision: latest.routeDecision,
+                timestamp: latest.timestamp,
+              });
+              await writeSkillRecipe(runCommandForAgentSync, recipe);
+              await loadSkills();
+            } catch (error) {
+              Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
+            }
+          })();
+        },
+      },
+      { text: t('common.cancel'), style: 'cancel' },
+    ]);
+  }, [t, runCommandForAgentSync, loadSkills]);
+
+  const handleDeleteSkill = React.useCallback(async (skillId: string) => {
+    try {
+      await deleteSkillRecipe(runCommandForAgentSync, skillId);
+      await loadSkills();
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runCommandForAgentSync, loadSkills, t]);
+
+  const showSkillDetail = React.useCallback((skill: SkillRecipe) => {
+    Alert.alert(
+      skill.name,
+      [
+        t('sidebar.skill_uses', { count: skill.successCount }),
+        `${skill.route} · ${skill.toolLabel}`,
+        '',
+        skill.prompt.slice(0, 400),
+      ].join('\n'),
+      [
+        { text: t('sidebar.skill_delete'), style: 'destructive', onPress: () => void handleDeleteSkill(skill.id) },
+        { text: t('common.close'), style: 'cancel' },
+      ]
+    );
+  }, [t, handleDeleteSkill]);
+
   const handleRunScheduledAgent = React.useCallback(async (agentId: string, agentName: string) => {
     setPendingAgentIds((prev) => new Set(prev).add(agentId));
     try {
       await runAgentNow(agentId, runCommandForAgentSync);
+      offerSkillSave(agentId);
       setTimeout(() => void refreshRunningAgents(), 1_000);
       setTimeout(() => void refreshRunningAgents(), 5_000);
       setTimeout(() => {
@@ -176,7 +255,7 @@ export function Sidebar() {
       });
       Alert.alert(t('sidebar.agent_failed_title'), t('sidebar.agent_failed_body', { name: agentName }));
     }
-  }, [refreshRunningAgents, runCommandForAgentSync, t]);
+  }, [refreshRunningAgents, runCommandForAgentSync, offerSkillSave, t]);
 
   const handleTogglePause = React.useCallback(async (agent: Agent) => {
     try {
@@ -503,6 +582,46 @@ export function Sidebar() {
             <Text style={styles.tasksEmpty}>
               {t('sidebar.tasks_empty')}
             </Text>
+          )}
+        </SidebarSection>
+
+        {/* SKILLS (Phase 2a) — reusable recipes distilled from successful runs. */}
+        <SidebarSection
+          title={t('sidebar.skills')}
+          icon="auto-awesome"
+          isOpen={openSections.skills ?? false}
+          onToggle={() => toggleSection('skills')}
+          badge={skills.length}
+          iconsOnly={iconsOnly}
+        >
+          {skills.length > 0 ? (
+            skills.map((skill) => (
+              <View key={`skill-${skill.id}`} style={[styles.taskRow, styles.agentRow]}>
+                <View style={[styles.taskDot, { backgroundColor: C.accent }]} />
+                <Pressable
+                  style={styles.taskInfo}
+                  onPress={() => showSkillDetail(skill)}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('sidebar.skill_detail_a11y', { name: skill.name })}
+                >
+                  <Text style={styles.taskName} numberOfLines={1}>{skill.name.toUpperCase()}</Text>
+                  <Text style={styles.taskMeta} numberOfLines={1}>
+                    {t('sidebar.skill_uses', { count: skill.successCount })} · {skill.toolLabel}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void handleDeleteSkill(skill.id)}
+                  hitSlop={8}
+                  style={styles.tasksAction}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('sidebar.skill_delete_a11y', { name: skill.name })}
+                >
+                  <MaterialIcons name="delete-outline" size={12} color={C.text2} />
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.tasksEmpty}>{t('sidebar.skill_empty')}</Text>
           )}
         </SidebarSection>
 
