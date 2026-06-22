@@ -45,9 +45,12 @@ export interface ScoredRoute {
 // Category keyword sets (kept local so the scorer is self-contained; suggestTool
 // keeps its own copy for the legacy keyword path and other callers).
 const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ'];
-const RESEARCH_KW = ['paper', 'research', 'study', 'evidence', 'journal', 'academic', 'latest', 'news', 'cite', '論文', '研究', '学術', '最新', 'ニュース', '調べ', '出典'];
+// Genuine research only — NOT bare "news/latest" (those are a weak freshness
+// signal via needsSearch, handled below). "summarize the news" must stay a
+// transform task → on-device, not get routed to the paid deep-research backend.
+const RESEARCH_KW = ['paper', 'research', 'study', 'evidence', 'journal', 'academic', 'cite', 'citation', '論文', '研究', '学術', '調べ', '出典', '引用', '文献'];
 const PROSE_KW = ['article', 'essay', 'blog', 'draft', 'write', 'content', 'story', '記事', '下書き', 'ブログ', '執筆', '物語'];
-const TRANSFORM_KW = ['summarize', 'format', 'translate', 'rewrite', 'extract', '要約', '整形', '翻訳', '書き直', '抽出', '箇条書き'];
+const TRANSFORM_KW = ['summarize', 'summary', 'format', 'translate', 'rewrite', 'extract', '要約', 'まとめ', '整形', '翻訳', '書き直', '抽出', '箇条書き'];
 const REASONING_KW = ['analyze', 'compare', 'evaluate', 'plan', 'design', 'reason', 'deep', 'why', 'strategy', '分析', '比較', '評価', '設計', '計画', '推論', '戦略', '考察', '精査'];
 
 // Per-tool capability profile (static, hand-tuned). Scores are 0–1.
@@ -129,7 +132,7 @@ export function detectRouteSignals(prompt: string): RouteSignals {
   const markerCount = REASONING_KW.filter((kw) => lower.includes(kw)).length;
   const lengthWeight = Math.min(prompt.length / 1500, 0.5);
   const reasoningWeight = Math.min(1, lengthWeight + markerCount * 0.3);
-  const needsSearch = category === 'research' || /\b(latest|today|current|news)\b/.test(lower) || /最新|今日|現在|速報/.test(prompt);
+  const needsSearch = category === 'research' || /\b(latest|today|current|news)\b/.test(lower) || /最新|今日|現在|速報|ニュース/.test(prompt);
 
   return { category, reasoningWeight, needsSearch, keyword };
 }

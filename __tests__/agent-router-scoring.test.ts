@@ -50,8 +50,18 @@ describe('scoreRoutes — deterministic + offline', () => {
 
   it('routes code → Codex, research → Perplexity, transform → Local', () => {
     expect(scoreRoutes('review the github pull request').tool.type).toBe('cli');
-    expect(scoreRoutes('summarize the latest research paper with citations').tool.type).toBe('perplexity');
+    expect(scoreRoutes('summarize the research paper with citations').tool.type).toBe('perplexity');
     expect(scoreRoutes('要約して箇条書きにして').tool.type).toBe('local');
+  });
+
+  it('keeps "summarize the news" a transform task → on-device (not paid research)', () => {
+    // Regression: "news/最新" used to be a research keyword, so summarizing news
+    // wrongly routed to Perplexity (paid, key-required) and failed on device.
+    expect(detectRouteSignals('ニュースを簡潔に要約').category).toBe('transform');
+    expect(scoreRoutes('ニュースを簡潔に要約').tool.type).toBe('local');
+    expect(scoreRoutes('summarize the news in bullets').tool.type).toBe('local');
+    // Genuine research still routes to Perplexity.
+    expect(scoreRoutes('最新の論文を調べて出典付きでまとめて').tool.type).toBe('perplexity');
   });
 
   it('keeps simple general tasks on-device (on-device-first, no widened cloud)', () => {
