@@ -28,6 +28,20 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### G5 Phase 3 — inbound ゲートウェイの後回し項目
+
+**優先度**: P2
+**状態**: G5（Telegram inbound）を main にマージ済み（PR #89, build 1600）。セキュリティ核心（authz 完全一致 / サニタイズ / 特権昇格不可 / replay 安全 / DoS 境界）は純粋モジュール `lib/telegram-inbound.ts` の単体テスト 13 件 + セキュリティレビュー（Blocker/High なし）で立証。opt-in・既定 OFF。
+
+**後回し**:
+1. **ライブ Telegram の実機テスト（未実施）** — ユーザーが Telegram 非利用のため end-to-end round-trip（実 bot token での long-poll → 通知 → 確認カード → Confirm）は未検証。opt-in・既定 OFF で休眠のため実害なし。Telegram を使うか、別 inbound チャネルを追加する際に検証。
+2. **inbound チャネルの選択肢（P2）** — ユーザーは Telegram 非利用。メール / 他メッセンジャ / Web フック等、実際に使うチャネルへの差し替え or 追加を将来検討（純粋コアの authz/サニタイズ設計は再利用可能）。
+3. **Telegram webhook モード（P3）** — 現状は long-poll。webhook（既存 http stack 経由）にすればバッテリー効率が良いが、公開エンドポイントが要る。
+4. **結果の reply-back（P3）** — 現状 outbound は通知のみ。inbound 元の Telegram チャットに結果を返す双方向化は未実装。
+5. **inbound-origin マーカー / per-message rate-limit（P3）** — 確認カードに「Telegram 由来」表示、認可チャットからの flood への秒間制限。
+
+**Why not now**: セキュリティ核心は Telegram 無しで立証済み、opt-in・既定 OFF で休眠。G6（orchestration・最重）の価値が勝る。
+
 ### G4 Phase 2b — Layer-2 ルーターの後回し項目
 
 **優先度**: P1（クラウドキー欠如のフォールバックは UX 影響大）／ 他は P2
@@ -1918,6 +1932,7 @@ claude() {
 - **2026-06-22**: G2（Phase 1 永続記憶）を main にマージ（PR #86, build 1591）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼き込み確認）/ Memory UI / on-device を実機 PASS。スケジュール fire の自動 result 取り込み・セマンティック recall・per-fire 鮮度・name strip 漏れを P2 として登録。次は G3（スキルレジストリ）。
 - **2026-06-22**: G3（Phase 2a スキルレジストリ）を main にマージ（PR #87, build 1594）。蒸留 save ゲート / SKILLS UI / Vault ミラー / success-count / no-cloud-leak に加え、実機テストで判明した日本語 reuse マッチ不発（tokenizer が JP を単語分割できない）を CJK バイグラム tokenizer（`lib/agent-text-match.ts`、memory と共有）で修正し、USE SKILL トグル + レシピ注入を実機 PASS。one-shot save・セマンティックマッチ・スキル編集 UI・半角カナを P2 として登録。次は G4（Layer-2 スコアリングルーター）。
 - **2026-06-22**: G4（Phase 2b Layer-2 スコアリングルーター）を main にマージ（PR #88）。`lib/agent-router-scoring.ts` で auto agent をオフライン採点（category 親和性 + reasoning + search + on-device ボーナス）、Scores/confidence/候補を reason-log に記録。実機テストで2点修正: ①スコアラーが走るよう `tool:'auto'` を配線（NL パーサが具体ツールを先に確定していた）②「ニュース要約」が research → 有料 Perplexity に誤ルート → news/最新を research から除外。実機で transform→Local（on-device-first）+ Scores 行 + Why: Layer-2 scorer を立証。クラウドキー欠如フォールバックを P1、Qwen 分類・キーワード重複を P2 登録。次は G5（inbound ゲートウェイ）。
+- **2026-06-22**: G5（Phase 3 Telegram inbound ゲートウェイ）を main にマージ（PR #89, build 1600）。`lib/telegram-inbound.ts`（純粋・13 テスト）で単一 authz チョークポイント + サニタイズ + offset replay 防止、poller は agent を作成/実行せず確認カードを enqueue するのみ（inbound は local より厳密に狭い）。セキュリティレビュー Blocker/High なし、M1 hot-loop フロア / M2 二重poller ガード / L1 通知本文除去を対応。**ユーザーが Telegram 非利用のためライブ end-to-end は未実機検証**（opt-in・既定 OFF で休眠、実害なし）。別 inbound チャネル検討・webhook・reply-back を後回し。次は G6（マルチステップ orchestration・最重）。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
