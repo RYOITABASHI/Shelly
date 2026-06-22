@@ -93,6 +93,17 @@ describe('matchSkillRecipes — conservative reuse', () => {
   it('respects empty input', () => {
     expect(matchSkillRecipes('crypto', [])).toEqual([]);
   });
+
+  it('matches a similar Japanese task via CJK bigrams (no word spaces)', () => {
+    const jp = [
+      recipe({ name: 'mem-test', trigger: '私は簡潔な箇条書き要約が好みだと覚えておいて', tags: [] }),
+    ];
+    const out = matchSkillRecipes('ニュースを簡潔な箇条書きで要約', jp);
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('mem-test');
+    // An unrelated Japanese task must not match.
+    expect(matchSkillRecipes('明日の天気を教えて', jp)).toEqual([]);
+  });
 });
 
 describe('buildSkillInjectionContext', () => {

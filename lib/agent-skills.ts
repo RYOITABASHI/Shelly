@@ -18,6 +18,7 @@
  */
 import * as FileSystem from 'expo-file-system/legacy';
 import { getHomePath } from '@/lib/home-path';
+import { tokenizeForMatch } from '@/lib/agent-text-match';
 import type { AgentRouteDecision } from '@/store/types';
 
 export interface SkillRecipe {
@@ -46,8 +47,10 @@ const DEFAULT_VAULT_PATH = '/sdcard/Documents/ObsidianVault';
 const SAFE_ID_RE = /^[A-Za-z0-9_-]+$/;
 /** Reuse is conservative: only surface a few strong matches. */
 export const DEFAULT_SKILL_MATCH_LIMIT = 3;
-/** A match must clear this score to be offered — avoids spurious reuse. */
-export const MIN_SKILL_MATCH_SCORE = 2;
+/** A match must clear this score to be offered — avoids spurious reuse.
+ *  Tuned for the CJK-bigram tokenizer (a similar task shares several bigrams;
+ *  an unrelated one shares ~none). */
+export const MIN_SKILL_MATCH_SCORE = 3;
 const MAX_RECIPE_PROMPT_CHARS = 2000;
 const MAX_INJECTION_CHARS = 800;
 
@@ -90,15 +93,6 @@ function normalizeTags(tags: string[] | undefined): string[] {
 function safeLine(value: string | undefined): string {
   if (!value) return '';
   return value.replace(/[\r\n]+/g, ' ').trim();
-}
-
-function tokenize(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^a-z0-9぀-ヿ一-鿿]+/)
-      .filter((t) => t.length >= 2)
-  );
 }
 
 /** Stable id from name+trigger so re-distilling the same skill overwrites it. */
@@ -280,10 +274,10 @@ export function matchSkillRecipes(
   limit = DEFAULT_SKILL_MATCH_LIMIT
 ): SkillRecipe[] {
   if (recipes.length === 0) return [];
-  const taskTokens = tokenize(taskText);
+  const taskTokens = tokenizeForMatch(taskText);
   const scored: ScoredSkill[] = [];
   for (const recipe of recipes) {
-    const triggerTokens = tokenize(`${recipe.trigger} ${recipe.tags.join(' ')}`);
+    const triggerTokens = tokenizeForMatch(`${recipe.trigger} ${recipe.tags.join(' ')}`);
     let score = 0;
     for (const tag of recipe.tags) if (taskTokens.has(tag)) score += 2;
     for (const tok of triggerTokens) if (taskTokens.has(tok)) score += 1;
@@ -318,7 +312,7 @@ export function distillSkillFromRun(params: {
   timestamp?: number;
 }): SkillRecipe {
   const trigger = deriveTrigger(params.taskText);
-  const tags = [...tokenize(params.taskText)].slice(0, 6);
+  const tags = [...tokenizeForMatch(params.taskText)].slice(0, 6);
   const created = params.timestamp ? new Date(params.timestamp).toISOString() : new Date().toISOString();
   return makeSkillRecipe({
     name: params.name,
@@ -343,6 +337,6 @@ export function bumpSkillUsage(recipe: SkillRecipe, timestamp?: number): SkillRe
 }
 
 function deriveTrigger(taskText: string): string {
-  const tokens = [...tokenize(taskText)].slice(0, 8);
+  const tokens = [...tokenizeForMatch(taskText)].slice(0, 8);
   return tokens.length ? tokens.join(' ') : taskText.trim().slice(0, 80);
 }
