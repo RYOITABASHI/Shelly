@@ -16,6 +16,8 @@ export const API_KEY_NAMES = [
   'groqApiKey',
   'cerebrasApiKey',
   'codexAuthToken',
+  // Phase 3 inbound gateway: the Telegram bot token is a secret → SecureStore.
+  'telegramBotToken',
 ] as const;
 export type ApiKeyName = typeof API_KEY_NAMES[number];
 
