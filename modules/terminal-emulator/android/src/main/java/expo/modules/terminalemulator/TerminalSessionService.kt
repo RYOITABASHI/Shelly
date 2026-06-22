@@ -78,7 +78,7 @@ class TerminalSessionService : Service() {
                     startForegroundWithNotification(null)
                     return START_STICKY
                 }
-                startForegroundWithNotification("Running agent: $agentId")
+                startForegroundWithNotification("Agent running in background")
                 runAgentInBackground(agentId)
                 return START_STICKY
             }
@@ -211,25 +211,30 @@ class TerminalSessionService : Service() {
         activeAgentRuns.incrementAndGet()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
-            val result = try {
+            try {
+                // AgentRuntime announces the run outcome itself (agent-result /
+                // error notification); we don't need its return value here.
                 AgentRuntime.runAgent(applicationContext, agentId)
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)
-                null
             } finally {
                 releaseAgentWakeLock(wakeLock, agentId)
             }
 
-            val info = when {
-                result == null -> "Agent failed: $agentId"
-                result.success -> "Agent completed: $agentId"
-                else -> "Agent failed: $agentId (${result.exitCode})"
-            }
-            updateNotification(info)
+            // The run outcome (success/failure + a readable preview) is announced
+            // exactly once by the agent-result notification (NotificationDispatcher),
+            // so we deliberately do NOT post a separate "Agent completed: <id>" card
+            // here — that was duplicate noise. We only manage the ongoing foreground
+            // notification's lifecycle.
             val remainingAgents = activeAgentRuns.decrementAndGet()
             if (sessionRegistry.isEmpty() && remainingAgents <= 0) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            } else {
+                // Terminals are still alive (or another agent is running): revert the
+                // ongoing notification to its base text instead of leaving it on the
+                // "Agent running" line.
+                updateNotification("")
             }
         }.apply {
             name = "ShellyAgent-$agentId"

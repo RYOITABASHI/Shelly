@@ -25,6 +25,26 @@ const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
 
 const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 
+describe('generateRunScript — readable notification preview (telemetry-stripped)', () => {
+  it('strips autonomous driver telemetry from the user-facing preview', () => {
+    const s = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));
+    // The notification/draft preview must NOT be the raw head of the result file
+    // (which, for the codex driver, begins with `AUDIT {...driver_start...}`).
+    expect(s).toContain('clean_result_preview()');
+    expect(s).toContain('PREVIEW=$(clean_result_preview "$RESULT_FILE")');
+    expect(s).toContain("sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d'");
+  });
+
+  it('threads the friendly agent name into approval + result notifications', () => {
+    const named: Agent = { ...agent({ type: 'local' }, true), name: 'Morning Digest' };
+    const s = generateRunScript(named, { suppressAction: false });
+    expect(s).toContain("AGENT_NAME='Morning Digest'");
+    // Both notification payloads carry agentName so the OS card shows a readable
+    // name instead of the raw agent id.
+    expect(s).toContain('"agentName":"$agent_name_json"');
+  });
+});
+
 describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
   it('non-final steps suppress the action (one notification per chain, not per step)', () => {
     const suppressed = generateRunScript(agent({ type: 'local' }), { suppressAction: true });

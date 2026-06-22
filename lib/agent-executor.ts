@@ -122,6 +122,7 @@ SHELLY_AGENT_SCRIPT_VERSION=${AGENT_SCRIPT_VERSION}
 set -euo pipefail
 
 AGENT_ID=${shellQuote(agentId)}
+AGENT_NAME=${shellQuote(agent.name)}
 RESULT_FILE=${shellQuote(resultFile)}
 LOCK_FILE=${shellQuote(lockFile)}
 LOG_DIR=${shellQuote(logDir)}
@@ -320,15 +321,28 @@ json_string_file() {
   printf '"'
 }
 
+# Strip the autonomous driver's structured telemetry (AUDIT/GATE/protocol/STDERR/
+# escalation) from a result file so the user-facing preview shows real content,
+# never the internal driver_start JSON. Backends that write a plain answer
+# (local/perplexity/gemini) have no such lines, so this is a harmless no-op for
+# them. Whitespace-collapsed and length-capped for a notification body.
+clean_result_preview() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null \
+    | head -c 500 | tr '\\n' ' '
+}
+
 write_native_notification_request() {
   status="$1"
   preview="$2"
   status_json=$(json_escape_text "$status")
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
+  agent_name_json=$(json_escape_text "$AGENT_NAME")
   tmp="$ACTION_NOTIFY_FILE.tmp"
   cat > "$tmp" << NOTIFYEOF
-{"agentId":"$agent_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
+{"agentId":"$agent_json","agentName":"$agent_name_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
 NOTIFYEOF
   mv "$tmp" "$ACTION_NOTIFY_FILE"
 }
@@ -410,6 +424,7 @@ write_action_approval_request() {
   mkdir -p "$ACTION_APPROVAL_DIR" "$ACTION_APPROVAL_REPLY_DIR" "$LOG_DIR"
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
+  agent_name_json=$(json_escape_text "$AGENT_NAME")
   approval_type_json=$(json_escape_text "$approval_type")
   destination_json=$(json_escape_text "$destination_host")
   command_json=$(json_escape_text "$ACTION_COMMAND")
@@ -421,7 +436,7 @@ write_action_approval_request() {
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -1647,7 +1662,7 @@ END_TIME=$(date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
 if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
-  PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ')
+  PREVIEW=$(clean_result_preview "$RESULT_FILE")
   STATUS="success"
   ERROR_MESSAGE=""
 
@@ -1658,7 +1673,7 @@ if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE
   fi
 else
   if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
-    PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ')
+    PREVIEW=$(clean_result_preview "$RESULT_FILE")
   else
     PREVIEW="Agent produced no output. Check backend configuration and required commands. Tool=$TOOL_LABEL PATH=$PATH"
   fi

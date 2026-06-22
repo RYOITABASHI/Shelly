@@ -101,6 +101,7 @@ type AgentGrantSpendRequest = {
 type AgentActionApprovalRequest = {
   runId: string;
   agentId: string;
+  agentName?: string | null;
   actionType: 'draft' | 'notify' | 'webhook' | 'cli';
   preview?: string | null;
   destinationHost?: string | null;
@@ -716,6 +717,7 @@ export default function RootLayout() {
       return {
         runId,
         agentId,
+        agentName: str('agentName') || null,
         actionType,
         preview: str('preview') || null,
         destinationHost: str('destinationHost') || null,

@@ -136,7 +136,8 @@ object AgentRuntime {
             NotificationDispatcher(context).notifyAgentResult(
                 agentId = json.optString("agentId", agentId).ifBlank { agentId },
                 status = json.optString("status", "success"),
-                preview = json.optString("preview", "")
+                preview = json.optString("preview", ""),
+                agentName = json.optString("agentName", "").trim().ifBlank { null }
             )
             return true
         } catch (e: Exception) {
