@@ -43,6 +43,15 @@ describe('generateRunScript — readable notification preview (telemetry-strippe
     // name instead of the raw agent id.
     expect(s).toContain('"agentName":"$agent_name_json"');
   });
+
+  it('an approved draft posts ONE completion card (closure) after saving', () => {
+    // Standalone draft: approval prompt THEN a success completion after save, so
+    // the user gets confirmation instead of a silent finish. (Suppressed steps
+    // never reach this branch — ACTION_TYPE routes them to __suppressed__, which
+    // returns before any approval/notification; covered by the suppress test.)
+    const draft = generateRunScript(agent({ type: 'local' }));
+    expect(draft).toMatch(/save_draft_result "\$result_file"\n\s*#[\s\S]*?write_native_notification_request "success" "\$preview" \|\| true/);
+  });
 });
 
 describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {

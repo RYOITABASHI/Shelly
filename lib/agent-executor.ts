@@ -547,6 +547,12 @@ dispatch_agent_action() {
       write_action_approval_request "draft" "$preview" "$result_file"
       wait_action_approval "draft" || return 1
       save_draft_result "$result_file"
+      # Post ONE readable completion card after the draft is saved, so an approved
+      # draft run gives the user closure (matching the notify action). The preview
+      # is already telemetry-stripped. Orchestration non-final steps never reach
+      # here (they use the __suppressed__ branch above), so a chain still ends with
+      # a single completion, not one per step.
+      write_native_notification_request "success" "$preview" || true
       return 0
       ;;
     notify)
