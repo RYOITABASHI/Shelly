@@ -1144,6 +1144,7 @@ const en: Record<string, string> = {
   'sidebar.agent_route_keyword': 'Keyword',
   'sidebar.agent_route_secret': 'Secret guard',
   'sidebar.agent_route_no_cloud': 'Cloud fallback disabled',
+  'sidebar.agent_route_score': 'Scores ({{confidence}}% conf)',
   'sidebar.agent_route_why': 'Why',
   'sidebar.agent_memory_title': 'Memory ({{count}} notes)',
   'sidebar.agent_memory_view': 'Memory',

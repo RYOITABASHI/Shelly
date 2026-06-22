@@ -304,6 +304,9 @@ export function Sidebar() {
             ? `${t('sidebar.agent_route_secret')}: ${routeDecision.secretKinds.join(', ')}`
             : null,
           routeDecision.noCloudFallback ? t('sidebar.agent_route_no_cloud') : null,
+          routeDecision.score
+            ? `${t('sidebar.agent_route_score', { confidence: Math.round(routeDecision.score.confidence * 100) })}: ${routeDecision.score.candidates.map((c) => `${c.toolType} ${c.score}`).join(', ')}`
+            : null,
           `${t('sidebar.agent_route_why')}: ${routeDecision.why}`,
         ].filter(Boolean).join('\n')
       : '';

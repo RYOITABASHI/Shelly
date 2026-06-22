@@ -5,6 +5,7 @@
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
+import { scoreRoutes } from './agent-router-scoring';
 
 export interface ToolSuggestion {
   tool: ToolChoice;
@@ -185,16 +186,20 @@ export function resolveAgentRoute(agent: Agent): AgentRouteResolution {
   }
 
   if (agent.tool.type === 'auto') {
-    const suggested = suggestTool(agent.prompt);
+    // Layer-2 (Phase 2b): after the hard guards, score candidate tools offline
+    // and pick the best. Hard guards above already returned, so the scorer can
+    // never override a forced-local secret-guard / pin / autonomous decision.
+    const scored = scoreRoutes(agent.prompt);
     return {
-      tool: suggested.tool,
+      tool: scored.tool,
       decision: {
-        route: routeForTool(suggested.tool),
-        toolType: suggested.tool.type,
-        toolLabel: toolChoiceToLabel(suggested.tool),
-        guard: suggested.keyword ? 'keyword' : 'default',
-        keyword: suggested.keyword,
-        why: suggested.reason,
+        route: routeForTool(scored.tool),
+        toolType: scored.tool.type,
+        toolLabel: scored.toolLabel,
+        guard: scored.guard,
+        keyword: scored.keyword,
+        why: scored.why,
+        score: { confidence: scored.confidence, candidates: scored.candidates },
       },
     };
   }

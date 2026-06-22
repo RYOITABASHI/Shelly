@@ -1143,6 +1143,7 @@ const ja: Record<string, string> = {
   'sidebar.agent_route_keyword': 'キーワード',
   'sidebar.agent_route_secret': '秘密検出',
   'sidebar.agent_route_no_cloud': 'クラウドフォールバック無効',
+  'sidebar.agent_route_score': 'スコア（確信度{{confidence}}%）',
   'sidebar.agent_route_why': '理由',
   'sidebar.agent_memory_title': 'メモリ（{{count}}件）',
   'sidebar.agent_memory_view': 'メモリ',
