@@ -475,6 +475,25 @@ export interface AgentAction {
   command?: string;
 }
 
+export type AgentRouteDecisionGuard =
+  | 'secret'
+  | 'manual-pin'
+  | 'autonomous-policy'
+  | 'keyword'
+  | 'configured-tool'
+  | 'default';
+
+export interface AgentRouteDecision {
+  route: 'on-device' | 'cloud' | 'hybrid';
+  toolType: ToolChoice['type'];
+  toolLabel: string;
+  guard: AgentRouteDecisionGuard;
+  why: string;
+  keyword?: string;
+  secretKinds?: string[];
+  noCloudFallback?: boolean;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -515,4 +534,5 @@ export interface AgentRunLog {
   durationMs: number;
   toolUsed: string;
   errorMessage?: string;
+  routeDecision?: AgentRouteDecision;
 }

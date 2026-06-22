@@ -2,10 +2,11 @@
  * lib/agent-executor.ts — Runs agent tasks in isolated tmux sessions.
  * Generates per-agent shell scripts and manages execution lifecycle.
  */
-import { Agent, ToolChoice } from '@/store/types';
-import { toolChoiceToLabel } from './agent-tool-router';
+import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
+import { evaluateAgentActionCommand } from './agent-action-safety';
 
 const MAX_CONCURRENT = 2;
 
@@ -69,14 +70,16 @@ export function generateRunScript(agent: Agent): string {
   const lockFile = `${locksDir}/${agentId}.pid`;
   const logDir = `${logsDir}/${agentId}`;
 
+  const routeResolution = resolveAgentRoute(agent);
+
   // Autonomous runs are OAuth/local only (Spec A §4): resolve `auto`→codex and
   // refuse api-key backends — there is no key in the autonomous agent path
   // (use OAuth-Codex/local, or the credential broker). Fail-closed.
-  let tool: ToolChoice = agent.tool;
+  let tool: ToolChoice = routeResolution.tool;
   if (agent.autonomous) {
-    const resolved = resolveForAutonomous(agent.tool);
+    const resolved = resolveForAutonomous(tool);
     if (!resolved) {
-      return refusalScript(agentId, resultFile, agent.tool.type);
+      return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
     }
     tool = resolved;
   }
@@ -85,6 +88,13 @@ export function generateRunScript(agent: Agent): string {
   }
 
   const toolLabel = toolChoiceToLabel(tool);
+  const routeDecision = {
+    ...routeResolution.decision,
+    toolType: tool.type,
+    toolLabel,
+    route: tool.type === 'local' ? 'on-device' : tool.type === 'ab-article-eval' ? 'hybrid' : 'cloud',
+  };
+  const routeDecisionJson = JSON.stringify(routeDecision);
   const apiKeyEnvScrub = requiresApiKeyEnv(tool)
     ? ''
     : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY\n';
@@ -94,6 +104,7 @@ export function generateRunScript(agent: Agent): string {
   const actionType = agent.action?.type ?? 'draft';
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
+  const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
   const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
 
@@ -116,6 +127,7 @@ TIMEOUT=${DEFAULT_TIMEOUT_SEC}
 OUTPUT_DIR=${shellQuote(outputDir)}
 SLUG=${shellQuote(slug)}
 TOOL_LABEL=${shellQuote(toolLabel)}
+ROUTE_DECISION_JSON=${shellQuote(routeDecisionJson)}
 ENV_FILE=${shellQuote(envFile)}
 LOCKS_DIR=${shellQuote(locksDir)}
 TMP_DIR=${shellQuote(tmpDir)}
@@ -124,7 +136,17 @@ AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 ACTION_TYPE=${shellQuote(actionType)}
 ACTION_WEBHOOK_URL=${shellQuote(actionWebhookUrl)}
 ACTION_COMMAND=${shellQuote(actionCommand)}
+ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
+ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
+ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
 ACTION_NOTIFY_FILE="$LOG_DIR/native-result-notification.json"
+ACTION_APPROVAL_DIR="$HOME/.shelly/agents/action-approvals"
+ACTION_APPROVAL_REPLY_DIR="$HOME/.shelly/agents/action-approval-replies"
+ACTION_RUN_ID="$AGENT_ID-$(date +%s)-$$"
+ACTION_APPROVAL_REQUEST_FILE="$ACTION_APPROVAL_DIR/action-$ACTION_RUN_ID.json"
+ACTION_APPROVAL_REPLY_FILE="$ACTION_APPROVAL_REPLY_DIR/action-$ACTION_RUN_ID.reply.json"
+ACTION_APPROVAL_REQUEST_SHA256=""
+ACTION_APPROVAL_TIMEOUT_SECONDS="\${SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS:-120}"
 ACTION_DISPATCH_STATUS=""
 ACTION_DISPATCH_MESSAGE=""
 REGISTRY_LOCK=""
@@ -132,6 +154,7 @@ REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
 LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
+FINISH_RAN=0
 
 START_TIME=$(date +%s)
 
@@ -231,14 +254,36 @@ write_failure_log() {
   cat > "$LOG_DIR/$TS.json" << LOGEOF
 {"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"error","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$PREVIEW_JSON"}
 LOGEOF
+  if [ -n "\${ROUTE_DECISION_JSON:-}" ]; then
+    tmp_log="$LOG_DIR/$TS.json.tmp"
+    cat > "$tmp_log" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"error","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$PREVIEW_JSON","routeDecision":$ROUTE_DECISION_JSON}
+LOGEOF
+    mv "$tmp_log" "$LOG_DIR/$TS.json"
+  fi
 }
 finish() {
-  code=$?
+  code="\${1:-$?}"
+  if [ "\${FINISH_RAN:-0}" = "1" ]; then
+    return 0
+  fi
+  FINISH_RAN=1
+  trap - EXIT
   if [ "$code" -ne 0 ]; then
     write_failure_log "$code" "\${BASH_LINENO[0]:-unknown}" || true
   fi
+  mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
   cleanup
+  return 0
+}
+
+mirror_driver_audit_to_app_private() {
+  audit_file="$LOG_DIR/agent-driver-audit.jsonl"
+  [ -s "$audit_file" ] || return 0
+  audit_dir="$HOME/.shelly/agents/audits"
+  mkdir -p "$audit_dir" 2>/dev/null || true
+  cp "$audit_file" "$audit_dir/$AGENT_ID-agent-driver-audit.jsonl" 2>/dev/null || true
 }
 
 mirror_driver_audit_to_sdcard() {
@@ -317,6 +362,105 @@ webhook_destination_host() {
   printf '%s' "$host"
 }
 
+sha256_file() {
+  file="$1"
+  if node_usable; then
+    if shelly_node - "$file" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const crypto = require('crypto');
+const file = process.argv[2];
+process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+NODEEOF
+    then
+      return 0
+    fi
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return 0
+  fi
+  return 1
+}
+
+json_field_file() {
+  file="$1"
+  field="$2"
+  if node_usable; then
+    if shelly_node - "$file" "$field" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const [file, field] = process.argv.slice(2);
+const value = JSON.parse(fs.readFileSync(file, 'utf8'))[field];
+if (typeof value === 'string') process.stdout.write(value);
+NODEEOF
+    then
+      return 0
+    fi
+  fi
+  sed -nE "s/.*\\\"$field\\\"[[:space:]]*:[[:space:]]*\\\"([^\\\"]*)\\\".*/\\1/p" "$file" 2>/dev/null | head -n 1
+}
+
+write_action_approval_request() {
+  approval_type="$1"
+  preview="$2"
+  result_file="$3"
+  destination_host="\${4:-}"
+  payload_path="\${5:-}"
+  mkdir -p "$ACTION_APPROVAL_DIR" "$ACTION_APPROVAL_REPLY_DIR" "$LOG_DIR"
+  preview_json=$(json_escape_text "$preview")
+  agent_json=$(json_escape_text "$AGENT_ID")
+  approval_type_json=$(json_escape_text "$approval_type")
+  destination_json=$(json_escape_text "$destination_host")
+  command_json=$(json_escape_text "$ACTION_COMMAND")
+  safety_level_json=$(json_escape_text "$ACTION_COMMAND_SAFETY_LEVEL")
+  safety_reason_json=$(json_escape_text "$ACTION_COMMAND_SAFETY_REASON")
+  payload_path_json=$(json_escape_text "$payload_path")
+  result_path_json=$(json_escape_text "$result_file")
+  ts_seconds=$(date +%s)
+  expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
+  tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
+  cat > "$tmp" << APPROVALEOF
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+APPROVALEOF
+  mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
+  ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
+}
+
+wait_action_approval() {
+  approval_type="$1"
+  deadline=$(( $(date +%s) + ACTION_APPROVAL_TIMEOUT_SECONDS ))
+  while [ "$(date +%s)" -le "$deadline" ]; do
+    if [ -s "$ACTION_APPROVAL_REPLY_FILE" ]; then
+      reply_run_id="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "runId")"
+      reply_decision="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "decision")"
+      reply_request_sha="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "requestSha256")"
+      if [ "$reply_run_id" != "$ACTION_RUN_ID" ] ||
+        [ -z "$ACTION_APPROVAL_REQUEST_SHA256" ] ||
+        [ "$reply_request_sha" != "$ACTION_APPROVAL_REQUEST_SHA256" ]; then
+        rm -f "$ACTION_APPROVAL_REPLY_FILE" "$ACTION_APPROVAL_REQUEST_FILE" 2>/dev/null || true
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="$approval_type action approval reply did not match the pending request."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ "$reply_decision" = "accept" ]; then
+        rm -f "$ACTION_APPROVAL_REPLY_FILE" "$ACTION_APPROVAL_REQUEST_FILE" 2>/dev/null || true
+        return 0
+      fi
+      rm -f "$ACTION_APPROVAL_REPLY_FILE" "$ACTION_APPROVAL_REQUEST_FILE" 2>/dev/null || true
+      ACTION_DISPATCH_STATUS="skipped"
+      ACTION_DISPATCH_MESSAGE="$approval_type action was declined."
+      write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
+      return 1
+    fi
+    sleep 1
+  done
+  rm -f "$ACTION_APPROVAL_REQUEST_FILE" 2>/dev/null || true
+  ACTION_DISPATCH_STATUS="skipped"
+  ACTION_DISPATCH_MESSAGE="$approval_type action approval timed out."
+  write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
+  return 1
+}
+
 register_source_urls() {
   result_file="$1"
   REGISTRY_LOCK="$SOURCE_REGISTRY_FILE.lock"
@@ -377,10 +521,14 @@ dispatch_agent_action() {
 
   case "$ACTION_TYPE" in
     ""|draft)
+      write_action_approval_request "draft" "$preview" "$result_file"
+      wait_action_approval "draft" || return 1
       save_draft_result "$result_file"
       return 0
       ;;
     notify)
+      write_action_approval_request "notify" "$preview" "$result_file"
+      wait_action_approval "notify" || return 1
       write_native_notification_request "success" "$preview"
       return 0
       ;;
@@ -410,6 +558,8 @@ dispatch_agent_action() {
       webhook_response="$LOG_DIR/webhook-response-$(date +%s).txt"
       webhook_error="$LOG_DIR/webhook-error-$(date +%s).txt"
       write_webhook_payload "$webhook_payload" "success" "$preview" "$result_file"
+      write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload"
+      wait_action_approval "webhook" || return 1
       set +e
       HTTP_TIMEOUT_SECONDS="\${WEBHOOK_TIMEOUT_SECONDS:-30}" http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload" "$webhook_response" "$webhook_error"
       webhook_rc=$?
@@ -424,10 +574,36 @@ dispatch_agent_action() {
       return 0
       ;;
     cli)
-      ACTION_DISPATCH_STATUS="skipped"
-      ACTION_DISPATCH_MESSAGE="CLI action requires in-app confirmation and was not auto-executed: $(printf '%s' "$ACTION_COMMAND" | head -c 240 | tr '\\n' ' ')"
-      write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
-      return 1
+      if [ -z "$ACTION_COMMAND" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="CLI action is missing a command."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      write_action_approval_request "cli" "$preview" "$result_file"
+      wait_action_approval "cli" || return 1
+      cli_output="$LOG_DIR/cli-action-output-$(date +%s).txt"
+      set +e
+      bash -lc "$ACTION_COMMAND" > "$cli_output" 2>&1
+      cli_rc=$?
+      set -e
+      {
+        printf '\\n## CLI action\\n\\n'
+        printf 'Safety: %s - %s\\n\\n' "$ACTION_COMMAND_SAFETY_LEVEL" "$ACTION_COMMAND_SAFETY_REASON"
+        printf 'Command:\\n\\n\`\`\`sh\\n%s\\n\`\`\`\\n\\n' "$ACTION_COMMAND"
+        printf 'Exit code: %s\\n\\n' "$cli_rc"
+        printf 'Output:\\n\\n\`\`\`text\\n'
+        head -c 4000 "$cli_output" 2>/dev/null || true
+        printf '\\n\`\`\`\\n'
+      } >> "$result_file"
+      if [ "$cli_rc" -ne 0 ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="CLI action failed with exit $cli_rc."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      ACTION_DISPATCH_MESSAGE="CLI action completed."
+      return 0
       ;;
     *)
       ACTION_DISPATCH_STATUS="error"
@@ -1432,7 +1608,7 @@ if [ "$ACTIVE_COUNT" -ge "$MAX_CONCURRENT" ]; then
   TS=$(date +%s)
   TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
   cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"global concurrency limit reached","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON"}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"global concurrency limit reached","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON","routeDecision":$ROUTE_DECISION_JSON}
 LOGEOF
   exit 0
 fi
@@ -1444,7 +1620,7 @@ if [ -f "$LOCK_FILE" ]; then
     TS=$(date +%s)
     TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
     cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON"}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON","routeDecision":$ROUTE_DECISION_JSON}
 LOGEOF
     exit 0
   fi
@@ -1489,7 +1665,7 @@ PREVIEW_JSON=$(json_escape_text "$PREVIEW")
 TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
 ERROR_MESSAGE_JSON=$(json_escape_text "$ERROR_MESSAGE")
 cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON"}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON}
 LOGEOF
 
 # Prune old logs (keep last 30)
@@ -1497,6 +1673,7 @@ ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || t
 
 # Cleanup temp
 rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"
+finish 0
 `;
 }
 
@@ -1505,14 +1682,28 @@ rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"
  * (an api-key backend — no key allowed in the autonomous path). Records the
  * refusal and exits non-zero so the run is logged as a failure, not silent.
  */
-function refusalScript(agentId: string, resultFile: string, toolType: string): string {
+function refusalScript(
+  agentId: string,
+  resultFile: string,
+  logDir: string,
+  decision: AgentRouteDecision,
+  toolType: string,
+): string {
   const msg = `autonomous mode does not allow the '${toolType}' backend — no API keys in the autonomous agent path (Spec A). Use OAuth-Codex/local, or route via the credential broker.`;
+  const toolLabel = toolChoiceToLabel({ type: toolType as ToolChoice['type'] } as ToolChoice);
+  const routeDecisionJson = JSON.stringify({ ...decision, toolType, toolLabel });
   return `#!/bin/bash
 # run-agent-${agentId}.sh — Shelly autonomous-mode refusal
 SHELLY_AGENT_SCRIPT_VERSION=${AGENT_SCRIPT_VERSION}
+ROUTE_DECISION_JSON=${shellQuote(routeDecisionJson)}
 echo ${shellQuote(`[REFUSED] ${msg}`)} >&2
 mkdir -p "$(dirname ${shellQuote(resultFile)})"
+mkdir -p ${shellQuote(logDir)}
 echo ${shellQuote(`[REFUSED] ${msg}`)} > ${shellQuote(resultFile)}
+TS=$(date +%s)
+cat > ${shellQuote(`${logDir}`)}/$TS.json << LOGEOF
+{"agentId":${shellQuote(JSON.stringify(agentId))},"timestamp":\${TS}000,"status":"error","outputPreview":${shellQuote(JSON.stringify(`[REFUSED] ${msg}`))},"durationMs":0,"toolUsed":${shellQuote(JSON.stringify(toolLabel))},"errorMessage":${shellQuote(JSON.stringify(`[REFUSED] ${msg}`))},"routeDecision":$ROUTE_DECISION_JSON}
+LOGEOF
 exit 1
 `;
 }
@@ -1538,6 +1729,8 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
     --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1 || true
+  mirror_driver_audit_to_app_private || true
+  mirror_driver_audit_to_sdcard || true
 else
   echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
 fi

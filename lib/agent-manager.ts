@@ -16,6 +16,30 @@ import * as Notifications from 'expo-notifications';
 import * as FileSystem from 'expo-file-system/legacy';
 
 const agentsDir = () => `${getHomePath()}/.shelly/agents`;
+export const DELETED_AGENT_MARKER_DIR = '.deleted';
+const deletedAgentsDir = () => `${agentsDir()}/${DELETED_AGENT_MARKER_DIR}`;
+const SAFE_AGENT_ID_RE = /^[A-Za-z0-9_-]+$/;
+const AGENT_RUN_WAIT_TIMEOUT_MS = 20 * 60_000;
+const AGENT_RUN_WAIT_POLL_MS = 1_500;
+
+export function isSafeAgentId(agentId: string): boolean {
+  return SAFE_AGENT_ID_RE.test(agentId);
+}
+
+function assertSafeAgentId(agentId: string): void {
+  if (!isSafeAgentId(agentId)) {
+    throw new Error(`refusing agent operation with unsafe id: ${agentId}`);
+  }
+}
+
+export function filterDeletedAgentMetadata(
+  agents: Agent[],
+  deletedIds: ReadonlySet<string>
+): Agent[] {
+  const safeAgents = agents.filter((agent) => isSafeAgentId(agent.id));
+  if (deletedIds.size === 0) return safeAgents;
+  return safeAgents.filter((agent) => !deletedIds.has(agent.id));
+}
 
 /**
  * Parse @agent commands from chat input.
@@ -232,6 +256,8 @@ async function materializeAgent(
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
   const commands = [
     `mkdir -p ${shellQuote(agentsDir())}`,
+    `rm -f ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)}`,
+    `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
     writeFileCommand(scriptPath, generateRunScript(agent)),
     ...generateInstallCommands(agent),
@@ -245,18 +271,78 @@ async function materializeAgent(
 
 export async function runAgentNow(
   agentId: string,
-  runCommand: (cmd: string) => Promise<string>
+  runCommand: (cmd: string) => Promise<string>,
+  options: {
+    waitTimeoutMs?: number;
+    pollMs?: number;
+    runStartedAtMs?: number;
+  } = {}
 ): Promise<void> {
+  assertSafeAgentId(agentId);
   // Global kill-switch: while halted, refuse manual runs too (not just scheduled).
   if (useAgentStore.getState().halted) {
     throw new Error('All agents are stopped (global kill-switch is on). Resume agents to run.');
   }
+  const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (agent) {
     await materializeAgent(agent, runCommand, false);
   }
+  let previousRunCount = 0;
+  let previousLatestTimestamp = Number.NEGATIVE_INFINITY;
+  try {
+    const existingLogs = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    previousRunCount = existingLogs.length;
+    previousLatestTimestamp = existingLogs.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY;
+  } catch {
+    // If log snapshotting fails, still run the agent and fall back to timestamp gating.
+  }
   await TerminalEmulator.runAgent(agentId);
+  await waitForAgentRunCompletion(runCommand, agentId, {
+    runStartedAtMs,
+    previousRunCount,
+    previousLatestTimestamp,
+    timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
+    pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+  });
   await syncAgentRunLogsFromDisk(runCommand, agentId);
+}
+
+async function waitForAgentRunCompletion(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId: string,
+  options: {
+    runStartedAtMs: number;
+    previousRunCount: number;
+    previousLatestTimestamp: number;
+    timeoutMs: number;
+    pollMs: number;
+  }
+): Promise<void> {
+  const deadline = Date.now() + options.timeoutMs;
+  let lastError: unknown;
+  while (Date.now() <= deadline) {
+    try {
+      const grouped = await readAgentRunLogs(runCommand, agentId);
+      const logs = grouped[agentId] ?? [];
+      const latest = logs.at(-1);
+      const hasNewRun =
+        logs.length > options.previousRunCount ||
+        (latest?.timestamp ?? Number.NEGATIVE_INFINITY) > options.previousLatestTimestamp;
+      if (latest && hasNewRun && latest.timestamp >= options.runStartedAtMs) {
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(options.pollMs);
+  }
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : '';
+  throw new Error(`Timed out waiting for agent "${agentId}" to finish${detail}`);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function stopAgent(
@@ -272,10 +358,13 @@ export async function stopAgent(
 export async function deleteAgent(agentId: string): Promise<void> {
   // ids are generated slugs (`agent-<ts>`) or sanitized names; refuse anything
   // with shell metacharacters so the $HOME-relative rm below is injection-safe.
-  if (!/^[A-Za-z0-9._-]+$/.test(agentId)) {
-    throw new Error(`refusing to delete agent with unsafe id: ${agentId}`);
+  assertSafeAgentId(agentId);
+  try {
+    await uninstallSchedule(agentId);
+  } catch (error) {
+    console.warn('deleteAgent: failed to cancel schedule before file cleanup', agentId, error);
+    // Best-effort: deleting the run script below still neutralizes any leftover alarm.
   }
-  await uninstallSchedule(agentId);
   // Delete via the live shell $HOME — NOT the JS getHomePath() cache. The cache
   // can hold an unresolved /data/user/0 alias that doesn't resolve to the real
   // files dir on some OEM builds, so `rm -f <alias>` silently exits 0 while the
@@ -287,9 +376,15 @@ export async function deleteAgent(agentId: string): Promise<void> {
   const command =
     `set -e\n` +
     `d="$HOME/.shelly/agents"\n` +
+    `if [ -s "$d/logs/${agentId}/agent-driver-audit.jsonl" ]; then\n` +
+    `  mkdir -p "$d/audits"\n` +
+    `  cp "$d/logs/${agentId}/agent-driver-audit.jsonl" "$d/audits/${agentId}-agent-driver-audit.jsonl"\n` +
+    `fi\n` +
     `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/locks/${agentId}.pid"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
-    `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }`;
+    `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }\n` +
+    `mkdir -p "$d/${DELETED_AGENT_MARKER_DIR}"\n` +
+    `printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" > "$d/${DELETED_AGENT_MARKER_DIR}/${agentId}"`;
   const result = await TerminalEmulator.execCommand(command, 30_000);
   if (result.exitCode !== 0) {
     throw new Error(
@@ -534,18 +629,34 @@ async function readAgentMetadataViaFileSystem(): Promise<Agent[] | null> {
     const info = await FileSystem.getInfoAsync(dirUri);
     if (!info.exists || !info.isDirectory) return [];
     const names = await FileSystem.readDirectoryAsync(dirUri);
+    const deletedIds = await readDeletedAgentIdsViaFileSystem(dirUri);
     const agents: Agent[] = [];
     for (const name of names.filter((entry) => entry.endsWith('.json'))) {
       try {
         const content = await FileSystem.readAsStringAsync(`${dirUri}/${name}`);
-        agents.push(JSON.parse(content) as Agent);
+        const parsed = JSON.parse(content) as Agent;
+        if (isSafeAgentId(parsed.id)) {
+          agents.push(parsed);
+        }
       } catch {
         // Skip malformed or concurrently-written metadata files.
       }
     }
-    return agents;
+    return filterDeletedAgentMetadata(agents, deletedIds);
   } catch {
     return null;
+  }
+}
+
+async function readDeletedAgentIdsViaFileSystem(dirUri: string): Promise<Set<string>> {
+  try {
+    const deletedUri = `${dirUri}/${DELETED_AGENT_MARKER_DIR}`;
+    const info = await FileSystem.getInfoAsync(deletedUri);
+    if (!info.exists || !info.isDirectory) return new Set();
+    const names = await FileSystem.readDirectoryAsync(deletedUri);
+    return new Set(names.filter((name) => isSafeAgentId(name)));
+  } catch {
+    return new Set();
   }
 }
 
@@ -553,14 +664,27 @@ async function readAgentMetadataViaShell(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<Agent[]> {
   const output = await runCommand(
-    `ls ${shellQuote(agentsDir())}/*.json 2>/dev/null | while read f; do cat "$f"; echo "---SEPARATOR---"; done`
+    `d=${shellQuote(agentsDir())}\n` +
+      `[ -d "$d" ] || exit 0\n` +
+      `deleted="$d/${DELETED_AGENT_MARKER_DIR}"\n` +
+      `for f in "$d"/*.json; do\n` +
+      `  [ -f "$f" ] || continue\n` +
+      `  id="\${f##*/}"\n` +
+      `  id="\${id%.json}"\n` +
+      `  [ -e "$deleted/$id" ] && continue\n` +
+      `  cat "$f"\n` +
+      `  echo "---SEPARATOR---"\n` +
+      `done`
   );
   if (!output.trim()) return [];
   const agents: Agent[] = [];
   const chunks = output.split('---SEPARATOR---').filter((c) => c.trim());
   for (const chunk of chunks) {
     try {
-      agents.push(JSON.parse(chunk.trim()) as Agent);
+      const parsed = JSON.parse(chunk.trim()) as Agent;
+      if (isSafeAgentId(parsed.id)) {
+        agents.push(parsed);
+      }
     } catch {
       // Skip malformed agent files.
     }

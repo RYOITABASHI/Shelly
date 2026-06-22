@@ -119,6 +119,16 @@ describe('parseAgentNL — action layer (capability boundary)', () => {
     expect(['draft', 'notify', 'webhook', 'cli']).toContain(d.action.type);
   });
 
+  it('SNS publish wording still stays draft-only unless a webhook or cli is explicit', () => {
+    for (const text of [
+      '毎日8時にXへ投稿する下書きを作って',
+      '毎朝Substackに公開する記事を準備して',
+      'every day at 8 prepare a post for X and publish it later',
+    ]) {
+      expect(parseAgentNL(text).action.type).toBe('draft');
+    }
+  });
+
   it('generic task does NOT escalate to cli', () => {
     expect(parseAgentNL('毎日8時に要約を作って').action.type).toBe('draft');
   });

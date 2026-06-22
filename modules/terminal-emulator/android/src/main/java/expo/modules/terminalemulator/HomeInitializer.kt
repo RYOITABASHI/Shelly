@@ -3282,6 +3282,7 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
         schedule: String? = null,
         inheritedState: JSONObject? = null,
     ) {
+        if (isAgentDeleted(agentsDir, id)) return
         val file = File(agentsDir, "$id.json")
         val nextContent = agentJson(id, name, description, prompt, toolJson, outputPath, schedule)
         if (!file.exists()) {
@@ -3304,6 +3305,9 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
             android.util.Log.w("HomeInitializer", "agent seed migration skipped for $id: ${e.message}")
         }
     }
+
+    private fun isAgentDeleted(agentsDir: File, id: String): Boolean =
+        File(File(agentsDir, ".deleted"), id).exists()
 
     private fun applyAgentState(target: JSONObject, state: JSONObject?) {
         if (state == null) return

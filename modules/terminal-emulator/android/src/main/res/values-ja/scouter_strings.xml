@@ -16,6 +16,8 @@
   <string name="scouter_widget_approval_not_ready">Codex の承認は現在使えません</string>
   <string name="scouter_widget_approval_allow_short">OK</string>
   <string name="scouter_widget_approval_deny_short">NO</string>
+  <string name="scouter_widget_agent_action_approved">エージェントアクションを許可しました</string>
+  <string name="scouter_widget_agent_action_denied">エージェントアクションを拒否しました</string>
   <string name="scouter_widget_prompt_queued_resume">キューしました。Codex を再開します...</string>
   <string name="scouter_widget_prompt_no_codex">先に Codex ターミナルを開くか再開してください</string>
   <string name="scouter_widget_prompt_stale_codex">紐づいた Codex ターミナルの準備ができていません</string>
@@ -24,7 +26,15 @@
   <string name="scouter_widget_choice_not_ready">Codex の選択はもう使えません</string>
   <string name="scouter_notification_action_allow">許可</string>
   <string name="scouter_notification_action_deny">拒否</string>
+  <string name="scouter_notification_action_review">確認</string>
   <string name="scouter_notification_codex_approval_title">Codex が承認を求めています</string>
+  <string name="scouter_notification_agent_action_title">エージェント %1$s: %2$s を許可しますか？</string>
+  <string name="scouter_notification_agent_action_preview">プレビュー: %1$s</string>
+  <string name="scouter_notification_agent_action_webhook_host">送信先: %1$s</string>
+  <string name="scouter_notification_agent_action_payload">ペイロード: %1$s</string>
+  <string name="scouter_notification_agent_action_safety">安全度: %1$s</string>
+  <string name="scouter_notification_agent_action_reason">理由: %1$s</string>
+  <string name="scouter_notification_agent_action_cli_review_required">CLI アクションはアプリ内でコマンド全文の確認が必要です。</string>
   <string name="scouter_notification_agent_escalation_title">エージェント %1$s: 境界操作を許可しますか？</string>
   <string name="scouter_notification_agent_escalation_truncated">長いコマンドです: %1$d 文字。許可前に Shelly で全文を確認してください。</string>
   <string name="scouter_notification_agent_escalation_reason">理由: %1$s</string>

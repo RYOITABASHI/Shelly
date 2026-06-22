@@ -1,9 +1,9 @@
 import "@/global.css";
-import React, { useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { Stack, type ErrorBoundaryProps } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { AppState, View, Text, Pressable, StyleSheet } from "react-native";
+import { Alert, AppState, View, Text, Pressable, ScrollView, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -12,7 +12,7 @@ import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fo
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
 import { loadAgentsFromDisk, syncAgentRunLogsFromDisk } from "@/lib/agent-manager";
-import { useI18n } from '@/lib/i18n';
+import { t, useI18n } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
@@ -97,13 +97,54 @@ type AgentGrantSpendRequest = {
   ts?: string | null;
 };
 
+type AgentActionApprovalRequest = {
+  runId: string;
+  agentId: string;
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+  preview?: string | null;
+  destinationHost?: string | null;
+  command?: string | null;
+  safetyLevel?: string | null;
+  safetyReason?: string | null;
+  payloadPath?: string | null;
+  resultPath?: string | null;
+  ts?: string | null;
+  expiresAt?: number | null;
+  requestSha256?: string | null;
+};
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,
   });
+  const [pendingAgentActionApproval, setPendingAgentActionApproval] =
+    useState<AgentActionApprovalRequest | null>(null);
+  const [agentActionResolving, setAgentActionResolving] = useState(false);
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
+  const resolvePendingAgentActionApproval = useCallback(async (decision: 'accept' | 'decline') => {
+    const request = pendingAgentActionApproval;
+    if (!request) return;
+    if (!TerminalEmulator.resolveAgentActionApproval) {
+      Alert.alert(t('agent_action_confirm_not_ready'));
+      return;
+    }
+    setAgentActionResolving(true);
+    try {
+      await TerminalEmulator.resolveAgentActionApproval(
+        request.runId,
+        decision,
+        request.requestSha256 ?? null,
+      );
+      setPendingAgentActionApproval(null);
+    } catch (e) {
+      logError('AgentActionApproval', `resolve ${decision} failed`, e);
+      Alert.alert(t('agent_action_confirm_not_ready'));
+    } finally {
+      setAgentActionResolving(false);
+    }
+  }, [pendingAgentActionApproval]);
   // Runtime theme preset swap. applyThemePreset() rewrites the live
   // colors object in place, re-injects Text.defaultProps.style.fontFamily,
   // and bumps the theme-version store so ShellLayout's root re-mounts
@@ -644,6 +685,110 @@ export default function RootLayout() {
       void TerminalEmulator.returnToHome?.().catch(() => undefined);
     };
 
+    const fallbackActionApprovalRequestDirUri = `${FileSystem.documentDirectory}home/.shelly/agents/action-approvals`;
+    const notifiedActionApprovals = new Map<string, { runId: string; seenAt: number }>();
+    let actionApprovalRequestDirUri: string | null = null;
+    let isDrainingActionApprovals = false;
+    const trimActionFileUri = (uri: string) => uri.replace(/\/+$/, '');
+    const joinActionFileUri = (dirUri: string, name: string) => `${trimActionFileUri(dirUri)}/${name}`;
+    const safeActionFilePart = (value: string) =>
+      value.replace(/[^A-Za-z0-9_.=-]/g, '_').slice(0, 160) || 'request';
+
+    const parseActionApprovalRequest = (raw: unknown): AgentActionApprovalRequest | null => {
+      const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+      if (!value) return null;
+      const str = (field: string) => typeof value[field] === 'string' ? (value[field] as string).trim() : '';
+      const runId = str('runId');
+      const agentId = str('agentId');
+      const actionType = str('actionType');
+      if (!runId || !agentId) return null;
+      if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli') {
+        return null;
+      }
+      const expiresAtRaw = value.expiresAt;
+      const expiresAt = typeof expiresAtRaw === 'number' && Number.isFinite(expiresAtRaw)
+        ? expiresAtRaw
+        : null;
+      return {
+        runId,
+        agentId,
+        actionType,
+        preview: str('preview') || null,
+        destinationHost: str('destinationHost') || null,
+        command: str('command') || null,
+        safetyLevel: str('safetyLevel') || null,
+        safetyReason: str('safetyReason') || null,
+        payloadPath: str('payloadPath') || null,
+        resultPath: str('resultPath') || null,
+        ts: str('ts') || null,
+        expiresAt,
+        requestSha256: str('requestSha256') || null,
+      };
+    };
+
+    const actionApprovalKey = (request: AgentActionApprovalRequest) => JSON.stringify({
+      runId: request.runId,
+      agentId: request.agentId,
+      actionType: request.actionType,
+      preview: request.preview,
+      destinationHost: request.destinationHost,
+      command: request.command,
+      safetyLevel: request.safetyLevel,
+      safetyReason: request.safetyReason,
+      payloadPath: request.payloadPath,
+      resultPath: request.resultPath,
+      ts: request.ts,
+      expiresAt: request.expiresAt,
+      requestSha256: request.requestSha256,
+    });
+
+    const getActionApprovalRequestDirUri = async () => {
+      if (actionApprovalRequestDirUri) return actionApprovalRequestDirUri;
+      if (TerminalEmulator.getAgentActionApprovalBridgePaths) {
+        const paths = await TerminalEmulator.getAgentActionApprovalBridgePaths().catch((e) => {
+          logError('AgentActionApproval', 'bridge path lookup failed', e);
+          return null;
+        });
+        if (paths?.requestDirUri) {
+          actionApprovalRequestDirUri = trimActionFileUri(paths.requestDirUri);
+          logInfo('AgentActionApproval', `watching ${paths.requestDirPath}`);
+          return actionApprovalRequestDirUri;
+        }
+      }
+      actionApprovalRequestDirUri = trimActionFileUri(fallbackActionApprovalRequestDirUri);
+      return actionApprovalRequestDirUri;
+    };
+
+    const readActionApprovalRequest = async (runId: string) => {
+      if (TerminalEmulator.readAgentActionApprovalRequest) {
+        return parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest(runId));
+      }
+      const dirUri = await getActionApprovalRequestDirUri();
+      const name = `action-${safeActionFilePart(runId)}.json`;
+      const fileUri = joinActionFileUri(dirUri, name);
+      const raw = await FileSystem.readAsStringAsync(fileUri);
+      return parseActionApprovalRequest(JSON.parse(raw));
+    };
+
+    const handleAgentActionConfirm = async (runId: string) => {
+      if (!runId) return;
+      try {
+        const request = await readActionApprovalRequest(runId);
+        if (!request || request.actionType !== 'cli') {
+          Alert.alert(t('agent_action_confirm_not_ready'));
+          return;
+        }
+        if (request.expiresAt && request.expiresAt < Date.now()) {
+          Alert.alert(t('agent_action_confirm_expired'));
+          return;
+        }
+        setPendingAgentActionApproval(request);
+      } catch (e) {
+        logError('AgentActionApproval', `read request failed run=${runId}`, e);
+        Alert.alert(t('agent_action_confirm_not_ready'));
+      }
+    };
+
     const handleDeepLink = async (url: string) => {
       try {
         const parsed = Linking.parse(url);
@@ -691,6 +836,11 @@ export default function RootLayout() {
         } else if (target === 'scouter') {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
+        } else if (target === 'agent-action-confirm') {
+          const runId = queryValue(parsed.queryParams?.runId);
+          if (typeof runId === 'string') {
+            await handleAgentActionConfirm(runId);
+          }
         } else if (target === 'agent-chat') {
           await waitForMultiPaneHydration();
           const compose = queryValue(parsed.queryParams?.compose);
@@ -1163,6 +1313,73 @@ export default function RootLayout() {
     const escalationInterval = setInterval(drainAgentEscalationRequests, 500);
     void drainAgentEscalationRequests();
 
+    const rememberActionApproval = (key: string, request: AgentActionApprovalRequest) => {
+      const now = Date.now();
+      notifiedActionApprovals.set(key, { runId: request.runId, seenAt: now });
+      for (const [candidate, record] of notifiedActionApprovals) {
+        if (now - record.seenAt > 10 * 60_000) notifiedActionApprovals.delete(candidate);
+      }
+    };
+
+    const drainAgentActionApprovalRequests = async () => {
+      if (
+        isDrainingActionApprovals ||
+        disposed ||
+        !TerminalEmulator.notifyAgentActionApprovalNeeded
+      ) {
+        return;
+      }
+      isDrainingActionApprovals = true;
+      try {
+        const requestDirUri = await getActionApprovalRequestDirUri();
+        const names = await FileSystem.readDirectoryAsync(requestDirUri).catch(() => null);
+        if (!names) return;
+        const activeKeys = new Set<string>();
+        const activeRunIds = new Set<string>();
+        for (const name of names) {
+          if (!/^action-[A-Za-z0-9_.=-]+\.json$/.test(name)) continue;
+          const fileUri = joinActionFileUri(requestDirUri, name);
+          let parsed: AgentActionApprovalRequest | null = null;
+          try {
+            parsed = parseActionApprovalRequest(JSON.parse(await FileSystem.readAsStringAsync(fileUri)));
+          } catch (e) {
+            logError('AgentActionApproval', `rejected unreadable request ${name}`, e);
+            continue;
+          }
+          if (!parsed) {
+            logError('AgentActionApproval', `rejected invalid request ${name}`);
+            continue;
+          }
+          if (parsed.expiresAt && parsed.expiresAt < Date.now()) {
+            continue;
+          }
+          const key = actionApprovalKey(parsed);
+          activeKeys.add(key);
+          activeRunIds.add(parsed.runId);
+          if (notifiedActionApprovals.has(key)) continue;
+          await TerminalEmulator.notifyAgentActionApprovalNeeded(parsed);
+          rememberActionApproval(key, parsed);
+          logInfo('AgentActionApproval', `approval notification posted run=${parsed.runId} action=${parsed.actionType}`);
+        }
+        for (const [key, record] of notifiedActionApprovals) {
+          if (activeKeys.has(key)) continue;
+          if (activeRunIds.has(record.runId)) {
+            notifiedActionApprovals.delete(key);
+            continue;
+          }
+          await TerminalEmulator.cancelAgentActionApproval?.(record.runId).catch(() => undefined);
+          notifiedActionApprovals.delete(key);
+          logInfo('AgentActionApproval', `stale approval notification cancelled run=${record.runId}`);
+        }
+      } catch (e) {
+        logError('AgentActionApproval', 'poll iteration failed', e);
+      } finally {
+        isDrainingActionApprovals = false;
+      }
+    };
+    const actionApprovalInterval = setInterval(drainAgentActionApprovalRequests, 500);
+    void drainAgentActionApprovalRequests();
+
     // Snapshot terminal state before the bridge can be paused or killed.
     const sub = AppState.addEventListener('change', (state) => {
       logInfo('RootLayout', `AppState changed: ${state}`);
@@ -1181,6 +1398,7 @@ export default function RootLayout() {
       clearTimeout(agentLogStartTimer);
       clearInterval(queueInterval);
       clearInterval(escalationInterval);
+      clearInterval(actionApprovalInterval);
       if (agentLogInterval) clearInterval(agentLogInterval);
     };
   }, [loadSettings]);
@@ -1202,8 +1420,136 @@ export default function RootLayout() {
         <Stack key={locale} screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
         </Stack>
+        {pendingAgentActionApproval ? (
+          <View style={actionApprovalStyles.backdrop}>
+            <View style={actionApprovalStyles.panel}>
+              <Text style={actionApprovalStyles.eyebrow}>
+                {t('agent_action_confirm_title')}
+              </Text>
+              <Text style={actionApprovalStyles.body}>
+                {t('agent_action_confirm_body')}
+              </Text>
+              <Text style={actionApprovalStyles.label}>
+                {t('agent_action_confirm_safety')}
+              </Text>
+              <Text style={actionApprovalStyles.meta}>
+                {(pendingAgentActionApproval.safetyLevel || 'UNKNOWN')}: {pendingAgentActionApproval.safetyReason || ''}
+              </Text>
+              <Text style={actionApprovalStyles.label}>
+                {t('agent_action_confirm_command')}
+              </Text>
+              <ScrollView style={actionApprovalStyles.commandBox}>
+                <Text selectable style={actionApprovalStyles.commandText}>
+                  {pendingAgentActionApproval.command || ''}
+                </Text>
+              </ScrollView>
+              <View style={actionApprovalStyles.actions}>
+                <Pressable
+                  disabled={agentActionResolving}
+                  style={[actionApprovalStyles.button, actionApprovalStyles.declineButton]}
+                  onPress={() => void resolvePendingAgentActionApproval('decline')}
+                >
+                  <Text style={actionApprovalStyles.buttonText}>
+                    {t('agent_action_confirm_decline')}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  disabled={agentActionResolving}
+                  style={[actionApprovalStyles.button, actionApprovalStyles.allowButton]}
+                  onPress={() => void resolvePendingAgentActionApproval('accept')}
+                >
+                  <Text style={actionApprovalStyles.buttonText}>
+                    {t('agent_action_confirm_allow')}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
         <StatusBar style="light" />
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
+
+const actionApprovalStyles = StyleSheet.create({
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 5000,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  panel: {
+    width: '100%',
+    maxWidth: 680,
+    maxHeight: '86%',
+    borderWidth: 1,
+    borderColor: '#00FF66',
+    backgroundColor: '#050805',
+    padding: 18,
+    gap: 12,
+  },
+  eyebrow: {
+    color: '#00FF66',
+    fontFamily: 'JetBrainsMono_700Bold',
+    fontSize: 16,
+  },
+  body: {
+    color: '#BDE8C6',
+    fontFamily: 'JetBrainsMono_400Regular',
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  label: {
+    color: '#7AF59C',
+    fontFamily: 'JetBrainsMono_700Bold',
+    fontSize: 12,
+    textTransform: 'uppercase',
+  },
+  meta: {
+    color: '#D7FCE0',
+    fontFamily: 'JetBrainsMono_400Regular',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  commandBox: {
+    maxHeight: 260,
+    borderWidth: 1,
+    borderColor: '#1D7F42',
+    backgroundColor: '#000',
+    padding: 12,
+  },
+  commandText: {
+    color: '#E8FFF0',
+    fontFamily: 'JetBrainsMono_400Regular',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  button: {
+    minWidth: 120,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  declineButton: {
+    borderColor: '#FF6B73',
+    backgroundColor: '#170508',
+  },
+  allowButton: {
+    borderColor: '#00FF66',
+    backgroundColor: '#063516',
+  },
+  buttonText: {
+    color: '#F5FFF8',
+    fontFamily: 'JetBrainsMono_700Bold',
+    fontSize: 13,
+  },
+});

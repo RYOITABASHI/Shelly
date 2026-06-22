@@ -201,6 +201,19 @@ export function Sidebar() {
   // Tap an agent row → full detail popup (the row only has room for the name).
   const showAgentDetail = React.useCallback((agent: Agent) => {
     const lastLog = useAgentStore.getState().getRunHistory(agent.id).at(-1);
+    const routeDecision = lastLog?.routeDecision;
+    const routeDetail = routeDecision
+      ? [
+          `${t('sidebar.agent_route')}: ${routeDecision.route} / ${routeDecision.toolLabel}`,
+          `${t('sidebar.agent_route_guard')}: ${routeDecision.guard}`,
+          routeDecision.keyword ? `${t('sidebar.agent_route_keyword')}: ${routeDecision.keyword}` : null,
+          routeDecision.secretKinds?.length
+            ? `${t('sidebar.agent_route_secret')}: ${routeDecision.secretKinds.join(', ')}`
+            : null,
+          routeDecision.noCloudFallback ? t('sidebar.agent_route_no_cloud') : null,
+          `${t('sidebar.agent_route_why')}: ${routeDecision.why}`,
+        ].filter(Boolean).join('\n')
+      : '';
     const meta = [
       agent.schedule || t('sidebar.agent_manual'),
       agent.action?.type ?? 'draft',
@@ -213,6 +226,7 @@ export function Sidebar() {
       '',
       meta,
       lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
+      routeDetail,
     ].filter(Boolean).join('\n');
     Alert.alert(agent.name, body, [
       { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },

@@ -209,7 +209,7 @@ function detectAction(text: string): AgentAction {
 
   // webhook — an explicit URL is the strongest signal.
   const url = text.match(URL_RE);
-  if (url || /webhook|フック|\bpost\b/i.test(text)) {
+  if (url || /webhook|フック/i.test(text)) {
     return { type: 'webhook', webhookUrl: url ? url[0] : undefined };
   }
 

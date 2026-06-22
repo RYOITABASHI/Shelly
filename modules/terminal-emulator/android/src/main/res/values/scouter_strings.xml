@@ -22,6 +22,8 @@
   <string name="scouter_widget_approval_deny">Deny Codex approval request</string>
   <string name="scouter_widget_approval_allow_short">OK</string>
   <string name="scouter_widget_approval_deny_short">NO</string>
+  <string name="scouter_widget_agent_action_approved">Agent action approved</string>
+  <string name="scouter_widget_agent_action_denied">Agent action declined</string>
   <string name="scouter_codex_pet">Codex pet</string>
   <string name="scouter_codex_pet_show">Show Codex pet</string>
   <string name="scouter_codex_pet_switch">Switch Codex pet</string>
@@ -34,7 +36,15 @@
   <string name="scouter_widget_choice_not_ready">Codex choice is no longer available</string>
   <string name="scouter_notification_action_allow">Allow</string>
   <string name="scouter_notification_action_deny">Deny</string>
+  <string name="scouter_notification_action_review">Review</string>
   <string name="scouter_notification_codex_approval_title">Codex needs approval</string>
+  <string name="scouter_notification_agent_action_title">Agent %1$s: approve %2$s?</string>
+  <string name="scouter_notification_agent_action_preview">Preview: %1$s</string>
+  <string name="scouter_notification_agent_action_webhook_host">Destination: %1$s</string>
+  <string name="scouter_notification_agent_action_payload">Payload: %1$s</string>
+  <string name="scouter_notification_agent_action_safety">Safety: %1$s</string>
+  <string name="scouter_notification_agent_action_reason">Reason: %1$s</string>
+  <string name="scouter_notification_agent_action_cli_review_required">CLI actions require in-app command review.</string>
   <string name="scouter_notification_agent_escalation_title">Agent %1$s: approve boundary op?</string>
   <string name="scouter_notification_agent_escalation_truncated">Long command: %1$d characters; review the full request in Shelly before allowing.</string>
   <string name="scouter_notification_agent_escalation_reason">Reason: %1$s</string>
