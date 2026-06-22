@@ -1011,6 +1011,7 @@ export function useAIPaneDispatch(paneId: string) {
           action: confirmed.action,
           runOn,
           autonomous: confirmed.autonomous || undefined,
+          memory: confirmed.memory,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
         await installAgent(created, runAgentShellCommand);

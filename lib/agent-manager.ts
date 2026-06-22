@@ -10,6 +10,14 @@ import { resolveForAutonomous } from './agent-credential-policy';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
+import {
+  buildRecallContext,
+  extractRunDigest,
+  makeMemoryNote,
+  readMemoryNotes,
+  recallMemoryNotes,
+  writeMemoryNote,
+} from './agent-memory';
 import { getHomePath } from '@/lib/home-path';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
@@ -183,6 +191,7 @@ export function createAgent(params: {
   outputTemplate?: string;
   action?: Agent['action'];
   runOn?: Agent['runOn'];
+  memory?: Agent['memory'];
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -202,6 +211,7 @@ export function createAgent(params: {
     outputTemplate: params.outputTemplate || null,
     action: params.action,
     runOn: params.runOn,
+    memory: params.memory,
     enabled: true,
     lastRun: null,
     lastResult: null,
@@ -250,22 +260,73 @@ export async function installAgent(
 async function materializeAgent(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
-  installAlarm: boolean
+  installAlarm: boolean,
+  // The startup-repair path re-materializes every scheduled agent on launch; it
+  // passes false so we don't re-issue an (idempotent but redundant) fact write
+  // for each one. Recall is always re-applied so the baked prompt stays fresh.
+  persistFacts = true
 ): Promise<void> {
+  // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
+  // so it is immediately recallable, then bake recalled notes into the run prompt.
+  if (persistFacts) {
+    await persistRememberFact(agent, runCommand);
+  }
+  const agentForRun = await applyRecallToAgent(agent);
+
   const scriptPath = getScriptPath(agent.id);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
   const commands = [
     `mkdir -p ${shellQuote(agentsDir())}`,
     `rm -f ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)}`,
     `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
+    // Metadata stores the ORIGINAL agent (no baked recall) so memory never
+    // compounds across materializations; the script gets the effective prompt.
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
-    writeFileCommand(scriptPath, generateRunScript(agent)),
+    writeFileCommand(scriptPath, generateRunScript(agentForRun)),
     ...generateInstallCommands(agent),
   ];
 
   await runCommand(`set -e\n${commands.join('\n')}`);
   if (installAlarm) {
     await installSchedule(agent);
+  }
+}
+
+/**
+ * Build the EFFECTIVE agent whose prompt is prefixed with recalled memory. The
+ * recall block flows through generateRunScript → resolveAgentRoute, which scans
+ * agent.prompt with secret-guard, so a secret inside a memory note forces the
+ * run on-device exactly like a secret in the task text (no silent cloud leak).
+ * Returns the agent unchanged when there is nothing to recall.
+ */
+async function applyRecallToAgent(agent: Agent): Promise<Agent> {
+  try {
+    const notes = await readMemoryNotes(agent.id);
+    if (notes.length === 0) return agent;
+    const relevant = recallMemoryNotes(notes, `${agent.name}\n${agent.prompt}`);
+    const context = buildRecallContext(relevant);
+    if (!context) return agent;
+    return { ...agent, prompt: `${context}\n\n---\n\n${agent.prompt}` };
+  } catch {
+    // Memory recall is best-effort; never block a run on a recall read failure.
+    return agent;
+  }
+}
+
+/** Write the registering "remember that …" fact as a memory note (idempotent). */
+async function persistRememberFact(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const fact = agent.memory?.rememberFact?.trim();
+  if (!fact) return;
+  try {
+    await writeMemoryNote(
+      runCommand,
+      makeMemoryNote({ agentId: agent.id, type: 'fact', text: fact, tags: agent.memory?.tags })
+    );
+  } catch (error) {
+    console.warn('Failed to persist remember-fact for agent', agent.id, error);
   }
 }
 
@@ -306,6 +367,33 @@ export async function runAgentNow(
     pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
   });
   await syncAgentRunLogsFromDisk(runCommand, agentId);
+  await captureRunMemory(agentId, runCommand);
+}
+
+/**
+ * Phase 1 memory-write: after a successful TS-driven run, save the result digest
+ * as a memory note when the agent opted in (memory.remember). Best-effort — a
+ * memory failure never fails the run. (Scheduled-fire auto-capture is deferred;
+ * see DEFERRED.md — the native fire path has no TS post-run hook yet.)
+ */
+async function captureRunMemory(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (!agent?.memory?.remember) return;
+  const latest = useAgentStore.getState().getRunHistory(agentId).at(-1);
+  if (!latest || latest.status !== 'success') return;
+  const digest = extractRunDigest(latest.outputPreview || '');
+  if (!digest) return;
+  try {
+    await writeMemoryNote(
+      runCommand,
+      makeMemoryNote({ agentId, type: 'result', text: digest, tags: agent.memory?.tags })
+    );
+  } catch (error) {
+    console.warn('Failed to capture run memory for agent', agentId, error);
+  }
 }
 
 async function waitForAgentRunCompletion(
@@ -382,6 +470,10 @@ export async function deleteAgent(agentId: string): Promise<void> {
     `fi\n` +
     `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/locks/${agentId}.pid"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
+    // Phase 1 memory lives under memory/<id>; drop it with the agent so a deleted
+    // agent leaves no orphaned memory behind (the Vault mirror is left in place
+    // for human review, like drafts/audits).
+    `rm -rf "$d/memory/${agentId}"\n` +
     `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }\n` +
     `mkdir -p "$d/${DELETED_AGENT_MARKER_DIR}"\n` +
     `printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" > "$d/${DELETED_AGENT_MARKER_DIR}/${agentId}"`;
@@ -605,7 +697,7 @@ function scheduleAgentStartupRepair(
         // captured snapshot would rewrite its <id>.json + alarm and resurrect it.
         if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
         try {
-          await materializeAgent(agent, runCommand, true);
+          await materializeAgent(agent, runCommand, true, false);
           await new Promise((resolve) => setTimeout(resolve, 250));
         } catch (error) {
           console.warn('Failed to repair scheduled agent on startup', agent.id, error);

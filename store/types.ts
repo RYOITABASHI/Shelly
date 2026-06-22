@@ -475,6 +475,17 @@ export interface AgentAction {
   command?: string;
 }
 
+/** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */
+export interface AgentMemoryConfig {
+  /** true = after a successful run, save the result digest as a memory note. */
+  remember?: boolean;
+  /** A fact captured from the registering utterance ("remember that …"), written
+   *  as a memory note at creation so the very next run can recall it. */
+  rememberFact?: string;
+  /** Default tags applied to notes this agent writes. */
+  tags?: string[];
+}
+
 export type AgentRouteDecisionGuard =
   | 'secret'
   | 'manual-pin'
@@ -519,6 +530,9 @@ export interface Agent {
    *  local-first routing (hard-guards + keyword). 'on-device' / 'cloud' override it.
    *  Absent = 'auto'. The escape hatch for bad local quality — widen control, not default. */
   runOn?: 'auto' | 'on-device' | 'cloud';
+  /** Phase 1 persistent memory. Absent = no memory writes (recall is always
+   *  attempted but is a no-op when the agent has no saved notes). */
+  memory?: AgentMemoryConfig;
   enabled: boolean;
   lastRun: number | null;
   lastResult: 'success' | 'error' | null;

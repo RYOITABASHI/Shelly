@@ -23,6 +23,7 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
+import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
@@ -198,8 +199,21 @@ export function Sidebar() {
     }
   }, [runCommandForAgentSync, t]);
 
+  // Secondary popup: list the agent's saved memory notes (Phase 1).
+  const showMemoryList = React.useCallback((agent: Agent, notes: MemoryNote[]) => {
+    const body = notes.length
+      ? notes
+          .slice(0, 20)
+          .map((note) => `• [${note.type}] ${note.text.replace(/\s+/g, ' ').slice(0, 160)}`)
+          .join('\n\n')
+      : t('sidebar.agent_memory_empty');
+    Alert.alert(t('sidebar.agent_memory_title', { count: notes.length }), body, [
+      { text: t('common.close'), style: 'cancel' },
+    ]);
+  }, [t]);
+
   // Tap an agent row → full detail popup (the row only has room for the name).
-  const showAgentDetail = React.useCallback((agent: Agent) => {
+  const showAgentDetail = React.useCallback(async (agent: Agent) => {
     const lastLog = useAgentStore.getState().getRunHistory(agent.id).at(-1);
     const routeDecision = lastLog?.routeDecision;
     const routeDetail = routeDecision
@@ -214,6 +228,13 @@ export function Sidebar() {
           `${t('sidebar.agent_route_why')}: ${routeDecision.why}`,
         ].filter(Boolean).join('\n')
       : '';
+    // Memory is best-effort: a read failure must not block the detail popup.
+    let memoryNotes: MemoryNote[] = [];
+    try {
+      memoryNotes = await readMemoryNotes(agent.id);
+    } catch {
+      memoryNotes = [];
+    }
     const meta = [
       agent.schedule || t('sidebar.agent_manual'),
       agent.action?.type ?? 'draft',
@@ -225,15 +246,20 @@ export function Sidebar() {
       (agent.prompt || agent.description || '').trim(),
       '',
       meta,
+      `${t('sidebar.agent_memory_title', { count: memoryNotes.length })}`,
       lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
       routeDetail,
     ].filter(Boolean).join('\n');
-    Alert.alert(agent.name, body, [
+    const buttons = [
       { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
       { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
-      { text: t('common.close'), style: 'cancel' },
-    ]);
-  }, [t, handleRunScheduledAgent, handleTogglePause]);
+      ...(memoryNotes.length
+        ? [{ text: t('sidebar.agent_memory_view'), onPress: () => showMemoryList(agent, memoryNotes) }]
+        : []),
+      { text: t('common.close'), style: 'cancel' as const },
+    ];
+    Alert.alert(agent.name, body, buttons);
+  }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
@@ -399,7 +425,7 @@ export function Sidebar() {
                   <View style={[styles.taskDot, { backgroundColor: agent.autonomous ? C.accent : C.text3 }]} />
                   <Pressable
                     style={styles.taskInfo}
-                    onPress={() => showAgentDetail(agent)}
+                    onPress={() => void showAgentDetail(agent)}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >

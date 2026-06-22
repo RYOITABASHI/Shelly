@@ -21,7 +21,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-nativ
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
-import { AgentAction, AgentActionType, ToolChoice } from '@/store/types';
+import { AgentAction, AgentActionType, AgentMemoryConfig, ToolChoice } from '@/store/types';
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -34,6 +34,8 @@ export interface ConfirmedAgentDraft {
   runOn: 'auto' | 'on-device' | 'cloud';
   /** true = run via the B2 autonomous gate (driver/escalation), no per-step approval. */
   autonomous: boolean;
+  /** Phase 1 memory intent parsed from the utterance ("remember that …"). */
+  memory?: AgentMemoryConfig;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
@@ -145,6 +147,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       action,
       runOn: autonomous ? 'auto' : runOn,
       autonomous,
+      // Phase 1 memory: carry the parsed "remember that …" intent through to
+      // createAgent. No card control yet — the NL parse is the source of truth.
+      memory: draft.memory,
     });
   };
 

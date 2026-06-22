@@ -15,7 +15,7 @@
  *
  * The result is a PREVIEW draft, not a live agent. The caller shows it in the confirm card.
  */
-import { AgentAction, ToolChoice } from '@/store/types';
+import { AgentAction, AgentMemoryConfig, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 
 export interface ParsedAgentDraft {
@@ -39,6 +39,10 @@ export interface ParsedAgentDraft {
   /** Default for the card's Autonomous toggle (set true when the `@agent autonomous`
    *  alias was used). The card is the source of truth; this is just the initial value. */
   autonomous?: boolean;
+  /** Phase 1 memory: set when the utterance asked the agent to remember something
+   *  ("覚えておいて" / "remember that …"). Absent = no memory write. Recall is
+   *  always attempted at run time regardless of this flag. */
+  memory?: AgentMemoryConfig;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -229,6 +233,41 @@ function detectAction(text: string): AgentAction {
   return { type: 'draft' };
 }
 
+// Memory-write markers (JP/EN). Presence flips on memory.remember; the clause
+// captured before the marker (JP) or after it (EN) becomes the remembered fact.
+const MEMORY_JP_RE = /(.+?)(?:を|って|と)?\s*(?:覚えておいて|覚えてて|覚えといて|記憶しておいて|メモしておいて|メモして|忘れないで)/;
+const MEMORY_EN_RE = /\b(?:remember|note|keep in mind|don'?t forget)\b(?:\s+(?:that|to|this)?)?\s*[:：]?\s*(.+)/i;
+
+// A NEGATED "remember" is a statement about NOT recalling ("I don't remember the
+// password") — not a request to store. It must never write a memory note. Note
+// "don't forget" is the opposite (an affirmative keep-this) and is handled apart.
+const EN_NEGATED_REMEMBER = /\b(?:do(?:n'?t| not)|can'?t|cannot|could ?n'?t|wo ?n'?t|will not|never|did ?n'?t)\s+remember\b/i;
+const JP_NEGATED_MEMORY = /覚えて(?:い)?ない|覚えてません|思い出せない|記憶にない/;
+
+/** Detect a "remember that …" request and extract the fact. Returns undefined when absent. */
+function detectMemory(text: string): AgentMemoryConfig | undefined {
+  // JP imperative keep-this markers, excluding negated "don't remember" forms.
+  const hasJp = !JP_NEGATED_MEMORY.test(text) &&
+    /(?:覚えておいて|覚えてて|覚えといて|記憶して|メモして|忘れないで)/.test(text);
+  // EN: "keep in mind" / "don't forget" / "note that" are always affirmative;
+  // bare "remember" counts only when it is NOT negated.
+  const hasEnAlways = /\b(?:keep in mind|don'?t forget|note that)\b/i.test(text);
+  const hasEnRemember = !EN_NEGATED_REMEMBER.test(text) && /\bremember\b/i.test(text);
+  const hasEn = hasEnAlways || hasEnRemember;
+  if (!hasJp && !hasEn) return undefined;
+
+  let fact: string | undefined;
+  if (hasJp) {
+    const m = text.match(MEMORY_JP_RE);
+    if (m && m[1]) fact = m[1].trim().replace(/^[「『]|[」』]$/g, '').trim();
+  }
+  if (!fact && hasEn) {
+    const m = text.match(MEMORY_EN_RE);
+    if (m && m[1]) fact = m[1].trim().replace(/^["']|["']$/g, '').trim();
+  }
+  return { remember: true, rememberFact: fact && fact.length > 0 ? fact : undefined };
+}
+
 // Tokens stripped when deriving a short display name.
 const NAME_STRIP_RE = new RegExp(
   [
@@ -282,6 +321,7 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   const action = detectAction(rawText);
   const prompt = derivePrompt(rawText, sched);
   const suggestion = suggestTool(prompt || rawText);
+  const memory = detectMemory(rawText);
 
   return {
     name: deriveName(rawText),
@@ -295,6 +335,7 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     action,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
+    memory,
     rawText,
   };
 }
