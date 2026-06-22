@@ -32,6 +32,8 @@ The goal of these two days: **finish the on-device autonomous AI secretary as fa
 
 ## 1. Where we are right now (2026-06-22)
 
+**G2 merged to main (PR #86, branch `feat/secretary-memory`, CI build 1591):** Phase-1 persistent memory. Device-verified on build 1591: memory-write (fact at registration + result digest after a TS-driven run), recall injection (the recall block is baked into the generated run script's prompt — verified on device), the Memory (k notes) detail-popup line + list, and on-device execution. Deferred to P2 (see DEFERRED.md): scheduled-fire auto result-capture, semantic recall, per-fire recall freshness, NAME_STRIP marker leak. **Next chunk: G3 (skill registry).**
+
 **G1 merged to main (PR #85, branch `feat/secretary-phase0-finish`, CI build 1589):** secret-guard + reason log + tiered approval scaffolding + the one-shot **audit-persistence fix**. Device-verified on build 1589: audit persistence (survives one-shot delete + failure path), secret-guard forced-local (tool=Codex CLI overridden to on-device / cloud-fallback disabled), reason log in the detail popup, draft one-tap approval. **Still unverified (P1 release gate — see DEFERRED.md, blocked by Codex usage limit until 2026-06-24):** command-safety blocks a dangerous cli + cli in-app confirm (never one-tap), webhook host+payload-preview approval, approval single-use/expiry, SNS draft-only no-publish, secret-guard end-to-end with the local LLM actually loaded. **Next chunk: G2 (persistent memory).**
 
 **(Earlier) Merged to main (`82f1a70e`, PR #83), CI build ~1584:**

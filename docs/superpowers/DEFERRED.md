@@ -28,6 +28,19 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### G2 Phase 1 — 記憶層の後回し項目
+
+**優先度**: P2
+**状態**: G2（永続記憶）はコアを build 1591 で実機 PASS して main にマージ済み（PR #86）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼かれることを実機確認）/ Memory UI / on-device 実行を立証。下記は first slice から意図的に外した。
+
+**後回し**:
+1. **スケジュール fire の自動 result 取り込み** — 現状 `captureRunMemory` は TS 経路（runAgentNow / Run now）のみ。native のスケジュール発火には TS post-run フックが無いため、定期実行は結果を自動記憶しない（recall 側はスクリプトに焼かれるので効く）。native 側 finish フックか、次回 materialize 時の結果ログ取り込みで対応。
+2. **セマンティック / 埋め込み recall** — 現状は tag/keyword overlap + recency のオフライン score のみ。ローカル埋め込みでの類似検索は未実装。
+3. **per-fire recall 鮮度** — recall は materialize 時にスクリプトへ焼かれる。スケジュール agent はインストール/起動修復時点の記憶で固定され、毎発火で再読込しない。頻繁に記憶が変わる用途では stale になりうる。
+4. **name strip の漏れ** — 「覚えておいて」等の memory マーカーが PROJECT NAME に残る（表示のみ、動作影響なし）。`NAME_STRIP_RE` にマーカーを追加して整形。
+
+**Why not now**: 記憶の書き込み・想起・UI・on-device 経路という Phase 1 の核心は立証済み。上記は品質/網羅性の上積みで、G3（スキル）の価値が勝る。
+
 ### G1 Phase 0 — 残りの実機検証（レートリミット明けの必須ゲート）
 
 **優先度**: P1（**実リリース前の必須ゲート**。dev チャネルへのマージは済み、PR #85）
@@ -1876,6 +1889,7 @@ claude() {
 - **2026-04-14**: Task 8.3 (Browser ペイン) スモークテストで bug #29 / #30 発覚。初回 Add Pane は成功するが 2 回目以降が無反応。原因調査で `AddPaneSheet` の `focusedPaneId` が split 後に stale になっていることを特定。#29 part 1 + part 2 で修正済 (0d7f0b40 / 409b4642)、実機検証は次セッション。
 - **2026-04-14**: Phase 5 で bug #36 / #51-#67 を発見、並列 5 agent で原因調査。
 - **2026-06-22**: G1（Phase 0 仕上げ）を main にマージ（PR #85）。secret-guard 強制ローカル / reason-log / audit 永続化 / draft one-tap を build 1589 で実機 PASS。残りの security-critical 経路（command-safety cli ブロック・cli in-app confirm / webhook host+preview / 承認 single-use / SNS draft-only / secret-guard の local-LLM end-to-end）は Codex usage limit（6/24 リセット）でブロック中のため P1 必須ゲートとして登録。レートリミット明けに実機検証する。
+- **2026-06-22**: G2（Phase 1 永続記憶）を main にマージ（PR #86, build 1591）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼き込み確認）/ Memory UI / on-device を実機 PASS。スケジュール fire の自動 result 取り込み・セマンティック recall・per-fire 鮮度・name strip 漏れを P2 として登録。次は G3（スキルレジストリ）。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
