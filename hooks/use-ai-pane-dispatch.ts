@@ -1005,9 +1005,16 @@ export function useAIPaneDispatch(paneId: string) {
       // backend. The AI chat confirmation card presents autonomous as the B2
       // gated Codex path; keep the submit boundary defensive in case a stale card
       // or another caller sends an api-key tool.
+      //
+      // Routing (G4): when the user leaves RUN ON = Auto (no manual pin) on a
+      // non-autonomous agent, store tool 'auto' so the Layer-2 scorer decides the
+      // route at run time (and re-scores each run). The NL parser's keyword guess
+      // (draft.tool) would otherwise pin a concrete tool and bypass the scorer.
       const tool: ToolChoice =
         confirmed.autonomous && confirmed.tool.type !== 'local'
           ? { type: 'cli', cli: 'codex' }
+          : !confirmed.autonomous && confirmed.runOn === 'auto'
+          ? { type: 'auto' }
           : confirmed.tool;
       const runOn = confirmed.autonomous
         ? tool.type === 'local' ? 'on-device' : 'auto'

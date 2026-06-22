@@ -28,6 +28,19 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### G3 Phase 2a — スキルレジストリの後回し項目
+
+**優先度**: P2
+**状態**: G3（スキルレジストリ）をコア実機 PASS して main にマージ済み（PR #87, build 1594）。蒸留 save ゲート / SKILLS UI / Vault ミラー / **日本語 reuse マッチ（CJK バイグラム tokenizer）+ レシピ注入** / success-count / no-cloud-leak を立証。
+
+**後回し**:
+1. **one-shot `@agent` の skill 保存** — 現状 save 提案は scheduled の Run now のみ。one-shot（ephemeral 削除）経路では蒸留提案が出ない。最も一般的な会話フローなので、one-shot 成功時に gated 提案を足す価値あり。
+2. **セマンティック / 埋め込みマッチ** — 現状は tag/keyword + CJK バイグラム overlap。ローカル埋め込みでの類似検索は未実装。
+3. **スキルのアプリ内編集** — 現状は閲覧 / 削除のみ。trigger/prompt の編集 UI なし。
+4. **tokenizer のカバレッジ境界** — 半角カナ（U+FF61–FF9F）・CJK 拡張B（補助面）は未対応。通常の JP 入力では問題ないが既知境界。
+
+**Why not now**: 蒸留・再利用・注入という Phase 2a の核心は日本語含め立証済み。上記は網羅性の上積みで、G4（ルーター）の価値が勝る。
+
 ### G2 Phase 1 — 記憶層の後回し項目
 
 **優先度**: P2
@@ -1890,6 +1903,7 @@ claude() {
 - **2026-04-14**: Phase 5 で bug #36 / #51-#67 を発見、並列 5 agent で原因調査。
 - **2026-06-22**: G1（Phase 0 仕上げ）を main にマージ（PR #85）。secret-guard 強制ローカル / reason-log / audit 永続化 / draft one-tap を build 1589 で実機 PASS。残りの security-critical 経路（command-safety cli ブロック・cli in-app confirm / webhook host+preview / 承認 single-use / SNS draft-only / secret-guard の local-LLM end-to-end）は Codex usage limit（6/24 リセット）でブロック中のため P1 必須ゲートとして登録。レートリミット明けに実機検証する。
 - **2026-06-22**: G2（Phase 1 永続記憶）を main にマージ（PR #86, build 1591）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼き込み確認）/ Memory UI / on-device を実機 PASS。スケジュール fire の自動 result 取り込み・セマンティック recall・per-fire 鮮度・name strip 漏れを P2 として登録。次は G3（スキルレジストリ）。
+- **2026-06-22**: G3（Phase 2a スキルレジストリ）を main にマージ（PR #87, build 1594）。蒸留 save ゲート / SKILLS UI / Vault ミラー / success-count / no-cloud-leak に加え、実機テストで判明した日本語 reuse マッチ不発（tokenizer が JP を単語分割できない）を CJK バイグラム tokenizer（`lib/agent-text-match.ts`、memory と共有）で修正し、USE SKILL トグル + レシピ注入を実機 PASS。one-shot save・セマンティックマッチ・スキル編集 UI・半角カナを P2 として登録。次は G4（Layer-2 スコアリングルーター）。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。

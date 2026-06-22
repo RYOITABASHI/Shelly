@@ -1372,7 +1372,9 @@ export default function TerminalScreen() {
                         description: promptText.slice(0, 120),
                         prompt: promptText,
                         schedule: null,
-                        tool: suggestion.tool,
+                        // G4: non-autonomous terminal @agent routes via the Layer-2
+                        // scorer at run time (tool 'auto'); autonomous keeps Codex.
+                        tool: autonomous ? suggestion.tool : { type: 'auto' },
                         autonomous,
                         outputPath: `~/.shelly/agents/${name}/output`,
                       });

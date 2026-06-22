@@ -491,8 +491,17 @@ export type AgentRouteDecisionGuard =
   | 'manual-pin'
   | 'autonomous-policy'
   | 'keyword'
+  | 'scorer'
   | 'configured-tool'
   | 'default';
+
+/** Phase 2b Layer-2 scoring metadata (lib/agent-router-scoring.ts). Offline. */
+export interface AgentRouteScore {
+  /** 0–1, from the gap between the top two candidates. */
+  confidence: number;
+  /** All candidate tools with their scores (highest first), for the audit log. */
+  candidates: { toolType: ToolChoice['type']; score: number }[];
+}
 
 export interface AgentRouteDecision {
   route: 'on-device' | 'cloud' | 'hybrid';
@@ -503,6 +512,8 @@ export interface AgentRouteDecision {
   keyword?: string;
   secretKinds?: string[];
   noCloudFallback?: boolean;
+  /** Present when the Layer-2 scorer chose the route (auto agents, post-guards). */
+  score?: AgentRouteScore;
 }
 
 export interface Agent {
