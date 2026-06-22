@@ -28,6 +28,19 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### G4 Phase 2b — Layer-2 ルーターの後回し項目
+
+**優先度**: P1（クラウドキー欠如のフォールバックは UX 影響大）／ 他は P2
+**状態**: G4（Layer-2 スコアリングルーター）をコア実機 PASS して main にマージ済み（PR #88, build 1597 系）。スコアラーが実機で稼働（Scores 行 + Why: Layer-2 scorer + confidence + 4候補）、on-device-first（ニュース要約 → transform → Local）を立証。ハードガード優先・オフライン決定論はレビュー + 単体テストで担保。
+
+**後回し**:
+1. **クラウドキー欠如のフォールバック（P1）** — auto-scorer がキー未設定の cloud バックエンド（Perplexity / Gemini）を選ぶと、実行時にエラーで止まり **local に degrade しない**（autonomous 経路は事前に api-key を拒否するが auto 経路には無い）。`resolveAgentRoute` で cloud 候補のキー可用性を見て、無ければ local に落とす preflight が望ましい。実機で genuine-research → Perplexity がキー無しで失敗するのを確認済み。
+2. **Qwen-0.8B 分類の任意導入（P2）** — 現状はヒューリスティックのみ（/goal は許容）。決定論ヒューリスティックで足りるか実運用で測ってから。
+3. **キーワード集合の重複（P2）** — scorer（CODE_KW 等）と `suggestTool`（CODE_KEYWORDS 等）が別々。drift しうるので将来統合。
+4. **カタカナ code キーワード（P3）** — プルリク/レビュー 等が未対応で general に落ちる（安全側）。
+
+**Why not now**: スコアリング・可視化・on-device-first・ハードガード優先という Phase 2b の核心は立証済み。クラウドキー fallback は G5/G6 後に着手（実害は cloud キー未設定ユーザーの genuine-research 時のみ）。
+
 ### G3 Phase 2a — スキルレジストリの後回し項目
 
 **優先度**: P2
@@ -1904,6 +1917,7 @@ claude() {
 - **2026-06-22**: G1（Phase 0 仕上げ）を main にマージ（PR #85）。secret-guard 強制ローカル / reason-log / audit 永続化 / draft one-tap を build 1589 で実機 PASS。残りの security-critical 経路（command-safety cli ブロック・cli in-app confirm / webhook host+preview / 承認 single-use / SNS draft-only / secret-guard の local-LLM end-to-end）は Codex usage limit（6/24 リセット）でブロック中のため P1 必須ゲートとして登録。レートリミット明けに実機検証する。
 - **2026-06-22**: G2（Phase 1 永続記憶）を main にマージ（PR #86, build 1591）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼き込み確認）/ Memory UI / on-device を実機 PASS。スケジュール fire の自動 result 取り込み・セマンティック recall・per-fire 鮮度・name strip 漏れを P2 として登録。次は G3（スキルレジストリ）。
 - **2026-06-22**: G3（Phase 2a スキルレジストリ）を main にマージ（PR #87, build 1594）。蒸留 save ゲート / SKILLS UI / Vault ミラー / success-count / no-cloud-leak に加え、実機テストで判明した日本語 reuse マッチ不発（tokenizer が JP を単語分割できない）を CJK バイグラム tokenizer（`lib/agent-text-match.ts`、memory と共有）で修正し、USE SKILL トグル + レシピ注入を実機 PASS。one-shot save・セマンティックマッチ・スキル編集 UI・半角カナを P2 として登録。次は G4（Layer-2 スコアリングルーター）。
+- **2026-06-22**: G4（Phase 2b Layer-2 スコアリングルーター）を main にマージ（PR #88）。`lib/agent-router-scoring.ts` で auto agent をオフライン採点（category 親和性 + reasoning + search + on-device ボーナス）、Scores/confidence/候補を reason-log に記録。実機テストで2点修正: ①スコアラーが走るよう `tool:'auto'` を配線（NL パーサが具体ツールを先に確定していた）②「ニュース要約」が research → 有料 Perplexity に誤ルート → news/最新を research から除外。実機で transform→Local（on-device-first）+ Scores 行 + Why: Layer-2 scorer を立証。クラウドキー欠如フォールバックを P1、Qwen 分類・キーワード重複を P2 登録。次は G5（inbound ゲートウェイ）。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
