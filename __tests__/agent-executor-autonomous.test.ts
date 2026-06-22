@@ -25,6 +25,66 @@ const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
 
 const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 
+describe('generateRunScript — local context window fit (no ctx overflow)', () => {
+  it('caps the combined local prompt + injected context and reserves response room', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // Tier-aware char budget: 8192-window tiers get 16000, the 4096-window 4B/9B
+    // tiers get 7000. Small tiers are matched FIRST so "0.8B" (ends in "8B") is
+    // not stolen by the *8[bB]* heavy glob.
+    expect(s).toContain('*0.8[bB]*|*0-8[bB]*|*1.7[bB]*|*1-7[bB]*|*2[bB]*) LOCAL_PROMPT_MAX_CHARS="${LOCAL_LLM_PROMPT_MAX_CHARS:-16000}"');
+    expect(s).toContain('*4[bB]*|*8[bB]*|*9[bB]*) LOCAL_PROMPT_MAX_CHARS="${LOCAL_LLM_PROMPT_MAX_CHARS:-7000}"');
+    // Abort-safe truncation: write a regular file then head it (NOT a pipe into
+    // head, which would SIGPIPE the producers under pipefail on large context).
+    expect(s).toContain('head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"');
+    expect(s).not.toContain('| head -c "$LOCAL_PROMPT_MAX_CHARS" > "$PROMPT_FILE"');
+    // Response reserve lowered so input + output stay inside the window.
+    expect(s).toContain('\\"max_tokens\\":2048');
+    expect(s).not.toContain('\\"max_tokens\\":4096');
+    // Local server starts with a usable context window, not the old tiny default.
+    expect(s).toContain("*2b*) printf '8192 4 180");
+    expect(s).not.toContain("*2b*) printf '1024 4 180");
+  });
+
+  it('the cap construct is abort-safe under pipefail with >64KB context (no SIGPIPE)', () => {
+    // Regression for the file-then-truncate fix: piping producers into "head -c"
+    // SIGPIPEs them once head closes early (context > ~64KB pipe buffer) → exit
+    // 141 → 'set -euo pipefail' aborts the whole run before the fallback. Reading
+    // a regular file with head has no producer to signal. Prove the construct
+    // survives a 100KB context and yields exactly the capped size.
+    const script = [
+      'set -euo pipefail',
+      "SOURCE_CONTEXT=$(head -c 100000 /dev/zero | tr '\\0' x)",
+      'PROMPT_FILE=$(mktemp)',
+      'LOCAL_PROMPT_MAX_CHARS=16000',
+      `{ printf '%s\\n' 'instruction'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"`,
+      'head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"',
+      'rm -f "$PROMPT_FILE.full"',
+      '[ "$(wc -c < "$PROMPT_FILE")" -eq 16000 ] && echo CAPPED_OK',
+      'rm -f "$PROMPT_FILE"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', script]).toString()).toContain('CAPPED_OK');
+  });
+
+  it('classifies the local cap by tier without the 0.8B/8B false match', () => {
+    const classify = (model: string) =>
+      [
+        `LOCAL_MODEL='${model}'`,
+        'case "$LOCAL_MODEL" in',
+        '  *0.8[bB]*|*0-8[bB]*|*1.7[bB]*|*1-7[bB]*|*2[bB]*) echo 16000 ;;',
+        '  *4[bB]*|*8[bB]*|*9[bB]*) echo 7000 ;;',
+        '  *) echo 16000 ;;',
+        'esac',
+      ].join('\n');
+    const run = (model: string) => execFileSync('bash', ['-c', classify(model)]).toString().trim();
+    // Small tiers (8192 window) → 16000. 0.8B must NOT be stolen by *8[bB]*.
+    expect(run('Qwen3.5-0.8B-Q4_K_M')).toBe('16000');
+    expect(run('Qwen3.5-2B-Q4_K_M')).toBe('16000');
+    // Heavy tiers (4096 window) → 7000.
+    expect(run('Qwen3.5-4B-Q4_K_M')).toBe('7000');
+    expect(run('Qwen3.5-9B-Q4_K_M')).toBe('7000');
+  });
+});
+
 describe('generateRunScript — readable notification preview (telemetry-stripped)', () => {
   it('strips autonomous driver telemetry from the user-facing preview', () => {
     const s = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));

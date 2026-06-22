@@ -937,12 +937,12 @@ local_llm_wait_for_no_active_users() {
 local_llm_runtime_profile() {
   model_name="$(printf '%s' "\${1:-}" | tr '[:upper:]' '[:lower:]')"
   case "$model_name" in
-    *0.8b*|*0-8b*) printf '1024 2 600\\n' ;;
-    *1.7b*|*1-7b*) printf '1024 3 300\\n' ;;
-    *2b*) printf '1024 4 180\\n' ;;
-    *4b*) printf '768 4 60\\n' ;;
-    *9b*|*8b*) printf '512 3 30\\n' ;;
-    *) printf '1024 3 180\\n' ;;
+    *0.8b*|*0-8b*) printf '8192 2 600\\n' ;;
+    *1.7b*|*1-7b*) printf '8192 3 300\\n' ;;
+    *2b*) printf '8192 4 180\\n' ;;
+    *4b*) printf '4096 4 60\\n' ;;
+    *9b*|*8b*) printf '4096 3 30\\n' ;;
+    *) printf '4096 3 180\\n' ;;
   esac
 }
 
@@ -1775,11 +1775,35 @@ rm -f "$PROMPT_FILE"`;
         : `LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	# Cap the combined prompt + injected context so it cannot overflow the local
+	# model's context window. The instruction (printed first) is always preserved;
+	# only the trailing project/source context is truncated. A real run sent 7806
+	# tokens into a small window and was rejected ("exceeds context size").
+	# The cap is tier-aware: the small "work" tiers (0.8B/1.7B/2B) have an 8192
+	# window, the heavier 4B/9B tiers only 4096, so they get a smaller char budget.
+	# With a 2048 response reserve, ~16000 chars (~5k tokens) fits 8192 and ~7000
+	# chars fits 4096. Genuinely large tasks escalate to a cloud backend (bigger
+	# window) rather than being silently truncated to uselessness.
+	# Match the small tiers FIRST: "0.8B" ends in the literal "8B", so a bare
+	# *8[bB]* heavy-tier glob would false-match 0.8B and starve it. Mirror the
+	# ordering in local_llm_runtime_profile, which lists 0.8b before 8b.
+	case "$LOCAL_MODEL" in
+	  *0.8[bB]*|*0-8[bB]*|*1.7[bB]*|*1-7[bB]*|*2[bB]*) LOCAL_PROMPT_MAX_CHARS="\${LOCAL_LLM_PROMPT_MAX_CHARS:-16000}" ;;
+	  *4[bB]*|*8[bB]*|*9[bB]*) LOCAL_PROMPT_MAX_CHARS="\${LOCAL_LLM_PROMPT_MAX_CHARS:-7000}" ;;
+	  *) LOCAL_PROMPT_MAX_CHARS="\${LOCAL_LLM_PROMPT_MAX_CHARS:-16000}" ;;
+	esac
+	# Write to a regular file first, THEN truncate by reading that file. Piping the
+	# producers directly into "head -c" would SIGPIPE the printf writers once head
+	# closes the pipe early (large context > pipe buffer) → exit 141 → under
+	# 'set -euo pipefail' the whole run aborts BEFORE the fallback. Reading a
+	# regular file with head has no producer to signal, so it is abort-safe.
+	{ printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
+	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"
+	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
 	${localModelAssignment}
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}

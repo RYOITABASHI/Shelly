@@ -14,22 +14,25 @@ describe('llama.cpp local server tuning', () => {
     const command = buildRecommendedStartCommand(model, '$HOME/models/model.gguf');
 
     expect(model.filename).toBe('Qwen3.5-0.8B-Q4_K_M.gguf');
-    expect(command).toContain('--ctx-size 1024');
+    // Context window must be large enough for agent prompts that inject project
+    // context (a real run overflowed a 1024 window at 7806 tokens).
+    expect(command).toContain('--ctx-size 8192');
+    expect(command).not.toContain('--ctx-size 1024');
     expect(command).toContain('--threads 2');
     expect(command).toContain('--alias "model"');
   });
 
-  it('uses shorter profiles for heavier models', () => {
+  it('gives the small work tiers a large window and heavier tiers a moderate one', () => {
     const twoB = getModelById('qwen3.5-2b-q4');
     const fourB = getModelById('qwen3.5-4b-q4');
 
     expect(twoB && getModelRuntimeProfile(twoB)).toMatchObject({
-      contextSize: 1024,
+      contextSize: 8192,
       threads: 4,
       idleTimeoutSeconds: 180,
     });
     expect(fourB && getModelRuntimeProfile(fourB)).toMatchObject({
-      contextSize: 768,
+      contextSize: 4096,
       idleTimeoutSeconds: 60,
     });
   });
