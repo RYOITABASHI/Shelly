@@ -28,6 +28,28 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### 🔭 Vision — Fork-first plugin ecosystem + ③ capability ladder
+
+**優先度**: P2（ビジョン）／ ③ ラダーの実装は P1
+**状態**: 方針合意（2026-06-23 のユーザーとの設計対話）。③a（ローカル ctx fit）は着地済み（commit 0202380, branch `claude/work-handoff-2qb1xd`）。→ sync: README（最終的に「fork-first 文化」を README に反映）
+
+**コア文化（採用方針）**:
+- 本家 repo はクリーンに保つ。各ユーザーは**フォークして自分専用の自律エージェントを自由に構築**し、**自分の GitHub アカウントでビルド**（本家に影響なし）。
+- 良いアイデア・便利機能は **PR で本家が積極採用**。「どんどんフォークして、面白い機能は PR して」という OSS 文化を README で明言する。
+- フォーカーの摩擦は「公式アプデ追従（rebase）」と「署名キー別＝横並びインストール」のみ。**機能を skill/agent/script/MCP（＝データ/プラグイン）として足せば追加ファイルなので衝突せず、公式アプデを無痛で生き延びる**。→ 拡張面を一級市民にするほどこの摩擦が消える。
+
+**2 つの拡張ティア**:
+- **Tier 1（リビルド不要・現実的）**: skill（`91_Agent_Skills`）/ agent（`~/.shelly/agents`）/ workflow / shell script として機能追加。動作中アプリがその場でロード。Codex 端末同梱でオンデバイス生成可。業務ロジック系はほぼこれで足りる。
+- **Tier 2（アプリ本体改造）**: 新ネイティブ/UI は Shelly ソース編集 → **APK 再ビルド必須**。端末で APK はビルド不可（gradle/SDK 無し）なので fork → push → GitHub Actions → install の経路（＝今のこのワークフロー）。fork/branch で本家から隔離、明示 merge まで本家不変。
+
+**Conversational feature authoring（対話で仕様）**: タスクが既存テンプレに収まらないとき、承認カードの代わりに「こんな仕組みでどうですか?」と**設計対話モード**に入り、やり取りで spec 確定 → Tier 1 でその場生成。orchestration / confirm カードの延長で実装可。
+
+**③ capability ladder（実装中、P1）**: `0.8B → 2B → 4B → Cerebras → Groq → Codex(最終)`。無料が足りない/在庫無しで上段へ、429（最初から or 作業中）で Codex 昇格しクォータ温存。学術→Perplexity / 画像→Gemini はドメイン例外。autonomous（無人）は既定 `local→Codex(OAuth)` に絞る（キー課金 backend は fail-closed、secret-guard 常時）。Codex 終端制限時は success 偽装せず「◯時間後解除」を明示通知。
+- ③a ✅: ローカル ctx 1024→8192/4096 + 注入文脈の tier-aware cap（commit 0202380）。
+- ③b: Cerebras/Groq を agent backend 追加（無料枠内）+ 429/不通の escalation + 終端通知。
+- ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
+- ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。残る解錠: 自律クラウド opt-in / Vault 内保存の自動承認 / 複数曜日スケジュール + 日付フォルダ出力テンプレ。
+
 ### G5 Phase 3 — inbound ゲートウェイの後回し項目
 
 **優先度**: P2
@@ -1922,6 +1944,7 @@ claude() {
 
 ## History
 
+- **2026-06-23**: ユーザーとの設計対話で「fork-first plugin ecosystem」文化と ③ capability ladder を合意・記録（`### 🔭 Vision` 節）。本家クリーン維持 / 各自フォークで自律エージェント自由構築 / 良機能は PR 採用。機能を skill/agent/script/MCP として足せば公式アプデを無痛で生き延びる、を設計原則に。③a（ローカル ctx fit, commit 0202380）着地。README は最終的に fork 文化を明記（→ sync）。
 - **2026-04-14**: 初版作成。v0.1.0 スモークテスト中の発見を整理。コードレビュー / セキュリティ / アーキテクチャ / A11y / 競合 5 エージェントの指摘のうち、出荷ブロッカーではない項目をすべて P1-P3 に振り分け。
 - **2026-04-14**: Task 5 スモークテスト時にユーザーから「戻るボタン」「モデル自動検出」「自動セットアップ」の 3 つの追加要望あり → BACK ボタン (P1)、モデル自動検出強化 (P1)、自動 Recommended セットアップ (P2) として登録。
 - **2026-04-14**: Task 7 (Ports monitor) スモークテストで bug #27 発覚。`node -e "..."` をペースト + Enter してもコマンドが実行されず、末尾 `"` が残り `^[` が混入。通常タイプ経路は OK。ペースト経路の `\r` 送信欠落が疑わしい。P1 に登録し次リリースで対応。Task 7 自体はスキップして Task 8 に進行。
