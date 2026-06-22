@@ -44,7 +44,7 @@ export interface ScoredRoute {
 
 // Category keyword sets (kept local so the scorer is self-contained; suggestTool
 // keeps its own copy for the legacy keyword path and other callers).
-const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ'];
+const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'repository', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ'];
 // Genuine research only — NOT bare "news/latest" (those are a weak freshness
 // signal via needsSearch, handled below). "summarize the news" must stay a
 // transform task → on-device, not get routed to the paid deep-research backend.
@@ -96,8 +96,20 @@ const TOOL_PROFILES: ToolProfile[] = [
   },
 ];
 
+/**
+ * Match a keyword against the (lowercased) text. Latin/ASCII keywords match on a
+ * WORD BOUNDARY so a short token like "pr" doesn't fire on "previous"/"approve"
+ * (this bit orchestration's "# Results from previous steps" scaffolding). CJK
+ * keywords have no word boundaries, so they match as a substring.
+ */
+function matchesKeyword(lower: string, kw: string): boolean {
+  if (/[぀-ヿ一-鿿]/.test(kw)) return lower.includes(kw);
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`).test(lower);
+}
+
 function hasAny(lower: string, kws: string[]): string | undefined {
-  return kws.find((kw) => lower.includes(kw));
+  return kws.find((kw) => matchesKeyword(lower, kw));
 }
 
 /** Detect task signals deterministically from the prompt (offline). */

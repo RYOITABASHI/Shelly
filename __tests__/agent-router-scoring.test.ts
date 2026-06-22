@@ -28,6 +28,15 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('say hello').category).toBe('general');
   });
 
+  it('short Latin keywords match on a word boundary (not substring)', () => {
+    // "previous" must NOT match 'pr', "report" must NOT match 'repo' — this bit
+    // orchestration's "# Results from previous steps" scaffolding.
+    expect(detectRouteSignals('use results from previous steps').category).toBe('general');
+    expect(detectRouteSignals('write a weather report').category).not.toBe('code');
+    // a bare "pr" / "repo" as a word still matches code.
+    expect(detectRouteSignals('open a pr').category).toBe('code');
+  });
+
   it('raises reasoning weight on complexity markers and length', () => {
     expect(detectRouteSignals('hi').reasoningWeight).toBeLessThan(0.3);
     expect(detectRouteSignals('deeply analyze and compare the strategy').reasoningWeight).toBeGreaterThan(0.4);

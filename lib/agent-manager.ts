@@ -284,7 +284,8 @@ async function materializeAgent(
   // The startup-repair path re-materializes every scheduled agent on launch; it
   // passes false so we don't re-issue an (idempotent but redundant) fact write
   // for each one. Recall is always re-applied so the baked prompt stays fresh.
-  persistFacts = true
+  persistFacts = true,
+  runOpts: { suppressAction?: boolean } = {}
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
@@ -303,7 +304,7 @@ async function materializeAgent(
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
-    writeFileCommand(scriptPath, generateRunScript(agentForRun)),
+    writeFileCommand(scriptPath, generateRunScript(agentForRun, runOpts)),
     ...generateInstallCommands(agent),
   ];
 
@@ -451,10 +452,14 @@ async function runAgentOrchestrated(
       orchestration: undefined,
     };
     const stepStart = Date.now();
+    // Only the FINAL step performs the agent action (draft/notify/webhook/cli) —
+    // non-final steps suppress it so the chain fires ONE approval/notification,
+    // not one per step.
+    const isFinalStep = i === steps.length - 1;
     let before: AgentRunLog[] = [];
     try {
       before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-      await materializeAgent(stepAgent, runCommand, false);
+      await materializeAgent(stepAgent, runCommand, false, true, { suppressAction: !isFinalStep });
       await TerminalEmulator.runAgent(agentId);
       await waitForAgentRunCompletion(runCommand, agentId, {
         runStartedAtMs: stepStart - 5_000,

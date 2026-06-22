@@ -63,7 +63,7 @@ export function selectAutonomousLocalModel(prompt: string): string {
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -101,7 +101,9 @@ export function generateRunScript(agent: Agent): string {
 
   const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
-  const actionType = agent.action?.type ?? 'draft';
+  // Orchestration: non-final steps suppress the action so only the FINAL step
+  // drafts/notifies once (otherwise a 3-step chain fires 3 approval prompts).
+  const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
@@ -520,6 +522,12 @@ dispatch_agent_action() {
   ACTION_DISPATCH_MESSAGE=""
 
   case "$ACTION_TYPE" in
+    __suppressed__)
+      # Orchestration non-final step: still save the draft result for the next
+      # step to read, but DO NOT request approval or fire a notification.
+      save_draft_result "$result_file" 2>/dev/null || true
+      return 0
+      ;;
     ""|draft)
       write_action_approval_request "draft" "$preview" "$result_file"
       wait_action_approval "draft" || return 1

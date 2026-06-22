@@ -25,6 +25,17 @@ const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
 
 const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 
+describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
+  it('non-final steps suppress the action (one notification per chain, not per step)', () => {
+    const suppressed = generateRunScript(agent({ type: 'local' }), { suppressAction: true });
+    expect(suppressed).toContain('ACTION_TYPE=\'__suppressed__\'');
+    expect(suppressed).toContain('__suppressed__)'); // the no-approval/no-notify case
+    // a normal run still drafts/notifies.
+    const normal = generateRunScript(agent({ type: 'local' }));
+    expect(normal).not.toContain("ACTION_TYPE='__suppressed__'");
+  });
+});
+
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
