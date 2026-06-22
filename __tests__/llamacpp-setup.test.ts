@@ -29,11 +29,11 @@ describe('llama.cpp local server tuning', () => {
     expect(twoB && getModelRuntimeProfile(twoB)).toMatchObject({
       contextSize: 8192,
       threads: 4,
-      idleTimeoutSeconds: 180,
+      idleTimeoutSeconds: 1800,
     });
     expect(fourB && getModelRuntimeProfile(fourB)).toMatchObject({
       contextSize: 4096,
-      idleTimeoutSeconds: 60,
+      idleTimeoutSeconds: 900,
     });
   });
 

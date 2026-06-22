@@ -937,12 +937,12 @@ local_llm_wait_for_no_active_users() {
 local_llm_runtime_profile() {
   model_name="$(printf '%s' "\${1:-}" | tr '[:upper:]' '[:lower:]')"
   case "$model_name" in
-    *0.8b*|*0-8b*) printf '8192 2 600\\n' ;;
-    *1.7b*|*1-7b*) printf '8192 3 300\\n' ;;
-    *2b*) printf '8192 4 180\\n' ;;
-    *4b*) printf '4096 4 60\\n' ;;
-    *9b*|*8b*) printf '4096 3 30\\n' ;;
-    *) printf '4096 3 180\\n' ;;
+    *0.8b*|*0-8b*) printf '8192 2 1800\\n' ;;
+    *1.7b*|*1-7b*) printf '8192 3 1800\\n' ;;
+    *2b*) printf '8192 4 1800\\n' ;;
+    *4b*) printf '4096 4 900\\n' ;;
+    *9b*|*8b*) printf '4096 3 600\\n' ;;
+    *) printf '4096 3 900\\n' ;;
   esac
 }
 
@@ -1334,11 +1334,17 @@ ensure_local_llm_server() {
   : > "$reason_file"
 
   if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
-    if local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
-      local_llm_touch_activity
-      return 0
-    fi
-    echo "auto-start will restart llama-server: active model does not match $model_name" > "$reason_file"
+    # Reuse ANY already-running local server, regardless of which model tier it
+    # serves. llama.cpp serves its loaded model irrespective of the request's
+    # "model" field, so a mismatch is harmless. Restarting a healthy in-app-started
+    # server was the root cause of on-device failures: the in-app "Start" launches
+    # llama-server through a linker64 + LLAMA_LIB_PATH wrapper, but the agent's own
+    # start exec's the binary directly and cannot relaunch it — so a tier mismatch
+    # (scorer wants 0.8B, user has 2B running) made the agent kill the working
+    # server and fail to bring it back. Reusing whatever is up is strictly better
+    # than a dead server.
+    local_llm_touch_activity
+    return 0
   fi
 
   if ! local_llm_is_loopback_url "$base_url"; then
@@ -1358,8 +1364,9 @@ ensure_local_llm_server() {
 	    lock_acquired=1
 	    break
 	  fi
-	  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
-	    local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+	  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+	    # Another starter won the race and a server is up — reuse it (any tier; see
+	    # the top reuse path). Consistent with not killing a healthy server.
 	    local_llm_touch_activity
 	    return 0
 	  fi
@@ -1371,8 +1378,8 @@ ensure_local_llm_server() {
     return 1
   fi
 
-  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
-    local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+    # Server came up while we held the lock — reuse it (any tier).
     local_llm_touch_activity
     rmdir "$lock_dir" 2>/dev/null || true
     return 0
