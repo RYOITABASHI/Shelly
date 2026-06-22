@@ -9,6 +9,7 @@ import { normalizePath } from '@/lib/normalize-path';
 export type SidebarMode = 'expanded' | 'icons' | 'hidden';
 export type SidebarSection =
   | 'tasks'
+  | 'skills'
   | 'repos'
   | 'files'
   | 'device'
@@ -123,6 +124,7 @@ export const useSidebarStore = create<SidebarState>()(
 function defaultOpenSections(): Record<SidebarSection, boolean> {
   return {
     tasks: true,
+    skills: false,
     repos: true,
     files: true,
     device: false,

@@ -36,6 +36,8 @@ export interface ConfirmedAgentDraft {
   autonomous: boolean;
   /** Phase 1 memory intent parsed from the utterance ("remember that …"). */
   memory?: AgentMemoryConfig;
+  /** Phase 2a: id of a reused skill recipe the user kept on in the card. */
+  skillId?: string;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
@@ -121,6 +123,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [command, setCommand] = useState(draft.action.command ?? '');
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
+  // Phase 2a: gated skill reuse. A matching skill (if any) is shown and reused by
+  // default; the user can opt out. Off when no skill matched the task.
+  const [useSkill, setUseSkill] = useState<boolean>(!!draft.matchedSkill);
 
   const isOnce = frequency === 'once';
   const cron = useMemo(
@@ -150,6 +155,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       // Phase 1 memory: carry the parsed "remember that …" intent through to
       // createAgent. No card control yet — the NL parse is the source of truth.
       memory: draft.memory,
+      // Phase 2a: attach the reused skill only when the user kept it on.
+      skillId: useSkill ? draft.matchedSkill?.id : undefined,
     });
   };
 
@@ -316,6 +323,32 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Phase 2a: gated skill reuse — only shown when a skill matched the task. */}
+      {draft.matchedSkill && (
+        <View style={styles.autoRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.label, { color: colors.muted, marginTop: 0 }]}>
+              {t('agentcard.use_skill', { name: draft.matchedSkill.name, count: draft.matchedSkill.successCount })}
+            </Text>
+            <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.use_skill_hint')}</Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => setUseSkill((v) => !v)}
+            style={[
+              styles.toggle,
+              { borderColor: useSkill ? colors.accent : colors.border, backgroundColor: useSkill ? colors.accent : 'transparent' },
+            ]}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: useSkill }}
+            activeOpacity={0.7}
+          >
+            <Text style={{ color: useSkill ? colors.background : colors.muted, fontSize: 11, fontWeight: '700' }}>
+              {useSkill ? 'ON' : 'OFF'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Buttons */}
       <View style={styles.actions}>

@@ -18,6 +18,12 @@ import {
   recallMemoryNotes,
   writeMemoryNote,
 } from './agent-memory';
+import {
+  buildSkillInjectionContext,
+  bumpSkillUsage,
+  readSkillRecipes,
+  writeSkillRecipe,
+} from './agent-skills';
 import { getHomePath } from '@/lib/home-path';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
@@ -192,6 +198,7 @@ export function createAgent(params: {
   action?: Agent['action'];
   runOn?: Agent['runOn'];
   memory?: Agent['memory'];
+  skillId?: Agent['skillId'];
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -212,6 +219,7 @@ export function createAgent(params: {
     action: params.action,
     runOn: params.runOn,
     memory: params.memory,
+    skillId: params.skillId,
     enabled: true,
     lastRun: null,
     lastResult: null,
@@ -267,11 +275,12 @@ async function materializeAgent(
   persistFacts = true
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
-  // so it is immediately recallable, then bake recalled notes into the run prompt.
+  // so it is immediately recallable, then bake recalled notes + a reused skill
+  // recipe (Phase 2a) into the run prompt.
   if (persistFacts) {
     await persistRememberFact(agent, runCommand);
   }
-  const agentForRun = await applyRecallToAgent(agent);
+  const agentForRun = await applyMemoryAndSkills(agent);
 
   const scriptPath = getScriptPath(agent.id);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
@@ -293,24 +302,38 @@ async function materializeAgent(
 }
 
 /**
- * Build the EFFECTIVE agent whose prompt is prefixed with recalled memory. The
- * recall block flows through generateRunScript → resolveAgentRoute, which scans
- * agent.prompt with secret-guard, so a secret inside a memory note forces the
- * run on-device exactly like a secret in the task text (no silent cloud leak).
- * Returns the agent unchanged when there is nothing to recall.
+ * Build the EFFECTIVE agent whose prompt is prefixed with recalled memory (G2)
+ * and a reused skill recipe (G3). Both blocks flow through generateRunScript →
+ * resolveAgentRoute, which scans agent.prompt with secret-guard, so a secret
+ * inside a memory note OR a skill recipe forces the run on-device exactly like a
+ * secret in the task text (no silent cloud leak). Returns the agent unchanged
+ * when there is nothing to inject.
  */
-async function applyRecallToAgent(agent: Agent): Promise<Agent> {
+async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
+  let prompt = agent.prompt;
+  // Phase 2a skill reuse: a skill was attached at creation via the gated
+  // "use skill X?" confirm. Prepend its recipe.
+  if (agent.skillId) {
+    try {
+      const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId) ?? null;
+      const skillContext = buildSkillInjectionContext(recipe);
+      if (skillContext) prompt = `${skillContext}\n\n---\n\n${prompt}`;
+    } catch {
+      // Skill injection is best-effort; never block a run on a read failure.
+    }
+  }
+  // Phase 1 memory recall.
   try {
     const notes = await readMemoryNotes(agent.id);
-    if (notes.length === 0) return agent;
-    const relevant = recallMemoryNotes(notes, `${agent.name}\n${agent.prompt}`);
-    const context = buildRecallContext(relevant);
-    if (!context) return agent;
-    return { ...agent, prompt: `${context}\n\n---\n\n${agent.prompt}` };
+    if (notes.length > 0) {
+      const relevant = recallMemoryNotes(notes, `${agent.name}\n${agent.prompt}`);
+      const recallContext = buildRecallContext(relevant);
+      if (recallContext) prompt = `${recallContext}\n\n---\n\n${prompt}`;
+    }
   } catch {
-    // Memory recall is best-effort; never block a run on a recall read failure.
-    return agent;
+    // best-effort
   }
+  return prompt === agent.prompt ? agent : { ...agent, prompt };
 }
 
 /** Write the registering "remember that …" fact as a memory note (idempotent). */
@@ -368,6 +391,28 @@ export async function runAgentNow(
   });
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
+  await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/**
+ * Phase 2a: when an agent that reuses a skill completes successfully, bump that
+ * skill's success-count + lastUsed so good recipes float to the top. Best-effort.
+ */
+async function bumpReusedSkillOnSuccess(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (!agent?.skillId) return;
+  const latest = useAgentStore.getState().getRunHistory(agentId).at(-1);
+  if (!latest || latest.status !== 'success') return;
+  try {
+    const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId);
+    if (!recipe) return;
+    await writeSkillRecipe(runCommand, bumpSkillUsage(recipe, latest.timestamp));
+  } catch (error) {
+    console.warn('Failed to bump reused skill for agent', agentId, error);
+  }
 }
 
 /**
