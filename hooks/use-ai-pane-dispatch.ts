@@ -1031,6 +1031,11 @@ export function useAIPaneDispatch(paneId: string) {
           autonomous: confirmed.autonomous || undefined,
           memory: confirmed.memory,
           skillId: confirmed.skillId,
+          // Phase 4: a multi-step utterance becomes an orchestrated agent.
+          orchestration:
+            confirmed.orchestrationSteps && confirmed.orchestrationSteps.length >= 2
+              ? { steps: confirmed.orchestrationSteps }
+              : undefined,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
         await installAgent(created, runAgentShellCommand);

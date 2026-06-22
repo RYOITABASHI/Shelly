@@ -556,6 +556,9 @@ export interface Agent {
    *  creation after a user-gated "use skill X?" confirm. Its recipe is injected
    *  into the run prompt and its success-count bumps on a successful run. */
   skillId?: string;
+  /** Phase 4: multi-step orchestration. Absent/<2 steps = single-run. Each step
+   *  runs through the SAME gated single-run path, so chaining adds no privilege. */
+  orchestration?: AgentOrchestrationConfig;
   enabled: boolean;
   lastRun: number | null;
   lastResult: 'success' | 'error' | null;
@@ -572,4 +575,26 @@ export interface AgentRunLog {
   toolUsed: string;
   errorMessage?: string;
   routeDecision?: AgentRouteDecision;
+  /** Phase 4: present when this was a multi-step orchestrated run. */
+  steps?: AgentRunStep[];
+}
+
+/** Phase 4 orchestration: one step within a multi-step run, for the run log. */
+export interface AgentRunStep {
+  index: number;
+  instruction: string;
+  status: 'success' | 'error' | 'skipped';
+  durationMs: number;
+  outputPreview: string;
+  routeDecision?: AgentRouteDecision;
+}
+
+/** Phase 4 orchestration config on an agent. Absent = single-run (today). */
+export interface AgentOrchestrationConfig {
+  /** Ordered step instructions; ≥ 2 → runs as a linear chain. */
+  steps: string[];
+  /** Max steps to launch (clamped to a hard cap for the phantom-process ceiling). */
+  maxSteps?: number;
+  /** Total wall-clock budget in ms (clamped to a hard ceiling). */
+  totalTimeoutMs?: number;
 }

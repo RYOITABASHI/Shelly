@@ -324,11 +324,24 @@ export function Sidebar() {
       agent.autonomous ? t('sidebar.agent_autonomous') : null,
       agent.enabled ? null : t('sidebar.agent_paused'),
     ].filter(Boolean).join(' · ');
+    // Phase 4: when the agent is multi-step, show the planned chain; and if the
+    // last run was orchestrated, show each step's status.
+    const plannedSteps = agent.orchestration?.steps ?? [];
+    const stepDetail = lastLog?.steps?.length
+      ? `${t('sidebar.agent_steps', { count: lastLog.steps.length })}\n${lastLog.steps
+          .map((s) => `  ${s.index + 1}. [${s.status}] ${s.instruction.slice(0, 60)}`)
+          .join('\n')}`
+      : plannedSteps.length >= 2
+      ? `${t('sidebar.agent_steps', { count: plannedSteps.length })}\n${plannedSteps
+          .map((s, i) => `  ${i + 1}. ${s.slice(0, 60)}`)
+          .join('\n')}`
+      : '';
     const body = [
       (agent.prompt || agent.description || '').trim(),
       '',
       meta,
       `${t('sidebar.agent_memory_title', { count: memoryNotes.length })}`,
+      stepDetail,
       lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
       routeDetail,
     ].filter(Boolean).join('\n');

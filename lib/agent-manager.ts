@@ -24,6 +24,16 @@ import {
   readSkillRecipes,
   writeSkillRecipe,
 } from './agent-skills';
+import {
+  buildStepPrompt,
+  combineFinalPreview,
+  isOrchestrated,
+  nextStepGate,
+  normalizeSteps,
+  reduceStatus,
+  resolveBudget,
+} from './agent-orchestration';
+import type { AgentRunStep } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
@@ -199,6 +209,7 @@ export function createAgent(params: {
   runOn?: Agent['runOn'];
   memory?: Agent['memory'];
   skillId?: Agent['skillId'];
+  orchestration?: Agent['orchestration'];
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -220,6 +231,7 @@ export function createAgent(params: {
     runOn: params.runOn,
     memory: params.memory,
     skillId: params.skillId,
+    orchestration: params.orchestration,
     enabled: true,
     lastRun: null,
     lastResult: null,
@@ -367,6 +379,13 @@ export async function runAgentNow(
   if (useAgentStore.getState().halted) {
     throw new Error('All agents are stopped (global kill-switch is on). Resume agents to run.');
   }
+  // Phase 4: a multi-step agent runs as a linear chain (each step through the
+  // SAME gated single-run path below). Single-step agents fall through unchanged.
+  const orchestrationAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (orchestrationAgent && isOrchestrated(orchestrationAgent.orchestration)) {
+    await runAgentOrchestrated(orchestrationAgent, runCommand, options);
+    return;
+  }
   const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (agent) {
@@ -392,6 +411,139 @@ export async function runAgentNow(
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/**
+ * Phase 4: run an agent as an ordered LINEAR chain. Each step is executed through
+ * the EXISTING single-run path (materialize → B2 driver), so every command still
+ * passes the same boundary + command-safety gate — chaining adds no privilege.
+ * The budget (hard step + time caps) REFUSES further steps rather than hanging
+ * (Android phantom-process ceiling). A failed step stops the chain and makes the
+ * whole run one 'error' for the circuit breaker. Result surfaces as a single run
+ * log carrying per-step detail.
+ */
+async function runAgentOrchestrated(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number } = {}
+): Promise<void> {
+  const agentId = agent.id;
+  const steps = normalizeSteps(agent.orchestration);
+  const budget = resolveBudget(agent.orchestration);
+  const startedAtMs = Date.now();
+  const priorResults: string[] = [];
+  const records: AgentRunStep[] = [];
+  let priorFailed = false;
+  // Snapshot existing log files so we can remove the per-step logs this chain
+  // writes and replace them with ONE aggregate (so the circuit breaker counts a
+  // failed chain as one run, and the per-step detail survives a reload).
+  const beforeFiles = await listAgentLogFiles(runCommand, agentId);
+
+  for (let i = 0; i < steps.length; i++) {
+    const gate = nextStepGate({ stepIndex: i, budget, startedAtMs, now: Date.now(), priorFailed });
+    if (!gate.proceed) break;
+
+    // Each step is a normal single run with a step-specific prompt; orchestration
+    // is cleared so the step itself doesn't recurse.
+    const stepAgent: Agent = {
+      ...agent,
+      prompt: buildStepPrompt(agent.prompt, steps[i], priorResults),
+      orchestration: undefined,
+    };
+    const stepStart = Date.now();
+    let before: AgentRunLog[] = [];
+    try {
+      before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+      await materializeAgent(stepAgent, runCommand, false);
+      await TerminalEmulator.runAgent(agentId);
+      await waitForAgentRunCompletion(runCommand, agentId, {
+        runStartedAtMs: stepStart - 5_000,
+        previousRunCount: before.length,
+        previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
+        timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
+        pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+      });
+    } catch (error) {
+      records.push({
+        index: i,
+        instruction: steps[i],
+        status: 'error',
+        durationMs: Date.now() - stepStart,
+        outputPreview: error instanceof Error ? error.message.slice(0, 200) : 'step failed',
+      });
+      priorFailed = true;
+      continue;
+    }
+    const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    const log = after.at(-1);
+    const status = log?.status ?? 'error';
+    records.push({
+      index: i,
+      instruction: steps[i],
+      status,
+      durationMs: Date.now() - stepStart,
+      outputPreview: log?.outputPreview ?? '',
+      routeDecision: log?.routeDecision,
+    });
+    if (status === 'success') priorResults.push(log?.outputPreview ?? '');
+    else priorFailed = true;
+  }
+
+  // Restore the original (orchestration) script after the last step-prompt run.
+  try {
+    await materializeAgent(agent, runCommand, false);
+  } catch {
+    // best-effort
+  }
+
+  // Aggregate the chain into a SINGLE on-disk run log (carrying per-step detail),
+  // replacing the per-step logs this chain wrote. Disk and store then agree, the
+  // circuit breaker counts one run, and the steps survive a reload.
+  const aggregate: AgentRunLog = {
+    agentId,
+    timestamp: Date.now(),
+    status: reduceStatus(records),
+    outputPreview: combineFinalPreview(records),
+    durationMs: Date.now() - startedAtMs,
+    toolUsed: records.at(-1)?.routeDecision?.toolLabel ?? 'orchestration',
+    routeDecision: records.at(-1)?.routeDecision,
+    steps: records,
+  };
+  try {
+    const afterFiles = await listAgentLogFiles(runCommand, agentId);
+    const newFiles = afterFiles.filter((f) => !beforeFiles.includes(f));
+    const logDir = `${agentsDir()}/logs/${agentId}`;
+    const aggFile = `${logDir}/${aggregate.timestamp}.json`;
+    const cmd =
+      `set -e\n` +
+      `mkdir -p ${shellQuote(logDir)}\n` +
+      newFiles.map((f) => `rm -f ${shellQuote(f)}`).join('\n') +
+      (newFiles.length ? '\n' : '') +
+      writeFileCommand(aggFile, JSON.stringify(aggregate));
+    await runCommand(cmd);
+  } catch (error) {
+    console.warn('orchestration: failed to persist aggregate log', agentId, error);
+  }
+  // Load the aggregate (+ prior logs) into the store — one run for the breaker —
+  // and run the same post-run hooks the single-run path uses.
+  await syncAgentRunLogsFromDisk(runCommand, agentId);
+  await captureRunMemory(agentId, runCommand);
+  await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/** List the agent's run-log file paths on disk (best-effort). */
+async function listAgentLogFiles(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId: string
+): Promise<string[]> {
+  try {
+    const out = await runCommand(
+      `ls -1 ${shellQuote(`${agentsDir()}/logs/${agentId}`)}/*.json 2>/dev/null || true`
+    );
+    return out.split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**

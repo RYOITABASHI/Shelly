@@ -38,6 +38,8 @@ export interface ConfirmedAgentDraft {
   memory?: AgentMemoryConfig;
   /** Phase 2a: id of a reused skill recipe the user kept on in the card. */
   skillId?: string;
+  /** Phase 4: ordered step instructions for a multi-step (orchestrated) agent. */
+  orchestrationSteps?: string[];
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
@@ -157,6 +159,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       memory: draft.memory,
       // Phase 2a: attach the reused skill only when the user kept it on.
       skillId: useSkill ? draft.matchedSkill?.id : undefined,
+      // Phase 4: carry detected multi-step instructions through to createAgent.
+      orchestrationSteps: draft.orchestrationSteps,
     });
   };
 
@@ -347,6 +351,20 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
               {useSkill ? 'ON' : 'OFF'}
             </Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Phase 4: when the utterance was multi-step, show the planned chain. */}
+      {draft.orchestrationSteps && draft.orchestrationSteps.length >= 2 && (
+        <View style={{ marginTop: 4 }}>
+          <Text style={[styles.label, { color: colors.muted, marginTop: 0 }]}>
+            {t('agentcard.orchestration', { count: draft.orchestrationSteps.length })}
+          </Text>
+          {draft.orchestrationSteps.map((s, i) => (
+            <Text key={`step-${i}`} style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
+              {`${i + 1}. ${s}`}
+            </Text>
+          ))}
         </View>
       )}
 

@@ -1,0 +1,159 @@
+/**
+ * lib/agent-orchestration.ts — Phase 4 multi-step orchestration: pure core.
+ *
+ * Orchestration runs a task as an ORDERED LINEAR sequence of steps, passing each
+ * step's result into the next. CRITICAL SECURITY PROPERTY: this layer NEVER
+ * executes a command. It only sequences prompts and enforces a step/time budget.
+ * Each step is run through the EXISTING single-run path (generateRunScript → B2
+ * driver), so every command still passes the same `classifyProposedCommand`
+ * boundary + command-safety gate. An orchestrated run therefore can never exceed
+ * the privileges of a single manual command — chaining adds no privilege.
+ *
+ * The B-persistence finding (Android phantom-process ceiling) means long local
+ * chains must REFUSE/STOP rather than hang: the budget (hard step + time caps)
+ * gates each step before it launches.
+ *
+ * All functions are pure (no IO) for deterministic unit tests.
+ */
+import type { AgentOrchestrationConfig, AgentRunStep } from '@/store/types';
+
+/** Sensible default; the hard cap protects the phantom-process ceiling. */
+export const DEFAULT_MAX_STEPS = 6;
+export const HARD_MAX_STEPS = 10;
+export const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000; // 30 min
+export const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
+const MAX_STEP_INSTRUCTION_CHARS = 500;
+const MAX_PROMPT_CHARS = 6000;
+const MAX_RESULT_CARRY_CHARS = 1500;
+const MAX_PREVIEW_CHARS = 500;
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+export interface ResolvedBudget {
+  maxSteps: number;
+  totalTimeoutMs: number;
+}
+
+/**
+ * Resolve the effective budget from the agent config, clamped to the hard caps.
+ * maxSteps never exceeds HARD_MAX_STEPS (phantom-process ceiling); the timeout
+ * never exceeds HARD_TOTAL_TIMEOUT_MS.
+ */
+export function resolveBudget(cfg: AgentOrchestrationConfig | undefined): ResolvedBudget {
+  const stepCount = cfg?.steps?.length ?? 0;
+  const requestedMax = cfg?.maxSteps ?? Math.min(stepCount || DEFAULT_MAX_STEPS, DEFAULT_MAX_STEPS);
+  const requestedTimeout = cfg?.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
+  return {
+    maxSteps: clamp(Math.floor(requestedMax) || 1, 1, HARD_MAX_STEPS),
+    totalTimeoutMs: clamp(Math.floor(requestedTimeout) || DEFAULT_TOTAL_TIMEOUT_MS, 1_000, HARD_TOTAL_TIMEOUT_MS),
+  };
+}
+
+/** Return the ordered, bounded, non-empty step instructions for an agent. */
+export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): string[] {
+  if (!cfg?.steps) return [];
+  return cfg.steps
+    .map((s) => s.trim().slice(0, MAX_STEP_INSTRUCTION_CHARS))
+    .filter((s) => s.length > 0)
+    .slice(0, HARD_MAX_STEPS);
+}
+
+/** True when the agent should run as a multi-step orchestration (≥ 2 steps). */
+export function isOrchestrated(cfg: AgentOrchestrationConfig | undefined): boolean {
+  return normalizeSteps(cfg).length >= 2;
+}
+
+export interface StepGate {
+  proceed: boolean;
+  reason?: string;
+}
+
+/**
+ * Decide whether to launch the next step. REFUSES (never hangs) when the prior
+ * step failed, the step budget is reached, or the time budget is exceeded.
+ */
+export function nextStepGate(opts: {
+  stepIndex: number;
+  budget: ResolvedBudget;
+  startedAtMs: number;
+  now: number;
+  priorFailed: boolean;
+}): StepGate {
+  if (opts.priorFailed) return { proceed: false, reason: 'previous step failed — chain stopped' };
+  if (opts.stepIndex >= opts.budget.maxSteps) {
+    return { proceed: false, reason: `step budget reached (${opts.budget.maxSteps})` };
+  }
+  if (opts.now - opts.startedAtMs > opts.budget.totalTimeoutMs) {
+    return { proceed: false, reason: 'total time budget exceeded' };
+  }
+  return { proceed: true };
+}
+
+/**
+ * Build the prompt for step `i`: the base prompt + the carried (bounded) prior
+ * results + this step's instruction. Bounded so a long chain can't unbounded-grow
+ * the prompt.
+ */
+export function buildStepPrompt(
+  basePrompt: string,
+  instruction: string,
+  priorResults: string[]
+): string {
+  const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
+  const carried = priorResults.length
+    ? `# Results from previous steps\n${priorResults
+        .map((r, i) => `## Step ${i + 1}\n${r.replace(/\s+/g, ' ').trim().slice(0, MAX_RESULT_CARRY_CHARS)}`)
+        .join('\n\n')}\n\n---\n\n`
+    : '';
+  return `${head}${carried}# This step\n${instruction.trim()}`.slice(0, MAX_PROMPT_CHARS);
+}
+
+/**
+ * Reduce per-step statuses to a single run status: any error → error (the run is
+ * a unit and feeds the circuit breaker as ONE failure), all skipped → skipped,
+ * else success.
+ */
+export function reduceStatus(steps: Pick<AgentRunStep, 'status'>[]): 'success' | 'error' | 'skipped' {
+  if (steps.length === 0) return 'skipped';
+  if (steps.some((s) => s.status === 'error')) return 'error';
+  if (steps.every((s) => s.status === 'skipped')) return 'skipped';
+  return 'success';
+}
+
+/** Build the single run-log preview for an orchestrated run (bounded). */
+export function combineFinalPreview(steps: AgentRunStep[]): string {
+  if (steps.length === 0) return '';
+  const failed = steps.find((s) => s.status === 'error');
+  if (failed) {
+    return `Step ${failed.index + 1}/${steps.length} failed: ${failed.outputPreview}`.slice(0, MAX_PREVIEW_CHARS);
+  }
+  const last = [...steps].reverse().find((s) => s.status === 'success');
+  const head = `Completed ${steps.length} step(s). `;
+  return `${head}${last?.outputPreview ?? ''}`.slice(0, MAX_PREVIEW_CHARS);
+}
+
+// ── NL step detection ────────────────────────────────────────────────────────
+
+const JP_SEQUENCE_SPLIT = /(?:^|[、。\n])\s*(?:まず|最初に|次に|その後|それから|続いて|最後に|そして)\s*/;
+const NUMBERED_SPLIT = /(?:^|\n)\s*(?:\d+[.)、]|ステップ\s*\d+[:：.]?|step\s*\d+[:.]?)\s*/i;
+const EN_SEQUENCE_SPLIT = /(?:^|[.\n])\s*(?:first|then|next|after that|finally|lastly)[,:]?\s+/i;
+
+/**
+ * Detect an explicit multi-step instruction in an utterance and split it into
+ * ordered steps. Returns [] when it is not clearly multi-step (≥ 2 parts), so a
+ * normal single task stays single-run. Conservative on purpose.
+ */
+export function parseStepsFromText(text: string): string[] {
+  for (const re of [NUMBERED_SPLIT, JP_SEQUENCE_SPLIT, EN_SEQUENCE_SPLIT]) {
+    const parts = text
+      .split(new RegExp(re, re.flags.includes('g') ? re.flags : re.flags + 'g'))
+      .map((s) => s.trim())
+      .filter((s) => s.length > 1);
+    if (parts.length >= 2) {
+      return parts.slice(0, HARD_MAX_STEPS).map((s) => s.slice(0, MAX_STEP_INSTRUCTION_CHARS));
+    }
+  }
+  return [];
+}

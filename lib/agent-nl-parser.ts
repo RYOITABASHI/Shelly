@@ -17,6 +17,7 @@
  */
 import { AgentAction, AgentMemoryConfig, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { parseStepsFromText } from './agent-orchestration';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -46,6 +47,9 @@ export interface ParsedAgentDraft {
   /** Phase 2a: a matching reusable skill surfaced for gated reuse in the confirm
    *  card. Set by the dispatcher (async skill match), not the pure parser. */
   matchedSkill?: { id: string; name: string; successCount: number };
+  /** Phase 4: ordered step instructions when the utterance is multi-step
+   *  ("まず…次に…最後に" / numbered). Absent/<2 = single-run. */
+  orchestrationSteps?: string[];
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -325,10 +329,13 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   const prompt = derivePrompt(rawText, sched);
   const suggestion = suggestTool(prompt || rawText);
   const memory = detectMemory(rawText);
+  // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts).
+  const orchestrationSteps = parseStepsFromText(prompt || rawText);
 
   return {
     name: deriveName(rawText),
     prompt,
+    orchestrationSteps: orchestrationSteps.length >= 2 ? orchestrationSteps : undefined,
     schedule: sched.schedule,
     scheduleConfident: sched.confident,
     scheduleLabel: sched.label,
