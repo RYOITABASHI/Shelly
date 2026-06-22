@@ -28,6 +28,32 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### G1 Phase 0 — 残りの実機検証（レートリミット明けの必須ゲート）
+
+**優先度**: P1（**実リリース前の必須ゲート**。dev チャネルへのマージは済み、PR #85）
+**状態**: G1 はコア部分を実機 PASS して main にマージ済み。下記の security-critical 経路が **未実機検証**。Codex usage limit（リセット 2026-06-24 23:51）で一部ブロック中。
+
+**実機 PASS 済み（build 1589）**:
+- audit 永続化（`~/.shelly/agents/audits/<id>-agent-driver-audit.jsonl` が実在・読める・one-shot 削除を生存。失敗 run でも `finish` 経由で保存）
+- secret-guard 強制ローカル（tool=Codex CLI 設定でも Route: on-device / Local LLM に上書き、Cloud fallback disabled）
+- reason log を詳細ポップアップに surface（Route / Guard / Secret / Why）
+- draft one-tap 承認
+
+**未検証（レートリミット明けに必ず実施）**:
+1. **command-safety が危険 cli をブロック**（例 `rm -rf /`）し、**cli は決して one-tap 不可**（必ず in-app confirm）— security-critical
+2. **webhook 承認**が宛先ホスト + payload preview を表示してから one-tap
+3. **承認 single-use / expiry** — 使用済み承認の再タップが no-op（リプレイ不可）
+4. **SNS vertical draft-only** — publish 能力に到達不可能なことを確認
+5. **secret-guard の end-to-end**（ローカル LLM = Qwen をロードした状態で実要約が走るか。今回は llama-server 未起動で local-context digest にフォールバック。secret はローカルに留まったので security は正しいが、実行系として未確認）
+
+**Follow-up（non-blocking）**: secret 種別ラベルの精度。`sk-ant-`（Anthropic）キーが `openai-like-key` と分類される。検出・強制ローカルは正しいが、汎用 `sk-` パターンより前に `anthropic-key` パターンを置く改善余地。
+
+**Why not now**: usage limit で codex 依存の経路が 6/24 までテスト不可。secret-guard / reason-log / audit のコア（最大の新規攻撃面）は実機立証済みなので G2（記憶層）に進む価値が勝る。ただし上記 1〜4 は security 保証そのものなので、**実リリースに載せる前に必ず実機 green を取る**こと。
+
+**戻す条件**: 上記 1〜5 を build 1589 以降で実機 PASS → このエントリに ✅ + 確認 build 番号を付ける。
+
+**→ 検証手順**: PR #85 本文の device-test チェックリスト、および `docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md` G1。
+
 ### bug #150 — Gemini CLI interactive TUI promotion blocked
 
 **優先度**: P2  
@@ -1849,6 +1875,7 @@ claude() {
 - **2026-04-14**: Task 8.2 (AI ペイン) スモークテストで bug #28 発覚。Cerebras 応答自体は正常だが、AI ペインの全テキスト (bubble, header, YOU/AI label) が大文字グリフで表示される。原因は Silkscreen フォントが小文字コードポイントを大文字形状で描画する仕様。ターミナルは JetBrains Mono 済だが UI 側は Silkscreen のまま。個別対応ではなく UI 全面一括置換として P1 に登録。bug #23 を統合・拡張。
 - **2026-04-14**: Task 8.3 (Browser ペイン) スモークテストで bug #29 / #30 発覚。初回 Add Pane は成功するが 2 回目以降が無反応。原因調査で `AddPaneSheet` の `focusedPaneId` が split 後に stale になっていることを特定。#29 part 1 + part 2 で修正済 (0d7f0b40 / 409b4642)、実機検証は次セッション。
 - **2026-04-14**: Phase 5 で bug #36 / #51-#67 を発見、並列 5 agent で原因調査。
+- **2026-06-22**: G1（Phase 0 仕上げ）を main にマージ（PR #85）。secret-guard 強制ローカル / reason-log / audit 永続化 / draft one-tap を build 1589 で実機 PASS。残りの security-critical 経路（command-safety cli ブロック・cli in-app confirm / webhook host+preview / 承認 single-use / SNS draft-only / secret-guard の local-LLM end-to-end）は Codex usage limit（6/24 リセット）でブロック中のため P1 必須ゲートとして登録。レートリミット明けに実機検証する。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。

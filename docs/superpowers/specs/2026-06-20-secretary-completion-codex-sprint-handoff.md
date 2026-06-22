@@ -30,9 +30,11 @@ The goal of these two days: **finish the on-device autonomous AI secretary as fa
 
 ---
 
-## 1. Where we are right now (2026-06-20)
+## 1. Where we are right now (2026-06-22)
 
-**Merged to main (`82f1a70e`, PR #83), CI build ~1584 building:**
+**G1 merged to main (PR #85, branch `feat/secretary-phase0-finish`, CI build 1589):** secret-guard + reason log + tiered approval scaffolding + the one-shot **audit-persistence fix**. Device-verified on build 1589: audit persistence (survives one-shot delete + failure path), secret-guard forced-local (tool=Codex CLI overridden to on-device / cloud-fallback disabled), reason log in the detail popup, draft one-tap approval. **Still unverified (P1 release gate — see DEFERRED.md, blocked by Codex usage limit until 2026-06-24):** command-safety blocks a dangerous cli + cli in-app confirm (never one-tap), webhook host+payload-preview approval, approval single-use/expiry, SNS draft-only no-publish, secret-guard end-to-end with the local LLM actually loaded. **Next chunk: G2 (persistent memory).**
+
+**(Earlier) Merged to main (`82f1a70e`, PR #83), CI build ~1584:**
 - `583097aa` Sidebar agent **detail popup** (tap row → purpose/schedule/action/autonomy/last-result + Run now/Pause/Close) + card **"Project name"** label + `cleanupOrphanAgentFiles` orphan sweep. *(detail popup on-device-verified: smoke5 showed prompt + webhook + last error.)*
 - `b7691533` **delete-resurrection fix** *(reviewed, NOT yet device-smoked)*.
 - `f6e35540` **updater download fix** *(reviewed, NOT yet device-smoked)*.
@@ -43,11 +45,11 @@ The goal of these two days: **finish the on-device autonomous AI secretary as fa
 | 2.1 | NL self-registration + confirm card | ✅ #79 (A1–A3), unified `@agent` flow #82 (A5) |
 | 2.2 | `codex exec` one-shot execution | ✅ reused; B2 gate **on-device verified** (build 1570/1580) |
 | 2.3 | Action layer `draft`/`notify`/`webhook`/`cli` | ✅ #80 (B1), all action types smoked build 1578 |
-| 2.4 | Routing: hard-guards + keyword + manual pin | ⚠️ pin + keyword done; **secret-guard (A6) + reason-log REMAIN** |
+| 2.4 | Routing: hard-guards + keyword + manual pin | ✅ pin + keyword + **secret-guard (A6) + reason-log** done (PR #85, device-verified build 1589) |
 | 2.5 | Lifecycle + kill-switch | ✅ #82 (A4): circuit-breaker / pause-resume / STOP-ALL, device-verified |
-| 2.6 | Push approval (tiered) | ⚠️ B2 signed-reply escalation done + verified; **tiered notify/webhook one-tap + cli in-app confirm + single-use run-id binding (B5) REMAIN** |
+| 2.6 | Push approval (tiered) | ✅ implemented (PR #85): draft one-tap device-verified; **webhook host+preview / cli in-app confirm / single-use+expiry still need on-device verify — P1 gate, blocked by usage limit until 6/24** |
 
-**So Phase 0 is ~90% done.** The remaining Phase-0 work is folded into **G1** below. Everything after G1 is North-Star Phases 1–4 + the Autonomous-Mode A/B/C hardening track.
+**So Phase 0 is implemented and merged (PR #85); the security-critical approval paths for cli/webhook + single-use remain to be device-verified after the 6/24 rate-limit reset (tracked in DEFERRED.md as a P1 release gate).** Everything after G1 is North-Star Phases 1–4 + the Autonomous-Mode A/B/C hardening track. **Next: G2.**
 
 ---
 
