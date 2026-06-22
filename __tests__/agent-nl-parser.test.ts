@@ -172,3 +172,34 @@ describe('parseAgentNL — invariants', () => {
     expect(parseAgentNL('').schedule).toBeNull();
   });
 });
+
+describe('parseAgentNL — memory (Phase 1)', () => {
+  it('JP: 覚えておいて → memory.remember with the fact captured', () => {
+    const d = parseAgentNL('私は簡潔な要約が好みだと覚えておいて');
+    expect(d.memory?.remember).toBe(true);
+    expect(d.memory?.rememberFact).toContain('簡潔な要約');
+  });
+
+  it('EN: "remember that …" → memory.remember with the fact captured', () => {
+    const d = parseAgentNL('remember that I prefer concise summaries');
+    expect(d.memory?.remember).toBe(true);
+    expect(d.memory?.rememberFact?.toLowerCase()).toContain('concise summaries');
+  });
+
+  it('is absent for ordinary tasks (no false positives)', () => {
+    expect(parseAgentNL('毎日8時にニュースを要約して').memory).toBeUndefined();
+    expect(parseAgentNL('summarize the news every day').memory).toBeUndefined();
+  });
+
+  it('does NOT fire on negated "remember" (statement of not recalling)', () => {
+    expect(parseAgentNL("I don't remember the password").memory).toBeUndefined();
+    expect(parseAgentNL("I can't remember where I put my keys").memory).toBeUndefined();
+    expect(parseAgentNL('覚えていないことを調べて').memory).toBeUndefined();
+    expect(parseAgentNL('パスワードを思い出せない').memory).toBeUndefined();
+  });
+
+  it('still fires on "don\'t forget" (affirmative keep-this)', () => {
+    const d = parseAgentNL("don't forget to water the plants");
+    expect(d.memory?.remember).toBe(true);
+  });
+});
