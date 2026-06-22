@@ -20,6 +20,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { PaneIdContext, MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
+import { useInboundStore } from '@/store/inbound-store';
+import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { formatContextBadge } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
@@ -359,6 +361,27 @@ export default function AIPane() {
     };
     useAIPaneStore.getState().addMessage(paneId, systemMsg);
   }, [boundAgent, paneId]);
+
+  // Phase 3 inbound gateway: drain authorized Telegram utterances into the SAME
+  // @agent confirm-card pipeline a local utterance uses. consume() pops atomically
+  // so with multiple AI panes only one card is created per message; the human
+  // still taps Confirm and the usual secret-guard / approval checks apply — inbound
+  // carries no extra privilege.
+  const pendingInboundCount = useInboundStore((s) => s.pending.length);
+  useEffect(() => {
+    if (pendingInboundCount === 0) return;
+    const item = useInboundStore.getState().consume();
+    if (!item) return;
+    const draft = parseAgentNL(item.text);
+    useAIPaneStore.getState().addMessage(paneId, {
+      id: `inb-card-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      agentDraft: draft,
+      agentCardState: 'pending',
+    });
+  }, [pendingInboundCount, paneId]);
 
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.isStreaming ?? false;

@@ -355,6 +355,14 @@ export type AppSettings = {
   localLlmModel: string;
   /** Optional selected GGUF path for llama-server auto-start */
   localLlmModelPath?: string;
+  // ─── Telegram inbound gateway (Phase 3) ──────────────────────────────────────────
+  /** Accept @agent messages from a single authorized Telegram chat (opt-in). */
+  telegramInboundEnabled?: boolean;
+  /** Bot token from @BotFather — secret, stored in SecureStore (not AsyncStorage). */
+  telegramBotToken?: string;
+  /** The SINGLE pre-authorized chat id; messages from any other chat are dropped. */
+  telegramAuthorizedChatId?: string;
+
   // ─── Perplexity Sonar API ────────────────────────────────────────────────────────
   /** Perplexity Sonar API キー (https://www.perplexity.ai/settings/api) */
   perplexityApiKey?: string;

@@ -46,6 +46,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   localLlmModel: DEFAULT_LOCAL_LLM_MODEL,
   localLlmModelPath: '',
   groqModel: 'llama-3.3-70b-versatile',
+  telegramInboundEnabled: false,
+  telegramBotToken: '',
+  telegramAuthorizedChatId: '',
   perplexityApiKey: '',
   teamMembers: {
     gemini: true,

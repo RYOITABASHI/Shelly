@@ -35,6 +35,7 @@ import {
 } from '@/lib/codex-session-reply';
 import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/codex-pty-detection';
 import { execCommand } from '@/hooks/use-native-exec';
+import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -118,6 +119,9 @@ export default function RootLayout() {
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,
   });
+  // Phase 3 inbound gateway: long-poll Telegram for the authorized chat (no-op
+  // unless enabled + token + chat id are configured). Enqueues confirm cards only.
+  useTelegramInbound();
   const [pendingAgentActionApproval, setPendingAgentActionApproval] =
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);

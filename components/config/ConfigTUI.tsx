@@ -110,6 +110,15 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     ],
   },
   {
+    title: 'Telegram Gateway',
+    icon: 'send',
+    items: [
+      { key: 'telegramInboundEnabled',  label: 'Enable Inbound',   type: 'boolean', source: 'settings', description: 'Accept @agent messages from one authorized Telegram chat. Each message still opens a confirm card.' },
+      { key: 'telegramBotToken',        label: 'Bot Token',        type: 'secret',  source: 'settings', description: 'From @BotFather (stored encrypted)' },
+      { key: 'telegramAuthorizedChatId', label: 'Authorized Chat ID', type: 'string', source: 'settings', description: 'Single chat id; messages from any other chat are dropped' },
+    ],
+  },
+  {
     title: 'Team',
     icon: 'groups',
     items: [
