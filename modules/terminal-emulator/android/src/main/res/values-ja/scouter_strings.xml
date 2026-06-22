@@ -29,6 +29,7 @@
   <string name="scouter_notification_action_review">確認</string>
   <string name="scouter_notification_codex_approval_title">Codex が承認を求めています</string>
   <string name="scouter_notification_agent_action_title">「%1$s」を許可しますか？</string>
+  <string name="scouter_notification_agent_action_engine">エンジン: %1$s</string>
   <string name="scouter_notification_agent_action_what_draft">結果を下書きとして保存します</string>
   <string name="scouter_notification_agent_action_what_notify">完了を通知します</string>
   <string name="scouter_notification_agent_action_what_webhook">Webhook に送信します</string>

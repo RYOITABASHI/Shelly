@@ -39,6 +39,7 @@
   <string name="scouter_notification_action_review">Review</string>
   <string name="scouter_notification_codex_approval_title">Codex needs approval</string>
   <string name="scouter_notification_agent_action_title">Approve “%1$s”?</string>
+  <string name="scouter_notification_agent_action_engine">Engine: %1$s</string>
   <string name="scouter_notification_agent_action_what_draft">Will save the result as a draft</string>
   <string name="scouter_notification_agent_action_what_notify">Will send a completion notification</string>
   <string name="scouter_notification_agent_action_what_webhook">Will post to the webhook</string>

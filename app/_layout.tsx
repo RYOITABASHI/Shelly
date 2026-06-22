@@ -102,6 +102,7 @@ type AgentActionApprovalRequest = {
   runId: string;
   agentId: string;
   agentName?: string | null;
+  toolLabel?: string | null;
   actionType: 'draft' | 'notify' | 'webhook' | 'cli';
   preview?: string | null;
   destinationHost?: string | null;
@@ -718,6 +719,7 @@ export default function RootLayout() {
         runId,
         agentId,
         agentName: str('agentName') || null,
+        toolLabel: str('toolLabel') || null,
         actionType,
         preview: str('preview') || null,
         destinationHost: str('destinationHost') || null,

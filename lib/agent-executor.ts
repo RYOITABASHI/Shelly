@@ -340,9 +340,10 @@ write_native_notification_request() {
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
   agent_name_json=$(json_escape_text "$AGENT_NAME")
+  tool_label_json=$(json_escape_text "$TOOL_LABEL")
   tmp="$ACTION_NOTIFY_FILE.tmp"
   cat > "$tmp" << NOTIFYEOF
-{"agentId":"$agent_json","agentName":"$agent_name_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
+{"agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
 NOTIFYEOF
   mv "$tmp" "$ACTION_NOTIFY_FILE"
 }
@@ -425,6 +426,7 @@ write_action_approval_request() {
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
   agent_name_json=$(json_escape_text "$AGENT_NAME")
+  tool_label_json=$(json_escape_text "$TOOL_LABEL")
   approval_type_json=$(json_escape_text "$approval_type")
   destination_json=$(json_escape_text "$destination_host")
   command_json=$(json_escape_text "$ACTION_COMMAND")
@@ -436,7 +438,7 @@ write_action_approval_request() {
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"

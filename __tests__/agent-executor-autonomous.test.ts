@@ -42,6 +42,9 @@ describe('generateRunScript — readable notification preview (telemetry-strippe
     // Both notification payloads carry agentName so the OS card shows a readable
     // name instead of the raw agent id.
     expect(s).toContain('"agentName":"$agent_name_json"');
+    // ...and the engine/route label, so the card shows which backend produced
+    // the result (route transparency at approval time).
+    expect(s).toContain('"toolLabel":"$tool_label_json"');
   });
 
   it('an approved draft posts ONE completion card (closure) after saving', () => {

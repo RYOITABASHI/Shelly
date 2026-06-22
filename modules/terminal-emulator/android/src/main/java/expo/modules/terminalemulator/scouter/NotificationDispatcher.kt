@@ -103,7 +103,7 @@ class NotificationDispatcher(private val context: Context) {
         notify(ID_LONG_RUNNING, "Agent still running", "${snapshot.currentTool ?: "Tool"} · ${snapshot.projectName}")
     }
 
-    fun notifyAgentResult(agentId: String, status: String, preview: String, agentName: String? = null) {
+    fun notifyAgentResult(agentId: String, status: String, preview: String, agentName: String? = null, toolLabel: String? = null) {
         val normalizedStatus = status.trim().lowercase(Locale.US).ifBlank { "success" }
         val name = agentName?.takeIf { it.isNotBlank() } ?: shorten(agentId, 40)
         val title = when (normalizedStatus) {
@@ -111,7 +111,12 @@ class NotificationDispatcher(private val context: Context) {
             "skipped" -> context.getString(R.string.scouter_notification_agent_result_skipped, name)
             else -> context.getString(R.string.scouter_notification_agent_result_failed, name)
         }
-        val body = preview.ifBlank { context.getString(R.string.scouter_notification_agent_result_no_preview) }
+        // Lead the body with the engine that produced the result (route transparency),
+        // then the preview, so the completion card mirrors the approval card.
+        val engineLine = toolLabel?.takeIf { it.isNotBlank() }
+            ?.let { context.getString(R.string.scouter_notification_agent_action_engine, it) }
+        val previewBody = preview.ifBlank { context.getString(R.string.scouter_notification_agent_result_no_preview) }
+        val body = listOfNotNull(engineLine, previewBody).joinToString("\n")
         val id = ID_AGENT_RESULT_BASE + (agentId.hashCode() and 0x7fffffff) % ID_AGENT_RESULT_SPAN
         notify(
             id = id,
@@ -142,14 +147,21 @@ class NotificationDispatcher(private val context: Context) {
                 else -> request.actionType
             }
             val previewText = request.preview.takeIf { it.isNotBlank() }?.redactForScouter()
+            // Which engine produced this result (route transparency): the body leads
+            // with "Engine: <tool>" so the user can see at approval time whether it
+            // ran on-device, on Codex, etc.
+            val engineLine = request.toolLabel?.takeIf { it.isNotBlank() }
+                ?.let { context.getString(R.string.scouter_notification_agent_action_engine, it) }
             val body = when (request.actionType) {
                 "webhook" -> listOfNotNull(
+                    engineLine,
                     actionPhrase,
                     context.getString(R.string.scouter_notification_agent_action_webhook_host, request.destinationHost ?: "unknown"),
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                     request.payloadPath?.let { context.getString(R.string.scouter_notification_agent_action_payload, it.redactForScouter()) },
                 ).joinToString("\n")
                 "cli" -> listOfNotNull(
+                    engineLine,
                     actionPhrase,
                     request.command?.redactForScouter(),
                     request.safetyLevel?.let { context.getString(R.string.scouter_notification_agent_action_safety, it) },
@@ -157,6 +169,7 @@ class NotificationDispatcher(private val context: Context) {
                     context.getString(R.string.scouter_notification_agent_action_cli_review_required),
                 ).joinToString("\n")
                 else -> listOfNotNull(
+                    engineLine,
                     actionPhrase,
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
