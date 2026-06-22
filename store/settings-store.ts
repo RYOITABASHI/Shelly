@@ -225,6 +225,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       if ('geminiModel' in newSettings && typeof newSettings.geminiModel === 'string') {
         envUpdates.push(['GEMINI_MODEL', newSettings.geminiModel]);
       }
+      if ('cerebrasApiKey' in newSettings && typeof newSettings.cerebrasApiKey === 'string') {
+        envUpdates.push(['CEREBRAS_API_KEY', newSettings.cerebrasApiKey]);
+      }
+      if ('cerebrasModel' in newSettings && typeof newSettings.cerebrasModel === 'string') {
+        envUpdates.push(['CEREBRAS_MODEL', newSettings.cerebrasModel]);
+      }
+      if ('groqApiKey' in newSettings && typeof newSettings.groqApiKey === 'string') {
+        envUpdates.push(['GROQ_API_KEY', newSettings.groqApiKey]);
+      }
+      if ('groqModel' in newSettings && typeof newSettings.groqModel === 'string') {
+        envUpdates.push(['GROQ_MODEL', newSettings.groqModel]);
+      }
       if ('localLlmUrl' in newSettings && typeof newSettings.localLlmUrl === 'string') {
         envUpdates.push(['LOCAL_LLM_URL', newSettings.localLlmUrl]);
       }

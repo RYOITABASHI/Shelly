@@ -25,6 +25,45 @@ const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
 
 const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
 
+describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)', () => {
+  it('non-autonomous Cerebras/Groq call their OpenAI-compatible endpoints with a Bearer key', () => {
+    const cb = generateRunScript(agent({ type: 'cerebras' }, false));
+    expect(cb).not.toContain('[REFUSED]');
+    expect(cb).toContain('https://api.cerebras.ai/v1/chat/completions');
+    expect(cb).toContain('HTTP_AUTH_HEADER="Bearer $CEREBRAS_API_KEY"');
+    expect(cb).toContain('MODEL="${CEREBRAS_MODEL:-qwen-3-235b-a22b-instruct-2507}"');
+    expect(cb).not.toContain(UNSET); // key-bearing backend keeps its env
+
+    const gq = generateRunScript(agent({ type: 'groq' }, false));
+    expect(gq).toContain('https://api.groq.com/openai/v1/chat/completions');
+    expect(gq).toContain('HTTP_AUTH_HEADER="Bearer $GROQ_API_KEY"');
+    expect(gq).toContain('MODEL="${GROQ_MODEL:-llama-3.3-70b-versatile}"');
+  });
+
+  it('refuses autonomous Cerebras/Groq, fail-closed (API-key backend, no key in the autonomous path)', () => {
+    for (const t of ['cerebras', 'groq'] as const) {
+      const s = generateRunScript(agent({ type: t }, true));
+      expect(s).toContain('[REFUSED]');
+      expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION');
+      expect(s).not.toContain('api.cerebras.ai');
+      expect(s).not.toContain('api.groq.com');
+    }
+  });
+
+  it('scrubs Cerebras/Groq keys from the env of non-key backends (no cross-backend leak)', () => {
+    // A local/oauth run must not carry ANY api key, including the new ones.
+    const local = generateRunScript(agent({ type: 'local' }, true));
+    expect(local).toContain('unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY');
+  });
+
+  it('emits parseable shell for the new backends', () => {
+    for (const t of ['cerebras', 'groq'] as const) {
+      const s = generateRunScript(agent({ type: t }, false));
+      expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+    }
+  });
+});
+
 describe('generateRunScript — local context window fit (no ctx overflow)', () => {
   it('caps the combined local prompt + injected context and reserves response room', () => {
     const s = generateRunScript(agent({ type: 'local' }));

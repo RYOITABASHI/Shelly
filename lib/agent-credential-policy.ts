@@ -12,8 +12,9 @@
  *     (~/.codex/auth.json, OPENAI_API_KEY:null) — NO API key in env.
  *   - `local` hits a loopback llama-server — NO API key.
  *   - `ab-article-eval` = local Qwen + codex (OAuth) — NO API key.
- *   - `perplexity` / `gemini-api` inject PERPLEXITY_API_KEY / GEMINI_API_KEY into
- *     the run env (agent-executor.ts:907,1099) — these are the API-key backends.
+ *   - `perplexity` / `gemini-api` / `cerebras` / `groq` inject a Bearer API key
+ *     (PERPLEXITY_API_KEY / GEMINI_API_KEY / CEREBRAS_API_KEY / GROQ_API_KEY) into
+ *     the run env — these are the API-key backends, excluded from the autonomous path.
  *   - `auto` resolves at runtime and PREFERS the GEMINI_API_KEY branch before
  *     OAuth-codex (agent-executor.ts:928), so as-written it may bear an API key.
  *
@@ -43,7 +44,9 @@ export function credentialClass(tool: ToolChoice): CredentialClass {
       return 'local';
     case 'perplexity':
     case 'gemini-api':
-      return 'api-key';
+    case 'cerebras':
+    case 'groq':
+      return 'api-key'; // Bearer API key in env → excluded from the autonomous path
     case 'auto':
       return 'api-key'; // conservative: may resolve to gemini-api (key-bearing)
   }

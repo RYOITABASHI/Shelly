@@ -170,6 +170,8 @@ const LABELS: Record<ToolChoice['type'], string> = {
   cli: 'Codex CLI',
   perplexity: 'Perplexity API',
   'gemini-api': 'Gemini API',
+  cerebras: 'Cerebras',
+  groq: 'Groq',
   'ab-article-eval': 'A/B Article Eval',
   auto: 'Auto',
 };

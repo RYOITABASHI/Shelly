@@ -258,6 +258,10 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
       return `${tool.cli.charAt(0).toUpperCase()}${tool.cli.slice(1)} CLI`;
     case 'gemini-api':
       return tool.model ? `Gemini API (${tool.model})` : 'Gemini API';
+    case 'cerebras':
+      return tool.model ? `Cerebras (${tool.model})` : 'Cerebras';
+    case 'groq':
+      return tool.model ? `Groq (${tool.model})` : 'Groq';
     case 'local':
       return 'Local LLM';
     case 'perplexity':

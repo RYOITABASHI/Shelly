@@ -97,7 +97,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const routeDecisionJson = JSON.stringify(routeDecision);
   const apiKeyEnvScrub = requiresApiKeyEnv(tool)
     ? ''
-    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY\n';
+    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY\n';
 
   const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
@@ -1848,6 +1848,26 @@ rm -f "$PROMPT_FILE"`;
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		fi
 		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
+    case 'cerebras':
+      // Free-tier cloud tier of the ③ ladder (OpenAI-compatible). Used after
+      // local when local can't fit/handle the task, BEFORE Codex (quota-preserving).
+      return openAiCompatApiCommand(escapedPrompt, resultVar, {
+        keyVar: 'CEREBRAS_API_KEY',
+        envModelVar: 'CEREBRAS_MODEL',
+        keyHint: 'Add CEREBRAS_API_KEY in Settings → API Keys (free tier at cloud.cerebras.ai).',
+        url: 'https://api.cerebras.ai/v1/chat/completions',
+        model: tool.model || 'qwen-3-235b-a22b-instruct-2507',
+        label: 'Cerebras',
+      });
+    case 'groq':
+      return openAiCompatApiCommand(escapedPrompt, resultVar, {
+        keyVar: 'GROQ_API_KEY',
+        envModelVar: 'GROQ_MODEL',
+        keyHint: 'Add GROQ_API_KEY in Settings → API Keys (free tier at console.groq.com).',
+        url: 'https://api.groq.com/openai/v1/chat/completions',
+        model: tool.model || 'llama-3.3-70b-versatile',
+        label: 'Groq',
+      });
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, tool.localModel, tool.codexCmd);
     case 'auto':
@@ -2014,6 +2034,46 @@ $(head -n 40 "$RUN_DIR/local-qwen.md")
 ## Codex Preview
 $(head -n 40 "$RUN_DIR/codex.md")
 RESULTEOF`;
+}
+
+/**
+ * OpenAI-compatible chat-completions backend (Cerebras / Groq). Mirrors the
+ * perplexity flow: source key from env, POST, extract content, fail-closed if no
+ * key (graceful error + BACKEND_ERROR_FILE so the ladder can escalate). The key
+ * is read from env (synced from Settings) and never logged.
+ */
+function openAiCompatApiCommand(
+  escapedPrompt: string,
+  resultVar: string,
+  opts: { keyVar: string; envModelVar: string; keyHint: string; url: string; model: string; label: string },
+): string {
+  const model = opts.model.replace(/"/g, '\\"');
+  const keyHint = opts.keyHint.replace(/'/g, "'\\''");
+  const url = opts.url.replace(/"/g, '\\"');
+  const label = opts.label.replace(/"/g, '\\"');
+  return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
+	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+	MODEL="\${${opts.envModelVar}:-${model}}"
+	if [ -z "\${${opts.keyVar}:-}" ]; then
+	  echo '${keyHint}' > ${resultVar}
+	  touch "$BACKEND_ERROR_FILE"
+	else
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	set +e
+	HTTP_AUTH_HEADER="Bearer $${opts.keyVar}" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	API_EXIT=$?
+	set -e
+	if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
+	  touch "$BACKEND_ERROR_FILE"
+	  echo "${label} API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+	else
+	  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+	fi
+	rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	fi
+	rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
 }
 
 function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string): string {
