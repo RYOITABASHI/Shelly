@@ -1581,6 +1581,14 @@ if (!content) {
   } catch (_) {}
 }
 if (!content) {
+  // Reasoning models (Qwen3 thinking) may leave message.content empty and put the
+  // text in reasoning_content (esp. when truncated at max_tokens). Surface that
+  // rather than dumping the raw JSON envelope into the result.
+  try {
+    content = data?.choices?.[0]?.message?.reasoning_content;
+  } catch (_) {}
+}
+if (!content) {
   try {
     const parts = data?.candidates?.[0]?.content?.parts || [];
     content = parts.map((part) => part && part.text ? part.text : '').filter(Boolean).join('\\n');
@@ -1627,6 +1635,11 @@ except Exception:
 if not content:
     try:
         content = data.get("choices", [{}])[0].get("text")
+    except Exception:
+        content = None
+if not content:
+    try:
+        content = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content")
     except Exception:
         content = None
 if not content:
@@ -1915,7 +1928,7 @@ rm -f "$PROMPT_FILE"`;
 	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
@@ -2060,7 +2073,7 @@ PROMPTEOF
 
 PROMPT_JSON=$(json_string_file "$RUN_DIR/prompt.md")
 LOCAL_REQUEST_FILE="$RUN_DIR/local-request.json"
-printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
+printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
 
 LOCAL_START=$(date +%s)
 if ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then

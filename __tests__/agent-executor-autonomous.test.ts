@@ -156,6 +156,21 @@ describe('generateRunScript — readable notification preview (telemetry-strippe
   });
 });
 
+describe('generateRunScript — local inference quality', () => {
+  it('disables Qwen thinking for local runs (direct answer, no token burn / empty content)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // A real run had the 2B spend all 2048 tokens in reasoning_content and finish
+    // with empty content (finish_reason=length) → no answer + raw-JSON preview.
+    expect(s).toContain('\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}');
+  });
+
+  it('extract_ai_content falls back to reasoning_content before dumping raw JSON', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('content = data?.choices?.[0]?.message?.reasoning_content;');
+    expect(s).toContain('content = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content")');
+  });
+});
+
 describe('generateRunScript — abort-safe shell (exit 141 root-causes)', () => {
   it('clean_result_preview heads a regular file (no sed|head SIGPIPE abort)', () => {
     const s = generateRunScript(agent({ type: 'local' }));
