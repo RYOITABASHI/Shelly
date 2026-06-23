@@ -50,6 +50,43 @@
 - ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
 - ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。残る解錠: 自律クラウド opt-in / Vault 内保存の自動承認 / 複数曜日スケジュール + 日付フォルダ出力テンプレ。
 
+### 🔴 Web-mandatory routing — 実機 end-to-end 検証待ち（quota 明けの必須ゲート）
+
+**優先度**: P1（North Star コアの収集経路。実装済みだが実機 end-to-end 未検証）
+**状態**: 実装 + 単体テスト + レビュー APPROVE 済み、push 済み（commit `203428c`、branch `claude/work-handoff-2qb1xd`、build 投入済み）。**両 web backend が一時的に quota 枯渇のため end-to-end 未確認。**
+
+**背景**: 「ニュース収集→要約→保存」エージェントが、収集を Web 非対応の local LLM に振られて**空テンプレを幻覚**し success 偽装していた（出力 `agent-mqp6j9w1/output.md/2026-06-24-.md` がプレースホルダ）。真因は偽成功/昇格バグではなく**ルーティング**。修正＝`needsWeb`（収集動詞＋鮮度語）判定を新設し、非Web backend（local/Cerebras/Groq）を除外、`Gemini(grounded)→Codex`（一般）/ `Perplexity→Codex`（学術）/ `自律=Codexのみ` に振る。素の Gemini 呼び出しは不変、needsWeb 一般時のみ `tools:[{google_search:{}}]` 付与。
+
+**実機で確認済み（2026-06-24, build 203428c 前）**:
+- 端末ネット OK（`curl https://hacker-news.firebaseio.com/v0/topstories.json` が実 ID 取得）
+- Codex は `sandbox: danger-full-access` / `approval: never` で起動＝**ネット+shell フルアクセス可**（quota あれば収集可能。net 保険として有効）
+- Gemini キーは設定→`.env` 同期 OK（403"unregistered"→消滅、429 まで到達＝キーは届いている）
+
+**quota ブロック中（明けたら必ず検証）**:
+- **Codex**: usage limit、リセット **2026-06-24 23:51**。
+- **Gemini**: `429 RESOURCE_EXHAUSTED` かつ **`limit: 0`**（＝`gemini-2.0-flash` の無料枠が 0）。別モデル（`gemini-2.5-flash` / `gemini-flash-latest`）に無料枠が残る可能性大。
+
+**未検証（quota 明けに必ず実施、コマンド同梱で self-contained）**:
+1. **Gemini grounding が実キーで効くか**（無料枠のあるモデルを特定）:
+   ```bash
+   . ~/.shelly/agents/.env
+   curl -sS "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | grep -o '"models/[a-zA-Z0-9.-]*"' | sort -u | head -40
+   for M in gemini-2.5-flash gemini-flash-latest gemini-2.0-flash-001; do echo "== $M =="; curl -sS -m 30 -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' "https://generativelanguage.googleapis.com/v1beta/models/$M:generateContent" -d '{"contents":[{"role":"user","parts":[{"text":"今日の主要な国内ニュースの見出しを3つ、出典URL付きで。"}]}],"tools":[{"google_search":{}}],"generationConfig":{"temperature":0.2}}' | head -c 400; echo; done
+   ```
+   → 実在の見出し＋URL（`groundingMetadata`）が返るモデルを特定。`gemini-2.0-flash` が `limit:0` なら **Shelly のデフォルト Gemini モデル（`agent-executor.ts` `geminiApiCommand` の `gemini-2.0-flash`）をそのモデルに更新してプッシュ**（小変更）。
+2. **Codex のネット可否**（usage 明け）:
+   ```bash
+   codex exec 'シェルで `curl -sS -m 15 https://hacker-news.firebaseio.com/v0/topstories.json | head -c 120` を実行し、数値IDの先頭3つだけ答えて。実行不可なら「NO_NET」とだけ。'
+   ```
+   → 実 ID なら net 保険成立。`NO_NET`/approval 停止なら Codex は収集に使えず「error → Gemini 登録/別モデル案内」に倒す。
+3. **end-to-end**: ニュースエージェント（`agent-mqp6j9w1`）を RUN NOW → 出力が**実在ニュースの要約**（幻覚テンプレでない）になるか `~/.shelly/agents/agent-mqp6j9w1/output.md/` で確認。
+
+**Follow-up（non-blocking）**:
+- **orchestration ステップ内の昇格未配線**: 収集ステップは `resolveAgentRoute(stepPrompt)` 経由で Gemini-grounded に乗るが、ステップ内の Gemini 失敗→Codex 昇格は未配線（昇格は単発 @agent パスのみ）。Gemini キーがあれば収集は通るので実害小。堅牢化として `runAgentOrchestrated` にラダー適用を検討。
+- デフォルト Gemini モデルの更新（上記 1 の結果次第）。
+
+**戻す条件**: 上記 1〜3 を build 203428c 以降で実機 PASS → ✅ + 確認 build 番号を付ける。
+
 ### G5 Phase 3 — inbound ゲートウェイの後回し項目
 
 **優先度**: P2
@@ -1971,6 +2008,7 @@ claude() {
 - **2026-06-10**: Claude Code オンデバイス実装の経緯を 3 エージェント並列調査 (リポジトリ履歴 / Android OSS 検証 / CC アーキ + Codex 連携)。「ネイティブ断念」の正体は Bun SEA 直接実行の断念 (v29-v59) で、CC 自体は extracted Node 経路 (v67+) で稼働中と確認。musl 矛盾を ferrum install.sh + 公式 docs 実取得で解消 (glibc 方式が実証済、musl も C++ ランタイム要・ただし軽量)。パッチ済バイナリ PoC (P2) と Bash tool exit 1 観測基盤 (既存 P1 の次の一手) を spec 化・DEFERRED 登録。実装は未着手。spec: 2026-06-10-claude-code-on-device-investigation / -claude-patched-binary-poc-plan / -bash-tool-exit1-observability-plan。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 - **2026-06-19**: Terminal pane の wallpaper 透過が native/GL 描画面のグレー化回帰を誘発したため、当面 opaque black に固定。再有効化条件を P3 として登録。
+- **2026-06-24**: ニュース収集エージェントの「偽成功」を切り分け→真因は**ルーティング**（収集が Web 非対応 local LLM に振られ空テンプレ幻覚）と確定。`needsWeb`（収集動詞＋鮮度語）routing を実装し非Web backend 除外＋`Gemini(grounded)→Codex`/学術`Perplexity`/自律`Codexのみ`に（commit 203428c, 全376テスト緑, レビュー APPROVE）。実機 end-to-end は**両 web backend の quota 枯渇（Gemini free-tier `limit:0` on gemini-2.0-flash / Codex usage limit リセット 6/24 23:51）でブロック**→「Web-mandatory routing 検証待ち」エントリに手順同梱で P1 登録。端末ネット OK・Codex sandbox=danger-full-access・Gemini キー疎通(403→429)は確認済み。
 - **2026-06-19**: Secretary MVP (Phase 0) 着手時、ユーザーから「ウィジェットからもいける導線」提案。既存 `ScouterWidgetProvider.kt` (home-screen AppWidget, 2026-06-10 実機 PASS) が tap PendingIntent / deep-link / 承認ピル配線を既に持つと確認。trigger (deep-link 1本) + status (snapshot 2フィールド) は安価な fast-follow として P2 登録。スケジュール承認はウィジェットに置かず通知側 (B5, run-id 束縛・単回・期限付き) に集約と判断。コアループ着地後に着手。
 
 ---
