@@ -176,6 +176,16 @@ describe('generateRunScript — studio context only for content-pipeline agents'
   });
 });
 
+describe('generateRunScript — Gemini Google Search grounding for web tasks', () => {
+  it('adds google_search grounding ONLY for a web-mandatory general task', () => {
+    const web = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'ニュースを集めて' });
+    expect(web).toContain('\\"tools\\":[{\\"google_search\\":{}}]');
+
+    const plain = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'say hello' });
+    expect(plain).not.toContain('google_search');
+  });
+});
+
 describe('generateRunScript — readable notification preview (telemetry-stripped)', () => {
   it('strips autonomous driver telemetry from the user-facing preview', () => {
     const s = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));

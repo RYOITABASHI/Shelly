@@ -23,6 +23,7 @@
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute } from './agent-tool-router';
 import { resolveForAutonomous } from './agent-credential-policy';
+import { detectRouteSignals } from './agent-router-scoring';
 
 export interface LadderEnv {
   /** Cerebras free-tier key present (Settings → API Keys). */
@@ -42,6 +43,8 @@ export interface EscalationLadder {
 
 const LOCAL: ToolChoice = { type: 'local' };
 const CODEX: ToolChoice = { type: 'cli', cli: 'codex' };
+const GEMINI: ToolChoice = { type: 'gemini-api' };
+const PERPLEXITY: ToolChoice = { type: 'perplexity', model: 'sonar-deep-research' };
 
 /** Identity for dedupe — local is tier-agnostic (the shell does installed-aware). */
 function toolKey(t: ToolChoice): string {
@@ -72,6 +75,28 @@ export function resolveEscalationLadder(agent: Agent, env: LadderEnv): Escalatio
   // Hard stops — a single attempt, never climb to cloud.
   if (decision.guard === 'secret' || decision.guard === 'manual-pin') {
     return { tools: [primary], noEscalation: true, guard: decision.guard, why: decision.why };
+  }
+
+  // Web-mandatory task (collect CURRENT info): only a live web fetch satisfies
+  // it. EXCLUDE non-web backends (local / Cerebras / Groq) — they would only
+  // hallucinate a plausible template and report a fake success. Web-capable
+  // backends only: Gemini(grounded) for general / Perplexity for academic, then
+  // Codex (danger-full-access shell) as the net fallback.
+  const web = detectRouteSignals(agent.prompt);
+  if (web.needsWeb) {
+    if (agent.autonomous) {
+      // Unattended: api-key web backends (Gemini/Perplexity) are fail-closed, so
+      // the only web-capable option is Codex (OAuth shell). N1 (autonomous-cloud
+      // opt-in) would later allow a keyed web backend here.
+      return { tools: [CODEX], noEscalation: false, guard: decision.guard, why: 'Web-mandatory task; autonomous policy → Codex only (Gemini/Perplexity need cloud opt-in).' };
+    }
+    const webPrimary = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
+    return {
+      tools: dedupe([webPrimary, CODEX]),
+      noEscalation: false,
+      guard: decision.guard,
+      why: `Web-mandatory ${web.webDomain} task → ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini (grounded)'} → Codex; non-web backends excluded.`,
+    };
   }
 
   if (agent.autonomous) {

@@ -4,6 +4,7 @@
  */
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
+import { detectRouteSignals } from './agent-router-scoring';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
@@ -1931,8 +1932,13 @@ else
   echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
 fi
 rm -f "$PROMPT_FILE"`;
-    case 'gemini-api':
-      return geminiApiCommand(escapedPrompt, resultVar, tool.model);
+    case 'gemini-api': {
+      // Web-mandatory general tasks (collect current news) need Google Search
+      // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
+      const sig = detectRouteSignals(rawPrompt);
+      const grounded = sig.needsWeb && sig.webDomain === 'general';
+      return geminiApiCommand(escapedPrompt, resultVar, tool.model, grounded);
+    }
     case 'local':
       const localModel = (tool.model || (options.autonomous ? selectAutonomousLocalModel(rawPrompt) : LOCAL_MODEL_LIGHT)).replace(/"/g, '\\"');
       const localModelAssignment = options.autonomous
@@ -2243,8 +2249,11 @@ function openAiCompatApiCommand(
 	rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
 }
 
-function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string): string {
+function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string, grounded = false): string {
   const defaultModel = model || 'gemini-2.0-flash';
+  // Google Search grounding: only added for web-mandatory tasks so routine
+  // Gemini calls aren't forced onto the search tool.
+  const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
@@ -2254,7 +2263,7 @@ if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
   touch "$BACKEND_ERROR_FILE"
 else
-  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],\\"generationConfig\\":{\\"maxOutputTokens\\":4096,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
+  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":4096,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
   HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
   API_EXIT=$?

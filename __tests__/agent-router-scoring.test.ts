@@ -46,6 +46,24 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('最新ニュースを調べて').needsSearch).toBe(true);
     expect(detectRouteSignals('rename this variable').needsSearch).toBe(false);
   });
+
+  it('flags needsWeb only for collect + fresh (web-mandatory), not summarize or trivial freshness', () => {
+    // Collect CURRENT info → only a live web fetch can do it.
+    expect(detectRouteSignals('ニュースを集めて').needsWeb).toBe(true);
+    expect(detectRouteSignals('collect the latest news').needsWeb).toBe(true);
+    expect(detectRouteSignals('最新情報を収集して').needsWeb).toBe(true);
+    // Summarize the news = transform, NO collection verb → not web-mandatory (stays cheap/local).
+    expect(detectRouteSignals('ニュースを要約して').needsWeb).toBe(false);
+    // Freshness alone (no collection verb) is a weak signal → not web-mandatory.
+    expect(detectRouteSignals('今日の天気は？').needsWeb).toBe(false);
+    // Collection without freshness → not web-mandatory.
+    expect(detectRouteSignals('資料を集めて整理して').needsWeb).toBe(false);
+  });
+
+  it('classifies the web domain — academic (Perplexity) vs general (Gemini)', () => {
+    expect(detectRouteSignals('最新の論文を集めて').webDomain).toBe('academic');
+    expect(detectRouteSignals('ニュースを集めて').webDomain).toBe('general');
+  });
 });
 
 describe('scoreRoutes — deterministic + offline', () => {
@@ -75,6 +93,16 @@ describe('scoreRoutes — deterministic + offline', () => {
 
   it('keeps simple general tasks on-device (on-device-first, no widened cloud)', () => {
     expect(scoreRoutes('say hi').tool.type).toBe('local');
+  });
+
+  it('routes web-mandatory collection to a web backend, not a hallucinating local LLM', () => {
+    // Collect current news → Gemini (grounded), NOT local — local has no web access.
+    expect(scoreRoutes('ニュースを集めて').tool.type).toBe('gemini-api');
+    expect(scoreRoutes('collect the latest tech news').tool.type).toBe('gemini-api');
+    // Academic web-mandatory → Perplexity.
+    expect(scoreRoutes('最新の論文を集めて').tool.type).toBe('perplexity');
+    // Summarize the news (no collection) stays a cheap on-device transform.
+    expect(scoreRoutes('ニュースを要約して').tool.type).toBe('local');
   });
 
   it('does not send a trivial freshness question to the paid deep-research backend', () => {

@@ -93,6 +93,35 @@ describe('resolveEscalationLadder — attended ladder (primary → local → fre
   });
 });
 
+describe('resolveEscalationLadder — web-mandatory tasks exclude non-web backends', () => {
+  it('general collect-news (attended) → Gemini → Codex, no local/cerebras/groq', () => {
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて' }), KEYED);
+    expect(types(l)).toEqual(['gemini-api', 'cli:codex']);
+    expect(types(l)).not.toContain('local');
+    expect(types(l)).not.toContain('cerebras');
+    expect(types(l)).not.toContain('groq');
+  });
+
+  it('academic collect (attended) → Perplexity → Codex', () => {
+    const l = resolveEscalationLadder(mk({ prompt: '最新の論文を集めて出典付きで' }), KEYED);
+    expect(types(l)).toEqual(['perplexity', 'cli:codex']);
+  });
+
+  it('autonomous web-mandatory → Codex ONLY (api-key web backends fail-closed)', () => {
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて', autonomous: true }), KEYED);
+    expect(types(l)).toEqual(['cli:codex']);
+    expect(types(l)).not.toContain('gemini-api');
+    expect(types(l)).not.toContain('local');
+  });
+
+  it('secret-guard still wins over a web-mandatory task (no cloud climb)', () => {
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて key sk-ant-api03-AAAABBBBCCCCDDDD' }), KEYED);
+    expect(l.guard).toBe('secret');
+    expect(l.noEscalation).toBe(true);
+    expect(types(l)).toEqual(['local']);
+  });
+});
+
 describe('failure detection', () => {
   it('isLocalFallbackDigest matches the shell digest marker', () => {
     expect(isLocalFallbackDigest('# Local Context Fallback\n\nLocal LLM was unavailable...')).toBe(true);
