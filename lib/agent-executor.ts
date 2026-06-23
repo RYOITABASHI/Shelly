@@ -1019,6 +1019,17 @@ find_llama_server_bin() {
     printf '%s\\n' "$LLAMA_SERVER_BIN"
     return 0
   fi
+  # T3: prefer the app-installed REAL ELF via its .realpath metadata. The
+  # $HOME/.local/bin/llama-server entry is a wrapper SCRIPT (not an ELF), so the
+  # linker64 launch below needs the real binary; direct-exec of the wrapper in
+  # the agent's exec context fails to resolve shared libs (cold-start blocker C).
+  if [ -s "$HOME/.local/bin/llama-server.realpath" ]; then
+    _real_bin="$(cat "$HOME/.local/bin/llama-server.realpath" 2>/dev/null || true)"
+    if [ -x "$_real_bin" ]; then
+      printf '%s\\n' "$_real_bin"
+      return 0
+    fi
+  fi
   if command -v llama-server >/dev/null 2>&1; then
     command -v llama-server
     return 0
@@ -1324,7 +1335,40 @@ find_local_llm_model() {
     fi
   done
 
+  # T1: installed-aware fallback. The requested tier is not present; rather than
+  # fail (which blocks ALL autostart — root cause B), use the first installed
+  # Qwen Q4_K_M model. llama.cpp serves whatever it loads regardless of the
+  # request's model field, and the caller re-derives the alias + readiness check
+  # from the returned path, so a tier substitution is safe.
+  for dir in "$HOME/models" "$HOME" "$HOME/.local/share/shelly/models" "/sdcard/Download" "/sdcard/models" "/sdcard/llama" "/sdcard/Documents/models" "/sdcard/Models"; do
+    [ -d "$dir" ] || continue
+    found=$(find "$dir" -maxdepth 2 -type f -name '*.gguf' 2>/dev/null | grep -iE 'qwen3?[._-].*q4_k_m' | head -n 1 || true)
+    if [ -n "$found" ]; then
+      printf '%s\\n' "$found"
+      return 0
+    fi
+  done
+
   return 1
+}
+
+# Remove a stale local-LLM start lock so a lock leaked by a killed starter cannot
+# permanently block autostart (root cause A). Stale = holder PID dead, or no live
+# holder and older than a short just-created grace window. The lock dir holds
+# owner.pid written by the acquirer.
+local_llm_clear_stale_start_lock() {
+  _ld="$1"
+  [ -d "$_ld" ] || return 0
+  _owner="$(cat "$_ld/owner.pid" 2>/dev/null || true)"
+  if [ -n "$_owner" ] && kill -0 "$_owner" 2>/dev/null; then
+    return 0
+  fi
+  _now="$(date +%s 2>/dev/null || echo 0)"
+  _mtime="$(stat -c %Y "$_ld" 2>/dev/null || echo 0)"
+  if [ -z "$_owner" ] && [ "$_now" -gt 0 ] && [ "$_mtime" -gt 0 ] && [ "$((_now - _mtime))" -lt 20 ]; then
+    return 0
+  fi
+  rm -rf "$_ld" 2>/dev/null || true
 }
 
 ensure_local_llm_server() {
@@ -1357,6 +1401,7 @@ ensure_local_llm_server() {
   fi
 
   lock_dir="$LOCKS_DIR/local-llm-server-start.lock"
+  local_llm_clear_stale_start_lock "$lock_dir"
   lock_acquired=0
   _i=0
 	while [ "$_i" -lt 30 ]; do
@@ -1374,14 +1419,15 @@ ensure_local_llm_server() {
 	  _i=$((_i + 1))
 	done
   if [ "$lock_acquired" != "1" ]; then
-    echo "auto-start skipped: could not acquire start lock $lock_dir" > "$reason_file"
+    echo "auto-start skipped: could not acquire start lock $lock_dir (held by a live starter)" > "$reason_file"
     return 1
   fi
+  echo $$ > "$lock_dir/owner.pid" 2>/dev/null || true
 
   if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
     # Server came up while we held the lock — reuse it (any tier).
     local_llm_touch_activity
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
     return 0
   fi
 
@@ -1389,14 +1435,14 @@ ensure_local_llm_server() {
   if [ -z "$server_bin" ]; then
     if [ "\${LOCAL_LLM_INSTALL_LLAMA_SERVER:-0}" != "1" ]; then
       echo "auto-start failed: llama-server binary not found in PATH, $HOME/.local/bin, or $HOME/bin" > "$reason_file"
-      rmdir "$lock_dir" 2>/dev/null || true
+      rm -rf "$lock_dir" 2>/dev/null || true
       return 1
     fi
     install_result=$(install_llama_server_bin || true)
     server_bin=$(find_llama_server_bin || true)
     if [ -z "$server_bin" ]; then
       echo "auto-start failed: llama-server binary not found and auto-install did not produce an executable. $install_result" > "$reason_file"
-      rmdir "$lock_dir" 2>/dev/null || true
+      rm -rf "$lock_dir" 2>/dev/null || true
       return 1
     fi
   fi
@@ -1404,7 +1450,7 @@ ensure_local_llm_server() {
   model_path=$(find_local_llm_model "$model_name" || true)
   if [ -z "$model_path" ]; then
     echo "auto-start failed: GGUF model not found for $model_name. Set LOCAL_LLM_MODEL_PATH or place it under $HOME/models or /sdcard/Download." > "$reason_file"
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
     return 1
   fi
 
@@ -1414,12 +1460,21 @@ ensure_local_llm_server() {
   mkdir -p "$(dirname "$log_file")" "$(dirname "$pid_file")"
   if ! local_llm_stop_server "$pid_file"; then
     echo "auto-start skipped: another local LLM request is still active; refusing to restart llama-server" > "$reason_file"
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
     return 1
   fi
   alias_name="\${model_path##*/}"
   alias_name="\${alias_name%.gguf}"
-  profile="$(local_llm_runtime_profile "$model_name")"
+  # T1: if find_local_llm_model fell back to a different installed tier, the
+  # readiness check below must match the model we actually load (alias_name),
+  # NOT the requested model_name — else the just-started 2B server would be
+  # rejected for not being the requested 8B and the start would "time out".
+  _req_norm="$(printf '%s' "$model_name" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+  _got_norm="$(printf '%s' "$alias_name" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+  if [ "$_req_norm" != "$_got_norm" ]; then
+    echo "note: requested model $model_name is not installed; using installed $alias_name" >> "$reason_file"
+  fi
+  profile="$(local_llm_runtime_profile "$alias_name")"
   set -- $profile
   default_ctx_size="$1"
   default_threads="$2"
@@ -1429,17 +1484,32 @@ ensure_local_llm_server() {
   idle_timeout="\${LOCAL_LLM_IDLE_TIMEOUT_SECONDS:-$default_idle_timeout}"
   local_llm_touch_activity
 
-  nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
-  echo $! > "$pid_file"
+  # T3: app-installed llama.cpp needs its shared libs on LD_LIBRARY_PATH and a
+  # linker64 launch (the same mechanism as the in-app Start). Without it the
+  # agent's exec context can't resolve the .so files and cold-start fails
+  # (blocker C). Self-contained binaries (PATH / agent-installed wrapper) have an
+  # empty llama_lib_path and fall through to a plain exec.
+  llama_lib_path="$(find "$HOME/.local/llama.cpp" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':')"
+  if [ -n "$llama_lib_path" ] && [ -x /system/bin/linker64 ]; then
+    (
+      cd "$(dirname "$server_bin")" 2>/dev/null || true
+      export LD_LIBRARY_PATH="\${llama_lib_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+      nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      echo $! > "$pid_file"
+    )
+  else
+    nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+    echo $! > "$pid_file"
+  fi
 
   ready_seconds="\${LOCAL_LLM_START_TIMEOUT_SECONDS:-90}"
   _i=0
   while [ "$_i" -lt "$ready_seconds" ]; do
     if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
-      local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+      local_llm_server_matches_model "$base_url" "$alias_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
       local_llm_touch_activity
       local_llm_start_idle_watcher "$(cat "$pid_file" 2>/dev/null || true)" "$idle_timeout" "$pid_file" "$log_file"
-      rmdir "$lock_dir" 2>/dev/null || true
+      rm -rf "$lock_dir" 2>/dev/null || true
       return 0
     fi
     sleep 1
@@ -1455,7 +1525,7 @@ ensure_local_llm_server() {
     echo "log tail:"
     tail -n 40 "$log_file" 2>/dev/null || true
   } > "$reason_file"
-  rmdir "$lock_dir" 2>/dev/null || true
+  rm -rf "$lock_dir" 2>/dev/null || true
   return 1
 }
 
