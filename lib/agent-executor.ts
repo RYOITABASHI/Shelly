@@ -63,7 +63,7 @@ export function selectAutonomousLocalModel(prompt: string): string {
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean } = {}): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -158,6 +158,7 @@ BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
 LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
+SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
 
 START_TIME=$(date +%s)
 
@@ -1779,7 +1780,12 @@ else
   fi
   ERROR_MESSAGE="$PREVIEW"
   STATUS="error"
-  write_native_notification_request "error" "$PREVIEW" || true
+  # ③b-2: a NON-final escalation attempt fails silently (no error notification) so
+  # the user only sees the final outcome — the next tool's success, or the last
+  # tool's failure. The TS run loop sets this for every attempt but the last.
+  if [ "\${SUPPRESS_ERROR_NOTIFICATION:-0}" != "1" ]; then
+    write_native_notification_request "error" "$PREVIEW" || true
+  fi
 fi
 
 # Log run result
@@ -1899,6 +1905,7 @@ rm -f "$PROMPT_FILE"`;
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
+		  touch "$BACKEND_ERROR_FILE"
 		else
 		  local_llm_start_activity_heartbeat 10
 		  set +e
@@ -1909,6 +1916,7 @@ rm -f "$PROMPT_FILE"`;
 		  if [ "$LOCAL_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
 		    START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		    local_context_fallback "http exit=$LOCAL_EXIT $START_REASON $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+		    touch "$BACKEND_ERROR_FILE"
 		  else
 		    extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
 		  fi

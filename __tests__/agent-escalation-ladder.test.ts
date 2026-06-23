@@ -1,0 +1,109 @@
+import {
+  resolveEscalationLadder,
+  attemptFailed,
+  isLocalFallbackDigest,
+  LadderEnv,
+} from '@/lib/agent-escalation-ladder';
+import { Agent, ToolChoice } from '@/store/types';
+
+const KEYED: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true };
+const NO_KEYS: LadderEnv = { hasCerebrasKey: false, hasGroqKey: false };
+
+const mk = (over: Partial<Agent> = {}): Agent => ({
+  id: 'a',
+  name: 'A',
+  description: '',
+  prompt: 'summarize this note',
+  schedule: null,
+  tool: { type: 'auto' } as ToolChoice,
+  outputPath: '~/out',
+  outputTemplate: null,
+  enabled: true,
+  lastRun: null,
+  lastResult: null,
+  createdAt: 0,
+  version: 1,
+  ...over,
+});
+
+const types = (l: { tools: ToolChoice[] }) => l.tools.map((t) => (t.type === 'cli' ? `cli:${t.cli}` : t.type));
+
+describe('resolveEscalationLadder — hard stops never climb', () => {
+  it('secret-guard match → on-device only, no escalation', () => {
+    const l = resolveEscalationLadder(mk({ prompt: 'use key sk-ant-api03-AAAABBBBCCCCDDDD now' }), KEYED);
+    expect(l.guard).toBe('secret');
+    expect(l.noEscalation).toBe(true);
+    expect(types(l)).toEqual(['local']);
+  });
+
+  it('manual on-device pin → local only, no climb', () => {
+    const l = resolveEscalationLadder(mk({ runOn: 'on-device' }), KEYED);
+    expect(l.guard).toBe('manual-pin');
+    expect(l.noEscalation).toBe(true);
+    expect(types(l)).toEqual(['local']);
+  });
+
+  it('manual cloud pin → single pinned tool, no climb', () => {
+    const l = resolveEscalationLadder(mk({ runOn: 'cloud' }), KEYED);
+    expect(l.guard).toBe('manual-pin');
+    expect(l.noEscalation).toBe(true);
+    expect(l.tools.length).toBe(1);
+  });
+});
+
+describe('resolveEscalationLadder — autonomous is local → Codex ONLY', () => {
+  it('autonomous auto → [local, codex], no key backends', () => {
+    const l = resolveEscalationLadder(mk({ autonomous: true }), KEYED);
+    expect(l.noEscalation).toBe(false);
+    expect(types(l)).toEqual(['local', 'cli:codex']);
+  });
+
+  it('autonomous with a configured api-key tool still drops it → [local, codex]', () => {
+    const l = resolveEscalationLadder(mk({ autonomous: true, tool: { type: 'perplexity' } }), KEYED);
+    expect(types(l)).toEqual(['local', 'cli:codex']);
+    expect(types(l)).not.toContain('perplexity');
+    expect(types(l)).not.toContain('cerebras');
+    expect(types(l)).not.toContain('groq');
+  });
+});
+
+describe('resolveEscalationLadder — attended ladder (primary → local → free cloud → Codex)', () => {
+  it('transform task primary=local, then free cloud (keyed), Codex last', () => {
+    const l = resolveEscalationLadder(mk({ prompt: '要約して箇条書きにして' }), KEYED);
+    expect(types(l)).toEqual(['local', 'cerebras', 'groq', 'cli:codex']);
+    expect(types(l).at(-1)).toBe('cli:codex'); // Codex always terminal (quota-preserving)
+  });
+
+  it('academic task tries Perplexity (domain) first, then climbs', () => {
+    const l = resolveEscalationLadder(mk({ prompt: 'find the latest research paper with citations' }), KEYED);
+    expect(types(l)[0]).toBe('perplexity');
+    expect(types(l).at(-1)).toBe('cli:codex');
+  });
+
+  it('omits Cerebras/Groq when their key is absent (no wasted hop)', () => {
+    const l = resolveEscalationLadder(mk({ prompt: '要約して' }), NO_KEYS);
+    expect(types(l)).not.toContain('cerebras');
+    expect(types(l)).not.toContain('groq');
+    expect(types(l)).toEqual(['local', 'cli:codex']);
+  });
+
+  it('only the keyed free-cloud tier is included', () => {
+    const l = resolveEscalationLadder(mk({ prompt: '要約して' }), { hasCerebrasKey: false, hasGroqKey: true });
+    expect(types(l)).toEqual(['local', 'groq', 'cli:codex']);
+  });
+});
+
+describe('failure detection', () => {
+  it('isLocalFallbackDigest matches the shell digest marker', () => {
+    expect(isLocalFallbackDigest('# Local Context Fallback\n\nLocal LLM was unavailable...')).toBe(true);
+    expect(isLocalFallbackDigest('Here is your summary.')).toBe(false);
+    expect(isLocalFallbackDigest(null)).toBe(false);
+  });
+
+  it('attemptFailed on an error status OR a fallback digest', () => {
+    expect(attemptFailed('error', 'anything')).toBe(true);
+    expect(attemptFailed('success', '# Local Context Fallback ...')).toBe(true);
+    expect(attemptFailed('success', 'a real answer')).toBe(false);
+    expect(attemptFailed('skipped', 'x')).toBe(false);
+  });
+});

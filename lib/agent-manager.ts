@@ -7,6 +7,8 @@ import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
+import { resolveEscalationLadder, attemptFailed, LadderEnv } from './agent-escalation-ladder';
+import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
@@ -285,7 +287,7 @@ async function materializeAgent(
   // passes false so we don't re-issue an (idempotent but redundant) fact write
   // for each one. Recall is always re-applied so the baked prompt stays fresh.
   persistFacts = true,
-  runOpts: { suppressAction?: boolean } = {}
+  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean } = {}
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
@@ -390,28 +392,103 @@ export async function runAgentNow(
   const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (agent) {
-    await materializeAgent(agent, runCommand, false);
+    await runEscalatingAttempts(agent, runCommand, options, runStartedAtMs);
   }
-  let previousRunCount = 0;
-  let previousLatestTimestamp = Number.NEGATIVE_INFINITY;
-  try {
-    const existingLogs = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-    previousRunCount = existingLogs.length;
-    previousLatestTimestamp = existingLogs.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY;
-  } catch {
-    // If log snapshotting fails, still run the agent and fall back to timestamp gating.
-  }
-  await TerminalEmulator.runAgent(agentId);
-  await waitForAgentRunCompletion(runCommand, agentId, {
-    runStartedAtMs,
-    previousRunCount,
-    previousLatestTimestamp,
-    timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
-    pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
-  });
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/** Read which free-cloud-tier keys are configured (authoritative source: the
+ * agent .env the run script sources). Best-effort; on failure both default true
+ * so a usable backend is never wrongly skipped (it would just fail-and-escalate). */
+async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): Promise<LadderEnv> {
+  try {
+    const out = await runCommand(
+      `for k in CEREBRAS_API_KEY GROQ_API_KEY; do ` +
+        `grep -qE "^$k=.+" "$HOME/.shelly/agents/.env" 2>/dev/null && echo "$k=1" || echo "$k=0"; done`,
+    );
+    return {
+      hasCerebrasKey: /CEREBRAS_API_KEY=1/.test(out),
+      hasGroqKey: /GROQ_API_KEY=1/.test(out),
+    };
+  } catch {
+    return { hasCerebrasKey: true, hasGroqKey: true };
+  }
+}
+
+/**
+ * ③b-2: run an agent through its escalation ladder. Try the primary backend; if
+ * the attempt failed (error status OR a local-context fallback digest), climb to
+ * the next allowed tool and re-run, until one succeeds or the ladder is exhausted.
+ * Every attempt goes through the SAME single-run path (materialize → gated run),
+ * so the boundary + command-safety + secret-guard re-check on each attempt — the
+ * autonomous boundary is never widened. Non-final attempts suppress the error
+ * notification so the user sees only the final outcome (next tool's success, or
+ * the last tool's failure). The first success performs the action exactly once.
+ */
+async function runEscalatingAttempts(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number },
+  runStartedAtMs: number,
+): Promise<void> {
+  const env = await ladderEnvFromDisk(runCommand);
+  const ladder = resolveEscalationLadder(agent, env);
+  const agentId = agent.id;
+
+  for (let i = 0; i < ladder.tools.length; i++) {
+    const isLast = i === ladder.tools.length - 1;
+    // For an escalating ladder, force the configured-tool branch to pick exactly
+    // this candidate (pins/secret already shaped the ladder; resolveAgentRoute
+    // STILL re-checks secret-guard per attempt as defense in depth). For a
+    // no-escalation ladder, run the agent unchanged.
+    const attemptAgent: Agent = ladder.noEscalation
+      ? agent
+      : { ...agent, tool: ladder.tools[i], runOn: 'auto' };
+
+    let before: AgentRunLog[] = [];
+    try {
+      before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    } catch {
+      // fall back to timestamp gating below
+    }
+
+    await materializeAgent(attemptAgent, runCommand, false, true, {
+      suppressErrorNotification: !isLast,
+    });
+    await TerminalEmulator.runAgent(agentId);
+    await waitForAgentRunCompletion(runCommand, agentId, {
+      runStartedAtMs: i === 0 ? runStartedAtMs : Date.now() - 5_000,
+      previousRunCount: before.length,
+      previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
+      timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
+      pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+    });
+
+    if (ladder.noEscalation || isLast) break;
+
+    const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    const log = after.at(-1);
+    // Stop on a real success OR a 'skipped' run: a skip means a concurrent run of
+    // THIS agent holds the per-agent lock, so climbing to another tool would just
+    // skip again — let the concurrent run produce the result. Only a genuine
+    // failure (error / fallback digest) climbs.
+    if (!attemptFailed(log?.status, log?.outputPreview)) break;
+    // else: escalate to the next tool
+  }
+
+  // Restore the agent's own (un-overridden) script so a later scheduled fire uses
+  // the configured tool / fresh route, not the last escalation override.
+  if (!ladder.noEscalation && ladder.tools.length > 1) {
+    try {
+      await materializeAgent(agent, runCommand, false);
+    } catch (error) {
+      // Best-effort: a later foreground run or startup-repair re-materializes. Log
+      // so a stale on-disk override (attended ladders only) is diagnosable.
+      logWarn('AgentEscalation', `failed to restore configured script for ${agentId}`, error);
+    }
+  }
 }
 
 /**

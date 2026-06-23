@@ -156,6 +156,25 @@ describe('generateRunScript — readable notification preview (telemetry-strippe
   });
 });
 
+describe('generateRunScript — ③b-2 escalation signalling', () => {
+  it('a non-final escalation attempt fails silently (gated error notification)', () => {
+    const silent = generateRunScript(agent({ type: 'local' }), { suppressErrorNotification: true });
+    expect(silent).toContain('SUPPRESS_ERROR_NOTIFICATION=1');
+    expect(silent).toContain('if [ "${SUPPRESS_ERROR_NOTIFICATION:-0}" != "1" ]; then');
+    const loud = generateRunScript(agent({ type: 'local' }));
+    expect(loud).toContain('SUPPRESS_ERROR_NOTIFICATION=0');
+  });
+
+  it('a failed local attempt signals BACKEND_ERROR (so the ladder climbs, no fake-success digest)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // Both local failure paths (server cannot start / http error) mark the run as
+    // an error via BACKEND_ERROR_FILE so attemptFailed() escalates instead of
+    // dispatching the action on a context digest.
+    expect(s).toContain('local_context_fallback "local llm start failed: $START_REASON" > "$RESULT_FILE"\n\t\t  touch "$BACKEND_ERROR_FILE"');
+    expect(s).toMatch(/local_context_fallback "http exit=[\s\S]*?> "\$RESULT_FILE"\n\t\t    touch "\$BACKEND_ERROR_FILE"/);
+  });
+});
+
 describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
   it('non-final steps suppress the action (one notification per chain, not per step)', () => {
     const suppressed = generateRunScript(agent({ type: 'local' }), { suppressAction: true });

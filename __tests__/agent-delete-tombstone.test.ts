@@ -89,6 +89,7 @@ describe('agent deletion tombstones', () => {
   });
 
   it('waits for the native agent service to write a run log before returning', async () => {
+    useAgentStore.getState().setAgents([agent('agent-x')]);
     const log = {
       agentId: 'agent-x',
       timestamp: 1_800_000,
@@ -97,11 +98,18 @@ describe('agent deletion tombstones', () => {
       toolUsed: 'Codex',
       outputPreview: 'ok',
     };
-    const runCommand = jest.fn()
-      .mockResolvedValueOnce('')
-      .mockResolvedValueOnce('')
-      .mockResolvedValueOnce(`${JSON.stringify(log)}\n---SHELLY_AGENT_LOG---\n`)
-      .mockResolvedValueOnce(`${JSON.stringify(log)}\n---SHELLY_AGENT_LOG---\n`);
+    // ③b-2 escalation: the run loop queries the free-cloud keys (ladderEnv) and
+    // reads logs before/after each attempt. Command-aware mock: no keys, and the
+    // FIRST log read (before-snapshot) is empty so the wait detects the new log.
+    let logReads = 0;
+    const runCommand = jest.fn(async (cmd: string) => {
+      if (cmd.includes('CEREBRAS_API_KEY')) return ''; // ladderEnv: no free-cloud keys
+      if (cmd.includes('SHELLY_AGENT_LOG')) {
+        logReads += 1;
+        return logReads === 1 ? '' : `${JSON.stringify(log)}\n---SHELLY_AGENT_LOG---\n`;
+      }
+      return ''; // materialize / misc
+    });
 
     await runAgentNow('agent-x', runCommand, {
       runStartedAtMs: 1_799_000,
@@ -109,8 +117,10 @@ describe('agent deletion tombstones', () => {
       pollMs: 1,
     });
 
+    // The first attempt (local) succeeds, so the agent runs once and the run log
+    // is captured (no escalation needed).
     expect(mockTerminalEmulator.runAgent).toHaveBeenCalledWith('agent-x');
-    expect(runCommand).toHaveBeenCalledTimes(4);
+    expect(mockTerminalEmulator.runAgent).toHaveBeenCalledTimes(1);
     expect(useAgentStore.getState().getRunHistory('agent-x')).toEqual([log]);
   });
 });
