@@ -1489,11 +1489,21 @@ ensure_local_llm_server() {
   # agent's exec context can't resolve the .so files and cold-start fails
   # (blocker C). Self-contained binaries (PATH / agent-installed wrapper) have an
   # empty llama_lib_path and fall through to a plain exec.
+  # The binary's OWN dir holds all its .so files (libggml*, libllama-server-impl,
+  # …). Put that absolute dir FIRST on LD_LIBRARY_PATH so lib resolution never
+  # depends on the find succeeding in the agent's exec context (where it returned
+  # empty, dropping to a libless plain exec → "CANNOT LINK EXECUTABLE … library
+  # not found"). The find still contributes any sibling lib dirs. Trigger the
+  # linker64 path whenever the binary lives under .local/llama.cpp.
+  server_dir="$(dirname "$server_bin")"
   llama_lib_path="$(find "$HOME/.local/llama.cpp" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':')"
-  if [ -n "$llama_lib_path" ] && [ -x /system/bin/linker64 ]; then
+  use_linker64=0
+  case "$server_bin" in "$HOME/.local/llama.cpp"/*) use_linker64=1 ;; esac
+  if [ -n "$llama_lib_path" ]; then use_linker64=1; fi
+  if [ "$use_linker64" = 1 ] && [ -x /system/bin/linker64 ]; then
     (
-      cd "$(dirname "$server_bin")" 2>/dev/null || true
-      export LD_LIBRARY_PATH="\${llama_lib_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+      cd "$server_dir" 2>/dev/null || true
+      export LD_LIBRARY_PATH="$server_dir:\${llama_lib_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
       nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
