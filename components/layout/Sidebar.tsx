@@ -133,6 +133,17 @@ export function Sidebar() {
   const pendingAgentCount = pendingAgentIds.size;
   const shouldPollRunningAgents = agents.length > 0 || pendingAgentCount > 0;
 
+  // The FILE TREE section is the only consumer of activeRepoPath; if it is
+  // collapsed, selecting a folder (REPOSITORIES or DEVICE shortcut) silently
+  // does nothing — "押しても開けない". Expand it on select so the tapped
+  // folder's contents actually appear.
+  const openFolderInTree = React.useCallback((path: string) => {
+    setActiveRepo(path);
+    if (!useSidebarStore.getState().openSections.files) {
+      toggleSection('files');
+    }
+  }, [setActiveRepo, toggleSection]);
+
   // Git dirty-count polling removed 2026-04-21. The count was run against
   // `$HOME` which is not a sane repo context — CLI bg updates, install
   // logs, npm caches, and agent state all counted as "dirty", surfacing
@@ -687,7 +698,7 @@ export function Sidebar() {
                       borderLeftColor: C.accent,
                     },
                   ]}
-                  onPress={() => setActiveRepo(p)}
+                  onPress={() => openFolderInTree(p)}
                   onLongPress={() => {
                     Alert.alert(
                       t('sidebar.remove_repository_title'),
@@ -757,7 +768,7 @@ export function Sidebar() {
             <Pressable
               key={path}
               style={styles.deviceRow}
-              onPress={() => setActiveRepo(path)}
+              onPress={() => openFolderInTree(path)}
             >
               <MaterialIcons name={icon as any} size={13} color={C.text2} />
               <Text style={styles.deviceLabel} numberOfLines={1} ellipsizeMode="tail">
