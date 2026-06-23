@@ -3,7 +3,7 @@ jest.mock('@/lib/home-path', () => ({
 }));
 
 import { execFileSync } from 'node:child_process';
-import { generateRunScript, selectAutonomousLocalModel } from '@/lib/agent-executor';
+import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext } from '@/lib/agent-executor';
 import { Agent, ToolChoice } from '@/store/types';
 
 const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
@@ -121,6 +121,58 @@ describe('generateRunScript — local context window fit (no ctx overflow)', () 
     // Heavy tiers (4096 window) → 7000.
     expect(run('Qwen3.5-4B-Q4_K_M')).toBe('7000');
     expect(run('Qwen3.5-9B-Q4_K_M')).toBe('7000');
+  });
+});
+
+describe('generateRunScript — studio context only for content-pipeline agents', () => {
+  it('agentUsesStudioContext gates on the content pipeline, not general tasks', () => {
+    // General ad-hoc @agent task (default output under ~/.shelly/agents) → no studio context.
+    expect(agentUsesStudioContext(agent({ type: 'local' }))).toBe(false);
+    // The article evaluator is always a content task.
+    expect(agentUsesStudioContext({ ...agent({ type: 'ab-article-eval' }), outputPath: '~/out' })).toBe(true);
+    // Output landing in the content-studio project / Obsidian vault → content task.
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), outputPath: '~/projects/shelly-content-studio/drafts/x/foo.md' })).toBe(true);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), outputPath: '/sdcard/Documents/ObsidianVault/90_Log/Agent_Output/foo.md' })).toBe(true);
+  });
+
+  it('autonomous & scheduled agents keep studio context despite the default outputPath', () => {
+    // North Star Mon/Fri agents are autonomous with the default ~/.shelly/agents
+    // outputPath (they mirror to Obsidian at save time) — they MUST keep the
+    // source-registry dedup context so they avoid duplicate sources.
+    expect(agentUsesStudioContext(agent({ type: 'local' }, true))).toBe(true);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), schedule: '0 8 * * 1,5' })).toBe(true);
+    // But a plain interactive one-shot (schedule:null, not autonomous) stays fast.
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), schedule: null, autonomous: undefined })).toBe(false);
+  });
+
+  it('a general task emits STUDIO_CONTEXT=0 and gates the ~20KB context build', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('STUDIO_CONTEXT=0');
+    // The heavy registry/draft/git-log scan must be behind the gate so a trivial
+    // "1+1は?" doesn't force the on-device model to prompt-process irrelevant tokens.
+    expect(s).toContain('if [ "${STUDIO_CONTEXT:-0}" = "1" ]; then');
+    expect(s).toContain('## Local project context');
+  });
+
+  it('a content-pipeline task (Obsidian output) emits STUDIO_CONTEXT=1', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), outputPath: '/sdcard/Documents/ObsidianVault/90_Log/Agent_Output/foo.md' });
+    expect(s).toContain('STUDIO_CONTEXT=1');
+  });
+
+  it('the gated block is a no-op when STUDIO_CONTEXT=0 (empty SOURCE_CONTEXT, no scan)', () => {
+    // Prove the bash gate skips the expensive scan and leaves SOURCE_CONTEXT empty.
+    const gatedBlock = [
+      'set -euo pipefail',
+      'STUDIO_CONTEXT=0',
+      'SOURCE_CONTEXT=""',
+      'SCANNED=0',
+      'if [ "${STUDIO_CONTEXT:-0}" = "1" ]; then',
+      '  SCANNED=1',
+      '  SOURCE_CONTEXT="heavy context here"',
+      'fi',
+      'echo "scanned=$SCANNED ctxlen=${#SOURCE_CONTEXT}"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', gatedBlock]).toString().trim()).toBe('scanned=0 ctxlen=0');
   });
 });
 

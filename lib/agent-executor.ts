@@ -60,6 +60,39 @@ export function selectAutonomousLocalModel(prompt: string): string {
 }
 
 /**
+ * The content-studio context block — source-registry dedup list, recent drafts,
+ * and content-studio/Obsidian git state — only helps the article pipeline. It
+ * was being prepended (up to ~20KB) to EVERY agent prompt, including ad-hoc
+ * `@agent` tasks, which forced the on-device model to prompt-process thousands
+ * of irrelevant tokens (a trivial "1+1は?" took ~2 min on the phone CPU). Gate
+ * it to agents that actually feed the content pipeline: the article evaluator,
+ * or an agent whose output lands in the content-studio project / Obsidian vault.
+ */
+export function agentUsesStudioContext(agent: Agent): boolean {
+  // The article evaluator is always content. Uses the authored tool (resolution
+  // to local/cli happens later) so autonomous resolution can't mis-gate it.
+  if (agent.tool?.type === 'ab-article-eval') return true;
+  // Autonomous / scheduled agents are the background secretary & content
+  // pipeline — including the Mon/Fri research→Obsidian agents that rely on the
+  // source-registry dedup ("avoid duplicate sources") and recent-draft context.
+  // They mirror to the vault via OBSIDIAN_VAULT_PATH at save time, so their
+  // outputPath stays the default ~/.shelly/agents/... and would otherwise miss
+  // the substring check below. Interactive one-shot @agent tasks (schedule:null,
+  // not autonomous) skip the context to stay fast on-device.
+  if (agent.autonomous === true) return true;
+  if (agent.schedule) return true;
+  const out = (agent.outputPath || '').toLowerCase();
+  return (
+    out.includes('content-studio') ||
+    out.includes('obsidianvault') ||
+    out.includes('obsidian') ||
+    out.includes('/drafts/') ||
+    out.includes('30_build_log') ||
+    out.includes('90_log')
+  );
+}
+
+/**
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
@@ -109,6 +142,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
   const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
+  const injectStudioContext = agentUsesStudioContext(agent);
 
   const toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
@@ -159,6 +193,7 @@ LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
 SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
+STUDIO_CONTEXT=${injectStudioContext ? '1' : '0'}
 
 START_TIME=$(date +%s)
 
@@ -1711,42 +1746,47 @@ SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-regis
 mkdir -p "$(dirname "$SOURCE_REGISTRY_FILE")"
 touch "$SOURCE_REGISTRY_FILE"
 SOURCE_CONTEXT=""
-if [ -s "$SOURCE_REGISTRY_FILE" ]; then
-  SOURCE_CONTEXT=$(printf '\\n\\nKnown source URLs already used. Avoid duplicates unless essential:\\n'; tail -n 120 "$SOURCE_REGISTRY_FILE" | awk -F '\\t' '{ if ($4 != "") print "- " $4 " (" $1 ", " $2 ")" }')
-fi
 LOCAL_CONTEXT_FILE="$TMP_DIR/local-context-$AGENT_ID.txt"
-{
-  echo
-  echo "## Local project context"
-  if [ -f "$PROJECT_DIR/AI_CONTEXT.md" ]; then
-    echo
-    echo "### AI_CONTEXT.md"
-    head -c 8000 "$PROJECT_DIR/AI_CONTEXT.md" || true
-    echo
+# Studio context (source-registry dedup + recent drafts + content-studio/Obsidian
+# git state) is only built for content-pipeline agents. For ad-hoc @agent tasks
+# it would prepend ~20KB of irrelevant tokens and stall the on-device model.
+if [ "\${STUDIO_CONTEXT:-0}" = "1" ]; then
+  if [ -s "$SOURCE_REGISTRY_FILE" ]; then
+    SOURCE_CONTEXT=$(printf '\\n\\nKnown source URLs already used. Avoid duplicates unless essential:\\n'; tail -n 120 "$SOURCE_REGISTRY_FILE" | awk -F '\\t' '{ if ($4 != "") print "- " $4 " (" $1 ", " $2 ")" }')
   fi
-  for dir in "$PROJECT_DIR/drafts/x" "$PROJECT_DIR/sources/x" "$PROJECT_DIR/drafts/articles" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/30_Build_Log" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/90_Log/Agent_Output"; do
-    [ -d "$dir" ] || continue
+  {
     echo
-    echo "### Recent files: $dir"
-    find "$dir" -type f -name '*.md' 2>/dev/null | sort | tail -n 6 | while read -r file; do
+    echo "## Local project context"
+    if [ -f "$PROJECT_DIR/AI_CONTEXT.md" ]; then
       echo
-      echo "#### $file"
-      head -c 3000 "$file" || true
+      echo "### AI_CONTEXT.md"
+      head -c 8000 "$PROJECT_DIR/AI_CONTEXT.md" || true
       echo
+    fi
+    for dir in "$PROJECT_DIR/drafts/x" "$PROJECT_DIR/sources/x" "$PROJECT_DIR/drafts/articles" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/30_Build_Log" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/90_Log/Agent_Output"; do
+      [ -d "$dir" ] || continue
+      echo
+      echo "### Recent files: $dir"
+      find "$dir" -type f -name '*.md' 2>/dev/null | sort | tail -n 6 | while read -r file; do
+        echo
+        echo "#### $file"
+        head -c 3000 "$file" || true
+        echo
+      done
     done
-  done
-  for repo in "$HOME/hw" "$HOME/projects/shelly-content-studio"; do
-    [ -d "$repo/.git" ] || continue
-    echo
-    echo "### Recent git log: $repo"
-    git -C "$repo" log --oneline -8 2>/dev/null || true
-    echo
-    echo "### Current git status: $repo"
-    git -C "$repo" status --short 2>/dev/null || true
-  done
-} > "$LOCAL_CONTEXT_FILE"
-if [ -s "$LOCAL_CONTEXT_FILE" ]; then
-  SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
+    for repo in "$HOME/hw" "$HOME/projects/shelly-content-studio"; do
+      [ -d "$repo/.git" ] || continue
+      echo
+      echo "### Recent git log: $repo"
+      git -C "$repo" log --oneline -8 2>/dev/null || true
+      echo
+      echo "### Current git status: $repo"
+      git -C "$repo" status --short 2>/dev/null || true
+    done
+  } > "$LOCAL_CONTEXT_FILE"
+  if [ -s "$LOCAL_CONTEXT_FILE" ]; then
+    SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
+  fi
 fi
 
 # Global concurrency check. NOTE: must NOT use find -exec sh -c with a {} inside
