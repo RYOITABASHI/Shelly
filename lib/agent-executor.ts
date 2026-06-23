@@ -1503,6 +1503,11 @@ ensure_local_llm_server() {
   if [ "$use_linker64" = 1 ] && [ -x /system/bin/linker64 ]; then
     (
       cd "$server_dir" 2>/dev/null || true
+      # The agent exec context sets LD_PRELOAD=libexec_wrapper.so (shelly-exec.c);
+      # inherited into the linker64 launch it breaks llama-server's own .so
+      # resolution ("library libllama-server-impl.so not found"). The in-app Start
+      # unsets it for the same reason — mirror that.
+      unset LD_PRELOAD
       export LD_LIBRARY_PATH="$server_dir:\${llama_lib_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
       nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
       echo $! > "$pid_file"
