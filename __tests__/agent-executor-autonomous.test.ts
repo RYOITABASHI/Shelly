@@ -3,7 +3,7 @@ jest.mock('@/lib/home-path', () => ({
 }));
 
 import { execFileSync } from 'node:child_process';
-import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext } from '@/lib/agent-executor';
+import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, computeAgentSlug, sanitizeOutputTemplate } from '@/lib/agent-executor';
 import { Agent, ToolChoice } from '@/store/types';
 
 const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
@@ -173,6 +173,49 @@ describe('generateRunScript — studio context only for content-pipeline agents'
       'echo "scanned=$SCANNED ctxlen=${#SOURCE_CONTEXT}"',
     ].join('\n');
     expect(execFileSync('bash', ['-c', gatedBlock]).toString().trim()).toBe('scanned=0 ctxlen=0');
+  });
+});
+
+describe('dated-folder output template (N4)', () => {
+  it('computeAgentSlug preserves CJK and falls back to the id when empty', () => {
+    // Regression: a pure-Japanese name slugged to "" → "2026-06-24-.md".
+    expect(computeAgentSlug('まずニュース 集めて 保存', 'agent-x')).toBe('まずニュース-集めて-保存');
+    expect(computeAgentSlug('!!!（）', 'agent-x')).toBe('agent-x');
+    expect(computeAgentSlug('My Weekly Report', 'id')).toBe('my-weekly-report');
+    expect(computeAgentSlug('', 'agent-fallback')).toBe('agent-fallback');
+  });
+
+  it('sanitizeOutputTemplate defaults, keeps date-folders, and blocks traversal', () => {
+    expect(sanitizeOutputTemplate(null)).toBe('{date}-{slug}');
+    expect(sanitizeOutputTemplate('  ')).toBe('{date}-{slug}');
+    expect(sanitizeOutputTemplate('{date}/{slug}.md')).toBe('{date}/{slug}.md');
+    // No absolute paths, no parent-dir escape out of the output dir.
+    expect(sanitizeOutputTemplate('/abs/{slug}')).toBe('abs/{slug}');
+    expect(sanitizeOutputTemplate('../../etc/{slug}')).toBe('etc/{slug}');
+  });
+
+  it('the generated save uses the template (placeholder substitution + dir create)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('OUTPUT_NAME_TEMPLATE=');
+    expect(s).toContain('s|{date}|$DATE|g');
+    expect(s).toContain('s|{slug}|$SLUG|g');
+    expect(s).toContain('mkdir -p "$(dirname "$SAVED_FILE")"');
+    // The old hardcoded flat name is gone.
+    expect(s).not.toContain('SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"');
+  });
+
+  it('a date-folder template resolves to <date>/<slug>.md at run time (bash)', () => {
+    const script = [
+      'set -euo pipefail',
+      'OUTPUT_NAME_TEMPLATE="{date}/{slug}"',
+      'DATE=2026-06-24',
+      'TIME=080000',
+      'SLUG=news-digest',
+      'REL_NAME=$(printf \'%s\' "$OUTPUT_NAME_TEMPLATE" | sed -e "s|{date}|$DATE|g" -e "s|{slug}|$SLUG|g" -e "s|{time}|$TIME|g")',
+      'case "$REL_NAME" in *.md|*.markdown|*.txt) ;; *) REL_NAME="$REL_NAME.md" ;; esac',
+      'echo "$REL_NAME"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', script]).toString().trim()).toBe('2026-06-24/news-digest.md');
   });
 });
 

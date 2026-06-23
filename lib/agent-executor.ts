@@ -93,6 +93,40 @@ export function agentUsesStudioContext(agent: Agent): boolean {
   );
 }
 
+// Keep a-z 0-9 and CJK (Hiragana / Katakana / CJK ideographs / half-width kana);
+// everything else collapses to a separator. A pure-CJK agent name used to slug to
+// "" (the old [^a-z0-9] strip), producing "2026-06-24-.md" with an empty title.
+const SLUG_DROP_RE = /[^a-z0-9぀-ヿ㐀-鿿ｦ-ﾟ]+/g;
+
+/** Filesystem-safe slug from an agent name; falls back to the id when empty. */
+export function computeAgentSlug(name: string, fallback: string): string {
+  const s = (name || '')
+    .toLowerCase()
+    .replace(SLUG_DROP_RE, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return s || fallback;
+}
+
+/**
+ * Sanitize an agent output-filename template. Supports {date} {slug} {time}
+ * placeholders and `/` for date-folder layouts (e.g. "{date}/{slug}.md"). Strips
+ * absolute paths and `..` traversal so a template can't escape the output dir.
+ * Empty/absent → the legacy default "{date}-{slug}".
+ */
+export function sanitizeOutputTemplate(template: string | null | undefined): string {
+  const raw = (template ?? '').trim();
+  if (!raw) return '{date}-{slug}';
+  const cleaned = raw
+    .replace(/[^A-Za-z0-9 _./{}぀-ヿ㐀-鿿ｦ-ﾟ-]+/g, '')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter((seg) => seg && seg !== '.' && seg !== '..')
+    .join('/');
+  return cleaned || '{date}-{slug}';
+}
+
 /**
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
@@ -133,7 +167,8 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     ? ''
     : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY\n';
 
-  const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const slug = computeAgentSlug(agent.name, agentId);
+  const outputNameTemplate = sanitizeOutputTemplate(agent.outputTemplate);
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
   // Orchestration: non-final steps suppress the action so only the FINAL step
   // drafts/notifies once (otherwise a 3-step chain fires 3 approval prompts).
@@ -164,6 +199,7 @@ LOG_DIR=${shellQuote(logDir)}
 TIMEOUT=${DEFAULT_TIMEOUT_SEC}
 OUTPUT_DIR=${shellQuote(outputDir)}
 SLUG=${shellQuote(slug)}
+OUTPUT_NAME_TEMPLATE=${shellQuote(outputNameTemplate)}
 TOOL_LABEL=${shellQuote(toolLabel)}
 ROUTE_DECISION_JSON=${shellQuote(routeDecisionJson)}
 ENV_FILE=${shellQuote(envFile)}
@@ -557,9 +593,18 @@ register_source_urls() {
 
 save_draft_result() {
   result_file="$1"
-  mkdir -p "$OUTPUT_DIR"
   DATE=$(date +%Y-%m-%d)
-  SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"
+  TIME=$(date +%H%M%S)
+  # Resolve the output-filename template ({date}/{slug}/{time}); '/' yields a
+  # date-folder layout. SLUG/DATE/TIME contain no '|' so it is a safe sed
+  # delimiter. The template was sanitized in TS (no leading '/' or '..').
+  REL_NAME=$(printf '%s' "$OUTPUT_NAME_TEMPLATE" | sed -e "s|{date}|$DATE|g" -e "s|{slug}|$SLUG|g" -e "s|{time}|$TIME|g")
+  case "$REL_NAME" in
+    *.md|*.markdown|*.txt) ;;
+    *) REL_NAME="$REL_NAME.md" ;;
+  esac
+  SAVED_FILE="$OUTPUT_DIR/$REL_NAME"
+  mkdir -p "$(dirname "$SAVED_FILE")"
   cp "$result_file" "$SAVED_FILE"
 
   if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
@@ -572,8 +617,9 @@ save_draft_result() {
       *images/prompts*) OBSIDIAN_TARGET="60_Experiments/Image_Prompts" ;;
       *evals*) OBSIDIAN_TARGET="90_Log/Agent_Evals" ;;
     esac
-    mkdir -p "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET"
-    cp "$SAVED_FILE" "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$DATE-$SLUG.md"
+    OBSIDIAN_DEST="$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$REL_NAME"
+    mkdir -p "$(dirname "$OBSIDIAN_DEST")"
+    cp "$SAVED_FILE" "$OBSIDIAN_DEST"
   fi
 
   register_source_urls "$result_file"
