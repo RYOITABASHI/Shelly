@@ -1852,6 +1852,7 @@ rm -f "$PROMPT_FILE"`;
         : `LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
+	${localModelAssignment}
 	# Cap the combined prompt + injected context so it cannot overflow the local
 	# model's context window. The instruction (printed first) is always preserved;
 	# only the trailing project/source context is truncated. A real run sent 7806
@@ -1879,7 +1880,6 @@ rm -f "$PROMPT_FILE"`;
 	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	${localModelAssignment}
 	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
