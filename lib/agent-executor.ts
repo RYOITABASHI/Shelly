@@ -252,6 +252,9 @@ write_failure_log() {
   END_TIME=$(date +%s)
   DURATION=$(( (END_TIME - START_TIME) * 1000 ))
   TS=$(date +%s)
+  # Deliberately bounded producer (a fixed short message + $PATH) — never exceeds
+  # 500 bytes, so this is the one safe printf-into-head -c 500 (no SIGPIPE/141).
+  # Do NOT pipe unbounded output (model results) into head; head a file instead.
   PREVIEW=$(printf 'Agent script failed before producing a result. exit=%s line=%s. PATH=%s' "$code" "$line" "$PATH" | head -c 500 | tr '\\n' ' ')
   PREVIEW_JSON=$(json_escape_text "$PREVIEW")
   TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
@@ -330,8 +333,15 @@ json_string_file() {
 clean_result_preview() {
   file="$1"
   [ -f "$file" ] || return 0
-  sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null \
-    | head -c 500 | tr '\\n' ' '
+  # Filter the driver telemetry into a temp file FIRST, then head THAT file.
+  # Piping sed directly into "head -c 500" SIGPIPEs sed the moment head closes the
+  # pipe early (any cleaned result > 500 bytes — i.e. every real answer); under
+  # 'set -euo pipefail' that 141 propagates and aborts the whole run. head reading
+  # a regular file has no upstream producer to signal, so it is abort-safe.
+  cleaned="$file.preview"
+  sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null > "$cleaned" || true
+  head -c 500 "$cleaned" 2>/dev/null | tr '\\n' ' '
+  rm -f "$cleaned"
 }
 
 write_native_notification_request() {
@@ -1726,8 +1736,12 @@ if [ -s "$LOCAL_CONTEXT_FILE" ]; then
   SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
 fi
 
-# Global concurrency check
-ACTIVE_COUNT=$(find "$LOCKS_DIR" -name '*.pid' -exec sh -c 'kill -0 $(cat "{}") 2>/dev/null && echo 1' \\; | wc -l)
+# Global concurrency check. NOTE: must NOT use find -exec sh -c with a {} inside
+# the sh -c string — Android toybox find does not substitute {} there, so it ran
+# cat on a literal "{}" ("cat: {}: No such file or directory") and, under
+# set -euo pipefail, aborted the whole run once any .pid lock existed. A
+# find | while-read loop substitutes correctly and is abort-safe.
+ACTIVE_COUNT=$({ find "$LOCKS_DIR" -name '*.pid' 2>/dev/null || true; } | while IFS= read -r _pidf; do _p="$(cat "$_pidf" 2>/dev/null || true)"; if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then echo 1; fi; done | wc -l | tr -d ' ')
 if [ "$ACTIVE_COUNT" -ge "$MAX_CONCURRENT" ]; then
   TS=$(date +%s)
   TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")

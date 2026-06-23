@@ -156,6 +156,26 @@ describe('generateRunScript — readable notification preview (telemetry-strippe
   });
 });
 
+describe('generateRunScript — abort-safe shell (exit 141 root-causes)', () => {
+  it('clean_result_preview heads a regular file (no sed|head SIGPIPE abort)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // sed | head -c 500 SIGPIPEs sed on any result > 500 bytes (every real answer)
+    // → exit 141 under set -euo pipefail. Must filter to a file, then head the file.
+    expect(s).toContain('sed -E \'/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d\' "$file" 2>/dev/null > "$cleaned"');
+    expect(s).toContain('head -c 500 "$cleaned" 2>/dev/null | tr');
+    // The OLD sed-piped-into-head form (the SIGPIPE source) must be gone. (A fixed
+    // short error string at line ~255 still pipes into head -c 500 — that is safe
+    // because its producer never exceeds 500 bytes, so it is not matched here.)
+    expect(s).not.toContain('2>/dev/null \\\n    | head -c 500 | tr');
+  });
+
+  it('the concurrency check uses find|while, not find -exec sh -c with {} (toybox-safe)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).not.toContain("-exec sh -c 'kill -0 $(cat \"{}\")");
+    expect(s).toContain('ACTIVE_COUNT=$({ find "$LOCKS_DIR" -name \'*.pid\' 2>/dev/null || true; } | while IFS= read -r _pidf;');
+  });
+});
+
 describe('generateRunScript — ③b-2 escalation signalling', () => {
   it('a non-final escalation attempt fails silently (gated error notification)', () => {
     const silent = generateRunScript(agent({ type: 'local' }), { suppressErrorNotification: true });
