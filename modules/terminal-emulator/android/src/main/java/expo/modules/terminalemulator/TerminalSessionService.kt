@@ -9,9 +9,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
+import expo.modules.terminalemulator.scouter.NotificationDispatcher
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -211,6 +215,11 @@ class TerminalSessionService : Service() {
         activeAgentRuns.incrementAndGet()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
+            // B: watch the action-approval request dir natively from the FGS so a
+            // draft/notify/webhook approval notification still posts when the app is
+            // backgrounded or the RN JS thread is paused/thermal-killed (the RN
+            // 500ms poll in app/_layout.tsx only runs while the Activity is alive).
+            val approvalObserver = startAgentActionApprovalObserver()
             try {
                 // AgentRuntime announces the run outcome itself (agent-result /
                 // error notification); we don't need its return value here.
@@ -218,6 +227,7 @@ class TerminalSessionService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)
             } finally {
+                runCatching { approvalObserver?.stopWatching() }
                 releaseAgentWakeLock(wakeLock, agentId)
             }
 
@@ -268,6 +278,48 @@ class TerminalSessionService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to release agent WakeLock for $agentId", e)
+        }
+    }
+
+    /**
+     * B: native FileObserver on the agent-action-approval request dir. Posts the
+     * approval notification via NotificationDispatcher independent of the RN JS
+     * thread, so approvals survive backgrounding / thermal throttling (the RN
+     * 500ms poll only runs while the Activity is alive). Dedupes by runId; the RN
+     * poll still handles cancel/cleanup + foreground responsiveness.
+     */
+    private fun startAgentActionApprovalObserver(): FileObserver? {
+        return try {
+            val dir = AgentActionApprovalBridge.requestDir(applicationContext)
+            val mask = FileObserver.CREATE or FileObserver.MOVED_TO or FileObserver.CLOSE_WRITE
+            val seen = java.util.Collections.synchronizedSet(HashSet<String>())
+            val observer = if (Build.VERSION.SDK_INT >= 29) {
+                object : FileObserver(dir, mask) {
+                    override fun onEvent(event: Int, path: String?) = onApprovalRequestEvent(dir, path, seen)
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                object : FileObserver(dir.absolutePath, mask) {
+                    override fun onEvent(event: Int, path: String?) = onApprovalRequestEvent(dir, path, seen)
+                }
+            }
+            observer.startWatching()
+            observer
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start agent action approval observer", e)
+            null
+        }
+    }
+
+    private fun onApprovalRequestEvent(dir: File, path: String?, seen: MutableSet<String>) {
+        if (path == null || !path.startsWith("action-") || !path.endsWith(".json")) return
+        try {
+            val request = AgentActionApprovalBridge.fromRequestFile(applicationContext, File(dir, path)) ?: return
+            if (!seen.add(request.runId)) return
+            NotificationDispatcher(applicationContext).notifyAgentActionApprovalNeeded(request)
+            Log.i(TAG, "Approval notification posted via FGS observer run=${request.runId}")
+        } catch (e: Exception) {
+            Log.w(TAG, "FGS approval observer dispatch failed for $path", e)
         }
     }
 }

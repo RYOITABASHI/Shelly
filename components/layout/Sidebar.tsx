@@ -51,6 +51,9 @@ const AGENT_RUNNING_BACKGROUND_POLL_INTERVAL_MS = 60_000;
 
 const QUICK_FOLDERS = [
   { label: '~',        path: '~/',                 icon: 'home' },
+  // Agent outputs land under ~/.shelly/agents/<name>/output (+ optional Obsidian
+  // Vault mirror). Surface the base so a draft result is one tap away (D).
+  { label: 'AGENT',    path: '~/.shelly/agents',   icon: 'smart-toy' },
   { label: 'DCIM',     path: '/sdcard/DCIM',       icon: 'photo-camera' },
   { label: 'DOWNLOAD', path: '/sdcard/Download',   icon: 'download' },
   { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description' },
