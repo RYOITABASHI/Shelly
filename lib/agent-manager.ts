@@ -7,7 +7,7 @@ import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
-import { resolveEscalationLadder, attemptFailed, LadderEnv } from './agent-escalation-ladder';
+import { resolveEscalationLadder, attemptFailed, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
@@ -433,9 +433,41 @@ async function runEscalatingAttempts(
   options: { waitTimeoutMs?: number; pollMs?: number },
   runStartedAtMs: number,
 ): Promise<void> {
+  const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs);
+
+  // Restore the agent's own (un-overridden) script so a later scheduled fire uses
+  // the configured tool / fresh route, not the last escalation override.
+  if (!ladder.noEscalation && ladder.tools.length > 1) {
+    try {
+      await materializeAgent(agent, runCommand, false);
+    } catch (error) {
+      // Best-effort: a later foreground run or startup-repair re-materializes. Log
+      // so a stale on-disk override (attended ladders only) is diagnosable.
+      logWarn('AgentEscalation', `failed to restore configured script for ${agent.id}`, error);
+    }
+  }
+}
+
+/**
+ * Run one logical attempt-with-escalation: resolve the ladder for `runAgent`
+ * (its prompt drives the route — so an orchestration STEP escalates by its own
+ * step instruction, e.g. a collect-news step climbs Gemini→Codex), then try each
+ * candidate tool until one produces a real result (not error / fallback digest).
+ * Shared by the single-run path and each orchestration step. Does NOT restore the
+ * on-disk script — the caller owns that (single-run restores; orchestration
+ * re-materializes the orchestration agent after the whole chain).
+ */
+async function runLadderAttempts(
+  runAgent: Agent,
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number },
+  runStartedAtMs: number,
+  materializeOpts: { suppressAction?: boolean } = {},
+): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
-  const ladder = resolveEscalationLadder(agent, env);
-  const agentId = agent.id;
+  const ladder = resolveEscalationLadder(runAgent, env);
+  let finalLog: AgentRunLog | undefined;
 
   for (let i = 0; i < ladder.tools.length; i++) {
     const isLast = i === ladder.tools.length - 1;
@@ -444,8 +476,8 @@ async function runEscalatingAttempts(
     // STILL re-checks secret-guard per attempt as defense in depth). For a
     // no-escalation ladder, run the agent unchanged.
     const attemptAgent: Agent = ladder.noEscalation
-      ? agent
-      : { ...agent, tool: ladder.tools[i], runOn: 'auto' };
+      ? runAgent
+      : { ...runAgent, tool: ladder.tools[i], runOn: 'auto' };
 
     let before: AgentRunLog[] = [];
     try {
@@ -456,6 +488,7 @@ async function runEscalatingAttempts(
 
     await materializeAgent(attemptAgent, runCommand, false, true, {
       suppressErrorNotification: !isLast,
+      suppressAction: materializeOpts.suppressAction,
     });
     await TerminalEmulator.runAgent(agentId);
     await waitForAgentRunCompletion(runCommand, agentId, {
@@ -466,29 +499,19 @@ async function runEscalatingAttempts(
       pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
     });
 
-    if (ladder.noEscalation || isLast) break;
-
     const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-    const log = after.at(-1);
+    finalLog = after.at(-1);
+
+    if (ladder.noEscalation || isLast) break;
     // Stop on a real success OR a 'skipped' run: a skip means a concurrent run of
     // THIS agent holds the per-agent lock, so climbing to another tool would just
     // skip again — let the concurrent run produce the result. Only a genuine
     // failure (error / fallback digest) climbs.
-    if (!attemptFailed(log?.status, log?.outputPreview)) break;
+    if (!attemptFailed(finalLog?.status, finalLog?.outputPreview)) break;
     // else: escalate to the next tool
   }
 
-  // Restore the agent's own (un-overridden) script so a later scheduled fire uses
-  // the configured tool / fresh route, not the last escalation override.
-  if (!ladder.noEscalation && ladder.tools.length > 1) {
-    try {
-      await materializeAgent(agent, runCommand, false);
-    } catch (error) {
-      // Best-effort: a later foreground run or startup-repair re-materializes. Log
-      // so a stale on-disk override (attended ladders only) is diagnosable.
-      logWarn('AgentEscalation', `failed to restore configured script for ${agentId}`, error);
-    }
-  }
+  return { ladder, finalLog };
 }
 
 /**
@@ -533,18 +556,19 @@ async function runAgentOrchestrated(
     // non-final steps suppress it so the chain fires ONE approval/notification,
     // not one per step.
     const isFinalStep = i === steps.length - 1;
-    let before: AgentRunLog[] = [];
+    let log: AgentRunLog | undefined;
     try {
-      before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-      await materializeAgent(stepAgent, runCommand, false, true, { suppressAction: !isFinalStep });
-      await TerminalEmulator.runAgent(agentId);
-      await waitForAgentRunCompletion(runCommand, agentId, {
-        runStartedAtMs: stepStart - 5_000,
-        previousRunCount: before.length,
-        previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
-        timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
-        pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
-      });
+      // Each step escalates through the ladder by its OWN instruction — so a
+      // collect-news step climbs Gemini(grounded)→Codex instead of dead-ending
+      // on a non-web local digest. Non-final steps suppress the action.
+      ({ finalLog: log } = await runLadderAttempts(
+        stepAgent,
+        agentId,
+        runCommand,
+        { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
+        stepStart - 5_000,
+        { suppressAction: !isFinalStep },
+      ));
     } catch (error) {
       records.push({
         index: i,
@@ -556,8 +580,6 @@ async function runAgentOrchestrated(
       priorFailed = true;
       continue;
     }
-    const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-    const log = after.at(-1);
     const status = log?.status ?? 'error';
     records.push({
       index: i,
