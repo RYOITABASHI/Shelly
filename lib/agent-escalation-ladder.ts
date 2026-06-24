@@ -30,6 +30,18 @@ export interface LadderEnv {
   hasCerebrasKey: boolean;
   /** Groq free-tier key present. */
   hasGroqKey: boolean;
+  /**
+   * N1: the user gave informed consent for autonomous agents to use cloud API
+   * keys (Gemini/Perplexity) UNATTENDED on web-mandatory tasks. Default OFF →
+   * fail-closed (autonomous web stays Codex-only). secret-guard still wins.
+   */
+  autonomousCloudConsent?: boolean;
+  /**
+   * N1: on cloud quota exhaustion (429) for an autonomous web task, 'stop' halts
+   * at the free tier instead of climbing to Codex/paid. Default (false) =
+   * escalate to Codex.
+   */
+  autonomousCloudStop?: boolean;
 }
 
 export interface EscalationLadder {
@@ -85,10 +97,24 @@ export function resolveEscalationLadder(agent: Agent, env: LadderEnv): Escalatio
   const web = detectRouteSignals(agent.prompt);
   if (web.needsWeb) {
     if (agent.autonomous) {
-      // Unattended: api-key web backends (Gemini/Perplexity) are fail-closed, so
-      // the only web-capable option is Codex (OAuth shell). N1 (autonomous-cloud
-      // opt-in) would later allow a keyed web backend here.
-      return { tools: [CODEX], noEscalation: false, guard: decision.guard, why: 'Web-mandatory task; autonomous policy → Codex only (Gemini/Perplexity need cloud opt-in).' };
+      // N1: with the user's informed consent, an autonomous web task may use the
+      // keyed web backend (Gemini grounded / Perplexity) unattended — the key
+      // authenticates the request and never reaches the model. On quota
+      // exhaustion (429) the ladder climbs to Codex unless 'stop' is set, which
+      // halts at the free tier rather than burning Codex/paid quota.
+      if (env.autonomousCloudConsent) {
+        const consented = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
+        const tools = env.autonomousCloudStop ? [consented] : [consented, CODEX];
+        return {
+          tools,
+          noEscalation: false,
+          guard: decision.guard,
+          why: `Web-mandatory ${web.webDomain} task; autonomous cloud opt-in → ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini (grounded)'}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
+        };
+      }
+      // No consent (fail-closed): api-key web backends are excluded, so the only
+      // web-capable option is Codex (OAuth shell).
+      return { tools: [CODEX], noEscalation: false, guard: decision.guard, why: 'Web-mandatory task; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity).' };
     }
     const webPrimary = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
     return {

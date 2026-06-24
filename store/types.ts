@@ -383,6 +383,17 @@ export type AppSettings = {
   cerebrasApiKey?: string;
   /** Cerebrasに使用するモデル (default: qwen-3-235b-a22b-instruct-2507) */
   cerebrasModel?: string;
+  // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
+  /** Informed consent: autonomous agents may use cloud API keys (Gemini /
+   *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:
+   *  without it, autonomous web tasks stay Codex-only. The key authenticates the
+   *  request to the provider and is never sent to the model; what this gates is
+   *  unattended quota/cost usage. secret-guard still always forces local. */
+  autonomousCloudConsent?: boolean;
+  /** On cloud quota exhaustion (HTTP 429) during an autonomous web task:
+   *  'escalate' (default) climbs to Codex; 'stop' halts at the free tier and
+   *  reports exhaustion instead of consuming Codex / paid quota. */
+  autonomousCloudOnExhaustion?: 'escalate' | 'stop';
   // ─── @team Table ────────────────────────────────────────────────────────────
   /** @teamに参加させるエージェントのON/OFF */
   teamMembers: {

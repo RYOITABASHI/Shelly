@@ -445,6 +445,22 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(generateRunScript(agent({ type: 'ab-article-eval' }, true))).not.toContain('[REFUSED]');
   });
 
+  it('N1: autonomous gemini on a web-mandatory task is allowed WITH consent (grounded)', () => {
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }, true), prompt: 'ニュースを集めて' }, { autonomousCloudConsent: true });
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).toContain('google_search'); // grounded web call
+  });
+
+  it('N1: still refuses autonomous gemini WITHOUT consent (fail-closed)', () => {
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }, true), prompt: 'ニュースを集めて' });
+    expect(s).toContain('[REFUSED]');
+  });
+
+  it('N1: consent does NOT allow autonomous gemini on a non-web task', () => {
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }, true), prompt: '要約して' }, { autonomousCloudConsent: true });
+    expect(s).toContain('[REFUSED]');
+  });
+
   it('selects a light local model for simple autonomous local work and 2B for heavier text work', () => {
     expect(selectAutonomousLocalModel('short classify this')).toBe('Qwen3.5-0.8B-Q4_K_M');
     expect(selectAutonomousLocalModel('この記事を比較して下書きにして')).toBe('Qwen3.5-2B-Q4_K_M');

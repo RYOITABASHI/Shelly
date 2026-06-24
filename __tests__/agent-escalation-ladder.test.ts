@@ -114,6 +114,33 @@ describe('resolveEscalationLadder — web-mandatory tasks exclude non-web backen
     expect(types(l)).not.toContain('local');
   });
 
+  it('N1: autonomous + cloud consent → Gemini→Codex (general) / Perplexity→Codex (academic)', () => {
+    const consent: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: true };
+    expect(types(resolveEscalationLadder(mk({ prompt: 'ニュースを集めて', autonomous: true }), consent)))
+      .toEqual(['gemini-api', 'cli:codex']);
+    expect(types(resolveEscalationLadder(mk({ prompt: '最新の論文を集めて', autonomous: true }), consent)))
+      .toEqual(['perplexity', 'cli:codex']);
+  });
+
+  it("N1: 'stop' policy halts at the free tier (no Codex climb on 429)", () => {
+    const consentStop: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: true, autonomousCloudStop: true };
+    expect(types(resolveEscalationLadder(mk({ prompt: 'ニュースを集めて', autonomous: true }), consentStop)))
+      .toEqual(['gemini-api']);
+  });
+
+  it('N1: consent does NOT widen non-web autonomous tasks (still local→Codex)', () => {
+    const consent: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: true };
+    expect(types(resolveEscalationLadder(mk({ prompt: '要約して', autonomous: true }), consent)))
+      .toEqual(['local', 'cli:codex']);
+  });
+
+  it('N1: secret-guard still wins over autonomous cloud consent', () => {
+    const consent: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: true };
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて key sk-ant-api03-AAAABBBBCCCCDDDD', autonomous: true }), consent);
+    expect(l.guard).toBe('secret');
+    expect(types(l)).toEqual(['local']);
+  });
+
   it('secret-guard still wins over a web-mandatory task (no cloud climb)', () => {
     const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて key sk-ant-api03-AAAABBBBCCCCDDDD' }), KEYED);
     expect(l.guard).toBe('secret');

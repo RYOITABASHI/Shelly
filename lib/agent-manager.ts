@@ -287,7 +287,7 @@ async function materializeAgent(
   // passes false so we don't re-issue an (idempotent but redundant) fact write
   // for each one. Recall is always re-applied so the baked prompt stays fresh.
   persistFacts = true,
-  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean } = {}
+  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean } = {}
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
@@ -406,14 +406,25 @@ async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): 
   try {
     const out = await runCommand(
       `for k in CEREBRAS_API_KEY GROQ_API_KEY; do ` +
-        `grep -qE "^$k=.+" "$HOME/.shelly/agents/.env" 2>/dev/null && echo "$k=1" || echo "$k=0"; done`,
+        `grep -qE "^$k=.+" "$HOME/.shelly/agents/.env" 2>/dev/null && echo "$k=1" || echo "$k=0"; done; ` +
+        // N1: the autonomous-cloud consent flags are written by settings-store as
+        // explicit 0/1 (not "key present"), so read their VALUE, defaulting to 0.
+        `for k in SHELLY_AUTONOMOUS_CLOUD SHELLY_AUTONOMOUS_CLOUD_STOP; do ` +
+        `v=$(grep -E "^$k=" "$HOME/.shelly/agents/.env" 2>/dev/null | tail -n1 | cut -d= -f2); echo "$k=\${v:-0}"; done`,
     );
     return {
       hasCerebrasKey: /CEREBRAS_API_KEY=1/.test(out),
       hasGroqKey: /GROQ_API_KEY=1/.test(out),
+      // Consent defaults OFF (fail-closed) when the flag is absent/unreadable.
+      // Anchor to an exact `=1` line so a malformed value (=10, =1foo) reads as
+      // OFF, not ON — a garbage value must never fail OPEN into cloud opt-in.
+      autonomousCloudConsent: /(^|\n)SHELLY_AUTONOMOUS_CLOUD=1(\n|$)/.test(out),
+      autonomousCloudStop: /(^|\n)SHELLY_AUTONOMOUS_CLOUD_STOP=1(\n|$)/.test(out),
     };
   } catch {
-    return { hasCerebrasKey: true, hasGroqKey: true };
+    // Conservative on read failure: free-cloud keys assumed present (attended
+    // ladder hop is cheap), but autonomous cloud stays fail-closed (no consent).
+    return { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: false, autonomousCloudStop: false };
   }
 }
 
@@ -489,6 +500,10 @@ async function runLadderAttempts(
     await materializeAgent(attemptAgent, runCommand, false, true, {
       suppressErrorNotification: !isLast,
       suppressAction: materializeOpts.suppressAction,
+      // N1: lets generateRunScript keep a keyed web tool (Gemini/Perplexity) for
+      // an autonomous run instead of refusing it — the ladder only put one here
+      // when consent + needsWeb held, and secret-guard still re-forces local.
+      autonomousCloudConsent: env.autonomousCloudConsent,
     });
     await TerminalEmulator.runAgent(agentId);
     await waitForAgentRunCompletion(runCommand, agentId, {

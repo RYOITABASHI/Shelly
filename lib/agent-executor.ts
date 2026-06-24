@@ -131,7 +131,7 @@ export function sanitizeOutputTemplate(template: string | null | undefined): str
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean } = {}): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -143,13 +143,26 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // Autonomous runs are OAuth/local only (Spec A §4): resolve `auto`→codex and
   // refuse api-key backends — there is no key in the autonomous agent path
   // (use OAuth-Codex/local, or the credential broker). Fail-closed.
+  //
+  // N1 exception: with the user's informed consent (opts.autonomousCloudConsent),
+  // a WEB-MANDATORY autonomous task may keep a keyed WEB backend (Gemini /
+  // Perplexity) — these are stateless completions, so the key authenticates the
+  // request and never reaches a model/shell. secret-guard still wins (a secret
+  // forces routeResolution.tool to local above, so consentWebTool is false then).
   let tool: ToolChoice = routeResolution.tool;
   if (agent.autonomous) {
-    const resolved = resolveForAutonomous(tool);
-    if (!resolved) {
-      return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
+    const sig = detectRouteSignals(agent.prompt);
+    const consentWebTool =
+      opts.autonomousCloudConsent === true &&
+      sig.needsWeb &&
+      (tool.type === 'gemini-api' || tool.type === 'perplexity');
+    if (!consentWebTool) {
+      const resolved = resolveForAutonomous(tool);
+      if (!resolved) {
+        return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
+      }
+      tool = resolved;
     }
-    tool = resolved;
   }
   if (agent.autonomous && tool.type === 'local' && !tool.model) {
     tool = { ...tool, model: selectAutonomousLocalModel(agent.prompt) };

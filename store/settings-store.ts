@@ -237,6 +237,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       if ('groqModel' in newSettings && typeof newSettings.groqModel === 'string') {
         envUpdates.push(['GROQ_MODEL', newSettings.groqModel]);
       }
+      if ('autonomousCloudConsent' in newSettings) {
+        envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD', newSettings.autonomousCloudConsent ? '1' : '0']);
+      }
+      if ('autonomousCloudOnExhaustion' in newSettings) {
+        envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD_STOP', newSettings.autonomousCloudOnExhaustion === 'stop' ? '1' : '0']);
+      }
       if ('localLlmUrl' in newSettings && typeof newSettings.localLlmUrl === 'string') {
         envUpdates.push(['LOCAL_LLM_URL', newSettings.localLlmUrl]);
       }
