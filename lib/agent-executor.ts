@@ -2327,6 +2327,10 @@ REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"
+# The 2.0-flash free tier is limit:0 (no free quota) → 429s and (in autonomous
+# runs) needlessly escalates to Codex. Older installs may have GEMINI_MODEL pinned
+# to it in ~/.shelly/agents/.env, so migrate any stale 2.0-flash pin to 2.5-flash.
+case "$MODEL" in gemini-2.0-flash|gemini-2.0-flash-001|gemini-2.0-flash-exp) MODEL="gemini-2.5-flash" ;; esac
 if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
   touch "$BACKEND_ERROR_FILE"

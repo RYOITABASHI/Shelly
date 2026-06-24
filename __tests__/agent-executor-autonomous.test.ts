@@ -255,6 +255,11 @@ describe('generateRunScript — Gemini Google Search grounding for web tasks', (
     const plain = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'say hello' });
     expect(plain).not.toContain('google_search');
   });
+
+  it('migrates a stale gemini-2.0-flash pin (free tier limit:0) to 2.5-flash at runtime', () => {
+    const s = generateRunScript(agent({ type: 'gemini-api' }));
+    expect(s).toContain('case "$MODEL" in gemini-2.0-flash|gemini-2.0-flash-001|gemini-2.0-flash-exp) MODEL="gemini-2.5-flash" ;; esac');
+  });
 });
 
 describe('generateRunScript — readable notification preview (telemetry-stripped)', () => {
