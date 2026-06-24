@@ -135,14 +135,16 @@ describe('generateRunScript — studio context only for content-pipeline agents'
     expect(agentUsesStudioContext({ ...agent({ type: 'local' }), outputPath: '/sdcard/Documents/ObsidianVault/90_Log/Agent_Output/foo.md' })).toBe(true);
   });
 
-  it('autonomous & scheduled agents keep studio context despite the default outputPath', () => {
-    // North Star Mon/Fri agents are autonomous with the default ~/.shelly/agents
-    // outputPath (they mirror to Obsidian at save time) — they MUST keep the
-    // source-registry dedup context so they avoid duplicate sources.
-    expect(agentUsesStudioContext(agent({ type: 'local' }, true))).toBe(true);
-    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), schedule: '0 8 * * 1,5' })).toBe(true);
-    // But a plain interactive one-shot (schedule:null, not autonomous) stays fast.
-    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), schedule: null, autonomous: undefined })).toBe(false);
+  it('autonomous & scheduled NEWS-collection agents stay lean (no studio-context pollution)', () => {
+    // Regression: injecting ~30–50KB of content-studio context into a cloud
+    // news-collection request blew the model token budget and escalated
+    // Gemini→Codex. A collection task must NOT get studio context just because
+    // it is autonomous/scheduled.
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }, true), prompt: 'ニュースを集めて' })).toBe(false);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), schedule: '0 8 * * 1,5', prompt: '最新ニュースを集めて' })).toBe(false);
+    // Content-DRAFTING tasks DO get the context (AI_CONTEXT + recent drafts + dedup).
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }, true), prompt: 'この件で記事を書いて' })).toBe(true);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), prompt: 'draft a blog post' })).toBe(true);
   });
 
   it('a general task emits STUDIO_CONTEXT=0 and gates the ~20KB context build', () => {

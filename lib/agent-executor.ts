@@ -73,24 +73,26 @@ export function agentUsesStudioContext(agent: Agent): boolean {
   // The article evaluator is always content. Uses the authored tool (resolution
   // to local/cli happens later) so autonomous resolution can't mis-gate it.
   if (agent.tool?.type === 'ab-article-eval') return true;
-  // Autonomous / scheduled agents are the background secretary & content
-  // pipeline — including the Mon/Fri research→Obsidian agents that rely on the
-  // source-registry dedup ("avoid duplicate sources") and recent-draft context.
-  // They mirror to the vault via OBSIDIAN_VAULT_PATH at save time, so their
-  // outputPath stays the default ~/.shelly/agents/... and would otherwise miss
-  // the substring check below. Interactive one-shot @agent tasks (schedule:null,
-  // not autonomous) skip the context to stay fast on-device.
-  if (agent.autonomous === true) return true;
-  if (agent.schedule) return true;
+  // Output landing in the content-studio project / Obsidian vault → content task.
   const out = (agent.outputPath || '').toLowerCase();
-  return (
+  if (
     out.includes('content-studio') ||
     out.includes('obsidianvault') ||
     out.includes('obsidian') ||
     out.includes('/drafts/') ||
     out.includes('30_build_log') ||
     out.includes('90_log')
-  );
+  ) {
+    return true;
+  }
+  // Content-DRAFTING tasks (write an article/essay/blog/draft) benefit from the
+  // AI_CONTEXT + recent-drafts + source-dedup context. A plain web-COLLECTION
+  // task ("collect today's news") does NOT — and injecting ~30–50KB of
+  // content-studio context into its cloud request blew the model's token budget
+  // / tripped the fallback-marker detector, needlessly escalating Gemini→Codex.
+  // So gate on the drafting intent, NOT merely on autonomous/scheduled.
+  const prompt = (agent.prompt || '').toLowerCase();
+  return /記事|下書き|執筆|寄稿|コラム|論説|\bdraft\b|\bessay\b|\bblog\b|\barticle\b|\bcolumn\b/.test(prompt);
 }
 
 // Keep a-z 0-9 and CJK (Hiragana / Katakana / CJK ideographs / half-width kana);
