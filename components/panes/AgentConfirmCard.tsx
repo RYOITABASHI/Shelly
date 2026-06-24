@@ -22,6 +22,9 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { AgentAction, AgentActionType, AgentMemoryConfig, ToolChoice } from '@/store/types';
+import { useSettingsStore } from '@/store/settings-store';
+import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
+import { detectRouteSignals } from '@/lib/agent-router-scoring';
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -125,6 +128,19 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [command, setCommand] = useState(draft.action.command ?? '');
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
+  // N1: an autonomous run normally uses the gated Codex driver (no API keys). But
+  // with explicit cloud consent, a WEB-MANDATORY task keeps its scored web backend
+  // (Gemini/Perplexity) — generateRunScript honours the same exception and bakes a
+  // Codex fallback for the unattended fire (P1). Mirror that here so the card stores
+  // the web tool instead of overriding to Codex (which silently defeated the path).
+  // The needsWeb gate is required: suggestTool defaults a general prompt to gemini-api,
+  // so without it a NON-web autonomous task would store gemini-api and the runtime
+  // would refuse it (api-key backend not allowed when needsWeb is false).
+  const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
+  const needsWeb = useMemo(() => detectRouteSignals(draft.prompt).needsWeb, [draft.prompt]);
+  const isWebTool = draft.tool.type === 'gemini-api' || draft.tool.type === 'perplexity';
+  const keepWebTool = autonomous && cloudConsent && needsWeb && isWebTool;
+  const webEngineLabel = draft.tool.type === 'perplexity' ? 'Perplexity' : 'Gemini';
   // Phase 2a: gated skill reuse. A matching skill (if any) is shown and reused by
   // default; the user can opt out. Off when no skill matched the task.
   const [useSkill, setUseSkill] = useState<boolean>(!!draft.matchedSkill);
@@ -145,7 +161,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     const action: AgentAction = { type: actionType };
     if (actionType === 'webhook') action.webhookUrl = webhookUrl.trim();
     if (actionType === 'cli') action.command = command.trim();
-    const finalTool: ToolChoice = autonomous ? { type: 'cli', cli: 'codex' } : draft.tool;
+    // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
+    // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
+    const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb);
     onConfirm({
       name: name.trim(),
       prompt: draft.prompt,
@@ -178,7 +196,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             : cron
             ? scheduleHuman(frequency, hour, minute, weekday, interval, t)
             : t('agentcard.schedule_unset'),
-          route: autonomous ? t('agentcard.autonomous_route') : t(`agentcard.runon_${runOn}`),
+          route: autonomous
+            ? keepWebTool
+              ? t('agentcard.autonomous_route_web', { engine: webEngineLabel })
+              : t('agentcard.autonomous_route')
+            : t(`agentcard.runon_${runOn}`),
         })}
       </Text>
 
@@ -292,7 +314,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       {autonomous ? (
         <>
           <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.runon')}</Text>
-          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.autonomous_route_hint')}</Text>
+          <Text style={[styles.warn, { color: colors.muted }]}>
+            {keepWebTool
+              ? t('agentcard.autonomous_route_hint_web', { engine: webEngineLabel })
+              : t('agentcard.autonomous_route_hint')}
+          </Text>
         </>
       ) : (
         <>

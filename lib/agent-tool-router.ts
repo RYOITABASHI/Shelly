@@ -272,3 +272,29 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
       return 'Auto';
   }
 }
+
+/**
+ * Pick the tool an agent is STORED with when confirmed from the creation card.
+ * Autonomous runs normally use the gated Codex driver, but with cloud consent a
+ * WEB-MANDATORY task keeps its scored web backend (Gemini/Perplexity) —
+ * generateRunScript honours the same exception and bakes a Codex fallback for the
+ * unattended fire (P1). Without this, the card overrode every autonomous run to
+ * Codex, silently defeating the Gemini path for the secretary use-case.
+ *
+ * MUST mirror generateRunScript's `consentWebTool` gate EXACTLY:
+ *   consent && needsWeb && tool ∈ {gemini-api, perplexity}.
+ * The `needsWeb` gate is load-bearing: `suggestTool` defaults a general prompt to
+ * gemini-api with no web check, so omitting needsWeb would store gemini-api for a
+ * non-web autonomous task — which the runtime then REFUSES (api-key backend is not
+ * allowed when needsWeb is false), dead-ending every scheduled fire in a refusal.
+ */
+export function resolveAutonomousFinalTool(
+  autonomous: boolean,
+  scoredTool: ToolChoice,
+  cloudConsent: boolean,
+  needsWeb: boolean,
+): ToolChoice {
+  if (!autonomous) return scoredTool;
+  const isWebTool = scoredTool.type === 'gemini-api' || scoredTool.type === 'perplexity';
+  return cloudConsent && needsWeb && isWebTool ? scoredTool : { type: 'cli', cli: 'codex' };
+}
