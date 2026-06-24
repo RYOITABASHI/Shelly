@@ -48,7 +48,7 @@
 - ③a ✅: ローカル ctx 1024→8192/4096 + 注入文脈の tier-aware cap（commit 0202380）。
 - ③b: Cerebras/Groq を agent backend 追加（無料枠内）+ 429/不通の escalation + 終端通知。
 - ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
-- ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。残る解錠: 自律クラウド opt-in / Vault 内保存の自動承認 / 複数曜日スケジュール + 日付フォルダ出力テンプレ。
+- ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。**残る解錠は全て実装着地（2026-06-24, branch claude/work-handoff-2qb1xd）**: 自律クラウド opt-in=N1(105fda3) / Vault 内保存の自動承認=N2(b08a608) / 複数曜日スケジュール=N4(c80bb04) / 日付フォルダ出力テンプレ=N4(fa10617) / web-mandatory routing(203428c) / orchestration 昇格=N3(8fb8926)。**残るは実機 end-to-end 検証（web quota 明け待ち）と N1 スケジュール .sh のクラウド完全無人化 follow-up のみ**。
 
 ### 🔴 Web-mandatory routing — 実機 end-to-end 検証待ち（quota 明けの必須ゲート）
 
@@ -83,6 +83,7 @@
 
 **Follow-up（non-blocking）**:
 - ~~orchestration ステップ内の昇格未配線~~ → ✅ **解消（commit 8fb8926, N3）**。`runLadderAttempts` を抽出し各ステップをラダーに通すので、収集ステップが Gemini(grounded)→Codex に昇格する。
+- **N1 スケジュール .sh のクラウド解錠が前景のみ**: consent ありの自律 Web は前景(@agent/RUN NOW)では Gemini 優先に乗るが、**スケジュール発火が読む on-disk .sh は materialize 時の consent を焼き込む**ため、(a) 設定トグル後に全自律エージェントの再 materialize が要る、(b) スケジュール .sh 内の Gemini→Codex 連鎖が無い（429 で当該回 error→次スケジュール再試行）。前景は完全動作。スケジュール完全無人化の最後の一手として、トグル時の再 materialize ＋ in-script クラウド fallback を P1 follow-up に。
 - デフォルト Gemini モデルの更新（上記 1 の結果次第）。
 
 **戻す条件**: 上記 1〜3 を build 203428c 以降で実機 PASS → ✅ + 確認 build 番号を付ける。
@@ -2008,6 +2009,7 @@ claude() {
 - **2026-06-10**: Claude Code オンデバイス実装の経緯を 3 エージェント並列調査 (リポジトリ履歴 / Android OSS 検証 / CC アーキ + Codex 連携)。「ネイティブ断念」の正体は Bun SEA 直接実行の断念 (v29-v59) で、CC 自体は extracted Node 経路 (v67+) で稼働中と確認。musl 矛盾を ferrum install.sh + 公式 docs 実取得で解消 (glibc 方式が実証済、musl も C++ ランタイム要・ただし軽量)。パッチ済バイナリ PoC (P2) と Bash tool exit 1 観測基盤 (既存 P1 の次の一手) を spec 化・DEFERRED 登録。実装は未着手。spec: 2026-06-10-claude-code-on-device-investigation / -claude-patched-binary-poc-plan / -bash-tool-exit1-observability-plan。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 - **2026-06-19**: Terminal pane の wallpaper 透過が native/GL 描画面のグレー化回帰を誘発したため、当面 opaque black に固定。再有効化条件を P3 として登録。
+- **2026-06-24**: N1 着地（backend 105fda3 前の eea8ec3 + UI 105fda3）。自律クラウド opt-in＝補完専用 backend(Gemini/Perplexity)は「キーが LLM/シェルに渡らない stateless completion」なので、ユーザー informed-consent ありで自律 Web に解錠。設計対話でユーザーが「429=API側の自動停止をトリガーに切替/停止、無料/有料の線引きは Shelly が知らなくて良い」と整理。settings(consent + onExhaustion escalate/stop) → .env → ladderEnvFromDisk(アンカー =1 で fail-closed) → resolveEscalationLadder + generateRunScript。secret-guard 常時ローカル・cli/webhook 手動・Codex env スクラブ・非Web不拡大を維持、セキュリティレビュー APPROVE。**North Star の残解錠コードは全着地**、残りは実機検証(quota待ち)＋スケジュール完全無人化 follow-up。
 - **2026-06-24**: N3 着地（commit 8fb8926）。orchestration の各ステップを共有 `runLadderAttempts` でラダーに通し、ステップ毎の指示で昇格（収集→Gemini grounded→Codex、要約→on-device）。単発 @agent パスは同ヘルパーに委譲して挙動保存、レビュー APPROVE・全 390 テスト緑。N2 着地（commit b08a608）＝自律エージェントのみ Vault 保存を自動承認（cli/webhook は手動・secret-guard 維持）。**North Star の残解錠は N1（自律クラウド opt-in）のみ**＝「自律=local→Codex のみ・api-key fail-closed」を意図的に緩める変更なので実装前にユーザーと設計を詰める。
 - **2026-06-24**: N4 着手（quota 非依存・North Star 直結）。(a) 空スラグ修正＝CJK のみのエージェント名が `2026-06-24-.md` になるバグ（slug が `[^a-z0-9]` strip で空）を CJK 保持＋id fallback で修正、(b) dead field だった `outputTemplate` を保存パスに配線（`{date}/{slug}/{time}` プレースホルダ、日付フォルダ `/` 対応、`..`/絶対パス除去、Obsidian ミラーも同名）、(c) 複数曜日 cron（`0 8 * * 1,5` = 月/金）を TS+Kotlin 両パーサに追加（従来は単一 dow のみで未発火）。commit fa10617 / c80bb04、全 387 テスト緑、レビュー APPROVE。実機検証は新ビルドで（保存系は quota 非依存で確認可）。
 - **2026-06-24**: ニュース収集エージェントの「偽成功」を切り分け→真因は**ルーティング**（収集が Web 非対応 local LLM に振られ空テンプレ幻覚）と確定。`needsWeb`（収集動詞＋鮮度語）routing を実装し非Web backend 除外＋`Gemini(grounded)→Codex`/学術`Perplexity`/自律`Codexのみ`に（commit 203428c, 全376テスト緑, レビュー APPROVE）。実機 end-to-end は**両 web backend の quota 枯渇（Gemini free-tier `limit:0` on gemini-2.0-flash / Codex usage limit リセット 6/24 23:51）でブロック**→「Web-mandatory routing 検証待ち」エントリに手順同梱で P1 登録。端末ネット OK・Codex sandbox=danger-full-access・Gemini キー疎通(403→429)は確認済み。
