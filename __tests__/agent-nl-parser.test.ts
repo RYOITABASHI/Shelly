@@ -173,6 +173,22 @@ describe('parseAgentNL — invariants', () => {
   });
 });
 
+describe('parseAgentNL — name derivation does not eat 日/月/金 from non-weekday words', () => {
+  // Regression: the weekday stripper '[日月火水木金土]曜?日?' matched a BARE
+  // 日月火水木金土, so 今日→今, 日本→本, 金融→融 lost a character in the name.
+  it('keeps 今日 in the name (does not strip the 日)', () => {
+    expect(parseAgentNL('今日の主要ニュースを出典付きで3つ集めて').name).toContain('今日');
+  });
+  it('keeps 日本 and 金融 intact', () => {
+    expect(parseAgentNL('日本の金融ニュースをまとめて').name).toContain('日本');
+    expect(parseAgentNL('日本の金融ニュースをまとめて').name).toContain('金融');
+  });
+  it('still strips a real weekday token from the name', () => {
+    // 月曜日 / 月曜 are schedule words and should NOT survive in the display name.
+    expect(parseAgentNL('毎週月曜日に週報を作って').name).not.toContain('月曜');
+  });
+});
+
 describe('parseAgentNL — memory (Phase 1)', () => {
   it('JP: 覚えておいて → memory.remember with the fact captured', () => {
     const d = parseAgentNL('私は簡潔な要約が好みだと覚えておいて');

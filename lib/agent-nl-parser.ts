@@ -281,7 +281,9 @@ const NAME_STRIP_RE = new RegExp(
     '毎日', '毎朝', '毎晩', '毎夕', '毎週', '每週', '日次',
     '午前', '午後', '朝', '夜', '夕方', '晩', '深夜', '昼',
     '\\d+\\s*時(?:\\s*半|\\s*\\d+\\s*分)?', '\\d+\\s*分\\s*(?:ごと|おき|毎|間隔)?',
-    '[日月火水木金土]曜?日?',
+    // Weekday tokens (月曜日 / 月曜) — require 曜 so a bare 日月火水木金土 is NOT
+    // stripped. Without it, '今日'→'今', '日本'→'本', '金融'→'融' all lost a char.
+    '[日月火水木金土]曜日?',
     'を?(作って|作成して?|書いて|まとめて|要約して|送って|通知して|教えて|して)',
     'every\\s*day', 'everyday', 'daily', 'each\\s+day',
     'every\\s+\\d+\\s*(?:min|mins|minute|minutes|hours?)',
