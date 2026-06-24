@@ -1,7 +1,7 @@
 /**
  * Google Gemini API クライアント
  *
- * - モデル: gemini-2.0-flash（高速・マルチモーダル対応）
+ * - モデル: gemini-2.5-flash（無料枠あり・grounding 対応。2.0-flash は無料枠 limit:0）
  * - ストリーミング: Server-Sent Events (generateContentStream)
  * - API仕様: https://ai.google.dev/api/generate-content
  */
@@ -10,8 +10,8 @@ import { getCurrentLocale } from '@/lib/i18n';
 
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-/** デフォルトモデル（高速・コスト効率が良い） */
-export const GEMINI_DEFAULT_MODEL = 'gemini-2.0-flash';
+/** デフォルトモデル（無料枠あり + Google検索 grounding 対応） */
+export const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash';
 
 /** Maximum SSE chunk size (1MB) — reject abnormally large chunks */
 const MAX_CHUNK_SIZE = 1_000_000;

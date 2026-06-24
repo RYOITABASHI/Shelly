@@ -2316,7 +2316,9 @@ function openAiCompatApiCommand(
 }
 
 function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string, grounded = false): string {
-  const defaultModel = model || 'gemini-2.0-flash';
+  // gemini-2.5-flash: the 2.0-flash free tier is limit:0 (no free quota); 2.5-flash
+  // has a working free tier AND supports Google Search grounding (verified 2026-06-24).
+  const defaultModel = model || 'gemini-2.5-flash';
   // Google Search grounding: only added for web-mandatory tasks so routine
   // Gemini calls aren't forced onto the search tool.
   const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';

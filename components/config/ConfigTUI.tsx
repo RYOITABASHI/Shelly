@@ -106,7 +106,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'cerebrasApiKey',  label: 'Cerebras API Key', type: 'secret', source: 'settings' },
       { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
       { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
-      { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'e.g. gemini-2.0-flash' },
+      { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },
       { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
       { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
     ],

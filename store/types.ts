@@ -371,7 +371,7 @@ export type AppSettings = {
   // ─── Gemini API ────────────────────────────────────────────────────────────────
   /** Gemini API キー (https://aistudio.google.com/app/apikey) */
   geminiApiKey?: string;
-  /** Geminiに使用するモデル (default: gemini-2.0-flash) */
+  /** Geminiに使用するモデル (default: gemini-2.5-flash — 無料枠 + grounding) */
   geminiModel?: string;
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
