@@ -107,14 +107,23 @@ class AgentAlarmReceiver : BroadcastReceiver() {
         target.set(Calendar.SECOND, 0)
         target.set(Calendar.MILLISECOND, 0)
 
-        val parsedDow = dayOfWeek.toIntOrNull()
-        if (parsedDow != null) {
-            val targetDow = if (parsedDow % 7 == 0) Calendar.SUNDAY else (parsedDow % 7) + 1
-            target.set(Calendar.DAY_OF_WEEK, targetDow)
-            if (target.timeInMillis <= now.timeInMillis) {
-                target.add(Calendar.DAY_OF_YEAR, 7)
+        // Single day OR a comma list (e.g. "1,5" = Mon/Fri): mirror the TS
+        // scheduler (lib/agent-scheduler.ts) and re-arm at the SOONEST listed day.
+        if (Regex("^\\d+(,\\d+)*$").matches(dayOfWeek)) {
+            var best: Long? = null
+            for (token in dayOfWeek.split(",")) {
+                val parsedDow = token.toIntOrNull() ?: continue
+                val targetDow = if (parsedDow % 7 == 0) Calendar.SUNDAY else (parsedDow % 7) + 1
+                val candidate = target.clone() as Calendar
+                candidate.set(Calendar.DAY_OF_WEEK, targetDow)
+                if (candidate.timeInMillis <= now.timeInMillis) {
+                    candidate.add(Calendar.DAY_OF_YEAR, 7)
+                }
+                if (best == null || candidate.timeInMillis < best!!) {
+                    best = candidate.timeInMillis
+                }
             }
-            return target.timeInMillis
+            return best
         }
 
         if (dayOfWeek != "*") return null
