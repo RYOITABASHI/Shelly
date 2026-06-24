@@ -107,6 +107,8 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
       { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
       { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'e.g. gemini-2.0-flash' },
+      { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
+      { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
     ],
   },
   {
@@ -519,6 +521,22 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     async (def: SettingDef, rawValue: unknown) => {
       const displayValue = def.type === 'secret' ? (rawValue ? 'set' : 'empty') : String(rawValue);
       logInfo('ConfigTUI', 'Setting ' + def.key + ' = ' + displayValue);
+      // N1: enabling autonomous cloud needs informed consent — an unattended
+      // agent will spend your cloud quota/cost without asking each time.
+      if (def.key === 'autonomousCloudConsent' && rawValue === true) {
+        const ok = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Autonomous cloud access',
+            'Autonomous agents will use your configured cloud API keys (Gemini / Perplexity) UNATTENDED for web tasks.\n\n• Your key authenticates the request and is NEVER sent to the model.\n• A scheduled agent will consume your quota/cost without asking each time (Gemini free tier; Perplexity is paid).\n• Secrets are still always kept on-device; sending/running still needs your approval.\n\nEnable?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          );
+        });
+        if (!ok) return; // leave the toggle OFF
+      }
       try {
       // Custom source handling
       if (def.source === 'custom') {
@@ -569,7 +587,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           updateSettings({ [parent]: { ...(current as object), [child]: rawValue } } as any);
         } else {
           updateSettings({ [def.key]: rawValue } as any);
-          if (def.type === 'secret' || def.key === 'geminiModel') {
+          if (
+            def.type === 'secret' ||
+            def.key === 'geminiModel' ||
+            def.key === 'autonomousCloudConsent' ||
+            def.key === 'autonomousCloudOnExhaustion'
+          ) {
             await flushPendingAgentEnvSync(def.label);
           }
         }

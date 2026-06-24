@@ -64,6 +64,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   experienceMode: 'learning' as const,
   autoApproveLevel: 'safe' as const,
   defaultAgent: 'codex' as const,
+  // N1: autonomous cloud opt-in — default OFF (fail-closed); on free-tier 429,
+  // escalate to Codex by default.
+  autonomousCloudConsent: false,
+  autonomousCloudOnExhaustion: 'escalate' as const,
   realtimeTranslateEnabled: false,
   llmInterpreterEnabled: false,
   externalKeyboardShortcuts: false,
