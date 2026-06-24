@@ -164,6 +164,13 @@ const en: Record<string, string> = {
   'agents.title': 'AI Agents',
   'agents.default': 'Default',
   'agents.auto_approve': 'Auto-approve',
+  'agents.autonomous_cloud': 'Autonomous Cloud',
+  'agents.cloud_on_exhaustion': 'On quota exhausted',
+  'agents.cloud_exhaust_escalate': 'Escalate to Codex',
+  'agents.cloud_exhaust_stop': 'Stop (retry later)',
+  'agents.cloud_consent_title': 'Autonomous cloud access',
+  'agents.cloud_consent_body': 'Autonomous agents will use your configured cloud API keys (Gemini / Perplexity) UNATTENDED for web tasks.\n\n• Your key authenticates the request and is NEVER sent to the model.\n• A scheduled agent will consume your quota/cost without asking each time (Gemini free tier; Perplexity is paid).\n• Secrets are still always kept on-device; sending/running still needs your approval.\n\nEnable?',
+  'agents.cloud_consent_enable': 'Enable',
 
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',

@@ -164,6 +164,13 @@ const ja: Record<string, string> = {
   'agents.title': 'AIエージェント',
   'agents.default': 'デフォルト',
   'agents.auto_approve': '自動承認',
+  'agents.autonomous_cloud': '自律クラウド',
+  'agents.cloud_on_exhaustion': 'クォータ枯渇時',
+  'agents.cloud_exhaust_escalate': 'Codexへ昇格',
+  'agents.cloud_exhaust_stop': '停止（後で再試行）',
+  'agents.cloud_consent_title': '自律エージェントのクラウド利用',
+  'agents.cloud_consent_body': '自律エージェントが、設定済みのクラウドAPIキー(Gemini/Perplexity)を無人でWebタスクに使用します。\n\n• キーはプロバイダ認証に使われ、モデルには送信されません。\n• スケジュール実行が毎回確認なしであなたのクォータ/課金を消費します（Gemini=無料枠、Perplexityは有料）。\n• 機密情報は常にローカルに留まり、送信/実行には引き続き承認が必要です。\n\n有効にしますか？',
+  'agents.cloud_consent_enable': '有効にする',
 
   // ── エージェント確認/プレビューカード (Phase 0 §2.1) ────────────
   'agentcard.title': 'このエージェントを登録しますか？',

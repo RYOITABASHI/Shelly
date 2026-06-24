@@ -760,6 +760,8 @@ function AgentsSection() {
   const { t } = useTranslation();
   const defaultAgent = useSettingsStore((s) => s.settings.defaultAgent);
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
+  const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
+  const cloudExhaustion = useSettingsStore((s) => s.settings.autonomousCloudOnExhaustion ?? 'escalate');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [pickerOpen, setPickerOpen] = React.useState(false);
 
@@ -772,6 +774,32 @@ function AgentsSection() {
   };
 
   const autoOn = autoApproveLevel !== 'none';
+
+  // N1: enabling autonomous cloud needs informed consent — an unattended agent
+  // will spend your cloud quota/cost without asking each time.
+  const toggleCloudConsent = async () => {
+    if (!cloudConsent) {
+      const ok = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          t('agents.cloud_consent_title'),
+          t('agents.cloud_consent_body'),
+          [
+            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('agents.cloud_consent_enable'), style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      });
+      if (!ok) return;
+    }
+    updateSettings({ autonomousCloudConsent: !cloudConsent });
+    await flushPendingAgentEnvSync('Autonomous Cloud');
+  };
+
+  const toggleExhaustion = async () => {
+    updateSettings({ autonomousCloudOnExhaustion: cloudExhaustion === 'stop' ? 'escalate' : 'stop' });
+    await flushPendingAgentEnvSync('Autonomous Cloud');
+  };
 
   return (
     <Section title={t('agents.title')}>
@@ -829,6 +857,37 @@ function AgentsSection() {
           />
         </Pressable>
       </Row>
+      <Row label={t('agents.autonomous_cloud')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: cloudConsent ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
+          onPress={toggleCloudConsent}
+          hitSlop={4}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: cloudConsent ? C.accent : C.text2 },
+              cloudConsent && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      {cloudConsent && (
+        <Row label={t('agents.cloud_on_exhaustion')}>
+          <Pressable
+            style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
+            onPress={toggleExhaustion}
+            hitSlop={4}
+          >
+            <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>
+              {cloudExhaustion === 'stop' ? t('agents.cloud_exhaust_stop') : t('agents.cloud_exhaust_escalate')}
+            </Text>
+          </Pressable>
+        </Row>
+      )}
     </Section>
   );
 }
