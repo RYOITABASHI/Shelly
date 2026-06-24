@@ -2337,7 +2337,7 @@ if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
   touch "$BACKEND_ERROR_FILE"
 else
-  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":4096,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
+  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
   HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
   API_EXIT=$?

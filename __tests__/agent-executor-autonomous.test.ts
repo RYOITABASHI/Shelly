@@ -258,6 +258,15 @@ describe('generateRunScript — Gemini Google Search grounding for web tasks', (
     expect(plain).not.toContain('google_search');
   });
 
+  it('gives the Gemini call an 8192 output budget (2.5-flash thinking + grounding needs room)', () => {
+    // Regression: maxOutputTokens:4096 let gemini-2.5-flash's thinking exhaust the
+    // budget on a grounded query → empty content → BACKEND_ERROR → needless Codex
+    // escalation. The standalone probe worked because it used the 8192 default.
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'ニュースを集めて' });
+    expect(s).toContain('\\"maxOutputTokens\\":8192');
+    expect(s).not.toContain('\\"maxOutputTokens\\":4096');
+  });
+
   it('migrates a stale gemini-2.0-flash pin (free tier limit:0) to 2.5-flash at runtime', () => {
     const s = generateRunScript(agent({ type: 'gemini-api' }));
     expect(s).toContain('case "$MODEL" in gemini-2.0-flash|gemini-2.0-flash-001|gemini-2.0-flash-exp) MODEL="gemini-2.5-flash" ;; esac');
