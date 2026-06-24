@@ -82,7 +82,7 @@
 3. **end-to-end**: ニュースエージェント（`agent-mqp6j9w1`）を RUN NOW → 出力が**実在ニュースの要約**（幻覚テンプレでない）になるか `~/.shelly/agents/agent-mqp6j9w1/output.md/` で確認。
 
 **Follow-up（non-blocking）**:
-- **orchestration ステップ内の昇格未配線**: 収集ステップは `resolveAgentRoute(stepPrompt)` 経由で Gemini-grounded に乗るが、ステップ内の Gemini 失敗→Codex 昇格は未配線（昇格は単発 @agent パスのみ）。Gemini キーがあれば収集は通るので実害小。堅牢化として `runAgentOrchestrated` にラダー適用を検討。
+- ~~orchestration ステップ内の昇格未配線~~ → ✅ **解消（commit 8fb8926, N3）**。`runLadderAttempts` を抽出し各ステップをラダーに通すので、収集ステップが Gemini(grounded)→Codex に昇格する。
 - デフォルト Gemini モデルの更新（上記 1 の結果次第）。
 
 **戻す条件**: 上記 1〜3 を build 203428c 以降で実機 PASS → ✅ + 確認 build 番号を付ける。
@@ -2008,6 +2008,7 @@ claude() {
 - **2026-06-10**: Claude Code オンデバイス実装の経緯を 3 エージェント並列調査 (リポジトリ履歴 / Android OSS 検証 / CC アーキ + Codex 連携)。「ネイティブ断念」の正体は Bun SEA 直接実行の断念 (v29-v59) で、CC 自体は extracted Node 経路 (v67+) で稼働中と確認。musl 矛盾を ferrum install.sh + 公式 docs 実取得で解消 (glibc 方式が実証済、musl も C++ ランタイム要・ただし軽量)。パッチ済バイナリ PoC (P2) と Bash tool exit 1 観測基盤 (既存 P1 の次の一手) を spec 化・DEFERRED 登録。実装は未着手。spec: 2026-06-10-claude-code-on-device-investigation / -claude-patched-binary-poc-plan / -bash-tool-exit1-observability-plan。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 - **2026-06-19**: Terminal pane の wallpaper 透過が native/GL 描画面のグレー化回帰を誘発したため、当面 opaque black に固定。再有効化条件を P3 として登録。
+- **2026-06-24**: N3 着地（commit 8fb8926）。orchestration の各ステップを共有 `runLadderAttempts` でラダーに通し、ステップ毎の指示で昇格（収集→Gemini grounded→Codex、要約→on-device）。単発 @agent パスは同ヘルパーに委譲して挙動保存、レビュー APPROVE・全 390 テスト緑。N2 着地（commit b08a608）＝自律エージェントのみ Vault 保存を自動承認（cli/webhook は手動・secret-guard 維持）。**North Star の残解錠は N1（自律クラウド opt-in）のみ**＝「自律=local→Codex のみ・api-key fail-closed」を意図的に緩める変更なので実装前にユーザーと設計を詰める。
 - **2026-06-24**: N4 着手（quota 非依存・North Star 直結）。(a) 空スラグ修正＝CJK のみのエージェント名が `2026-06-24-.md` になるバグ（slug が `[^a-z0-9]` strip で空）を CJK 保持＋id fallback で修正、(b) dead field だった `outputTemplate` を保存パスに配線（`{date}/{slug}/{time}` プレースホルダ、日付フォルダ `/` 対応、`..`/絶対パス除去、Obsidian ミラーも同名）、(c) 複数曜日 cron（`0 8 * * 1,5` = 月/金）を TS+Kotlin 両パーサに追加（従来は単一 dow のみで未発火）。commit fa10617 / c80bb04、全 387 テスト緑、レビュー APPROVE。実機検証は新ビルドで（保存系は quota 非依存で確認可）。
 - **2026-06-24**: ニュース収集エージェントの「偽成功」を切り分け→真因は**ルーティング**（収集が Web 非対応 local LLM に振られ空テンプレ幻覚）と確定。`needsWeb`（収集動詞＋鮮度語）routing を実装し非Web backend 除外＋`Gemini(grounded)→Codex`/学術`Perplexity`/自律`Codexのみ`に（commit 203428c, 全376テスト緑, レビュー APPROVE）。実機 end-to-end は**両 web backend の quota 枯渇（Gemini free-tier `limit:0` on gemini-2.0-flash / Codex usage limit リセット 6/24 23:51）でブロック**→「Web-mandatory routing 検証待ち」エントリに手順同梱で P1 登録。端末ネット OK・Codex sandbox=danger-full-access・Gemini キー疎通(403→429)は確認済み。
 - **2026-06-19**: Secretary MVP (Phase 0) 着手時、ユーザーから「ウィジェットからもいける導線」提案。既存 `ScouterWidgetProvider.kt` (home-screen AppWidget, 2026-06-10 実機 PASS) が tap PendingIntent / deep-link / 承認ピル配線を既に持つと確認。trigger (deep-link 1本) + status (snapshot 2フィールド) は安価な fast-follow として P2 登録。スケジュール承認はウィジェットに置かず通知側 (B5, run-id 束縛・単回・期限付き) に集約と判断。コアループ着地後に着手。
