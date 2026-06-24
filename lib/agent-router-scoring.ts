@@ -60,6 +60,12 @@ const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'repository', 
 // signal via needsSearch, handled below). "summarize the news" must stay a
 // transform task → on-device, not get routed to the paid deep-research backend.
 const RESEARCH_KW = ['paper', 'research', 'study', 'evidence', 'journal', 'academic', 'cite', 'citation', '論文', '研究', '学術', '調べ', '出典', '引用', '文献'];
+// NARROW scholarly set used ONLY to pick the web DOMAIN (academic→Perplexity vs
+// general→Gemini grounded). It deliberately EXCLUDES the generic citation words
+// in RESEARCH_KW (出典 / 引用 / 調べ / cite / citation / evidence): a news
+// collection that asks for sources ("出典付き") is still a GENERAL web task and
+// must route to Gemini, not the paid Perplexity deep-research tier.
+const ACADEMIC_WEB_KW = ['paper', 'research', 'study', 'journal', 'academic', '論文', '研究', '学術', '文献'];
 const PROSE_KW = ['article', 'essay', 'blog', 'draft', 'write', 'content', 'story', '記事', '下書き', 'ブログ', '執筆', '物語'];
 const TRANSFORM_KW = ['summarize', 'summary', 'format', 'translate', 'rewrite', 'extract', '要約', 'まとめ', '整形', '翻訳', '書き直', '抽出', '箇条書き'];
 const REASONING_KW = ['analyze', 'compare', 'evaluate', 'plan', 'design', 'reason', 'deep', 'why', 'strategy', '分析', '比較', '評価', '設計', '計画', '推論', '戦略', '考察', '精査'];
@@ -171,7 +177,12 @@ export function detectRouteSignals(prompt: string): RouteSignals {
   // live web fetch can do it; a non-web LLM just hallucinates a template.
   const collects = hasAny(lower, COLLECTION_KW) !== undefined;
   const needsWeb = fresh && collects;
-  const webDomain: 'academic' | 'general' = researchKw ? 'academic' : 'general';
+  // Domain picks the web primary. Use the NARROW scholarly set, NOT researchKw —
+  // "collect news with sources (出典付き)" is general → Gemini grounded, not the
+  // paid Perplexity deep-research tier. (Bug: 出典 ∈ RESEARCH_KW routed news to
+  // Perplexity, which has no key/quota → dead-ended on Codex, never trying Gemini.)
+  const academicWeb = hasAny(lower, ACADEMIC_WEB_KW) !== undefined;
+  const webDomain: 'academic' | 'general' = academicWeb ? 'academic' : 'general';
 
   return { category, reasoningWeight, needsSearch, needsWeb, webDomain, keyword };
 }

@@ -64,6 +64,18 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('最新の論文を集めて').webDomain).toBe('academic');
     expect(detectRouteSignals('ニュースを集めて').webDomain).toBe('general');
   });
+
+  it('"collect news WITH SOURCES (出典付き)" is general → Gemini, not academic → Perplexity', () => {
+    // Regression: 出典 ∈ RESEARCH_KW flipped a news task to webDomain=academic →
+    // ladder [Perplexity, Codex] (no Perplexity key) → dead-ended on Codex, Gemini
+    // never tried. A news collection asking for citations is still general.
+    const sig = detectRouteSignals('今日の主要ニュースを3つ集めて出典付きで');
+    expect(sig.needsWeb).toBe(true);
+    expect(sig.webDomain).toBe('general');
+    expect(detectRouteSignals('引用付きで最新ニュースを集めて').webDomain).toBe('general');
+    // Genuine scholarly collection still routes academic.
+    expect(detectRouteSignals('最新の研究論文を集めて出典付きで').webDomain).toBe('academic');
+  });
 });
 
 describe('scoreRoutes — deterministic + offline', () => {
