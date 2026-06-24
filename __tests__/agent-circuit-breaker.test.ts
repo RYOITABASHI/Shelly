@@ -31,6 +31,14 @@ describe('agent circuit breaker', () => {
     expect(shouldTripCircuitBreaker([log('error'), log('error'), log('skipped')])).toBe(false);
   });
 
+  it("a transient 'unavailable' (web 429/5xx) is NOT a failure and resets the streak", () => {
+    // A busy upstream must never auto-disable an otherwise-healthy unattended agent.
+    expect(consecutiveFailures([log('error'), log('error'), log('unavailable')])).toBe(0);
+    expect(shouldTripCircuitBreaker([log('error'), log('error'), log('unavailable')])).toBe(false);
+    // Even an all-unavailable streak never trips.
+    expect(shouldTripCircuitBreaker([log('unavailable'), log('unavailable'), log('unavailable')])).toBe(false);
+  });
+
   it('trips at exactly the threshold (default 3)', () => {
     expect(DEFAULT_CIRCUIT_BREAKER_THRESHOLD).toBe(3);
     expect(shouldTripCircuitBreaker([log('error'), log('error')])).toBe(false);

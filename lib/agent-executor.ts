@@ -133,7 +133,7 @@ export function sanitizeOutputTemplate(template: string | null | undefined): str
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean } = {}): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -152,6 +152,12 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // request and never reaches a model/shell. secret-guard still wins (a secret
   // forces routeResolution.tool to local above, so consentWebTool is false then).
   let tool: ToolChoice = routeResolution.tool;
+  // P1: when an autonomous web-mandatory run keeps its keyed web backend, bake a
+  // Codex fallback into the on-disk script so the UNATTENDED scheduled fire (which
+  // runs the .sh directly via AlarmManager — no foreground TS ladder) still
+  // escalates web→Codex. Suppressed when the user opted to STOP on free-tier
+  // exhaustion (autonomousCloudStop), and when Codex isn't a valid autonomous tool.
+  let bakeWebCodexLadder = false;
   if (agent.autonomous) {
     const sig = detectRouteSignals(agent.prompt);
     const consentWebTool =
@@ -164,6 +170,12 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
         return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
       }
       tool = resolved;
+    } else {
+      // Bake the in-shell web→Codex fallback ONLY for the unattended on-disk
+      // script. The foreground TS ladder owns escalation per-attempt and passes
+      // suppressWebCodexBake so Codex isn't run twice (in-shell AND as the next
+      // ladder hop). Also suppressed when the user opted to STOP on exhaustion.
+      bakeWebCodexLadder = opts.autonomousCloudStop !== true && opts.suppressWebCodexBake !== true;
     }
   }
   if (agent.autonomous && tool.type === 'local' && !tool.model) {
@@ -195,9 +207,28 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
   const injectStudioContext = agentUsesStudioContext(agent);
 
-  const toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
+  let toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
   });
+  if (bakeWebCodexLadder) {
+    // The web backend already touches BACKEND_ERROR_FILE (+ TRANSIENT_ERROR_FILE on
+    // a 429/5xx/network failure) when it fails. Mirror the foreground ladder
+    // [web, Codex]: on any web failure, escalate to Codex. Codex re-marks on its
+    // own failure (a usage-limit refusal → transient). If Codex is absent, keep
+    // the web verdict (preserving its transient/hard classification).
+    toolCommand = `${toolCommand}
+if [ -f "$BACKEND_ERROR_FILE" ]; then
+  WEB_WAS_TRANSIENT=0
+  [ -f "$TRANSIENT_ERROR_FILE" ] && WEB_WAS_TRANSIENT=1
+  rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
+  if command -v codex >/dev/null 2>&1; then
+    ${codexExecCommand(escapedPrompt, '"$RESULT_FILE"')}
+  else
+    touch "$BACKEND_ERROR_FILE"
+    [ "$WEB_WAS_TRANSIENT" = "1" ] && touch "$TRANSIENT_ERROR_FILE"
+  fi
+fi`;
+  }
   const auditMirrorSdcardEligible = agent.autonomous === true && tool.type === 'cli';
 
   return `#!/bin/bash
@@ -241,6 +272,7 @@ ACTION_DISPATCH_MESSAGE=""
 REGISTRY_LOCK=""
 REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
+TRANSIENT_ERROR_FILE="$RESULT_FILE.transient-error"
 LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
@@ -804,13 +836,20 @@ const req = client.request({
   res.setEncoding('utf8');
   res.on('data', (chunk) => process.stdout.write(chunk));
   res.on('end', () => {
-    process.exitCode = res.statusCode && res.statusCode >= 400 ? 22 : 0;
+    const code = res.statusCode || 0;
+    if (code < 400) {
+      process.exitCode = 0;            // success (2xx/3xx)
+    } else if (code === 429 || code >= 500) {
+      process.exitCode = 23;           // transient: rate-limited / server overloaded
+    } else {
+      process.exitCode = 22;           // permanent: other 4xx (bad request, auth, etc.)
+    }
   });
 });
 
 req.on('error', (err) => {
   console.error(err && err.message ? err.message : String(err));
-  process.exitCode = 1;
+  process.exitCode = 23;               // network/DNS/reset → treat as transient (retryable)
 });
 if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
   req.setTimeout(timeoutSeconds * 1000, () => {
@@ -825,6 +864,47 @@ NODEEOF
 
   echo "No HTTP client available: node is missing or unavailable." > "$err_file"
   return 127
+}
+
+# Wraps http_post_json with bounded retry on transient failures (exit 23 =
+# HTTP 429 / 5xx / network error / timeout). Permanent failures (exit 22 =
+# other 4xx) and success (0) return immediately — no point retrying a 400/401.
+# Up to 3 attempts total, sleeping 2s then 4s between them (no sleep after the
+# final attempt), so a brief upstream overload (e.g. Gemini "503 high demand,
+# UNAVAILABLE") rides through unattended without a long stall.
+http_post_json_retry() {
+  _hpr_url="$1"
+  _hpr_body="$2"
+  _hpr_out="$3"
+  _hpr_err="$4"
+  _hpr_attempt=1
+  _hpr_max=3
+  _hpr_delay=2
+  while : ; do
+    http_post_json "$_hpr_url" "$_hpr_body" "$_hpr_out" "$_hpr_err"
+    _hpr_rc=$?
+    if [ "$_hpr_rc" -ne 23 ]; then
+      return $_hpr_rc
+    fi
+    if [ "$_hpr_attempt" -ge "$_hpr_max" ]; then
+      return 23
+    fi
+    echo "[Shelly] transient HTTP failure (attempt $_hpr_attempt/$_hpr_max), retrying in \${_hpr_delay}s..." >> "$_hpr_err"
+    sleep "$_hpr_delay"
+    _hpr_attempt=$((_hpr_attempt + 1))
+    _hpr_delay=$((_hpr_delay * 2))
+  done
+}
+
+# Records a backend failure. Always touches BACKEND_ERROR_FILE so the run is not
+# finalized as success; additionally touches TRANSIENT_ERROR_FILE when the HTTP
+# exit code is 23 (429 / 5xx / network / timeout, after retry) so the run is
+# reported as 'unavailable' rather than a hard 'error'.
+mark_http_failure() {
+  touch "$BACKEND_ERROR_FILE"
+  if [ "\${1:-0}" -eq 23 ]; then
+    touch "$TRANSIENT_ERROR_FILE"
+  fi
 }
 
 http_get_ok() {
@@ -1891,7 +1971,7 @@ fi
 echo $$ > "$LOCK_FILE"
 
 # Execute tool
-rm -f "$BACKEND_ERROR_FILE"
+rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
 ${toolCommand}
 
 # Check result
@@ -1915,12 +1995,20 @@ else
     PREVIEW="Agent produced no output. Check backend configuration and required commands. Tool=$TOOL_LABEL PATH=$PATH"
   fi
   ERROR_MESSAGE="$PREVIEW"
-  STATUS="error"
+  # A purely transient failure (HTTP 429 / 5xx / network) after bounded retry is
+  # reported as 'unavailable' — distinct from a real 'error'. The ladder still
+  # climbs on it, but the circuit breaker must NOT trip (an overloaded upstream
+  # is not the agent misbehaving), and the notification stays truthful.
+  if [ -f "$TRANSIENT_ERROR_FILE" ]; then
+    STATUS="unavailable"
+  else
+    STATUS="error"
+  fi
   # ③b-2: a NON-final escalation attempt fails silently (no error notification) so
   # the user only sees the final outcome — the next tool's success, or the last
   # tool's failure. The TS run loop sets this for every attempt but the last.
   if [ "\${SUPPRESS_ERROR_NOTIFICATION:-0}" != "1" ]; then
-    write_native_notification_request "error" "$PREVIEW" || true
+    write_native_notification_request "$STATUS" "$PREVIEW" || true
   fi
 fi
 
@@ -2077,11 +2165,11 @@ rm -f "$PROMPT_FILE"`;
 		else
 		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		set +e
-		HTTP_AUTH_HEADER="Bearer $PERPLEXITY_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+		HTTP_AUTH_HEADER="Bearer $PERPLEXITY_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		API_EXIT=$?
 		set -e
 		if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-		  touch "$BACKEND_ERROR_FILE"
+		  mark_http_failure "$API_EXIT"
 		  echo "Perplexity API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
 		else
 		  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
@@ -2115,14 +2203,35 @@ rm -f "$PROMPT_FILE"`;
       return `if [ -n "\${GEMINI_API_KEY:-}" ]; then
   ${geminiApiCommand(escapedPrompt, resultVar)}
 elif command -v codex >/dev/null 2>&1; then
-  PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-  printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-  timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
-  rm -f "$PROMPT_FILE"
+  ${codexExecCommand(escapedPrompt, resultVar)}
 else
   echo 'No background agent backend is configured. Add a Gemini API key, install Codex, or choose Local LLM/Perplexity explicitly.' > ${resultVar}
 fi`;
   }
+}
+
+/**
+ * Codex `exec` into the result file, GUARDED. Codex prints a usage/rate-limit
+ * refusal to stdout with a zero exit (so a naive `> result || true` records that
+ * refusal as a real success). We capture the exit code AND scan the output for a
+ * usage-limit signature: a non-zero exit → hard backend error; a usage-limit
+ * refusal → transient (exit-23 class) so the run is 'unavailable' (retried next
+ * schedule, no circuit-breaker trip) instead of a false success. Used by the
+ * `auto` backend and the baked autonomous web→Codex ladder (P1).
+ */
+function codexExecCommand(escapedPrompt: string, resultVar: string): string {
+  return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+  printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+  set +e
+  timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1
+  CODEX_EXIT=$?
+  set -e
+  rm -f "$PROMPT_FILE"
+  if [ "$CODEX_EXIT" -ne 0 ]; then
+    mark_http_failure "$CODEX_EXIT"
+  elif grep -qiE 'usage limit|rate.?limit|too many requests|quota (exceeded|reached)|you.?ve hit your|\\b429\\b' ${resultVar} 2>/dev/null; then
+    mark_http_failure 23
+  fi`;
 }
 
 function articleEvalCommand(rawPrompt: string, resultVar: string, localModel?: string, codexCmd?: string): string {
@@ -2303,11 +2412,11 @@ function openAiCompatApiCommand(
 	else
 	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 	set +e
-	HTTP_AUTH_HEADER="Bearer $${opts.keyVar}" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	HTTP_AUTH_HEADER="Bearer $${opts.keyVar}" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 	API_EXIT=$?
 	set -e
 	if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-	  touch "$BACKEND_ERROR_FILE"
+	  mark_http_failure "$API_EXIT"
 	  echo "${label} API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
 	else
 	  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
@@ -2339,11 +2448,11 @@ if [ -z "\${GEMINI_API_KEY:-}" ]; then
 else
   printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
-  HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+  HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
   API_EXIT=$?
   set -e
   if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-    touch "$BACKEND_ERROR_FILE"
+    mark_http_failure "$API_EXIT"
     echo "Gemini API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
   else
     extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }

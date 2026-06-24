@@ -109,6 +109,7 @@ class NotificationDispatcher(private val context: Context) {
         val title = when (normalizedStatus) {
             "success" -> context.getString(R.string.scouter_notification_agent_result_done, name)
             "skipped" -> context.getString(R.string.scouter_notification_agent_result_skipped, name)
+            "unavailable" -> context.getString(R.string.scouter_notification_agent_result_unavailable, name)
             else -> context.getString(R.string.scouter_notification_agent_result_failed, name)
         }
         // Lead the body with the engine that produced the result (route transparency),

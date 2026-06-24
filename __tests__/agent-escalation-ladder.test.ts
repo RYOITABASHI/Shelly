@@ -162,4 +162,10 @@ describe('failure detection', () => {
     expect(attemptFailed('success', 'a real answer')).toBe(false);
     expect(attemptFailed('skipped', 'x')).toBe(false);
   });
+
+  it("attemptFailed climbs on a transient 'unavailable' (busy web backend hands off)", () => {
+    // 'unavailable' still escalates the ladder (try the next tool) even though it
+    // is excluded from the circuit breaker.
+    expect(attemptFailed('unavailable', 'a real answer')).toBe(true);
+  });
 });

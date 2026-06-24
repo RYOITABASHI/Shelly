@@ -582,7 +582,9 @@ export interface Agent {
 export interface AgentRunLog {
   agentId: string;
   timestamp: number;
-  status: 'success' | 'error' | 'skipped';
+  // 'unavailable' = all web backends failed transiently (429/5xx/network) after
+  // retry; the ladder still climbs on it, but it does NOT trip the circuit breaker.
+  status: 'success' | 'error' | 'skipped' | 'unavailable';
   outputPreview: string;       // first 500 chars
   durationMs: number;
   toolUsed: string;
@@ -596,7 +598,10 @@ export interface AgentRunLog {
 export interface AgentRunStep {
   index: number;
   instruction: string;
-  status: 'success' | 'error' | 'skipped';
+  // 'unavailable' mirrors AgentRunLog: a step whose only failure was a transient
+  // web outage. reduceStatus folds it to an 'unavailable' run (not 'error') so a
+  // multi-step agent is NOT auto-disabled by a transient outage either.
+  status: 'success' | 'error' | 'skipped' | 'unavailable';
   durationMs: number;
   outputPreview: string;
   routeDecision?: AgentRouteDecision;

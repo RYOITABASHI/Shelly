@@ -186,7 +186,8 @@ function formatHistory(agent: Agent, logs: any[]): string {
   if (logs.length === 0) return `No run history for ${agent.name}.`;
   const lines = logs.slice(-10).reverse().map((log) => {
     const date = new Date(log.timestamp).toLocaleString('ja-JP');
-    const icon = log.status === 'success' ? '✅' : log.status === 'error' ? '❌' : '⏭️';
+    const icon =
+      log.status === 'success' ? '✅' : log.status === 'error' ? '❌' : log.status === 'unavailable' ? '⏳' : '⏭️';
     const duration = `${(log.durationMs / 1000).toFixed(0)}s`;
     return `${icon} ${date} — ${duration} — ${log.toolUsed}`;
   });
@@ -287,7 +288,7 @@ async function materializeAgent(
   // passes false so we don't re-issue an (idempotent but redundant) fact write
   // for each one. Recall is always re-applied so the baked prompt stays fresh.
   persistFacts = true,
-  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean } = {}
+  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
@@ -296,6 +297,21 @@ async function materializeAgent(
     await persistRememberFact(agent, runCommand);
   }
   const agentForRun = await applyMemoryAndSkills(agent);
+
+  // P1: the install + restore paths (which write the script the UNATTENDED alarm
+  // later runs) don't carry the consent flags the foreground ladder passes
+  // explicitly. For an autonomous agent, read them from disk so the on-disk script
+  // keeps its keyed web backend AND bakes the web→Codex ladder (otherwise an
+  // autonomous web run on the alarm path refuses the web tool → dead-ends on Codex).
+  let effectiveRunOpts = runOpts;
+  if (agent.autonomous && runOpts.autonomousCloudConsent === undefined) {
+    const env = await ladderEnvFromDisk(runCommand);
+    effectiveRunOpts = {
+      ...runOpts,
+      autonomousCloudConsent: env.autonomousCloudConsent,
+      autonomousCloudStop: env.autonomousCloudStop,
+    };
+  }
 
   const scriptPath = getScriptPath(agent.id);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
@@ -306,7 +322,7 @@ async function materializeAgent(
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
-    writeFileCommand(scriptPath, generateRunScript(agentForRun, runOpts)),
+    writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
     ...generateInstallCommands(agent),
   ];
 
@@ -504,6 +520,9 @@ async function runLadderAttempts(
       // an autonomous run instead of refusing it — the ladder only put one here
       // when consent + needsWeb held, and secret-guard still re-forces local.
       autonomousCloudConsent: env.autonomousCloudConsent,
+      // This loop pins ONE tool per attempt and owns escalation; don't also bake
+      // an in-shell web→Codex fallback (it would run Codex twice).
+      suppressWebCodexBake: true,
     });
     await TerminalEmulator.runAgent(agentId);
     await waitForAgentRunCompletion(runCommand, agentId, {
@@ -595,7 +614,11 @@ async function runAgentOrchestrated(
       priorFailed = true;
       continue;
     }
-    const status = log?.status ?? 'error';
+    // Preserve a transient 'unavailable' as its own step status (do NOT collapse
+    // to 'error'): the chain still stops (priorFailed below), but reduceStatus
+    // folds it to an 'unavailable' run that the circuit breaker EXCLUDES — so a
+    // multi-step agent isn't auto-disabled by a transient web outage either.
+    const status: AgentRunStep['status'] = log?.status ?? 'error';
     records.push({
       index: i,
       instruction: steps[i],
@@ -604,6 +627,8 @@ async function runAgentOrchestrated(
       outputPreview: log?.outputPreview ?? '',
       routeDecision: log?.routeDecision,
     });
+    // A transient step carries no usable result downstream, so it stops the chain
+    // just like an error — only success feeds the next step's context.
     if (status === 'success') priorResults.push(log?.outputPreview ?? '');
     else priorFailed = true;
   }
@@ -907,10 +932,13 @@ export async function resumeAllAgents(
  */
 export async function notifyAgentResult(
   agent: Agent,
-  status: 'success' | 'error' | 'skipped',
+  status: 'success' | 'error' | 'skipped' | 'unavailable',
   summary: string
 ): Promise<void> {
-  const icon = status === 'success' ? '✅' : status === 'error' ? '❌' : '⏭️';
+  // 'unavailable' (transient web outage) gets its own ⏳ glyph so the user reads it
+  // as "will retry", not a hard ❌ failure they need to act on.
+  const icon =
+    status === 'success' ? '✅' : status === 'error' ? '❌' : status === 'unavailable' ? '⏳' : '⏭️';
   await Notifications.scheduleNotificationAsync({
     content: {
       title: `${icon} ${agent.name}`,
@@ -971,6 +999,9 @@ export async function loadAgentsFromDisk(
         ? {
             ...agent,
             lastRun: latest.timestamp,
+            // 'skipped'/'unavailable' intentionally keep the prior lastResult: the
+            // badge shouldn't flip to a hard verdict for a declined or transient
+            // run. The truthful per-run status still lives in the run-log history.
             lastResult: latest.status === 'success' ? 'success' as const : latest.status === 'error' ? 'error' as const : agent.lastResult,
           }
         : agent;
@@ -1119,6 +1150,8 @@ export async function syncAgentRunLogsFromDisk(
       ? {
           ...agent,
           lastRun: latest.timestamp,
+          // 'skipped'/'unavailable' intentionally keep the prior lastResult: the
+          // badge shouldn't flip to a hard verdict for a declined or transient run.
           lastResult:
             latest.status === 'success'
               ? ('success' as const)
@@ -1185,7 +1218,10 @@ async function readAgentRunLogs(
       if (
         typeof log.agentId === 'string' &&
         typeof log.timestamp === 'number' &&
-        (log.status === 'success' || log.status === 'error' || log.status === 'skipped')
+        (log.status === 'success' ||
+          log.status === 'error' ||
+          log.status === 'skipped' ||
+          log.status === 'unavailable')
       ) {
         logs.push(log);
       }

@@ -163,10 +163,16 @@ export function isLocalFallbackDigest(text: string | null | undefined): boolean 
   return typeof text === 'string' && text.includes(LOCAL_FALLBACK_DIGEST_MARKER);
 }
 
-/** An attempt failed (and should escalate) on an error status OR a fallback digest. */
+/**
+ * An attempt failed (and should escalate) on a hard 'error', a transient
+ * 'unavailable' (HTTP 429/5xx/network after retry), OR a local fallback digest.
+ * 'unavailable' still climbs the ladder — a busy web backend should hand off to
+ * the next tool — but it is excluded from the circuit breaker (see
+ * shouldTripCircuitBreaker): an overloaded upstream is not the agent misbehaving.
+ */
 export function attemptFailed(
   status: string | null | undefined,
   preview: string | null | undefined,
 ): boolean {
-  return status === 'error' || isLocalFallbackDigest(preview);
+  return status === 'error' || status === 'unavailable' || isLocalFallbackDigest(preview);
 }

@@ -38,6 +38,7 @@
   <string name="scouter_notification_agent_result_done">「%1$s」が完了しました</string>
   <string name="scouter_notification_agent_result_skipped">「%1$s」をスキップしました</string>
   <string name="scouter_notification_agent_result_failed">「%1$s」が失敗しました</string>
+  <string name="scouter_notification_agent_result_unavailable">「%1$s」: 接続先が一時的に混雑（次回の予定で再試行します）</string>
   <string name="scouter_notification_agent_result_no_preview">プレビューなし</string>
   <string name="scouter_notification_agent_action_webhook_host">送信先: %1$s</string>
   <string name="scouter_notification_agent_action_payload">ペイロード: %1$s</string>

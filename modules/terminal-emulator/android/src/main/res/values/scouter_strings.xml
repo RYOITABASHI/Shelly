@@ -48,6 +48,7 @@
   <string name="scouter_notification_agent_result_done">“%1$s” finished</string>
   <string name="scouter_notification_agent_result_skipped">“%1$s” skipped</string>
   <string name="scouter_notification_agent_result_failed">“%1$s” failed</string>
+  <string name="scouter_notification_agent_result_unavailable">“%1$s”: backend temporarily busy (will retry next schedule)</string>
   <string name="scouter_notification_agent_result_no_preview">No preview</string>
   <string name="scouter_notification_agent_action_webhook_host">Destination: %1$s</string>
   <string name="scouter_notification_agent_action_payload">Payload: %1$s</string>

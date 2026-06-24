@@ -549,3 +549,61 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(cli).not.toContain('eval "$ACTION_COMMAND"');
   });
 });
+
+describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
+  const webAgent = (over: Partial<Agent> = {}): Agent => ({
+    ...agent({ type: 'gemini-api' }, true),
+    prompt: 'ニュースを集めて',
+    ...over,
+  });
+
+  it('P0-a: HTTP helper splits transient (23) vs permanent (22) exit codes and retries only the transient class', () => {
+    const s = generateRunScript(agent({ type: 'perplexity' }, false));
+    // Node helper classifies: <400 → 0, 429/5xx → 23, other 4xx → 22, network → 23.
+    expect(s).toContain('process.exitCode = 23;');
+    expect(s).toContain('process.exitCode = 22;');
+    expect(s).toContain('code === 429 || code >= 500');
+    // Bounded retry wrapper, used by the keyed web backends.
+    expect(s).toContain('http_post_json_retry()');
+    expect(s).toContain('if [ "$_hpr_rc" -ne 23 ]; then');
+    expect(s).toContain('http_post_json_retry "https://api.perplexity.ai/chat/completions"');
+  });
+
+  it('P0-b: a transient failure marks TRANSIENT_ERROR_FILE → STATUS=unavailable, not error', () => {
+    const s = generateRunScript(agent({ type: 'perplexity' }, false));
+    expect(s).toContain('TRANSIENT_ERROR_FILE="$RESULT_FILE.transient-error"');
+    expect(s).toContain('mark_http_failure "$API_EXIT"');
+    // mark_http_failure only touches the transient marker on exit 23.
+    expect(s).toContain('if [ "${1:-0}" -eq 23 ]; then\n    touch "$TRANSIENT_ERROR_FILE"');
+    // STATUS branches on the transient marker.
+    expect(s).toContain('if [ -f "$TRANSIENT_ERROR_FILE" ]; then\n    STATUS="unavailable"');
+  });
+
+  it('P1: an autonomous web run WITH consent bakes a Gemini→Codex fallback into the on-disk script', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(s).not.toContain('[REFUSED]');
+    // The baked ladder escalates on a web backend failure.
+    expect(s).toContain('if [ -f "$BACKEND_ERROR_FILE" ]; then');
+    expect(s).toContain('command -v codex >/dev/null 2>&1');
+    expect(s).toContain('codex exec');
+    // Codex usage-limit guard: a 429/usage-limit refusal is NOT recorded as success.
+    expect(s).toContain('usage limit|rate.?limit|too many requests');
+    expect(s).toContain('mark_http_failure 23');
+  });
+
+  it('P1: consent + STOP-on-exhaustion does NOT bake the Codex fallback (free-tier auto-stop)', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true, autonomousCloudStop: true });
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).not.toContain('command -v codex >/dev/null 2>&1');
+  });
+
+  it('P1: the foreground ladder suppresses the in-shell bake (Codex would otherwise run twice)', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true, suppressWebCodexBake: true });
+    expect(s).not.toContain('command -v codex >/dev/null 2>&1');
+  });
+
+  it('emits parseable shell with the baked ladder', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+  });
+});

@@ -101,6 +101,21 @@ describe('reduceStatus / combineFinalPreview', () => {
     const out = combineFinalPreview([step({ index: 1, status: 'error', outputPreview: 'boom' })]);
     expect(out).toMatch(/Step 2.*failed.*boom/);
   });
+  it('a transient step (no hard error) reduces to unavailable, NOT error (breaker exclusion)', () => {
+    // P0-b invariant must hold for multi-step agents too: a transient web outage
+    // must not be folded into an 'error' that trips the circuit breaker.
+    expect(reduceStatus([step({ status: 'success' }), step({ status: 'unavailable' })])).toBe('unavailable');
+    // A hard error still wins over a transient.
+    expect(reduceStatus([step({ status: 'unavailable' }), step({ status: 'error' })])).toBe('error');
+  });
+  it('preview reports a transient step as temporarily unavailable, not failed', () => {
+    const out = combineFinalPreview([
+      step({ index: 0, status: 'success', outputPreview: 'ok' }),
+      step({ index: 1, status: 'unavailable', outputPreview: 'Gemini 503' }),
+    ]);
+    expect(out).toMatch(/Step 2.*unavailable.*Gemini 503/);
+    expect(out).not.toMatch(/failed/);
+  });
 });
 
 describe('parseStepsFromText — conservative multi-step detection', () => {

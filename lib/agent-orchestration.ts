@@ -111,13 +111,21 @@ export function buildStepPrompt(
 }
 
 /**
- * Reduce per-step statuses to a single run status: any error → error (the run is
- * a unit and feeds the circuit breaker as ONE failure), all skipped → skipped,
- * else success.
+ * Reduce per-step statuses to a single run status. Precedence:
+ *   1. any hard 'error' → error (the run is a unit and feeds the circuit breaker
+ *      as ONE failure),
+ *   2. else any transient 'unavailable' → unavailable (a web outage stopped the
+ *      chain; the breaker EXCLUDES this so a multi-step agent is not auto-disabled
+ *      by a transient failure — same invariant as the single-run path),
+ *   3. all skipped → skipped,
+ *   4. else success.
  */
-export function reduceStatus(steps: Pick<AgentRunStep, 'status'>[]): 'success' | 'error' | 'skipped' {
+export function reduceStatus(
+  steps: Pick<AgentRunStep, 'status'>[],
+): 'success' | 'error' | 'skipped' | 'unavailable' {
   if (steps.length === 0) return 'skipped';
   if (steps.some((s) => s.status === 'error')) return 'error';
+  if (steps.some((s) => s.status === 'unavailable')) return 'unavailable';
   if (steps.every((s) => s.status === 'skipped')) return 'skipped';
   return 'success';
 }
@@ -128,6 +136,15 @@ export function combineFinalPreview(steps: AgentRunStep[]): string {
   const failed = steps.find((s) => s.status === 'error');
   if (failed) {
     return `Step ${failed.index + 1}/${steps.length} failed: ${failed.outputPreview}`.slice(0, MAX_PREVIEW_CHARS);
+  }
+  // No hard error but a transient web outage stopped the chain — surface it as
+  // "temporarily unavailable" (will retry next schedule), not a failure.
+  const transient = steps.find((s) => s.status === 'unavailable');
+  if (transient) {
+    return `Step ${transient.index + 1}/${steps.length} temporarily unavailable (web backend busy): ${transient.outputPreview}`.slice(
+      0,
+      MAX_PREVIEW_CHARS,
+    );
   }
   const last = [...steps].reverse().find((s) => s.status === 'success');
   const head = `Completed ${steps.length} step(s). `;
