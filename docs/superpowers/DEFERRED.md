@@ -84,7 +84,7 @@
 **Follow-up（non-blocking）**:
 - ~~orchestration ステップ内の昇格未配線~~ → ✅ **解消（commit 8fb8926, N3）**。`runLadderAttempts` を抽出し各ステップをラダーに通すので、収集ステップが Gemini(grounded)→Codex に昇格する。
 - **N1 スケジュール .sh のクラウド解錠が前景のみ**: consent ありの自律 Web は前景(@agent/RUN NOW)では Gemini 優先に乗るが、**スケジュール発火が読む on-disk .sh は materialize 時の consent を焼き込む**ため、(a) 設定トグル後に全自律エージェントの再 materialize が要る、(b) スケジュール .sh 内の Gemini→Codex 連鎖が無い（429 で当該回 error→次スケジュール再試行）。前景は完全動作。スケジュール完全無人化の最後の一手として、トグル時の再 materialize ＋ in-script クラウド fallback を P1 follow-up に。
-- デフォルト Gemini モデルの更新（上記 1 の結果次第）。
+- ~~デフォルト Gemini モデルの更新~~ → ✅ **解消（commit 41ebb39）**。実機検証で `gemini-2.0-flash` 無料枠 = `limit:0`、`gemini-2.5-flash` = 無料枠あり + grounding 動作（groundingMetadata + 実在出典URL + webSearchQueries 取得）を確認。デフォルトを 2.5-flash に更新。これで web routing が無料枠ユーザーで end-to-end 成立。
 
 **戻す条件**: 上記 1〜3 を build 203428c 以降で実機 PASS → ✅ + 確認 build 番号を付ける。
 
