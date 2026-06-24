@@ -231,6 +231,7 @@ LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
 SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
 STUDIO_CONTEXT=${injectStudioContext ? '1' : '0'}
+AGENT_AUTONOMOUS=${agent.autonomous === true ? '1' : '0'}
 
 START_TIME=$(date +%s)
 
@@ -639,14 +640,20 @@ dispatch_agent_action() {
       return 0
       ;;
     ""|draft)
-      write_action_approval_request "draft" "$preview" "$result_file"
-      wait_action_approval "draft" || return 1
+      # N2: autonomous agents auto-approve a draft→vault save. It is a local file
+      # write only (low-risk) — cli/webhook/notify still require an approval tap,
+      # and secret-guard has already forced the run on-device, so nothing leaves
+      # the device unapproved. Manual (@agent) runs keep the confirm card.
+      if [ "\${AGENT_AUTONOMOUS:-0}" != "1" ]; then
+        write_action_approval_request "draft" "$preview" "$result_file"
+        wait_action_approval "draft" || return 1
+      fi
       save_draft_result "$result_file"
-      # Post ONE readable completion card after the draft is saved, so an approved
-      # draft run gives the user closure (matching the notify action). The preview
-      # is already telemetry-stripped. Orchestration non-final steps never reach
-      # here (they use the __suppressed__ branch above), so a chain still ends with
-      # a single completion, not one per step.
+      # Post ONE readable completion card after the draft is saved, so the run
+      # gives the user closure (matching the notify action). The preview is
+      # already telemetry-stripped. Orchestration non-final steps never reach here
+      # (they use the __suppressed__ branch above), so a chain still ends with a
+      # single completion, not one per step.
       write_native_notification_request "success" "$preview" || true
       return 0
       ;;

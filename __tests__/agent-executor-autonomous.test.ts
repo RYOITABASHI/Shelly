@@ -176,6 +176,34 @@ describe('generateRunScript — studio context only for content-pipeline agents'
   });
 });
 
+describe('N2 — autonomous agents auto-approve the draft→vault save', () => {
+  it('autonomous agent emits AGENT_AUTONOMOUS=1 and gates the draft approval on it', () => {
+    const s = generateRunScript(agent({ type: 'local' }, true));
+    expect(s).toContain('AGENT_AUTONOMOUS=1');
+    // The approval request/wait for a draft is now behind the non-autonomous gate.
+    expect(s).toContain('if [ "${AGENT_AUTONOMOUS:-0}" != "1" ]; then');
+    expect(s).toContain('wait_action_approval "draft"');
+  });
+
+  it('a manual (non-autonomous) agent still requires the draft confirm card', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('AGENT_AUTONOMOUS=0');
+  });
+
+  it('the gate skips the approval wait only when autonomous (bash)', () => {
+    const run = (autonomous: string) =>
+      execFileSync('bash', ['-c', [
+        'set -euo pipefail',
+        `AGENT_AUTONOMOUS=${autonomous}`,
+        'step=autoapprove',
+        'if [ "${AGENT_AUTONOMOUS:-0}" != "1" ]; then step=waited; fi',
+        'echo "$step"',
+      ].join('\n')]).toString().trim();
+    expect(run('1')).toBe('autoapprove'); // autonomous → no approval wait
+    expect(run('0')).toBe('waited');      // manual → confirm card
+  });
+});
+
 describe('dated-folder output template (N4)', () => {
   it('computeAgentSlug preserves CJK and falls back to the id when empty', () => {
     // Regression: a pure-Japanese name slugged to "" → "2026-06-24-.md".
