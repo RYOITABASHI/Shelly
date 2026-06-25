@@ -191,6 +191,7 @@ const ja: Record<string, string> = {
   'agentcard.freq_weekly': '毎週',
   'agentcard.freq_interval': 'N分ごと',
   'agentcard.weekday_multi_hint': '曜日は複数選べます（例: 月・金）',
+  'agentcard.time_placeholder_hint': '⚠ 時刻は仮です。実行前に確認してください',
   'agentcard.minutes_every': '分ごと',
   'agentcard.action': 'アクション',
   'agentcard.action_draft': '下書き',

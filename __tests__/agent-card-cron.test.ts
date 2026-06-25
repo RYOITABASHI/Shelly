@@ -1,4 +1,21 @@
-import { decodeCron, buildCron } from '@/lib/agent-card-cron';
+import { decodeCron, buildCron, resolveInitialFrequency } from '@/lib/agent-card-cron';
+
+describe('resolveInitialFrequency — confirm-card initial selection', () => {
+  it('a confident parse keeps its decoded shape', () => {
+    expect(resolveInitialFrequency(true, 'custom', undefined, '1,5')).toBe('custom');
+    expect(resolveInitialFrequency(true, 'daily', undefined, '')).toBe('daily');
+  });
+
+  it('a no-time recurrence honours the suggested frequency instead of falling to once', () => {
+    expect(resolveInitialFrequency(false, 'daily', 'daily', undefined)).toBe('daily');
+    expect(resolveInitialFrequency(false, 'daily', 'weekly', '5')).toBe('weekly');
+    expect(resolveInitialFrequency(false, 'daily', 'weekly', '1,5')).toBe('custom'); // multi-day → custom
+  });
+
+  it('a truly scheduleless utterance defaults to once', () => {
+    expect(resolveInitialFrequency(false, 'daily', undefined, undefined)).toBe('once');
+  });
+});
 
 describe('agent confirm-card cron codec', () => {
   it('round-trips a multi-day (Mon/Fri) preset cron WITHOUT collapsing to daily', () => {

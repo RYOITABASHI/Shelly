@@ -53,6 +53,25 @@ export function decodeCron(cron: string | null): DecodedCron {
   return { ...FALLBACK };
 }
 
+/**
+ * Pick the confirm-card's INITIAL frequency. A confidently-parsed schedule keeps
+ * its decoded shape. Otherwise, if the utterance stated a recurrence but no time
+ * (suggestedFrequency), honour it — a multi-day weekly hint ("1,5") becomes
+ * 'custom' — so the card doesn't fall to a one-shot 'once'. A truly scheduleless
+ * utterance stays 'once'. (Pure so it's unit-testable without React Native.)
+ */
+export function resolveInitialFrequency(
+  scheduleConfident: boolean,
+  decodedFrequency: Frequency,
+  suggestedFrequency: 'daily' | 'weekly' | undefined,
+  suggestedDowList: string | undefined,
+): Frequency {
+  if (scheduleConfident) return decodedFrequency;
+  if (suggestedFrequency === 'weekly') return (suggestedDowList ?? '').includes(',') ? 'custom' : 'weekly';
+  if (suggestedFrequency === 'daily') return 'daily';
+  return 'once';
+}
+
 /** Build a whitelisted cron from selector state, or null when the selection is invalid. */
 export function buildCron(
   f: Frequency,

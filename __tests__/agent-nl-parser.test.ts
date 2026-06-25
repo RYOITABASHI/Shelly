@@ -166,6 +166,96 @@ describe('parseAgentNL — daily (EN)', () => {
   });
 });
 
+describe('parseAgentNL — cross-model (Codex) review fixes', () => {
+  // G-1: "1日1回" family = once per day → daily marker.
+  it('1日1回 / 1日に1回 / 一日一回 are recognised as a daily recurrence', () => {
+    for (const u of [
+      'arxivを1日1回チェックして8時に通知',
+      '1日に1回ニュースを8時にまとめて',
+      '一日一回8時に集計して',
+    ]) {
+      expect(parseAgentNL(u).schedule).toBe('0 8 * * *');
+    }
+  });
+
+  it('1日1回 WITHOUT a time → daily suggestion, not a one-shot', () => {
+    const d = parseAgentNL('arxivを1日1回チェックして要点を3行で教えて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.suggestedFrequency).toBe('daily');
+  });
+
+  // G-1 date-collision guard: "7月1日" / "21日" are DATES, not "once per day".
+  it('a date context (7月1日に1回 / 21日に1回) is NOT treated as daily', () => {
+    expect(parseAgentNL('7月1日に1回9時に通知して').schedule).not.toBe('0 9 * * *');
+    expect(parseAgentNL('21日に1回9時にまとめて').schedule).not.toBe('0 9 * * *');
+  });
+
+  // G-1 compound-日 guard (pre-push review): a kanji day-word + "1回" is a ONE-SHOT
+  // ("today/tomorrow, once"), NOT a daily recurrence. The required leading "1日"
+  // run keeps these out.
+  it('compound 日 one-shots (今日に1回 / 明日に1回 / 誕生日に1回) are NOT daily', () => {
+    for (const u of ['今日に1回9時にまとめて', '明日に1回9時に通知して', '誕生日に1回9時に祝って']) {
+      expect(parseAgentNL(u).schedule).not.toBe('0 9 * * *');
+      expect(parseAgentNL(u).scheduleConfident).toBe(false);
+    }
+  });
+
+  // G-2: a stated recurrence without a time carries a frequency suggestion so the
+  // card pre-selects it instead of falling to 'once'/run-now.
+  it('毎日 without a time → suggestedFrequency daily (schedule still null)', () => {
+    const d = parseAgentNL('毎日ニュースまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.suggestedFrequency).toBe('daily');
+  });
+
+  it('毎週金曜 without a time → weekly suggestion with the dow', () => {
+    const d = parseAgentNL('毎週金曜にまとめて');
+    expect(d.suggestedFrequency).toBe('weekly');
+    expect(d.suggestedDowList).toBe('5');
+  });
+
+  it('月曜と金曜 without a time → weekly suggestion with the multi-dow', () => {
+    expect(parseAgentNL('月曜と金曜にまとめて').suggestedDowList).toBe('1,5');
+  });
+
+  // EN time: the number bound to "at" wins over an earlier bare number.
+  it('EN: "top 10 posts at 8" → 8:00, not 10:00', () => {
+    expect(parseAgentNL('every day process top 10 posts at 8').schedule).toBe('0 8 * * *');
+  });
+
+  // EN H:MM with meridiem — minute AND am/pm must both survive (pre-push review).
+  it('EN: H:MMpm / H:MMam keep both minute and meridiem', () => {
+    expect(parseAgentNL('every day at 8:30pm summarize').schedule).toBe('30 20 * * *');
+    expect(parseAgentNL('daily 11:45pm digest').schedule).toBe('45 23 * * *');
+    expect(parseAgentNL('every day 9:15am report').schedule).toBe('15 9 * * *');
+    expect(parseAgentNL('every day 12:30am notify').schedule).toBe('30 0 * * *');
+    expect(parseAgentNL('every day 8pm post').schedule).toBe('0 20 * * *');
+  });
+
+  it('EN: a bare number with no time marker is NOT a time', () => {
+    const d = parseAgentNL('summarize 5 articles every day');
+    expect(d.suggestedFrequency).toBe('daily'); // daily intent kept
+    expect(d.suggestedTime).toBeUndefined(); // "5" not mistaken for 5:00
+  });
+
+  // derivePrompt: a topic BEFORE a mid-sentence schedule clause survives.
+  it('strips the schedule clause in place, preserving the leading topic', () => {
+    const d = parseAgentNL('GitHub Trendingを毎日8時にまとめて');
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.prompt).toContain('GitHub Trending');
+    expect(d.prompt).not.toContain('毎日');
+    expect(d.prompt).not.toContain('8時');
+  });
+
+  // JP time: 昼N時 is afternoon, but 昼12時 stays noon (guarded by hour < 12).
+  it('昼3時 → 15:00, 昼12時 → 12:00', () => {
+    expect(parseAgentNL('毎日昼3時に通知して').schedule).toBe('0 15 * * *');
+    expect(parseAgentNL('毎日昼12時に通知して').schedule).toBe('0 12 * * *');
+  });
+});
+
 describe('parseAgentNL — ambiguous / unparseable (never silently register)', () => {
   it('bare time, no frequency → null + suggestedTime pre-fill', () => {
     const d = parseAgentNL('8時にメールをチェックして');

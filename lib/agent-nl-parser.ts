@@ -33,6 +33,12 @@ export interface ParsedAgentDraft {
   scheduleLabel: string;
   /** When a time was parsed but the frequency was ambiguous, pre-fill this in the card. */
   suggestedTime?: { hour: number; minute: number };
+  /** A recurrence was stated but the time is missing: the card pre-selects this
+   *  frequency (instead of falling to 'once'/run-now) and asks for a time. The
+   *  schedule itself stays null/not-confident — never auto-registered. */
+  suggestedFrequency?: 'daily' | 'weekly';
+  /** Dow csv ("1" / "1,5") accompanying a 'weekly' suggestedFrequency. */
+  suggestedDowList?: string;
   /** Delivery capability. Defaults to 'draft' (write to outputPath). Never 'publish'. */
   action: AgentAction;
   /** Routed tool (reuses the keyword router). */
@@ -85,7 +91,8 @@ function extractTime(text: string): ParsedTime | null {
     if (jp[3] === '半') minute = 30;
     else if (jp[4] !== undefined) minute = parseInt(jp[4], 10);
     const meridiem = jp[1];
-    if ((meridiem === '午後' || meridiem === '夜' || meridiem === '夕方' || meridiem === '晩') && hour < 12) {
+    if ((meridiem === '午後' || meridiem === '夜' || meridiem === '夕方' || meridiem === '晩' || meridiem === '昼') && hour < 12) {
+      // 昼1時=13:00 … 昼3時=15:00; 昼12時 stays 12:00 (guarded by hour < 12).
       hour += 12;
     } else if ((meridiem === '午前' || meridiem === '朝' || meridiem === '深夜') && hour === 12) {
       hour = 0; // 午前12時/深夜12時 = 0:00
@@ -93,15 +100,28 @@ function extractTime(text: string): ParsedTime | null {
     if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
   }
 
-  // EN/numeric: "8:30am" "8 pm" "20:30" "at 9"
-  const en = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
-  if (en && (en[2] !== undefined || en[3] !== undefined || /\bat\s+\d/i.test(text))) {
-    let hour = parseInt(en[1], 10);
-    const minute = en[2] !== undefined ? parseInt(en[2], 10) : 0;
-    const mer = en[3]?.toLowerCase();
+  // EN/numeric. Ordered branches; a bare standalone number is NOT a time (ambiguous).
+  //  1. "at N(:MM)?(am/pm)?" — bound to "at", so "process top 10 posts at 8" → 8:00.
+  //  2. "H:MM(am/pm)?"       — colon form; minute and meridiem are independent so
+  //                            "8:30pm" → 20:30 and "9:15am" → 09:15 both work.
+  //  3. "H am/pm"            — bare hour carrying a meridiem ("8pm" → 20:00).
+  const at = text.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const colon = at ? null : text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
+  const meridiemOnly = at || colon ? null : text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+  const m = at || colon;
+  if (m) {
+    let hour = parseInt(m[1], 10);
+    const minute = m[2] !== undefined ? parseInt(m[2], 10) : 0;
+    const mer = m[3]?.toLowerCase();
     if (mer === 'pm' && hour < 12) hour += 12;
     else if (mer === 'am' && hour === 12) hour = 0;
     if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+  } else if (meridiemOnly) {
+    let hour = parseInt(meridiemOnly[1], 10);
+    const mer = meridiemOnly[2].toLowerCase();
+    if (mer === 'pm' && hour < 12) hour += 12;
+    else if (mer === 'am' && hour === 12) hour = 0;
+    if (hour >= 0 && hour <= 23) return { hour, minute: 0 };
   }
 
   return null;
@@ -118,6 +138,12 @@ interface ScheduleResult {
   confident: boolean;
   label: string;
   suggestedTime?: ParsedTime;
+  /** A recurrence was clearly stated but the TIME is missing, so we can't emit a
+   *  confident cron. The card pre-selects this frequency (instead of 'once') and
+   *  forces the user to pick a time. schedule stays null — never auto-registered. */
+  suggestedFrequency?: 'daily' | 'weekly';
+  /** For a weekly suggestion: the dow csv ("1" or "1,5") to pre-select the chips. */
+  suggestedDowList?: string;
 }
 
 /** Parse the schedule, constrained to the 3 whitelisted cron shapes. */
@@ -152,9 +178,18 @@ function parseSchedule(text: string): ScheduleResult {
 
   const time = extractTime(text);
 
+  // "1日1回 / 1日に1回 / 一日一回 / 1日1度" = once per day → daily. The leading "1日"
+  // run is REQUIRED (no bare 日 alternative): that both rejects a DATE context
+  // ("7月1日に1回", "21日に1回" — the digit/月 before 日 fails the negated class) and
+  // kanji-compound day-words ("今日/明日/誕生日/平日に1回" — no [1一] before 日). No JS
+  // lookbehind reliance (Hermes-safe negated class).
+  const dailyOnce = /(?:^|[^0-9０-９月/／])[1１一]\s*日\s*に?\s*[1１一]\s*[回度]/.test(text);
   // An explicit daily marker (毎日 / daily) outranks an incidental weekday mention,
   // so "毎日月曜の予定を8時に通知" stays daily instead of collapsing to weekly-Mon.
-  const dailyMarker = /毎日|毎朝|毎晩|毎夕|日次/.test(text) || /\b(every\s*day|everyday|daily|each\s+day)\b/.test(lower);
+  const dailyMarker =
+    /毎日|毎朝|毎晩|毎夕|日次/.test(text) ||
+    dailyOnce ||
+    /\b(every\s*day|everyday|daily|each\s+day|once\s+a\s+day)\b/.test(lower);
 
   // ── 2. Weekly → `M H * * D` (single day) or `M H * * d1,d2,…` (multi-day) ──
   // Collect EVERY weekday mentioned so "月曜と金曜" → `* * 1,5` instead of being
@@ -199,7 +234,8 @@ function parseSchedule(text: string): ScheduleResult {
       schedule: null,
       confident: false,
       label: `毎週${dayLabel} 時刻未設定（要選択）`,
-      suggestedTime: undefined,
+      suggestedFrequency: 'weekly',
+      suggestedDowList: dowField,
     };
   }
 
@@ -216,6 +252,7 @@ function parseSchedule(text: string): ScheduleResult {
       schedule: null,
       confident: false,
       label: '毎日 時刻未設定（要選択）',
+      suggestedFrequency: 'daily',
     };
   }
 
@@ -334,7 +371,10 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   let s = text.trim();
   if (schedule.confident) {
     s = s
-      .replace(/^.*?(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
+      // Strip the schedule clause IN PLACE (no leading `.*?`) so a topic BEFORE it
+      // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
+      // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
+      .replace(/(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
       // No-毎週 multi-day path. Two narrow strips, each requiring a trailing 時 so a
       // non-schedule opener is untouched:
       //  (A) a leading 曜-qualified weekday clause ("月曜と金曜の朝8時に…").
@@ -456,6 +496,8 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     suggestedTime: sched.suggestedTime
       ? { hour: sched.suggestedTime.hour, minute: sched.suggestedTime.minute }
       : undefined,
+    suggestedFrequency: sched.suggestedFrequency,
+    suggestedDowList: sched.suggestedDowList,
     action,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),

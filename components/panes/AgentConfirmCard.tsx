@@ -25,7 +25,7 @@ import { AgentAction, AgentActionType, AgentMemoryConfig, ToolChoice } from '@/s
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
-import { decodeCron, buildCron, type Frequency } from '@/lib/agent-card-cron';
+import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -71,19 +71,39 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
 
   const decoded = useMemo(() => decodeCron(draft.schedule), [draft.schedule]);
 
-  const [name, setName] = useState(draft.name);
-  // No confident schedule parsed ⇒ default to a one-shot "run now" (the user can
-  // still switch to Daily/Weekly/Every-N-min). A confident parse keeps its shape.
-  const [frequency, setFrequency] = useState<Frequency>(
-    draft.scheduleConfident ? decoded.frequency : 'once',
+  // Initial frequency. A confident parse keeps its shape. Otherwise, if the user
+  // clearly stated a recurrence but no time (suggestedFrequency), honour it so the
+  // card doesn't silently fall to a one-shot "run now" — a multi-day weekly hint
+  // becomes 'custom'. Only a truly scheduleless utterance defaults to 'once'.
+  const initialFrequency = resolveInitialFrequency(
+    draft.scheduleConfident,
+    decoded.frequency,
+    draft.suggestedFrequency,
+    draft.suggestedDowList,
   );
+  // The time is a PLACEHOLDER when a recurrence was stated without one — surface a
+  // "confirm the time" hint and never claim it was parsed.
+  const timeIsPlaceholder = !draft.scheduleConfident && !!draft.suggestedFrequency && !draft.suggestedTime;
+  const initialDow = draft.scheduleConfident ? decoded.dowList : draft.suggestedDowList || decoded.dowList;
+  const initialWeekday = (() => {
+    if (draft.scheduleConfident) return decoded.weekday;
+    const first = parseInt((draft.suggestedDowList ?? '').split(',')[0], 10);
+    return Number.isNaN(first) ? decoded.weekday : first;
+  })();
+
+  const [name, setName] = useState(draft.name);
+  const [frequency, setFrequency] = useState<Frequency>(initialFrequency);
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
-  const [weekday, setWeekday] = useState(decoded.weekday);
+  // When the time is only a placeholder (recurrence stated without one), Confirm is
+  // gated until the user actually touches the time — "force a manual time pick"
+  // rather than letting an unreviewed 08:00 register in one tap.
+  const [timeTouched, setTimeTouched] = useState(false);
+  const [weekday, setWeekday] = useState(initialWeekday);
   // Multi-day ('custom') DOW list (e.g. "1,5" = Mon/Fri). Editable via the weekday
   // chips below: tapping a 2nd day promotes weekly→custom; dropping back to 1 day
   // demotes custom→weekly. Preserved verbatim so a Mon/Fri preset doesn't flatten.
-  const [customDow, setCustomDow] = useState(decoded.dowList);
+  const [customDow, setCustomDow] = useState(initialDow);
   const [interval, setInterval] = useState(decoded.interval);
   const [actionType, setActionType] = useState<AgentActionType>(draft.action.type);
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
@@ -149,9 +169,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   };
 
   // Confirm gating: a one-shot needs no schedule; otherwise a valid cron is required.
+  // A placeholder time (recurrence stated without one) additionally requires the
+  // user to touch the time first, so an unreviewed default never registers silently.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
   const commandValid = actionType !== 'cli' || command.trim().length > 0;
-  const canConfirm = (isOnce || !!cron) && name.trim().length > 0 && webhookValid && commandValid;
+  const timeReady = !timeIsPlaceholder || timeTouched;
+  const canConfirm =
+    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid;
 
   const handleConfirm = () => {
     if (!canConfirm) return;
@@ -250,18 +274,27 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           <View style={styles.row}>
             <TextInput
               value={String(hour).padStart(2, '0')}
-              onChangeText={(v) => setHour(clampInt(v, 0, 23))}
+              onChangeText={(v) => {
+                setHour(clampInt(v, 0, 23));
+                setTimeTouched(true);
+              }}
               keyboardType="number-pad"
               style={[styles.inputSmall, fieldBg]}
             />
             <Text style={[styles.unit, { color: colors.foreground }]}>:</Text>
             <TextInput
               value={String(minute).padStart(2, '0')}
-              onChangeText={(v) => setMinute(clampInt(v, 0, 59))}
+              onChangeText={(v) => {
+                setMinute(clampInt(v, 0, 59));
+                setTimeTouched(true);
+              }}
               keyboardType="number-pad"
               style={[styles.inputSmall, fieldBg]}
             />
           </View>
+          {timeIsPlaceholder && (
+            <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.time_placeholder_hint')}</Text>
+          )}
           {showWeekdays && (
             <>
               <View style={styles.weekRow}>
