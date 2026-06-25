@@ -176,6 +176,17 @@ function parseSchedule(text: string): ScheduleResult {
     return { schedule: null, confident: false, label: '未設定（時間間隔は非対応・要選択）' };
   }
 
+  // Biweekly / Nth-weekday / N-times-a-week cadences are NOT expressible in the
+  // whitelisted weekly cron. Registering them as a plain weekly would silently
+  // change the meaning ("隔週月曜" → EVERY Monday, "第2月曜" → every Monday), so
+  // force manual selection. These markers are schedule-specific (not topic words).
+  if (
+    /隔週|隔月|第\s*[0-9０-９一二三四五六七八九十]+\s*(?:週|[日月火水木金土]曜)|週\s*[2-7２-７]\s*回|biweekly|fortnightly/i.test(text) ||
+    /\b(every\s+other\s+week|every\s+\d+\s+weeks?)\b/i.test(lower)
+  ) {
+    return { schedule: null, confident: false, label: '未設定（この周期は非対応・要選択）' };
+  }
+
   const time = extractTime(text);
 
   // "1日1回 / 1日に1回 / 一日一回 / 1日1度" = once per day → daily. The leading "1日"
@@ -211,7 +222,9 @@ function parseSchedule(text: string): ScheduleResult {
     );
     if (runs) {
       for (const run of runs) {
-        const chars = run.match(/[日月火水木金土]/g);
+        // Strip "曜日"/"曜" FIRST so the trailing 日 of 曜日 (e.g. "火曜日") isn't
+        // extracted as Sunday — "月曜日と火曜日" must be 1,2 not 0,1,2.
+        const chars = run.replace(/曜日?/g, ' ').match(/[日月火水木金土]/g);
         if (chars) for (const ch of chars) dows.add(JP_WEEKDAY[ch]);
       }
     }

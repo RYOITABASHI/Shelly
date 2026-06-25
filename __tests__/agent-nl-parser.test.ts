@@ -254,6 +254,34 @@ describe('parseAgentNL — cross-model (Codex) review fixes', () => {
     expect(parseAgentNL('毎日昼3時に通知して').schedule).toBe('0 15 * * *');
     expect(parseAgentNL('毎日昼12時に通知して').schedule).toBe('0 12 * * *');
   });
+
+  // 2nd-pass Codex review (correct branch): cadences not expressible in the
+  // whitelisted weekly cron must NOT be registered as a plain weekly.
+  it('隔週/第N週/第N曜/週N回 are forced to manual, not silently registered weekly', () => {
+    for (const u of ['隔週月曜9時にまとめて', '第2月曜の9時に集計して', '第3週の月曜9時に通知', '週3回9時にまとめて']) {
+      const d = parseAgentNL(u);
+      expect(d.scheduleConfident).toBe(false);
+      expect(d.schedule).toBeNull();
+    }
+  });
+
+  // The trailing 日 of 曜日 must not be mis-read as Sunday in the bare-run path.
+  it('月曜日と火曜日 / 水・木曜日 → no spurious Sunday (0)', () => {
+    expect(parseAgentNL('月曜日と火曜日の9時にまとめて').schedule).toBe('0 9 * * 1,2');
+    expect(parseAgentNL('水・木曜日の9時に集計して').schedule).toBe('0 9 * * 3,4');
+  });
+
+  // Ordering invariant: the non-expressible-cadence guard must run BEFORE the
+  // daily/weekly paths, so a 毎日+第N collision stays manual (not confident daily).
+  it('the 隔週/第N guard outranks an explicit daily marker (ordering regression)', () => {
+    expect(parseAgentNL('毎日第2週の月曜9時に通知して').scheduleConfident).toBe(false);
+    expect(parseAgentNL('毎日第2週の月曜9時に通知して').schedule).toBeNull();
+  });
+
+  // Genuine weekday 日 (Sunday) must survive — only the 曜日 trailer is stripped.
+  it('日曜日と土曜日 keeps Sunday → 0,6', () => {
+    expect(parseAgentNL('日曜日と土曜日の9時にまとめて').schedule).toBe('0 9 * * 0,6');
+  });
 });
 
 describe('parseAgentNL — ambiguous / unparseable (never silently register)', () => {

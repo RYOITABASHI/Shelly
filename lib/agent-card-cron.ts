@@ -89,8 +89,10 @@ export function buildCron(
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
   if (f === 'custom') {
-    // Multi-day (e.g. "1,5"): preserve the DOW list, still allow time edits.
+    // Multi-day (e.g. "1,5"): preserve the DOW list, still allow time edits. Each
+    // day must be a valid 0..6 (reject "1,9" etc. so a bad list can't be built).
     if (!/^\d+(,\d+)*$/.test(customDow)) return null;
+    if (customDow.split(',').some((d) => +d < 0 || +d > 6)) return null;
     return `${minute} ${hour} * * ${customDow}`;
   }
   if (f === 'weekly') {

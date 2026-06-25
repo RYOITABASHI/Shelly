@@ -9,10 +9,14 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 // A day-of-week field of a single day OR a comma list (e.g. "1,5" = Mon & Fri).
 const DOW_LIST_RE = /^\d+(,\d+)*$/;
 
-/** Parse a cron day-of-week field into sorted, de-duped 0–6 (cron 0 or 7 = Sun). */
+/** Parse a cron day-of-week field into sorted, de-duped 0–6 (cron 0 or 7 = Sun).
+ *  Rejects out-of-range values (only 0..7 are valid) so a malformed stored cron
+ *  like "1,9" is not silently normalised (9 % 7 = 2) into the wrong day. */
 export function parseDowList(dow: string): number[] | null {
   if (!DOW_LIST_RE.test(dow)) return null;
-  const days = dow.split(',').map((d) => parseInt(d, 10) % 7);
+  const nums = dow.split(',').map((d) => parseInt(d, 10));
+  if (nums.some((n) => n > 7)) return null; // 0 and 7 both = Sunday; >7 is invalid
+  const days = nums.map((n) => n % 7);
   return Array.from(new Set(days)).sort((a, b) => a - b);
 }
 
@@ -24,7 +28,8 @@ export function cronToIntervalMs(cron: string): number | null {
 
   const everyMinMatch = min.match(/^\*\/(\d+)$/);
   if (everyMinMatch && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
-    return parseInt(everyMinMatch[1]) * 60 * 1000;
+    const n = parseInt(everyMinMatch[1], 10);
+    return n >= 1 ? n * 60 * 1000 : null; // reject "*/0" (would be a 0ms interval)
   }
 
   if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && dow === '*') {
@@ -34,8 +39,8 @@ export function cronToIntervalMs(cron: string): number | null {
   // Single day OR a multi-day list (e.g. "1,5" = Mon/Fri). intervalMs is only a
   // fallback — the native receiver re-arms from the cron string after each fire
   // (AgentAlarmReceiver.nextTriggerAt), so a daily net is safe and never skips a
-  // listed day even if a later parse fails.
-  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && DOW_LIST_RE.test(dow)) {
+  // listed day even if a later parse fails. parseDowList rejects out-of-range dow.
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && parseDowList(dow)) {
     return 24 * 60 * 60 * 1000;
   }
 

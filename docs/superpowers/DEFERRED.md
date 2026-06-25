@@ -251,8 +251,13 @@
 
 **さらに残る P3（今回は未対応）**:
 4. **`正午`/`深夜`単体・全角数字（`８時`）・漢数字（`八時`）の時刻抽出**未対応。
-5. **`平日`/`週末`/`土日`/`隔週`/`第2月曜`/`毎月1日`/`1日おき`/`週3`** など語彙・複合スケジュールは未対応（安全側で manual に落ちる）。
-6. **scheduler の DOW 入力検証が緩い**（`agent-scheduler.ts` `parseDowList` は `8`/`999` も `%7` 正規化）。内部生成のみなので低リスクだが、保存済み cron を読むなら `0..7` に制限したい。
+5. **`平日`/`週末`/`土日`/`毎月1日`/`1日おき`** など語彙スケジュールは未対応（安全側で manual に落ちる）。
+
+**2モデル目（Codex, 対象ブランチ確定後）レビューで追加修正した分（実装済・テスト済）**:
+- `隔週`/`第N週`/`第N曜`/`週N回`/`biweekly`/`every other week` は whitelist 外なので「通常 weekly として確信登録」せず **manual に強制**（旧: `隔週月曜`→毎週月曜に化けていた）。
+- `月曜日と火曜日`/`水・木曜日` の bare-run 抽出で `曜日` の `日` を日曜と誤検出していたのを修正（`曜日?` を strip してから抽出）。
+- DOW/interval 入力検証を厳格化: `parseDowList` は `8`/`1,9` 等の範囲外を `null`、`cronToIntervalMs` は `*/0` を `null`、card `buildCron('custom')` は dow 0..6 範囲チェック。
+- placeholder-time の Confirm gate を clock-time 頻度（daily/weekly/custom）に限定（`once`/`interval` に切替時のデッドロック回避）。
 
 ### Claude Code Bash tool Exit code 1
 

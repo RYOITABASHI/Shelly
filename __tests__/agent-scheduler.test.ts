@@ -21,6 +21,14 @@ describe('parseDowList — cron day-of-week field', () => {
     expect(parseDowList('mon')).toBeNull();
     expect(parseDowList('')).toBeNull();
   });
+
+  it('rejects out-of-range days instead of silently % 7 normalizing them', () => {
+    // Regression (2nd-pass review): "1,9" used to become [1,2] (9 % 7). A bad list
+    // must be rejected so it can't fire on a day the user never chose.
+    expect(parseDowList('1,9')).toBeNull();
+    expect(parseDowList('8')).toBeNull();
+    expect(parseDowList('1,5,99')).toBeNull();
+  });
 });
 
 describe('cronToIntervalMs — multi-day schedules are now schedulable', () => {
@@ -35,6 +43,11 @@ describe('cronToIntervalMs — multi-day schedules are now schedulable', () => {
     expect(cronToIntervalMs('0 8 * * *')).toBe(24 * 60 * 60 * 1000);
     expect(cronToIntervalMs('30 9 * * 3')).toBe(24 * 60 * 60 * 1000);
     expect(cronToIntervalMs('not a cron')).toBeNull();
+  });
+
+  it('rejects "*/0" and an out-of-range dow list', () => {
+    expect(cronToIntervalMs('*/0 * * * *')).toBeNull(); // 0ms interval is invalid
+    expect(cronToIntervalMs('0 8 * * 1,9')).toBeNull(); // 9 is not a valid day
   });
 });
 
@@ -60,5 +73,13 @@ describe('nextTriggerMs — soonest of the listed days', () => {
   it('picks the nearer of the two listed days (never further than 7 days out)', () => {
     const ms = nextTriggerMs('0 8 * * 1,5');
     expect(ms - Date.now()).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('an out-of-range dow does not crash or fire on a wrong day (returns a future time)', () => {
+    // installSchedule gates this via cronToIntervalMs (→null), so it should never
+    // be installed; if nextTriggerMs is called directly it must stay safe, not NaN.
+    const ms = nextTriggerMs('0 8 * * 1,9');
+    expect(Number.isFinite(ms)).toBe(true);
+    expect(ms).toBeGreaterThan(Date.now());
   });
 });

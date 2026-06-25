@@ -173,7 +173,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // user to touch the time first, so an unreviewed default never registers silently.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
   const commandValid = actionType !== 'cli' || command.trim().length > 0;
-  const timeReady = !timeIsPlaceholder || timeTouched;
+  // The placeholder-time gate only applies to clock-time frequencies. If the user
+  // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
+  // uses an HH:MM), there's nothing to confirm — don't deadlock Confirm.
+  const freqUsesClockTime = frequency === 'daily' || frequency === 'weekly' || frequency === 'custom';
+  const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
   const canConfirm =
     (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid;
 

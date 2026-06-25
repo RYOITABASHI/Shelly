@@ -51,4 +51,10 @@ describe('agent confirm-card cron codec', () => {
     expect(buildCron('custom', 8, 0, 1, 15, 'bad')).toBeNull();
     expect(buildCron('interval', 0, 0, 0, 99, '')).toBeNull(); // interval out of range
   });
+
+  it('rejects an out-of-range custom DOW list', () => {
+    expect(buildCron('custom', 8, 0, 1, 15, '1,5')).toBe('0 8 * * 1,5');
+    expect(buildCron('custom', 8, 0, 1, 15, '1,9')).toBeNull(); // 9 is not 0..6
+    expect(buildCron('custom', 8, 0, 1, 15, '7')).toBeNull(); // 7 not allowed here (card uses 0..6)
+  });
 });
