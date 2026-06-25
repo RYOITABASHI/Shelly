@@ -147,6 +147,33 @@ describe('generateRunScript — studio context only for content-pipeline agents'
     expect(agentUsesStudioContext({ ...agent({ type: 'local' }), prompt: 'draft a blog post' })).toBe(true);
   });
 
+  it('a general collection agent uses the global output destination (clean, findable)', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'ニュースを集めて' });
+    // Non-studio → honour the global target with a clean date-folder layout.
+    expect(s).toContain('USE_GLOBAL_OUTPUT=1');
+    expect(s).toContain('case "${SHELLY_AGENT_OUTPUT_TARGET:-local}" in');
+    expect(s).toContain('OUT_BASE="${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}"');
+    expect(s).toContain('OUT_BASE="${SHELLY_AGENT_CUSTOM_PATH:-$HOME/agent-output}"');
+    // Default local lands in a findable folder, NOT the buried ~/.shelly/.../output.md.
+    expect(s).toContain('OUT_BASE="$HOME/agent-output"');
+    // Filename: {date}_{title}.md (readable slug), under a {date} subfolder.
+    expect(s).toContain('SAVED_FILE="$OUT_BASE/$DATE/${DATE}_$SLUG.md"');
+    expect(s).toContain('[ -n "${SHELLY_AGENT_TOPIC_FOLDER:-}" ] && OUT_BASE="$OUT_BASE/$SHELLY_AGENT_TOPIC_FOLDER"');
+  });
+
+  it('a content-studio agent keeps its explicit path (global output NOT applied)', () => {
+    const s = generateRunScript(agent({ type: 'ab-article-eval' }));
+    expect(s).toContain('USE_GLOBAL_OUTPUT=0');
+    // Studio path: existing template + keyword Obsidian routing remain.
+    expect(s).toContain('SAVED_FILE="$OUTPUT_DIR/$REL_NAME"');
+    expect(s).toContain('OBSIDIAN_TARGET="90_Log/Agent_Output"');
+  });
+
+  it('emits parseable shell with the global-output branch', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'ニュースを集めて' });
+    expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+  });
+
   it('a general task emits STUDIO_CONTEXT=0 and gates the ~20KB context build', () => {
     const s = generateRunScript(agent({ type: 'local' }));
     expect(s).toContain('STUDIO_CONTEXT=0');

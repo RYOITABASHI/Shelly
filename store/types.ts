@@ -394,6 +394,19 @@ export type AppSettings = {
    *  'escalate' (default) climbs to Codex; 'stop' halts at the free tier and
    *  reports exhaustion instead of consuming Codex / paid quota. */
   autonomousCloudOnExhaustion?: 'escalate' | 'stop';
+  // ─── Agent output destination (where saved drafts land) ─────────────────────
+  /** Where an agent's saved draft is written. 'local' (default) → a clean,
+   *  findable local folder ($HOME/agent-output); 'obsidian' → the configured
+   *  Vault; 'custom' → an arbitrary path (e.g. a Drive-synced /sdcard folder).
+   *  Applies to general collection agents; content-studio agents keep their
+   *  explicit paths. Layout: <base>/<topic?>/{date}/{date}_{title}.md. */
+  agentOutputTarget?: 'local' | 'obsidian' | 'custom';
+  /** Obsidian Vault root (also used for the content-studio mirror). */
+  agentVaultPath?: string;
+  /** Optional topic root inserted before the date folder (e.g. "STEAM_AI"). */
+  agentTopicFolder?: string;
+  /** Base path when agentOutputTarget === 'custom'. */
+  agentCustomPath?: string;
   // ─── @team Table ────────────────────────────────────────────────────────────
   /** @teamに参加させるエージェントのON/OFF */
   teamMembers: {

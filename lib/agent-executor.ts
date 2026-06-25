@@ -278,6 +278,10 @@ LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
 SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
 STUDIO_CONTEXT=${injectStudioContext ? '1' : '0'}
+# General collection agents (non content-studio) honour the global output-target
+# setting and a clean <base>/<topic?>/<date>/<date>_<title>.md layout. Studio
+# agents keep their explicit paths + keyword Obsidian routing.
+USE_GLOBAL_OUTPUT=${injectStudioContext ? '0' : '1'}
 AGENT_AUTONOMOUS=${agent.autonomous === true ? '1' : '0'}
 
 START_TIME=$(date +%s)
@@ -643,6 +647,35 @@ save_draft_result() {
   result_file="$1"
   DATE=$(date +%Y-%m-%d)
   TIME=$(date +%H%M%S)
+
+  # General collection agents: write to the user-chosen destination with a clean,
+  # findable layout <base>/<topic?>/<date>/<date>_<title>.md. The .sh sources
+  # ~/.shelly/agents/.env, so these globals (written by Settings) are in scope.
+  # Default target 'local' lands in $HOME/agent-output (NOT the old buried
+  # ~/.shelly/agents/<name>/output.md path that was hard to find).
+  if [ "\${USE_GLOBAL_OUTPUT:-0}" = "1" ]; then
+    case "\${SHELLY_AGENT_OUTPUT_TARGET:-local}" in
+      obsidian)
+        OUT_BASE="\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}"
+        [ -n "\${SHELLY_AGENT_TOPIC_FOLDER:-}" ] && OUT_BASE="$OUT_BASE/$SHELLY_AGENT_TOPIC_FOLDER"
+        ;;
+      custom)
+        OUT_BASE="\${SHELLY_AGENT_CUSTOM_PATH:-$HOME/agent-output}"
+        [ -n "\${SHELLY_AGENT_TOPIC_FOLDER:-}" ] && OUT_BASE="$OUT_BASE/$SHELLY_AGENT_TOPIC_FOLDER"
+        ;;
+      *)
+        OUT_BASE="$HOME/agent-output"
+        ;;
+    esac
+    SAVED_FILE="$OUT_BASE/$DATE/\${DATE}_$SLUG.md"
+    mkdir -p "$(dirname "$SAVED_FILE")"
+    cp "$result_file" "$SAVED_FILE"
+    register_source_urls "$result_file"
+    return 0
+  fi
+
+  # Content-studio agents: keep the explicit per-agent OUTPUT_DIR + template, and
+  # the keyword-routed Obsidian mirror below.
   # Resolve the output-filename template ({date}/{slug}/{time}); '/' yields a
   # date-folder layout. SLUG/DATE/TIME contain no '|' so it is a safe sed
   # delimiter. The template was sanitized in TS (no leading '/' or '..').

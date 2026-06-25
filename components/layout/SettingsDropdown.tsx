@@ -762,8 +762,27 @@ function AgentsSection() {
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
   const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const cloudExhaustion = useSettingsStore((s) => s.settings.autonomousCloudOnExhaustion ?? 'escalate');
+  const outputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
+  const vaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
+  const topicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
+  const customPath = useSettingsStore((s) => s.settings.agentCustomPath ?? '');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  // Local edit state for the path fields so each keystroke doesn't trigger an
+  // .env sync; commit on blur (onEndEditing).
+  const [vaultDraft, setVaultDraft] = React.useState(vaultPath);
+  const [topicDraft, setTopicDraft] = React.useState(topicFolder);
+  const [customDraft, setCustomDraft] = React.useState(customPath);
+  React.useEffect(() => setVaultDraft(vaultPath), [vaultPath]);
+  React.useEffect(() => setTopicDraft(topicFolder), [topicFolder]);
+  React.useEffect(() => setCustomDraft(customPath), [customPath]);
+
+  const cycleOutputTarget = () => {
+    const order = ['local', 'obsidian', 'custom'] as const;
+    const next = order[(order.indexOf(outputTarget) + 1) % order.length];
+    updateSettings({ agentOutputTarget: next });
+    void flushPendingAgentEnvSync('Agent Output');
+  };
 
   const currentLabel =
     DEFAULT_AGENT_OPTIONS.find((o) => o.value === defaultAgent)?.label ?? 'Codex';
@@ -887,6 +906,63 @@ function AgentsSection() {
             </Text>
           </Pressable>
         </Row>
+      )}
+      <Row label={t('agents.output_target')}>
+        <Pressable
+          style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
+          onPress={cycleOutputTarget}
+          hitSlop={4}
+        >
+          <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>{t(`agents.output_${outputTarget}`)}</Text>
+        </Pressable>
+      </Row>
+      {outputTarget === 'obsidian' && (
+        <TextInput
+          value={vaultDraft}
+          onChangeText={setVaultDraft}
+          onEndEditing={() => {
+            updateSettings({ agentVaultPath: vaultDraft.trim() });
+            void flushPendingAgentEnvSync('Agent Output');
+          }}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('agents.vault_path_ph')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+      )}
+      {outputTarget === 'custom' && (
+        <TextInput
+          value={customDraft}
+          onChangeText={setCustomDraft}
+          onEndEditing={() => {
+            updateSettings({ agentCustomPath: customDraft.trim() });
+            void flushPendingAgentEnvSync('Agent Output');
+          }}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('agents.custom_path_ph')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+      )}
+      {(outputTarget === 'obsidian' || outputTarget === 'custom') && (
+        <TextInput
+          value={topicDraft}
+          onChangeText={setTopicDraft}
+          onEndEditing={() => {
+            updateSettings({ agentTopicFolder: topicDraft.trim() });
+            void flushPendingAgentEnvSync('Agent Output');
+          }}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('agents.topic_folder_ph')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
       )}
     </Section>
   );

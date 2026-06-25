@@ -68,6 +68,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // escalate to Codex by default.
   autonomousCloudConsent: false,
   autonomousCloudOnExhaustion: 'escalate' as const,
+  // Agent output: default to a clean, findable local folder. Switch to 'obsidian'
+  // (with a Vault path) or 'custom' to unify saved drafts elsewhere.
+  agentOutputTarget: 'local' as const,
+  agentVaultPath: '',
+  agentTopicFolder: '',
+  agentCustomPath: '',
   realtimeTranslateEnabled: false,
   llmInterpreterEnabled: false,
   externalKeyboardShortcuts: false,
@@ -246,6 +252,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       if ('autonomousCloudOnExhaustion' in newSettings) {
         envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD_STOP', newSettings.autonomousCloudOnExhaustion === 'stop' ? '1' : '0']);
+      }
+      if ('agentOutputTarget' in newSettings && typeof newSettings.agentOutputTarget === 'string') {
+        envUpdates.push(['SHELLY_AGENT_OUTPUT_TARGET', newSettings.agentOutputTarget]);
+      }
+      if ('agentVaultPath' in newSettings && typeof newSettings.agentVaultPath === 'string') {
+        // Reuse OBSIDIAN_VAULT_PATH so the content-studio mirror benefits too.
+        envUpdates.push(['OBSIDIAN_VAULT_PATH', newSettings.agentVaultPath]);
+      }
+      if ('agentTopicFolder' in newSettings && typeof newSettings.agentTopicFolder === 'string') {
+        envUpdates.push(['SHELLY_AGENT_TOPIC_FOLDER', newSettings.agentTopicFolder]);
+      }
+      if ('agentCustomPath' in newSettings && typeof newSettings.agentCustomPath === 'string') {
+        envUpdates.push(['SHELLY_AGENT_CUSTOM_PATH', newSettings.agentCustomPath]);
       }
       if ('localLlmUrl' in newSettings && typeof newSettings.localLlmUrl === 'string') {
         envUpdates.push(['LOCAL_LLM_URL', newSettings.localLlmUrl]);
