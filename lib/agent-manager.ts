@@ -432,10 +432,12 @@ async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): 
       hasCerebrasKey: /CEREBRAS_API_KEY=1/.test(out),
       hasGroqKey: /GROQ_API_KEY=1/.test(out),
       // Consent defaults OFF (fail-closed) when the flag is absent/unreadable.
-      // Anchor to an exact `=1` line so a malformed value (=10, =1foo) reads as
-      // OFF, not ON — a garbage value must never fail OPEN into cloud opt-in.
-      autonomousCloudConsent: /(^|\n)SHELLY_AUTONOMOUS_CLOUD=1(\n|$)/.test(out),
-      autonomousCloudStop: /(^|\n)SHELLY_AUTONOMOUS_CLOUD_STOP=1(\n|$)/.test(out),
+      // Anchor to an exact `1` (optionally quoted — settings-store writes the
+      // value via dotenvValue() which wraps it as '1', so the .env line is
+      // SHELLY_AUTONOMOUS_CLOUD='1'). Still strict: a malformed value (=10,
+      // =1foo, ='1foo') reads as OFF, never fail-open into cloud opt-in.
+      autonomousCloudConsent: /(^|\n)SHELLY_AUTONOMOUS_CLOUD=['"]?1['"]?(\n|$)/.test(out),
+      autonomousCloudStop: /(^|\n)SHELLY_AUTONOMOUS_CLOUD_STOP=['"]?1['"]?(\n|$)/.test(out),
     };
   } catch {
     // Conservative on read failure: free-cloud keys assumed present (attended
