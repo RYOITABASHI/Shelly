@@ -191,10 +191,20 @@ describe('parseAgentNL — G6 pipeline preset', () => {
     expect(d.name).toContain('量子コンピュータ');
   });
 
-  it("the user's own schedule overrides the preset's Mon/Fri default", () => {
+  it("the user's own schedule overrides the preset's Mon/Fri, and the topic drops the schedule clause", () => {
     const d = parseAgentNL('毎日8時に量子コンピュータのパイプライン');
     expect(d.schedule).toBe('0 8 * * *');
     expect(d.orchestrationSteps?.length).toBe(4);
+    // Topic must be the subject, not "8時に量子コンピュータ".
+    expect(d.orchestrationSteps?.[0]).toContain('量子コンピュータ');
+    expect(d.orchestrationSteps?.[0]).not.toContain('8時');
+  });
+
+  it('an unparseable user schedule falls to manual selection, NOT silently Mon/Fri', () => {
+    const d = parseAgentNL('90分ごとにSTEAMのパイプライン');
+    expect(d.orchestrationSteps?.length).toBe(4); // still the pipeline
+    expect(d.scheduleConfident).toBe(false); // but the schedule needs picking
+    expect(d.schedule).toBeNull();
   });
 
   it('a normal collection utterance (no パイプライン) stays single-step', () => {
@@ -202,11 +212,12 @@ describe('parseAgentNL — G6 pipeline preset', () => {
     expect(d.orchestrationSteps).toBeUndefined();
   });
 
-  it('does NOT hijack a DevOps "fix the CI/CD pipeline" request into the collection preset', () => {
-    // The build-pipeline sense of "pipeline" is a debug request, not collection.
+  it('does NOT hijack the DevOps / design senses of "pipeline" into the collection preset', () => {
     expect(parseAgentNL('CI/CDパイプラインのエラーを直して').orchestrationSteps).toBeUndefined();
     expect(parseAgentNL('build pipeline failed, fix it').orchestrationSteps).toBeUndefined();
     expect(parseAgentNL('デプロイパイプラインのジョブが失敗した').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('データパイプラインを設計して').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('design an ML pipeline architecture').orchestrationSteps).toBeUndefined();
   });
 });
 

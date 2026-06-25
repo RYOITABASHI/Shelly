@@ -214,6 +214,8 @@
 
 **Why not now**: 確認カードが登録をゲートし、ソフト指示でモデルは上限を守るので v1 は成立。ハード保証は X 投稿の厳密 280 字運用を始める時に必要。
 
+**補足（既存特性・G6 で顕在化）**: orchestration の各ステップは `buildStepPrompt(base, step, priorResults)` の**全文**で `detectRouteSignals` される。base prompt は中立化済（`{topic}の定例レポート`）だが、**前段の収集結果（最新ニュース本文）が priorResults に載ると、要約ステップでも needsWeb が立ち web ルートになり得る**。dead-end ではない（cloud で要約は可能、consent ON）が「要約は端末内」の意図が崩れ cloud quota を食う。根治はステップを instruction でルートする `routeHint`（resolveEscalationLadder に渡す）だが orchestration 共通の変更で面積が大きいため後回し。P2。
+
 ### Claude Code Bash tool Exit code 1
 
 **優先度**: P1

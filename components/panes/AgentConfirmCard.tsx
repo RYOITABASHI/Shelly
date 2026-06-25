@@ -25,6 +25,7 @@ import { AgentAction, AgentActionType, AgentMemoryConfig, ToolChoice } from '@/s
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
+import { decodeCron, buildCron, type Frequency } from '@/lib/agent-card-cron';
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -46,54 +47,11 @@ export interface ConfirmedAgentDraft {
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
-type Frequency = 'once' | 'daily' | 'weekly' | 'interval';
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
 const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
-
-/** Parse an existing cron (when the draft was confident) back into selector state. */
-function decodeCron(cron: string | null): {
-  frequency: Frequency;
-  hour: number;
-  minute: number;
-  weekday: number;
-  interval: number;
-} {
-  const fallback = { frequency: 'daily' as Frequency, hour: 8, minute: 0, weekday: 1, interval: 15 };
-  if (!cron) return fallback;
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return fallback;
-  const [min, hour, , , dow] = parts;
-  const everyMin = min.match(/^\*\/(\d+)$/);
-  if (everyMin && hour === '*') {
-    return { ...fallback, frequency: 'interval', interval: parseInt(everyMin[1], 10) };
-  }
-  if (/^\d+$/.test(min) && /^\d+$/.test(hour)) {
-    if (/^\d+$/.test(dow)) {
-      return { ...fallback, frequency: 'weekly', minute: +min, hour: +hour, weekday: +dow };
-    }
-    return { ...fallback, frequency: 'daily', minute: +min, hour: +hour };
-  }
-  return fallback;
-}
-
-/** Build a whitelisted cron from selector state, or null when the selection is invalid. */
-function buildCron(f: Frequency, hour: number, minute: number, weekday: number, interval: number): string | null {
-  if (f === 'once') return null; // one-shot: no schedule
-  if (f === 'interval') {
-    if (!Number.isInteger(interval) || interval < 1 || interval > 59) return null;
-    return `*/${interval} * * * *`;
-  }
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (f === 'weekly') {
-    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return null;
-    return `${minute} ${hour} * * ${weekday}`;
-  }
-  return `${minute} ${hour} * * *`;
-}
 
 function clampInt(raw: string, min: number, max: number): number {
   const n = parseInt(raw.replace(/[^\d]/g, ''), 10);
@@ -122,6 +80,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
   const [weekday, setWeekday] = useState(decoded.weekday);
+  // Multi-day ('custom') DOW list (e.g. "1,5" = Mon/Fri) preserved verbatim so a
+  // Mon/Fri pipeline preset doesn't collapse to daily on confirm.
+  const [customDow] = useState(decoded.dowList);
   const [interval, setInterval] = useState(decoded.interval);
   const [actionType, setActionType] = useState<AgentActionType>(draft.action.type);
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
@@ -151,8 +112,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
 
   const isOnce = frequency === 'once';
   const cron = useMemo(
-    () => buildCron(frequency, hour, minute, weekday, interval),
-    [frequency, hour, minute, weekday, interval],
+    () => buildCron(frequency, hour, minute, weekday, interval, customDow),
+    [frequency, hour, minute, weekday, interval, customDow],
   );
 
   // Confirm gating: a one-shot needs no schedule; otherwise a valid cron is required.
@@ -198,7 +159,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           schedule: isOnce
             ? t('agentcard.sched_once')
             : cron
-            ? scheduleHuman(frequency, hour, minute, weekday, interval, t)
+            ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow)
             : t('agentcard.schedule_unset'),
           route: autonomous
             ? keepWebTool
@@ -228,6 +189,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           { key: 'daily', label: t('agentcard.freq_daily') },
           { key: 'weekly', label: t('agentcard.freq_weekly') },
           { key: 'interval', label: t('agentcard.freq_interval') },
+          // Multi-day presets (e.g. Mon/Fri) surface a read-through 'custom' chip
+          // labelled with the weekdays so the schedule isn't silently flattened.
+          ...(frequency === 'custom'
+            ? [{ key: 'custom', label: customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・') }]
+            : []),
         ]}
         value={frequency}
         onChange={(k) => setFrequency(k as Frequency)}
@@ -432,9 +398,14 @@ function scheduleHuman(
   weekday: number,
   interval: number,
   t: (k: string, p?: Record<string, string | number>) => string,
+  customDow = '',
 ): string {
   const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
+  if (f === 'custom') {
+    const days = customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・');
+    return t('agentcard.sched_weekly', { day: days, time: hhmm });
+  }
   if (f === 'weekly') return t('agentcard.sched_weekly', { day: WEEKDAY_LABELS[weekday], time: hhmm });
   return t('agentcard.sched_daily', { time: hhmm });
 }

@@ -330,10 +330,13 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
  */
 function detectPipelinePreset(text: string): PipelinePreset | null {
   if (!/パイプライン|pipeline/i.test(text)) return null;
-  // Don't hijack a DevOps "fix my CI/CD pipeline" request into a data-collection
-  // preset — those are debugging, not scheduled collection. A fix/error/CI cue
-  // means the user is talking about a build pipeline, not a content pipeline.
-  if (/エラー|直し|直す|修正|\bfix\b|失敗|\bfail|デプロイ|deploy|\bci\b|\bcd\b|ci\/cd|cicd|ジョブ|\bjob\b|\bbuild\b|ビルド/i.test(text)) {
+  // Don't hijack the OTHER senses of "pipeline" into a data-collection preset:
+  //  - DevOps / CI build pipelines (debugging, not scheduled collection)
+  //  - "design / architect a pipeline" (engineering, not collection)
+  if (
+    /エラー|直し|直す|修正|\bfix\b|失敗|\bfail|デプロイ|deploy|\bci\b|\bcd\b|ci\/cd|cicd|ジョブ|\bjob\b|\bbuild\b|ビルド/i.test(text) ||
+    /設計|構築|アーキ|\bdesign\b|\barchitect|\bdata pipeline\b|データパイプライン/i.test(text)
+  ) {
     return null;
   }
   const m = text.match(
@@ -342,7 +345,11 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
   let topic = (m?.[1] ?? '').trim();
   topic = topic
     .replace(/[@＠]?agent\s*/gi, '')
-    .replace(/^(毎日|毎週|毎朝|毎晩|定期的?に?)\s*/g, '')
+    // Strip a leading schedule clause so "毎日8時に量子コンピュータ" → "量子コンピュータ".
+    .replace(
+      /^((?:毎日|毎週|毎朝|毎晩|毎夕|定期的?に?|\d+\s*時(?:\s*\d+\s*分)?|\d+\s*分(?:ごと|おき)?|[日月火水木金土]曜日?)\s*に?\s*)+/g,
+      '',
+    )
     .trim();
   if (/^steam/i.test(topic) || topic.length < 2) topic = '';
   return buildSteamPipeline({ topic: topic || undefined });
@@ -362,13 +369,30 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   if (preset) {
     const presetSched = parseSchedule(rawText);
     const presetSuggestion = suggestTool(preset.prompt);
+    // Use the preset's Mon/Fri default ONLY when the user gave no schedule cue at
+    // all. If they stated one that we couldn't confidently parse (e.g. "90分ごと"),
+    // fall to manual selection rather than silently rewriting it to Mon/Fri.
+    const hasScheduleCue = /毎日|毎週|毎朝|毎晩|毎夕|日次|[日月火水木金土]曜|\d+\s*時|\d+\s*分|ごと|おき|daily|weekly|every|hourly|\bmin/i.test(rawText);
+    const usePresetDefault = !presetSched.confident && !hasScheduleCue;
+    const schedule = presetSched.confident
+      ? presetSched.schedule
+      : usePresetDefault
+      ? preset.schedule
+      : null;
     return {
       name: deriveName(preset.name),
       prompt: preset.prompt,
       orchestrationSteps: preset.orchestration.steps,
-      schedule: presetSched.confident ? presetSched.schedule : preset.schedule,
-      scheduleConfident: true,
-      scheduleLabel: presetSched.confident ? presetSched.label : '毎週 月・金 8:00',
+      schedule,
+      scheduleConfident: presetSched.confident || usePresetDefault,
+      scheduleLabel: presetSched.confident
+        ? presetSched.label
+        : usePresetDefault
+        ? '毎週 月・金 8:00'
+        : presetSched.label,
+      suggestedTime: presetSched.suggestedTime
+        ? { hour: presetSched.suggestedTime.hour, minute: presetSched.suggestedTime.minute }
+        : undefined,
       action: detectAction(rawText),
       tool: presetSuggestion.tool,
       toolLabel: presetSuggestion.label ?? toolChoiceToLabel(presetSuggestion.tool),

@@ -69,7 +69,11 @@ export function buildSteamPipeline(opts: {
 
   return {
     name: `${topic} 収集`,
-    prompt: `${topic}の最新動向を定期収集して、一次ソース付きで要約する`,
+    // NEUTRAL base prompt — no collection verb / freshness word. buildStepPrompt
+    // prepends this to EVERY step, and the escalation ladder routes a step by its
+    // FULL prompt; a freshness/collection word here would force needsWeb on the
+    // summarize/re-summarize steps too. Keep routing driven by each step's verb.
+    prompt: `${topic}の定例レポート`,
     orchestration,
     schedule,
     autonomous: true,
@@ -90,10 +94,12 @@ export function clampCharLimit(limit: number): number {
  * ellipsis is included WITHIN the budget (result length ≤ limit).
  */
 export function enforceCharLimit(text: string, limit: number): string {
+  // Clamp first so a raw 0 / negative / NaN can never break the ≤-limit guarantee.
+  const lim = clampCharLimit(limit);
   const chars = Array.from(text);
-  if (chars.length <= limit) return text;
+  if (chars.length <= lim) return text;
   const ELLIPSIS = '…';
-  const budget = Math.max(limit - 1, 1); // reserve 1 for the ellipsis
+  const budget = Math.max(lim - 1, 1); // reserve 1 for the ellipsis
   const head = chars.slice(0, budget);
   // Find the last sentence terminator within the kept head; only honour it if it
   // keeps a reasonable amount (≥ 60% of budget) so we don't gut the text.

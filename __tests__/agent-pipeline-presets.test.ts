@@ -17,13 +17,20 @@ describe('buildSteamPipeline — North Star collection pipeline', () => {
   });
 
   it('routes each step correctly via the existing scorer (collect=web, summarize=on-device)', () => {
-    const [collect, primary, summarize, resummarize] = buildSteamPipeline().orchestration.steps;
+    const p = buildSteamPipeline();
+    const [collect, primary, summarize, resummarize] = p.orchestration.steps;
+    // The base prompt is prepended to every step at runtime (buildStepPrompt), so
+    // it MUST be neutral — no collection verb / freshness — or it would force
+    // needsWeb on the transform steps too.
+    expect(detectRouteSignals(p.prompt).needsWeb).toBe(false);
     // Collect + primary-source are web-mandatory → a web backend (Gemini/Perplexity).
     expect(detectRouteSignals(collect).needsWeb).toBe(true);
     expect(detectRouteSignals(primary).needsWeb).toBe(true);
     // Summarize / re-summarize are transforms (no collection verb) → on-device.
     expect(detectRouteSignals(summarize).needsWeb).toBe(false);
     expect(detectRouteSignals(resummarize).needsWeb).toBe(false);
+    // Base + transform step combined still stays on-device (the base doesn't leak).
+    expect(detectRouteSignals(`${p.prompt}\n\n# This step\n${summarize}`).needsWeb).toBe(false);
   });
 
   it('honours topic / count / charLimit / schedule overrides (clamped)', () => {

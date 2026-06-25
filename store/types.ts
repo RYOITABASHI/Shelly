@@ -628,8 +628,9 @@ export interface AgentOrchestrationConfig {
   maxSteps?: number;
   /** Total wall-clock budget in ms (clamped to a hard ceiling). */
   totalTimeoutMs?: number;
-  /** G6: when set, the FINAL step's output is guaranteed to be ≤ this many
-   *  characters (e.g. an X/Twitter digest). The runner re-compresses once if the
-   *  step overshoots, then hard-caps at a sentence boundary as a last resort. */
+  /** G6: target character budget for the FINAL step (e.g. an X/Twitter digest).
+   *  v1 is a SOFT budget — baked into the final step's instruction. The hard
+   *  save-path guarantee (enforceCharLimit) + full plumbing through the create
+   *  flow are not wired yet; see DEFERRED.md. */
   charLimit?: number;
 }
