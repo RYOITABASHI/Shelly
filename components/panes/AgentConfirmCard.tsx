@@ -138,9 +138,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // would refuse it (api-key backend not allowed when needsWeb is false).
   const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const needsWeb = useMemo(() => detectRouteSignals(draft.prompt).needsWeb, [draft.prompt]);
-  const isWebTool = draft.tool.type === 'gemini-api' || draft.tool.type === 'perplexity';
-  const keepWebTool = autonomous && cloudConsent && needsWeb && isWebTool;
-  const webEngineLabel = draft.tool.type === 'perplexity' ? 'Perplexity' : 'Gemini';
+  // The tool this agent will actually be STORED with — same resolver the submit
+  // handler and runtime use — so the preview never lies about the engine (web
+  // with consent, on-device local, or the gated Codex driver).
+  const autonomousTool = resolveAutonomousFinalTool(true, draft.tool, cloudConsent, needsWeb);
+  const keepWebTool = autonomous && (autonomousTool.type === 'gemini-api' || autonomousTool.type === 'perplexity');
+  const keepLocal = autonomous && autonomousTool.type === 'local';
+  const webEngineLabel = autonomousTool.type === 'perplexity' ? 'Perplexity' : 'Gemini';
   // Phase 2a: gated skill reuse. A matching skill (if any) is shown and reused by
   // default; the user can opt out. Off when no skill matched the task.
   const [useSkill, setUseSkill] = useState<boolean>(!!draft.matchedSkill);
@@ -199,6 +203,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           route: autonomous
             ? keepWebTool
               ? t('agentcard.autonomous_route_web', { engine: webEngineLabel })
+              : keepLocal
+              ? t('agentcard.autonomous_route_local')
               : t('agentcard.autonomous_route')
             : t(`agentcard.runon_${runOn}`),
         })}
@@ -317,6 +323,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           <Text style={[styles.warn, { color: colors.muted }]}>
             {keepWebTool
               ? t('agentcard.autonomous_route_hint_web', { engine: webEngineLabel })
+              : keepLocal
+              ? t('agentcard.autonomous_route_hint_local')
               : t('agentcard.autonomous_route_hint')}
           </Text>
         </>

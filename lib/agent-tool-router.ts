@@ -274,19 +274,20 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
 }
 
 /**
- * Pick the tool an agent is STORED with when confirmed from the creation card.
- * Autonomous runs normally use the gated Codex driver, but with cloud consent a
- * WEB-MANDATORY task keeps its scored web backend (Gemini/Perplexity) —
- * generateRunScript honours the same exception and bakes a Codex fallback for the
- * unattended fire (P1). Without this, the card overrode every autonomous run to
- * Codex, silently defeating the Gemini path for the secretary use-case.
+ * Pick the tool an agent is STORED with when confirmed from the creation flow.
+ * The SINGLE source of truth for the autonomous tool override — called by BOTH
+ * the confirm card and the @agent submit handler so they can never disagree.
  *
- * MUST mirror generateRunScript's `consentWebTool` gate EXACTLY:
- *   consent && needsWeb && tool ∈ {gemini-api, perplexity}.
- * The `needsWeb` gate is load-bearing: `suggestTool` defaults a general prompt to
- * gemini-api with no web check, so omitting needsWeb would store gemini-api for a
- * non-web autonomous task — which the runtime then REFUSES (api-key backend is not
- * allowed when needsWeb is false), dead-ending every scheduled fire in a refusal.
+ * Mirrors generateRunScript's autonomous resolution EXACTLY:
+ *   - local stays local (an on-device transform is a valid autonomous path),
+ *   - a web backend (gemini-api/perplexity) is kept ONLY with consent + needsWeb
+ *     (the P1 path; generateRunScript bakes a Codex fallback for the fire),
+ *   - everything else (auto, cli, or an api-key tool without consent/needsWeb) →
+ *     the gated Codex driver.
+ * The needsWeb gate is load-bearing: suggestTool defaults a general prompt to
+ * gemini-api, so without it a non-web autonomous task would store gemini-api and
+ * the runtime would REFUSE it (api-key backend not allowed when needsWeb is
+ * false), dead-ending every scheduled fire in a refusal.
  */
 export function resolveAutonomousFinalTool(
   autonomous: boolean,
@@ -295,6 +296,7 @@ export function resolveAutonomousFinalTool(
   needsWeb: boolean,
 ): ToolChoice {
   if (!autonomous) return scoredTool;
+  if (scoredTool.type === 'local') return scoredTool;
   const isWebTool = scoredTool.type === 'gemini-api' || scoredTool.type === 'perplexity';
   return cloudConsent && needsWeb && isWebTool ? scoredTool : { type: 'cli', cli: 'codex' };
 }
