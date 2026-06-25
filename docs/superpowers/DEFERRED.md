@@ -216,6 +216,27 @@
 
 **補足（既存特性・G6 で顕在化）**: orchestration の各ステップは `buildStepPrompt(base, step, priorResults)` の**全文**で `detectRouteSignals` される。base prompt は中立化済（`{topic}の定例レポート`）だが、**前段の収集結果（最新ニュース本文）が priorResults に載ると、要約ステップでも needsWeb が立ち web ルートになり得る**。dead-end ではない（cloud で要約は可能、consent ON）が「要約は端末内」の意図が崩れ cloud quota を食う。根治はステップを instruction でルートする `routeHint`（resolveEscalationLadder に渡す）だが orchestration 共通の変更で面積が大きいため後回し。P2。
 
+### 自律エージェント制御面レビュー（2-model）— 残課題
+
+2モデル＋人手のクロスレビューで挙がった自律エージェント制御面の穴。**#2（policy 配線漏れ）と one-shot cleanup（Med）は修正済**。残り：
+
+**#1 action approval reply の偽造可能性（P1・security・要実機）**
+- `wait_action_approval`（lib/agent-executor.ts）は reply の `runId` と `requestSha256`（＝リクエストの sha256、秘密でない）一致のみ検証。同一 UID（＝エージェントスクリプト自身）が reply ファイルを書けば自分の action（cli/webhook/notify）承認を偽造できる。
+- 緩和事実：承認対象は**作成時にユーザーが設定したアクション**（cli コマンドは `agent.action.command` 固定、モデルが実行時に任意注入しない）。モデル選択コマンドの **driver escalation は公開鍵署名済**（AgentEscalationBridge / Android Keystore RSA + shelly-agent-driver の verifier）。よって任意 RCE でなく「ユーザー設定アクションの自動承認」＝defense-in-depth。
+- 戻す条件：escalation 署名インフラを action approval に拡張（`AgentActionApprovalBridge` で reply を署名 → `wait_action_approval` が node 検証ヘルパーで公開鍵検証、pin は escalation と同様）。**crypto/keystore/承認フローの実機検証必須**。実機接続セッション（Codex-on-device / ワイヤレスデバッグ）で実装すること。
+
+**#3 ab-article-eval が B2 driver を迂回（P2・consistency）**
+- `ab-article-eval` は autonomous 許可（agent-credential-policy）だが `articleEvalCommand` が `codex exec` を直叩きし driver audit/pin/gate を通らない。ただし記事評価専用の制約ツールで**任意シェルを実行しない**ため gate の必要性は低い。整合性のため将来 driver 経由化 or 明示的に「driver 不要ツール」と仕様化。
+
+**#2 の残り：workspaceRoot → driver --cwd（P2）**
+- autonomyLevel は `--policy-json` で配線済。`agent.workspaceRoot` → `DRIVER_CWD` の配線は未（現状 `PROJECT_DIR`＝content-studio 既定）。workspace 分離を使う場合に必要。
+
+**escalation 通知の poller 依存（要実機確認）**
+- escalation 通知は `app/_layout.tsx` の RN/JS poller で drain。バックグラウンド実行で JS が生きていない場合に通知が遅延/欠落しないか実機確認が必要（action approval notifier は native 起動）。
+
+**provider 表示の整合（likely fixed）**
+- 「autonomous で Local 表示なのに Codex」系の混乱は `resolveAutonomousFinalTool`（commit c738a47/6a533b6）でカード表示＝保存ツール一致に修正済の見込み。実機で再確認。
+
 ### Claude Code Bash tool Exit code 1
 
 **優先度**: P1

@@ -8,6 +8,7 @@ import { detectRouteSignals } from './agent-router-scoring';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
+import { buildAgentPolicy } from './agent-policy';
 
 const MAX_CONCURRENT = 2;
 
@@ -19,6 +20,9 @@ const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
 
 type ToolCommandOptions = {
   autonomous: boolean;
+  /** B2: the AutonomyPolicy JSON passed to the driver via --policy-json (inline
+   *  arg, never a file the agent can read — preserves the §6 invariant). */
+  policyJson?: string;
 };
 
 function shellQuote(value: string): string {
@@ -207,8 +211,14 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
   const injectStudioContext = agentUsesStudioContext(agent);
 
+  // B2 §6: the driver gates on the agent's configured autonomy level. Build the
+  // policy here (level from agent.autonomyLevel; default L2) and hand it to the
+  // driver via --policy-json so a configured L1/L3 agent isn't silently run at L2.
+  // canonicalRoot is re-anchored to the driver's --cwd at run time, so home is fine.
+  const agentPolicyJson = JSON.stringify(buildAgentPolicy(agent, home));
   let toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
+    policyJson: agentPolicyJson,
   });
   if (bakeWebCodexLadder) {
     // The web backend already touches BACKEND_ERROR_FILE (+ TRANSIENT_ERROR_FILE on
@@ -2111,6 +2121,7 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
     --cwd "$DRIVER_CWD" \\
     --approval-policy untrusted \\
+    --policy-json ${shellQuote(options.policyJson ?? '')} \\
     --agent-id "$AGENT_ID" \\
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\

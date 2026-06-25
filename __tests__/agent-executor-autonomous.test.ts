@@ -518,6 +518,20 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(sDefault).not.toContain('[REFUSED]');
   });
 
+  it('passes the agent autonomy policy to the B2 driver (configured level is honored, not silently L2)', () => {
+    // Regression (control-plane review): buildAgentPolicy existed but the driver
+    // launch never received --policy-json, so a configured L1/L3 agent silently
+    // ran at the driver's default L2. The policy is passed inline (never a file the
+    // agent can read) to preserve the §6 invariant.
+    const l1 = generateRunScript({ ...agent({ type: 'cli', cli: 'codex' }, true), autonomyLevel: 'L1' });
+    expect(l1).toContain('--policy-json');
+    expect(l1).toContain('"level":"L1"');
+    const l3 = generateRunScript({ ...agent({ type: 'cli', cli: 'codex' }, true), autonomyLevel: 'L3' });
+    expect(l3).toContain('"level":"L3"');
+    // Default (no level set) still resolves to L2 via buildAgentPolicy.
+    expect(generateRunScript(agent({ type: 'cli', cli: 'codex' }, true))).toContain('"level":"L2"');
+  });
+
   it('gates /sdcard audit mirroring behind an explicit env flag for autonomous cli runs', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
     expect(s).toContain('AUDIT_MIRROR_SDCARD_ELIGIBLE=1');

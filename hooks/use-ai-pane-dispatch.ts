@@ -1048,11 +1048,9 @@ export function useAIPaneDispatch(paneId: string) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
-          let runFinished = false;
           let finalContent: string | null = null;
           try {
             await runAgentNow(created.id, runAgentShellCommand);
-            runFinished = true;
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
@@ -1066,7 +1064,10 @@ export function useAIPaneDispatch(paneId: string) {
               content: finalContent,
             });
           } finally {
-            if (runFinished) {
+            // Always discard the ephemeral one-shot agent — including when the run
+            // THREW (runFinished=false). Gating cleanup on success leaked a
+            // throwaway agent into the sidebar on any failure.
+            {
               try {
                 await deleteAgent(created.id);
               } catch (cleanupError) {
