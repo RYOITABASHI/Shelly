@@ -3,7 +3,9 @@ import { parseAgentNL } from '@/lib/agent-nl-parser';
 // The scheduler accepts ONLY these three cron shapes (lib/agent-scheduler.ts).
 // Any non-null schedule the parser emits MUST match one of them, or the agent
 // would silently never fire — the spec's hard requirement (§2.1).
-const WHITELIST_CRON = /^(\*\/\d+ \* \* \* \*|\d+ \d+ \* \* \*|\d+ \d+ \* \* [0-6])$/;
+// Single-day OR a multi-day DOW list (e.g. "1,5" = Mon/Fri) — both accepted by
+// lib/agent-scheduler.ts (DOW_LIST_RE) and the native AgentAlarmReceiver.
+const WHITELIST_CRON = /^(\*\/\d+ \* \* \* \*|\d+ \d+ \* \* \*|\d+ \d+ \* \* [0-6](,[0-6])*)$/;
 
 describe('parseAgentNL — schedule (JP)', () => {
   it('毎日8時 → daily 0 8 * * *, confident', () => {
@@ -170,6 +172,41 @@ describe('parseAgentNL — invariants', () => {
     expect(() => parseAgentNL('')).not.toThrow();
     expect(() => parseAgentNL('   ')).not.toThrow();
     expect(parseAgentNL('').schedule).toBeNull();
+  });
+});
+
+describe('parseAgentNL — G6 pipeline preset', () => {
+  it('a "パイプライン" request builds the multi-step collection preset (Mon/Fri, autonomous)', () => {
+    const d = parseAgentNL('STEAMのパイプライン');
+    expect(d.orchestrationSteps?.length).toBe(4);
+    expect(d.autonomous).toBe(true);
+    expect(d.schedule).toBe('0 8 * * 1,5');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.schedule!).toMatch(WHITELIST_CRON);
+  });
+
+  it('carries a custom topic stated before the keyword', () => {
+    const d = parseAgentNL('量子コンピュータのパイプライン');
+    expect(d.orchestrationSteps?.[0]).toContain('量子コンピュータ');
+    expect(d.name).toContain('量子コンピュータ');
+  });
+
+  it("the user's own schedule overrides the preset's Mon/Fri default", () => {
+    const d = parseAgentNL('毎日8時に量子コンピュータのパイプライン');
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.orchestrationSteps?.length).toBe(4);
+  });
+
+  it('a normal collection utterance (no パイプライン) stays single-step', () => {
+    const d = parseAgentNL('STEAMの最新ニュースを集めて');
+    expect(d.orchestrationSteps).toBeUndefined();
+  });
+
+  it('does NOT hijack a DevOps "fix the CI/CD pipeline" request into the collection preset', () => {
+    // The build-pipeline sense of "pipeline" is a debug request, not collection.
+    expect(parseAgentNL('CI/CDパイプラインのエラーを直して').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('build pipeline failed, fix it').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('デプロイパイプラインのジョブが失敗した').orchestrationSteps).toBeUndefined();
   });
 });
 

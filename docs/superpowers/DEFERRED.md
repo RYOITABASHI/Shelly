@@ -200,6 +200,20 @@
 
 **Why not now**: 報告された症状（対話ターミナルの HTTPS git）は解決済。ユーザーの無人クラウド保存は DriveSync が担うため git push 自体が必須でない（出力先=Obsidian フォルダ書き込みで充足）。agent からの HTTPS git は将来 Codex-on-Shelly の自動 push 等で必要になった時点で対応。
 
+### G6 パイプライン — charLimit のハード結線（v1 はソフトのみ）
+
+**優先度**: P2
+**状態**: v1 出荷済（`buildSteamPipeline` 4段＋`enforceCharLimit`/`clampCharLimit` 実装・テスト済）。文字数制限は**最終段の指示文（「N文字以内・超過厳禁」）にベイクしたソフト保証のみ**。
+
+**ギャップ（agent-reviewed）**:
+- `AgentOrchestrationConfig.charLimit` 型・`clampCharLimit`・`enforceCharLimit` は実装済だが**実経路では未配線**：`detectPipelinePreset` は `orchestration.charLimit` を落とし（`steps` のみ→`orchestrationSteps`）、`ConfirmedAgentDraft`/`createAgent` に charLimit フィールドが無い。よって型・ヘルパーは現状 dead code（ソフト指示だけが効く）。
+
+**戻す条件**:
+1. charLimit を draft→confirm card→createAgent まで通す（`ConfirmedAgentDraft.charLimit`、`createAgent` の orchestration 構築に反映）。
+2. 最終段の保存前に `enforceCharLimit` を適用してハード保証（最終段 materialize に charLimit を渡し、`save_draft_result` 直前で result file を上限内に丸める）。
+
+**Why not now**: 確認カードが登録をゲートし、ソフト指示でモデルは上限を守るので v1 は成立。ハード保証は X 投稿の厳密 280 字運用を始める時に必要。
+
 ### Claude Code Bash tool Exit code 1
 
 **優先度**: P1

@@ -18,6 +18,7 @@
 import { AgentAction, AgentMemoryConfig, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { parseStepsFromText } from './agent-orchestration';
+import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -320,12 +321,63 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
 }
 
 /**
+ * G6: an explicit "パイプライン" / "pipeline" request builds the ready-made STEAM
+ * collection pipeline (search → primary source → summarize → char-limited
+ * re-summarize) instead of the single-step parse. A topic before the keyword is
+ * carried through ("量子コンピュータのパイプライン" → topic=量子コンピュータ); a bare
+ * "パイプライン" or a STEAM topic falls back to the STEAM×AI default. Returns null
+ * when the utterance isn't a pipeline request, so the normal parse path runs.
+ */
+function detectPipelinePreset(text: string): PipelinePreset | null {
+  if (!/パイプライン|pipeline/i.test(text)) return null;
+  // Don't hijack a DevOps "fix my CI/CD pipeline" request into a data-collection
+  // preset — those are debugging, not scheduled collection. A fix/error/CI cue
+  // means the user is talking about a build pipeline, not a content pipeline.
+  if (/エラー|直し|直す|修正|\bfix\b|失敗|\bfail|デプロイ|deploy|\bci\b|\bcd\b|ci\/cd|cicd|ジョブ|\bjob\b|\bbuild\b|ビルド/i.test(text)) {
+    return null;
+  }
+  const m = text.match(
+    /(.+?)(?:の|を|に関する)?\s*(?:最新の?)?\s*(?:ニュース|論文|情報|動向)?\s*(?:を)?\s*(?:パイプライン|pipeline)/i,
+  );
+  let topic = (m?.[1] ?? '').trim();
+  topic = topic
+    .replace(/[@＠]?agent\s*/gi, '')
+    .replace(/^(毎日|毎週|毎朝|毎晩|定期的?に?)\s*/g, '')
+    .trim();
+  if (/^steam/i.test(topic) || topic.length < 2) topic = '';
+  return buildSteamPipeline({ topic: topic || undefined });
+}
+
+/**
  * Parse an utterance into a structured agent draft. Pure & deterministic — safe to call
  * offline and in unit tests. Always returns a draft (never throws / never hard-blocks);
  * an unparseable schedule yields `schedule: null` + `scheduleConfident: false`.
  */
 export function parseAgentNL(utterance: string): ParsedAgentDraft {
   const rawText = utterance.trim();
+
+  // G6: a "パイプライン" request becomes the multi-step collection preset. The
+  // user's own schedule (if confidently parsed) overrides the preset's Mon/Fri.
+  const preset = detectPipelinePreset(rawText);
+  if (preset) {
+    const presetSched = parseSchedule(rawText);
+    const presetSuggestion = suggestTool(preset.prompt);
+    return {
+      name: deriveName(preset.name),
+      prompt: preset.prompt,
+      orchestrationSteps: preset.orchestration.steps,
+      schedule: presetSched.confident ? presetSched.schedule : preset.schedule,
+      scheduleConfident: true,
+      scheduleLabel: presetSched.confident ? presetSched.label : '毎週 月・金 8:00',
+      action: detectAction(rawText),
+      tool: presetSuggestion.tool,
+      toolLabel: presetSuggestion.label ?? toolChoiceToLabel(presetSuggestion.tool),
+      autonomous: true,
+      memory: detectMemory(rawText),
+      rawText,
+    };
+  }
+
   const sched = parseSchedule(rawText);
   const action = detectAction(rawText);
   const prompt = derivePrompt(rawText, sched);

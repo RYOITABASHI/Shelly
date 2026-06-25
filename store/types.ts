@@ -628,4 +628,8 @@ export interface AgentOrchestrationConfig {
   maxSteps?: number;
   /** Total wall-clock budget in ms (clamped to a hard ceiling). */
   totalTimeoutMs?: number;
+  /** G6: when set, the FINAL step's output is guaranteed to be ≤ this many
+   *  characters (e.g. an X/Twitter digest). The runner re-compresses once if the
+   *  step overshoots, then hard-caps at a sentence boundary as a last resort. */
+  charLimit?: number;
 }
