@@ -184,6 +184,22 @@
 
 **Why not now**: v5.3.1 の価値は Claude Code + Codex の real Android CLI 体験、API-backed AI Pane、更新済み Local LLM catalog にある。Gemini CLI を launch blocker にすると、既に動く主要体験のリリースを遅らせる割に品質保証ができない。
 
+### git over HTTPS — autonomous agent runtime の latent gap（BASHRC_VERSION 230 で対話側は解決済）
+
+**優先度**: P2
+**状態**: 対話 PTY の `git()` は libexec_wrapper.so を preload して解決済（commit `fix(git): preload libexec_wrapper.so …`, BASHRC_VERSION 230）。**autonomous agent runtime 側は未対応**。
+
+**症状/リスク**:
+- 自律エージェント（または content-studio の command action）が `git fetch/push/clone` を **HTTPS** で実行すると、`git-remote-https` の child execve が app_data_file exec 拒否に当たり `cannot exec 'remote-https': Permission denied` で失敗しうる。
+- agent runtime の `shelly_run_app_binary`（`lib/agent-executor.ts`）は raw linker64 経由で app-data binary を起動するが、`git()` shell helper を定義せず、libexec_wrapper の LD_PRELOAD を git に必ず付ける保証がない（`shelly-exec.c` の global LD_PRELOAD が scope に入るかは経路依存）。
+- 現状 agent runtime が呼ぶ git は `git log` / `git status`（local-only、transport helper を exec しない）のみなので **実害は出ていない**＝latent。
+
+**戻す条件**:
+1. agent runtime（`shelly_run_app_binary` / `generateRunScript`）で git を呼ぶ経路にも、対話 `git()` と同じ `LD_PRELOAD=$libDir/libexec_wrapper.so` を git 限定で確実に付与する（global 付与は llama-server を壊すので不可）。
+2. 自律エージェントから `git fetch --dry-run`（HTTPS）が transport helper 起動まで通ることを実機確認。
+
+**Why not now**: 報告された症状（対話ターミナルの HTTPS git）は解決済。ユーザーの無人クラウド保存は DriveSync が担うため git push 自体が必須でない（出力先=Obsidian フォルダ書き込みで充足）。agent からの HTTPS git は将来 Codex-on-Shelly の自動 push 等で必要になった時点で対応。
+
 ### Claude Code Bash tool Exit code 1
 
 **優先度**: P1
