@@ -163,8 +163,23 @@ function parseSchedule(text: string): ScheduleResult {
   // EN matches whole words. The scheduler accepts a comma DOW list (DOW_LIST_RE).
   const dows = new Set<number>();
   if (!dailyMarker) {
+    // (a) 曜-qualified weekdays (月曜 / 金曜) — always unambiguous.
     const jpQualified = text.match(/[日月火水木金土](?=曜)/g);
     if (jpQualified) for (const ch of jpQualified) dows.add(JP_WEEKDAY[ch]);
+    // (b) A separator-joined bare run of 2+ weekday chars (火・金 / 月、水、金 / 火と金)
+    // is admitted ONLY when it leads directly into the time ("火・金の朝8時"). That
+    // adjacency is what separates a real schedule from element / celestial lists
+    // like 火・水 (fire/water 五行) or 日・月 (sun/moon), which are followed by a NOUN,
+    // not a time. A lone bare 月/金/日 stays ambiguous and is never matched.
+    const runs = text.match(
+      /[日月火水木金土]曜?日?(?:\s*[・、，,と＆&]\s*[日月火水木金土]曜?日?)+(?=\s*(?:の|は|、|,)?\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*[:時])/g,
+    );
+    if (runs) {
+      for (const run of runs) {
+        const chars = run.match(/[日月火水木金土]/g);
+        if (chars) for (const ch of chars) dows.add(JP_WEEKDAY[ch]);
+      }
+    }
     for (const [re, d] of EN_WEEKDAY) {
       if (re.test(lower)) dows.add(d);
     }
@@ -320,10 +335,20 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   if (schedule.confident) {
     s = s
       .replace(/^.*?(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
-      // No-毎週 multi-day path ("月曜と金曜の朝8時に…"): strip a leading run of
-      // 曜-qualified weekdays through the time token. Requires 曜 + a 時, so a
-      // non-schedule sentence that merely starts with a weekday word is untouched.
-      .replace(/^(?:[日月火水木金土]曜日?\s*(?:と|・|、|,|および|＆|&)?\s*){1,7}[^、。]*?時(?:半|\d+分)?\s*(?:に|の)?/, '')
+      // No-毎週 multi-day path. Two narrow strips, each requiring a trailing 時 so a
+      // non-schedule opener is untouched:
+      //  (A) a leading 曜-qualified weekday clause ("月曜と金曜の朝8時に…").
+      .replace(
+        /^[日月火水木金土]曜日?(?:\s*(?:と|・|、|,|，|および|＆|&)\s*[日月火水木金土]曜?日?)*\s*[^、。]*?時(?:半|\d+分)?\s*(?:に|の)?/,
+        '',
+      )
+      //  (B) a leading bare run of 2+ weekday chars that leads DIRECTLY into the time
+      //  ("火・金の朝8時に…"). Mirrors detection's adjacency so it can't eat an element
+      //  pair (火・水の実験を…8時) that merely precedes an unrelated time downstream.
+      .replace(
+        /^[日月火水木金土]曜?日?(?:\s*[・、，,と＆&]\s*[日月火水木金土]曜?日?)+\s*(?:の|は|、|,)?\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*(?:時(?:半|\d+分)?|:\d{2})\s*(?:に|の)?/,
+        '',
+      )
       .replace(/^\s*((on\s+)?(mon|tue|wed|thu|fri|sat|sun)\w*(\s*(,|and|&)\s*(mon|tue|wed|thu|fri|sat|sun)\w*)*)\b[^.,]*?\b(at\s+\d|\d\s*(am|pm|:))[^,.]*[\s,]*/i, '')
       .replace(/^\s*(every\s*day|everyday|daily|each\s+day|every\s+\d+\s*\w+)\b[\s,]*/i, '')
       .trim();

@@ -112,6 +112,52 @@ describe('parseAgentNL — weekly', () => {
     expect(d.prompt).not.toContain('8時');
     expect(d.prompt).toContain('論文');
   });
+
+  it('bare separator run 火・金 (no 曜) → 0 8 * * 2,5', () => {
+    const d = parseAgentNL('火・金の朝8時にニュースを集めて');
+    expect(d.schedule).toBe('0 8 * * 2,5');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.prompt).not.toContain('火');
+    expect(d.prompt).toContain('ニュース');
+  });
+
+  it('bare run 月、水、金 → 0 9 * * 1,3,5', () => {
+    expect(parseAgentNL('月、水、金の9時に集計して').schedule).toBe('0 9 * * 1,3,5');
+  });
+
+  it('a LONE bare weekday char is NOT treated as a schedule (金=gold ambiguity)', () => {
+    // "金" alone (no 曜, no separator run) must stay ambiguous, not become Friday.
+    const d = parseAgentNL('金の価格を8時に教えて');
+    expect(d.schedule).not.toBe('0 8 * * 5');
+    expect(d.prompt).toContain('金の価格');
+  });
+
+  it('element pair 火・水 (fire/water) followed by a NOUN is NOT a schedule', () => {
+    // Regression (review): a bare run is only a schedule when it leads directly
+    // into the time. 火・水の実験を9時に… is 五行 vocab, not Tue/Wed.
+    const d = parseAgentNL('火・水の実験を9時に記録して');
+    expect(d.schedule).not.toBe('0 9 * * 2,3');
+    expect(d.prompt).toContain('実験');
+  });
+
+  it('celestial pair 日・月 (sun/moon) followed by a NOUN is NOT a schedule', () => {
+    const d = parseAgentNL('日・月の周期を8時に観測する');
+    expect(d.schedule).not.toBe('0 8 * * 0,1');
+    expect(d.prompt).toContain('周期');
+  });
+
+  it('but 火・水 leading DIRECTLY into the time IS a schedule (Tue/Wed)', () => {
+    // Same chars, schedule shape: adjacency to the time is the disambiguator.
+    expect(parseAgentNL('火・水の朝8時に在庫を確認して').schedule).toBe('0 8 * * 2,3');
+  });
+
+  it('colon time after a bare run schedules AND strips the clause from the prompt', () => {
+    const d = parseAgentNL('火・金の8:00にニュースを集めて');
+    expect(d.schedule).toBe('0 8 * * 2,5');
+    expect(d.prompt).not.toContain('火・金');
+    expect(d.prompt).not.toContain('8:00');
+    expect(d.prompt).toContain('ニュース');
+  });
 });
 
 describe('parseAgentNL — daily (EN)', () => {
