@@ -80,9 +80,10 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
   const [weekday, setWeekday] = useState(decoded.weekday);
-  // Multi-day ('custom') DOW list (e.g. "1,5" = Mon/Fri) preserved verbatim so a
-  // Mon/Fri pipeline preset doesn't collapse to daily on confirm.
-  const [customDow] = useState(decoded.dowList);
+  // Multi-day ('custom') DOW list (e.g. "1,5" = Mon/Fri). Editable via the weekday
+  // chips below: tapping a 2nd day promotes weekly→custom; dropping back to 1 day
+  // demotes custom→weekly. Preserved verbatim so a Mon/Fri preset doesn't flatten.
+  const [customDow, setCustomDow] = useState(decoded.dowList);
   const [interval, setInterval] = useState(decoded.interval);
   const [actionType, setActionType] = useState<AgentActionType>(draft.action.type);
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
@@ -115,6 +116,37 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     () => buildCron(frequency, hour, minute, weekday, interval, customDow),
     [frequency, hour, minute, weekday, interval, customDow],
   );
+
+  // The weekday chips are shown for both 'weekly' (single) and 'custom' (multi).
+  // selectedDays is the unified selection; toggling reconciles the frequency:
+  // 1 day → 'weekly' (weekday), 2+ days → 'custom' (customDow csv). Empty is
+  // disallowed so the agent always has at least one fire day.
+  const selectedDays = useMemo(() => {
+    if (frequency === 'custom') {
+      return customDow
+        .split(',')
+        .map((d) => parseInt(d, 10))
+        .filter((n) => n >= 0 && n <= 6);
+    }
+    return [weekday];
+  }, [frequency, customDow, weekday]);
+
+  const showWeekdays = frequency === 'weekly' || frequency === 'custom';
+
+  const toggleDay = (d: number) => {
+    const has = selectedDays.includes(d);
+    const next = (has ? selectedDays.filter((x) => x !== d) : [...selectedDays, d])
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .sort((a, b) => a - b);
+    if (next.length === 0) return; // never allow an empty day list
+    if (next.length === 1) {
+      setWeekday(next[0]);
+      setFrequency('weekly');
+    } else {
+      setCustomDow(next.join(','));
+      setFrequency('custom');
+    }
+  };
 
   // Confirm gating: a one-shot needs no schedule; otherwise a valid cron is required.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
@@ -230,22 +262,28 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
               style={[styles.inputSmall, fieldBg]}
             />
           </View>
-          {frequency === 'weekly' && (
-            <View style={styles.weekRow}>
-              {WEEKDAY_LABELS.map((wl, d) => (
-                <TouchableOpacity
-                  key={d}
-                  onPress={() => setWeekday(d)}
-                  style={[
-                    styles.weekDay,
-                    { borderColor: colors.border },
-                    weekday === d && { backgroundColor: colors.accent, borderColor: colors.accent },
-                  ]}
-                >
-                  <Text style={{ color: weekday === d ? colors.background : colors.foreground, fontSize: 12 }}>{wl}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+          {showWeekdays && (
+            <>
+              <View style={styles.weekRow}>
+                {WEEKDAY_LABELS.map((wl, d) => {
+                  const on = selectedDays.includes(d);
+                  return (
+                    <TouchableOpacity
+                      key={d}
+                      onPress={() => toggleDay(d)}
+                      style={[
+                        styles.weekDay,
+                        { borderColor: colors.border },
+                        on && { backgroundColor: colors.accent, borderColor: colors.accent },
+                      ]}
+                    >
+                      <Text style={{ color: on ? colors.background : colors.foreground, fontSize: 12 }}>{wl}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.weekday_multi_hint')}</Text>
+            </>
           )}
         </>
       )}

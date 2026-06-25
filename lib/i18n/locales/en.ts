@@ -190,6 +190,7 @@ const en: Record<string, string> = {
   'agentcard.freq_daily': 'Daily',
   'agentcard.freq_weekly': 'Weekly',
   'agentcard.freq_interval': 'Every N min',
+  'agentcard.weekday_multi_hint': 'Pick multiple days (e.g. Mon・Fri)',
   'agentcard.minutes_every': 'min interval',
   'agentcard.action': 'Action',
   'agentcard.action_draft': 'draft',

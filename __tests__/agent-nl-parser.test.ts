@@ -77,6 +77,41 @@ describe('parseAgentNL — weekly', () => {
     expect(d.scheduleConfident).toBe(false);
     expect(d.scheduleLabel).toContain('金');
   });
+
+  it('月曜と金曜の朝8時 → 0 8 * * 1,5 (multi-day, no 毎週 needed)', () => {
+    const d = parseAgentNL('月曜と金曜の朝8時にSTEAM×AIの論文を集めて');
+    expect(d.schedule).toBe('0 8 * * 1,5');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.scheduleLabel).toContain('月・金');
+  });
+
+  it('毎週月・水・金 → sorted dow list, deduped', () => {
+    expect(parseAgentNL('毎週月曜・水曜・金曜の10時に集計して').schedule).toBe('0 10 * * 1,3,5');
+  });
+
+  it('EN multi-day: mon and thu at 7am → 0 7 * * 1,4', () => {
+    expect(parseAgentNL('every monday and thursday at 7am send a digest').schedule).toBe('0 7 * * 1,4');
+  });
+
+  it('multi-day with no time → null, not confident, label keeps all days', () => {
+    const d = parseAgentNL('月曜と金曜にまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.scheduleLabel).toContain('月・金');
+  });
+
+  it('explicit 毎日 outranks an incidental weekday → daily, not weekly', () => {
+    // Regression guard: a 曜-weekday must not hijack an explicit daily marker.
+    expect(parseAgentNL('毎日月曜の予定を8時に通知して').schedule).toBe('0 8 * * *');
+  });
+
+  it('multi-day schedule clause is stripped from the agent prompt', () => {
+    const d = parseAgentNL('月曜と金曜の朝8時にSTEAM×AIの論文を集めて');
+    expect(d.schedule).toBe('0 8 * * 1,5');
+    expect(d.prompt).not.toContain('月曜');
+    expect(d.prompt).not.toContain('8時');
+    expect(d.prompt).toContain('論文');
+  });
 });
 
 describe('parseAgentNL — daily (EN)', () => {

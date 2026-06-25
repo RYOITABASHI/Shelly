@@ -152,37 +152,43 @@ function parseSchedule(text: string): ScheduleResult {
 
   const time = extractTime(text);
 
-  // ── 2. Weekly → `M H * * D` (requires a weekday + a time) ──
-  let dow: number | null = null;
-  const weeklyJp = text.match(/(?:毎週|每週)?\s*([日月火水木金土])曜?/);
-  if (/毎週|每週/.test(text) && weeklyJp) {
-    dow = JP_WEEKDAY[weeklyJp[1]];
-  } else {
+  // An explicit daily marker (毎日 / daily) outranks an incidental weekday mention,
+  // so "毎日月曜の予定を8時に通知" stays daily instead of collapsing to weekly-Mon.
+  const dailyMarker = /毎日|毎朝|毎晩|毎夕|日次/.test(text) || /\b(every\s*day|everyday|daily|each\s+day)\b/.test(lower);
+
+  // ── 2. Weekly → `M H * * D` (single day) or `M H * * d1,d2,…` (multi-day) ──
+  // Collect EVERY weekday mentioned so "月曜と金曜" → `* * 1,5` instead of being
+  // flattened to the first day. JP detection requires 曜 (unambiguous: avoids
+  // 日次 / 今日 / 日報 false-positives); a bare 月/金/日 is too ambiguous to trust.
+  // EN matches whole words. The scheduler accepts a comma DOW list (DOW_LIST_RE).
+  const dows = new Set<number>();
+  if (!dailyMarker) {
+    const jpQualified = text.match(/[日月火水木金土](?=曜)/g);
+    if (jpQualified) for (const ch of jpQualified) dows.add(JP_WEEKDAY[ch]);
     for (const [re, d] of EN_WEEKDAY) {
-      if (re.test(lower)) {
-        dow = d;
-        break;
-      }
+      if (re.test(lower)) dows.add(d);
     }
   }
-  if (dow !== null) {
+  const dowList = [...dows].sort((a, b) => a - b);
+  if (dowList.length > 0) {
+    const dowField = dowList.join(',');
+    const dayLabel = dowList.map((d) => JP_DOW_LABEL[d]).join('・');
     if (time) {
       return {
-        schedule: `${time.minute} ${time.hour} * * ${dow}`,
+        schedule: `${time.minute} ${time.hour} * * ${dowField}`,
         confident: true,
-        label: `毎週${JP_DOW_LABEL[dow]} ${fmtTime(time)}`,
+        label: `毎週${dayLabel} ${fmtTime(time)}`,
       };
     }
     return {
       schedule: null,
       confident: false,
-      label: `毎週${JP_DOW_LABEL[dow]} 時刻未設定（要選択）`,
+      label: `毎週${dayLabel} 時刻未設定（要選択）`,
       suggestedTime: undefined,
     };
   }
 
   // ── 3. Daily → `M H * * *` (explicit daily marker + a time) ──
-  const dailyMarker = /毎日|毎朝|毎晩|毎夕|日次/.test(text) || /\b(every\s*day|everyday|daily|each\s+day)\b/.test(lower);
   if (dailyMarker) {
     if (time) {
       return {
@@ -314,6 +320,11 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   if (schedule.confident) {
     s = s
       .replace(/^.*?(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
+      // No-毎週 multi-day path ("月曜と金曜の朝8時に…"): strip a leading run of
+      // 曜-qualified weekdays through the time token. Requires 曜 + a 時, so a
+      // non-schedule sentence that merely starts with a weekday word is untouched.
+      .replace(/^(?:[日月火水木金土]曜日?\s*(?:と|・|、|,|および|＆|&)?\s*){1,7}[^、。]*?時(?:半|\d+分)?\s*(?:に|の)?/, '')
+      .replace(/^\s*((on\s+)?(mon|tue|wed|thu|fri|sat|sun)\w*(\s*(,|and|&)\s*(mon|tue|wed|thu|fri|sat|sun)\w*)*)\b[^.,]*?\b(at\s+\d|\d\s*(am|pm|:))[^,.]*[\s,]*/i, '')
       .replace(/^\s*(every\s*day|everyday|daily|each\s+day|every\s+\d+\s*\w+)\b[\s,]*/i, '')
       .trim();
   }
