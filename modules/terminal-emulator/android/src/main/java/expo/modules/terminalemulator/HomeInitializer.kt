@@ -1053,7 +1053,10 @@ patchCodex(libDir);
     //      wraps on screen instead of showing a leading "<" truncation marker.
     //      228 was seen on device while an older APK still targeted 227, so
     //      use 229 to guarantee regeneration on those homes as well.
-    private const val BASHRC_VERSION = 229
+    //      230: git() now preloads libexec_wrapper.so so its child HTTPS transport
+    //      helper (git-remote-https) execs through linker64 — fixes "cannot exec
+    //      'remote-https': Permission denied" on git fetch/push/clone over HTTPS.
+    private const val BASHRC_VERSION = 230
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2023,7 +2026,16 @@ patchCodex(libDir);
             sb.appendLine("fi")
             sb.appendLine("bash() { _run $libDir/libbash.so \"\$@\"; }")
             sb.appendLine("node() { _run $libDir/node \"\$@\"; }")
-            sb.appendLine("git() { _run $libDir/git \"\$@\"; }")
+            // git spawns its own app-data helpers as CHILD processes (the HTTPS
+            // transport helper git-remote-https, plus hooks / credential helpers).
+            // Those child execve()s do NOT go through _run/linker64, so under Knox
+            // they hit the app_data_file exec denial → "cannot exec 'remote-https':
+            // Permission denied" (git fetch/push/clone over HTTPS all fail). Preload
+            // libexec_wrapper.so for git ONLY (same pattern the Codex launchers use)
+            // so the wrapper rewrites git's child execve() through linker64. Scoped
+            // to git — never global (the PTY unsets LD_PRELOAD; llama-server etc.
+            // break if they inherit it).
+            sb.appendLine("git() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/git \"\$@\"; }")
             // bug #100: seed default identity for auto-savepoint. Runs now
             // (AFTER git() is defined) so bare `git config` resolves to the
             // shell function -> _run linker64 $libDir/git. User-set values
