@@ -1,10 +1,11 @@
 import { detectPostFormatDirective } from '@/lib/post-format-directive';
 
 describe('detectPostFormatDirective — platform-aware summary intent (B)', () => {
-  it('returns the X directive (280-char cap) for X/Twitter post phrasings', () => {
+  it('returns the X directive (full-width 140 / weighted 280, URL=23) for X/Twitter phrasings', () => {
     for (const t of ['X投稿用に要約して', 'これをX用に要約', 'ツイート用にまとめて', 'Twitter投稿用に要約', 'Xポスト用に要約']) {
       const d = detectPostFormatDirective(t);
-      expect(d).toContain('280文字以内');
+      expect(d).toContain('全角なら140文字以内');
+      expect(d).toContain('23文字'); // URL weighting
       expect(d).toContain('X(旧Twitter)');
     }
   });
@@ -13,7 +14,7 @@ describe('detectPostFormatDirective — platform-aware summary intent (B)', () =
     for (const t of ['Note投稿用に要約して', 'note記事用にまとめて', 'ノート用に要約', 'note用に要約']) {
       const d = detectPostFormatDirective(t);
       expect(d).toContain('Note(note.com)');
-      expect(d).not.toContain('280文字以内');
+      expect(d).not.toContain('全角なら140文字以内');
     }
   });
 
