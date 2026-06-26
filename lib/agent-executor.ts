@@ -1855,9 +1855,35 @@ if (!content) {
   } catch (_) {}
 }
 
+// Perplexity (sonar) returns its source URLs in a SIDECAR field — search_results
+// (array of {title,url,date}) or legacy citations (array of url strings) — never
+// inline in message.content (which carries only [1][2] markers). Append them as a
+// "## Sources" list so the result actually carries the primary-source URLs (the
+// collection goal) AND the no-URL guard doesn't false-fire and escalate to Codex.
+// Data-driven: other backends lack these keys, so this is a no-op for them.
+let sourcesBlock = '';
+try {
+  const sr = Array.isArray(data && data.search_results) && data.search_results.length ? data.search_results : null;
+  const cites = !sr && Array.isArray(data && data.citations) && data.citations.length ? data.citations : null;
+  const entries = sr || cites || [];
+  const seen = {};
+  const lines = [];
+  for (const e of entries) {
+    if (lines.length >= 20) break;
+    const url = typeof e === 'string' ? e : (e && typeof e.url === 'string' ? e.url : '');
+    const clean = url.trim().replace(/[).,;]+$/, '');
+    const isUrl = clean.slice(0, 7) === 'http://' || clean.slice(0, 8) === 'https://';
+    if (!isUrl || seen[clean]) continue;
+    seen[clean] = 1;
+    const title = (e && typeof e === 'object' && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : clean;
+    lines.push('[' + (lines.length + 1) + '] ' + title + ' — ' + clean);
+  }
+  if (lines.length) sourcesBlock = '\\n\\n## Sources\\n' + lines.join('\\n');
+} catch (_) {}
+
 const err = data?.error || data?.message;
 if (content) {
-  process.stdout.write(content);
+  process.stdout.write(content + sourcesBlock);
 } else if (err) {
   process.stdout.write('API error: ' + (typeof err === 'string' ? err : JSON.stringify(err)));
   process.exit(2);
@@ -1909,9 +1935,44 @@ if not content:
     except Exception:
         content = None
 
+# Perplexity sources live in a sidecar field (search_results / citations), not
+# inline in content — mirror the node branch and append them as "## Sources".
+sources_block = ""
+try:
+    entries = None
+    sr = data.get("search_results")
+    if isinstance(sr, list) and sr:
+        entries = sr
+    else:
+        cites = data.get("citations")
+        if isinstance(cites, list) and cites:
+            entries = cites
+    if entries:
+        seen = set()
+        lines = []
+        for e in entries:
+            if len(lines) >= 20:
+                break
+            if isinstance(e, str):
+                url, title = e, None
+            elif isinstance(e, dict):
+                url, title = e.get("url") or "", e.get("title")
+            else:
+                continue
+            clean = url.strip().rstrip(").,;")
+            if not (clean.startswith("http://") or clean.startswith("https://")) or clean in seen:
+                continue
+            seen.add(clean)
+            label = title.strip() if isinstance(title, str) and title.strip() else clean
+            lines.append("[" + str(len(lines) + 1) + "] " + label + " — " + clean)
+        if lines:
+            sources_block = "\\n\\n## Sources\\n" + "\\n".join(lines)
+except Exception:
+    sources_block = ""
+
 err = data.get("error") or data.get("message")
 if content:
-    sys.stdout.write(content)
+    sys.stdout.write(content + sources_block)
 elif err:
     sys.stdout.write("API error: " + (err if isinstance(err, str) else json.dumps(err, ensure_ascii=False)))
     raise SystemExit(2)
