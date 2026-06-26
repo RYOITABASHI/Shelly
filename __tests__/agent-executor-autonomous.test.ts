@@ -316,6 +316,15 @@ describe('generateRunScript — collection contract + no-source guard (North Sta
     }
   });
 
+  it('(A) forces Japanese output for a Japanese web task, not for an English one', () => {
+    const ja = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: 'STEAM×AIの最新論文を集めて' });
+    expect(ja).toContain('OUTPUT LANGUAGE (REQUIRED)');
+    expect(ja).toContain('日本語');
+
+    const en = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: 'collect the latest STEAM×AI papers' });
+    expect(en).not.toContain('OUTPUT LANGUAGE (REQUIRED)');
+  });
+
   it('leaves a non-web task untouched (no contract → no behavioural change)', () => {
     const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'say hello' });
     expect(s).not.toContain('research-collection agent');

@@ -218,8 +218,18 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // Gated on needsWeb so non-research agents (code tasks, file summaries) are
   // untouched (collectionContract === '' → byte-identical to the old prompt).
   const promptSignals = detectRouteSignals(agent.prompt);
+  // (A) Output-language guard: deep-research models (Perplexity sonar-deep-research)
+  // ignore a soft "same language as the task" hint and answer in English even for a
+  // Japanese task. When the task is Japanese, lead with a forceful directive to write
+  // the whole answer in Japanese and TRANSLATE non-Japanese source material — language
+  // is orthogonal to the report format the model insists on, so it honours this even
+  // when it ignores the "bullet list only" shape. (Source URLs stay verbatim.)
+  const taskIsJapanese = /[ぁ-んァ-ヶ一-龥]/.test(agent.prompt);
+  const languageDirective = taskIsJapanese
+    ? 'OUTPUT LANGUAGE (REQUIRED): Write the ENTIRE response in Japanese (日本語). Any non-Japanese source material MUST be translated into natural Japanese and summarised in Japanese — never leave English paragraphs. Source URLs stay verbatim.\n\n'
+    : '';
   const collectionContract = promptSignals.needsWeb
-    ? 'You are a research-collection agent. EXECUTE this task NOW using live web search — do NOT describe, design, or plan a workflow, and do NOT explain how it could be done. Return ONLY a Markdown bullet list, one line per source, each formatted exactly as:\n- [title](primary_source_url) — concise summary (max 200 characters)\nRules: include at least one item; cite real, verifiable PRIMARY-source URLs (papers, official sites, journals), never search-engine or aggregator links; respond in the same language as the task; output no preamble, headings, or closing remarks — only the list.\n\nTask:\n'
+    ? languageDirective + 'You are a research-collection agent. EXECUTE this task NOW using live web search — do NOT describe, design, or plan a workflow, and do NOT explain how it could be done. Return ONLY a Markdown bullet list, one line per source, each formatted exactly as:\n- [title](primary_source_url) — concise summary (max 200 characters)\nRules: include at least one item; cite real, verifiable PRIMARY-source URLs (papers, official sites, journals), never search-engine or aggregator links; output no preamble, headings, or closing remarks — only the list.\n\nTask:\n'
     : '';
   const escapedPrompt = (collectionContract + agent.prompt).replace(/'/g, "'\\''");
   const injectStudioContext = agentUsesStudioContext(agent);

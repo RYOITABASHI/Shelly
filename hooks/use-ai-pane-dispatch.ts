@@ -22,6 +22,7 @@ import {
 } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/chat-store';
 import { logInfo, logError } from '@/lib/debug-logger';
+import { detectPostFormatDirective } from '@/lib/post-format-directive';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
@@ -532,9 +533,10 @@ export function useAIPaneDispatch(paneId: string) {
           'AIPaneDispatch',
           `Terminal context: agent=${agent} session=${terminalSessionId ?? 'active'} raw=${describeTerminalContextForLog(terminalCtx)} injected=${describeTerminalContextForLog(promptTerminalCtx)}`,
         );
-        const systemPrompt = agent === 'local'
+        const systemPrompt = (agent === 'local'
           ? buildLocalAIPaneSystemPrompt(promptTerminalCtx)
-          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile);
+          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile))
+          + detectPostFormatDirective(promptText);
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder and the current user message;
         // the active prompt is passed separately to each provider below.
