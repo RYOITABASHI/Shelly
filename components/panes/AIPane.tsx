@@ -346,12 +346,15 @@ export default function AIPane() {
   }, [boundAgent]);
 
   // Keep the chat pinned to the latest message as content streams in, mirroring
-  // the terminal's auto-scroll. onContentSizeChange fires on every new message AND
-  // on each streamed token (the content height grows), so a single hook follows the
-  // tail without a manual "is at bottom" gate.
+  // the terminal's auto-scroll. A single scrollToEnd is fragile with variable row
+  // heights + removeClippedSubviews (the content size is estimated, so one call
+  // lands short), so we fire it three times — immediately, next frame, and after a
+  // short settle — exactly like AgentChatPane which already tail-follows reliably.
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const scrollToLatest = useCallback(() => {
     listRef.current?.scrollToEnd({ animated: false });
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+    setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 80);
   }, []);
 
   const prevAgentRef = useRef<string | null>(boundAgent);
@@ -396,6 +399,16 @@ export default function AIPane() {
   const isStreaming = conversation?.isStreaming ?? false;
   const terminalContext = conversation?.terminalContext ?? null;
   const contextBadge = formatContextBadge(terminalContext);
+
+  // Tail-follow signal: changes on every new message AND on each streamed token,
+  // since the store mutates the last message's streamingText in place (the array
+  // ref may not change, so onContentSizeChange alone can miss growth). Re-running
+  // scrollToLatest on this signal keeps the latest line pinned during streaming.
+  const last = messages[messages.length - 1];
+  const tailSignal = `${messages.length}:${(last?.streamingText ?? last?.content ?? '').length}:${isStreaming ? 1 : 0}`;
+  useEffect(() => {
+    if (messages.length > 0) scrollToLatest();
+  }, [tailSignal, scrollToLatest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
