@@ -532,7 +532,7 @@ const styles = StyleSheet.create({
   inputSmall: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, fontSize: 14, minWidth: 44, textAlign: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
   unit: { fontSize: 14 },
-  weekRow: { flexDirection: 'row', gap: 4, marginTop: 6 },
+  weekRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 },
   weekDay: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, overflow: 'hidden', marginTop: 4 },
   segment: { flex: 1, paddingVertical: 7, alignItems: 'center' },
