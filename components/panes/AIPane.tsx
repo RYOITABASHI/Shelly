@@ -345,6 +345,15 @@ export default function AIPane() {
     }
   }, [boundAgent]);
 
+  // Keep the chat pinned to the latest message as content streams in, mirroring
+  // the terminal's auto-scroll. onContentSizeChange fires on every new message AND
+  // on each streamed token (the content height grows), so a single hook follows the
+  // tail without a manual "is at bottom" gate.
+  const listRef = useRef<FlatList<ChatMessage>>(null);
+  const scrollToLatest = useCallback(() => {
+    listRef.current?.scrollToEnd({ animated: false });
+  }, []);
+
   const prevAgentRef = useRef<string | null>(boundAgent);
   useEffect(() => {
     const prev = prevAgentRef.current;
@@ -428,6 +437,7 @@ export default function AIPane() {
         </View>
       ) : (
         <FlatList
+          ref={listRef}
           data={messages}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
@@ -435,6 +445,7 @@ export default function AIPane() {
           contentContainerStyle={paneStyles.listContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          onContentSizeChange={scrollToLatest}
           removeClippedSubviews
         />
       )}
