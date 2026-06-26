@@ -208,7 +208,20 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
-  const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
+  // North Star fix: a web-research / collection agent otherwise receives the bare
+  // task utterance as a single user message with no output contract, so the backend
+  // DESCRIBES a workflow instead of EXECUTING the collection — it returns a design
+  // essay, not sourced results (observed on-device: "…ワークフローの設計。本稿では…").
+  // Prepend an explicit execution contract to the prompt. Every backend leads with
+  // escapedPrompt (perplexity/gemini/local/codex all `printf '%s' '${escapedPrompt}'`
+  // first), so this injects uniformly without per-backend system-message plumbing.
+  // Gated on needsWeb so non-research agents (code tasks, file summaries) are
+  // untouched (collectionContract === '' → byte-identical to the old prompt).
+  const promptSignals = detectRouteSignals(agent.prompt);
+  const collectionContract = promptSignals.needsWeb
+    ? 'You are a research-collection agent. EXECUTE this task NOW using live web search — do NOT describe, design, or plan a workflow, and do NOT explain how it could be done. Return ONLY a Markdown bullet list, one line per source, each formatted exactly as:\n- [title](primary_source_url) — concise summary (max 200 characters)\nRules: include at least one item; cite real, verifiable PRIMARY-source URLs (papers, official sites, journals), never search-engine or aggregator links; respond in the same language as the task; output no preamble, headings, or closing remarks — only the list.\n\nTask:\n'
+    : '';
+  const escapedPrompt = (collectionContract + agent.prompt).replace(/'/g, "'\\''");
   const injectStudioContext = agentUsesStudioContext(agent);
 
   // B2 §6: the driver gates on the agent's configured autonomy level. Build the
@@ -220,6 +233,20 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     autonomous: agent.autonomous === true,
     policyJson: agentPolicyJson,
   });
+  if (promptSignals.needsWeb) {
+    // North Star guard: a collection agent that "succeeded" but produced no source
+    // URL (the backend wrote a design essay rather than collecting) is a SOFT
+    // failure, not a green result. Mark BACKEND_ERROR_FILE so the escalation ladder
+    // retries with a stricter backend instead of silently drafting an essay into
+    // Obsidian. Runs BEFORE the web→Codex bake so that ladder picks it up. Only when
+    // the backend didn't already error (no double-mark). 'https?://' is precise: a
+    // contract-compliant result carries real links, an essay does not.
+    toolCommand = `${toolCommand}
+if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_FILE" 2>/dev/null; then
+  printf '\\n%s\\n' 'Collection produced no primary-source links (the backend described a workflow instead of collecting). Marked as a soft failure so the run escalates rather than drafting an essay.' >> "$RESULT_FILE"
+  touch "$BACKEND_ERROR_FILE"
+fi`;
+  }
   if (bakeWebCodexLadder) {
     // The web backend already touches BACKEND_ERROR_FILE (+ TRANSIENT_ERROR_FILE on
     // a 429/5xx/network failure) when it fails. Mirror the foreground ladder
@@ -233,6 +260,12 @@ if [ -f "$BACKEND_ERROR_FILE" ]; then
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
   if command -v codex >/dev/null 2>&1; then
     ${codexExecCommand(escapedPrompt, '"$RESULT_FILE"')}
+    # North Star guard (baked path): the no-URL check above ran before this Codex
+    # escalation, so re-check here — a sourceless Codex essay must also fail-closed
+    # rather than ship to the vault on the unattended (alarm-fired) run.
+    if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_FILE" 2>/dev/null; then
+      touch "$BACKEND_ERROR_FILE"
+    fi
   else
     touch "$BACKEND_ERROR_FILE"
     [ "$WEB_WAS_TRANSIENT" = "1" ] && touch "$TRANSIENT_ERROR_FILE"

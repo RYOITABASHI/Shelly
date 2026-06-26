@@ -300,6 +300,40 @@ describe('generateRunScript — Gemini Google Search grounding for web tasks', (
   });
 });
 
+describe('generateRunScript — collection contract + no-source guard (North Star)', () => {
+  it('prepends an execute-and-list contract for a web-research task (all backends)', () => {
+    const tools: ToolChoice[] = [
+      { type: 'perplexity' },
+      { type: 'gemini-api' },
+      { type: 'local' },
+      { type: 'cli', cli: 'codex' },
+    ];
+    for (const tool of tools) {
+      const s = generateRunScript({ ...agent(tool, tool.type === 'cli'), prompt: '最新ニュースを集めて' });
+      expect(s).toContain('research-collection agent');
+      expect(s).toContain('[title](primary_source_url)');
+      expect(s).toContain('do NOT describe, design, or plan a workflow');
+    }
+  });
+
+  it('leaves a non-web task untouched (no contract → no behavioural change)', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'say hello' });
+    expect(s).not.toContain('research-collection agent');
+    expect(s).not.toContain('primary_source_url');
+  });
+
+  it('marks a sourceless web result as a soft failure so the run escalates', () => {
+    const web = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: '最新ニュースを集めて' });
+    // The guard fires only for web tasks, keys off a missing URL, and sets the
+    // backend-error flag the escalation ladder reads.
+    expect(web).toContain("! grep -qE 'https?://' \"$RESULT_FILE\"");
+    expect(web).toContain('touch "$BACKEND_ERROR_FILE"');
+
+    const plain = generateRunScript({ ...agent({ type: 'local' }), prompt: 'say hello' });
+    expect(plain).not.toContain("! grep -qE 'https?://' \"$RESULT_FILE\"");
+  });
+});
+
 describe('generateRunScript — readable notification preview (telemetry-stripped)', () => {
   it('strips autonomous driver telemetry from the user-facing preview', () => {
     const s = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));
