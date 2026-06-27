@@ -52,6 +52,14 @@ No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI
 
 <br>
 
+**An autonomous agent, scheduled in plain language, waking itself up to do the work**
+
+https://github.com/user-attachments/assets/ab272ae8-c741-4acb-b71d-2da151f50d75
+
+Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled on-device agent that fires on its own alarm — here it set itself for 16:16, woke up while the screen was off, collected sources with the user's own API key, and wrote a primary-source summary to the Obsidian vault. *Observed end-to-end once on a Galaxy Z Fold6 (N=1); cross-OEM deep-Doze reliability is still being hardened — see [Status](#status).*
+
+<br>
+
 ---
 
 ## Why Shelly?
@@ -230,8 +238,8 @@ The wedge isn't "smarter than a cloud agent" — it's that it **works where a cl
 It's a **capability you point at your own tools**, not a fixed feature. One example (mine):
 
 ```
-@agent every weekday at 8am, collect the latest STEAM×AI papers and news,
-and write the primary-source links + a Japanese summary to my Obsidian vault
+@agent every weekday at 8am, collect the latest STEAM×AI education papers and news,
+and write the primary-source links + a short summary to my Obsidian vault
 ```
 
 The phone wakes itself at 8am, researches via Perplexity, and drops a dated, sourced summary into Obsidian — unattended. Swap in your own schedule, source, and output.
