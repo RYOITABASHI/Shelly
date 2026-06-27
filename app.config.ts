@@ -81,6 +81,10 @@ const config: ExpoConfig & { android?: any } = {
       "POST_NOTIFICATIONS",
       "FOREGROUND_SERVICE",
       "FOREGROUND_SERVICE_SPECIAL_USE",
+      // Scheduled agents fire via setExactAndAllowWhileIdle (8:00-sharp unattended
+      // runs). Declared here so a clean `expo prebuild` keeps it — the checked-in
+      // AndroidManifest survives today only because CI prebuilds WITHOUT --clean.
+      "SCHEDULE_EXACT_ALARM",
       "MANAGE_EXTERNAL_STORAGE",
       "REQUEST_INSTALL_PACKAGES",
     ],
