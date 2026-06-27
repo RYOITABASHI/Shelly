@@ -16,6 +16,7 @@ import {
 import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
@@ -70,6 +71,23 @@ export function Sidebar() {
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
   const agentsHalted = useAgentStore((s) => s.halted);
+  // Surface the configured Obsidian vault (where collection agents write their dated
+  // output folders) as a one-tap DEVICE shortcut, so generated results are easy to
+  // open. Falls back to the runtime default when no custom vault path is set.
+  const agentVaultPath = useSettingsStore((s) => s.settings.agentVaultPath);
+  const deviceFolders = React.useMemo(() => {
+    const obsidian = {
+      label: 'OBSIDIAN',
+      path: (agentVaultPath && agentVaultPath.trim()) || '/sdcard/Documents/ObsidianVault',
+      icon: 'menu-book',
+    };
+    const out: { label: string; path: string; icon: string }[] = [];
+    for (const f of QUICK_FOLDERS) {
+      out.push(f);
+      if (f.label === 'AGENT') out.push(obsidian); // group the two agent-output shortcuts
+    }
+    return out;
+  }, [agentVaultPath]);
   const [runningAgentIds, setRunningAgentIds] = useState<Set<string>>(new Set());
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(new Set());
   const mountedAtRef = React.useRef(Date.now());
@@ -764,7 +782,7 @@ export function Sidebar() {
           onToggle={() => toggleSection('device')}
           iconsOnly={iconsOnly}
         >
-          {QUICK_FOLDERS.map(({ label, path, icon }) => (
+          {deviceFolders.map(({ label, path, icon }) => (
             <Pressable
               key={path}
               style={styles.deviceRow}
