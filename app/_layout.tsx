@@ -24,6 +24,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
+import { useAIPaneStore } from '@/store/ai-pane-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
@@ -36,6 +37,7 @@ import {
 import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/codex-pty-detection';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
+import { usePinnedAgentSync } from '@/hooks/use-pinned-agent-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -124,6 +126,8 @@ export default function RootLayout() {
   // Phase 3 inbound gateway: long-poll Telegram for the authorized chat (no-op
   // unless enabled + token + chat id are configured). Enqueues confirm cards only.
   useTelegramInbound();
+  // Task B: mirror the pinned agent into the native widget snapshot (one-tap RUN).
+  usePinnedAgentSync();
   const [pendingAgentActionApproval, setPendingAgentActionApproval] =
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);
@@ -349,7 +353,7 @@ export default function RootLayout() {
       return 'p4';
     };
 
-    const focusPaneByTab = (tab: 'agent-chat') => {
+    const focusPaneByTab = (tab: 'agent-chat' | 'ai') => {
       const multiPane = useMultiPaneStore.getState();
       const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
       if (existingIndex >= 0) {
@@ -849,6 +853,22 @@ export default function RootLayout() {
           if (typeof runId === 'string') {
             await handleAgentActionConfirm(runId);
           }
+        } else if (target === 'agent-new') {
+          // Task A (Scouter widget ＋NEW): open the AI pane — the agent NL input that
+          // runs parseAgentNL → confirm card — and arm voice when ?voice=1. This is an
+          // input shortcut, NOT a bypass: registration still goes through the card.
+          await waitForMultiPaneHydration();
+          const voice = queryValue(parsed.queryParams?.voice) === '1';
+          const opened = focusPaneByTab('ai');
+          if (!opened) {
+            logInfo('DeepLink', 'agent-new: could not open AI pane');
+            return;
+          }
+          // Make the AI pane the focused one so it (and only it) consumes the launch.
+          const aiSlot = useMultiPaneStore.getState().slots.find((s) => s?.tab === 'ai');
+          if (aiSlot) usePaneStore.getState().setFocusedPane(aiSlot.id);
+          useAIPaneStore.getState().requestAgentNewLaunch(voice);
+          logInfo('DeepLink', `agent-new opened (voice=${voice})`);
         } else if (target === 'agent-chat') {
           await waitForMultiPaneHydration();
           const compose = queryValue(parsed.queryParams?.compose);

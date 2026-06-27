@@ -418,9 +418,15 @@ export function Sidebar() {
       stepDetail,
       routeDetail,
     ].filter(Boolean).join('\n');
+    const isPinnedToWidget = useSettingsStore.getState().settings.pinnedAgentId === agent.id;
     const buttons = [
       { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
       { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
+      {
+        text: isPinnedToWidget ? t('sidebar.agent_unpin_widget') : t('sidebar.agent_pin_widget'),
+        onPress: () =>
+          useSettingsStore.getState().updateSettings({ pinnedAgentId: isPinnedToWidget ? undefined : agent.id }),
+      },
       ...(memoryNotes.length
         ? [{ text: t('sidebar.agent_memory_view'), onPress: () => showMemoryList(agent, memoryNotes) }]
         : []),

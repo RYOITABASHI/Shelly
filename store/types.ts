@@ -407,6 +407,11 @@ export type AppSettings = {
   agentTopicFolder?: string;
   /** Base path when agentOutputTarget === 'custom'. */
   agentCustomPath?: string;
+  /** Scouter widget one-tap RUN target (Task B): the id of the single agent the
+   *  home-screen widget's RUN button fires. Undefined = no pinned agent (widget
+   *  hides the RUN affordance). The widget reads the pinned agent's name/status
+   *  from the native ScouterStateStore snapshot, which RN keeps in sync. */
+  pinnedAgentId?: string;
   // ─── @team Table ────────────────────────────────────────────────────────────
   /** @teamに参加させるエージェントのON/OFF */
   teamMembers: {

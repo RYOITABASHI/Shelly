@@ -329,6 +329,70 @@
       android:shadowRadius="6"
       android:includeFontPadding="false" />
 
+    <!-- ── Agent launch (widget→agent) ──
+         scouter_agent_status: pinned-agent name + last/next (provider hides it when
+         no agent is pinned). The pill row: RUN fires the pinned agent via the
+         foreground-service path (Task B, hidden when unpinned); ＋NEW deep-links to
+         the agent input (Task A, always shown). All TextViews — RemoteViews-safe. -->
+    <TextView
+      android:id="@+id/scouter_agent_status"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="6dp"
+      android:ellipsize="end"
+      android:singleLine="true"
+      android:text=""
+      android:textColor="#8CFFAA"
+      android:textSize="12sp"
+      android:typeface="monospace"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="6dp"
+      android:orientation="horizontal">
+
+      <TextView
+        android:id="@+id/scouter_agent_run"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:minHeight="32dp"
+        android:background="@drawable/scouter_ask_pill_bg"
+        android:contentDescription="@string/scouter_agent_run"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text="@string/scouter_agent_run_short"
+        android:textColor="#00FF41"
+        android:textSize="13sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
+        android:visibility="gone" />
+
+      <TextView
+        android:id="@+id/scouter_agent_new"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:gravity="center"
+        android:minHeight="32dp"
+        android:background="@drawable/scouter_ask_pill_bg"
+        android:contentDescription="@string/scouter_agent_new"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text="@string/scouter_agent_new_short"
+        android:textColor="#00FF41"
+        android:textSize="13sp"
+        android:typeface="monospace"
+        android:textStyle="bold"
+        android:includeFontPadding="false" />
+    </LinearLayout>
+
     <!-- divider — must be a TextView (plain <View> is not in the App Widget
          RemoteViews class allowlist and throws InflateException in the host) -->
     <TextView

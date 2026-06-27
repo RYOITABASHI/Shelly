@@ -1011,6 +1011,18 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        AsyncFunction("setScouterPinnedAgent") { pinned: Map<String, Any?> ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).setPinnedAgent(
+                agentId = pinned["agentId"] as? String,
+                agentName = pinned["agentName"] as? String,
+                status = pinned["status"] as? String,
+            )
+            ScouterWidgetProvider.updateAll(context, force = true)
+            null
+        }
+
         AsyncFunction("clearScouterWidgetCodexBinding") {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

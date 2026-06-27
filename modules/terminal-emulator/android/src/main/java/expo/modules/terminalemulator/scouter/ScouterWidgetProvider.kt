@@ -235,6 +235,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
             promptPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_codex_ask, it) }
+            bindAgentLaunch(context, views)
 
             val privacySuppressed = conversation?.privacySuppressed == true
             val latestCodex = latestFor(snapshots, ScouterSource.CODEX)
@@ -630,6 +631,66 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
+        }
+
+        /** Wire the widget→agent affordances. ＋NEW (Task A) is always shown. RUN +
+         *  the status line (Task B) appear only when an agent is pinned; the pinned
+         *  agent's name/status come from the native ScouterStateStore snapshot that RN
+         *  keeps in sync (the RN agent store is no-persist / cross-process invisible). */
+        private fun bindAgentLaunch(context: Context, views: RemoteViews) {
+            views.setOnClickPendingIntent(R.id.scouter_agent_new, newAgentPendingIntent(context))
+            val pinned = try {
+                ScouterStateStore(context).pinnedAgent()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read pinned agent", e)
+                null
+            }
+            if (pinned == null) {
+                views.setViewVisibility(R.id.scouter_agent_run, View.GONE)
+                views.setViewVisibility(R.id.scouter_agent_status, View.GONE)
+                return
+            }
+            views.setViewVisibility(R.id.scouter_agent_run, View.VISIBLE)
+            views.setOnClickPendingIntent(
+                R.id.scouter_agent_run,
+                runPinnedAgentPendingIntent(context, pinned.agentId)
+            )
+            val name = pinned.agentName?.ifBlank { null } ?: "Pinned agent"
+            val statusLine = pinned.status?.ifBlank { null }?.let { "AGENT: $name · $it" } ?: "AGENT: $name"
+            views.setTextViewText(R.id.scouter_agent_status, statusLine)
+            views.setViewVisibility(R.id.scouter_agent_status, View.VISIBLE)
+        }
+
+        /** Task A — input shortcut: deep-link to the agent NL input (mic armed).
+         *  ACTION_VIEW from a getActivity PendingIntent is allowed (it is NOT the
+         *  Knox-blocked `am start` from the app uid). RN routes this in handleDeepLink. */
+        private fun newAgentPendingIntent(context: Context): PendingIntent {
+            val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("shelly:///agent-new?voice=1&source=widget"))
+                .setPackage(context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return PendingIntent.getActivity(
+                context,
+                9120,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        /** Task B — one-tap RUN of the pinned agent: fire the v7.0.0 unattended path
+         *  directly (TerminalSessionService.ACTION_RUN_AGENT via getForegroundService),
+         *  with NO interval/cron extras so the service does not re-arm a schedule
+         *  (manual run). No app open, no card. The service refuses while halted. */
+        private fun runPinnedAgentPendingIntent(context: Context, agentId: String): PendingIntent {
+            val intent = Intent(context, TerminalSessionService::class.java).apply {
+                action = TerminalSessionService.ACTION_RUN_AGENT
+                putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+            }
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                PendingIntent.getForegroundService(context, 9121, intent, flags)
+            } else {
+                PendingIntent.getService(context, 9121, intent, flags)
+            }
         }
 
         private fun petCyclePendingIntent(context: Context): PendingIntent {

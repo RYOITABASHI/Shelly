@@ -1187,6 +1187,8 @@ const en: Record<string, string> = {
   'sidebar.skill_save_yes': 'Save skill',
   'sidebar.skill_save_failed_title': 'Could not save skill',
   'sidebar.agent_run_now': 'Run now',
+  'sidebar.agent_pin_widget': 'Pin to widget',
+  'sidebar.agent_unpin_widget': 'Unpin from widget',
   'sidebar.agent_pause': 'Pause',
   'sidebar.agent_resume': 'Resume',
   'sidebar.agent_detail_a11y': 'Open {{name}} details',

@@ -65,6 +65,15 @@ data class ScouterWidgetUsageLimited(
     val resetAt: Long?
 )
 
+/** Task B: the single agent the home-screen widget's RUN button fires. Written by
+ *  RN (TerminalEmulator.setScouterPinnedAgent) so the widget — a separate process
+ *  that can't read the no-persist RN agent store — has ground truth to display/fire. */
+data class ScouterPinnedAgent(
+    val agentId: String,
+    val agentName: String?,
+    val status: String?
+)
+
 class ScouterStateStore(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("scouter_state", Context.MODE_PRIVATE)
@@ -93,6 +102,32 @@ class ScouterStateStore(context: Context) {
     }
 
     fun getRuntimePort(): Int = prefs.getInt(KEY_PORT, -1)
+
+    /** Task B: pin (agentId != null) or clear (agentId == null) the widget RUN target. */
+    fun setPinnedAgent(agentId: String?, agentName: String?, status: String?) {
+        val editor = prefs.edit()
+        if (agentId.isNullOrBlank()) {
+            editor.remove(KEY_PINNED_AGENT_ID)
+                .remove(KEY_PINNED_AGENT_NAME)
+                .remove(KEY_PINNED_AGENT_STATUS)
+        } else {
+            editor.putString(KEY_PINNED_AGENT_ID, agentId)
+                .putString(KEY_PINNED_AGENT_NAME, agentName?.takeIf { it.isNotBlank() })
+                .putString(KEY_PINNED_AGENT_STATUS, status?.takeIf { it.isNotBlank() })
+        }
+        editor.commit()
+        writeHelperState()
+    }
+
+    /** The pinned widget RUN target, or null when none is set. */
+    fun pinnedAgent(): ScouterPinnedAgent? {
+        val id = prefs.getString(KEY_PINNED_AGENT_ID, null)?.ifBlank { null } ?: return null
+        return ScouterPinnedAgent(
+            agentId = id,
+            agentName = prefs.getString(KEY_PINNED_AGENT_NAME, null)?.ifBlank { null },
+            status = prefs.getString(KEY_PINNED_AGENT_STATUS, null)?.ifBlank { null }
+        )
+    }
 
     fun upsert(event: ScouterEvent): SessionSnapshot {
         synchronized(lock) {
@@ -1057,6 +1092,9 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_STATUS_AT = "widget_status_at"
         private const val KEY_WIDGET_ERROR = "widget_error"
         private const val KEY_WIDGET_CHOICE_OPTIONS = "widget_choice_options"
+        private const val KEY_PINNED_AGENT_ID = "pinned_agent_id"
+        private const val KEY_PINNED_AGENT_NAME = "pinned_agent_name"
+        private const val KEY_PINNED_AGENT_STATUS = "pinned_agent_status"
         private const val KEY_WIDGET_PRIVACY_CLEARED_AT = "widget_privacy_cleared_at"
         private const val KEY_WIDGET_PRIVACY_SUPPRESSED_AT = "widget_privacy_suppressed_at"
         private const val KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID = "widget_privacy_suppressed_codex_session_id"

@@ -24,6 +24,10 @@
   <string name="scouter_widget_approval_deny_short">NO</string>
   <string name="scouter_widget_agent_action_approved">Agent action approved</string>
   <string name="scouter_widget_agent_action_denied">Agent action declined</string>
+  <string name="scouter_agent_run_short">RUN</string>
+  <string name="scouter_agent_run">Run the pinned agent now</string>
+  <string name="scouter_agent_new_short">＋ NEW</string>
+  <string name="scouter_agent_new">New agent (voice)</string>
   <string name="scouter_codex_pet">Codex pet</string>
   <string name="scouter_codex_pet_show">Show Codex pet</string>
   <string name="scouter_codex_pet_switch">Switch Codex pet</string>

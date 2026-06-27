@@ -73,6 +73,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     shellySessionId?: string | null;
     cwd?: string | null;
   }): Promise<void>;
+  /** Task B: pin (or clear) the agent the home-screen widget's RUN button fires.
+   *  Pass agentId === null to clear. status is a short human line (e.g. last
+   *  result + next fire) the widget renders under the agent name. */
+  setScouterPinnedAgent?(pinned: {
+    agentId: string | null;
+    agentName?: string | null;
+    status?: string | null;
+  }): Promise<void>;
   clearScouterWidgetCodexBinding?(): Promise<void>;
   clearScouterWidgetConversationForPrivacy?(): Promise<void>;
   consumeScouterWidgetPendingPrompt?(

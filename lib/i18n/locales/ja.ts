@@ -1186,6 +1186,8 @@ const ja: Record<string, string> = {
   'sidebar.skill_save_yes': 'スキルを保存',
   'sidebar.skill_save_failed_title': 'スキルを保存できませんでした',
   'sidebar.agent_run_now': '今すぐ実行',
+  'sidebar.agent_pin_widget': 'ウィジェットに固定',
+  'sidebar.agent_unpin_widget': 'ウィジェット固定を解除',
   'sidebar.agent_pause': '一時停止',
   'sidebar.agent_resume': '再開',
   'sidebar.agent_detail_a11y': '{{name}} の詳細を開く',

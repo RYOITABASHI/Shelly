@@ -87,6 +87,23 @@ class TerminalSessionService : Service() {
                     startForegroundWithNotification(null)
                     return START_STICKY
                 }
+                // Global kill-switch (STOP-ALL): while halted, refuse to run. Scheduled
+                // fires are already prevented by alarm cancellation in haltAllAgents, but
+                // a MANUAL fire (widget one-tap RUN) is a direct service start that
+                // bypasses the alarm layer — so this sentinel check is what enforces the
+                // kill-switch for the widget path (and is defense-in-depth for any alarm
+                // that races a halt). The sentinel is written/cleared by RN
+                // (agent-manager.ts haltAllAgents/resumeAllAgents) at
+                // $HOME/.shelly/agents/.halted.
+                if (isAgentsHalted()) {
+                    Log.w(TAG, "RUN_AGENT refused: agents halted (STOP-ALL) — $agentId")
+                    // getForegroundService requires a prompt startForeground; satisfy it
+                    // then stop so nothing runs and no notification lingers.
+                    startForegroundWithNotification(null)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 startForegroundWithNotification("Agent running in background")
                 runAgentInBackground(agentId)
                 // Alarm-fired runs carry interval/cron — re-arm the next fire here now
@@ -272,6 +289,21 @@ class TerminalSessionService : Service() {
 
     private fun hasProtectedWork(): Boolean =
         sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0
+
+    /** STOP-ALL kill-switch sentinel (written by RN agent-manager haltAllAgents).
+     *  Its presence means every agent run — scheduled OR manual — must be refused. */
+    private fun isAgentsHalted(): Boolean =
+        try {
+            File(HomeInitializer.getHomeDir(applicationContext), ".shelly/agents/.halted").exists()
+        } catch (e: Exception) {
+            // Deliberate fail-OPEN: the RN in-memory `halted` flag + alarm cancellation
+            // are the primary kill-switch; this sentinel only backstops the cross-process
+            // manual (widget) path. A filesystem error on app-private storage is extremely
+            // unlikely, and the per-action gate + unattended fail-closed still apply
+            // downstream, so a missed sentinel check is not a new attack surface.
+            Log.e(TAG, "Failed to check halt sentinel — proceeding (fail-open)", e)
+            false
+        }
 
     private fun acquireAgentWakeLock(agentId: String): PowerManager.WakeLock? {
         return try {
