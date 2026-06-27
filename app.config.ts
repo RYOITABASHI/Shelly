@@ -43,11 +43,11 @@ const env = {
 const config: ExpoConfig & { android?: any } = {
   name: env.appName,
   slug: env.appSlug,
-  version: "6.0.0",
+  version: "7.0.0",
   // OTA remains disabled for release APKs: installed devices should run
   // exactly the JS bundled in the APK. Keep runtimeVersion aligned with
   // the app semver so a future OTA re-enable starts from a clean boundary.
-  runtimeVersion: "6.0.0",
+  runtimeVersion: "7.0.0",
   orientation: "default",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
