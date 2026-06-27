@@ -1,9 +1,7 @@
 package expo.modules.terminalemulator
 
-import android.app.AlarmManager
 import android.app.DownloadManager
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
@@ -406,39 +404,8 @@ class TerminalEmulatorModule : Module() {
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
-    private fun getAgentRequestCode(context: Context, agentId: String): Int {
-        val prefs = context.getSharedPreferences("shelly_agent_ids", Context.MODE_PRIVATE)
-        val existing = prefs.getInt(agentId, -1)
-        if (existing >= 0) return existing
-        val nextId = prefs.getInt("_next_id", 1000)
-        prefs.edit().putInt(agentId, nextId).putInt("_next_id", nextId + 1).apply()
-        return nextId
-    }
-
-    private fun scheduleAgentAlarm(
-        alarmManager: AlarmManager,
-        triggerAtMs: Long,
-        pendingIntent: PendingIntent
-    ) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
-                (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms())
-            ) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
-            } else {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
-            }
-        } catch (e: SecurityException) {
-            Log.w("TerminalEmulator", "Exact alarm denied; falling back to inexact alarm", e)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
-            } else {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
-            }
-        }
-    }
+    // Agent alarm scheduling/cancellation moved to AgentAlarmScheduler (single source
+    // of truth) — see scheduleAgent / cancelAgent AsyncFunctions below.
 
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
@@ -1433,35 +1400,19 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("scheduleAgent") { agentId: String, intervalMs: Long, triggerAtMs: Long, cron: String? ->
             val context = appContext.reactContext ?: return@AsyncFunction null
-            val requestCode = getAgentRequestCode(context, agentId)
-            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
-                putExtra(AgentAlarmReceiver.EXTRA_AGENT_ID, agentId)
-                putExtra(AgentAlarmReceiver.EXTRA_INTERVAL_MS, intervalMs)
-                if (!cron.isNullOrBlank()) putExtra(AgentAlarmReceiver.EXTRA_CRON, cron)
-            }
-            val pi = PendingIntent.getBroadcast(
-                context, requestCode, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            scheduleAgentAlarm(am, triggerAtMs, pi)
-            Log.i("TerminalEmulator", "Scheduled agent $agentId (reqCode=$requestCode): interval=${intervalMs}ms")
+            // Arm the alarm directly at the foreground service (getForegroundService),
+            // NOT the broadcast receiver: on Android 14+/Samsung One UI the broadcast
+            // trampoline was dropped while the app process was cached/frozen, so
+            // unattended fires never reached the agent. The helper also cancels any
+            // legacy broadcast alarm for this agent, migrating it forward on next launch.
+            AgentAlarmScheduler.schedule(context, agentId, intervalMs, triggerAtMs, cron)
             null
         }
 
         AsyncFunction("cancelAgent") { agentId: String ->
             val context = appContext.reactContext ?: return@AsyncFunction null
-            val requestCode = getAgentRequestCode(context, agentId)
-            val intent = Intent(context, AgentAlarmReceiver::class.java).apply {
-                putExtra(AgentAlarmReceiver.EXTRA_AGENT_ID, agentId)
-            }
-            val pi = android.app.PendingIntent.getBroadcast(
-                context, requestCode, intent,
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-            )
-            val am = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            am.cancel(pi)
-            Log.i("TerminalEmulator", "Cancelled agent $agentId")
+            // Cancels BOTH the new service alarm and any legacy broadcast alarm.
+            AgentAlarmScheduler.cancel(context, agentId)
             null
         }
 

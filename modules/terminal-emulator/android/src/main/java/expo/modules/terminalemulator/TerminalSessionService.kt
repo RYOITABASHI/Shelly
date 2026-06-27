@@ -38,6 +38,11 @@ class TerminalSessionService : Service() {
         const val ACTION_STOP = "expo.modules.terminalemulator.STOP"
         const val ACTION_RUN_AGENT = "expo.modules.terminalemulator.RUN_AGENT"
         const val EXTRA_AGENT_ID = "agent_id"
+        // Carried on the alarm-fired RUN_AGENT intent so the service can re-arm the
+        // next fire itself (the alarm now targets the service directly, not the
+        // receiver, so the re-schedule loop lives here).
+        const val EXTRA_INTERVAL_MS = "interval_ms"
+        const val EXTRA_CRON = "cron"
 
         /**
          * Authoritative session registry. Lives here (Service companion) rather
@@ -84,6 +89,18 @@ class TerminalSessionService : Service() {
                 }
                 startForegroundWithNotification("Agent running in background")
                 runAgentInBackground(agentId)
+                // Alarm-fired runs carry interval/cron — re-arm the next fire here now
+                // that the alarm targets this service directly (no receiver in the
+                // loop). A manual run (no interval/cron extras) is a no-op.
+                val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)
+                val cron = intent.getStringExtra(EXTRA_CRON)
+                if (intervalMs > 0 || !cron.isNullOrBlank()) {
+                    try {
+                        AgentAlarmScheduler.scheduleNext(applicationContext, agentId, intervalMs, cron)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to re-arm next alarm for $agentId", e)
+                    }
+                }
                 return START_STICKY
             }
         }
