@@ -105,16 +105,22 @@ export const useSidebarStore = create<SidebarState>()(
         activeRepoPath: s.activeRepoPath,
         repoPaths: s.repoPaths,
       }),
-      version: 4,
+      version: 5,
       migrate: (persistedState) => {
         const state = (persistedState ?? {}) as Partial<Pick<
           SidebarState,
           'mode' | 'openSections' | 'activeRepoPath' | 'repoPaths'
         >>;
+	        // v5: the AGENT output shortcut (feature D) lives in the DEVICE section,
+	        // which older persisted state pinned closed (device:false) — so the
+	        // shortcut never appeared. Drop the stale key once so it resolves to the
+	        // new default (open) and the draft result is one tap away as intended.
+	        const persistedSections = { ...(state.openSections ?? {}) };
+	        delete (persistedSections as Partial<Record<SidebarSection, boolean>>).device;
 	        return {
 	          ...state,
 	          mode: isSidebarMode(state.mode) ? state.mode : 'icons',
-	          openSections: { ...defaultOpenSections(), ...(state.openSections ?? {}) },
+	          openSections: { ...defaultOpenSections(), ...persistedSections },
 	        };
 	      },
     }
@@ -127,7 +133,7 @@ function defaultOpenSections(): Record<SidebarSection, boolean> {
     skills: false,
     repos: true,
     files: true,
-    device: false,
+    device: true,
     ports: false,
     profiles: false,
     worktrees: true,

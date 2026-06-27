@@ -17,6 +17,8 @@
  */
 import { AgentAction, AgentMemoryConfig, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { parseStepsFromText } from './agent-orchestration';
+import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -31,6 +33,12 @@ export interface ParsedAgentDraft {
   scheduleLabel: string;
   /** When a time was parsed but the frequency was ambiguous, pre-fill this in the card. */
   suggestedTime?: { hour: number; minute: number };
+  /** A recurrence was stated but the time is missing: the card pre-selects this
+   *  frequency (instead of falling to 'once'/run-now) and asks for a time. The
+   *  schedule itself stays null/not-confident — never auto-registered. */
+  suggestedFrequency?: 'daily' | 'weekly';
+  /** Dow csv ("1" / "1,5") accompanying a 'weekly' suggestedFrequency. */
+  suggestedDowList?: string;
   /** Delivery capability. Defaults to 'draft' (write to outputPath). Never 'publish'. */
   action: AgentAction;
   /** Routed tool (reuses the keyword router). */
@@ -46,6 +54,9 @@ export interface ParsedAgentDraft {
   /** Phase 2a: a matching reusable skill surfaced for gated reuse in the confirm
    *  card. Set by the dispatcher (async skill match), not the pure parser. */
   matchedSkill?: { id: string; name: string; successCount: number };
+  /** Phase 4: ordered step instructions when the utterance is multi-step
+   *  ("まず…次に…最後に" / numbered). Absent/<2 = single-run. */
+  orchestrationSteps?: string[];
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -80,7 +91,8 @@ function extractTime(text: string): ParsedTime | null {
     if (jp[3] === '半') minute = 30;
     else if (jp[4] !== undefined) minute = parseInt(jp[4], 10);
     const meridiem = jp[1];
-    if ((meridiem === '午後' || meridiem === '夜' || meridiem === '夕方' || meridiem === '晩') && hour < 12) {
+    if ((meridiem === '午後' || meridiem === '夜' || meridiem === '夕方' || meridiem === '晩' || meridiem === '昼') && hour < 12) {
+      // 昼1時=13:00 … 昼3時=15:00; 昼12時 stays 12:00 (guarded by hour < 12).
       hour += 12;
     } else if ((meridiem === '午前' || meridiem === '朝' || meridiem === '深夜') && hour === 12) {
       hour = 0; // 午前12時/深夜12時 = 0:00
@@ -88,15 +100,28 @@ function extractTime(text: string): ParsedTime | null {
     if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
   }
 
-  // EN/numeric: "8:30am" "8 pm" "20:30" "at 9"
-  const en = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
-  if (en && (en[2] !== undefined || en[3] !== undefined || /\bat\s+\d/i.test(text))) {
-    let hour = parseInt(en[1], 10);
-    const minute = en[2] !== undefined ? parseInt(en[2], 10) : 0;
-    const mer = en[3]?.toLowerCase();
+  // EN/numeric. Ordered branches; a bare standalone number is NOT a time (ambiguous).
+  //  1. "at N(:MM)?(am/pm)?" — bound to "at", so "process top 10 posts at 8" → 8:00.
+  //  2. "H:MM(am/pm)?"       — colon form; minute and meridiem are independent so
+  //                            "8:30pm" → 20:30 and "9:15am" → 09:15 both work.
+  //  3. "H am/pm"            — bare hour carrying a meridiem ("8pm" → 20:00).
+  const at = text.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const colon = at ? null : text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
+  const meridiemOnly = at || colon ? null : text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+  const m = at || colon;
+  if (m) {
+    let hour = parseInt(m[1], 10);
+    const minute = m[2] !== undefined ? parseInt(m[2], 10) : 0;
+    const mer = m[3]?.toLowerCase();
     if (mer === 'pm' && hour < 12) hour += 12;
     else if (mer === 'am' && hour === 12) hour = 0;
     if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+  } else if (meridiemOnly) {
+    let hour = parseInt(meridiemOnly[1], 10);
+    const mer = meridiemOnly[2].toLowerCase();
+    if (mer === 'pm' && hour < 12) hour += 12;
+    else if (mer === 'am' && hour === 12) hour = 0;
+    if (hour >= 0 && hour <= 23) return { hour, minute: 0 };
   }
 
   return null;
@@ -113,6 +138,12 @@ interface ScheduleResult {
   confident: boolean;
   label: string;
   suggestedTime?: ParsedTime;
+  /** A recurrence was clearly stated but the TIME is missing, so we can't emit a
+   *  confident cron. The card pre-selects this frequency (instead of 'once') and
+   *  forces the user to pick a time. schedule stays null — never auto-registered. */
+  suggestedFrequency?: 'daily' | 'weekly';
+  /** For a weekly suggestion: the dow csv ("1" or "1,5") to pre-select the chips. */
+  suggestedDowList?: string;
 }
 
 /** Parse the schedule, constrained to the 3 whitelisted cron shapes. */
@@ -145,39 +176,83 @@ function parseSchedule(text: string): ScheduleResult {
     return { schedule: null, confident: false, label: '未設定（時間間隔は非対応・要選択）' };
   }
 
+  // Biweekly / Nth-weekday / N-times-a-week cadences are NOT expressible in the
+  // whitelisted weekly cron. Registering them as a plain weekly would silently
+  // change the meaning ("隔週月曜" → EVERY Monday, "第2月曜" → every Monday), so
+  // force manual selection. These markers are schedule-specific (not topic words).
+  if (
+    /隔週|隔月|第\s*[0-9０-９一二三四五六七八九十]+\s*(?:週|[日月火水木金土]曜)|週\s*[2-7２-７]\s*回|biweekly|fortnightly/i.test(text) ||
+    /\b(every\s+other\s+week|every\s+\d+\s+weeks?)\b/i.test(lower)
+  ) {
+    return { schedule: null, confident: false, label: '未設定（この周期は非対応・要選択）' };
+  }
+
   const time = extractTime(text);
 
-  // ── 2. Weekly → `M H * * D` (requires a weekday + a time) ──
-  let dow: number | null = null;
-  const weeklyJp = text.match(/(?:毎週|每週)?\s*([日月火水木金土])曜?/);
-  if (/毎週|每週/.test(text) && weeklyJp) {
-    dow = JP_WEEKDAY[weeklyJp[1]];
-  } else {
-    for (const [re, d] of EN_WEEKDAY) {
-      if (re.test(lower)) {
-        dow = d;
-        break;
+  // "1日1回 / 1日に1回 / 一日一回 / 1日1度" = once per day → daily. The leading "1日"
+  // run is REQUIRED (no bare 日 alternative): that both rejects a DATE context
+  // ("7月1日に1回", "21日に1回" — the digit/月 before 日 fails the negated class) and
+  // kanji-compound day-words ("今日/明日/誕生日/平日に1回" — no [1一] before 日). No JS
+  // lookbehind reliance (Hermes-safe negated class).
+  const dailyOnce = /(?:^|[^0-9０-９月/／])[1１一]\s*日\s*に?\s*[1１一]\s*[回度]/.test(text);
+  // An explicit daily marker (毎日 / daily) outranks an incidental weekday mention,
+  // so "毎日月曜の予定を8時に通知" stays daily instead of collapsing to weekly-Mon.
+  const dailyMarker =
+    /毎日|毎朝|毎晩|毎夕|日次/.test(text) ||
+    dailyOnce ||
+    /\b(every\s*day|everyday|daily|each\s+day|once\s+a\s+day)\b/.test(lower);
+
+  // ── 2. Weekly → `M H * * D` (single day) or `M H * * d1,d2,…` (multi-day) ──
+  // Collect EVERY weekday mentioned so "月曜と金曜" → `* * 1,5` instead of being
+  // flattened to the first day. JP detection requires 曜 (unambiguous: avoids
+  // 日次 / 今日 / 日報 false-positives); a bare 月/金/日 is too ambiguous to trust.
+  // EN matches whole words. The scheduler accepts a comma DOW list (DOW_LIST_RE).
+  const dows = new Set<number>();
+  if (!dailyMarker) {
+    // (a) 曜-qualified weekdays (月曜 / 金曜) — always unambiguous.
+    const jpQualified = text.match(/[日月火水木金土](?=曜)/g);
+    if (jpQualified) for (const ch of jpQualified) dows.add(JP_WEEKDAY[ch]);
+    // (b) A separator-joined bare run of 2+ weekday chars (火・金 / 月、水、金 / 火と金)
+    // is admitted ONLY when it leads directly into the time ("火・金の朝8時"). That
+    // adjacency is what separates a real schedule from element / celestial lists
+    // like 火・水 (fire/water 五行) or 日・月 (sun/moon), which are followed by a NOUN,
+    // not a time. A lone bare 月/金/日 stays ambiguous and is never matched.
+    const runs = text.match(
+      /[日月火水木金土]曜?日?(?:\s*[・、，,と＆&]\s*[日月火水木金土]曜?日?)+(?=\s*(?:の|は|、|,)?\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*[:時])/g,
+    );
+    if (runs) {
+      for (const run of runs) {
+        // Strip "曜日"/"曜" FIRST so the trailing 日 of 曜日 (e.g. "火曜日") isn't
+        // extracted as Sunday — "月曜日と火曜日" must be 1,2 not 0,1,2.
+        const chars = run.replace(/曜日?/g, ' ').match(/[日月火水木金土]/g);
+        if (chars) for (const ch of chars) dows.add(JP_WEEKDAY[ch]);
       }
     }
+    for (const [re, d] of EN_WEEKDAY) {
+      if (re.test(lower)) dows.add(d);
+    }
   }
-  if (dow !== null) {
+  const dowList = [...dows].sort((a, b) => a - b);
+  if (dowList.length > 0) {
+    const dowField = dowList.join(',');
+    const dayLabel = dowList.map((d) => JP_DOW_LABEL[d]).join('・');
     if (time) {
       return {
-        schedule: `${time.minute} ${time.hour} * * ${dow}`,
+        schedule: `${time.minute} ${time.hour} * * ${dowField}`,
         confident: true,
-        label: `毎週${JP_DOW_LABEL[dow]} ${fmtTime(time)}`,
+        label: `毎週${dayLabel} ${fmtTime(time)}`,
       };
     }
     return {
       schedule: null,
       confident: false,
-      label: `毎週${JP_DOW_LABEL[dow]} 時刻未設定（要選択）`,
-      suggestedTime: undefined,
+      label: `毎週${dayLabel} 時刻未設定（要選択）`,
+      suggestedFrequency: 'weekly',
+      suggestedDowList: dowField,
     };
   }
 
   // ── 3. Daily → `M H * * *` (explicit daily marker + a time) ──
-  const dailyMarker = /毎日|毎朝|毎晩|毎夕|日次/.test(text) || /\b(every\s*day|everyday|daily|each\s+day)\b/.test(lower);
   if (dailyMarker) {
     if (time) {
       return {
@@ -190,6 +265,7 @@ function parseSchedule(text: string): ScheduleResult {
       schedule: null,
       confident: false,
       label: '毎日 時刻未設定（要選択）',
+      suggestedFrequency: 'daily',
     };
   }
 
@@ -277,7 +353,9 @@ const NAME_STRIP_RE = new RegExp(
     '毎日', '毎朝', '毎晩', '毎夕', '毎週', '每週', '日次',
     '午前', '午後', '朝', '夜', '夕方', '晩', '深夜', '昼',
     '\\d+\\s*時(?:\\s*半|\\s*\\d+\\s*分)?', '\\d+\\s*分\\s*(?:ごと|おき|毎|間隔)?',
-    '[日月火水木金土]曜?日?',
+    // Weekday tokens (月曜日 / 月曜) — require 曜 so a bare 日月火水木金土 is NOT
+    // stripped. Without it, '今日'→'今', '日本'→'本', '金融'→'融' all lost a char.
+    '[日月火水木金土]曜日?',
     'を?(作って|作成して?|書いて|まとめて|要約して|送って|通知して|教えて|して)',
     'every\\s*day', 'everyday', 'daily', 'each\\s+day',
     'every\\s+\\d+\\s*(?:min|mins|minute|minutes|hours?)',
@@ -306,11 +384,64 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   let s = text.trim();
   if (schedule.confident) {
     s = s
-      .replace(/^.*?(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
+      // Strip the schedule clause IN PLACE (no leading `.*?`) so a topic BEFORE it
+      // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
+      // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
+      .replace(/(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
+      // No-毎週 multi-day path. Two narrow strips, each requiring a trailing 時 so a
+      // non-schedule opener is untouched:
+      //  (A) a leading 曜-qualified weekday clause ("月曜と金曜の朝8時に…").
+      .replace(
+        /^[日月火水木金土]曜日?(?:\s*(?:と|・|、|,|，|および|＆|&)\s*[日月火水木金土]曜?日?)*\s*[^、。]*?時(?:半|\d+分)?\s*(?:に|の)?/,
+        '',
+      )
+      //  (B) a leading bare run of 2+ weekday chars that leads DIRECTLY into the time
+      //  ("火・金の朝8時に…"). Mirrors detection's adjacency so it can't eat an element
+      //  pair (火・水の実験を…8時) that merely precedes an unrelated time downstream.
+      .replace(
+        /^[日月火水木金土]曜?日?(?:\s*[・、，,と＆&]\s*[日月火水木金土]曜?日?)+\s*(?:の|は|、|,)?\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*(?:時(?:半|\d+分)?|:\d{2})\s*(?:に|の)?/,
+        '',
+      )
+      .replace(/^\s*((on\s+)?(mon|tue|wed|thu|fri|sat|sun)\w*(\s*(,|and|&)\s*(mon|tue|wed|thu|fri|sat|sun)\w*)*)\b[^.,]*?\b(at\s+\d|\d\s*(am|pm|:))[^,.]*[\s,]*/i, '')
       .replace(/^\s*(every\s*day|everyday|daily|each\s+day|every\s+\d+\s*\w+)\b[\s,]*/i, '')
       .trim();
   }
   return s || text.trim();
+}
+
+/**
+ * G6: an explicit "パイプライン" / "pipeline" request builds the ready-made STEAM
+ * collection pipeline (search → primary source → summarize → char-limited
+ * re-summarize) instead of the single-step parse. A topic before the keyword is
+ * carried through ("量子コンピュータのパイプライン" → topic=量子コンピュータ); a bare
+ * "パイプライン" or a STEAM topic falls back to the STEAM×AI default. Returns null
+ * when the utterance isn't a pipeline request, so the normal parse path runs.
+ */
+function detectPipelinePreset(text: string): PipelinePreset | null {
+  if (!/パイプライン|pipeline/i.test(text)) return null;
+  // Don't hijack the OTHER senses of "pipeline" into a data-collection preset:
+  //  - DevOps / CI build pipelines (debugging, not scheduled collection)
+  //  - "design / architect a pipeline" (engineering, not collection)
+  if (
+    /エラー|直し|直す|修正|\bfix\b|失敗|\bfail|デプロイ|deploy|\bci\b|\bcd\b|ci\/cd|cicd|ジョブ|\bjob\b|\bbuild\b|ビルド/i.test(text) ||
+    /設計|構築|アーキ|\bdesign\b|\barchitect|\bdata pipeline\b|データパイプライン/i.test(text)
+  ) {
+    return null;
+  }
+  const m = text.match(
+    /(.+?)(?:の|を|に関する)?\s*(?:最新の?)?\s*(?:ニュース|論文|情報|動向)?\s*(?:を)?\s*(?:パイプライン|pipeline)/i,
+  );
+  let topic = (m?.[1] ?? '').trim();
+  topic = topic
+    .replace(/[@＠]?agent\s*/gi, '')
+    // Strip a leading schedule clause so "毎日8時に量子コンピュータ" → "量子コンピュータ".
+    .replace(
+      /^((?:毎日|毎週|毎朝|毎晩|毎夕|定期的?に?|\d+\s*時(?:\s*\d+\s*分)?|\d+\s*分(?:ごと|おき)?|[日月火水木金土]曜日?)\s*に?\s*)+/g,
+      '',
+    )
+    .trim();
+  if (/^steam/i.test(topic) || topic.length < 2) topic = '';
+  return buildSteamPipeline({ topic: topic || undefined });
 }
 
 /**
@@ -320,21 +451,66 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
  */
 export function parseAgentNL(utterance: string): ParsedAgentDraft {
   const rawText = utterance.trim();
+
+  // G6: a "パイプライン" request becomes the multi-step collection preset. The
+  // user's own schedule (if confidently parsed) overrides the preset's Mon/Fri.
+  const preset = detectPipelinePreset(rawText);
+  if (preset) {
+    const presetSched = parseSchedule(rawText);
+    const presetSuggestion = suggestTool(preset.prompt);
+    // Use the preset's Mon/Fri default ONLY when the user gave no schedule cue at
+    // all. If they stated one that we couldn't confidently parse (e.g. "90分ごと"),
+    // fall to manual selection rather than silently rewriting it to Mon/Fri.
+    const hasScheduleCue = /毎日|毎週|毎朝|毎晩|毎夕|日次|[日月火水木金土]曜|\d+\s*時|\d+\s*分|ごと|おき|daily|weekly|every|hourly|\bmin/i.test(rawText);
+    const usePresetDefault = !presetSched.confident && !hasScheduleCue;
+    const schedule = presetSched.confident
+      ? presetSched.schedule
+      : usePresetDefault
+      ? preset.schedule
+      : null;
+    return {
+      name: deriveName(preset.name),
+      prompt: preset.prompt,
+      orchestrationSteps: preset.orchestration.steps,
+      schedule,
+      scheduleConfident: presetSched.confident || usePresetDefault,
+      scheduleLabel: presetSched.confident
+        ? presetSched.label
+        : usePresetDefault
+        ? '毎週 月・金 8:00'
+        : presetSched.label,
+      suggestedTime: presetSched.suggestedTime
+        ? { hour: presetSched.suggestedTime.hour, minute: presetSched.suggestedTime.minute }
+        : undefined,
+      action: detectAction(rawText),
+      tool: presetSuggestion.tool,
+      toolLabel: presetSuggestion.label ?? toolChoiceToLabel(presetSuggestion.tool),
+      autonomous: true,
+      memory: detectMemory(rawText),
+      rawText,
+    };
+  }
+
   const sched = parseSchedule(rawText);
   const action = detectAction(rawText);
   const prompt = derivePrompt(rawText, sched);
   const suggestion = suggestTool(prompt || rawText);
   const memory = detectMemory(rawText);
+  // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts).
+  const orchestrationSteps = parseStepsFromText(prompt || rawText);
 
   return {
     name: deriveName(rawText),
     prompt,
+    orchestrationSteps: orchestrationSteps.length >= 2 ? orchestrationSteps : undefined,
     schedule: sched.schedule,
     scheduleConfident: sched.confident,
     scheduleLabel: sched.label,
     suggestedTime: sched.suggestedTime
       ? { hour: sched.suggestedTime.hour, minute: sched.suggestedTime.minute }
       : undefined,
+    suggestedFrequency: sched.suggestedFrequency,
+    suggestedDowList: sched.suggestedDowList,
     action,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),

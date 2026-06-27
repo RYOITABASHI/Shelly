@@ -258,6 +258,10 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
       return `${tool.cli.charAt(0).toUpperCase()}${tool.cli.slice(1)} CLI`;
     case 'gemini-api':
       return tool.model ? `Gemini API (${tool.model})` : 'Gemini API';
+    case 'cerebras':
+      return tool.model ? `Cerebras (${tool.model})` : 'Cerebras';
+    case 'groq':
+      return tool.model ? `Groq (${tool.model})` : 'Groq';
     case 'local':
       return 'Local LLM';
     case 'perplexity':
@@ -267,4 +271,32 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
     case 'auto':
       return 'Auto';
   }
+}
+
+/**
+ * Pick the tool an agent is STORED with when confirmed from the creation flow.
+ * The SINGLE source of truth for the autonomous tool override — called by BOTH
+ * the confirm card and the @agent submit handler so they can never disagree.
+ *
+ * Mirrors generateRunScript's autonomous resolution EXACTLY:
+ *   - local stays local (an on-device transform is a valid autonomous path),
+ *   - a web backend (gemini-api/perplexity) is kept ONLY with consent + needsWeb
+ *     (the P1 path; generateRunScript bakes a Codex fallback for the fire),
+ *   - everything else (auto, cli, or an api-key tool without consent/needsWeb) →
+ *     the gated Codex driver.
+ * The needsWeb gate is load-bearing: suggestTool defaults a general prompt to
+ * gemini-api, so without it a non-web autonomous task would store gemini-api and
+ * the runtime would REFUSE it (api-key backend not allowed when needsWeb is
+ * false), dead-ending every scheduled fire in a refusal.
+ */
+export function resolveAutonomousFinalTool(
+  autonomous: boolean,
+  scoredTool: ToolChoice,
+  cloudConsent: boolean,
+  needsWeb: boolean,
+): ToolChoice {
+  if (!autonomous) return scoredTool;
+  if (scoredTool.type === 'local') return scoredTool;
+  const isWebTool = scoredTool.type === 'gemini-api' || scoredTool.type === 'perplexity';
+  return cloudConsent && needsWeb && isWebTool ? scoredTool : { type: 'cli', cli: 'codex' };
 }

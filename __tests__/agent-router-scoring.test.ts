@@ -28,6 +28,15 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('say hello').category).toBe('general');
   });
 
+  it('short Latin keywords match on a word boundary (not substring)', () => {
+    // "previous" must NOT match 'pr', "report" must NOT match 'repo' — this bit
+    // orchestration's "# Results from previous steps" scaffolding.
+    expect(detectRouteSignals('use results from previous steps').category).toBe('general');
+    expect(detectRouteSignals('write a weather report').category).not.toBe('code');
+    // a bare "pr" / "repo" as a word still matches code.
+    expect(detectRouteSignals('open a pr').category).toBe('code');
+  });
+
   it('raises reasoning weight on complexity markers and length', () => {
     expect(detectRouteSignals('hi').reasoningWeight).toBeLessThan(0.3);
     expect(detectRouteSignals('deeply analyze and compare the strategy').reasoningWeight).toBeGreaterThan(0.4);
@@ -36,6 +45,36 @@ describe('detectRouteSignals', () => {
   it('flags search need for research / fresh-info tasks', () => {
     expect(detectRouteSignals('最新ニュースを調べて').needsSearch).toBe(true);
     expect(detectRouteSignals('rename this variable').needsSearch).toBe(false);
+  });
+
+  it('flags needsWeb only for collect + fresh (web-mandatory), not summarize or trivial freshness', () => {
+    // Collect CURRENT info → only a live web fetch can do it.
+    expect(detectRouteSignals('ニュースを集めて').needsWeb).toBe(true);
+    expect(detectRouteSignals('collect the latest news').needsWeb).toBe(true);
+    expect(detectRouteSignals('最新情報を収集して').needsWeb).toBe(true);
+    // Summarize the news = transform, NO collection verb → not web-mandatory (stays cheap/local).
+    expect(detectRouteSignals('ニュースを要約して').needsWeb).toBe(false);
+    // Freshness alone (no collection verb) is a weak signal → not web-mandatory.
+    expect(detectRouteSignals('今日の天気は？').needsWeb).toBe(false);
+    // Collection without freshness → not web-mandatory.
+    expect(detectRouteSignals('資料を集めて整理して').needsWeb).toBe(false);
+  });
+
+  it('classifies the web domain — academic (Perplexity) vs general (Gemini)', () => {
+    expect(detectRouteSignals('最新の論文を集めて').webDomain).toBe('academic');
+    expect(detectRouteSignals('ニュースを集めて').webDomain).toBe('general');
+  });
+
+  it('"collect news WITH SOURCES (出典付き)" is general → Gemini, not academic → Perplexity', () => {
+    // Regression: 出典 ∈ RESEARCH_KW flipped a news task to webDomain=academic →
+    // ladder [Perplexity, Codex] (no Perplexity key) → dead-ended on Codex, Gemini
+    // never tried. A news collection asking for citations is still general.
+    const sig = detectRouteSignals('今日の主要ニュースを3つ集めて出典付きで');
+    expect(sig.needsWeb).toBe(true);
+    expect(sig.webDomain).toBe('general');
+    expect(detectRouteSignals('引用付きで最新ニュースを集めて').webDomain).toBe('general');
+    // Genuine scholarly collection still routes academic.
+    expect(detectRouteSignals('最新の研究論文を集めて出典付きで').webDomain).toBe('academic');
   });
 });
 
@@ -66,6 +105,16 @@ describe('scoreRoutes — deterministic + offline', () => {
 
   it('keeps simple general tasks on-device (on-device-first, no widened cloud)', () => {
     expect(scoreRoutes('say hi').tool.type).toBe('local');
+  });
+
+  it('routes web-mandatory collection to a web backend, not a hallucinating local LLM', () => {
+    // Collect current news → Gemini (grounded), NOT local — local has no web access.
+    expect(scoreRoutes('ニュースを集めて').tool.type).toBe('gemini-api');
+    expect(scoreRoutes('collect the latest tech news').tool.type).toBe('gemini-api');
+    // Academic web-mandatory → Perplexity.
+    expect(scoreRoutes('最新の論文を集めて').tool.type).toBe('perplexity');
+    // Summarize the news (no collection) stays a cheap on-device transform.
+    expect(scoreRoutes('ニュースを要約して').tool.type).toBe('local');
   });
 
   it('does not send a trivial freshness question to the paid deep-research backend', () => {

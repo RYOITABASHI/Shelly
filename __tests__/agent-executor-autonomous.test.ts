@@ -3,7 +3,7 @@ jest.mock('@/lib/home-path', () => ({
 }));
 
 import { execFileSync } from 'node:child_process';
-import { generateRunScript, selectAutonomousLocalModel } from '@/lib/agent-executor';
+import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, computeAgentSlug, sanitizeOutputTemplate } from '@/lib/agent-executor';
 import { Agent, ToolChoice } from '@/store/types';
 
 const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
@@ -24,6 +24,421 @@ const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
 });
 
 const UNSET = 'unset PERPLEXITY_API_KEY GEMINI_API_KEY';
+
+describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)', () => {
+  it('non-autonomous Cerebras/Groq call their OpenAI-compatible endpoints with a Bearer key', () => {
+    const cb = generateRunScript(agent({ type: 'cerebras' }, false));
+    expect(cb).not.toContain('[REFUSED]');
+    expect(cb).toContain('https://api.cerebras.ai/v1/chat/completions');
+    expect(cb).toContain('HTTP_AUTH_HEADER="Bearer $CEREBRAS_API_KEY"');
+    expect(cb).toContain('MODEL="${CEREBRAS_MODEL:-qwen-3-235b-a22b-instruct-2507}"');
+    expect(cb).not.toContain(UNSET); // key-bearing backend keeps its env
+
+    const gq = generateRunScript(agent({ type: 'groq' }, false));
+    expect(gq).toContain('https://api.groq.com/openai/v1/chat/completions');
+    expect(gq).toContain('HTTP_AUTH_HEADER="Bearer $GROQ_API_KEY"');
+    expect(gq).toContain('MODEL="${GROQ_MODEL:-llama-3.3-70b-versatile}"');
+  });
+
+  it('refuses autonomous Cerebras/Groq, fail-closed (API-key backend, no key in the autonomous path)', () => {
+    for (const t of ['cerebras', 'groq'] as const) {
+      const s = generateRunScript(agent({ type: t }, true));
+      expect(s).toContain('[REFUSED]');
+      expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION');
+      expect(s).not.toContain('api.cerebras.ai');
+      expect(s).not.toContain('api.groq.com');
+    }
+  });
+
+  it('scrubs Cerebras/Groq keys from the env of non-key backends (no cross-backend leak)', () => {
+    // A local/oauth run must not carry ANY api key, including the new ones.
+    const local = generateRunScript(agent({ type: 'local' }, true));
+    expect(local).toContain('unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY');
+  });
+
+  it('emits parseable shell for the new backends', () => {
+    for (const t of ['cerebras', 'groq'] as const) {
+      const s = generateRunScript(agent({ type: t }, false));
+      expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+    }
+  });
+});
+
+describe('generateRunScript — local context window fit (no ctx overflow)', () => {
+  it('caps the combined local prompt + injected context and reserves response room', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // Tier-aware char budget: 8192-window tiers get 16000, the 4096-window 4B/9B
+    // tiers get 7000. Small tiers are matched FIRST so "0.8B" (ends in "8B") is
+    // not stolen by the *8[bB]* heavy glob.
+    expect(s).toContain('*0.8[bB]*|*0-8[bB]*|*1.7[bB]*|*1-7[bB]*|*2[bB]*) LOCAL_PROMPT_MAX_CHARS="${LOCAL_LLM_PROMPT_MAX_CHARS:-16000}"');
+    expect(s).toContain('*4[bB]*|*8[bB]*|*9[bB]*) LOCAL_PROMPT_MAX_CHARS="${LOCAL_LLM_PROMPT_MAX_CHARS:-7000}"');
+    // Abort-safe truncation: write a regular file then head it (NOT a pipe into
+    // head, which would SIGPIPE the producers under pipefail on large context).
+    expect(s).toContain('head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"');
+    expect(s).not.toContain('| head -c "$LOCAL_PROMPT_MAX_CHARS" > "$PROMPT_FILE"');
+    // Response reserve lowered so input + output stay inside the window.
+    expect(s).toContain('\\"max_tokens\\":2048');
+    expect(s).not.toContain('\\"max_tokens\\":4096');
+    // Local server starts with a usable context window, not the old tiny default.
+    expect(s).toContain("*2b*) printf '8192 4 180");
+    expect(s).not.toContain("*2b*) printf '1024 4 180");
+  });
+
+  it('the cap construct is abort-safe under pipefail with >64KB context (no SIGPIPE)', () => {
+    // Regression for the file-then-truncate fix: piping producers into "head -c"
+    // SIGPIPEs them once head closes early (context > ~64KB pipe buffer) → exit
+    // 141 → 'set -euo pipefail' aborts the whole run before the fallback. Reading
+    // a regular file with head has no producer to signal. Prove the construct
+    // survives a 100KB context and yields exactly the capped size.
+    const script = [
+      'set -euo pipefail',
+      "SOURCE_CONTEXT=$(head -c 100000 /dev/zero | tr '\\0' x)",
+      'PROMPT_FILE=$(mktemp)',
+      'LOCAL_PROMPT_MAX_CHARS=16000',
+      `{ printf '%s\\n' 'instruction'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"`,
+      'head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"',
+      'rm -f "$PROMPT_FILE.full"',
+      '[ "$(wc -c < "$PROMPT_FILE")" -eq 16000 ] && echo CAPPED_OK',
+      'rm -f "$PROMPT_FILE"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', script]).toString()).toContain('CAPPED_OK');
+  });
+
+  it('classifies the local cap by tier without the 0.8B/8B false match', () => {
+    const classify = (model: string) =>
+      [
+        `LOCAL_MODEL='${model}'`,
+        'case "$LOCAL_MODEL" in',
+        '  *0.8[bB]*|*0-8[bB]*|*1.7[bB]*|*1-7[bB]*|*2[bB]*) echo 16000 ;;',
+        '  *4[bB]*|*8[bB]*|*9[bB]*) echo 7000 ;;',
+        '  *) echo 16000 ;;',
+        'esac',
+      ].join('\n');
+    const run = (model: string) => execFileSync('bash', ['-c', classify(model)]).toString().trim();
+    // Small tiers (8192 window) → 16000. 0.8B must NOT be stolen by *8[bB]*.
+    expect(run('Qwen3.5-0.8B-Q4_K_M')).toBe('16000');
+    expect(run('Qwen3.5-2B-Q4_K_M')).toBe('16000');
+    // Heavy tiers (4096 window) → 7000.
+    expect(run('Qwen3.5-4B-Q4_K_M')).toBe('7000');
+    expect(run('Qwen3.5-9B-Q4_K_M')).toBe('7000');
+  });
+});
+
+describe('generateRunScript — studio context only for content-pipeline agents', () => {
+  it('agentUsesStudioContext gates on the content pipeline, not general tasks', () => {
+    // General ad-hoc @agent task (default output under ~/.shelly/agents) → no studio context.
+    expect(agentUsesStudioContext(agent({ type: 'local' }))).toBe(false);
+    // The article evaluator is always a content task.
+    expect(agentUsesStudioContext({ ...agent({ type: 'ab-article-eval' }), outputPath: '~/out' })).toBe(true);
+    // Output landing in the content-studio project / Obsidian vault → content task.
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), outputPath: '~/projects/shelly-content-studio/drafts/x/foo.md' })).toBe(true);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), outputPath: '/sdcard/Documents/ObsidianVault/90_Log/Agent_Output/foo.md' })).toBe(true);
+  });
+
+  it('autonomous & scheduled NEWS-collection agents stay lean (no studio-context pollution)', () => {
+    // Regression: injecting ~30–50KB of content-studio context into a cloud
+    // news-collection request blew the model token budget and escalated
+    // Gemini→Codex. A collection task must NOT get studio context just because
+    // it is autonomous/scheduled.
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }, true), prompt: 'ニュースを集めて' })).toBe(false);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), schedule: '0 8 * * 1,5', prompt: '最新ニュースを集めて' })).toBe(false);
+    // Content-DRAFTING tasks DO get the context (AI_CONTEXT + recent drafts + dedup).
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }, true), prompt: 'この件で記事を書いて' })).toBe(true);
+    expect(agentUsesStudioContext({ ...agent({ type: 'local' }), prompt: 'draft a blog post' })).toBe(true);
+  });
+
+  it('a general collection agent uses the global output destination (clean, findable)', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'ニュースを集めて' });
+    // Non-studio → honour the global target with a clean date-folder layout.
+    expect(s).toContain('USE_GLOBAL_OUTPUT=1');
+    expect(s).toContain('case "${SHELLY_AGENT_OUTPUT_TARGET:-local}" in');
+    expect(s).toContain('OUT_BASE="${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}"');
+    expect(s).toContain('OUT_BASE="${SHELLY_AGENT_CUSTOM_PATH:-$HOME/agent-output}"');
+    // Default local lands in a findable folder, NOT the buried ~/.shelly/.../output.md.
+    expect(s).toContain('OUT_BASE="$HOME/agent-output"');
+    // Filename: {date}_{title}.md (readable slug), under a {date} subfolder.
+    expect(s).toContain('SAVED_FILE="$OUT_BASE/$DATE/${DATE}_$SLUG.md"');
+    expect(s).toContain('[ -n "${SHELLY_AGENT_TOPIC_FOLDER:-}" ] && OUT_BASE="$OUT_BASE/$SHELLY_AGENT_TOPIC_FOLDER"');
+  });
+
+  it('a content-studio agent keeps its explicit path (global output NOT applied)', () => {
+    const s = generateRunScript(agent({ type: 'ab-article-eval' }));
+    expect(s).toContain('USE_GLOBAL_OUTPUT=0');
+    // Studio path: existing template + keyword Obsidian routing remain.
+    expect(s).toContain('SAVED_FILE="$OUTPUT_DIR/$REL_NAME"');
+    expect(s).toContain('OBSIDIAN_TARGET="90_Log/Agent_Output"');
+  });
+
+  it('emits parseable shell with the global-output branch', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'ニュースを集めて' });
+    expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+  });
+
+  it('a general task emits STUDIO_CONTEXT=0 and gates the ~20KB context build', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('STUDIO_CONTEXT=0');
+    // The heavy registry/draft/git-log scan must be behind the gate so a trivial
+    // "1+1は?" doesn't force the on-device model to prompt-process irrelevant tokens.
+    expect(s).toContain('if [ "${STUDIO_CONTEXT:-0}" = "1" ]; then');
+    expect(s).toContain('## Local project context');
+  });
+
+  it('a content-pipeline task (Obsidian output) emits STUDIO_CONTEXT=1', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), outputPath: '/sdcard/Documents/ObsidianVault/90_Log/Agent_Output/foo.md' });
+    expect(s).toContain('STUDIO_CONTEXT=1');
+  });
+
+  it('the gated block is a no-op when STUDIO_CONTEXT=0 (empty SOURCE_CONTEXT, no scan)', () => {
+    // Prove the bash gate skips the expensive scan and leaves SOURCE_CONTEXT empty.
+    const gatedBlock = [
+      'set -euo pipefail',
+      'STUDIO_CONTEXT=0',
+      'SOURCE_CONTEXT=""',
+      'SCANNED=0',
+      'if [ "${STUDIO_CONTEXT:-0}" = "1" ]; then',
+      '  SCANNED=1',
+      '  SOURCE_CONTEXT="heavy context here"',
+      'fi',
+      'echo "scanned=$SCANNED ctxlen=${#SOURCE_CONTEXT}"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', gatedBlock]).toString().trim()).toBe('scanned=0 ctxlen=0');
+  });
+});
+
+describe('N2 — autonomous agents auto-approve the draft→vault save', () => {
+  it('autonomous agent emits AGENT_AUTONOMOUS=1 and gates the draft approval on it', () => {
+    const s = generateRunScript(agent({ type: 'local' }, true));
+    expect(s).toContain('AGENT_AUTONOMOUS=1');
+    // The approval request/wait for a draft is now behind the non-autonomous gate.
+    expect(s).toContain('if [ "${AGENT_AUTONOMOUS:-0}" != "1" ]; then');
+    expect(s).toContain('wait_action_approval "draft"');
+  });
+
+  it('a manual (non-autonomous) agent still requires the draft confirm card', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('AGENT_AUTONOMOUS=0');
+  });
+
+  it('the gate skips the approval wait only when autonomous (bash)', () => {
+    const run = (autonomous: string) =>
+      execFileSync('bash', ['-c', [
+        'set -euo pipefail',
+        `AGENT_AUTONOMOUS=${autonomous}`,
+        'step=autoapprove',
+        'if [ "${AGENT_AUTONOMOUS:-0}" != "1" ]; then step=waited; fi',
+        'echo "$step"',
+      ].join('\n')]).toString().trim();
+    expect(run('1')).toBe('autoapprove'); // autonomous → no approval wait
+    expect(run('0')).toBe('waited');      // manual → confirm card
+  });
+});
+
+describe('dated-folder output template (N4)', () => {
+  it('computeAgentSlug preserves CJK and falls back to the id when empty', () => {
+    // Regression: a pure-Japanese name slugged to "" → "2026-06-24-.md".
+    expect(computeAgentSlug('まずニュース 集めて 保存', 'agent-x')).toBe('まずニュース-集めて-保存');
+    expect(computeAgentSlug('!!!（）', 'agent-x')).toBe('agent-x');
+    expect(computeAgentSlug('My Weekly Report', 'id')).toBe('my-weekly-report');
+    expect(computeAgentSlug('', 'agent-fallback')).toBe('agent-fallback');
+  });
+
+  it('sanitizeOutputTemplate defaults, keeps date-folders, and blocks traversal', () => {
+    expect(sanitizeOutputTemplate(null)).toBe('{date}-{slug}');
+    expect(sanitizeOutputTemplate('  ')).toBe('{date}-{slug}');
+    expect(sanitizeOutputTemplate('{date}/{slug}.md')).toBe('{date}/{slug}.md');
+    // No absolute paths, no parent-dir escape out of the output dir.
+    expect(sanitizeOutputTemplate('/abs/{slug}')).toBe('abs/{slug}');
+    expect(sanitizeOutputTemplate('../../etc/{slug}')).toBe('etc/{slug}');
+  });
+
+  it('the generated save uses the template (placeholder substitution + dir create)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('OUTPUT_NAME_TEMPLATE=');
+    expect(s).toContain('s|{date}|$DATE|g');
+    expect(s).toContain('s|{slug}|$SLUG|g');
+    expect(s).toContain('mkdir -p "$(dirname "$SAVED_FILE")"');
+    // The old hardcoded flat name is gone.
+    expect(s).not.toContain('SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"');
+  });
+
+  it('a date-folder template resolves to <date>/<slug>.md at run time (bash)', () => {
+    const script = [
+      'set -euo pipefail',
+      'OUTPUT_NAME_TEMPLATE="{date}/{slug}"',
+      'DATE=2026-06-24',
+      'TIME=080000',
+      'SLUG=news-digest',
+      'REL_NAME=$(printf \'%s\' "$OUTPUT_NAME_TEMPLATE" | sed -e "s|{date}|$DATE|g" -e "s|{slug}|$SLUG|g" -e "s|{time}|$TIME|g")',
+      'case "$REL_NAME" in *.md|*.markdown|*.txt) ;; *) REL_NAME="$REL_NAME.md" ;; esac',
+      'echo "$REL_NAME"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', script]).toString().trim()).toBe('2026-06-24/news-digest.md');
+  });
+});
+
+describe('generateRunScript — Gemini Google Search grounding for web tasks', () => {
+  it('adds google_search grounding ONLY for a web-mandatory general task', () => {
+    const web = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'ニュースを集めて' });
+    expect(web).toContain('\\"tools\\":[{\\"google_search\\":{}}]');
+
+    const plain = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'say hello' });
+    expect(plain).not.toContain('google_search');
+  });
+
+  it('gives the Gemini call an 8192 output budget (2.5-flash thinking + grounding needs room)', () => {
+    // Regression: maxOutputTokens:4096 let gemini-2.5-flash's thinking exhaust the
+    // budget on a grounded query → empty content → BACKEND_ERROR → needless Codex
+    // escalation. The standalone probe worked because it used the 8192 default.
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: 'ニュースを集めて' });
+    expect(s).toContain('\\"maxOutputTokens\\":8192');
+    expect(s).not.toContain('\\"maxOutputTokens\\":4096');
+  });
+
+  it('migrates a stale gemini-2.0-flash pin (free tier limit:0) to 2.5-flash at runtime', () => {
+    const s = generateRunScript(agent({ type: 'gemini-api' }));
+    expect(s).toContain('case "$MODEL" in gemini-2.0-flash|gemini-2.0-flash-001|gemini-2.0-flash-exp) MODEL="gemini-2.5-flash" ;; esac');
+  });
+});
+
+describe('generateRunScript — collection contract + no-source guard (North Star)', () => {
+  it('prepends an execute-and-list contract for a web-research task (all backends)', () => {
+    const tools: ToolChoice[] = [
+      { type: 'perplexity' },
+      { type: 'gemini-api' },
+      { type: 'local' },
+      { type: 'cli', cli: 'codex' },
+    ];
+    for (const tool of tools) {
+      const s = generateRunScript({ ...agent(tool, tool.type === 'cli'), prompt: '最新ニュースを集めて' });
+      expect(s).toContain('research-collection agent');
+      expect(s).toContain('[title](primary_source_url)');
+      expect(s).toContain('do NOT describe, design, or plan a workflow');
+    }
+  });
+
+  it('(A) forces Japanese output for a Japanese web task, not for an English one', () => {
+    const ja = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: 'STEAM×AIの最新論文を集めて' });
+    expect(ja).toContain('OUTPUT LANGUAGE (REQUIRED)');
+    expect(ja).toContain('日本語');
+
+    const en = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: 'collect the latest STEAM×AI papers' });
+    expect(en).not.toContain('OUTPUT LANGUAGE (REQUIRED)');
+  });
+
+  it('leaves a non-web task untouched (no contract → no behavioural change)', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'say hello' });
+    expect(s).not.toContain('research-collection agent');
+    expect(s).not.toContain('primary_source_url');
+  });
+
+  it('marks a sourceless web result as a soft failure so the run escalates', () => {
+    const web = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: '最新ニュースを集めて' });
+    // The guard fires only for web tasks, keys off a missing URL, and sets the
+    // backend-error flag the escalation ladder reads.
+    expect(web).toContain("! grep -qE 'https?://' \"$RESULT_FILE\"");
+    expect(web).toContain('touch "$BACKEND_ERROR_FILE"');
+
+    const plain = generateRunScript({ ...agent({ type: 'local' }), prompt: 'say hello' });
+    expect(plain).not.toContain("! grep -qE 'https?://' \"$RESULT_FILE\"");
+  });
+});
+
+describe('generateRunScript — readable notification preview (telemetry-stripped)', () => {
+  it('strips autonomous driver telemetry from the user-facing preview', () => {
+    const s = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));
+    // The notification/draft preview must NOT be the raw head of the result file
+    // (which, for the codex driver, begins with `AUDIT {...driver_start...}`).
+    expect(s).toContain('clean_result_preview()');
+    expect(s).toContain('PREVIEW=$(clean_result_preview "$RESULT_FILE")');
+    expect(s).toContain("sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d'");
+  });
+
+  it('threads the friendly agent name into approval + result notifications', () => {
+    const named: Agent = { ...agent({ type: 'local' }, true), name: 'Morning Digest' };
+    const s = generateRunScript(named, { suppressAction: false });
+    expect(s).toContain("AGENT_NAME='Morning Digest'");
+    // Both notification payloads carry agentName so the OS card shows a readable
+    // name instead of the raw agent id.
+    expect(s).toContain('"agentName":"$agent_name_json"');
+    // ...and the engine/route label, so the card shows which backend produced
+    // the result (route transparency at approval time).
+    expect(s).toContain('"toolLabel":"$tool_label_json"');
+  });
+
+  it('an approved draft posts ONE completion card (closure) after saving', () => {
+    // Standalone draft: approval prompt THEN a success completion after save, so
+    // the user gets confirmation instead of a silent finish. (Suppressed steps
+    // never reach this branch — ACTION_TYPE routes them to __suppressed__, which
+    // returns before any approval/notification; covered by the suppress test.)
+    const draft = generateRunScript(agent({ type: 'local' }));
+    expect(draft).toMatch(/save_draft_result "\$result_file"\n\s*#[\s\S]*?write_native_notification_request "success" "\$preview" \|\| true/);
+  });
+});
+
+describe('generateRunScript — local inference quality', () => {
+  it('disables Qwen thinking for local runs (direct answer, no token burn / empty content)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // A real run had the 2B spend all 2048 tokens in reasoning_content and finish
+    // with empty content (finish_reason=length) → no answer + raw-JSON preview.
+    expect(s).toContain('\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}');
+  });
+
+  it('extract_ai_content falls back to reasoning_content before dumping raw JSON', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain('content = data?.choices?.[0]?.message?.reasoning_content;');
+    expect(s).toContain('content = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content")');
+  });
+});
+
+describe('generateRunScript — abort-safe shell (exit 141 root-causes)', () => {
+  it('clean_result_preview heads a regular file (no sed|head SIGPIPE abort)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // sed | head -c 500 SIGPIPEs sed on any result > 500 bytes (every real answer)
+    // → exit 141 under set -euo pipefail. Must filter to a file, then head the file.
+    expect(s).toContain('sed -E \'/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d\' "$file" 2>/dev/null > "$cleaned"');
+    expect(s).toContain('head -c 500 "$cleaned" 2>/dev/null | tr');
+    // The OLD sed-piped-into-head form (the SIGPIPE source) must be gone. (A fixed
+    // short error string at line ~255 still pipes into head -c 500 — that is safe
+    // because its producer never exceeds 500 bytes, so it is not matched here.)
+    expect(s).not.toContain('2>/dev/null \\\n    | head -c 500 | tr');
+  });
+
+  it('the concurrency check uses find|while, not find -exec sh -c with {} (toybox-safe)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).not.toContain("-exec sh -c 'kill -0 $(cat \"{}\")");
+    expect(s).toContain('ACTIVE_COUNT=$({ find "$LOCKS_DIR" -name \'*.pid\' 2>/dev/null || true; } | while IFS= read -r _pidf;');
+  });
+});
+
+describe('generateRunScript — ③b-2 escalation signalling', () => {
+  it('a non-final escalation attempt fails silently (gated error notification)', () => {
+    const silent = generateRunScript(agent({ type: 'local' }), { suppressErrorNotification: true });
+    expect(silent).toContain('SUPPRESS_ERROR_NOTIFICATION=1');
+    expect(silent).toContain('if [ "${SUPPRESS_ERROR_NOTIFICATION:-0}" != "1" ]; then');
+    const loud = generateRunScript(agent({ type: 'local' }));
+    expect(loud).toContain('SUPPRESS_ERROR_NOTIFICATION=0');
+  });
+
+  it('a failed local attempt signals BACKEND_ERROR (so the ladder climbs, no fake-success digest)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    // Both local failure paths (server cannot start / http error) mark the run as
+    // an error via BACKEND_ERROR_FILE so attemptFailed() escalates instead of
+    // dispatching the action on a context digest.
+    expect(s).toContain('local_context_fallback "local llm start failed: $START_REASON" > "$RESULT_FILE"\n\t\t  touch "$BACKEND_ERROR_FILE"');
+    expect(s).toMatch(/local_context_fallback "http exit=[\s\S]*?> "\$RESULT_FILE"\n\t\t    touch "\$BACKEND_ERROR_FILE"/);
+  });
+});
+
+describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
+  it('non-final steps suppress the action (one notification per chain, not per step)', () => {
+    const suppressed = generateRunScript(agent({ type: 'local' }), { suppressAction: true });
+    expect(suppressed).toContain('ACTION_TYPE=\'__suppressed__\'');
+    expect(suppressed).toContain('__suppressed__)'); // the no-approval/no-notify case
+    // a normal run still drafts/notifies.
+    const normal = generateRunScript(agent({ type: 'local' }));
+    expect(normal).not.toContain("ACTION_TYPE='__suppressed__'");
+  });
+});
 
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
@@ -116,6 +531,22 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(generateRunScript(agent({ type: 'ab-article-eval' }, true))).not.toContain('[REFUSED]');
   });
 
+  it('N1: autonomous gemini on a web-mandatory task is allowed WITH consent (grounded)', () => {
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }, true), prompt: 'ニュースを集めて' }, { autonomousCloudConsent: true });
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).toContain('google_search'); // grounded web call
+  });
+
+  it('N1: still refuses autonomous gemini WITHOUT consent (fail-closed)', () => {
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }, true), prompt: 'ニュースを集めて' });
+    expect(s).toContain('[REFUSED]');
+  });
+
+  it('N1: consent does NOT allow autonomous gemini on a non-web task', () => {
+    const s = generateRunScript({ ...agent({ type: 'gemini-api' }, true), prompt: '要約して' }, { autonomousCloudConsent: true });
+    expect(s).toContain('[REFUSED]');
+  });
+
   it('selects a light local model for simple autonomous local work and 2B for heavier text work', () => {
     expect(selectAutonomousLocalModel('short classify this')).toBe('Qwen3.5-0.8B-Q4_K_M');
     expect(selectAutonomousLocalModel('この記事を比較して下書きにして')).toBe('Qwen3.5-2B-Q4_K_M');
@@ -128,6 +559,20 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).not.toContain(UNSET); // key-bearing backend keeps its env
     const sDefault = generateRunScript(agent({ type: 'perplexity' })); // autonomous undefined
     expect(sDefault).not.toContain('[REFUSED]');
+  });
+
+  it('passes the agent autonomy policy to the B2 driver (configured level is honored, not silently L2)', () => {
+    // Regression (control-plane review): buildAgentPolicy existed but the driver
+    // launch never received --policy-json, so a configured L1/L3 agent silently
+    // ran at the driver's default L2. The policy is passed inline (never a file the
+    // agent can read) to preserve the §6 invariant.
+    const l1 = generateRunScript({ ...agent({ type: 'cli', cli: 'codex' }, true), autonomyLevel: 'L1' });
+    expect(l1).toContain('--policy-json');
+    expect(l1).toContain('"level":"L1"');
+    const l3 = generateRunScript({ ...agent({ type: 'cli', cli: 'codex' }, true), autonomyLevel: 'L3' });
+    expect(l3).toContain('"level":"L3"');
+    // Default (no level set) still resolves to L2 via buildAgentPolicy.
+    expect(generateRunScript(agent({ type: 'cli', cli: 'codex' }, true))).toContain('"level":"L2"');
   });
 
   it('gates /sdcard audit mirroring behind an explicit env flag for autonomous cli runs', () => {
@@ -186,5 +631,63 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(cli).toContain('wait_action_approval "cli" || return 1');
     expect(cli).toContain('bash -lc "$ACTION_COMMAND" > "$cli_output" 2>&1');
     expect(cli).not.toContain('eval "$ACTION_COMMAND"');
+  });
+});
+
+describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
+  const webAgent = (over: Partial<Agent> = {}): Agent => ({
+    ...agent({ type: 'gemini-api' }, true),
+    prompt: 'ニュースを集めて',
+    ...over,
+  });
+
+  it('P0-a: HTTP helper splits transient (23) vs permanent (22) exit codes and retries only the transient class', () => {
+    const s = generateRunScript(agent({ type: 'perplexity' }, false));
+    // Node helper classifies: <400 → 0, 429/5xx → 23, other 4xx → 22, network → 23.
+    expect(s).toContain('process.exitCode = 23;');
+    expect(s).toContain('process.exitCode = 22;');
+    expect(s).toContain('code === 429 || code >= 500');
+    // Bounded retry wrapper, used by the keyed web backends.
+    expect(s).toContain('http_post_json_retry()');
+    expect(s).toContain('if [ "$_hpr_rc" -ne 23 ]; then');
+    expect(s).toContain('http_post_json_retry "https://api.perplexity.ai/chat/completions"');
+  });
+
+  it('P0-b: a transient failure marks TRANSIENT_ERROR_FILE → STATUS=unavailable, not error', () => {
+    const s = generateRunScript(agent({ type: 'perplexity' }, false));
+    expect(s).toContain('TRANSIENT_ERROR_FILE="$RESULT_FILE.transient-error"');
+    expect(s).toContain('mark_http_failure "$API_EXIT"');
+    // mark_http_failure only touches the transient marker on exit 23.
+    expect(s).toContain('if [ "${1:-0}" -eq 23 ]; then\n    touch "$TRANSIENT_ERROR_FILE"');
+    // STATUS branches on the transient marker.
+    expect(s).toContain('if [ -f "$TRANSIENT_ERROR_FILE" ]; then\n    STATUS="unavailable"');
+  });
+
+  it('P1: an autonomous web run WITH consent bakes a Gemini→Codex fallback into the on-disk script', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(s).not.toContain('[REFUSED]');
+    // The baked ladder escalates on a web backend failure.
+    expect(s).toContain('if [ -f "$BACKEND_ERROR_FILE" ]; then');
+    expect(s).toContain('command -v codex >/dev/null 2>&1');
+    expect(s).toContain('codex exec');
+    // Codex usage-limit guard: a 429/usage-limit refusal is NOT recorded as success.
+    expect(s).toContain('usage limit|rate.?limit|too many requests');
+    expect(s).toContain('mark_http_failure 23');
+  });
+
+  it('P1: consent + STOP-on-exhaustion does NOT bake the Codex fallback (free-tier auto-stop)', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true, autonomousCloudStop: true });
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).not.toContain('command -v codex >/dev/null 2>&1');
+  });
+
+  it('P1: the foreground ladder suppresses the in-shell bake (Codex would otherwise run twice)', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true, suppressWebCodexBake: true });
+    expect(s).not.toContain('command -v codex >/dev/null 2>&1');
+  });
+
+  it('emits parseable shell with the baked ladder', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
   });
 });

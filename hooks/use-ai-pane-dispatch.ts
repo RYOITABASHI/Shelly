@@ -22,6 +22,7 @@ import {
 } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/chat-store';
 import { logInfo, logError } from '@/lib/debug-logger';
+import { detectPostFormatDirective } from '@/lib/post-format-directive';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
@@ -40,7 +41,8 @@ import {
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import type { ToolChoice } from '@/store/types';
-import { suggestTool } from '@/lib/agent-tool-router';
+import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
+import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import type { ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
@@ -531,9 +533,10 @@ export function useAIPaneDispatch(paneId: string) {
           'AIPaneDispatch',
           `Terminal context: agent=${agent} session=${terminalSessionId ?? 'active'} raw=${describeTerminalContextForLog(terminalCtx)} injected=${describeTerminalContextForLog(promptTerminalCtx)}`,
         );
-        const systemPrompt = agent === 'local'
+        const systemPrompt = (agent === 'local'
           ? buildLocalAIPaneSystemPrompt(promptTerminalCtx)
-          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile);
+          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile))
+          + detectPostFormatDirective(promptText);
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder and the current user message;
         // the active prompt is passed separately to each provider below.
@@ -1001,21 +1004,24 @@ export function useAIPaneDispatch(paneId: string) {
       const store = useAIPaneStore.getState();
       const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
         || `agent-${Date.now().toString(36)}`;
-      // Autonomous (B2 gate) can only run Codex OAuth / local — never an api-key
-      // backend. The AI chat confirmation card presents autonomous as the B2
-      // gated Codex path; keep the submit boundary defensive in case a stale card
-      // or another caller sends an api-key tool.
+      // Autonomous tool resolution goes through the SINGLE source of truth
+      // (resolveAutonomousFinalTool) so this submit boundary can never disagree
+      // with the confirm card or the runtime: local stays local, a web backend is
+      // kept only with cloud consent + needsWeb (the P1 path), everything else →
+      // the gated Codex driver. Read consent live (getState, not the hook — we are
+      // in a callback) and derive needsWeb from the same prompt the card used.
       //
       // Routing (G4): when the user leaves RUN ON = Auto (no manual pin) on a
       // non-autonomous agent, store tool 'auto' so the Layer-2 scorer decides the
       // route at run time (and re-scores each run). The NL parser's keyword guess
       // (draft.tool) would otherwise pin a concrete tool and bypass the scorer.
-      const tool: ToolChoice =
-        confirmed.autonomous && confirmed.tool.type !== 'local'
-          ? { type: 'cli', cli: 'codex' }
-          : !confirmed.autonomous && confirmed.runOn === 'auto'
-          ? { type: 'auto' }
-          : confirmed.tool;
+      const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
+      const needsWeb = detectRouteSignals(confirmed.prompt).needsWeb;
+      const tool: ToolChoice = confirmed.autonomous
+        ? resolveAutonomousFinalTool(true, confirmed.tool, cloudConsent, needsWeb)
+        : confirmed.runOn === 'auto'
+        ? { type: 'auto' }
+        : confirmed.tool;
       const runOn = confirmed.autonomous
         ? tool.type === 'local' ? 'on-device' : 'auto'
         : confirmed.runOn;
@@ -1031,6 +1037,11 @@ export function useAIPaneDispatch(paneId: string) {
           autonomous: confirmed.autonomous || undefined,
           memory: confirmed.memory,
           skillId: confirmed.skillId,
+          // Phase 4: a multi-step utterance becomes an orchestrated agent.
+          orchestration:
+            confirmed.orchestrationSteps && confirmed.orchestrationSteps.length >= 2
+              ? { steps: confirmed.orchestrationSteps }
+              : undefined,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
         await installAgent(created, runAgentShellCommand);
@@ -1039,11 +1050,9 @@ export function useAIPaneDispatch(paneId: string) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
-          let runFinished = false;
           let finalContent: string | null = null;
           try {
             await runAgentNow(created.id, runAgentShellCommand);
-            runFinished = true;
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
@@ -1057,7 +1066,10 @@ export function useAIPaneDispatch(paneId: string) {
               content: finalContent,
             });
           } finally {
-            if (runFinished) {
+            // Always discard the ephemeral one-shot agent — including when the run
+            // THREW (runFinished=false). Gating cleanup on success leaked a
+            // throwaway agent into the sidebar on any failure.
+            {
               try {
                 await deleteAgent(created.id);
               } catch (cleanupError) {

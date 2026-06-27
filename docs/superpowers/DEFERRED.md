@@ -28,6 +28,80 @@
 
 **次セッションの必読**: `docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md`
 
+### 🔭 Vision — Fork-first plugin ecosystem + ③ capability ladder
+
+**優先度**: P2（ビジョン）／ ③ ラダーの実装は P1
+**状態**: 方針合意（2026-06-23 のユーザーとの設計対話）。③a（ローカル ctx fit）は着地済み（commit 0202380, branch `claude/work-handoff-2qb1xd`）。→ sync: README（最終的に「fork-first 文化」を README に反映）
+
+**コア文化（採用方針）**:
+- 本家 repo はクリーンに保つ。各ユーザーは**フォークして自分専用の自律エージェントを自由に構築**し、**自分の GitHub アカウントでビルド**（本家に影響なし）。
+- 良いアイデア・便利機能は **PR で本家が積極採用**。「どんどんフォークして、面白い機能は PR して」という OSS 文化を README で明言する。
+- フォーカーの摩擦は「公式アプデ追従（rebase）」と「署名キー別＝横並びインストール」のみ。**機能を skill/agent/script/MCP（＝データ/プラグイン）として足せば追加ファイルなので衝突せず、公式アプデを無痛で生き延びる**。→ 拡張面を一級市民にするほどこの摩擦が消える。
+
+**2 つの拡張ティア**:
+- **Tier 1（リビルド不要・現実的）**: skill（`91_Agent_Skills`）/ agent（`~/.shelly/agents`）/ workflow / shell script として機能追加。動作中アプリがその場でロード。Codex 端末同梱でオンデバイス生成可。業務ロジック系はほぼこれで足りる。
+- **Tier 2（アプリ本体改造）**: 新ネイティブ/UI は Shelly ソース編集 → **APK 再ビルド必須**。端末で APK はビルド不可（gradle/SDK 無し）なので fork → push → GitHub Actions → install の経路（＝今のこのワークフロー）。fork/branch で本家から隔離、明示 merge まで本家不変。
+
+**Conversational feature authoring（対話で仕様）**: タスクが既存テンプレに収まらないとき、承認カードの代わりに「こんな仕組みでどうですか?」と**設計対話モード**に入り、やり取りで spec 確定 → Tier 1 でその場生成。orchestration / confirm カードの延長で実装可。
+
+**③ capability ladder（実装中、P1）**: `0.8B → 2B → 4B → Cerebras → Groq → Codex(最終)`。無料が足りない/在庫無しで上段へ、429（最初から or 作業中）で Codex 昇格しクォータ温存。学術→Perplexity / 画像→Gemini はドメイン例外。autonomous（無人）は既定 `local→Codex(OAuth)` に絞る（キー課金 backend は fail-closed、secret-guard 常時）。Codex 終端制限時は success 偽装せず「◯時間後解除」を明示通知。
+- ③a ✅: ローカル ctx 1024→8192/4096 + 注入文脈の tier-aware cap（commit 0202380）。
+- ③b: Cerebras/Groq を agent backend 追加（無料枠内）+ 429/不通の escalation + 終端通知。
+- ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
+- ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。**残る解錠は全て実装着地（2026-06-24, branch claude/work-handoff-2qb1xd）**: 自律クラウド opt-in=N1(105fda3) / Vault 内保存の自動承認=N2(b08a608) / 複数曜日スケジュール=N4(c80bb04) / 日付フォルダ出力テンプレ=N4(fa10617) / web-mandatory routing(203428c) / orchestration 昇格=N3(8fb8926)。**残るは実機 end-to-end 検証（web quota 明け待ち）と N1 スケジュール .sh のクラウド完全無人化 follow-up のみ**。
+
+### 🔴 Web-mandatory routing — 実機 end-to-end 検証待ち（quota 明けの必須ゲート）
+
+**優先度**: P1（North Star コアの収集経路。実装済みだが実機 end-to-end 未検証）
+**状態**: 実装 + 単体テスト + レビュー APPROVE 済み、push 済み（commit `203428c`、branch `claude/work-handoff-2qb1xd`、build 投入済み）。**両 web backend が一時的に quota 枯渇のため end-to-end 未確認。**
+
+**背景**: 「ニュース収集→要約→保存」エージェントが、収集を Web 非対応の local LLM に振られて**空テンプレを幻覚**し success 偽装していた（出力 `agent-mqp6j9w1/output.md/2026-06-24-.md` がプレースホルダ）。真因は偽成功/昇格バグではなく**ルーティング**。修正＝`needsWeb`（収集動詞＋鮮度語）判定を新設し、非Web backend（local/Cerebras/Groq）を除外、`Gemini(grounded)→Codex`（一般）/ `Perplexity→Codex`（学術）/ `自律=Codexのみ` に振る。素の Gemini 呼び出しは不変、needsWeb 一般時のみ `tools:[{google_search:{}}]` 付与。
+
+**実機で確認済み（2026-06-24, build 203428c 前）**:
+- 端末ネット OK（`curl https://hacker-news.firebaseio.com/v0/topstories.json` が実 ID 取得）
+- Codex は `sandbox: danger-full-access` / `approval: never` で起動＝**ネット+shell フルアクセス可**（quota あれば収集可能。net 保険として有効）
+- Gemini キーは設定→`.env` 同期 OK（403"unregistered"→消滅、429 まで到達＝キーは届いている）
+
+**quota ブロック中（明けたら必ず検証）**:
+- **Codex**: usage limit、リセット **2026-06-24 23:51**。
+- **Gemini**: `429 RESOURCE_EXHAUSTED` かつ **`limit: 0`**（＝`gemini-2.0-flash` の無料枠が 0）。別モデル（`gemini-2.5-flash` / `gemini-flash-latest`）に無料枠が残る可能性大。
+
+**未検証（quota 明けに必ず実施、コマンド同梱で self-contained）**:
+1. **Gemini grounding が実キーで効くか**（無料枠のあるモデルを特定）:
+   ```bash
+   . ~/.shelly/agents/.env
+   curl -sS "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | grep -o '"models/[a-zA-Z0-9.-]*"' | sort -u | head -40
+   for M in gemini-2.5-flash gemini-flash-latest gemini-2.0-flash-001; do echo "== $M =="; curl -sS -m 30 -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' "https://generativelanguage.googleapis.com/v1beta/models/$M:generateContent" -d '{"contents":[{"role":"user","parts":[{"text":"今日の主要な国内ニュースの見出しを3つ、出典URL付きで。"}]}],"tools":[{"google_search":{}}],"generationConfig":{"temperature":0.2}}' | head -c 400; echo; done
+   ```
+   → 実在の見出し＋URL（`groundingMetadata`）が返るモデルを特定。`gemini-2.0-flash` が `limit:0` なら **Shelly のデフォルト Gemini モデル（`agent-executor.ts` `geminiApiCommand` の `gemini-2.0-flash`）をそのモデルに更新してプッシュ**（小変更）。
+2. **Codex のネット可否**（usage 明け）:
+   ```bash
+   codex exec 'シェルで `curl -sS -m 15 https://hacker-news.firebaseio.com/v0/topstories.json | head -c 120` を実行し、数値IDの先頭3つだけ答えて。実行不可なら「NO_NET」とだけ。'
+   ```
+   → 実 ID なら net 保険成立。`NO_NET`/approval 停止なら Codex は収集に使えず「error → Gemini 登録/別モデル案内」に倒す。
+3. **end-to-end**: ニュースエージェント（`agent-mqp6j9w1`）を RUN NOW → 出力が**実在ニュースの要約**（幻覚テンプレでない）になるか `~/.shelly/agents/agent-mqp6j9w1/output.md/` で確認。
+
+**Follow-up（non-blocking）**:
+- ~~orchestration ステップ内の昇格未配線~~ → ✅ **解消（commit 8fb8926, N3）**。`runLadderAttempts` を抽出し各ステップをラダーに通すので、収集ステップが Gemini(grounded)→Codex に昇格する。
+- **N1 スケジュール .sh のクラウド解錠が前景のみ**: consent ありの自律 Web は前景(@agent/RUN NOW)では Gemini 優先に乗るが、**スケジュール発火が読む on-disk .sh は materialize 時の consent を焼き込む**ため、(a) 設定トグル後に全自律エージェントの再 materialize が要る、(b) スケジュール .sh 内の Gemini→Codex 連鎖が無い（429 で当該回 error→次スケジュール再試行）。前景は完全動作。スケジュール完全無人化の最後の一手として、トグル時の再 materialize ＋ in-script クラウド fallback を P1 follow-up に。
+- ~~デフォルト Gemini モデルの更新~~ → ✅ **解消（commit 41ebb39）**。実機検証で `gemini-2.0-flash` 無料枠 = `limit:0`、`gemini-2.5-flash` = 無料枠あり + grounding 動作（groundingMetadata + 実在出典URL + webSearchQueries 取得）を確認。デフォルトを 2.5-flash に更新。これで web routing が無料枠ユーザーで end-to-end 成立。
+
+**戻す条件**: 上記 1〜3 を build 203428c 以降で実機 PASS → ✅ + 確認 build 番号を付ける。
+
+### G5 Phase 3 — inbound ゲートウェイの後回し項目
+
+**優先度**: P2
+**状態**: G5（Telegram inbound）を main にマージ済み（PR #89, build 1600）。セキュリティ核心（authz 完全一致 / サニタイズ / 特権昇格不可 / replay 安全 / DoS 境界）は純粋モジュール `lib/telegram-inbound.ts` の単体テスト 13 件 + セキュリティレビュー（Blocker/High なし）で立証。opt-in・既定 OFF。
+
+**後回し**:
+1. **ライブ Telegram の実機テスト（未実施）** — ユーザーが Telegram 非利用のため end-to-end round-trip（実 bot token での long-poll → 通知 → 確認カード → Confirm）は未検証。opt-in・既定 OFF で休眠のため実害なし。Telegram を使うか、別 inbound チャネルを追加する際に検証。
+2. **inbound チャネルの選択肢（P2）** — ユーザーは Telegram 非利用。メール / 他メッセンジャ / Web フック等、実際に使うチャネルへの差し替え or 追加を将来検討（純粋コアの authz/サニタイズ設計は再利用可能）。
+3. **Telegram webhook モード（P3）** — 現状は long-poll。webhook（既存 http stack 経由）にすればバッテリー効率が良いが、公開エンドポイントが要る。
+4. **結果の reply-back（P3）** — 現状 outbound は通知のみ。inbound 元の Telegram チャットに結果を返す双方向化は未実装。
+5. **inbound-origin マーカー / per-message rate-limit（P3）** — 確認カードに「Telegram 由来」表示、認可チャットからの flood への秒間制限。
+
+**Why not now**: セキュリティ核心は Telegram 無しで立証済み、opt-in・既定 OFF で休眠。G6（orchestration・最重）の価値が勝る。
+
 ### G4 Phase 2b — Layer-2 ルーターの後回し項目
 
 **優先度**: P1（クラウドキー欠如のフォールバックは UX 影響大）／ 他は P2
@@ -109,6 +183,81 @@
 3. Worktrees / Quick Launch への復帰は README / AGENTS / CLAUDE / GEMINI / release notes 同期後。
 
 **Why not now**: v5.3.1 の価値は Claude Code + Codex の real Android CLI 体験、API-backed AI Pane、更新済み Local LLM catalog にある。Gemini CLI を launch blocker にすると、既に動く主要体験のリリースを遅らせる割に品質保証ができない。
+
+### git over HTTPS — autonomous agent runtime の latent gap（BASHRC_VERSION 230 で対話側は解決済）
+
+**優先度**: P2
+**状態**: 対話 PTY の `git()` は libexec_wrapper.so を preload して解決済（commit `fix(git): preload libexec_wrapper.so …`, BASHRC_VERSION 230）。**autonomous agent runtime 側は未対応**。
+
+**症状/リスク**:
+- 自律エージェント（または content-studio の command action）が `git fetch/push/clone` を **HTTPS** で実行すると、`git-remote-https` の child execve が app_data_file exec 拒否に当たり `cannot exec 'remote-https': Permission denied` で失敗しうる。
+- agent runtime の `shelly_run_app_binary`（`lib/agent-executor.ts`）は raw linker64 経由で app-data binary を起動するが、`git()` shell helper を定義せず、libexec_wrapper の LD_PRELOAD を git に必ず付ける保証がない（`shelly-exec.c` の global LD_PRELOAD が scope に入るかは経路依存）。
+- 現状 agent runtime が呼ぶ git は `git log` / `git status`（local-only、transport helper を exec しない）のみなので **実害は出ていない**＝latent。
+
+**戻す条件**:
+1. agent runtime（`shelly_run_app_binary` / `generateRunScript`）で git を呼ぶ経路にも、対話 `git()` と同じ `LD_PRELOAD=$libDir/libexec_wrapper.so` を git 限定で確実に付与する（global 付与は llama-server を壊すので不可）。
+2. 自律エージェントから `git fetch --dry-run`（HTTPS）が transport helper 起動まで通ることを実機確認。
+
+**Why not now**: 報告された症状（対話ターミナルの HTTPS git）は解決済。ユーザーの無人クラウド保存は DriveSync が担うため git push 自体が必須でない（出力先=Obsidian フォルダ書き込みで充足）。agent からの HTTPS git は将来 Codex-on-Shelly の自動 push 等で必要になった時点で対応。
+
+### G6 パイプライン — charLimit のハード結線（v1 はソフトのみ）
+
+**優先度**: P2
+**状態**: v1 出荷済（`buildSteamPipeline` 4段＋`enforceCharLimit`/`clampCharLimit` 実装・テスト済）。文字数制限は**最終段の指示文（「N文字以内・超過厳禁」）にベイクしたソフト保証のみ**。
+
+**ギャップ（agent-reviewed）**:
+- `AgentOrchestrationConfig.charLimit` 型・`clampCharLimit`・`enforceCharLimit` は実装済だが**実経路では未配線**：`detectPipelinePreset` は `orchestration.charLimit` を落とし（`steps` のみ→`orchestrationSteps`）、`ConfirmedAgentDraft`/`createAgent` に charLimit フィールドが無い。よって型・ヘルパーは現状 dead code（ソフト指示だけが効く）。
+
+**戻す条件**:
+1. charLimit を draft→confirm card→createAgent まで通す（`ConfirmedAgentDraft.charLimit`、`createAgent` の orchestration 構築に反映）。
+2. 最終段の保存前に `enforceCharLimit` を適用してハード保証（最終段 materialize に charLimit を渡し、`save_draft_result` 直前で result file を上限内に丸める）。
+
+**Why not now**: 確認カードが登録をゲートし、ソフト指示でモデルは上限を守るので v1 は成立。ハード保証は X 投稿の厳密 280 字運用を始める時に必要。
+
+**補足（既存特性・G6 で顕在化）**: orchestration の各ステップは `buildStepPrompt(base, step, priorResults)` の**全文**で `detectRouteSignals` される。base prompt は中立化済（`{topic}の定例レポート`）だが、**前段の収集結果（最新ニュース本文）が priorResults に載ると、要約ステップでも needsWeb が立ち web ルートになり得る**。dead-end ではない（cloud で要約は可能、consent ON）が「要約は端末内」の意図が崩れ cloud quota を食う。根治はステップを instruction でルートする `routeHint`（resolveEscalationLadder に渡す）だが orchestration 共通の変更で面積が大きいため後回し。P2。
+
+### 自律エージェント制御面レビュー（2-model）— 残課題
+
+2モデル＋人手のクロスレビューで挙がった自律エージェント制御面の穴。**#2（policy 配線漏れ）と one-shot cleanup（Med）は修正済**。残り：
+
+**#1 action approval reply の偽造可能性（P1・security・要実機）**
+- `wait_action_approval`（lib/agent-executor.ts）は reply の `runId` と `requestSha256`（＝リクエストの sha256、秘密でない）一致のみ検証。同一 UID（＝エージェントスクリプト自身）が reply ファイルを書けば自分の action（cli/webhook/notify）承認を偽造できる。
+- 緩和事実：承認対象は**作成時にユーザーが設定したアクション**（cli コマンドは `agent.action.command` 固定、モデルが実行時に任意注入しない）。モデル選択コマンドの **driver escalation は公開鍵署名済**（AgentEscalationBridge / Android Keystore RSA + shelly-agent-driver の verifier）。よって任意 RCE でなく「ユーザー設定アクションの自動承認」＝defense-in-depth。
+- 戻す条件：escalation 署名インフラを action approval に拡張（`AgentActionApprovalBridge` で reply を署名 → `wait_action_approval` が node 検証ヘルパーで公開鍵検証、pin は escalation と同様）。**crypto/keystore/承認フローの実機検証必須**。実機接続セッション（Codex-on-device / ワイヤレスデバッグ）で実装すること。
+
+**#3 ab-article-eval が B2 driver を迂回（P2・consistency）**
+- `ab-article-eval` は autonomous 許可（agent-credential-policy）だが `articleEvalCommand` が `codex exec` を直叩きし driver audit/pin/gate を通らない。ただし記事評価専用の制約ツールで**任意シェルを実行しない**ため gate の必要性は低い。整合性のため将来 driver 経由化 or 明示的に「driver 不要ツール」と仕様化。
+
+**#2 の残り：workspaceRoot → driver --cwd（P2）**
+- autonomyLevel は `--policy-json` で配線済。`agent.workspaceRoot` → `DRIVER_CWD` の配線は未（現状 `PROJECT_DIR`＝content-studio 既定）。workspace 分離を使う場合に必要。
+
+**escalation 通知の poller 依存（要実機確認）**
+- escalation 通知は `app/_layout.tsx` の RN/JS poller で drain。バックグラウンド実行で JS が生きていない場合に通知が遅延/欠落しないか実機確認が必要（action approval notifier は native 起動）。
+
+**provider 表示の整合（likely fixed）**
+- 「autonomous で Local 表示なのに Codex」系の混乱は `resolveAutonomousFinalTool`（commit c738a47/6a533b6）でカード表示＝保存ツール一致に修正済の見込み。実機で再確認。
+
+### 曜日スケジュール NL パース — 残課題（agent-reviewed）
+
+**優先度**: P3
+**状態**: 複数曜日（`月曜と金曜` / 中黒区切り `火・金`）のパース＋確認カードの複数選択を実装・テスト済（`lib/agent-nl-parser.ts` `parseSchedule`、`components/panes/AgentConfirmCard.tsx`）。曜なしの並びは「**直後に時刻が続く**」ときだけ採用し、`火・水`（五行）`日・月`（日月）等の同形語誤検出を回避（クロスレビューで顕在化→修正済）。
+
+**残る後回し（いずれも安全側の保守的 miss、誤発火なし）**:
+1. **`火・金は毎週8時に…` 形が null になる** — 並びと時刻の間に `毎週` が割り込むと time-adjacency が崩れ、曜なし並びを拾えない。戻すには「別の場所に `毎週` 週次マーカーがあれば曜なし並びも信用する」緩和が要る。`火・金の8時に` / `火・金、8時に` / `火・金 8時に`（半角）等は動く。
+2. **`土日`（区切りなしの連続）非対応** — 区切り必須にしているため連続2文字の週末語は拾わない。`土日`/`平日`/`週末` の語彙エイリアスとして別途追加可能。
+3. **`火・金に8時に…`（助詞 `に`）が null** — lookahead の接続詞集合 `の|は|、|,` に `に` を含めていない（`に` は二重で不自然なため保守的に除外）。
+
+**2モデル目（Codex）レビューで追加対応した分（実装済・テスト済）**: `1日1回/1日に1回/一日一回/1日1度`→daily（`7月1日に1回` 等の日付文脈は negated-class で除外）、頻度判明だが時刻なし→カードが `suggestedFrequency` で頻度を事前選択（`schedule:null` 維持・「時刻は仮」hint）、EN 時刻は `at N` 優先（`top 10 posts at 8`→8:00）、`derivePrompt` の `^.*?` 撤去で先頭話題を保持、`昼N時`→午後。
+
+**さらに残る P3（今回は未対応）**:
+4. **`正午`/`深夜`単体・全角数字（`８時`）・漢数字（`八時`）の時刻抽出**未対応。
+5. **`平日`/`週末`/`土日`/`毎月1日`/`1日おき`** など語彙スケジュールは未対応（安全側で manual に落ちる）。
+
+**2モデル目（Codex, 対象ブランチ確定後）レビューで追加修正した分（実装済・テスト済）**:
+- `隔週`/`第N週`/`第N曜`/`週N回`/`biweekly`/`every other week` は whitelist 外なので「通常 weekly として確信登録」せず **manual に強制**（旧: `隔週月曜`→毎週月曜に化けていた）。
+- `月曜日と火曜日`/`水・木曜日` の bare-run 抽出で `曜日` の `日` を日曜と誤検出していたのを修正（`曜日?` を strip してから抽出）。
+- DOW/interval 入力検証を厳格化: `parseDowList` は `8`/`1,9` 等の範囲外を `null`、`cronToIntervalMs` は `*/0` を `null`、card `buildCron('custom')` は dow 0..6 範囲チェック。
+- placeholder-time の Confirm gate を clock-time 頻度（daily/weekly/custom）に限定（`once`/`interval` に切替時のデッドロック回避）。
 
 ### Claude Code Bash tool Exit code 1
 
@@ -1908,6 +2057,7 @@ claude() {
 
 ## History
 
+- **2026-06-23**: ユーザーとの設計対話で「fork-first plugin ecosystem」文化と ③ capability ladder を合意・記録（`### 🔭 Vision` 節）。本家クリーン維持 / 各自フォークで自律エージェント自由構築 / 良機能は PR 採用。機能を skill/agent/script/MCP として足せば公式アプデを無痛で生き延びる、を設計原則に。③a（ローカル ctx fit, commit 0202380）着地。README は最終的に fork 文化を明記（→ sync）。
 - **2026-04-14**: 初版作成。v0.1.0 スモークテスト中の発見を整理。コードレビュー / セキュリティ / アーキテクチャ / A11y / 競合 5 エージェントの指摘のうち、出荷ブロッカーではない項目をすべて P1-P3 に振り分け。
 - **2026-04-14**: Task 5 スモークテスト時にユーザーから「戻るボタン」「モデル自動検出」「自動セットアップ」の 3 つの追加要望あり → BACK ボタン (P1)、モデル自動検出強化 (P1)、自動 Recommended セットアップ (P2) として登録。
 - **2026-04-14**: Task 7 (Ports monitor) スモークテストで bug #27 発覚。`node -e "..."` をペースト + Enter してもコマンドが実行されず、末尾 `"` が残り `^[` が混入。通常タイプ経路は OK。ペースト経路の `\r` 送信欠落が疑わしい。P1 に登録し次リリースで対応。Task 7 自体はスキップして Task 8 に進行。
@@ -1918,6 +2068,7 @@ claude() {
 - **2026-06-22**: G2（Phase 1 永続記憶）を main にマージ（PR #86, build 1591）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼き込み確認）/ Memory UI / on-device を実機 PASS。スケジュール fire の自動 result 取り込み・セマンティック recall・per-fire 鮮度・name strip 漏れを P2 として登録。次は G3（スキルレジストリ）。
 - **2026-06-22**: G3（Phase 2a スキルレジストリ）を main にマージ（PR #87, build 1594）。蒸留 save ゲート / SKILLS UI / Vault ミラー / success-count / no-cloud-leak に加え、実機テストで判明した日本語 reuse マッチ不発（tokenizer が JP を単語分割できない）を CJK バイグラム tokenizer（`lib/agent-text-match.ts`、memory と共有）で修正し、USE SKILL トグル + レシピ注入を実機 PASS。one-shot save・セマンティックマッチ・スキル編集 UI・半角カナを P2 として登録。次は G4（Layer-2 スコアリングルーター）。
 - **2026-06-22**: G4（Phase 2b Layer-2 スコアリングルーター）を main にマージ（PR #88）。`lib/agent-router-scoring.ts` で auto agent をオフライン採点（category 親和性 + reasoning + search + on-device ボーナス）、Scores/confidence/候補を reason-log に記録。実機テストで2点修正: ①スコアラーが走るよう `tool:'auto'` を配線（NL パーサが具体ツールを先に確定していた）②「ニュース要約」が research → 有料 Perplexity に誤ルート → news/最新を research から除外。実機で transform→Local（on-device-first）+ Scores 行 + Why: Layer-2 scorer を立証。クラウドキー欠如フォールバックを P1、Qwen 分類・キーワード重複を P2 登録。次は G5（inbound ゲートウェイ）。
+- **2026-06-22**: G5（Phase 3 Telegram inbound ゲートウェイ）を main にマージ（PR #89, build 1600）。`lib/telegram-inbound.ts`（純粋・13 テスト）で単一 authz チョークポイント + サニタイズ + offset replay 防止、poller は agent を作成/実行せず確認カードを enqueue するのみ（inbound は local より厳密に狭い）。セキュリティレビュー Blocker/High なし、M1 hot-loop フロア / M2 二重poller ガード / L1 通知本文除去を対応。**ユーザーが Telegram 非利用のためライブ end-to-end は未実機検証**（opt-in・既定 OFF で休眠、実害なし）。別 inbound チャネル検討・webhook・reply-back を後回し。次は G6（マルチステップ orchestration・最重）。
 - **2026-04-15**: Wave A/B/C/D/E で #27 / #28 / #36 / #51 / #52 / #53 / #54 / #55 / #56 / #57 / #58 / #59 / #60 / #61 / #62 / #63 / #64 / #65 / #66 / #67 を一括修正。
 - **2026-04-15**: DEFERRED.md 再構成 — 先頭に「🟢 現状サマリ」「🟡 一段落後チェックリスト」を追加、各 bug にステータスマーク。
 - **2026-04-15**: Phase 6-A 継続実機検証で #68 / #69 / #70 を特定・コード修正済 (未ビルド)。Test 5-1 Tab ✅ / Test 5-2 ↑ ✅ (履歴空時の無反応で一時誤診、後に正常動作確認)。#73 (repo パス正規化) / #74 (空履歴 ↑ UX) を登録。
@@ -1933,6 +2084,10 @@ claude() {
 - **2026-06-10**: Claude Code オンデバイス実装の経緯を 3 エージェント並列調査 (リポジトリ履歴 / Android OSS 検証 / CC アーキ + Codex 連携)。「ネイティブ断念」の正体は Bun SEA 直接実行の断念 (v29-v59) で、CC 自体は extracted Node 経路 (v67+) で稼働中と確認。musl 矛盾を ferrum install.sh + 公式 docs 実取得で解消 (glibc 方式が実証済、musl も C++ ランタイム要・ただし軽量)。パッチ済バイナリ PoC (P2) と Bash tool exit 1 観測基盤 (既存 P1 の次の一手) を spec 化・DEFERRED 登録。実装は未着手。spec: 2026-06-10-claude-code-on-device-investigation / -claude-patched-binary-poc-plan / -bash-tool-exit1-observability-plan。
 - **2026-06-10**: Scouter widget Stage 1+2 を実機 (scrcpy) 検証しながら一気に完遂。通知カテゴリ別チャンネル (heads-up) / 本文フル表示 / 5セル四角ゲージ (緑→critical 全赤) / updater ハング根治 / 相対時刻 / README 反映まで実装・push。残ポリッシュ (git branch / error 詳細 / ctx ゲージ) と既知バグ 2件 (Updates モーダル開閉のレイアウト崩れ / `fetchWithTimeout` end-to-end ハードニング) を P2 登録。v6.0.0 リリース候補。
 - **2026-06-19**: Terminal pane の wallpaper 透過が native/GL 描画面のグレー化回帰を誘発したため、当面 opaque black に固定。再有効化条件を P3 として登録。
+- **2026-06-24**: N1 着地（backend 105fda3 前の eea8ec3 + UI 105fda3）。自律クラウド opt-in＝補完専用 backend(Gemini/Perplexity)は「キーが LLM/シェルに渡らない stateless completion」なので、ユーザー informed-consent ありで自律 Web に解錠。設計対話でユーザーが「429=API側の自動停止をトリガーに切替/停止、無料/有料の線引きは Shelly が知らなくて良い」と整理。settings(consent + onExhaustion escalate/stop) → .env → ladderEnvFromDisk(アンカー =1 で fail-closed) → resolveEscalationLadder + generateRunScript。secret-guard 常時ローカル・cli/webhook 手動・Codex env スクラブ・非Web不拡大を維持、セキュリティレビュー APPROVE。**North Star の残解錠コードは全着地**、残りは実機検証(quota待ち)＋スケジュール完全無人化 follow-up。
+- **2026-06-24**: N3 着地（commit 8fb8926）。orchestration の各ステップを共有 `runLadderAttempts` でラダーに通し、ステップ毎の指示で昇格（収集→Gemini grounded→Codex、要約→on-device）。単発 @agent パスは同ヘルパーに委譲して挙動保存、レビュー APPROVE・全 390 テスト緑。N2 着地（commit b08a608）＝自律エージェントのみ Vault 保存を自動承認（cli/webhook は手動・secret-guard 維持）。**North Star の残解錠は N1（自律クラウド opt-in）のみ**＝「自律=local→Codex のみ・api-key fail-closed」を意図的に緩める変更なので実装前にユーザーと設計を詰める。
+- **2026-06-24**: N4 着手（quota 非依存・North Star 直結）。(a) 空スラグ修正＝CJK のみのエージェント名が `2026-06-24-.md` になるバグ（slug が `[^a-z0-9]` strip で空）を CJK 保持＋id fallback で修正、(b) dead field だった `outputTemplate` を保存パスに配線（`{date}/{slug}/{time}` プレースホルダ、日付フォルダ `/` 対応、`..`/絶対パス除去、Obsidian ミラーも同名）、(c) 複数曜日 cron（`0 8 * * 1,5` = 月/金）を TS+Kotlin 両パーサに追加（従来は単一 dow のみで未発火）。commit fa10617 / c80bb04、全 387 テスト緑、レビュー APPROVE。実機検証は新ビルドで（保存系は quota 非依存で確認可）。
+- **2026-06-24**: ニュース収集エージェントの「偽成功」を切り分け→真因は**ルーティング**（収集が Web 非対応 local LLM に振られ空テンプレ幻覚）と確定。`needsWeb`（収集動詞＋鮮度語）routing を実装し非Web backend 除外＋`Gemini(grounded)→Codex`/学術`Perplexity`/自律`Codexのみ`に（commit 203428c, 全376テスト緑, レビュー APPROVE）。実機 end-to-end は**両 web backend の quota 枯渇（Gemini free-tier `limit:0` on gemini-2.0-flash / Codex usage limit リセット 6/24 23:51）でブロック**→「Web-mandatory routing 検証待ち」エントリに手順同梱で P1 登録。端末ネット OK・Codex sandbox=danger-full-access・Gemini キー疎通(403→429)は確認済み。
 - **2026-06-19**: Secretary MVP (Phase 0) 着手時、ユーザーから「ウィジェットからもいける導線」提案。既存 `ScouterWidgetProvider.kt` (home-screen AppWidget, 2026-06-10 実機 PASS) が tap PendingIntent / deep-link / 承認ピル配線を既に持つと確認。trigger (deep-link 1本) + status (snapshot 2フィールド) は安価な fast-follow として P2 登録。スケジュール承認はウィジェットに置かず通知側 (B5, run-id 束縛・単回・期限付き) に集約と判断。コアループ着地後に着手。
 
 ---

@@ -22,6 +22,10 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { AgentAction, AgentActionType, AgentMemoryConfig, ToolChoice } from '@/store/types';
+import { useSettingsStore } from '@/store/settings-store';
+import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
+import { detectRouteSignals } from '@/lib/agent-router-scoring';
+import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -38,57 +42,16 @@ export interface ConfirmedAgentDraft {
   memory?: AgentMemoryConfig;
   /** Phase 2a: id of a reused skill recipe the user kept on in the card. */
   skillId?: string;
+  /** Phase 4: ordered step instructions for a multi-step (orchestrated) agent. */
+  orchestrationSteps?: string[];
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
-type Frequency = 'once' | 'daily' | 'weekly' | 'interval';
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
 const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
-
-/** Parse an existing cron (when the draft was confident) back into selector state. */
-function decodeCron(cron: string | null): {
-  frequency: Frequency;
-  hour: number;
-  minute: number;
-  weekday: number;
-  interval: number;
-} {
-  const fallback = { frequency: 'daily' as Frequency, hour: 8, minute: 0, weekday: 1, interval: 15 };
-  if (!cron) return fallback;
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return fallback;
-  const [min, hour, , , dow] = parts;
-  const everyMin = min.match(/^\*\/(\d+)$/);
-  if (everyMin && hour === '*') {
-    return { ...fallback, frequency: 'interval', interval: parseInt(everyMin[1], 10) };
-  }
-  if (/^\d+$/.test(min) && /^\d+$/.test(hour)) {
-    if (/^\d+$/.test(dow)) {
-      return { ...fallback, frequency: 'weekly', minute: +min, hour: +hour, weekday: +dow };
-    }
-    return { ...fallback, frequency: 'daily', minute: +min, hour: +hour };
-  }
-  return fallback;
-}
-
-/** Build a whitelisted cron from selector state, or null when the selection is invalid. */
-function buildCron(f: Frequency, hour: number, minute: number, weekday: number, interval: number): string | null {
-  if (f === 'once') return null; // one-shot: no schedule
-  if (f === 'interval') {
-    if (!Number.isInteger(interval) || interval < 1 || interval > 59) return null;
-    return `*/${interval} * * * *`;
-  }
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (f === 'weekly') {
-    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return null;
-    return `${minute} ${hour} * * ${weekday}`;
-  }
-  return `${minute} ${hour} * * *`;
-}
 
 function clampInt(raw: string, min: number, max: number): number {
   const n = parseInt(raw.replace(/[^\d]/g, ''), 10);
@@ -108,42 +71,124 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
 
   const decoded = useMemo(() => decodeCron(draft.schedule), [draft.schedule]);
 
-  const [name, setName] = useState(draft.name);
-  // No confident schedule parsed ⇒ default to a one-shot "run now" (the user can
-  // still switch to Daily/Weekly/Every-N-min). A confident parse keeps its shape.
-  const [frequency, setFrequency] = useState<Frequency>(
-    draft.scheduleConfident ? decoded.frequency : 'once',
+  // Initial frequency. A confident parse keeps its shape. Otherwise, if the user
+  // clearly stated a recurrence but no time (suggestedFrequency), honour it so the
+  // card doesn't silently fall to a one-shot "run now" — a multi-day weekly hint
+  // becomes 'custom'. Only a truly scheduleless utterance defaults to 'once'.
+  const initialFrequency = resolveInitialFrequency(
+    draft.scheduleConfident,
+    decoded.frequency,
+    draft.suggestedFrequency,
+    draft.suggestedDowList,
   );
+  // The time is a PLACEHOLDER when a recurrence was stated without one — surface a
+  // "confirm the time" hint and never claim it was parsed.
+  const timeIsPlaceholder = !draft.scheduleConfident && !!draft.suggestedFrequency && !draft.suggestedTime;
+  const initialDow = draft.scheduleConfident ? decoded.dowList : draft.suggestedDowList || decoded.dowList;
+  const initialWeekday = (() => {
+    if (draft.scheduleConfident) return decoded.weekday;
+    const first = parseInt((draft.suggestedDowList ?? '').split(',')[0], 10);
+    return Number.isNaN(first) ? decoded.weekday : first;
+  })();
+
+  const [name, setName] = useState(draft.name);
+  const [frequency, setFrequency] = useState<Frequency>(initialFrequency);
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
-  const [weekday, setWeekday] = useState(decoded.weekday);
+  // When the time is only a placeholder (recurrence stated without one), Confirm is
+  // gated until the user actually touches the time — "force a manual time pick"
+  // rather than letting an unreviewed 08:00 register in one tap.
+  const [timeTouched, setTimeTouched] = useState(false);
+  const [weekday, setWeekday] = useState(initialWeekday);
+  // Multi-day ('custom') DOW list (e.g. "1,5" = Mon/Fri). Editable via the weekday
+  // chips below: tapping a 2nd day promotes weekly→custom; dropping back to 1 day
+  // demotes custom→weekly. Preserved verbatim so a Mon/Fri preset doesn't flatten.
+  const [customDow, setCustomDow] = useState(initialDow);
   const [interval, setInterval] = useState(decoded.interval);
   const [actionType, setActionType] = useState<AgentActionType>(draft.action.type);
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
   const [command, setCommand] = useState(draft.action.command ?? '');
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
+  // N1: an autonomous run normally uses the gated Codex driver (no API keys). But
+  // with explicit cloud consent, a WEB-MANDATORY task keeps its scored web backend
+  // (Gemini/Perplexity) — generateRunScript honours the same exception and bakes a
+  // Codex fallback for the unattended fire (P1). Mirror that here so the card stores
+  // the web tool instead of overriding to Codex (which silently defeated the path).
+  // The needsWeb gate is required: suggestTool defaults a general prompt to gemini-api,
+  // so without it a NON-web autonomous task would store gemini-api and the runtime
+  // would refuse it (api-key backend not allowed when needsWeb is false).
+  const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
+  const needsWeb = useMemo(() => detectRouteSignals(draft.prompt).needsWeb, [draft.prompt]);
+  // The tool this agent will actually be STORED with — same resolver the submit
+  // handler and runtime use — so the preview never lies about the engine (web
+  // with consent, on-device local, or the gated Codex driver).
+  const autonomousTool = resolveAutonomousFinalTool(true, draft.tool, cloudConsent, needsWeb);
+  const keepWebTool = autonomous && (autonomousTool.type === 'gemini-api' || autonomousTool.type === 'perplexity');
+  const keepLocal = autonomous && autonomousTool.type === 'local';
+  const webEngineLabel = autonomousTool.type === 'perplexity' ? 'Perplexity' : 'Gemini';
   // Phase 2a: gated skill reuse. A matching skill (if any) is shown and reused by
   // default; the user can opt out. Off when no skill matched the task.
   const [useSkill, setUseSkill] = useState<boolean>(!!draft.matchedSkill);
 
   const isOnce = frequency === 'once';
   const cron = useMemo(
-    () => buildCron(frequency, hour, minute, weekday, interval),
-    [frequency, hour, minute, weekday, interval],
+    () => buildCron(frequency, hour, minute, weekday, interval, customDow),
+    [frequency, hour, minute, weekday, interval, customDow],
   );
 
+  // The weekday chips are shown for both 'weekly' (single) and 'custom' (multi).
+  // selectedDays is the unified selection; toggling reconciles the frequency:
+  // 1 day → 'weekly' (weekday), 2+ days → 'custom' (customDow csv). Empty is
+  // disallowed so the agent always has at least one fire day.
+  const selectedDays = useMemo(() => {
+    if (frequency === 'custom') {
+      return customDow
+        .split(',')
+        .map((d) => parseInt(d, 10))
+        .filter((n) => n >= 0 && n <= 6);
+    }
+    return [weekday];
+  }, [frequency, customDow, weekday]);
+
+  const showWeekdays = frequency === 'weekly' || frequency === 'custom';
+
+  const toggleDay = (d: number) => {
+    const has = selectedDays.includes(d);
+    const next = (has ? selectedDays.filter((x) => x !== d) : [...selectedDays, d])
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .sort((a, b) => a - b);
+    if (next.length === 0) return; // never allow an empty day list
+    if (next.length === 1) {
+      setWeekday(next[0]);
+      setFrequency('weekly');
+    } else {
+      setCustomDow(next.join(','));
+      setFrequency('custom');
+    }
+  };
+
   // Confirm gating: a one-shot needs no schedule; otherwise a valid cron is required.
+  // A placeholder time (recurrence stated without one) additionally requires the
+  // user to touch the time first, so an unreviewed default never registers silently.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
   const commandValid = actionType !== 'cli' || command.trim().length > 0;
-  const canConfirm = (isOnce || !!cron) && name.trim().length > 0 && webhookValid && commandValid;
+  // The placeholder-time gate only applies to clock-time frequencies. If the user
+  // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
+  // uses an HH:MM), there's nothing to confirm — don't deadlock Confirm.
+  const freqUsesClockTime = frequency === 'daily' || frequency === 'weekly' || frequency === 'custom';
+  const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
+  const canConfirm =
+    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid;
 
   const handleConfirm = () => {
     if (!canConfirm) return;
     const action: AgentAction = { type: actionType };
     if (actionType === 'webhook') action.webhookUrl = webhookUrl.trim();
     if (actionType === 'cli') action.command = command.trim();
-    const finalTool: ToolChoice = autonomous ? { type: 'cli', cli: 'codex' } : draft.tool;
+    // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
+    // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
+    const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb);
     onConfirm({
       name: name.trim(),
       prompt: draft.prompt,
@@ -157,6 +202,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       memory: draft.memory,
       // Phase 2a: attach the reused skill only when the user kept it on.
       skillId: useSkill ? draft.matchedSkill?.id : undefined,
+      // Phase 4: carry detected multi-step instructions through to createAgent.
+      orchestrationSteps: draft.orchestrationSteps,
     });
   };
 
@@ -172,9 +219,15 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           schedule: isOnce
             ? t('agentcard.sched_once')
             : cron
-            ? scheduleHuman(frequency, hour, minute, weekday, interval, t)
+            ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow)
             : t('agentcard.schedule_unset'),
-          route: autonomous ? t('agentcard.autonomous_route') : t(`agentcard.runon_${runOn}`),
+          route: autonomous
+            ? keepWebTool
+              ? t('agentcard.autonomous_route_web', { engine: webEngineLabel })
+              : keepLocal
+              ? t('agentcard.autonomous_route_local')
+              : t('agentcard.autonomous_route')
+            : t(`agentcard.runon_${runOn}`),
         })}
       </Text>
 
@@ -196,6 +249,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           { key: 'daily', label: t('agentcard.freq_daily') },
           { key: 'weekly', label: t('agentcard.freq_weekly') },
           { key: 'interval', label: t('agentcard.freq_interval') },
+          // Multi-day presets (e.g. Mon/Fri) surface a read-through 'custom' chip
+          // labelled with the weekdays so the schedule isn't silently flattened.
+          ...(frequency === 'custom'
+            ? [{ key: 'custom', label: customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・') }]
+            : []),
         ]}
         value={frequency}
         onChange={(k) => setFrequency(k as Frequency)}
@@ -220,34 +278,49 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           <View style={styles.row}>
             <TextInput
               value={String(hour).padStart(2, '0')}
-              onChangeText={(v) => setHour(clampInt(v, 0, 23))}
+              onChangeText={(v) => {
+                setHour(clampInt(v, 0, 23));
+                setTimeTouched(true);
+              }}
               keyboardType="number-pad"
               style={[styles.inputSmall, fieldBg]}
             />
             <Text style={[styles.unit, { color: colors.foreground }]}>:</Text>
             <TextInput
               value={String(minute).padStart(2, '0')}
-              onChangeText={(v) => setMinute(clampInt(v, 0, 59))}
+              onChangeText={(v) => {
+                setMinute(clampInt(v, 0, 59));
+                setTimeTouched(true);
+              }}
               keyboardType="number-pad"
               style={[styles.inputSmall, fieldBg]}
             />
           </View>
-          {frequency === 'weekly' && (
-            <View style={styles.weekRow}>
-              {WEEKDAY_LABELS.map((wl, d) => (
-                <TouchableOpacity
-                  key={d}
-                  onPress={() => setWeekday(d)}
-                  style={[
-                    styles.weekDay,
-                    { borderColor: colors.border },
-                    weekday === d && { backgroundColor: colors.accent, borderColor: colors.accent },
-                  ]}
-                >
-                  <Text style={{ color: weekday === d ? colors.background : colors.foreground, fontSize: 12 }}>{wl}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+          {timeIsPlaceholder && (
+            <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.time_placeholder_hint')}</Text>
+          )}
+          {showWeekdays && (
+            <>
+              <View style={styles.weekRow}>
+                {WEEKDAY_LABELS.map((wl, d) => {
+                  const on = selectedDays.includes(d);
+                  return (
+                    <TouchableOpacity
+                      key={d}
+                      onPress={() => toggleDay(d)}
+                      style={[
+                        styles.weekDay,
+                        { borderColor: colors.border },
+                        on && { backgroundColor: colors.accent, borderColor: colors.accent },
+                      ]}
+                    >
+                      <Text style={{ color: on ? colors.background : colors.foreground, fontSize: 12 }}>{wl}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.weekday_multi_hint')}</Text>
+            </>
           )}
         </>
       )}
@@ -288,7 +361,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       {autonomous ? (
         <>
           <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.runon')}</Text>
-          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.autonomous_route_hint')}</Text>
+          <Text style={[styles.warn, { color: colors.muted }]}>
+            {keepWebTool
+              ? t('agentcard.autonomous_route_hint_web', { engine: webEngineLabel })
+              : keepLocal
+              ? t('agentcard.autonomous_route_hint_local')
+              : t('agentcard.autonomous_route_hint')}
+          </Text>
         </>
       ) : (
         <>
@@ -350,6 +429,20 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         </View>
       )}
 
+      {/* Phase 4: when the utterance was multi-step, show the planned chain. */}
+      {draft.orchestrationSteps && draft.orchestrationSteps.length >= 2 && (
+        <View style={{ marginTop: 4 }}>
+          <Text style={[styles.label, { color: colors.muted, marginTop: 0 }]}>
+            {t('agentcard.orchestration', { count: draft.orchestrationSteps.length })}
+          </Text>
+          {draft.orchestrationSteps.map((s, i) => (
+            <Text key={`step-${i}`} style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
+              {`${i + 1}. ${s}`}
+            </Text>
+          ))}
+        </View>
+      )}
+
       {/* Buttons */}
       <View style={styles.actions}>
         <TouchableOpacity onPress={onCancel} style={[styles.btn, { borderColor: colors.border }]} activeOpacity={0.7}>
@@ -380,9 +473,14 @@ function scheduleHuman(
   weekday: number,
   interval: number,
   t: (k: string, p?: Record<string, string | number>) => string,
+  customDow = '',
 ): string {
   const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
+  if (f === 'custom') {
+    const days = customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・');
+    return t('agentcard.sched_weekly', { day: days, time: hhmm });
+  }
   if (f === 'weekly') return t('agentcard.sched_weekly', { day: WEEKDAY_LABELS[weekday], time: hhmm });
   return t('agentcard.sched_daily', { time: hhmm });
 }
@@ -422,25 +520,25 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: 10,
     borderWidth: 1,
-    padding: 12,
-    marginVertical: 6,
-    gap: 4,
+    padding: 10,
+    marginVertical: 5,
+    gap: 2,
   },
-  title: { fontSize: 13, fontWeight: '700', marginBottom: 2 },
-  summary: { fontSize: 13, lineHeight: 19, marginBottom: 6 },
-  label: { fontSize: 10, letterSpacing: 0.5, marginTop: 8, textTransform: 'uppercase' },
-  warn: { fontSize: 11, marginTop: 2 },
-  input: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, marginTop: 4 },
-  inputSmall: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6, fontSize: 14, minWidth: 44, textAlign: 'center' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+  title: { fontSize: 13, fontWeight: '700', marginBottom: 1 },
+  summary: { fontSize: 12, lineHeight: 16, marginBottom: 4 },
+  label: { fontSize: 10, letterSpacing: 0.5, marginTop: 6, textTransform: 'uppercase' },
+  warn: { fontSize: 10, lineHeight: 14, marginTop: 1 },
+  input: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 5, fontSize: 13, marginTop: 3 },
+  inputSmall: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5, fontSize: 14, minWidth: 44, textAlign: 'center' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
   unit: { fontSize: 14 },
-  weekRow: { flexDirection: 'row', gap: 4, marginTop: 6 },
-  weekDay: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, overflow: 'hidden', marginTop: 4 },
-  segment: { flex: 1, paddingVertical: 7, alignItems: 'center' },
-  autoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
-  toggle: { minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 14 },
-  btn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 18, paddingVertical: 8 },
+  weekRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 5 },
+  weekDay: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, overflow: 'hidden', marginTop: 3 },
+  segment: { flex: 1, paddingVertical: 6, alignItems: 'center' },
+  autoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 7 },
+  toggle: { minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1 },
+  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 10 },
+  btn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 18, paddingVertical: 7 },
   btnText: { fontSize: 13 },
 });

@@ -51,6 +51,9 @@ const AGENT_RUNNING_BACKGROUND_POLL_INTERVAL_MS = 60_000;
 
 const QUICK_FOLDERS = [
   { label: '~',        path: '~/',                 icon: 'home' },
+  // Agent outputs land under ~/.shelly/agents/<name>/output (+ optional Obsidian
+  // Vault mirror). Surface the base so a draft result is one tap away (D).
+  { label: 'AGENT',    path: '~/.shelly/agents',   icon: 'smart-toy' },
   { label: 'DCIM',     path: '/sdcard/DCIM',       icon: 'photo-camera' },
   { label: 'DOWNLOAD', path: '/sdcard/Download',   icon: 'download' },
   { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description' },
@@ -129,6 +132,17 @@ export function Sidebar() {
   const agentsSectionOpen = mode === 'expanded' && openSections.tasks;
   const pendingAgentCount = pendingAgentIds.size;
   const shouldPollRunningAgents = agents.length > 0 || pendingAgentCount > 0;
+
+  // The FILE TREE section is the only consumer of activeRepoPath; if it is
+  // collapsed, selecting a folder (REPOSITORIES or DEVICE shortcut) silently
+  // does nothing — "押しても開けない". Expand it on select so the tapped
+  // folder's contents actually appear.
+  const openFolderInTree = React.useCallback((path: string) => {
+    setActiveRepo(path);
+    if (!useSidebarStore.getState().openSections.files) {
+      toggleSection('files');
+    }
+  }, [setActiveRepo, toggleSection]);
 
   // Git dirty-count polling removed 2026-04-21. The count was run against
   // `$HOME` which is not a sane repo context — CLI bg updates, install
@@ -324,11 +338,24 @@ export function Sidebar() {
       agent.autonomous ? t('sidebar.agent_autonomous') : null,
       agent.enabled ? null : t('sidebar.agent_paused'),
     ].filter(Boolean).join(' · ');
+    // Phase 4: when the agent is multi-step, show the planned chain; and if the
+    // last run was orchestrated, show each step's status.
+    const plannedSteps = agent.orchestration?.steps ?? [];
+    const stepDetail = lastLog?.steps?.length
+      ? `${t('sidebar.agent_steps', { count: lastLog.steps.length })}\n${lastLog.steps
+          .map((s) => `  ${s.index + 1}. [${s.status}] ${s.instruction.slice(0, 60)}`)
+          .join('\n')}`
+      : plannedSteps.length >= 2
+      ? `${t('sidebar.agent_steps', { count: plannedSteps.length })}\n${plannedSteps
+          .map((s, i) => `  ${i + 1}. ${s.slice(0, 60)}`)
+          .join('\n')}`
+      : '';
     const body = [
       (agent.prompt || agent.description || '').trim(),
       '',
       meta,
       `${t('sidebar.agent_memory_title', { count: memoryNotes.length })}`,
+      stepDetail,
       lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
       routeDetail,
     ].filter(Boolean).join('\n');
@@ -671,7 +698,7 @@ export function Sidebar() {
                       borderLeftColor: C.accent,
                     },
                   ]}
-                  onPress={() => setActiveRepo(p)}
+                  onPress={() => openFolderInTree(p)}
                   onLongPress={() => {
                     Alert.alert(
                       t('sidebar.remove_repository_title'),
@@ -741,7 +768,7 @@ export function Sidebar() {
             <Pressable
               key={path}
               style={styles.deviceRow}
-              onPress={() => setActiveRepo(path)}
+              onPress={() => openFolderInTree(path)}
             >
               <MaterialIcons name={icon as any} size={13} color={C.text2} />
               <Text style={styles.deviceLabel} numberOfLines={1} ellipsizeMode="tail">

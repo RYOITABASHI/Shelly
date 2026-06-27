@@ -3,7 +3,9 @@ import { parseAgentNL } from '@/lib/agent-nl-parser';
 // The scheduler accepts ONLY these three cron shapes (lib/agent-scheduler.ts).
 // Any non-null schedule the parser emits MUST match one of them, or the agent
 // would silently never fire — the spec's hard requirement (§2.1).
-const WHITELIST_CRON = /^(\*\/\d+ \* \* \* \*|\d+ \d+ \* \* \*|\d+ \d+ \* \* [0-6])$/;
+// Single-day OR a multi-day DOW list (e.g. "1,5" = Mon/Fri) — both accepted by
+// lib/agent-scheduler.ts (DOW_LIST_RE) and the native AgentAlarmReceiver.
+const WHITELIST_CRON = /^(\*\/\d+ \* \* \* \*|\d+ \d+ \* \* \*|\d+ \d+ \* \* [0-6](,[0-6])*)$/;
 
 describe('parseAgentNL — schedule (JP)', () => {
   it('毎日8時 → daily 0 8 * * *, confident', () => {
@@ -75,11 +77,210 @@ describe('parseAgentNL — weekly', () => {
     expect(d.scheduleConfident).toBe(false);
     expect(d.scheduleLabel).toContain('金');
   });
+
+  it('月曜と金曜の朝8時 → 0 8 * * 1,5 (multi-day, no 毎週 needed)', () => {
+    const d = parseAgentNL('月曜と金曜の朝8時にSTEAM×AIの論文を集めて');
+    expect(d.schedule).toBe('0 8 * * 1,5');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.scheduleLabel).toContain('月・金');
+  });
+
+  it('毎週月・水・金 → sorted dow list, deduped', () => {
+    expect(parseAgentNL('毎週月曜・水曜・金曜の10時に集計して').schedule).toBe('0 10 * * 1,3,5');
+  });
+
+  it('EN multi-day: mon and thu at 7am → 0 7 * * 1,4', () => {
+    expect(parseAgentNL('every monday and thursday at 7am send a digest').schedule).toBe('0 7 * * 1,4');
+  });
+
+  it('multi-day with no time → null, not confident, label keeps all days', () => {
+    const d = parseAgentNL('月曜と金曜にまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.scheduleLabel).toContain('月・金');
+  });
+
+  it('explicit 毎日 outranks an incidental weekday → daily, not weekly', () => {
+    // Regression guard: a 曜-weekday must not hijack an explicit daily marker.
+    expect(parseAgentNL('毎日月曜の予定を8時に通知して').schedule).toBe('0 8 * * *');
+  });
+
+  it('multi-day schedule clause is stripped from the agent prompt', () => {
+    const d = parseAgentNL('月曜と金曜の朝8時にSTEAM×AIの論文を集めて');
+    expect(d.schedule).toBe('0 8 * * 1,5');
+    expect(d.prompt).not.toContain('月曜');
+    expect(d.prompt).not.toContain('8時');
+    expect(d.prompt).toContain('論文');
+  });
+
+  it('bare separator run 火・金 (no 曜) → 0 8 * * 2,5', () => {
+    const d = parseAgentNL('火・金の朝8時にニュースを集めて');
+    expect(d.schedule).toBe('0 8 * * 2,5');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.prompt).not.toContain('火');
+    expect(d.prompt).toContain('ニュース');
+  });
+
+  it('bare run 月、水、金 → 0 9 * * 1,3,5', () => {
+    expect(parseAgentNL('月、水、金の9時に集計して').schedule).toBe('0 9 * * 1,3,5');
+  });
+
+  it('a LONE bare weekday char is NOT treated as a schedule (金=gold ambiguity)', () => {
+    // "金" alone (no 曜, no separator run) must stay ambiguous, not become Friday.
+    const d = parseAgentNL('金の価格を8時に教えて');
+    expect(d.schedule).not.toBe('0 8 * * 5');
+    expect(d.prompt).toContain('金の価格');
+  });
+
+  it('element pair 火・水 (fire/water) followed by a NOUN is NOT a schedule', () => {
+    // Regression (review): a bare run is only a schedule when it leads directly
+    // into the time. 火・水の実験を9時に… is 五行 vocab, not Tue/Wed.
+    const d = parseAgentNL('火・水の実験を9時に記録して');
+    expect(d.schedule).not.toBe('0 9 * * 2,3');
+    expect(d.prompt).toContain('実験');
+  });
+
+  it('celestial pair 日・月 (sun/moon) followed by a NOUN is NOT a schedule', () => {
+    const d = parseAgentNL('日・月の周期を8時に観測する');
+    expect(d.schedule).not.toBe('0 8 * * 0,1');
+    expect(d.prompt).toContain('周期');
+  });
+
+  it('but 火・水 leading DIRECTLY into the time IS a schedule (Tue/Wed)', () => {
+    // Same chars, schedule shape: adjacency to the time is the disambiguator.
+    expect(parseAgentNL('火・水の朝8時に在庫を確認して').schedule).toBe('0 8 * * 2,3');
+  });
+
+  it('colon time after a bare run schedules AND strips the clause from the prompt', () => {
+    const d = parseAgentNL('火・金の8:00にニュースを集めて');
+    expect(d.schedule).toBe('0 8 * * 2,5');
+    expect(d.prompt).not.toContain('火・金');
+    expect(d.prompt).not.toContain('8:00');
+    expect(d.prompt).toContain('ニュース');
+  });
 });
 
 describe('parseAgentNL — daily (EN)', () => {
   it('every day at 8 → 0 8 * * *', () => {
     expect(parseAgentNL('every day at 8 draft a post').schedule).toBe('0 8 * * *');
+  });
+});
+
+describe('parseAgentNL — cross-model (Codex) review fixes', () => {
+  // G-1: "1日1回" family = once per day → daily marker.
+  it('1日1回 / 1日に1回 / 一日一回 are recognised as a daily recurrence', () => {
+    for (const u of [
+      'arxivを1日1回チェックして8時に通知',
+      '1日に1回ニュースを8時にまとめて',
+      '一日一回8時に集計して',
+    ]) {
+      expect(parseAgentNL(u).schedule).toBe('0 8 * * *');
+    }
+  });
+
+  it('1日1回 WITHOUT a time → daily suggestion, not a one-shot', () => {
+    const d = parseAgentNL('arxivを1日1回チェックして要点を3行で教えて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.suggestedFrequency).toBe('daily');
+  });
+
+  // G-1 date-collision guard: "7月1日" / "21日" are DATES, not "once per day".
+  it('a date context (7月1日に1回 / 21日に1回) is NOT treated as daily', () => {
+    expect(parseAgentNL('7月1日に1回9時に通知して').schedule).not.toBe('0 9 * * *');
+    expect(parseAgentNL('21日に1回9時にまとめて').schedule).not.toBe('0 9 * * *');
+  });
+
+  // G-1 compound-日 guard (pre-push review): a kanji day-word + "1回" is a ONE-SHOT
+  // ("today/tomorrow, once"), NOT a daily recurrence. The required leading "1日"
+  // run keeps these out.
+  it('compound 日 one-shots (今日に1回 / 明日に1回 / 誕生日に1回) are NOT daily', () => {
+    for (const u of ['今日に1回9時にまとめて', '明日に1回9時に通知して', '誕生日に1回9時に祝って']) {
+      expect(parseAgentNL(u).schedule).not.toBe('0 9 * * *');
+      expect(parseAgentNL(u).scheduleConfident).toBe(false);
+    }
+  });
+
+  // G-2: a stated recurrence without a time carries a frequency suggestion so the
+  // card pre-selects it instead of falling to 'once'/run-now.
+  it('毎日 without a time → suggestedFrequency daily (schedule still null)', () => {
+    const d = parseAgentNL('毎日ニュースまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.suggestedFrequency).toBe('daily');
+  });
+
+  it('毎週金曜 without a time → weekly suggestion with the dow', () => {
+    const d = parseAgentNL('毎週金曜にまとめて');
+    expect(d.suggestedFrequency).toBe('weekly');
+    expect(d.suggestedDowList).toBe('5');
+  });
+
+  it('月曜と金曜 without a time → weekly suggestion with the multi-dow', () => {
+    expect(parseAgentNL('月曜と金曜にまとめて').suggestedDowList).toBe('1,5');
+  });
+
+  // EN time: the number bound to "at" wins over an earlier bare number.
+  it('EN: "top 10 posts at 8" → 8:00, not 10:00', () => {
+    expect(parseAgentNL('every day process top 10 posts at 8').schedule).toBe('0 8 * * *');
+  });
+
+  // EN H:MM with meridiem — minute AND am/pm must both survive (pre-push review).
+  it('EN: H:MMpm / H:MMam keep both minute and meridiem', () => {
+    expect(parseAgentNL('every day at 8:30pm summarize').schedule).toBe('30 20 * * *');
+    expect(parseAgentNL('daily 11:45pm digest').schedule).toBe('45 23 * * *');
+    expect(parseAgentNL('every day 9:15am report').schedule).toBe('15 9 * * *');
+    expect(parseAgentNL('every day 12:30am notify').schedule).toBe('30 0 * * *');
+    expect(parseAgentNL('every day 8pm post').schedule).toBe('0 20 * * *');
+  });
+
+  it('EN: a bare number with no time marker is NOT a time', () => {
+    const d = parseAgentNL('summarize 5 articles every day');
+    expect(d.suggestedFrequency).toBe('daily'); // daily intent kept
+    expect(d.suggestedTime).toBeUndefined(); // "5" not mistaken for 5:00
+  });
+
+  // derivePrompt: a topic BEFORE a mid-sentence schedule clause survives.
+  it('strips the schedule clause in place, preserving the leading topic', () => {
+    const d = parseAgentNL('GitHub Trendingを毎日8時にまとめて');
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.prompt).toContain('GitHub Trending');
+    expect(d.prompt).not.toContain('毎日');
+    expect(d.prompt).not.toContain('8時');
+  });
+
+  // JP time: 昼N時 is afternoon, but 昼12時 stays noon (guarded by hour < 12).
+  it('昼3時 → 15:00, 昼12時 → 12:00', () => {
+    expect(parseAgentNL('毎日昼3時に通知して').schedule).toBe('0 15 * * *');
+    expect(parseAgentNL('毎日昼12時に通知して').schedule).toBe('0 12 * * *');
+  });
+
+  // 2nd-pass Codex review (correct branch): cadences not expressible in the
+  // whitelisted weekly cron must NOT be registered as a plain weekly.
+  it('隔週/第N週/第N曜/週N回 are forced to manual, not silently registered weekly', () => {
+    for (const u of ['隔週月曜9時にまとめて', '第2月曜の9時に集計して', '第3週の月曜9時に通知', '週3回9時にまとめて']) {
+      const d = parseAgentNL(u);
+      expect(d.scheduleConfident).toBe(false);
+      expect(d.schedule).toBeNull();
+    }
+  });
+
+  // The trailing 日 of 曜日 must not be mis-read as Sunday in the bare-run path.
+  it('月曜日と火曜日 / 水・木曜日 → no spurious Sunday (0)', () => {
+    expect(parseAgentNL('月曜日と火曜日の9時にまとめて').schedule).toBe('0 9 * * 1,2');
+    expect(parseAgentNL('水・木曜日の9時に集計して').schedule).toBe('0 9 * * 3,4');
+  });
+
+  // Ordering invariant: the non-expressible-cadence guard must run BEFORE the
+  // daily/weekly paths, so a 毎日+第N collision stays manual (not confident daily).
+  it('the 隔週/第N guard outranks an explicit daily marker (ordering regression)', () => {
+    expect(parseAgentNL('毎日第2週の月曜9時に通知して').scheduleConfident).toBe(false);
+    expect(parseAgentNL('毎日第2週の月曜9時に通知して').schedule).toBeNull();
+  });
+
+  // Genuine weekday 日 (Sunday) must survive — only the 曜日 trailer is stripped.
+  it('日曜日と土曜日 keeps Sunday → 0,6', () => {
+    expect(parseAgentNL('日曜日と土曜日の9時にまとめて').schedule).toBe('0 9 * * 0,6');
   });
 });
 
@@ -170,6 +371,68 @@ describe('parseAgentNL — invariants', () => {
     expect(() => parseAgentNL('')).not.toThrow();
     expect(() => parseAgentNL('   ')).not.toThrow();
     expect(parseAgentNL('').schedule).toBeNull();
+  });
+});
+
+describe('parseAgentNL — G6 pipeline preset', () => {
+  it('a "パイプライン" request builds the multi-step collection preset (Mon/Fri, autonomous)', () => {
+    const d = parseAgentNL('STEAMのパイプライン');
+    expect(d.orchestrationSteps?.length).toBe(4);
+    expect(d.autonomous).toBe(true);
+    expect(d.schedule).toBe('0 8 * * 1,5');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.schedule!).toMatch(WHITELIST_CRON);
+  });
+
+  it('carries a custom topic stated before the keyword', () => {
+    const d = parseAgentNL('量子コンピュータのパイプライン');
+    expect(d.orchestrationSteps?.[0]).toContain('量子コンピュータ');
+    expect(d.name).toContain('量子コンピュータ');
+  });
+
+  it("the user's own schedule overrides the preset's Mon/Fri, and the topic drops the schedule clause", () => {
+    const d = parseAgentNL('毎日8時に量子コンピュータのパイプライン');
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.orchestrationSteps?.length).toBe(4);
+    // Topic must be the subject, not "8時に量子コンピュータ".
+    expect(d.orchestrationSteps?.[0]).toContain('量子コンピュータ');
+    expect(d.orchestrationSteps?.[0]).not.toContain('8時');
+  });
+
+  it('an unparseable user schedule falls to manual selection, NOT silently Mon/Fri', () => {
+    const d = parseAgentNL('90分ごとにSTEAMのパイプライン');
+    expect(d.orchestrationSteps?.length).toBe(4); // still the pipeline
+    expect(d.scheduleConfident).toBe(false); // but the schedule needs picking
+    expect(d.schedule).toBeNull();
+  });
+
+  it('a normal collection utterance (no パイプライン) stays single-step', () => {
+    const d = parseAgentNL('STEAMの最新ニュースを集めて');
+    expect(d.orchestrationSteps).toBeUndefined();
+  });
+
+  it('does NOT hijack the DevOps / design senses of "pipeline" into the collection preset', () => {
+    expect(parseAgentNL('CI/CDパイプラインのエラーを直して').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('build pipeline failed, fix it').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('デプロイパイプラインのジョブが失敗した').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('データパイプラインを設計して').orchestrationSteps).toBeUndefined();
+    expect(parseAgentNL('design an ML pipeline architecture').orchestrationSteps).toBeUndefined();
+  });
+});
+
+describe('parseAgentNL — name derivation does not eat 日/月/金 from non-weekday words', () => {
+  // Regression: the weekday stripper '[日月火水木金土]曜?日?' matched a BARE
+  // 日月火水木金土, so 今日→今, 日本→本, 金融→融 lost a character in the name.
+  it('keeps 今日 in the name (does not strip the 日)', () => {
+    expect(parseAgentNL('今日の主要ニュースを出典付きで3つ集めて').name).toContain('今日');
+  });
+  it('keeps 日本 and 金融 intact', () => {
+    expect(parseAgentNL('日本の金融ニュースをまとめて').name).toContain('日本');
+    expect(parseAgentNL('日本の金融ニュースをまとめて').name).toContain('金融');
+  });
+  it('still strips a real weekday token from the name', () => {
+    // 月曜日 / 月曜 are schedule words and should NOT survive in the display name.
+    expect(parseAgentNL('毎週月曜日に週報を作って').name).not.toContain('月曜');
   });
 });
 

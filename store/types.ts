@@ -371,7 +371,7 @@ export type AppSettings = {
   // ─── Gemini API ────────────────────────────────────────────────────────────────
   /** Gemini API キー (https://aistudio.google.com/app/apikey) */
   geminiApiKey?: string;
-  /** Geminiに使用するモデル (default: gemini-2.0-flash) */
+  /** Geminiに使用するモデル (default: gemini-2.5-flash — 無料枠 + grounding) */
   geminiModel?: string;
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
@@ -383,6 +383,30 @@ export type AppSettings = {
   cerebrasApiKey?: string;
   /** Cerebrasに使用するモデル (default: qwen-3-235b-a22b-instruct-2507) */
   cerebrasModel?: string;
+  // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
+  /** Informed consent: autonomous agents may use cloud API keys (Gemini /
+   *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:
+   *  without it, autonomous web tasks stay Codex-only. The key authenticates the
+   *  request to the provider and is never sent to the model; what this gates is
+   *  unattended quota/cost usage. secret-guard still always forces local. */
+  autonomousCloudConsent?: boolean;
+  /** On cloud quota exhaustion (HTTP 429) during an autonomous web task:
+   *  'escalate' (default) climbs to Codex; 'stop' halts at the free tier and
+   *  reports exhaustion instead of consuming Codex / paid quota. */
+  autonomousCloudOnExhaustion?: 'escalate' | 'stop';
+  // ─── Agent output destination (where saved drafts land) ─────────────────────
+  /** Where an agent's saved draft is written. 'local' (default) → a clean,
+   *  findable local folder ($HOME/agent-output); 'obsidian' → the configured
+   *  Vault; 'custom' → an arbitrary path (e.g. a Drive-synced /sdcard folder).
+   *  Applies to general collection agents; content-studio agents keep their
+   *  explicit paths. Layout: <base>/<topic?>/{date}/{date}_{title}.md. */
+  agentOutputTarget?: 'local' | 'obsidian' | 'custom';
+  /** Obsidian Vault root (also used for the content-studio mirror). */
+  agentVaultPath?: string;
+  /** Optional topic root inserted before the date folder (e.g. "STEAM_AI"). */
+  agentTopicFolder?: string;
+  /** Base path when agentOutputTarget === 'custom'. */
+  agentCustomPath?: string;
   // ─── @team Table ────────────────────────────────────────────────────────────
   /** @teamに参加させるエージェントのON/OFF */
   teamMembers: {
@@ -458,6 +482,8 @@ export type AppSettings = {
 export type ToolChoice =
   | { type: 'cli'; cli: 'codex' }
   | { type: 'gemini-api'; model?: string }
+  | { type: 'cerebras'; model?: string }
+  | { type: 'groq'; model?: string }
   | { type: 'local'; model?: string }
   | { type: 'perplexity'; model?: string }
   | { type: 'ab-article-eval'; localModel?: string; codexCmd?: string }
@@ -556,6 +582,9 @@ export interface Agent {
    *  creation after a user-gated "use skill X?" confirm. Its recipe is injected
    *  into the run prompt and its success-count bumps on a successful run. */
   skillId?: string;
+  /** Phase 4: multi-step orchestration. Absent/<2 steps = single-run. Each step
+   *  runs through the SAME gated single-run path, so chaining adds no privilege. */
+  orchestration?: AgentOrchestrationConfig;
   enabled: boolean;
   lastRun: number | null;
   lastResult: 'success' | 'error' | null;
@@ -566,10 +595,42 @@ export interface Agent {
 export interface AgentRunLog {
   agentId: string;
   timestamp: number;
-  status: 'success' | 'error' | 'skipped';
+  // 'unavailable' = all web backends failed transiently (429/5xx/network) after
+  // retry; the ladder still climbs on it, but it does NOT trip the circuit breaker.
+  status: 'success' | 'error' | 'skipped' | 'unavailable';
   outputPreview: string;       // first 500 chars
   durationMs: number;
   toolUsed: string;
   errorMessage?: string;
   routeDecision?: AgentRouteDecision;
+  /** Phase 4: present when this was a multi-step orchestrated run. */
+  steps?: AgentRunStep[];
+}
+
+/** Phase 4 orchestration: one step within a multi-step run, for the run log. */
+export interface AgentRunStep {
+  index: number;
+  instruction: string;
+  // 'unavailable' mirrors AgentRunLog: a step whose only failure was a transient
+  // web outage. reduceStatus folds it to an 'unavailable' run (not 'error') so a
+  // multi-step agent is NOT auto-disabled by a transient outage either.
+  status: 'success' | 'error' | 'skipped' | 'unavailable';
+  durationMs: number;
+  outputPreview: string;
+  routeDecision?: AgentRouteDecision;
+}
+
+/** Phase 4 orchestration config on an agent. Absent = single-run (today). */
+export interface AgentOrchestrationConfig {
+  /** Ordered step instructions; ≥ 2 → runs as a linear chain. */
+  steps: string[];
+  /** Max steps to launch (clamped to a hard cap for the phantom-process ceiling). */
+  maxSteps?: number;
+  /** Total wall-clock budget in ms (clamped to a hard ceiling). */
+  totalTimeoutMs?: number;
+  /** G6: target character budget for the FINAL step (e.g. an X/Twitter digest).
+   *  v1 is a SOFT budget — baked into the final step's instruction. The hard
+   *  save-path guarantee (enforceCharLimit) + full plumbing through the create
+   *  flow are not wired yet; see DEFERRED.md. */
+  charLimit?: number;
 }

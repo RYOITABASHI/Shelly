@@ -4,9 +4,11 @@
  */
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
+import { detectRouteSignals } from './agent-router-scoring';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
+import { buildAgentPolicy } from './agent-policy';
 
 const MAX_CONCURRENT = 2;
 
@@ -18,6 +20,9 @@ const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
 
 type ToolCommandOptions = {
   autonomous: boolean;
+  /** B2: the AutonomyPolicy JSON passed to the driver via --policy-json (inline
+   *  arg, never a file the agent can read — preserves the §6 invariant). */
+  policyJson?: string;
 };
 
 function shellQuote(value: string): string {
@@ -60,10 +65,79 @@ export function selectAutonomousLocalModel(prompt: string): string {
 }
 
 /**
+ * The content-studio context block — source-registry dedup list, recent drafts,
+ * and content-studio/Obsidian git state — only helps the article pipeline. It
+ * was being prepended (up to ~20KB) to EVERY agent prompt, including ad-hoc
+ * `@agent` tasks, which forced the on-device model to prompt-process thousands
+ * of irrelevant tokens (a trivial "1+1は?" took ~2 min on the phone CPU). Gate
+ * it to agents that actually feed the content pipeline: the article evaluator,
+ * or an agent whose output lands in the content-studio project / Obsidian vault.
+ */
+export function agentUsesStudioContext(agent: Agent): boolean {
+  // The article evaluator is always content. Uses the authored tool (resolution
+  // to local/cli happens later) so autonomous resolution can't mis-gate it.
+  if (agent.tool?.type === 'ab-article-eval') return true;
+  // Output landing in the content-studio project / Obsidian vault → content task.
+  const out = (agent.outputPath || '').toLowerCase();
+  if (
+    out.includes('content-studio') ||
+    out.includes('obsidianvault') ||
+    out.includes('obsidian') ||
+    out.includes('/drafts/') ||
+    out.includes('30_build_log') ||
+    out.includes('90_log')
+  ) {
+    return true;
+  }
+  // Content-DRAFTING tasks (write an article/essay/blog/draft) benefit from the
+  // AI_CONTEXT + recent-drafts + source-dedup context. A plain web-COLLECTION
+  // task ("collect today's news") does NOT — and injecting ~30–50KB of
+  // content-studio context into its cloud request blew the model's token budget
+  // / tripped the fallback-marker detector, needlessly escalating Gemini→Codex.
+  // So gate on the drafting intent, NOT merely on autonomous/scheduled.
+  const prompt = (agent.prompt || '').toLowerCase();
+  return /記事|下書き|執筆|寄稿|コラム|論説|\bdraft\b|\bessay\b|\bblog\b|\barticle\b|\bcolumn\b/.test(prompt);
+}
+
+// Keep a-z 0-9 and CJK (Hiragana / Katakana / CJK ideographs / half-width kana);
+// everything else collapses to a separator. A pure-CJK agent name used to slug to
+// "" (the old [^a-z0-9] strip), producing "2026-06-24-.md" with an empty title.
+const SLUG_DROP_RE = /[^a-z0-9぀-ヿ㐀-鿿ｦ-ﾟ]+/g;
+
+/** Filesystem-safe slug from an agent name; falls back to the id when empty. */
+export function computeAgentSlug(name: string, fallback: string): string {
+  const s = (name || '')
+    .toLowerCase()
+    .replace(SLUG_DROP_RE, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return s || fallback;
+}
+
+/**
+ * Sanitize an agent output-filename template. Supports {date} {slug} {time}
+ * placeholders and `/` for date-folder layouts (e.g. "{date}/{slug}.md"). Strips
+ * absolute paths and `..` traversal so a template can't escape the output dir.
+ * Empty/absent → the legacy default "{date}-{slug}".
+ */
+export function sanitizeOutputTemplate(template: string | null | undefined): string {
+  const raw = (template ?? '').trim();
+  if (!raw) return '{date}-{slug}';
+  const cleaned = raw
+    .replace(/[^A-Za-z0-9 _./{}぀-ヿ㐀-鿿ｦ-ﾟ-]+/g, '')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter((seg) => seg && seg !== '.' && seg !== '..')
+    .join('/');
+  return cleaned || '{date}-{slug}';
+}
+
+/**
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -75,13 +149,38 @@ export function generateRunScript(agent: Agent): string {
   // Autonomous runs are OAuth/local only (Spec A §4): resolve `auto`→codex and
   // refuse api-key backends — there is no key in the autonomous agent path
   // (use OAuth-Codex/local, or the credential broker). Fail-closed.
+  //
+  // N1 exception: with the user's informed consent (opts.autonomousCloudConsent),
+  // a WEB-MANDATORY autonomous task may keep a keyed WEB backend (Gemini /
+  // Perplexity) — these are stateless completions, so the key authenticates the
+  // request and never reaches a model/shell. secret-guard still wins (a secret
+  // forces routeResolution.tool to local above, so consentWebTool is false then).
   let tool: ToolChoice = routeResolution.tool;
+  // P1: when an autonomous web-mandatory run keeps its keyed web backend, bake a
+  // Codex fallback into the on-disk script so the UNATTENDED scheduled fire (which
+  // runs the .sh directly via AlarmManager — no foreground TS ladder) still
+  // escalates web→Codex. Suppressed when the user opted to STOP on free-tier
+  // exhaustion (autonomousCloudStop), and when Codex isn't a valid autonomous tool.
+  let bakeWebCodexLadder = false;
   if (agent.autonomous) {
-    const resolved = resolveForAutonomous(tool);
-    if (!resolved) {
-      return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
+    const sig = detectRouteSignals(agent.prompt);
+    const consentWebTool =
+      opts.autonomousCloudConsent === true &&
+      sig.needsWeb &&
+      (tool.type === 'gemini-api' || tool.type === 'perplexity');
+    if (!consentWebTool) {
+      const resolved = resolveForAutonomous(tool);
+      if (!resolved) {
+        return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
+      }
+      tool = resolved;
+    } else {
+      // Bake the in-shell web→Codex fallback ONLY for the unattended on-disk
+      // script. The foreground TS ladder owns escalation per-attempt and passes
+      // suppressWebCodexBake so Codex isn't run twice (in-shell AND as the next
+      // ladder hop). Also suppressed when the user opted to STOP on exhaustion.
+      bakeWebCodexLadder = opts.autonomousCloudStop !== true && opts.suppressWebCodexBake !== true;
     }
-    tool = resolved;
   }
   if (agent.autonomous && tool.type === 'local' && !tool.model) {
     tool = { ...tool, model: selectAutonomousLocalModel(agent.prompt) };
@@ -97,20 +196,92 @@ export function generateRunScript(agent: Agent): string {
   const routeDecisionJson = JSON.stringify(routeDecision);
   const apiKeyEnvScrub = requiresApiKeyEnv(tool)
     ? ''
-    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY\n';
+    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY\n';
 
-  const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const slug = computeAgentSlug(agent.name, agentId);
+  const outputNameTemplate = sanitizeOutputTemplate(agent.outputTemplate);
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
-  const actionType = agent.action?.type ?? 'draft';
+  // Orchestration: non-final steps suppress the action so only the FINAL step
+  // drafts/notifies once (otherwise a 3-step chain fires 3 approval prompts).
+  const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
-  const escapedPrompt = agent.prompt.replace(/'/g, "'\\''");
+  // North Star fix: a web-research / collection agent otherwise receives the bare
+  // task utterance as a single user message with no output contract, so the backend
+  // DESCRIBES a workflow instead of EXECUTING the collection — it returns a design
+  // essay, not sourced results (observed on-device: "…ワークフローの設計。本稿では…").
+  // Prepend an explicit execution contract to the prompt. Every backend leads with
+  // escapedPrompt (perplexity/gemini/local/codex all `printf '%s' '${escapedPrompt}'`
+  // first), so this injects uniformly without per-backend system-message plumbing.
+  // Gated on needsWeb so non-research agents (code tasks, file summaries) are
+  // untouched (collectionContract === '' → byte-identical to the old prompt).
+  const promptSignals = detectRouteSignals(agent.prompt);
+  // (A) Output-language guard: deep-research models (Perplexity sonar-deep-research)
+  // ignore a soft "same language as the task" hint and answer in English even for a
+  // Japanese task. When the task is Japanese, lead with a forceful directive to write
+  // the whole answer in Japanese and TRANSLATE non-Japanese source material — language
+  // is orthogonal to the report format the model insists on, so it honours this even
+  // when it ignores the "bullet list only" shape. (Source URLs stay verbatim.)
+  const taskIsJapanese = /[ぁ-んァ-ヶ一-龥]/.test(agent.prompt);
+  const languageDirective = taskIsJapanese
+    ? 'OUTPUT LANGUAGE (REQUIRED): Write the ENTIRE response in Japanese (日本語). Any non-Japanese source material MUST be translated into natural Japanese and summarised in Japanese — never leave English paragraphs. Source URLs stay verbatim.\n\n'
+    : '';
+  const collectionContract = promptSignals.needsWeb
+    ? languageDirective + 'You are a research-collection agent. EXECUTE this task NOW using live web search — do NOT describe, design, or plan a workflow, and do NOT explain how it could be done. Return ONLY a Markdown bullet list, one line per source, each formatted exactly as:\n- [title](primary_source_url) — concise summary (max 200 characters)\nRules: include at least one item; cite real, verifiable PRIMARY-source URLs (papers, official sites, journals), never search-engine or aggregator links; output no preamble, headings, or closing remarks — only the list.\n\nTask:\n'
+    : '';
+  const escapedPrompt = (collectionContract + agent.prompt).replace(/'/g, "'\\''");
+  const injectStudioContext = agentUsesStudioContext(agent);
 
-  const toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
+  // B2 §6: the driver gates on the agent's configured autonomy level. Build the
+  // policy here (level from agent.autonomyLevel; default L2) and hand it to the
+  // driver via --policy-json so a configured L1/L3 agent isn't silently run at L2.
+  // canonicalRoot is re-anchored to the driver's --cwd at run time, so home is fine.
+  const agentPolicyJson = JSON.stringify(buildAgentPolicy(agent, home));
+  let toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
+    policyJson: agentPolicyJson,
   });
+  if (promptSignals.needsWeb) {
+    // North Star guard: a collection agent that "succeeded" but produced no source
+    // URL (the backend wrote a design essay rather than collecting) is a SOFT
+    // failure, not a green result. Mark BACKEND_ERROR_FILE so the escalation ladder
+    // retries with a stricter backend instead of silently drafting an essay into
+    // Obsidian. Runs BEFORE the web→Codex bake so that ladder picks it up. Only when
+    // the backend didn't already error (no double-mark). 'https?://' is precise: a
+    // contract-compliant result carries real links, an essay does not.
+    toolCommand = `${toolCommand}
+if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_FILE" 2>/dev/null; then
+  printf '\\n%s\\n' 'Collection produced no primary-source links (the backend described a workflow instead of collecting). Marked as a soft failure so the run escalates rather than drafting an essay.' >> "$RESULT_FILE"
+  touch "$BACKEND_ERROR_FILE"
+fi`;
+  }
+  if (bakeWebCodexLadder) {
+    // The web backend already touches BACKEND_ERROR_FILE (+ TRANSIENT_ERROR_FILE on
+    // a 429/5xx/network failure) when it fails. Mirror the foreground ladder
+    // [web, Codex]: on any web failure, escalate to Codex. Codex re-marks on its
+    // own failure (a usage-limit refusal → transient). If Codex is absent, keep
+    // the web verdict (preserving its transient/hard classification).
+    toolCommand = `${toolCommand}
+if [ -f "$BACKEND_ERROR_FILE" ]; then
+  WEB_WAS_TRANSIENT=0
+  [ -f "$TRANSIENT_ERROR_FILE" ] && WEB_WAS_TRANSIENT=1
+  rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
+  if command -v codex >/dev/null 2>&1; then
+    ${codexExecCommand(escapedPrompt, '"$RESULT_FILE"')}
+    # North Star guard (baked path): the no-URL check above ran before this Codex
+    # escalation, so re-check here — a sourceless Codex essay must also fail-closed
+    # rather than ship to the vault on the unattended (alarm-fired) run.
+    if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_FILE" 2>/dev/null; then
+      touch "$BACKEND_ERROR_FILE"
+    fi
+  else
+    touch "$BACKEND_ERROR_FILE"
+    [ "$WEB_WAS_TRANSIENT" = "1" ] && touch "$TRANSIENT_ERROR_FILE"
+  fi
+fi`;
+  }
   const auditMirrorSdcardEligible = agent.autonomous === true && tool.type === 'cli';
 
   return `#!/bin/bash
@@ -120,12 +291,14 @@ SHELLY_AGENT_SCRIPT_VERSION=${AGENT_SCRIPT_VERSION}
 set -euo pipefail
 
 AGENT_ID=${shellQuote(agentId)}
+AGENT_NAME=${shellQuote(agent.name)}
 RESULT_FILE=${shellQuote(resultFile)}
 LOCK_FILE=${shellQuote(lockFile)}
 LOG_DIR=${shellQuote(logDir)}
 TIMEOUT=${DEFAULT_TIMEOUT_SEC}
 OUTPUT_DIR=${shellQuote(outputDir)}
 SLUG=${shellQuote(slug)}
+OUTPUT_NAME_TEMPLATE=${shellQuote(outputNameTemplate)}
 TOOL_LABEL=${shellQuote(toolLabel)}
 ROUTE_DECISION_JSON=${shellQuote(routeDecisionJson)}
 ENV_FILE=${shellQuote(envFile)}
@@ -152,9 +325,17 @@ ACTION_DISPATCH_MESSAGE=""
 REGISTRY_LOCK=""
 REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
+TRANSIENT_ERROR_FILE="$RESULT_FILE.transient-error"
 LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
+SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
+STUDIO_CONTEXT=${injectStudioContext ? '1' : '0'}
+# General collection agents (non content-studio) honour the global output-target
+# setting and a clean <base>/<topic?>/<date>/<date>_<title>.md layout. Studio
+# agents keep their explicit paths + keyword Obsidian routing.
+USE_GLOBAL_OUTPUT=${injectStudioContext ? '0' : '1'}
+AGENT_AUTONOMOUS=${agent.autonomous === true ? '1' : '0'}
 
 START_TIME=$(date +%s)
 
@@ -248,6 +429,9 @@ write_failure_log() {
   END_TIME=$(date +%s)
   DURATION=$(( (END_TIME - START_TIME) * 1000 ))
   TS=$(date +%s)
+  # Deliberately bounded producer (a fixed short message + $PATH) — never exceeds
+  # 500 bytes, so this is the one safe printf-into-head -c 500 (no SIGPIPE/141).
+  # Do NOT pipe unbounded output (model results) into head; head a file instead.
   PREVIEW=$(printf 'Agent script failed before producing a result. exit=%s line=%s. PATH=%s' "$code" "$line" "$PATH" | head -c 500 | tr '\\n' ' ')
   PREVIEW_JSON=$(json_escape_text "$PREVIEW")
   TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
@@ -318,15 +502,36 @@ json_string_file() {
   printf '"'
 }
 
+# Strip the autonomous driver's structured telemetry (AUDIT/GATE/protocol/STDERR/
+# escalation) from a result file so the user-facing preview shows real content,
+# never the internal driver_start JSON. Backends that write a plain answer
+# (local/perplexity/gemini) have no such lines, so this is a harmless no-op for
+# them. Whitespace-collapsed and length-capped for a notification body.
+clean_result_preview() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  # Filter the driver telemetry into a temp file FIRST, then head THAT file.
+  # Piping sed directly into "head -c 500" SIGPIPEs sed the moment head closes the
+  # pipe early (any cleaned result > 500 bytes — i.e. every real answer); under
+  # 'set -euo pipefail' that 141 propagates and aborts the whole run. head reading
+  # a regular file has no upstream producer to signal, so it is abort-safe.
+  cleaned="$file.preview"
+  sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null > "$cleaned" || true
+  head -c 500 "$cleaned" 2>/dev/null | tr '\\n' ' '
+  rm -f "$cleaned"
+}
+
 write_native_notification_request() {
   status="$1"
   preview="$2"
   status_json=$(json_escape_text "$status")
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
+  agent_name_json=$(json_escape_text "$AGENT_NAME")
+  tool_label_json=$(json_escape_text "$TOOL_LABEL")
   tmp="$ACTION_NOTIFY_FILE.tmp"
   cat > "$tmp" << NOTIFYEOF
-{"agentId":"$agent_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
+{"agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","status":"$status_json","preview":"$preview_json","timestamp":$(date +%s)}
 NOTIFYEOF
   mv "$tmp" "$ACTION_NOTIFY_FILE"
 }
@@ -408,6 +613,8 @@ write_action_approval_request() {
   mkdir -p "$ACTION_APPROVAL_DIR" "$ACTION_APPROVAL_REPLY_DIR" "$LOG_DIR"
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
+  agent_name_json=$(json_escape_text "$AGENT_NAME")
+  tool_label_json=$(json_escape_text "$TOOL_LABEL")
   approval_type_json=$(json_escape_text "$approval_type")
   destination_json=$(json_escape_text "$destination_host")
   command_json=$(json_escape_text "$ACTION_COMMAND")
@@ -419,7 +626,7 @@ write_action_approval_request() {
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -491,9 +698,47 @@ register_source_urls() {
 
 save_draft_result() {
   result_file="$1"
-  mkdir -p "$OUTPUT_DIR"
   DATE=$(date +%Y-%m-%d)
-  SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"
+  TIME=$(date +%H%M%S)
+
+  # General collection agents: write to the user-chosen destination with a clean,
+  # findable layout <base>/<topic?>/<date>/<date>_<title>.md. The .sh sources
+  # ~/.shelly/agents/.env, so these globals (written by Settings) are in scope.
+  # Default target 'local' lands in $HOME/agent-output (NOT the old buried
+  # ~/.shelly/agents/<name>/output.md path that was hard to find).
+  if [ "\${USE_GLOBAL_OUTPUT:-0}" = "1" ]; then
+    case "\${SHELLY_AGENT_OUTPUT_TARGET:-local}" in
+      obsidian)
+        OUT_BASE="\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}"
+        [ -n "\${SHELLY_AGENT_TOPIC_FOLDER:-}" ] && OUT_BASE="$OUT_BASE/$SHELLY_AGENT_TOPIC_FOLDER"
+        ;;
+      custom)
+        OUT_BASE="\${SHELLY_AGENT_CUSTOM_PATH:-$HOME/agent-output}"
+        [ -n "\${SHELLY_AGENT_TOPIC_FOLDER:-}" ] && OUT_BASE="$OUT_BASE/$SHELLY_AGENT_TOPIC_FOLDER"
+        ;;
+      *)
+        OUT_BASE="$HOME/agent-output"
+        ;;
+    esac
+    SAVED_FILE="$OUT_BASE/$DATE/\${DATE}_$SLUG.md"
+    mkdir -p "$(dirname "$SAVED_FILE")"
+    cp "$result_file" "$SAVED_FILE"
+    register_source_urls "$result_file"
+    return 0
+  fi
+
+  # Content-studio agents: keep the explicit per-agent OUTPUT_DIR + template, and
+  # the keyword-routed Obsidian mirror below.
+  # Resolve the output-filename template ({date}/{slug}/{time}); '/' yields a
+  # date-folder layout. SLUG/DATE/TIME contain no '|' so it is a safe sed
+  # delimiter. The template was sanitized in TS (no leading '/' or '..').
+  REL_NAME=$(printf '%s' "$OUTPUT_NAME_TEMPLATE" | sed -e "s|{date}|$DATE|g" -e "s|{slug}|$SLUG|g" -e "s|{time}|$TIME|g")
+  case "$REL_NAME" in
+    *.md|*.markdown|*.txt) ;;
+    *) REL_NAME="$REL_NAME.md" ;;
+  esac
+  SAVED_FILE="$OUTPUT_DIR/$REL_NAME"
+  mkdir -p "$(dirname "$SAVED_FILE")"
   cp "$result_file" "$SAVED_FILE"
 
   if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
@@ -506,8 +751,9 @@ save_draft_result() {
       *images/prompts*) OBSIDIAN_TARGET="60_Experiments/Image_Prompts" ;;
       *evals*) OBSIDIAN_TARGET="90_Log/Agent_Evals" ;;
     esac
-    mkdir -p "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET"
-    cp "$SAVED_FILE" "$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$DATE-$SLUG.md"
+    OBSIDIAN_DEST="$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$REL_NAME"
+    mkdir -p "$(dirname "$OBSIDIAN_DEST")"
+    cp "$SAVED_FILE" "$OBSIDIAN_DEST"
   fi
 
   register_source_urls "$result_file"
@@ -520,10 +766,28 @@ dispatch_agent_action() {
   ACTION_DISPATCH_MESSAGE=""
 
   case "$ACTION_TYPE" in
+    __suppressed__)
+      # Orchestration non-final step: still save the draft result for the next
+      # step to read, but DO NOT request approval or fire a notification.
+      save_draft_result "$result_file" 2>/dev/null || true
+      return 0
+      ;;
     ""|draft)
-      write_action_approval_request "draft" "$preview" "$result_file"
-      wait_action_approval "draft" || return 1
+      # N2: autonomous agents auto-approve a draft→vault save. It is a local file
+      # write only (low-risk) — cli/webhook/notify still require an approval tap,
+      # and secret-guard has already forced the run on-device, so nothing leaves
+      # the device unapproved. Manual (@agent) runs keep the confirm card.
+      if [ "\${AGENT_AUTONOMOUS:-0}" != "1" ]; then
+        write_action_approval_request "draft" "$preview" "$result_file"
+        wait_action_approval "draft" || return 1
+      fi
       save_draft_result "$result_file"
+      # Post ONE readable completion card after the draft is saved, so the run
+      # gives the user closure (matching the notify action). The preview is
+      # already telemetry-stripped. Orchestration non-final steps never reach here
+      # (they use the __suppressed__ branch above), so a chain still ends with a
+      # single completion, not one per step.
+      write_native_notification_request "success" "$preview" || true
       return 0
       ;;
     notify)
@@ -658,13 +922,20 @@ const req = client.request({
   res.setEncoding('utf8');
   res.on('data', (chunk) => process.stdout.write(chunk));
   res.on('end', () => {
-    process.exitCode = res.statusCode && res.statusCode >= 400 ? 22 : 0;
+    const code = res.statusCode || 0;
+    if (code < 400) {
+      process.exitCode = 0;            // success (2xx/3xx)
+    } else if (code === 429 || code >= 500) {
+      process.exitCode = 23;           // transient: rate-limited / server overloaded
+    } else {
+      process.exitCode = 22;           // permanent: other 4xx (bad request, auth, etc.)
+    }
   });
 });
 
 req.on('error', (err) => {
   console.error(err && err.message ? err.message : String(err));
-  process.exitCode = 1;
+  process.exitCode = 23;               // network/DNS/reset → treat as transient (retryable)
 });
 if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
   req.setTimeout(timeoutSeconds * 1000, () => {
@@ -679,6 +950,47 @@ NODEEOF
 
   echo "No HTTP client available: node is missing or unavailable." > "$err_file"
   return 127
+}
+
+# Wraps http_post_json with bounded retry on transient failures (exit 23 =
+# HTTP 429 / 5xx / network error / timeout). Permanent failures (exit 22 =
+# other 4xx) and success (0) return immediately — no point retrying a 400/401.
+# Up to 3 attempts total, sleeping 2s then 4s between them (no sleep after the
+# final attempt), so a brief upstream overload (e.g. Gemini "503 high demand,
+# UNAVAILABLE") rides through unattended without a long stall.
+http_post_json_retry() {
+  _hpr_url="$1"
+  _hpr_body="$2"
+  _hpr_out="$3"
+  _hpr_err="$4"
+  _hpr_attempt=1
+  _hpr_max=3
+  _hpr_delay=2
+  while : ; do
+    http_post_json "$_hpr_url" "$_hpr_body" "$_hpr_out" "$_hpr_err"
+    _hpr_rc=$?
+    if [ "$_hpr_rc" -ne 23 ]; then
+      return $_hpr_rc
+    fi
+    if [ "$_hpr_attempt" -ge "$_hpr_max" ]; then
+      return 23
+    fi
+    echo "[Shelly] transient HTTP failure (attempt $_hpr_attempt/$_hpr_max), retrying in \${_hpr_delay}s..." >> "$_hpr_err"
+    sleep "$_hpr_delay"
+    _hpr_attempt=$((_hpr_attempt + 1))
+    _hpr_delay=$((_hpr_delay * 2))
+  done
+}
+
+# Records a backend failure. Always touches BACKEND_ERROR_FILE so the run is not
+# finalized as success; additionally touches TRANSIENT_ERROR_FILE when the HTTP
+# exit code is 23 (429 / 5xx / network / timeout, after retry) so the run is
+# reported as 'unavailable' rather than a hard 'error'.
+mark_http_failure() {
+  touch "$BACKEND_ERROR_FILE"
+  if [ "\${1:-0}" -eq 23 ]; then
+    touch "$TRANSIENT_ERROR_FILE"
+  fi
 }
 
 http_get_ok() {
@@ -906,12 +1218,12 @@ local_llm_wait_for_no_active_users() {
 local_llm_runtime_profile() {
   model_name="$(printf '%s' "\${1:-}" | tr '[:upper:]' '[:lower:]')"
   case "$model_name" in
-    *0.8b*|*0-8b*) printf '1024 2 600\\n' ;;
-    *1.7b*|*1-7b*) printf '1024 3 300\\n' ;;
-    *2b*) printf '1024 4 180\\n' ;;
-    *4b*) printf '768 4 60\\n' ;;
-    *9b*|*8b*) printf '512 3 30\\n' ;;
-    *) printf '1024 3 180\\n' ;;
+    *0.8b*|*0-8b*) printf '8192 2 1800\\n' ;;
+    *1.7b*|*1-7b*) printf '8192 3 1800\\n' ;;
+    *2b*) printf '8192 4 1800\\n' ;;
+    *4b*) printf '4096 4 900\\n' ;;
+    *9b*|*8b*) printf '4096 3 600\\n' ;;
+    *) printf '4096 3 900\\n' ;;
   esac
 }
 
@@ -987,6 +1299,17 @@ find_llama_server_bin() {
   if [ -n "\${LLAMA_SERVER_BIN:-}" ] && [ -x "$LLAMA_SERVER_BIN" ]; then
     printf '%s\\n' "$LLAMA_SERVER_BIN"
     return 0
+  fi
+  # T3: prefer the app-installed REAL ELF via its .realpath metadata. The
+  # $HOME/.local/bin/llama-server entry is a wrapper SCRIPT (not an ELF), so the
+  # linker64 launch below needs the real binary; direct-exec of the wrapper in
+  # the agent's exec context fails to resolve shared libs (cold-start blocker C).
+  if [ -s "$HOME/.local/bin/llama-server.realpath" ]; then
+    _real_bin="$(cat "$HOME/.local/bin/llama-server.realpath" 2>/dev/null || true)"
+    if [ -x "$_real_bin" ]; then
+      printf '%s\\n' "$_real_bin"
+      return 0
+    fi
   fi
   if command -v llama-server >/dev/null 2>&1; then
     command -v llama-server
@@ -1293,7 +1616,40 @@ find_local_llm_model() {
     fi
   done
 
+  # T1: installed-aware fallback. The requested tier is not present; rather than
+  # fail (which blocks ALL autostart — root cause B), use the first installed
+  # Qwen Q4_K_M model. llama.cpp serves whatever it loads regardless of the
+  # request's model field, and the caller re-derives the alias + readiness check
+  # from the returned path, so a tier substitution is safe.
+  for dir in "$HOME/models" "$HOME" "$HOME/.local/share/shelly/models" "/sdcard/Download" "/sdcard/models" "/sdcard/llama" "/sdcard/Documents/models" "/sdcard/Models"; do
+    [ -d "$dir" ] || continue
+    found=$(find "$dir" -maxdepth 2 -type f -name '*.gguf' 2>/dev/null | grep -iE 'qwen3?[._-].*q4_k_m' | head -n 1 || true)
+    if [ -n "$found" ]; then
+      printf '%s\\n' "$found"
+      return 0
+    fi
+  done
+
   return 1
+}
+
+# Remove a stale local-LLM start lock so a lock leaked by a killed starter cannot
+# permanently block autostart (root cause A). Stale = holder PID dead, or no live
+# holder and older than a short just-created grace window. The lock dir holds
+# owner.pid written by the acquirer.
+local_llm_clear_stale_start_lock() {
+  _ld="$1"
+  [ -d "$_ld" ] || return 0
+  _owner="$(cat "$_ld/owner.pid" 2>/dev/null || true)"
+  if [ -n "$_owner" ] && kill -0 "$_owner" 2>/dev/null; then
+    return 0
+  fi
+  _now="$(date +%s 2>/dev/null || echo 0)"
+  _mtime="$(stat -c %Y "$_ld" 2>/dev/null || echo 0)"
+  if [ -z "$_owner" ] && [ "$_now" -gt 0 ] && [ "$_mtime" -gt 0 ] && [ "$((_now - _mtime))" -lt 20 ]; then
+    return 0
+  fi
+  rm -rf "$_ld" 2>/dev/null || true
 }
 
 ensure_local_llm_server() {
@@ -1303,11 +1659,17 @@ ensure_local_llm_server() {
   : > "$reason_file"
 
   if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
-    if local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
-      local_llm_touch_activity
-      return 0
-    fi
-    echo "auto-start will restart llama-server: active model does not match $model_name" > "$reason_file"
+    # Reuse ANY already-running local server, regardless of which model tier it
+    # serves. llama.cpp serves its loaded model irrespective of the request's
+    # "model" field, so a mismatch is harmless. Restarting a healthy in-app-started
+    # server was the root cause of on-device failures: the in-app "Start" launches
+    # llama-server through a linker64 + LLAMA_LIB_PATH wrapper, but the agent's own
+    # start exec's the binary directly and cannot relaunch it — so a tier mismatch
+    # (scorer wants 0.8B, user has 2B running) made the agent kill the working
+    # server and fail to bring it back. Reusing whatever is up is strictly better
+    # than a dead server.
+    local_llm_touch_activity
+    return 0
   fi
 
   if ! local_llm_is_loopback_url "$base_url"; then
@@ -1320,6 +1682,7 @@ ensure_local_llm_server() {
   fi
 
   lock_dir="$LOCKS_DIR/local-llm-server-start.lock"
+  local_llm_clear_stale_start_lock "$lock_dir"
   lock_acquired=0
   _i=0
 	while [ "$_i" -lt 30 ]; do
@@ -1327,8 +1690,9 @@ ensure_local_llm_server() {
 	    lock_acquired=1
 	    break
 	  fi
-	  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
-	    local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+	  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+	    # Another starter won the race and a server is up — reuse it (any tier; see
+	    # the top reuse path). Consistent with not killing a healthy server.
 	    local_llm_touch_activity
 	    return 0
 	  fi
@@ -1336,14 +1700,15 @@ ensure_local_llm_server() {
 	  _i=$((_i + 1))
 	done
   if [ "$lock_acquired" != "1" ]; then
-    echo "auto-start skipped: could not acquire start lock $lock_dir" > "$reason_file"
+    echo "auto-start skipped: could not acquire start lock $lock_dir (held by a live starter)" > "$reason_file"
     return 1
   fi
+  echo $$ > "$lock_dir/owner.pid" 2>/dev/null || true
 
-  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
-    local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+  if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err"; then
+    # Server came up while we held the lock — reuse it (any tier).
     local_llm_touch_activity
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
     return 0
   fi
 
@@ -1351,14 +1716,14 @@ ensure_local_llm_server() {
   if [ -z "$server_bin" ]; then
     if [ "\${LOCAL_LLM_INSTALL_LLAMA_SERVER:-0}" != "1" ]; then
       echo "auto-start failed: llama-server binary not found in PATH, $HOME/.local/bin, or $HOME/bin" > "$reason_file"
-      rmdir "$lock_dir" 2>/dev/null || true
+      rm -rf "$lock_dir" 2>/dev/null || true
       return 1
     fi
     install_result=$(install_llama_server_bin || true)
     server_bin=$(find_llama_server_bin || true)
     if [ -z "$server_bin" ]; then
       echo "auto-start failed: llama-server binary not found and auto-install did not produce an executable. $install_result" > "$reason_file"
-      rmdir "$lock_dir" 2>/dev/null || true
+      rm -rf "$lock_dir" 2>/dev/null || true
       return 1
     fi
   fi
@@ -1366,7 +1731,7 @@ ensure_local_llm_server() {
   model_path=$(find_local_llm_model "$model_name" || true)
   if [ -z "$model_path" ]; then
     echo "auto-start failed: GGUF model not found for $model_name. Set LOCAL_LLM_MODEL_PATH or place it under $HOME/models or /sdcard/Download." > "$reason_file"
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
     return 1
   fi
 
@@ -1376,12 +1741,21 @@ ensure_local_llm_server() {
   mkdir -p "$(dirname "$log_file")" "$(dirname "$pid_file")"
   if ! local_llm_stop_server "$pid_file"; then
     echo "auto-start skipped: another local LLM request is still active; refusing to restart llama-server" > "$reason_file"
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
     return 1
   fi
   alias_name="\${model_path##*/}"
   alias_name="\${alias_name%.gguf}"
-  profile="$(local_llm_runtime_profile "$model_name")"
+  # T1: if find_local_llm_model fell back to a different installed tier, the
+  # readiness check below must match the model we actually load (alias_name),
+  # NOT the requested model_name — else the just-started 2B server would be
+  # rejected for not being the requested 8B and the start would "time out".
+  _req_norm="$(printf '%s' "$model_name" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+  _got_norm="$(printf '%s' "$alias_name" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+  if [ "$_req_norm" != "$_got_norm" ]; then
+    echo "note: requested model $model_name is not installed; using installed $alias_name" >> "$reason_file"
+  fi
+  profile="$(local_llm_runtime_profile "$alias_name")"
   set -- $profile
   default_ctx_size="$1"
   default_threads="$2"
@@ -1391,17 +1765,47 @@ ensure_local_llm_server() {
   idle_timeout="\${LOCAL_LLM_IDLE_TIMEOUT_SECONDS:-$default_idle_timeout}"
   local_llm_touch_activity
 
-  nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
-  echo $! > "$pid_file"
+  # T3: app-installed llama.cpp needs its shared libs on LD_LIBRARY_PATH and a
+  # linker64 launch (the same mechanism as the in-app Start). Without it the
+  # agent's exec context can't resolve the .so files and cold-start fails
+  # (blocker C). Self-contained binaries (PATH / agent-installed wrapper) have an
+  # empty llama_lib_path and fall through to a plain exec.
+  # The binary's OWN dir holds all its .so files (libggml*, libllama-server-impl,
+  # …). Put that absolute dir FIRST on LD_LIBRARY_PATH so lib resolution never
+  # depends on the find succeeding in the agent's exec context (where it returned
+  # empty, dropping to a libless plain exec → "CANNOT LINK EXECUTABLE … library
+  # not found"). The find still contributes any sibling lib dirs. Trigger the
+  # linker64 path whenever the binary lives under .local/llama.cpp.
+  server_dir="$(dirname "$server_bin")"
+  llama_lib_path="$(find "$HOME/.local/llama.cpp" -type f \\( -name '*.so' -o -name '*.so.*' \\) -exec dirname {} \\; 2>/dev/null | sort -u | tr '\\n' ':')"
+  use_linker64=0
+  case "$server_bin" in "$HOME/.local/llama.cpp"/*) use_linker64=1 ;; esac
+  if [ -n "$llama_lib_path" ]; then use_linker64=1; fi
+  if [ "$use_linker64" = 1 ] && [ -x /system/bin/linker64 ]; then
+    (
+      cd "$server_dir" 2>/dev/null || true
+      # The agent exec context sets LD_PRELOAD=libexec_wrapper.so (shelly-exec.c);
+      # inherited into the linker64 launch it breaks llama-server's own .so
+      # resolution ("library libllama-server-impl.so not found"). The in-app Start
+      # unsets it for the same reason — mirror that.
+      unset LD_PRELOAD
+      export LD_LIBRARY_PATH="$server_dir:\${llama_lib_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+      nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      echo $! > "$pid_file"
+    )
+  else
+    nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+    echo $! > "$pid_file"
+  fi
 
   ready_seconds="\${LOCAL_LLM_START_TIMEOUT_SECONDS:-90}"
   _i=0
   while [ "$_i" -lt "$ready_seconds" ]; do
     if local_llm_ready "$base_url" 3 "$TMP_DIR/local-llm-ready-$AGENT_ID.err" &&
-      local_llm_server_matches_model "$base_url" "$model_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
+      local_llm_server_matches_model "$base_url" "$alias_name" 3 "$TMP_DIR/local-llm-models-$AGENT_ID.err"; then
       local_llm_touch_activity
       local_llm_start_idle_watcher "$(cat "$pid_file" 2>/dev/null || true)" "$idle_timeout" "$pid_file" "$log_file"
-      rmdir "$lock_dir" 2>/dev/null || true
+      rm -rf "$lock_dir" 2>/dev/null || true
       return 0
     fi
     sleep 1
@@ -1417,7 +1821,7 @@ ensure_local_llm_server() {
     echo "log tail:"
     tail -n 40 "$log_file" 2>/dev/null || true
   } > "$reason_file"
-  rmdir "$lock_dir" 2>/dev/null || true
+  rm -rf "$lock_dir" 2>/dev/null || true
   return 1
 }
 
@@ -1447,15 +1851,49 @@ if (!content) {
   } catch (_) {}
 }
 if (!content) {
+  // Reasoning models (Qwen3 thinking) may leave message.content empty and put the
+  // text in reasoning_content (esp. when truncated at max_tokens). Surface that
+  // rather than dumping the raw JSON envelope into the result.
+  try {
+    content = data?.choices?.[0]?.message?.reasoning_content;
+  } catch (_) {}
+}
+if (!content) {
   try {
     const parts = data?.candidates?.[0]?.content?.parts || [];
     content = parts.map((part) => part && part.text ? part.text : '').filter(Boolean).join('\\n');
   } catch (_) {}
 }
 
+// Perplexity (sonar) returns its source URLs in a SIDECAR field — search_results
+// (array of {title,url,date}) or legacy citations (array of url strings) — never
+// inline in message.content (which carries only [1][2] markers). Append them as a
+// "## Sources" list so the result actually carries the primary-source URLs (the
+// collection goal) AND the no-URL guard doesn't false-fire and escalate to Codex.
+// Data-driven: other backends lack these keys, so this is a no-op for them.
+let sourcesBlock = '';
+try {
+  const sr = Array.isArray(data && data.search_results) && data.search_results.length ? data.search_results : null;
+  const cites = !sr && Array.isArray(data && data.citations) && data.citations.length ? data.citations : null;
+  const entries = sr || cites || [];
+  const seen = {};
+  const lines = [];
+  for (const e of entries) {
+    if (lines.length >= 20) break;
+    const url = typeof e === 'string' ? e : (e && typeof e.url === 'string' ? e.url : '');
+    const clean = url.trim().replace(/[).,;]+$/, '');
+    const isUrl = clean.slice(0, 7) === 'http://' || clean.slice(0, 8) === 'https://';
+    if (!isUrl || seen[clean]) continue;
+    seen[clean] = 1;
+    const title = (e && typeof e === 'object' && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : clean;
+    lines.push('[' + (lines.length + 1) + '] ' + title + ' — ' + clean);
+  }
+  if (lines.length) sourcesBlock = '\\n\\n## Sources\\n' + lines.join('\\n');
+} catch (_) {}
+
 const err = data?.error || data?.message;
 if (content) {
-  process.stdout.write(content);
+  process.stdout.write(content + sourcesBlock);
 } else if (err) {
   process.stdout.write('API error: ' + (typeof err === 'string' ? err : JSON.stringify(err)));
   process.exit(2);
@@ -1497,14 +1935,54 @@ if not content:
         content = None
 if not content:
     try:
+        content = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content")
+    except Exception:
+        content = None
+if not content:
+    try:
         parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
         content = "\\n".join(part.get("text", "") for part in parts if part.get("text"))
     except Exception:
         content = None
 
+# Perplexity sources live in a sidecar field (search_results / citations), not
+# inline in content — mirror the node branch and append them as "## Sources".
+sources_block = ""
+try:
+    entries = None
+    sr = data.get("search_results")
+    if isinstance(sr, list) and sr:
+        entries = sr
+    else:
+        cites = data.get("citations")
+        if isinstance(cites, list) and cites:
+            entries = cites
+    if entries:
+        seen = set()
+        lines = []
+        for e in entries:
+            if len(lines) >= 20:
+                break
+            if isinstance(e, str):
+                url, title = e, None
+            elif isinstance(e, dict):
+                url, title = e.get("url") or "", e.get("title")
+            else:
+                continue
+            clean = url.strip().rstrip(").,;")
+            if not (clean.startswith("http://") or clean.startswith("https://")) or clean in seen:
+                continue
+            seen.add(clean)
+            label = title.strip() if isinstance(title, str) and title.strip() else clean
+            lines.append("[" + str(len(lines) + 1) + "] " + label + " — " + clean)
+        if lines:
+            sources_block = "\\n\\n## Sources\\n" + "\\n".join(lines)
+except Exception:
+    sources_block = ""
+
 err = data.get("error") or data.get("message")
 if content:
-    sys.stdout.write(content)
+    sys.stdout.write(content + sources_block)
 elif err:
     sys.stdout.write("API error: " + (err if isinstance(err, str) else json.dumps(err, ensure_ascii=False)))
     raise SystemExit(2)
@@ -1564,46 +2042,55 @@ SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-regis
 mkdir -p "$(dirname "$SOURCE_REGISTRY_FILE")"
 touch "$SOURCE_REGISTRY_FILE"
 SOURCE_CONTEXT=""
-if [ -s "$SOURCE_REGISTRY_FILE" ]; then
-  SOURCE_CONTEXT=$(printf '\\n\\nKnown source URLs already used. Avoid duplicates unless essential:\\n'; tail -n 120 "$SOURCE_REGISTRY_FILE" | awk -F '\\t' '{ if ($4 != "") print "- " $4 " (" $1 ", " $2 ")" }')
-fi
 LOCAL_CONTEXT_FILE="$TMP_DIR/local-context-$AGENT_ID.txt"
-{
-  echo
-  echo "## Local project context"
-  if [ -f "$PROJECT_DIR/AI_CONTEXT.md" ]; then
-    echo
-    echo "### AI_CONTEXT.md"
-    head -c 8000 "$PROJECT_DIR/AI_CONTEXT.md" || true
-    echo
+# Studio context (source-registry dedup + recent drafts + content-studio/Obsidian
+# git state) is only built for content-pipeline agents. For ad-hoc @agent tasks
+# it would prepend ~20KB of irrelevant tokens and stall the on-device model.
+if [ "\${STUDIO_CONTEXT:-0}" = "1" ]; then
+  if [ -s "$SOURCE_REGISTRY_FILE" ]; then
+    SOURCE_CONTEXT=$(printf '\\n\\nKnown source URLs already used. Avoid duplicates unless essential:\\n'; tail -n 120 "$SOURCE_REGISTRY_FILE" | awk -F '\\t' '{ if ($4 != "") print "- " $4 " (" $1 ", " $2 ")" }')
   fi
-  for dir in "$PROJECT_DIR/drafts/x" "$PROJECT_DIR/sources/x" "$PROJECT_DIR/drafts/articles" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/30_Build_Log" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/90_Log/Agent_Output"; do
-    [ -d "$dir" ] || continue
+  {
     echo
-    echo "### Recent files: $dir"
-    find "$dir" -type f -name '*.md' 2>/dev/null | sort | tail -n 6 | while read -r file; do
+    echo "## Local project context"
+    if [ -f "$PROJECT_DIR/AI_CONTEXT.md" ]; then
       echo
-      echo "#### $file"
-      head -c 3000 "$file" || true
+      echo "### AI_CONTEXT.md"
+      head -c 8000 "$PROJECT_DIR/AI_CONTEXT.md" || true
       echo
+    fi
+    for dir in "$PROJECT_DIR/drafts/x" "$PROJECT_DIR/sources/x" "$PROJECT_DIR/drafts/articles" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/30_Build_Log" "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}/90_Log/Agent_Output"; do
+      [ -d "$dir" ] || continue
+      echo
+      echo "### Recent files: $dir"
+      find "$dir" -type f -name '*.md' 2>/dev/null | sort | tail -n 6 | while read -r file; do
+        echo
+        echo "#### $file"
+        head -c 3000 "$file" || true
+        echo
+      done
     done
-  done
-  for repo in "$HOME/hw" "$HOME/projects/shelly-content-studio"; do
-    [ -d "$repo/.git" ] || continue
-    echo
-    echo "### Recent git log: $repo"
-    git -C "$repo" log --oneline -8 2>/dev/null || true
-    echo
-    echo "### Current git status: $repo"
-    git -C "$repo" status --short 2>/dev/null || true
-  done
-} > "$LOCAL_CONTEXT_FILE"
-if [ -s "$LOCAL_CONTEXT_FILE" ]; then
-  SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
+    for repo in "$HOME/hw" "$HOME/projects/shelly-content-studio"; do
+      [ -d "$repo/.git" ] || continue
+      echo
+      echo "### Recent git log: $repo"
+      git -C "$repo" log --oneline -8 2>/dev/null || true
+      echo
+      echo "### Current git status: $repo"
+      git -C "$repo" status --short 2>/dev/null || true
+    done
+  } > "$LOCAL_CONTEXT_FILE"
+  if [ -s "$LOCAL_CONTEXT_FILE" ]; then
+    SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
+  fi
 fi
 
-# Global concurrency check
-ACTIVE_COUNT=$(find "$LOCKS_DIR" -name '*.pid' -exec sh -c 'kill -0 $(cat "{}") 2>/dev/null && echo 1' \\; | wc -l)
+# Global concurrency check. NOTE: must NOT use find -exec sh -c with a {} inside
+# the sh -c string — Android toybox find does not substitute {} there, so it ran
+# cat on a literal "{}" ("cat: {}: No such file or directory") and, under
+# set -euo pipefail, aborted the whole run once any .pid lock existed. A
+# find | while-read loop substitutes correctly and is abort-safe.
+ACTIVE_COUNT=$({ find "$LOCKS_DIR" -name '*.pid' 2>/dev/null || true; } | while IFS= read -r _pidf; do _p="$(cat "$_pidf" 2>/dev/null || true)"; if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then echo 1; fi; done | wc -l | tr -d ' ')
 if [ "$ACTIVE_COUNT" -ge "$MAX_CONCURRENT" ]; then
   TS=$(date +%s)
   TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
@@ -1631,7 +2118,7 @@ fi
 echo $$ > "$LOCK_FILE"
 
 # Execute tool
-rm -f "$BACKEND_ERROR_FILE"
+rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
 ${toolCommand}
 
 # Check result
@@ -1639,7 +2126,7 @@ END_TIME=$(date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
 if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
-  PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ')
+  PREVIEW=$(clean_result_preview "$RESULT_FILE")
   STATUS="success"
   ERROR_MESSAGE=""
 
@@ -1650,13 +2137,26 @@ if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE
   fi
 else
   if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
-    PREVIEW=$(head -c 500 "$RESULT_FILE" | tr '\\n' ' ')
+    PREVIEW=$(clean_result_preview "$RESULT_FILE")
   else
     PREVIEW="Agent produced no output. Check backend configuration and required commands. Tool=$TOOL_LABEL PATH=$PATH"
   fi
   ERROR_MESSAGE="$PREVIEW"
-  STATUS="error"
-  write_native_notification_request "error" "$PREVIEW" || true
+  # A purely transient failure (HTTP 429 / 5xx / network) after bounded retry is
+  # reported as 'unavailable' — distinct from a real 'error'. The ladder still
+  # climbs on it, but the circuit breaker must NOT trip (an overloaded upstream
+  # is not the agent misbehaving), and the notification stays truthful.
+  if [ -f "$TRANSIENT_ERROR_FILE" ]; then
+    STATUS="unavailable"
+  else
+    STATUS="error"
+  fi
+  # ③b-2: a NON-final escalation attempt fails silently (no error notification) so
+  # the user only sees the final outcome — the next tool's success, or the last
+  # tool's failure. The TS run loop sets this for every attempt but the last.
+  if [ "\${SUPPRESS_ERROR_NOTIFICATION:-0}" != "1" ]; then
+    write_native_notification_request "$STATUS" "$PREVIEW" || true
+  fi
 fi
 
 # Log run result
@@ -1725,6 +2225,7 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
     --cwd "$DRIVER_CWD" \\
     --approval-policy untrusted \\
+    --policy-json ${shellQuote(options.policyJson ?? '')} \\
     --agent-id "$AGENT_ID" \\
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
@@ -1735,8 +2236,13 @@ else
   echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
 fi
 rm -f "$PROMPT_FILE"`;
-    case 'gemini-api':
-      return geminiApiCommand(escapedPrompt, resultVar, tool.model);
+    case 'gemini-api': {
+      // Web-mandatory general tasks (collect current news) need Google Search
+      // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
+      const sig = detectRouteSignals(rawPrompt);
+      const grounded = sig.needsWeb && sig.webDomain === 'general';
+      return geminiApiCommand(escapedPrompt, resultVar, tool.model, grounded);
+    }
     case 'local':
       const localModel = (tool.model || (options.autonomous ? selectAutonomousLocalModel(rawPrompt) : LOCAL_MODEL_LIGHT)).replace(/"/g, '\\"');
       const localModelAssignment = options.autonomous
@@ -1744,14 +2250,39 @@ rm -f "$PROMPT_FILE"`;
         : `LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	${localModelAssignment}
+	# Cap the combined prompt + injected context so it cannot overflow the local
+	# model's context window. The instruction (printed first) is always preserved;
+	# only the trailing project/source context is truncated. A real run sent 7806
+	# tokens into a small window and was rejected ("exceeds context size").
+	# The cap is tier-aware: the small "work" tiers (0.8B/1.7B/2B) have an 8192
+	# window, the heavier 4B/9B tiers only 4096, so they get a smaller char budget.
+	# With a 2048 response reserve, ~16000 chars (~5k tokens) fits 8192 and ~7000
+	# chars fits 4096. Genuinely large tasks escalate to a cloud backend (bigger
+	# window) rather than being silently truncated to uselessness.
+	# Match the small tiers FIRST: "0.8B" ends in the literal "8B", so a bare
+	# *8[bB]* heavy-tier glob would false-match 0.8B and starve it. Mirror the
+	# ordering in local_llm_runtime_profile, which lists 0.8b before 8b.
+	case "$LOCAL_MODEL" in
+	  *0.8[bB]*|*0-8[bB]*|*1.7[bB]*|*1-7[bB]*|*2[bB]*) LOCAL_PROMPT_MAX_CHARS="\${LOCAL_LLM_PROMPT_MAX_CHARS:-16000}" ;;
+	  *4[bB]*|*8[bB]*|*9[bB]*) LOCAL_PROMPT_MAX_CHARS="\${LOCAL_LLM_PROMPT_MAX_CHARS:-7000}" ;;
+	  *) LOCAL_PROMPT_MAX_CHARS="\${LOCAL_LLM_PROMPT_MAX_CHARS:-16000}" ;;
+	esac
+	# Write to a regular file first, THEN truncate by reading that file. Piping the
+	# producers directly into "head -c" would SIGPIPE the printf writers once head
+	# closes the pipe early (large context > pipe buffer) → exit 141 → under
+	# 'set -euo pipefail' the whole run aborts BEFORE the fallback. Reading a
+	# regular file with head has no producer to signal, so it is abort-safe.
+	{ printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
+	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"
+	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	${localModelAssignment}
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
+		  touch "$BACKEND_ERROR_FILE"
 		else
 		  local_llm_start_activity_heartbeat 10
 		  set +e
@@ -1762,6 +2293,7 @@ rm -f "$PROMPT_FILE"`;
 		  if [ "$LOCAL_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
 		    START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		    local_context_fallback "http exit=$LOCAL_EXIT $START_REASON $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+		    touch "$BACKEND_ERROR_FILE"
 		  else
 		    extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
 		  fi
@@ -1781,11 +2313,11 @@ rm -f "$PROMPT_FILE"`;
 		else
 		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		set +e
-		HTTP_AUTH_HEADER="Bearer $PERPLEXITY_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+		HTTP_AUTH_HEADER="Bearer $PERPLEXITY_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		API_EXIT=$?
 		set -e
 		if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-		  touch "$BACKEND_ERROR_FILE"
+		  mark_http_failure "$API_EXIT"
 		  echo "Perplexity API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
 		else
 		  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
@@ -1793,20 +2325,61 @@ rm -f "$PROMPT_FILE"`;
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		fi
 		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
+    case 'cerebras':
+      // Free-tier cloud tier of the ③ ladder (OpenAI-compatible). Used after
+      // local when local can't fit/handle the task, BEFORE Codex (quota-preserving).
+      return openAiCompatApiCommand(escapedPrompt, resultVar, {
+        keyVar: 'CEREBRAS_API_KEY',
+        envModelVar: 'CEREBRAS_MODEL',
+        keyHint: 'Add CEREBRAS_API_KEY in Settings → API Keys (free tier at cloud.cerebras.ai).',
+        url: 'https://api.cerebras.ai/v1/chat/completions',
+        model: tool.model || 'qwen-3-235b-a22b-instruct-2507',
+        label: 'Cerebras',
+      });
+    case 'groq':
+      return openAiCompatApiCommand(escapedPrompt, resultVar, {
+        keyVar: 'GROQ_API_KEY',
+        envModelVar: 'GROQ_MODEL',
+        keyHint: 'Add GROQ_API_KEY in Settings → API Keys (free tier at console.groq.com).',
+        url: 'https://api.groq.com/openai/v1/chat/completions',
+        model: tool.model || 'llama-3.3-70b-versatile',
+        label: 'Groq',
+      });
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, tool.localModel, tool.codexCmd);
     case 'auto':
       return `if [ -n "\${GEMINI_API_KEY:-}" ]; then
   ${geminiApiCommand(escapedPrompt, resultVar)}
 elif command -v codex >/dev/null 2>&1; then
-  PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-  printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-  timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1 || true
-  rm -f "$PROMPT_FILE"
+  ${codexExecCommand(escapedPrompt, resultVar)}
 else
   echo 'No background agent backend is configured. Add a Gemini API key, install Codex, or choose Local LLM/Perplexity explicitly.' > ${resultVar}
 fi`;
   }
+}
+
+/**
+ * Codex `exec` into the result file, GUARDED. Codex prints a usage/rate-limit
+ * refusal to stdout with a zero exit (so a naive `> result || true` records that
+ * refusal as a real success). We capture the exit code AND scan the output for a
+ * usage-limit signature: a non-zero exit → hard backend error; a usage-limit
+ * refusal → transient (exit-23 class) so the run is 'unavailable' (retried next
+ * schedule, no circuit-breaker trip) instead of a false success. Used by the
+ * `auto` backend and the baked autonomous web→Codex ladder (P1).
+ */
+function codexExecCommand(escapedPrompt: string, resultVar: string): string {
+  return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+  printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+  set +e
+  timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1
+  CODEX_EXIT=$?
+  set -e
+  rm -f "$PROMPT_FILE"
+  if [ "$CODEX_EXIT" -ne 0 ]; then
+    mark_http_failure "$CODEX_EXIT"
+  elif grep -qiE 'usage limit|rate.?limit|too many requests|quota (exceeded|reached)|you.?ve hit your|\\b429\\b' ${resultVar} 2>/dev/null; then
+    mark_http_failure 23
+  fi`;
 }
 
 function articleEvalCommand(rawPrompt: string, resultVar: string, localModel?: string, codexCmd?: string): string {
@@ -1871,7 +2444,7 @@ PROMPTEOF
 
 PROMPT_JSON=$(json_string_file "$RUN_DIR/prompt.md")
 LOCAL_REQUEST_FILE="$RUN_DIR/local-request.json"
-printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
+printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
 
 LOCAL_START=$(date +%s)
 if ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
@@ -1961,24 +2534,73 @@ $(head -n 40 "$RUN_DIR/codex.md")
 RESULTEOF`;
 }
 
-function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string): string {
-  const defaultModel = model || 'gemini-2.0-flash';
+/**
+ * OpenAI-compatible chat-completions backend (Cerebras / Groq). Mirrors the
+ * perplexity flow: source key from env, POST, extract content, fail-closed if no
+ * key (graceful error + BACKEND_ERROR_FILE so the ladder can escalate). The key
+ * is read from env (synced from Settings) and never logged.
+ */
+function openAiCompatApiCommand(
+  escapedPrompt: string,
+  resultVar: string,
+  opts: { keyVar: string; envModelVar: string; keyHint: string; url: string; model: string; label: string },
+): string {
+  const model = opts.model.replace(/"/g, '\\"');
+  const keyHint = opts.keyHint.replace(/'/g, "'\\''");
+  const url = opts.url.replace(/"/g, '\\"');
+  const label = opts.label.replace(/"/g, '\\"');
+  return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
+	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+	MODEL="\${${opts.envModelVar}:-${model}}"
+	if [ -z "\${${opts.keyVar}:-}" ]; then
+	  echo '${keyHint}' > ${resultVar}
+	  touch "$BACKEND_ERROR_FILE"
+	else
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	set +e
+	HTTP_AUTH_HEADER="Bearer $${opts.keyVar}" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	API_EXIT=$?
+	set -e
+	if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
+	  mark_http_failure "$API_EXIT"
+	  echo "${label} API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+	else
+	  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+	fi
+	rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	fi
+	rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
+}
+
+function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string, grounded = false): string {
+  // gemini-2.5-flash: the 2.0-flash free tier is limit:0 (no free quota); 2.5-flash
+  // has a working free tier AND supports Google Search grounding (verified 2026-06-24).
+  const defaultModel = model || 'gemini-2.5-flash';
+  // Google Search grounding: only added for web-mandatory tasks so routine
+  // Gemini calls aren't forced onto the search tool.
+  const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"
+# The 2.0-flash free tier is limit:0 (no free quota) → 429s and (in autonomous
+# runs) needlessly escalates to Codex. Older installs may have GEMINI_MODEL pinned
+# to it in ~/.shelly/agents/.env, so migrate any stale 2.0-flash pin to 2.5-flash.
+case "$MODEL" in gemini-2.0-flash|gemini-2.0-flash-001|gemini-2.0-flash-exp) MODEL="gemini-2.5-flash" ;; esac
 if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
   touch "$BACKEND_ERROR_FILE"
 else
-  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],\\"generationConfig\\":{\\"maxOutputTokens\\":4096,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
+  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
-  HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+  HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
   API_EXIT=$?
   set -e
   if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
-    touch "$BACKEND_ERROR_FILE"
+    mark_http_failure "$API_EXIT"
     echo "Gemini API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
   else
     extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }

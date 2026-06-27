@@ -760,8 +760,29 @@ function AgentsSection() {
   const { t } = useTranslation();
   const defaultAgent = useSettingsStore((s) => s.settings.defaultAgent);
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
+  const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
+  const cloudExhaustion = useSettingsStore((s) => s.settings.autonomousCloudOnExhaustion ?? 'escalate');
+  const outputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
+  const vaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
+  const topicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
+  const customPath = useSettingsStore((s) => s.settings.agentCustomPath ?? '');
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  // Local edit state for the path fields so each keystroke doesn't trigger an
+  // .env sync; commit on blur (onEndEditing).
+  const [vaultDraft, setVaultDraft] = React.useState(vaultPath);
+  const [topicDraft, setTopicDraft] = React.useState(topicFolder);
+  const [customDraft, setCustomDraft] = React.useState(customPath);
+  React.useEffect(() => setVaultDraft(vaultPath), [vaultPath]);
+  React.useEffect(() => setTopicDraft(topicFolder), [topicFolder]);
+  React.useEffect(() => setCustomDraft(customPath), [customPath]);
+
+  const cycleOutputTarget = () => {
+    const order = ['local', 'obsidian', 'custom'] as const;
+    const next = order[(order.indexOf(outputTarget) + 1) % order.length];
+    updateSettings({ agentOutputTarget: next });
+    void flushPendingAgentEnvSync('Agent Output');
+  };
 
   const currentLabel =
     DEFAULT_AGENT_OPTIONS.find((o) => o.value === defaultAgent)?.label ?? 'Codex';
@@ -772,6 +793,32 @@ function AgentsSection() {
   };
 
   const autoOn = autoApproveLevel !== 'none';
+
+  // N1: enabling autonomous cloud needs informed consent — an unattended agent
+  // will spend your cloud quota/cost without asking each time.
+  const toggleCloudConsent = async () => {
+    if (!cloudConsent) {
+      const ok = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          t('agents.cloud_consent_title'),
+          t('agents.cloud_consent_body'),
+          [
+            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('agents.cloud_consent_enable'), style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      });
+      if (!ok) return;
+    }
+    updateSettings({ autonomousCloudConsent: !cloudConsent });
+    await flushPendingAgentEnvSync('Autonomous Cloud');
+  };
+
+  const toggleExhaustion = async () => {
+    updateSettings({ autonomousCloudOnExhaustion: cloudExhaustion === 'stop' ? 'escalate' : 'stop' });
+    await flushPendingAgentEnvSync('Autonomous Cloud');
+  };
 
   return (
     <Section title={t('agents.title')}>
@@ -829,6 +876,94 @@ function AgentsSection() {
           />
         </Pressable>
       </Row>
+      <Row label={t('agents.autonomous_cloud')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: cloudConsent ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
+          onPress={toggleCloudConsent}
+          hitSlop={4}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: cloudConsent ? C.accent : C.text2 },
+              cloudConsent && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      {cloudConsent && (
+        <Row label={t('agents.cloud_on_exhaustion')}>
+          <Pressable
+            style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
+            onPress={toggleExhaustion}
+            hitSlop={4}
+          >
+            <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>
+              {cloudExhaustion === 'stop' ? t('agents.cloud_exhaust_stop') : t('agents.cloud_exhaust_escalate')}
+            </Text>
+          </Pressable>
+        </Row>
+      )}
+      <Row label={t('agents.output_target')}>
+        <Pressable
+          style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
+          onPress={cycleOutputTarget}
+          hitSlop={4}
+        >
+          <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>{t(`agents.output_${outputTarget}`)}</Text>
+        </Pressable>
+      </Row>
+      {outputTarget === 'obsidian' && (
+        <TextInput
+          value={vaultDraft}
+          onChangeText={setVaultDraft}
+          onEndEditing={() => {
+            updateSettings({ agentVaultPath: vaultDraft.trim() });
+            void flushPendingAgentEnvSync('Agent Output');
+          }}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('agents.vault_path_ph')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+      )}
+      {outputTarget === 'custom' && (
+        <TextInput
+          value={customDraft}
+          onChangeText={setCustomDraft}
+          onEndEditing={() => {
+            updateSettings({ agentCustomPath: customDraft.trim() });
+            void flushPendingAgentEnvSync('Agent Output');
+          }}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('agents.custom_path_ph')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+      )}
+      {(outputTarget === 'obsidian' || outputTarget === 'custom') && (
+        <TextInput
+          value={topicDraft}
+          onChangeText={setTopicDraft}
+          onEndEditing={() => {
+            updateSettings({ agentTopicFolder: topicDraft.trim() });
+            void flushPendingAgentEnvSync('Agent Output');
+          }}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('agents.topic_folder_ph')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+      )}
     </Section>
   );
 }

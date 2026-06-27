@@ -9,6 +9,8 @@
  * - Adds the <service> element for TerminalSessionService
  * - Sets android:foregroundServiceType="specialUse" (API 34+ requirement)
  * - Sets stopWithTask=false so onTaskRemoved() fires instead of auto-kill
+ * - Registers AgentAlarmReceiver (legacy bridge for alarms armed by older builds;
+ *   new alarms target the service directly via getForegroundService)
  */
 const { withAndroidManifest } = require("expo/config-plugins");
 
@@ -48,6 +50,25 @@ function withTerminalService(config) {
             },
           },
         ],
+      });
+    }
+
+    // Register AgentAlarmReceiver. New alarms target the service directly, but this
+    // receiver is still needed as a backward-compat bridge for any alarm armed by an
+    // older build via getBroadcast. Declared here so a clean prebuild keeps it.
+    if (!application.receiver) {
+      application.receiver = [];
+    }
+    const receiverName = "expo.modules.terminalemulator.AgentAlarmReceiver";
+    const receiverExists = application.receiver.find(
+      (r) => r.$?.["android:name"] === receiverName
+    );
+    if (!receiverExists) {
+      application.receiver.push({
+        $: {
+          "android:name": receiverName,
+          "android:exported": "false",
+        },
       });
     }
 

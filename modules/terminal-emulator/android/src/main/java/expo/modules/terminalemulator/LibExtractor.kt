@@ -169,7 +169,16 @@ object LibExtractor {
         "shelly_shell",
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.
-        "shelly_xdg_open"
+        "shelly_xdg_open",
+        // git + its transport/credential helpers: force-refresh so the HTTPS
+        // helper exec fix (git() now preloads libexec_wrapper.so) is validated
+        // against fresh binaries — a stale helper from a prior broken state must
+        // not muddy "cannot exec 'remote-https'" diagnosis.
+        "git",
+        "git-remote-https",
+        "git-remote-http",
+        "git-credential-store",
+        "git-credential-cache"
     )
 
     fun getLibDir(context: Context): File =

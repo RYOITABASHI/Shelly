@@ -11,6 +11,8 @@ import java.time.Instant
 data class AgentActionApprovalRequest(
     val runId: String,
     val agentId: String,
+    val agentName: String?,
+    val toolLabel: String?,
     val actionType: String,
     val preview: String,
     val destinationHost: String?,
@@ -81,6 +83,8 @@ object AgentActionApprovalBridge {
     fun toMap(request: AgentActionApprovalRequest): Map<String, Any?> = mapOf(
         "runId" to request.runId,
         "agentId" to request.agentId,
+        "agentName" to request.agentName,
+        "toolLabel" to request.toolLabel,
         "actionType" to request.actionType,
         "preview" to request.preview,
         "destinationHost" to request.destinationHost,
@@ -102,6 +106,8 @@ object AgentActionApprovalBridge {
         return AgentActionApprovalRequest(
             runId = runId,
             agentId = raw.optString("agentId").trim().takeIf { it.isNotBlank() } ?: "agent",
+            agentName = raw.optString("agentName").trim().takeIf { it.isNotBlank() },
+            toolLabel = raw.optString("toolLabel").trim().takeIf { it.isNotBlank() },
             actionType = actionType,
             preview = raw.optString("preview"),
             destinationHost = raw.optString("destinationHost").trim().takeIf { it.isNotBlank() },

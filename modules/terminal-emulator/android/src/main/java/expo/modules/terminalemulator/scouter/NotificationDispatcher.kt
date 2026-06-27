@@ -103,21 +103,27 @@ class NotificationDispatcher(private val context: Context) {
         notify(ID_LONG_RUNNING, "Agent still running", "${snapshot.currentTool ?: "Tool"} · ${snapshot.projectName}")
     }
 
-    fun notifyAgentResult(agentId: String, status: String, preview: String) {
+    fun notifyAgentResult(agentId: String, status: String, preview: String, agentName: String? = null, toolLabel: String? = null) {
         val normalizedStatus = status.trim().lowercase(Locale.US).ifBlank { "success" }
+        val name = agentName?.takeIf { it.isNotBlank() } ?: shorten(agentId, 40)
         val title = when (normalizedStatus) {
-            "success" -> "Agent completed"
-            "skipped" -> "Agent skipped"
-            else -> "Agent failed"
+            "success" -> context.getString(R.string.scouter_notification_agent_result_done, name)
+            "skipped" -> context.getString(R.string.scouter_notification_agent_result_skipped, name)
+            "unavailable" -> context.getString(R.string.scouter_notification_agent_result_unavailable, name)
+            else -> context.getString(R.string.scouter_notification_agent_result_failed, name)
         }
-        val body = preview.ifBlank { "No preview" }
+        // Lead the body with the engine that produced the result (route transparency),
+        // then the preview, so the completion card mirrors the approval card.
+        val engineLine = toolLabel?.takeIf { it.isNotBlank() }
+            ?.let { context.getString(R.string.scouter_notification_agent_action_engine, it) }
+        val previewBody = preview.ifBlank { context.getString(R.string.scouter_notification_agent_result_no_preview) }
+        val body = listOfNotNull(engineLine, previewBody).joinToString("\n")
         val id = ID_AGENT_RESULT_BASE + (agentId.hashCode() and 0x7fffffff) % ID_AGENT_RESULT_SPAN
         notify(
             id = id,
             title = title,
             text = truncate(body, REPLY_MAX_CHARS),
-            bigText = truncate(body, APPROVAL_MAX_CHARS),
-            subText = shorten(agentId, 40)
+            bigText = truncate(body, APPROVAL_MAX_CHARS)
         )
     }
 
@@ -128,23 +134,46 @@ class NotificationDispatcher(private val context: Context) {
             val requestSha256 = request.requestSha256
                 ?.takeIf { HEX_SHA256_RE.matches(it) }
                 ?: return
-            val preview = request.preview.takeIf { it.isNotBlank() } ?: request.actionType
-            val actionLabel = request.actionType.replaceFirstChar {
-                if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString()
+            // Friendly agent name (threaded from the run script); fall back to the
+            // raw id only when a name is unavailable.
+            val name = request.agentName?.takeIf { it.isNotBlank() } ?: shorten(request.agentId, 32)
+            // Plain-language phrase for WHAT the agent is about to do, so the body
+            // leads with a readable "it will save a draft / run a command" instead
+            // of an opaque action keyword or internal telemetry.
+            val actionPhrase = when (request.actionType) {
+                "draft" -> context.getString(R.string.scouter_notification_agent_action_what_draft)
+                "notify" -> context.getString(R.string.scouter_notification_agent_action_what_notify)
+                "webhook" -> context.getString(R.string.scouter_notification_agent_action_what_webhook)
+                "cli" -> context.getString(R.string.scouter_notification_agent_action_what_cli)
+                else -> request.actionType
             }
+            val previewText = request.preview.takeIf { it.isNotBlank() }?.redactForScouter()
+            // Which engine produced this result (route transparency): the body leads
+            // with "Engine: <tool>" so the user can see at approval time whether it
+            // ran on-device, on Codex, etc.
+            val engineLine = request.toolLabel?.takeIf { it.isNotBlank() }
+                ?.let { context.getString(R.string.scouter_notification_agent_action_engine, it) }
             val body = when (request.actionType) {
                 "webhook" -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
                     context.getString(R.string.scouter_notification_agent_action_webhook_host, request.destinationHost ?: "unknown"),
-                    context.getString(R.string.scouter_notification_agent_action_preview, preview.redactForScouter()),
+                    previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                     request.payloadPath?.let { context.getString(R.string.scouter_notification_agent_action_payload, it.redactForScouter()) },
                 ).joinToString("\n")
                 "cli" -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
                     request.command?.redactForScouter(),
                     request.safetyLevel?.let { context.getString(R.string.scouter_notification_agent_action_safety, it) },
                     request.safetyReason?.let { context.getString(R.string.scouter_notification_agent_action_reason, it.redactForScouter()) },
                     context.getString(R.string.scouter_notification_agent_action_cli_review_required),
                 ).joinToString("\n")
-                else -> context.getString(R.string.scouter_notification_agent_action_preview, preview.redactForScouter())
+                else -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
+                    previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
+                ).joinToString("\n")
             }
             val actions = if (request.actionType == "cli") {
                 listOf(
@@ -161,8 +190,7 @@ class NotificationDispatcher(private val context: Context) {
                 id = AgentActionApprovalBridge.notificationId(request.runId),
                 title = context.getString(
                     R.string.scouter_notification_agent_action_title,
-                    shorten(request.agentId, 32),
-                    actionLabel
+                    name
                 ),
                 text = truncate(body, REPLY_MAX_CHARS),
                 bigText = truncate(body, APPROVAL_MAX_CHARS),

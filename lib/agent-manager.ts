@@ -7,6 +7,8 @@ import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
+import { resolveEscalationLadder, attemptFailed, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
+import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
@@ -24,6 +26,16 @@ import {
   readSkillRecipes,
   writeSkillRecipe,
 } from './agent-skills';
+import {
+  buildStepPrompt,
+  combineFinalPreview,
+  isOrchestrated,
+  nextStepGate,
+  normalizeSteps,
+  reduceStatus,
+  resolveBudget,
+} from './agent-orchestration';
+import type { AgentRunStep } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
@@ -174,7 +186,8 @@ function formatHistory(agent: Agent, logs: any[]): string {
   if (logs.length === 0) return `No run history for ${agent.name}.`;
   const lines = logs.slice(-10).reverse().map((log) => {
     const date = new Date(log.timestamp).toLocaleString('ja-JP');
-    const icon = log.status === 'success' ? '✅' : log.status === 'error' ? '❌' : '⏭️';
+    const icon =
+      log.status === 'success' ? '✅' : log.status === 'error' ? '❌' : log.status === 'unavailable' ? '⏳' : '⏭️';
     const duration = `${(log.durationMs / 1000).toFixed(0)}s`;
     return `${icon} ${date} — ${duration} — ${log.toolUsed}`;
   });
@@ -199,6 +212,7 @@ export function createAgent(params: {
   runOn?: Agent['runOn'];
   memory?: Agent['memory'];
   skillId?: Agent['skillId'];
+  orchestration?: Agent['orchestration'];
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -220,6 +234,7 @@ export function createAgent(params: {
     runOn: params.runOn,
     memory: params.memory,
     skillId: params.skillId,
+    orchestration: params.orchestration,
     enabled: true,
     lastRun: null,
     lastResult: null,
@@ -272,7 +287,8 @@ async function materializeAgent(
   // The startup-repair path re-materializes every scheduled agent on launch; it
   // passes false so we don't re-issue an (idempotent but redundant) fact write
   // for each one. Recall is always re-applied so the baked prompt stays fresh.
-  persistFacts = true
+  persistFacts = true,
+  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
@@ -281,6 +297,21 @@ async function materializeAgent(
     await persistRememberFact(agent, runCommand);
   }
   const agentForRun = await applyMemoryAndSkills(agent);
+
+  // P1: the install + restore paths (which write the script the UNATTENDED alarm
+  // later runs) don't carry the consent flags the foreground ladder passes
+  // explicitly. For an autonomous agent, read them from disk so the on-disk script
+  // keeps its keyed web backend AND bakes the web→Codex ladder (otherwise an
+  // autonomous web run on the alarm path refuses the web tool → dead-ends on Codex).
+  let effectiveRunOpts = runOpts;
+  if (agent.autonomous && runOpts.autonomousCloudConsent === undefined) {
+    const env = await ladderEnvFromDisk(runCommand);
+    effectiveRunOpts = {
+      ...runOpts,
+      autonomousCloudConsent: env.autonomousCloudConsent,
+      autonomousCloudStop: env.autonomousCloudStop,
+    };
+  }
 
   const scriptPath = getScriptPath(agent.id);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
@@ -291,7 +322,7 @@ async function materializeAgent(
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
-    writeFileCommand(scriptPath, generateRunScript(agentForRun)),
+    writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
     ...generateInstallCommands(agent),
   ];
 
@@ -367,31 +398,298 @@ export async function runAgentNow(
   if (useAgentStore.getState().halted) {
     throw new Error('All agents are stopped (global kill-switch is on). Resume agents to run.');
   }
+  // Phase 4: a multi-step agent runs as a linear chain (each step through the
+  // SAME gated single-run path below). Single-step agents fall through unchanged.
+  const orchestrationAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (orchestrationAgent && isOrchestrated(orchestrationAgent.orchestration)) {
+    await runAgentOrchestrated(orchestrationAgent, runCommand, options);
+    return;
+  }
   const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (agent) {
-    await materializeAgent(agent, runCommand, false);
+    await runEscalatingAttempts(agent, runCommand, options, runStartedAtMs);
   }
-  let previousRunCount = 0;
-  let previousLatestTimestamp = Number.NEGATIVE_INFINITY;
-  try {
-    const existingLogs = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-    previousRunCount = existingLogs.length;
-    previousLatestTimestamp = existingLogs.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY;
-  } catch {
-    // If log snapshotting fails, still run the agent and fall back to timestamp gating.
-  }
-  await TerminalEmulator.runAgent(agentId);
-  await waitForAgentRunCompletion(runCommand, agentId, {
-    runStartedAtMs,
-    previousRunCount,
-    previousLatestTimestamp,
-    timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
-    pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
-  });
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/** Read which free-cloud-tier keys are configured (authoritative source: the
+ * agent .env the run script sources). Best-effort; on failure both default true
+ * so a usable backend is never wrongly skipped (it would just fail-and-escalate). */
+async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): Promise<LadderEnv> {
+  try {
+    const out = await runCommand(
+      `for k in CEREBRAS_API_KEY GROQ_API_KEY; do ` +
+        `grep -qE "^$k=.+" "$HOME/.shelly/agents/.env" 2>/dev/null && echo "$k=1" || echo "$k=0"; done; ` +
+        // N1: the autonomous-cloud consent flags are written by settings-store as
+        // explicit 0/1 (not "key present"), so read their VALUE, defaulting to 0.
+        `for k in SHELLY_AUTONOMOUS_CLOUD SHELLY_AUTONOMOUS_CLOUD_STOP; do ` +
+        `v=$(grep -E "^$k=" "$HOME/.shelly/agents/.env" 2>/dev/null | tail -n1 | cut -d= -f2); echo "$k=\${v:-0}"; done`,
+    );
+    return {
+      hasCerebrasKey: /CEREBRAS_API_KEY=1/.test(out),
+      hasGroqKey: /GROQ_API_KEY=1/.test(out),
+      // Consent defaults OFF (fail-closed) when the flag is absent/unreadable.
+      // Anchor to an exact `1` (optionally quoted — settings-store writes the
+      // value via dotenvValue() which wraps it as '1', so the .env line is
+      // SHELLY_AUTONOMOUS_CLOUD='1'). Still strict: a malformed value (=10,
+      // =1foo, ='1foo') reads as OFF, never fail-open into cloud opt-in.
+      autonomousCloudConsent: /(^|\n)SHELLY_AUTONOMOUS_CLOUD=['"]?1['"]?(\n|$)/.test(out),
+      autonomousCloudStop: /(^|\n)SHELLY_AUTONOMOUS_CLOUD_STOP=['"]?1['"]?(\n|$)/.test(out),
+    };
+  } catch {
+    // Conservative on read failure: free-cloud keys assumed present (attended
+    // ladder hop is cheap), but autonomous cloud stays fail-closed (no consent).
+    return { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: false, autonomousCloudStop: false };
+  }
+}
+
+/**
+ * ③b-2: run an agent through its escalation ladder. Try the primary backend; if
+ * the attempt failed (error status OR a local-context fallback digest), climb to
+ * the next allowed tool and re-run, until one succeeds or the ladder is exhausted.
+ * Every attempt goes through the SAME single-run path (materialize → gated run),
+ * so the boundary + command-safety + secret-guard re-check on each attempt — the
+ * autonomous boundary is never widened. Non-final attempts suppress the error
+ * notification so the user sees only the final outcome (next tool's success, or
+ * the last tool's failure). The first success performs the action exactly once.
+ */
+async function runEscalatingAttempts(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number },
+  runStartedAtMs: number,
+): Promise<void> {
+  const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs);
+
+  // Restore the agent's own (un-overridden) script so a later scheduled fire uses
+  // the configured tool / fresh route, not the last escalation override.
+  if (!ladder.noEscalation && ladder.tools.length > 1) {
+    try {
+      await materializeAgent(agent, runCommand, false);
+    } catch (error) {
+      // Best-effort: a later foreground run or startup-repair re-materializes. Log
+      // so a stale on-disk override (attended ladders only) is diagnosable.
+      logWarn('AgentEscalation', `failed to restore configured script for ${agent.id}`, error);
+    }
+  }
+}
+
+/**
+ * Run one logical attempt-with-escalation: resolve the ladder for `runAgent`
+ * (its prompt drives the route — so an orchestration STEP escalates by its own
+ * step instruction, e.g. a collect-news step climbs Gemini→Codex), then try each
+ * candidate tool until one produces a real result (not error / fallback digest).
+ * Shared by the single-run path and each orchestration step. Does NOT restore the
+ * on-disk script — the caller owns that (single-run restores; orchestration
+ * re-materializes the orchestration agent after the whole chain).
+ */
+async function runLadderAttempts(
+  runAgent: Agent,
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number },
+  runStartedAtMs: number,
+  materializeOpts: { suppressAction?: boolean } = {},
+): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
+  const env = await ladderEnvFromDisk(runCommand);
+  const ladder = resolveEscalationLadder(runAgent, env);
+  let finalLog: AgentRunLog | undefined;
+
+  for (let i = 0; i < ladder.tools.length; i++) {
+    const isLast = i === ladder.tools.length - 1;
+    // For an escalating ladder, force the configured-tool branch to pick exactly
+    // this candidate (pins/secret already shaped the ladder; resolveAgentRoute
+    // STILL re-checks secret-guard per attempt as defense in depth). For a
+    // no-escalation ladder, run the agent unchanged.
+    const attemptAgent: Agent = ladder.noEscalation
+      ? runAgent
+      : { ...runAgent, tool: ladder.tools[i], runOn: 'auto' };
+
+    let before: AgentRunLog[] = [];
+    try {
+      before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    } catch {
+      // fall back to timestamp gating below
+    }
+
+    await materializeAgent(attemptAgent, runCommand, false, true, {
+      suppressErrorNotification: !isLast,
+      suppressAction: materializeOpts.suppressAction,
+      // N1: lets generateRunScript keep a keyed web tool (Gemini/Perplexity) for
+      // an autonomous run instead of refusing it — the ladder only put one here
+      // when consent + needsWeb held, and secret-guard still re-forces local.
+      autonomousCloudConsent: env.autonomousCloudConsent,
+      // This loop pins ONE tool per attempt and owns escalation; don't also bake
+      // an in-shell web→Codex fallback (it would run Codex twice).
+      suppressWebCodexBake: true,
+    });
+    await TerminalEmulator.runAgent(agentId);
+    await waitForAgentRunCompletion(runCommand, agentId, {
+      runStartedAtMs: i === 0 ? runStartedAtMs : Date.now() - 5_000,
+      previousRunCount: before.length,
+      previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
+      timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
+      pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+    });
+
+    const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    finalLog = after.at(-1);
+
+    if (ladder.noEscalation || isLast) break;
+    // Stop on a real success OR a 'skipped' run: a skip means a concurrent run of
+    // THIS agent holds the per-agent lock, so climbing to another tool would just
+    // skip again — let the concurrent run produce the result. Only a genuine
+    // failure (error / fallback digest) climbs.
+    if (!attemptFailed(finalLog?.status, finalLog?.outputPreview)) break;
+    // else: escalate to the next tool
+  }
+
+  return { ladder, finalLog };
+}
+
+/**
+ * Phase 4: run an agent as an ordered LINEAR chain. Each step is executed through
+ * the EXISTING single-run path (materialize → B2 driver), so every command still
+ * passes the same boundary + command-safety gate — chaining adds no privilege.
+ * The budget (hard step + time caps) REFUSES further steps rather than hanging
+ * (Android phantom-process ceiling). A failed step stops the chain and makes the
+ * whole run one 'error' for the circuit breaker. Result surfaces as a single run
+ * log carrying per-step detail.
+ */
+async function runAgentOrchestrated(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number } = {}
+): Promise<void> {
+  const agentId = agent.id;
+  const steps = normalizeSteps(agent.orchestration);
+  const budget = resolveBudget(agent.orchestration);
+  const startedAtMs = Date.now();
+  const priorResults: string[] = [];
+  const records: AgentRunStep[] = [];
+  let priorFailed = false;
+  // Snapshot existing log files so we can remove the per-step logs this chain
+  // writes and replace them with ONE aggregate (so the circuit breaker counts a
+  // failed chain as one run, and the per-step detail survives a reload).
+  const beforeFiles = await listAgentLogFiles(runCommand, agentId);
+
+  for (let i = 0; i < steps.length; i++) {
+    const gate = nextStepGate({ stepIndex: i, budget, startedAtMs, now: Date.now(), priorFailed });
+    if (!gate.proceed) break;
+
+    // Each step is a normal single run with a step-specific prompt; orchestration
+    // is cleared so the step itself doesn't recurse.
+    const stepAgent: Agent = {
+      ...agent,
+      prompt: buildStepPrompt(agent.prompt, steps[i], priorResults),
+      orchestration: undefined,
+    };
+    const stepStart = Date.now();
+    // Only the FINAL step performs the agent action (draft/notify/webhook/cli) —
+    // non-final steps suppress it so the chain fires ONE approval/notification,
+    // not one per step.
+    const isFinalStep = i === steps.length - 1;
+    let log: AgentRunLog | undefined;
+    try {
+      // Each step escalates through the ladder by its OWN instruction — so a
+      // collect-news step climbs Gemini(grounded)→Codex instead of dead-ending
+      // on a non-web local digest. Non-final steps suppress the action.
+      ({ finalLog: log } = await runLadderAttempts(
+        stepAgent,
+        agentId,
+        runCommand,
+        { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
+        stepStart - 5_000,
+        { suppressAction: !isFinalStep },
+      ));
+    } catch (error) {
+      records.push({
+        index: i,
+        instruction: steps[i],
+        status: 'error',
+        durationMs: Date.now() - stepStart,
+        outputPreview: error instanceof Error ? error.message.slice(0, 200) : 'step failed',
+      });
+      priorFailed = true;
+      continue;
+    }
+    // Preserve a transient 'unavailable' as its own step status (do NOT collapse
+    // to 'error'): the chain still stops (priorFailed below), but reduceStatus
+    // folds it to an 'unavailable' run that the circuit breaker EXCLUDES — so a
+    // multi-step agent isn't auto-disabled by a transient web outage either.
+    const status: AgentRunStep['status'] = log?.status ?? 'error';
+    records.push({
+      index: i,
+      instruction: steps[i],
+      status,
+      durationMs: Date.now() - stepStart,
+      outputPreview: log?.outputPreview ?? '',
+      routeDecision: log?.routeDecision,
+    });
+    // A transient step carries no usable result downstream, so it stops the chain
+    // just like an error — only success feeds the next step's context.
+    if (status === 'success') priorResults.push(log?.outputPreview ?? '');
+    else priorFailed = true;
+  }
+
+  // Restore the original (orchestration) script after the last step-prompt run.
+  try {
+    await materializeAgent(agent, runCommand, false);
+  } catch {
+    // best-effort
+  }
+
+  // Aggregate the chain into a SINGLE on-disk run log (carrying per-step detail),
+  // replacing the per-step logs this chain wrote. Disk and store then agree, the
+  // circuit breaker counts one run, and the steps survive a reload.
+  const aggregate: AgentRunLog = {
+    agentId,
+    timestamp: Date.now(),
+    status: reduceStatus(records),
+    outputPreview: combineFinalPreview(records),
+    durationMs: Date.now() - startedAtMs,
+    toolUsed: records.at(-1)?.routeDecision?.toolLabel ?? 'orchestration',
+    routeDecision: records.at(-1)?.routeDecision,
+    steps: records,
+  };
+  try {
+    const afterFiles = await listAgentLogFiles(runCommand, agentId);
+    const newFiles = afterFiles.filter((f) => !beforeFiles.includes(f));
+    const logDir = `${agentsDir()}/logs/${agentId}`;
+    const aggFile = `${logDir}/${aggregate.timestamp}.json`;
+    const cmd =
+      `set -e\n` +
+      `mkdir -p ${shellQuote(logDir)}\n` +
+      newFiles.map((f) => `rm -f ${shellQuote(f)}`).join('\n') +
+      (newFiles.length ? '\n' : '') +
+      writeFileCommand(aggFile, JSON.stringify(aggregate));
+    await runCommand(cmd);
+  } catch (error) {
+    console.warn('orchestration: failed to persist aggregate log', agentId, error);
+  }
+  // Load the aggregate (+ prior logs) into the store — one run for the breaker —
+  // and run the same post-run hooks the single-run path uses.
+  await syncAgentRunLogsFromDisk(runCommand, agentId);
+  await captureRunMemory(agentId, runCommand);
+  await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/** List the agent's run-log file paths on disk (best-effort). */
+async function listAgentLogFiles(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId: string
+): Promise<string[]> {
+  try {
+    const out = await runCommand(
+      `ls -1 ${shellQuote(`${agentsDir()}/logs/${agentId}`)}/*.json 2>/dev/null || true`
+    );
+    return out.split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -636,10 +934,13 @@ export async function resumeAllAgents(
  */
 export async function notifyAgentResult(
   agent: Agent,
-  status: 'success' | 'error' | 'skipped',
+  status: 'success' | 'error' | 'skipped' | 'unavailable',
   summary: string
 ): Promise<void> {
-  const icon = status === 'success' ? '✅' : status === 'error' ? '❌' : '⏭️';
+  // 'unavailable' (transient web outage) gets its own ⏳ glyph so the user reads it
+  // as "will retry", not a hard ❌ failure they need to act on.
+  const icon =
+    status === 'success' ? '✅' : status === 'error' ? '❌' : status === 'unavailable' ? '⏳' : '⏭️';
   await Notifications.scheduleNotificationAsync({
     content: {
       title: `${icon} ${agent.name}`,
@@ -700,6 +1001,9 @@ export async function loadAgentsFromDisk(
         ? {
             ...agent,
             lastRun: latest.timestamp,
+            // 'skipped'/'unavailable' intentionally keep the prior lastResult: the
+            // badge shouldn't flip to a hard verdict for a declined or transient
+            // run. The truthful per-run status still lives in the run-log history.
             lastResult: latest.status === 'success' ? 'success' as const : latest.status === 'error' ? 'error' as const : agent.lastResult,
           }
         : agent;
@@ -848,6 +1152,8 @@ export async function syncAgentRunLogsFromDisk(
       ? {
           ...agent,
           lastRun: latest.timestamp,
+          // 'skipped'/'unavailable' intentionally keep the prior lastResult: the
+          // badge shouldn't flip to a hard verdict for a declined or transient run.
           lastResult:
             latest.status === 'success'
               ? ('success' as const)
@@ -914,7 +1220,10 @@ async function readAgentRunLogs(
       if (
         typeof log.agentId === 'string' &&
         typeof log.timestamp === 'number' &&
-        (log.status === 'success' || log.status === 'error' || log.status === 'skipped')
+        (log.status === 'success' ||
+          log.status === 'error' ||
+          log.status === 'skipped' ||
+          log.status === 'unavailable')
       ) {
         logs.push(log);
       }

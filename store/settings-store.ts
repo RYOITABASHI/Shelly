@@ -64,6 +64,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   experienceMode: 'learning' as const,
   autoApproveLevel: 'safe' as const,
   defaultAgent: 'codex' as const,
+  // N1: autonomous cloud opt-in — default OFF (fail-closed); on free-tier 429,
+  // escalate to Codex by default.
+  autonomousCloudConsent: false,
+  autonomousCloudOnExhaustion: 'escalate' as const,
+  // Agent output: default to a clean, findable local folder. Switch to 'obsidian'
+  // (with a Vault path) or 'custom' to unify saved drafts elsewhere.
+  agentOutputTarget: 'local' as const,
+  agentVaultPath: '',
+  agentTopicFolder: '',
+  agentCustomPath: '',
   realtimeTranslateEnabled: false,
   llmInterpreterEnabled: false,
   externalKeyboardShortcuts: false,
@@ -224,6 +234,37 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       if ('geminiModel' in newSettings && typeof newSettings.geminiModel === 'string') {
         envUpdates.push(['GEMINI_MODEL', newSettings.geminiModel]);
+      }
+      if ('cerebrasApiKey' in newSettings && typeof newSettings.cerebrasApiKey === 'string') {
+        envUpdates.push(['CEREBRAS_API_KEY', newSettings.cerebrasApiKey]);
+      }
+      if ('cerebrasModel' in newSettings && typeof newSettings.cerebrasModel === 'string') {
+        envUpdates.push(['CEREBRAS_MODEL', newSettings.cerebrasModel]);
+      }
+      if ('groqApiKey' in newSettings && typeof newSettings.groqApiKey === 'string') {
+        envUpdates.push(['GROQ_API_KEY', newSettings.groqApiKey]);
+      }
+      if ('groqModel' in newSettings && typeof newSettings.groqModel === 'string') {
+        envUpdates.push(['GROQ_MODEL', newSettings.groqModel]);
+      }
+      if ('autonomousCloudConsent' in newSettings) {
+        envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD', newSettings.autonomousCloudConsent ? '1' : '0']);
+      }
+      if ('autonomousCloudOnExhaustion' in newSettings) {
+        envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD_STOP', newSettings.autonomousCloudOnExhaustion === 'stop' ? '1' : '0']);
+      }
+      if ('agentOutputTarget' in newSettings && typeof newSettings.agentOutputTarget === 'string') {
+        envUpdates.push(['SHELLY_AGENT_OUTPUT_TARGET', newSettings.agentOutputTarget]);
+      }
+      if ('agentVaultPath' in newSettings && typeof newSettings.agentVaultPath === 'string') {
+        // Reuse OBSIDIAN_VAULT_PATH so the content-studio mirror benefits too.
+        envUpdates.push(['OBSIDIAN_VAULT_PATH', newSettings.agentVaultPath]);
+      }
+      if ('agentTopicFolder' in newSettings && typeof newSettings.agentTopicFolder === 'string') {
+        envUpdates.push(['SHELLY_AGENT_TOPIC_FOLDER', newSettings.agentTopicFolder]);
+      }
+      if ('agentCustomPath' in newSettings && typeof newSettings.agentCustomPath === 'string') {
+        envUpdates.push(['SHELLY_AGENT_CUSTOM_PATH', newSettings.agentCustomPath]);
       }
       if ('localLlmUrl' in newSettings && typeof newSettings.localLlmUrl === 'string') {
         envUpdates.push(['LOCAL_LLM_URL', newSettings.localLlmUrl]);

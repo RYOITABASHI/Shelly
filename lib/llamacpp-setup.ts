@@ -274,22 +274,32 @@ function normalizedModelText(model: LlamaCppModel): string {
 
 export function getModelRuntimeProfile(model: LlamaCppModel): LlamaCppRuntimeProfile {
   const text = normalizedModelText(model);
+  // Context sizes were 512–1024 originally, which is far too small for agent
+  // prompts that inject project/source context (a real run overflowed at 7806
+  // tokens vs a 1024 window). Qwen3.5 supports long context, so give the small
+  // "work" tiers a generous 8192 window and the heavier tiers a moderate 4096.
+  // The agent ALSO caps the injected context per request, so these are headroom,
+  // not a guarantee on their own.
+  // Idle timeouts were 30–600s, which killed a manually-started server before
+  // the user could use it (a 2B server idle-died in 180s with zero requests).
+  // Raised so a started server persists through a work session; the watcher still
+  // frees RAM after a long idle. Heavier tiers (more RAM) get shorter idles.
   if (text.includes('0.8b') || text.includes('0-8b')) {
-    return { contextSize: 1024, threads: 2, idleTimeoutSeconds: 600 };
+    return { contextSize: 8192, threads: 2, idleTimeoutSeconds: 1800 };
   }
   if (text.includes('1.7b') || text.includes('1-7b')) {
-    return { contextSize: 1024, threads: 3, idleTimeoutSeconds: 300 };
+    return { contextSize: 8192, threads: 3, idleTimeoutSeconds: 1800 };
   }
   if (text.includes('2b')) {
-    return { contextSize: 1024, threads: 4, idleTimeoutSeconds: 180 };
+    return { contextSize: 8192, threads: 4, idleTimeoutSeconds: 1800 };
   }
   if (text.includes('4b')) {
-    return { contextSize: 768, threads: 4, idleTimeoutSeconds: 60 };
+    return { contextSize: 4096, threads: 4, idleTimeoutSeconds: 900 };
   }
   if (text.includes('9b') || text.includes('8b')) {
-    return { contextSize: 512, threads: 3, idleTimeoutSeconds: 30 };
+    return { contextSize: 4096, threads: 3, idleTimeoutSeconds: 600 };
   }
-  return { contextSize: 1024, threads: 3, idleTimeoutSeconds: 180 };
+  return { contextSize: 4096, threads: 3, idleTimeoutSeconds: 900 };
 }
 
 function shellQuote(value: string): string {

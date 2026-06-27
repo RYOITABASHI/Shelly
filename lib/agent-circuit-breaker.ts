@@ -16,9 +16,12 @@ export const DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 3;
 
 /**
  * Count trailing consecutive FAILED runs in a chronological run-log list
- * (oldest→newest, as the store keeps them). A 'success' OR 'skipped' run breaks
- * the streak: 'skipped' is the cli "requires in-app confirmation" outcome — the
- * agent correctly declined, which is NOT a failure and must reset the breaker.
+ * (oldest→newest, as the store keeps them). Only a hard 'error' counts. A
+ * 'success' OR 'skipped' run breaks the streak ('skipped' is the cli "requires
+ * in-app confirmation" outcome — the agent correctly declined). 'unavailable'
+ * (a transient 429/5xx/network failure of a web backend after retry) also breaks
+ * the streak: an overloaded upstream is not the agent misbehaving, so it must
+ * NEVER auto-disable an otherwise-healthy unattended agent.
  */
 export function consecutiveFailures(logs: AgentRunLog[] | undefined): number {
   if (!logs || logs.length === 0) return 0;
@@ -27,7 +30,7 @@ export function consecutiveFailures(logs: AgentRunLog[] | undefined): number {
     if (logs[i].status === 'error') {
       n++;
     } else {
-      // 'success' | 'skipped' → streak ends.
+      // 'success' | 'skipped' | 'unavailable' → streak ends.
       break;
     }
   }

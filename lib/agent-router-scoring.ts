@@ -21,6 +21,17 @@ export interface RouteSignals {
   reasoningWeight: number;
   /** true when the task needs fresh/web/cited information. */
   needsSearch: boolean;
+  /**
+   * true when the task can ONLY be done by fetching the LIVE web (collect/gather
+   * CURRENT info, e.g. "ニュースを集めて"). Unlike needsSearch this is a hard
+   * capability requirement: non-web backends (local / Cerebras / Groq) are
+   * EXCLUDED from the ladder because they would only hallucinate a plausible
+   * template. Web-capable backends: Gemini (grounded) for general, Perplexity
+   * for academic, Codex (danger-full-access shell) as the net fallback.
+   */
+  needsWeb: boolean;
+  /** When needsWeb: 'academic' → Perplexity, 'general' → Gemini (grounded). */
+  webDomain: 'academic' | 'general';
   /** the keyword that drove the category, if any (for the reason log). */
   keyword?: string;
 }
@@ -44,14 +55,29 @@ export interface ScoredRoute {
 
 // Category keyword sets (kept local so the scorer is self-contained; suggestTool
 // keeps its own copy for the legacy keyword path and other callers).
-const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ'];
+const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'repository', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ'];
 // Genuine research only — NOT bare "news/latest" (those are a weak freshness
 // signal via needsSearch, handled below). "summarize the news" must stay a
 // transform task → on-device, not get routed to the paid deep-research backend.
 const RESEARCH_KW = ['paper', 'research', 'study', 'evidence', 'journal', 'academic', 'cite', 'citation', '論文', '研究', '学術', '調べ', '出典', '引用', '文献'];
+// NARROW scholarly set used ONLY to pick the web DOMAIN (academic→Perplexity vs
+// general→Gemini grounded). It deliberately EXCLUDES the generic citation words
+// in RESEARCH_KW (出典 / 引用 / 調べ / cite / citation / evidence): a news
+// collection that asks for sources ("出典付き") is still a GENERAL web task and
+// must route to Gemini, not the paid Perplexity deep-research tier.
+const ACADEMIC_WEB_KW = ['paper', 'research', 'study', 'journal', 'academic', '論文', '研究', '学術', '文献'];
 const PROSE_KW = ['article', 'essay', 'blog', 'draft', 'write', 'content', 'story', '記事', '下書き', 'ブログ', '執筆', '物語'];
 const TRANSFORM_KW = ['summarize', 'summary', 'format', 'translate', 'rewrite', 'extract', '要約', 'まとめ', '整形', '翻訳', '書き直', '抽出', '箇条書き'];
 const REASONING_KW = ['analyze', 'compare', 'evaluate', 'plan', 'design', 'reason', 'deep', 'why', 'strategy', '分析', '比較', '評価', '設計', '計画', '推論', '戦略', '考察', '精査'];
+// "Gather CURRENT info" verbs. Paired with a freshness signal (below) they make a
+// task web-mandatory — only a live web fetch can satisfy it. Kept distinct from
+// TRANSFORM_KW's 'まとめ' (summarize), which is NOT a collection verb.
+const COLLECTION_KW = ['集め', '収集', 'gather', 'collect', 'scrape', 'aggregate', '取得', 'ピックアップ', '探して', '探索'];
+// A freshness/current-info signal. On its own it is weak (a trivial "今日の天気"
+// must stay cheap); only freshness + a collection verb makes a task web-mandatory.
+function hasFreshnessSignal(prompt: string, lower: string): boolean {
+  return /\b(latest|today|current|news|recent|trending)\b/.test(lower) || /最新|今日|現在|速報|ニュース|時事|トレンド/.test(prompt);
+}
 
 // Per-tool capability profile (static, hand-tuned). Scores are 0–1.
 interface ToolProfile {
@@ -96,8 +122,20 @@ const TOOL_PROFILES: ToolProfile[] = [
   },
 ];
 
+/**
+ * Match a keyword against the (lowercased) text. Latin/ASCII keywords match on a
+ * WORD BOUNDARY so a short token like "pr" doesn't fire on "previous"/"approve"
+ * (this bit orchestration's "# Results from previous steps" scaffolding). CJK
+ * keywords have no word boundaries, so they match as a substring.
+ */
+function matchesKeyword(lower: string, kw: string): boolean {
+  if (/[぀-ヿ一-鿿]/.test(kw)) return lower.includes(kw);
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`).test(lower);
+}
+
 function hasAny(lower: string, kws: string[]): string | undefined {
-  return kws.find((kw) => lower.includes(kw));
+  return kws.find((kw) => matchesKeyword(lower, kw));
 }
 
 /** Detect task signals deterministically from the prompt (offline). */
@@ -132,9 +170,21 @@ export function detectRouteSignals(prompt: string): RouteSignals {
   const markerCount = REASONING_KW.filter((kw) => lower.includes(kw)).length;
   const lengthWeight = Math.min(prompt.length / 1500, 0.5);
   const reasoningWeight = Math.min(1, lengthWeight + markerCount * 0.3);
-  const needsSearch = category === 'research' || /\b(latest|today|current|news)\b/.test(lower) || /最新|今日|現在|速報|ニュース/.test(prompt);
+  const fresh = hasFreshnessSignal(prompt, lower);
+  const needsSearch = category === 'research' || fresh;
 
-  return { category, reasoningWeight, needsSearch, keyword };
+  // Web-mandatory = "gather CURRENT info" (collection verb + freshness). Only a
+  // live web fetch can do it; a non-web LLM just hallucinates a template.
+  const collects = hasAny(lower, COLLECTION_KW) !== undefined;
+  const needsWeb = fresh && collects;
+  // Domain picks the web primary. Use the NARROW scholarly set, NOT researchKw —
+  // "collect news with sources (出典付き)" is general → Gemini grounded, not the
+  // paid Perplexity deep-research tier. (Bug: 出典 ∈ RESEARCH_KW routed news to
+  // Perplexity, which has no key/quota → dead-ended on Codex, never trying Gemini.)
+  const academicWeb = hasAny(lower, ACADEMIC_WEB_KW) !== undefined;
+  const webDomain: 'academic' | 'general' = academicWeb ? 'academic' : 'general';
+
+  return { category, reasoningWeight, needsSearch, needsWeb, webDomain, keyword };
 }
 
 function scoreTool(profile: ToolProfile, signals: RouteSignals): number {
@@ -158,6 +208,8 @@ const LABELS: Record<ToolChoice['type'], string> = {
   cli: 'Codex CLI',
   perplexity: 'Perplexity API',
   'gemini-api': 'Gemini API',
+  cerebras: 'Cerebras',
+  groq: 'Groq',
   'ab-article-eval': 'A/B Article Eval',
   auto: 'Auto',
 };
@@ -167,8 +219,29 @@ const LABELS: Record<ToolChoice['type'], string> = {
  * confidence (top-two gap), and the full candidate score list for the audit log.
  * Deterministic + offline.
  */
+// Web-capable primaries (the only backends that can fetch live info).
+const GEMINI_WEB: ToolChoice = { type: 'gemini-api' };
+const PERPLEXITY_WEB: ToolChoice = { type: 'perplexity', model: 'sonar-deep-research' };
+
 export function scoreRoutes(prompt: string): ScoredRoute {
   const signals = detectRouteSignals(prompt);
+
+  // Web-mandatory task: bypass the affinity scorer (which is on-device-first and
+  // would hand a "collect the news" task to a non-web LLM that can only
+  // hallucinate). Force the web primary; the ladder excludes non-web backends.
+  if (signals.needsWeb) {
+    const tool = signals.webDomain === 'academic' ? PERPLEXITY_WEB : GEMINI_WEB;
+    return {
+      tool,
+      toolLabel: LABELS[tool.type],
+      why: `Layer-2 scorer: web-mandatory ${signals.webDomain} task (collect + fresh) → ${LABELS[tool.type]}; non-web backends excluded.`,
+      guard: 'keyword',
+      keyword: signals.keyword,
+      confidence: 0.9,
+      candidates: [{ toolType: tool.type, score: 0.9 }],
+    };
+  }
+
   const scored = TOOL_PROFILES.map((p) => ({ profile: p, score: scoreTool(p, signals) }))
     .sort((a, b) => b.score - a.score);
 
