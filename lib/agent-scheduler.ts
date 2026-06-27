@@ -103,6 +103,55 @@ export function nextTriggerMs(cron: string): number {
   return target.getTime();
 }
 
+/** The most recent scheduled fire time at or before now, or null if not parseable.
+ *  Mirrors nextTriggerMs but going BACKWARD — used to detect a missed run (a fire
+ *  that was due but never produced a run log). Display/health only, not scheduling. */
+export function lastTriggerMs(cron: string): number | null {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+
+  const [min, hour, dom, mon, dow] = parts;
+  const now = new Date();
+  const target = new Date();
+
+  const everyMinMatch = min.match(/^\*\/(\d+)$/);
+  if (everyMinMatch && hour === '*') {
+    const intervalMin = parseInt(everyMinMatch[1], 10);
+    if (intervalMin > 0) {
+      const prevMinute = Math.floor(now.getMinutes() / intervalMin) * intervalMin;
+      target.setSeconds(0);
+      target.setMilliseconds(0);
+      target.setMinutes(prevMinute);
+      if (target.getTime() > now.getTime()) target.setMinutes(prevMinute - intervalMin);
+      return target.getTime();
+    }
+  }
+
+  if (/^\d+$/.test(min)) target.setMinutes(parseInt(min));
+  if (/^\d+$/.test(hour)) target.setHours(parseInt(hour));
+  target.setSeconds(0);
+  target.setMilliseconds(0);
+
+  const dowList = (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*')
+    ? parseDowList(dow)
+    : null;
+  if (dowList && dowList.length) {
+    let best = -Infinity;
+    for (const day of dowList) {
+      const candidate = new Date(target);
+      let daysSince = (candidate.getDay() - day + 7) % 7;
+      if (daysSince === 0 && candidate.getTime() > now.getTime()) daysSince = 7;
+      candidate.setDate(candidate.getDate() - daysSince);
+      best = Math.max(best, candidate.getTime());
+    }
+    return best === -Infinity ? null : best;
+  }
+
+  // Daily (m h * * *): today at h:m if already past, else yesterday.
+  if (target.getTime() > now.getTime()) target.setDate(target.getDate() - 1);
+  return target.getTime();
+}
+
 export async function installSchedule(agent: Agent): Promise<void> {
   if (!agent.schedule) return;
 

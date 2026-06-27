@@ -231,6 +231,10 @@
 **#2 の残り：workspaceRoot → driver --cwd（P2）**
 - autonomyLevel は `--policy-json` で配線済。`agent.workspaceRoot` → `DRIVER_CWD` の配線は未（現状 `PROJECT_DIR`＝content-studio 既定）。workspace 分離を使う場合に必要。
 
+**#2 境界の本丸：out-of-workspace write の無人 hard-deny（P1、次スプリント）**
+- 現状 workspace 外への write は L2 で `gray`（escalate→承認待ち）。無人（承認者非在）では `wait_action_approval`（agent-executor.ts:635-658）が `ACTION_APPROVAL_TIMEOUT_SECONDS`(120s) で declined＝**実効 fail-closed**。だがこれは「無人＝承認者が来ない」＋「120s で declined」の **2つの実装事実の合流に依存した安全性**。誰かが利便性で gray のデフォルト承認 / タイムアウト延長 / auto-approve を足した瞬間、out-of-workspace write が**テストを赤にせず**開く。
+- 対策: **無人検出時（承認者非在）に gray ではなく即 `deny` へ落とす分岐**を入れ（`lib/agent-policy.ts` の classify / 無人時の gray 処理）、「2条件の合流」を**1個の不変条件**に畳む。「無人なら 120s 待たず即 declined」だけでもタイムアウト依存が消える。深層防御の層を1枚増やす話で、今日の穴を塞ぐ話ではない（README ① 公開時点では収集経路＝書込面ゼロ＋Codex 経路は 120s fail-closed で穴なし）。境界バグスレッドの本丸近くなので別タスクではなくこのスレッドの一部として扱う。2026-06-27 の market/reliability レビューで提起。
+
 **escalation 通知の poller 依存（要実機確認）**
 - escalation 通知は `app/_layout.tsx` の RN/JS poller で drain。バックグラウンド実行で JS が生きていない場合に通知が遅延/欠落しないか実機確認が必要（action approval notifier は native 起動）。
 

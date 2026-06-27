@@ -52,6 +52,14 @@ No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI
 
 <br>
 
+**An autonomous agent, scheduled in plain language, that wakes itself to do the work**
+
+https://github.com/user-attachments/assets/ab272ae8-c741-4acb-b71d-2da151f50d75
+
+Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled on-device agent that fires on its own alarm — here it set itself for 16:16, woke up while the screen was off, collected sources with the user's own API key, and wrote a primary-source summary to the Obsidian vault. *Observed end-to-end once on a Galaxy Z Fold6 (N=1); cross-OEM and deep-Doze behavior is not yet tested beyond this device — see [Status](#status).*
+
+<br>
+
 ---
 
 ## Why Shelly?
@@ -66,13 +74,13 @@ You're running an AI coding tool in a terminal — Codex, or any other AI CLI. I
 
 **Seven steps. Every single time.**
 
-This is the daily workflow of every developer using CLI-based AI tools. The terminal and the AI live in different worlds, and *you* are the copy-paste bridge between them.
+This is a familiar workflow for developers using CLI-based AI tools. The terminal and the AI live in different worlds, and *you* are the copy-paste bridge between them.
 
 **Shelly puts the terminal and the AI side by side. The AI reads your terminal output automatically.**
 
 Say **"fix the error on the right"**. Shelly reads the terminal output, explains the error, and generates an executable command. Tap **[Run]** and the fix lands directly in the Terminal pane.
 
-No copy. No paste. No tab switching. Zero friction.
+No copy. No paste. No tab switching.
 
 **Three levels of value:**
 
@@ -84,7 +92,7 @@ No copy. No paste. No tab switching. Zero friction.
 
 ## Important Android Notes
 
-- **APK is ~700 MB** because Shelly bundles real tools, not shims. bash,
+- **APK is ~800 MB** because Shelly bundles real tools, not shims. bash,
   Node.js, Python 3, git, curl, ripgrep, jq, tmux, vim, less, sqlite3,
   make, ssh — plus the OpenAI Codex CLI runtime — ship inside the APK.
   No Termux, no repository server, no package manager bootstrap. First
@@ -110,7 +118,7 @@ No copy. No paste. No tab switching. Zero friction.
 
 ### Install
 
-Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1514, commit `687b2f3f`).
+Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1649, commit `b1dfb133`).
 
 After the first install, Shelly can update itself from inside the app: open the cloud-download button in the top bar or **Settings → Updates**. Shelly reads the public `android-latest/latest.json` manifest, compares Android `versionCode`, enqueues the APK with Android DownloadManager under `/sdcard/Download/shelly-update-<versionCode>/`, verifies SHA-256, then opens Android's package installer. The system download keeps running if Shelly is backgrounded or restarted. Android still asks you to confirm the install because Shelly is distributed outside the Play Store.
 
@@ -201,12 +209,13 @@ No Termux install. No proot. No ttyd. No remote bridge.
 
 ## Features
 
-> Everything listed in this section is working in the current build. Anything not yet shipped is listed under [Coming Soon](#coming-soon) further down.
+> Features below describe implemented paths in the current build. Items with limited device validation (e.g. voice dialogue, immortal sessions, unattended agent firing) are caveated here and in [Status](#status) / [Coming Soon](#coming-soon).
 
 ### Highlights
 
 | | |
 |---|---|
+| **On-device autonomous agent** | Say it in plain language → a scheduled agent runs on the phone *by itself* (screen off), on your own keys and tools, and tells you when it ran. It works where a cloud agent can't reach — your files, terminal, local LLM, the device itself. *One unattended run observed end-to-end on one device (N=1) — cross-OEM reliability not yet proven; see [Status](#status).* ([details](#autonomous-agents)) |
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
@@ -214,11 +223,28 @@ No Termux install. No proot. No ttyd. No remote bridge.
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **7 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, and Ask. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
-| **Local LLM that holds its own** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
+| **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, and device load without opening the app. It is interactive: **ASK** can deliver a prompt to a live, resumed, or freshly-started Codex PTY; **Allow / Deny** and up to six widget choice pills answer Codex straight from the launcher. |
 | **Color themes** | Blue / Red / Purple palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
+
+### Autonomous agents
+
+Say what you want in plain language; Shelly registers a scheduled agent that runs **on the device, by itself** — even with the screen off. It wakes via Android **AlarmManager** (`setExactAndAllowWhileIdle`, designed to fire under Doze, unlike cron-under-Termux), runs on-device with **your own keys and tools**, and **tells you when it ran** (notification + per-agent next/last-run, with a missed-run warning if an expected run didn't record).
+
+The wedge isn't "smarter than a cloud agent" — it's that it **works where a cloud agent can't reach**: your files, your terminal/scripts, your local LLM, the phone itself.
+
+It's a **capability you point at your own tools**, not a fixed feature. One example (mine):
+
+```
+@agent every weekday at 8am, collect the latest STEAM×AI education papers and news,
+and write the primary-source links + a short summary to my Obsidian vault
+```
+
+The schedule above registers an agent that, when it fires, wakes the phone, researches via Perplexity, and drops a dated, sourced summary into Obsidian — unattended. (Observed end-to-end once so far; see the demo and [Status](#status) for what's actually been verified.) Swap in your own schedule, source, and output.
+
+**Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
 
 ### Scouter Widget
 
@@ -467,7 +493,7 @@ Currently registered:
 | Area | State |
 |---|---|
 | Native PTY, sessions, tmux revival | ✅ shipping |
-| Multi-pane layout (5 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
+| Multi-pane layout (7 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
 | Atomic paste (bracketed-paste wrap when guest opts in via DECSET 2004, single `TerminalEmulator.paste()` choke point, IME chunk-split coalesced) | ✅ shipping (bugs #91, #94, #97, #106) |
 | `/sdcard` access via `MANAGE_EXTERNAL_STORAGE` (first-launch grant flow) | ✅ shipping (bug #92) |
 | `bash` wrapper at `$HOME/bin/bash` for shebangs and `bash script.sh` | ✅ shipping (bug #93) |
@@ -487,7 +513,7 @@ Currently registered:
 | Codex CLI launch/auth | ✅ supported; bare `codex` runs over the native PTY, using Shelly device-code auth before TUI launch |
 | Codex managed native runtime (`codex_exec` / `codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` smoke-tested, repair / reset to bundled runtime) | ✅ managed latest |
 | Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
-| Background agents — `@agent` registration, AlarmManager scheduling, Sidebar Tasks list with run-now / delete | ✅ wired, AlarmManager end-to-end smoke test pending |
+| Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Codex |
@@ -506,7 +532,8 @@ Full validation checklist: [`docs/superpowers/specs/2026-04-13-validation-checkl
 Parts of the app are written but not yet verified. These are on the short-term roadmap, not in the current build:
 
 - **Play Store / F-Droid distribution** — the APK is published via GitHub Releases only; store submission flow not yet done
-- **End-to-end device validation** for voice dialogue, immortal sessions, and background agent AlarmManager scheduling — all wired but not yet smoke-tested on the target device
+- **End-to-end device validation** for voice dialogue and immortal sessions — wired but not yet smoke-tested on the target device
+- **Cross-OEM autonomous-agent reliability** — unattended scheduled firing is observed on the Z Fold6 (N=1), but Android background limits vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers); broad cross-device reliability + a device health/permission checklist are not done yet
 - **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in an earlier cleanup pass. Snippets can still be added by editing `~/.shelly/snippets.json` directly or via `shelly config`.
 
 ---
@@ -556,7 +583,7 @@ For a React Native app this is an unusual architecture: an embedded native termi
 
 - **Vibe Coders** — Lovable / Bolt / Replit Agent, but on your phone with a real terminal underneath
 - **Mobile-first developers** — Codex CLI users and anyone serious about CLI-first AI coding workflows who want a proper multi-pane IDE around real local terminals
-- **Non-engineers with ideas** — Shelly translates everything. Dangerous operations are blocked until you understand them
+- **Non-engineers with ideas** — Shelly translates everything. Dangerous operations are surfaced with explanations and approval steps before they run
 
 ---
 
@@ -724,14 +751,14 @@ asset name, size, and SHA-256.
 
 | Metric | Value | Source |
 |---|---:|---|
-| Public APK version | `6.0.0` / Android `versionCode` 1514 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Public APK commit | `687b2f3f` (`687b2f3fe7328f7439cbaade5368734934962d38`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
-| APK artifact | `Shelly-android-v6.0.0-1514-27514462191-1-687b2f3fe732.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
-| APK artifact size | `832,653,049` bytes (`832.7 MB`, `794.1 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
-| APK SHA-256 | `bf1449064fa44eb2fc9db193d0aeec64b942badc2f2151c8e0439988156fa7a5` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK version | `6.0.0` / Android `versionCode` 1649 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
+| Public APK commit | `b1dfb133` (`b1dfb133c69c4c21dbc96df72c7627daf27eaa7a`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
+| APK artifact | `Shelly-android-v6.0.0-1649-28276103389-1-b1dfb133c69c.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
+| APK artifact size | `801,357,530` bytes (`801.4 MB`, `764.2 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
+| APK SHA-256 | `6452fb741b6ff7f4d9e702e01a684f5bb0cb53a89aab6390733838c729cca2a1` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
 | APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Codex runtime version | `0.139.0` | `.ci-versions/codex.txt` |
-| Codex runtime artifact size | `140,557,745` bytes (`140.6 MB`, `134.0 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
+| Codex runtime version | `0.142.0` | `.ci-versions/codex.txt` |
+| Codex runtime artifact size | `168,257,099` bytes (`168.3 MB`, `160.5 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
 | Codex runtime manifest size | `613` bytes | [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json) |
 | CI quality job | `43s` | lint, typecheck, unit tests |
 | CI Android build job | `11m 45s` | full release build job |
@@ -790,7 +817,7 @@ Read the contributing guide: **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 In two years, mobile terminals will be standard. The hardware is already here — 40+ TOPS NPUs, 12 GB of RAM, 7B-parameter models running on-device at interactive speeds — and the only thing missing is the interface. Shelly is a bet on that timeline.
 
-When a full IDE runs in your pocket and the AI doesn't have to phone home, you get zero-cost assisted development, complete privacy, and the ability to ship real software from places no laptop reaches. The first person to ship a production app from a plane without wifi will be using something like this.
+When a full IDE runs in your pocket and local-LLM work doesn't have to phone home, you can work on your own keys, keep on-device inference fully local, and ship real software from places no laptop reaches. The first person to ship a production app from a plane without wifi will be using something like this.
 
 Shelly was built for that future. Local LLM routing is already wired. The native terminal is already there. The multi-agent routing already supports local models alongside cloud APIs. The layout system already handles the screen real estate of foldables and tablets.
 
@@ -872,7 +899,7 @@ Shelly runs commands on your device. The safety system is a best-effort layer, n
 - **Security model** — Shelly is a normal Android app sandbox, not a hardened VM. Terminal commands and approved AI-agent actions run as the app uid and can read/write whatever the app can access.
 - **Command safety is regex-based** — The 5-level risk assessment uses pattern matching. It catches common dangerous patterns (`rm -rf /`, `dd if=`, etc.) but is not a sandbox. Treat it as a seatbelt, not a firewall.
 - **APK distribution uses CI release APKs** — GitHub Actions builds release APKs and publishes them to the rolling `android-latest` release. For production-grade signing guarantees, clone the repo and build with your own keystore. See [Build from source](#build-from-source).
-- **Autonomous agents require explicit approval per action** — AI Pane and background actions run through explicit API providers with per-action command approval. There is no hidden subscription worker.
+- **Autonomous agents are gated, not free-roaming** — AI Pane and background agents use explicit API providers, not hidden subscription reuse. Shell-command execution and risky actions still go through Shelly's approval / command-safety path; when an agent runs unattended and an action needs approval, it fails closed rather than running unreviewed. There is no hidden subscription worker.
 - **API keys are stored in SecureStore** — Keys are never written to logs or debug output. SecureStore uses Android Keystore encryption on supported devices.
 - **`shelly-doctor`** — reports shell/native binary presence, bundled Codex binaries, JS dispatcher, local LLM endpoints, and whether `~/.codex/auth.json` exists. Run it when something feels broken.
 - **Log redaction** — Shelly redacts common API key and token patterns before writing app debug logs. This is a guardrail, not permission to paste secrets into prompts or terminal output.
@@ -885,7 +912,7 @@ See [SECURITY.md](./SECURITY.md) for the threat model and private vulnerability 
 ## Privacy
 
 - **User profile learning** — Shelly observes your command patterns and AI usage to personalize suggestions (`lib/user-profile.ts`). This data stays on-device in AsyncStorage. However, when you send a message to a cloud AI, the profile context is included in the API request to improve response quality. You can disable profile learning in Settings.
-- **No telemetry** — Shelly does not phone home. No analytics, no crash reporting, no usage tracking. The only network traffic is your explicit AI API calls.
+- **No telemetry** — Shelly does not phone home: no analytics, no crash reporting, no usage tracking. Network traffic comes only from things you initiate — your AI API calls, Codex auth, update checks/downloads, Browser Pane use, and any local/API endpoints you configure.
 - **Local LLM mode** — For fully private usage, configure a local GGUF model through llama.cpp. Qwen3.5-2B Q4_K_M is the recommended default, Qwen3 1.7B and Qwen3.5 0.8B are available for lower memory pressure, and 4B/9B models are available for short quality checks. All processing stays on-device.
 
 ---
