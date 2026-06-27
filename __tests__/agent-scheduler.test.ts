@@ -3,7 +3,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   default: { scheduleAgent: jest.fn(), cancelAgent: jest.fn() },
 }));
 
-import { parseDowList, cronToIntervalMs, nextTriggerMs } from '@/lib/agent-scheduler';
+import { parseDowList, cronToIntervalMs, nextTriggerMs, lastTriggerMs } from '@/lib/agent-scheduler';
 
 describe('parseDowList — cron day-of-week field', () => {
   it('parses a single day, a list, and normalizes Sunday (0 or 7)', () => {
@@ -81,5 +81,47 @@ describe('nextTriggerMs — soonest of the listed days', () => {
     const ms = nextTriggerMs('0 8 * * 1,9');
     expect(Number.isFinite(ms)).toBe(true);
     expect(ms).toBeGreaterThan(Date.now());
+  });
+});
+
+describe('lastTriggerMs — most recent past fire (missed-run detection)', () => {
+  it('daily: returns a past time at the right hour:minute, within the last 24h', () => {
+    const ms = lastTriggerMs('0 8 * * *')!;
+    const d = new Date(ms);
+    expect(ms).toBeLessThanOrEqual(Date.now());
+    expect(Date.now() - ms).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+    expect(d.getHours()).toBe(8);
+    expect(d.getMinutes()).toBe(0);
+  });
+
+  it('weekly DOW list: returns a past Mon/Fri at 08:00 within the last 7 days', () => {
+    const ms = lastTriggerMs('0 8 * * 1,5')!; // Mon & Fri 08:00
+    const d = new Date(ms);
+    expect(ms).toBeLessThanOrEqual(Date.now());
+    expect(Date.now() - ms).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000);
+    expect(d.getHours()).toBe(8);
+    expect([1, 5]).toContain(d.getDay());
+  });
+
+  it('interval: returns the most recent N-minute boundary at or before now', () => {
+    const ms = lastTriggerMs('*/15 * * * *')!;
+    const d = new Date(ms);
+    expect(ms).toBeLessThanOrEqual(Date.now());
+    expect(Date.now() - ms).toBeLessThan(15 * 60 * 1000);
+    expect(d.getMinutes() % 15).toBe(0);
+  });
+
+  it('past fire is before now and the next fire is after now (coherent window)', () => {
+    for (const cron of ['0 8 * * *', '0 8 * * 1,5', '*/30 * * * *']) {
+      const last = lastTriggerMs(cron)!;
+      const next = nextTriggerMs(cron);
+      expect(last).toBeLessThanOrEqual(Date.now());
+      expect(next).toBeGreaterThan(Date.now());
+      expect(last).toBeLessThan(next);
+    }
+  });
+
+  it('returns null for an unparseable cron', () => {
+    expect(lastTriggerMs('not a cron')).toBeNull();
   });
 });

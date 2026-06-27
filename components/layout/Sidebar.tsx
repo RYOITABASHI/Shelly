@@ -20,6 +20,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
+import { nextTriggerMs, lastTriggerMs } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
@@ -60,6 +61,18 @@ const QUICK_FOLDERS = [
   { label: 'DOCUMENT', path: '/sdcard/Documents',  icon: 'description' },
   { label: 'MUSIC',    path: '/sdcard/Music',      icon: 'music-note' },
 ] as const;
+
+// Compact local timestamp for the agent reliability block (M/D HH:mm), with a
+// relative hint for very recent runs so "did it just run?" is answerable at a glance.
+function formatWhen(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const deltaMin = Math.round((Date.now() - ms) / 60000);
+  if (deltaMin >= 0 && deltaMin < 60) return `${stamp} (${deltaMin}m ago)`;
+  if (deltaMin < 0 && deltaMin > -60) return `${stamp} (in ${-deltaMin}m)`;
+  return stamp;
+}
 
 function isUiAutonomousTool(tool: ToolChoice): boolean {
   return tool.type === 'cli' || tool.type === 'local';
@@ -368,13 +381,41 @@ export function Sidebar() {
           .map((s, i) => `  ${i + 1}. ${s.slice(0, 60)}`)
           .join('\n')}`
       : '';
+    // Reliability block (proof-of-execution): next scheduled run, last run (time ·
+    // status · duration · error), and a MISSED-RUN warning when a scheduled fire was
+    // due but never recorded a run — the trust signal that surfaces OEM/Doze kills
+    // ("it silently didn't fire") instead of letting them pass unnoticed.
+    const relLines: string[] = [];
+    if (agent.schedule && agent.enabled) {
+      relLines.push(`${t('sidebar.agent_next_run')}: ${formatWhen(nextTriggerMs(agent.schedule))}`);
+    }
+    if (lastLog) {
+      const dur = lastLog.durationMs ? ` · ${Math.round(lastLog.durationMs / 1000)}s` : '';
+      relLines.push(`${t('sidebar.agent_last_run')}: ${formatWhen(lastLog.timestamp)} · ${lastLog.status}${dur}`);
+      if (lastLog.status === 'error' && lastLog.errorMessage) {
+        relLines.push(`${t('sidebar.agent_last_error')}: ${lastLog.errorMessage.slice(0, 160)}`);
+      } else if (lastLog.outputPreview) {
+        relLines.push(`— ${lastLog.outputPreview.slice(0, 120)}`);
+      }
+    } else {
+      relLines.push(t('sidebar.agent_never_run'));
+    }
+    if (agent.schedule && agent.enabled) {
+      const lastExpected = lastTriggerMs(agent.schedule);
+      const lastActual = agent.lastRun ?? lastLog?.timestamp ?? agent.createdAt;
+      const GRACE = 5 * 60 * 1000;
+      if (lastExpected != null && lastExpected < Date.now() - GRACE && lastExpected > lastActual + GRACE) {
+        relLines.push(`⚠ ${t('sidebar.agent_missed_run', { when: formatWhen(lastExpected) })}`);
+      }
+    }
+    const reliability = relLines.join('\n');
     const body = [
       (agent.prompt || agent.description || '').trim(),
       '',
       meta,
+      reliability,
       `${t('sidebar.agent_memory_title', { count: memoryNotes.length })}`,
       stepDetail,
-      lastLog ? `${t('sidebar.agent_last')}: ${lastLog.status}${lastLog.outputPreview ? ` — ${lastLog.outputPreview.slice(0, 160)}` : ''}` : '',
       routeDetail,
     ].filter(Boolean).join('\n');
     const buttons = [
