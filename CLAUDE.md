@@ -6,6 +6,8 @@
 
 **[docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md](./docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md)** — 🔴 最新の再開点。ブランチ `claude/work-handoff-2qb1xd`（build 1608、main未マージ）。on-device 自律推論の残ブロッカー＝local-LLM autostart の3真因（A lock-leak / B model-not-installed / C launcher非互換、全て `lib/agent-executor.ts` `ensure_local_llm_server`）と次タスク T1–T3、③ ロードマップ、不変条件を内蔵。**現環境からの再開はまずこれ。**
 
+**[docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md](./docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md)** — 🟢 次の実装タスク（モバイル連携セッションで）。Scouter ウィジェットから A=入力ショートカット + B=登録済みエージェントを1タップ RUN（カード無し＝v7.0.0 の `ACTION_RUN_AGENT` foreground-service 発火を widget タップで再利用）。着手条件（コアループ）は v7.0.0 で達成済み。HEAD の file:line・設計・ガード・実機検証を内蔵。
+
 **[docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md](./docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md)** — 🎯 自律秘書フル実装 2 日スプリント（Codex 用）。`/goal` チャンクを順に貼って「実装→プッシュ前エージェントレビュー必須→ビルド→実機テスト→次の /goal」を回す。Phase 0 残り（G1）→ 記憶層 → スキル → ルーター → inbound → orchestration。踏んだ地雷（agent-store no-persist / `$HOME` vs getHomePath / DownloadManager 公開dir / Knox bridge）と build/install/verify 手順を内蔵。**現環境からの再開はまずこれ。**
 
 **[docs/superpowers/DEFERRED.md](./docs/superpowers/DEFERRED.md)** — 後回しリストの唯一の真実の情報源。

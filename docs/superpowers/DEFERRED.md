@@ -565,8 +565,9 @@ fail-loud する。詳細:
 
 ### Secretary MVP — ウィジェット導線 (Scouter widget 拡張: trigger + status)
 
-**優先度**: P2 (Phase 0 MVP コアループ着地後の fast-follow)
-**状態**: 未着手。設計確定済み (2026-06-19, CC)。Phase 0 MVP (`docs/superpowers/specs/2026-06-16-hermes-secretary-mvp-phase0.md`) のコアループ (NL→確認カード→ゲート→action) が on-device 立証された後に着手する。
+**優先度**: P1 (着手条件クリア。実装はモバイル連携セッションで)
+**状態**: 🟢 着手可。**ブロッカー（コアループ未完）は解消** — コアループ (NL→確認カード→ゲート→action→無人 AlarmManager 発火) は **v7.0.0 で on-device 立証・出荷済み** (N=1 デモ)。ユーザー決定 (2026-06-27): **A（入力ショートカット）と B（登録済みエージェントを1タップ RUN＝カード無しの本物）を両方実装**。実装はモバイル連携セッションで後ほど。
+**→ 実装引き継ぎ (cold-start resume)**: `docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md`（HEAD の file:line・A/B 設計・ガード・実機検証手順を内蔵）。**B の肝**: widget ボタン → `PendingIntent.getForegroundService` で `TerminalSessionService.ACTION_RUN_AGENT`（v7.0.0 のアラーム発火と同一 intent）を叩く＝アプリを開かずカード無しで既存エージェントを発火。
 
 **何を足すか** (既存 `ScouterWidgetProvider.kt` の拡張であって新規 widget ではない — インフラは 2026-06-10 に実機 PASS 済み):
 - **トリガー導線** — ウィジェットから「〇〇やって」を最短距離で開始。`ScouterWidgetPromptActivity` に deep-link action (例 `shelly://agent/new?voice=1`) を1本追加し、tap → チャットを音声待機状態で開く。配線 (`promptPendingIntent` / `ScouterWidgetPromptActivity` / `$HOME/.shelly-deep-link-queue` poll) は全て既存・実証済み。**ほぼタダ。**

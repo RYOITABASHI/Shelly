@@ -118,7 +118,7 @@ No copy. No paste. No tab switching.
 
 ### Install
 
-Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build; the current `v6.0.0` release APK is aligned with that rolling build (`versionCode` 1649, commit `b1dfb133`).
+Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build, and the latest tagged `vX.Y.Z` release APK is cut from that same build — the exact `versionCode`, commit, and SHA-256 are live in [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json).
 
 After the first install, Shelly can update itself from inside the app: open the cloud-download button in the top bar or **Settings → Updates**. Shelly reads the public `android-latest/latest.json` manifest, compares Android `versionCode`, enqueues the APK with Android DownloadManager under `/sdcard/Download/shelly-update-<versionCode>/`, verifies SHA-256, then opens Android's package installer. The system download keeps running if Shelly is backgrounded or restarted. Android still asks you to confirm the install because Shelly is distributed outside the Play Store.
 
@@ -744,34 +744,27 @@ The `colors` object is mutable and keeps the same identity, so every `import { c
 
 ## Operational Metrics
 
-Measured on the public **Shelly v6.0.0** Android release line. The rolling
-[`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json)
-manifest is the source of truth for the newest APK `versionCode`, commit,
-asset name, size, and SHA-256.
+These are intentionally operational rather than synthetic — they show the cost
+of shipping a real Android-native toolchain, not a thin client. The exact
+per-build numbers (`versionCode`, commit, asset name, byte size, SHA-256) live
+in the release manifests, which the in-app updater reads directly, so they never
+drift out of sync with this page:
 
-| Metric | Value | Source |
-|---|---:|---|
-| Public APK version | `6.0.0` / Android `versionCode` 1649 | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Public APK commit | `b1dfb133` (`b1dfb133c69c4c21dbc96df72c7627daf27eaa7a`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release target |
-| APK artifact | `Shelly-android-v6.0.0-1649-28276103389-1-b1dfb133c69c.apk` | [`v6.0.0`](https://github.com/RYOITABASHI/Shelly/releases/tag/v6.0.0) / [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) |
-| APK artifact size | `801,357,530` bytes (`801.4 MB`, `764.2 MiB`) | [`android-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/android-latest) release asset |
-| APK SHA-256 | `6452fb741b6ff7f4d9e702e01a684f5bb0cb53a89aab6390733838c729cca2a1` | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| APK manifest size | `642` bytes | [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) |
-| Codex runtime version | `0.142.0` | `.ci-versions/codex.txt` |
-| Codex runtime artifact size | `168,257,099` bytes (`168.3 MB`, `160.5 MiB`) | [`codex-runtime-latest`](https://github.com/RYOITABASHI/Shelly/releases/tag/codex-runtime-latest) release asset |
-| Codex runtime manifest size | `613` bytes | [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json) |
-| CI quality job | `43s` | lint, typecheck, unit tests |
-| CI Android build job | `11m 45s` | full release build job |
-| Gradle APK step | `7m 52s` | `:terminal-emulator:externalNativeBuildRelease assembleRelease` |
-| Release publish step | `45s` | `android-latest` APK + manifest upload |
-| Release update verification | SHA-256 before installer handoff | Updates UI and release manifest |
-| Runtime update verification | SHA-256 plus `codex_tui` / `codex_exec --version` smoke tests | Runtime updater |
+- **Android APK** — [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json): `versionCode`, `versionName`, `gitSha`, `apkAssetName`, `apkSizeBytes`, `sha256`.
+- **Codex runtime** — [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json): `codexVersion`, asset name, `sha256`.
 
-These numbers are intentionally operational rather than synthetic. They show
-the cost of shipping a real Android-native toolchain: a large APK, a separate
-managed Codex runtime, and a CI pipeline that checks app code, builds native
-release artifacts, and generates verified release metadata/update manifests
-before users install anything.
+| What | Shape | Why it costs that |
+|---|---|---|
+| APK size | ~800 MB | bundles bash / Node.js / Python 3 / git / ripgrep / … plus the Codex runtime as real binaries, not shims |
+| Codex runtime | shipped + managed on its own lane (~160 MB) | promoted separately so it can move faster than the APK |
+| Release verification | SHA-256 checked before the installer handoff | the updater refuses an APK whose hash doesn't match the manifest |
+| Runtime verification | SHA-256 + `codex_tui` / `codex_exec --version` smoke tests | a runtime candidate is only promoted after it actually runs |
+| CI per release | lint · typecheck · unit tests · native release build · signed APK + manifest publish | every release artifact is built and verified by GitHub Actions |
+
+The point: a large APK, a separately managed Codex runtime, and a CI pipeline
+that builds native release artifacts and generates verified update manifests
+before anything reaches a device. The exact, current numbers live in the
+manifests linked above rather than being copied here where they would go stale.
 
 ---
 
@@ -860,7 +853,7 @@ GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo
 
 ## Known Limitations
 
-Shelly v6.0.0 is pre-release Android software. Here's what we know isn't perfect yet.
+Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-2B Q4_K_M is the recommended on-device default, Qwen3 1.7B / Qwen3.5 0.8B are lighter options, and 4B/9B models are reserved for short quality checks.
 - **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
