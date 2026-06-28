@@ -418,15 +418,12 @@ export function Sidebar() {
       stepDetail,
       routeDetail,
     ].filter(Boolean).join('\n');
-    const isPinnedToWidget = useSettingsStore.getState().settings.pinnedAgentId === agent.id;
+    // NOTE: Android's Alert caps at 3 buttons; keep this to Run/Pause/Close (+Memory
+    // only when present) so Close is never displaced. Pin-to-widget lives on the
+    // row's long-press menu (showPinMenu) to avoid a 4th button eating Close.
     const buttons = [
       { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
       { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
-      {
-        text: isPinnedToWidget ? t('sidebar.agent_unpin_widget') : t('sidebar.agent_pin_widget'),
-        onPress: () =>
-          useSettingsStore.getState().updateSettings({ pinnedAgentId: isPinnedToWidget ? undefined : agent.id }),
-      },
       ...(memoryNotes.length
         ? [{ text: t('sidebar.agent_memory_view'), onPress: () => showMemoryList(agent, memoryNotes) }]
         : []),
@@ -434,6 +431,25 @@ export function Sidebar() {
     ];
     Alert.alert(agent.name, body, buttons);
   }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList]);
+
+  // Long-press an agent row → pin/unpin it as the Scouter widget's one-tap RUN
+  // target (Task B). Kept off the detail dialog so it can't displace its Close
+  // button (Android Alert caps at 3 buttons).
+  const showPinMenu = React.useCallback((agent: Agent) => {
+    const isPinned = useSettingsStore.getState().settings.pinnedAgentId === agent.id;
+    Alert.alert(
+      agent.name,
+      t(isPinned ? 'sidebar.agent_unpin_widget_body' : 'sidebar.agent_pin_widget_body'),
+      [
+        {
+          text: isPinned ? t('sidebar.agent_unpin_widget') : t('sidebar.agent_pin_widget'),
+          onPress: () =>
+            useSettingsStore.getState().updateSettings({ pinnedAgentId: isPinned ? undefined : agent.id }),
+        },
+        { text: t('common.close'), style: 'cancel' as const },
+      ],
+    );
+  }, [t]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
@@ -600,6 +616,7 @@ export function Sidebar() {
                   <Pressable
                     style={styles.taskInfo}
                     onPress={() => void showAgentDetail(agent)}
+                    onLongPress={() => showPinMenu(agent)}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >
