@@ -24,7 +24,6 @@ import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
-import { useAIPaneStore } from '@/store/ai-pane-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
@@ -854,21 +853,19 @@ export default function RootLayout() {
             await handleAgentActionConfirm(runId);
           }
         } else if (target === 'agent-new') {
-          // Task A (Scouter widget ＋NEW): open the AI pane — the agent NL input that
-          // runs parseAgentNL → confirm card — and arm voice when ?voice=1. This is an
-          // input shortcut, NOT a bypass: registration still goes through the card.
+          // Task A (Scouter widget ＋NEW): open + focus the AI pane — the agent NL
+          // input that runs parseAgentNL → confirm card. A navigation shortcut only;
+          // the user types via the normal pane controls and registration still goes
+          // through the card (no bypass).
           await waitForMultiPaneHydration();
-          const voice = queryValue(parsed.queryParams?.voice) === '1';
           const opened = focusPaneByTab('ai');
           if (!opened) {
             logInfo('DeepLink', 'agent-new: could not open AI pane');
             return;
           }
-          // Make the AI pane the focused one so it (and only it) consumes the launch.
           const aiSlot = useMultiPaneStore.getState().slots.find((s) => s?.tab === 'ai');
           if (aiSlot) usePaneStore.getState().setFocusedPane(aiSlot.id);
-          useAIPaneStore.getState().requestAgentNewLaunch(voice);
-          logInfo('DeepLink', `agent-new opened (voice=${voice})`);
+          logInfo('DeepLink', 'agent-new opened (AI pane)');
         } else if (target === 'agent-chat') {
           await waitForMultiPaneHydration();
           const compose = queryValue(parsed.queryParams?.compose);

@@ -24,12 +24,6 @@ type AIPaneState = {
   conversations: Record<string, AIPaneConversation>;
   isLoaded: boolean;
 
-  /** Task A (widget → agent input): a one-shot launch signal set by the
-   *  `shelly:///agent-new` deep-link. The next AI pane to mount/focus consumes it
-   *  once — focusing the composer, and starting voice when `voice` is true (the NL
-   *  utterance lands on the normal parseAgentNL → confirm-card flow). */
-  pendingAgentNewLaunch: { voice: boolean } | null;
-
   // Initialization
   load: () => Promise<void>;
 
@@ -41,10 +35,6 @@ type AIPaneState = {
   setTerminalContext: (paneId: string, context: string | null) => void;
   setActiveAgent: (paneId: string, agent: ChatAgent | null) => void;
   clearConversation: (paneId: string) => void;
-  /** Arm the one-shot agent-new launch (Task A). */
-  requestAgentNewLaunch: (voice: boolean) => void;
-  /** Consume the one-shot launch signal (returns it once, then clears it). */
-  consumeAgentNewLaunch: () => { voice: boolean } | null;
 };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -108,7 +98,6 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
   return {
     conversations: {},
     isLoaded: false,
-    pendingAgentNewLaunch: null,
 
     load: async () => {
       try {
@@ -244,14 +233,6 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         },
       }));
       debouncedSave(persist);
-    },
-
-    requestAgentNewLaunch: (voice) => set({ pendingAgentNewLaunch: { voice } }),
-
-    consumeAgentNewLaunch: () => {
-      const pending = get().pendingAgentNewLaunch;
-      if (pending) set({ pendingAgentNewLaunch: null });
-      return pending;
     },
   };
 });

@@ -307,20 +307,6 @@ export default function AIPane() {
     else startRecording();
   }, [isRecording, startRecording, stopRecording]);
 
-  // Task A (widget ＋NEW deep-link): the focused AI pane consumes the one-shot
-  // agent-new launch signal once. If voice was requested, start recording so the
-  // user can just speak — the utterance lands on the normal parseAgentNL →
-  // confirm-card flow. Best-effort: voice starts only if mic permission is already
-  // granted (cold-start permission prompt is handled by usePaneVoice; device-verify).
-  const pendingAgentNewLaunch = useAIPaneStore((s) => s.pendingAgentNewLaunch);
-  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
-  useEffect(() => {
-    if (!pendingAgentNewLaunch) return;
-    if (focusedPaneId && focusedPaneId !== paneId) return; // only the focused pane handles it
-    const signal = useAIPaneStore.getState().consumeAgentNewLaunch();
-    if (signal?.voice && !isRecording) startRecording();
-  }, [pendingAgentNewLaunch, focusedPaneId, paneId, isRecording, startRecording]);
-
   // Keyboard height tracking lifted to MultiPaneContainer so split
   // layouts don't stack paddingBottom per-pane.
 

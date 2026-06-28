@@ -661,14 +661,15 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             views.setViewVisibility(R.id.scouter_agent_status, View.VISIBLE)
         }
 
-        /** Task A — input shortcut: deep-link to the agent NL input (mic armed).
-         *  ACTION_VIEW from a getActivity PendingIntent is allowed (it is NOT the
-         *  Knox-blocked `am start` from the app uid). RN routes this in handleDeepLink. */
+        /** Task A — input shortcut: deep-link that opens + focuses the agent NL input
+         *  (AI pane). ACTION_VIEW from a getActivity PendingIntent is allowed (it is
+         *  NOT the Knox-blocked `am start` from the app uid). RN routes this in
+         *  handleDeepLink; app/agent-new.tsx is the landing route so expo-router does
+         *  not show its Unmatched Route page. */
         private fun newAgentPendingIntent(context: Context): PendingIntent {
-            // Host-form (two slashes) so expo-router lands on the index route and the
-            // custom handleDeepLink processes it — a path-form (shelly:///agent-new)
-            // is matched as a file route /agent-new, which doesn't exist → not-found.
-            val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("shelly://agent-new?voice=1&source=widget"))
+            // Host-form (two slashes) for consistency with shelly://scouter; the
+            // landing route app/agent-new.tsx prevents the not-found page either way.
+            val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("shelly://agent-new?source=widget"))
                 .setPackage(context.packageName)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             return PendingIntent.getActivity(
