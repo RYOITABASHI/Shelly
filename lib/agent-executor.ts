@@ -13,7 +13,7 @@ import { buildAgentPolicy } from './agent-policy';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 8;
+const AGENT_SCRIPT_VERSION = 9;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1696,6 +1696,10 @@ ensure_local_llm_server() {
 	    local_llm_touch_activity
 	    return 0
 	  fi
+	  # A starter that held the lock may have died WHILE we were waiting; the pre-loop
+	  # clear only catches a lock already stale on entry. Re-clear each iteration so a
+	  # lock leaked by a dead starter (root cause A) can't block us the full 30s window.
+	  local_llm_clear_stale_start_lock "$lock_dir"
 	  sleep 1
 	  _i=$((_i + 1))
 	done

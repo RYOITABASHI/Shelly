@@ -1190,6 +1190,7 @@ const ja: Record<string, string> = {
   'sidebar.agent_unpin_widget': 'ウィジェット固定を解除',
   'sidebar.agent_pin_widget_body': 'ホーム画面ウィジェットの RUN ボタンでこのエージェントを1タップ実行できます。',
   'sidebar.agent_unpin_widget_body': 'このエージェントのウィジェット固定を解除します。',
+  'sidebar.agent_pin_local_offline_caution': '⚠ ローカルLLMがオフラインです。先に起動するか、エージェントを Cloud 経路に切り替えてください。',
   'sidebar.agent_pause': '一時停止',
   'sidebar.agent_resume': '再開',
   'sidebar.agent_detail_a11y': '{{name}} の詳細を開く',

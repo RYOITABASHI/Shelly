@@ -1191,6 +1191,7 @@ const en: Record<string, string> = {
   'sidebar.agent_unpin_widget': 'Unpin from widget',
   'sidebar.agent_pin_widget_body': "The home-screen widget's RUN button will run this agent in one tap.",
   'sidebar.agent_unpin_widget_body': 'Remove this agent from the home-screen widget.',
+  'sidebar.agent_pin_local_offline_caution': '⚠ The Local LLM is offline. Start it first, or switch this agent to the Cloud route.',
   'sidebar.agent_pause': 'Pause',
   'sidebar.agent_resume': 'Resume',
   'sidebar.agent_detail_a11y': 'Open {{name}} details',

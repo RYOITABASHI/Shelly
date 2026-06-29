@@ -24,7 +24,8 @@ import { nextTriggerMs, lastTriggerMs } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
-import { toolChoiceToLabel } from '@/lib/agent-tool-router';
+import { toolChoiceToLabel, resolveAgentRoute } from '@/lib/agent-tool-router';
+import { checkOllamaConnection } from '@/lib/local-llm';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import {
   deleteSkillRecipe,
@@ -50,6 +51,14 @@ const TIMING_MS = 200;
 const AGENT_RUNNING_POLL_START_DELAY_MS = 15_000;
 const AGENT_RUNNING_POLL_INTERVAL_MS = 15_000;
 const AGENT_RUNNING_BACKGROUND_POLL_INTERVAL_MS = 60_000;
+
+/** TRUE iff this agent's next run would execute on the on-device Local LLM. Delegates
+ *  to the same resolver the executor uses (resolveAgentRoute) — it is pure/cheap and
+ *  faithfully covers secret-guard, runOn pin, autonomous collapse, and prompt-scored
+ *  'auto' agents, so we never hand-roll (and mis-predict) the routing. */
+function agentUsesLocalLlm(agent: Agent): boolean {
+  return resolveAgentRoute(agent).tool.type === 'local';
+}
 
 const QUICK_FOLDERS = [
   { label: '~',        path: '~/',                 icon: 'home' },
@@ -435,11 +444,23 @@ export function Sidebar() {
   // Long-press an agent row → pin/unpin it as the Scouter widget's one-tap RUN
   // target (Task B). Kept off the detail dialog so it can't displace its Close
   // button (Android Alert caps at 3 buttons).
-  const showPinMenu = React.useCallback((agent: Agent) => {
+  const showPinMenu = React.useCallback(async (agent: Agent) => {
     const isPinned = useSettingsStore.getState().settings.pinnedAgentId === agent.id;
+
+    // Pin path: if this agent would route to the on-device Local LLM and the local
+    // server is unreachable, warn up front so the user starts it / switches to Cloud
+    // instead of getting a confusing "失敗" (fallback digest) on the first widget RUN.
+    let cautionLine = '';
+    if (!isPinned && agentUsesLocalLlm(agent)) {
+      const baseUrl = useSettingsStore.getState().settings.localLlmUrl;
+      // checkOllamaConnection never throws; short timeout so the dialog isn't held up.
+      const { available } = await checkOllamaConnection(baseUrl, 1500);
+      if (!available) cautionLine = `\n\n${t('sidebar.agent_pin_local_offline_caution')}`;
+    }
+
     Alert.alert(
       agent.name,
-      t(isPinned ? 'sidebar.agent_unpin_widget_body' : 'sidebar.agent_pin_widget_body'),
+      t(isPinned ? 'sidebar.agent_unpin_widget_body' : 'sidebar.agent_pin_widget_body') + cautionLine,
       [
         {
           text: isPinned ? t('sidebar.agent_unpin_widget') : t('sidebar.agent_pin_widget'),
@@ -616,7 +637,7 @@ export function Sidebar() {
                   <Pressable
                     style={styles.taskInfo}
                     onPress={() => void showAgentDetail(agent)}
-                    onLongPress={() => showPinMenu(agent)}
+                    onLongPress={() => void showPinMenu(agent)}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >
