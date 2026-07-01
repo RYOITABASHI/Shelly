@@ -50,6 +50,32 @@
 - ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
 - ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。**残る解錠は全て実装着地（2026-06-24, branch claude/work-handoff-2qb1xd）**: 自律クラウド opt-in=N1(105fda3) / Vault 内保存の自動承認=N2(b08a608) / 複数曜日スケジュール=N4(c80bb04) / 日付フォルダ出力テンプレ=N4(fa10617) / web-mandatory routing(203428c) / orchestration 昇格=N3(8fb8926)。**残るは実機 end-to-end 検証（web quota 明け待ち）と N1 スケジュール .sh のクラウド完全無人化 follow-up のみ**。
 
+### 🧭 L1/L2 Capability Catalog — Android 版 Hermes ロードマップ（正典・実装ゲート）
+
+**優先度**: Phase 0 = **P0**（着手中の次実装）／Phase 1 = P1 ／ Phase 2–3 = P2 ／ Phase 4–5 = P3
+**状態**: 確定カタログ push 済み（spec `docs/superpowers/specs/2026-07-01-l1-l2-capability-catalog.md`、commit `9331604a`、branch `claude/work-handoff-2qb1xd`）。6 ソース（内部エージェント3体＋外部 GPT/Claude/Codex）統合。Codex が HEAD `580f5fa0` を実読して現状照合済み。→ sync: README（達成窓口・構造的な壁を Status 表に反映）
+
+**設計の単一の真実は spec 側**。ここは進捗トラッキングのみ。
+
+- **Phase 0 — 床/substrate（P0・〜14pd・L1 追加なし）**: `.sh` 実行本体 → TS PlanSpec executor / broker-first 化（P0 の穴。Scheduler の Alarm→FGS 配線は完成済み） → `CAP-001 capability.envelope`（grant/consent/budget/loop/audit/taint 骨格/署名） → `SECRET-001 secret.invoke`（secret-by-reference、`.env` raw secret 縮小） → `HTTP-001 http.request`＋egress allowlist → `FS-001 scoped.fs`（workspace 越境バグの構造修正） → `EXEC-001` を command template/cwd jail/timeout/secret-env 禁止に制限。**ここが済むまで planner/skill 自動登録に進まない。**
+- **Phase 1 — 反応＋永続＋脳（P1・〜10pd）**: L1 追加 `RECEIVE_BOOT_COMPLETED`＋`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`。`EVENT-001 event.queue`（durable/lease/retry） → `MEMORY-001`（FS-001＋sqlite FTS5 上の薄い層） → `MODEL-001` に eligibility-first＋routing-floor → action approval を署名付きに。
+- **Phase 2 — マルチ窓口・安価ルート（P2・〜10pd）**: L1 追加 `NotificationListenerService`（Special Access＋Restricted-Settings 導線）。`NOTIFY-001`（read＋RemoteInput 返信）＋notify 入力の taint tagging ＋DM-pairing ＋Samsung deep-sleep 対策 ＋`SKILL-001`（agentskills.io 採用・quarantine 付き）。
+- **Phase 3 — 音声＋起動＋公式窓口（P2・〜7pd）**: L1 追加 mic FGS（`RECORD_AUDIO` は宣言済）。`VOICE-001`（既存 STT/TTS＋Groq Whisper） → `INTENT-001 app.launch` ＋Telegram 公式 bot（HTTP-001 経由）/Discord(text)/Slack(Socket)/Email。
+- **Phase 4 — computer-use・高危険・最後（P3・〜16pd）**: L1 追加 `AccessibilityService`（`SYSTEM_ALERT_WINDOW` は宣言済）。`UI-001 ui.observe/act`＋target allowlist＋**never-auto-approve**＋生体束縛ゲート＋ui 入力 taint（observe-only→suggest→承認付き act→限定自律）。＋MediaProjection（眼）＋`BROWSER-001`（compact refs）＋`CONTENT-001`＋`MCP-001`。
+- **Phase 5 — egress 封じ込め・防御の本丸（P3・stretch・〜15pd+）**: L1 追加 `VpnService`。tun2socks 同梱でアプリ egress 許可制（per-skill は best-effort）。
+
+**明示的に descope（構造的に不可 or 外部プラットフォーム都合）** → sync: README Status 表に「非対応」と明記:
+- **WhatsApp 窓口** — ToS が 3rd-party AI チャットボットを禁止（2026-01-15〜）、非公式ライブラリは 2–8 週で BAN。公式 Business API は有料・cloud webhook（端末でホスト不可）。**Experimental/非対応。**
+- **Signal 窓口** — bot API が設計上存在せず、signal-cli は重量 JVM、linked-device モデルが「端末自身が Signal 端末」と競合。**Deferred/非対応。**
+- **iMessage 窓口** — Mac 常時稼働必須＋Apple の 2026-06 enforcement。Android 単体では**不可**。
+- **RL / 大規模 trajectory 学習** — GPU/クラスタ必須（ハードの壁）。**trajectory ログ採取のみ**実施し端末外 export。RL/batch-gen は**非対応**。
+- **共有スキルマーケット（他人の未検証 skill を安全実行）** — 単一 uid では /proc・ファイル・Keystore 共有のため隔離不可。**構造的に不可**。ユーザー自作・信頼前提、import は quarantine＋owner 承認で限定。
+- **skill ごとの OS-level egress firewall** — app 子プロセスを個別遮断できない。VpnService でアプリ全体 allowlist までが上限（per-skill 帰属は best-effort）。
+
+**達成できる窓口**: Telegram / Discord(text) / Slack(Socket) / Email（全部公式 API）。
+
+---
+
 ### 🔴 Web-mandatory routing — 実機 end-to-end 検証待ち（quota 明けの必須ゲート）
 
 **優先度**: P1（North Star コアの収集経路。実装済みだが実機 end-to-end 未検証）

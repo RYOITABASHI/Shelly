@@ -4,6 +4,8 @@
 
 ## ⚠️ セッション開始時に必ず読むもの
 
+**[docs/superpowers/specs/2026-07-01-l1-l2-capability-catalog.md](./docs/superpowers/specs/2026-07-01-l1-l2-capability-catalog.md)** — 🟢🧭 **能力ロードマップの正典**。Android 版 Hermes（on-device 自律エージェント）へ向けて焼くべき L1/L2 を 6 ソース（内部エージェント3体＋GPT/Claude/Codex）統合で確定。L1/L2/L3 能力モデルと壁の位置、現状照合（Scheduler 完成／残る P0＝`.sh` 実行本体を broker/PlanSpec executor に置換）、L1 OS 能力カタログ、L2 汎用プリミティブ（`CAP-001 envelope`＋Core 8＋拡張）、安全の背骨（envelope／taint 両輪／secret-by-reference／生体束縛／DM-pairing／無人＝決定論）、trifecta 集中点、構造的な壁、Phase 0–5 ロードマップ（工数付き）、確定した 10 の設計判断を内蔵。**capability/skill 拡張に着手する前にまずこれ。** 進捗は DEFERRED.md の「L1/L2 Capability Catalog」節が真実。
+
 **[docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md](./docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md)** — 🔴 最新の再開点。ブランチ `claude/work-handoff-2qb1xd`（build 1608、main未マージ）。on-device 自律推論の残ブロッカー＝local-LLM autostart の3真因（A lock-leak / B model-not-installed / C launcher非互換、全て `lib/agent-executor.ts` `ensure_local_llm_server`）と次タスク T1–T3、③ ロードマップ、不変条件を内蔵。**現環境からの再開はまずこれ。**
 
 **[docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md](./docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md)** — 🟢 次の実装タスク（モバイル連携セッションで）。Scouter ウィジェットから A=入力ショートカット + B=登録済みエージェントを1タップ RUN（カード無し＝v7.0.0 の `ACTION_RUN_AGENT` foreground-service 発火を widget タップで再利用）。着手条件（コアループ）は v7.0.0 で達成済み。HEAD の file:line・設計・ガード・実機検証を内蔵。
