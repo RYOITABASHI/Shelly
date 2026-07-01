@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { spawn } from 'child_process';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
 
@@ -79,6 +80,46 @@ function runExecutor(args: string[], home: string): Promise<{ status: number | n
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function approveNextAction(home: string): Promise<void> {
+  const requestDir = path.join(home, '.shelly/agents/action-approvals');
+  const replyDir = path.join(home, '.shelly/agents/action-approval-replies');
+  for (let i = 0; i < 100; i += 1) {
+    const requests = fs.existsSync(requestDir)
+      ? fs.readdirSync(requestDir).filter((name) => name.startsWith('action-') && name.endsWith('.json'))
+      : [];
+    if (requests.length > 0) {
+      const requestFile = path.join(requestDir, requests[0]);
+      const bytes = fs.readFileSync(requestFile);
+      const request = JSON.parse(bytes.toString('utf8'));
+      const requestSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      fs.mkdirSync(replyDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(replyDir, `action-${request.runId}.reply.json`),
+        JSON.stringify({
+          runId: request.runId,
+          decision: 'accept',
+          by: 'test',
+          requestSha256,
+          ts: new Date().toISOString(),
+        }) + '\n',
+      );
+      return;
+    }
+    await delay(50);
+  }
+  throw new Error('timed out waiting for action approval request');
+}
+
+function runExecutorWithApproval(args: string[], home: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const run = runExecutor(args, home);
+  void approveNextAction(home).catch(() => undefined);
+  return run;
+}
+
 describe('shelly-plan-executor host smoke', () => {
   let server: http.Server;
   let port = 0;
@@ -118,7 +159,7 @@ describe('shelly-plan-executor host smoke', () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
 
-    const result = await runExecutor([executor, '--plan-file', planFile, '--home', home, '--broker', broker], home);
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--broker', broker], home);
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
@@ -143,6 +184,38 @@ describe('shelly-plan-executor host smoke', () => {
     const planAudit = fs.readFileSync(path.join(logDir, 'plan-executor-audit.jsonl'), 'utf8');
     expect(planAudit).toContain('"event":"plan_start"');
     expect(planAudit).toContain('"event":"plan_finish"');
+  });
+
+  it('denies a symlink outputDir instead of adding it as a scoped root', async () => {
+    const home = makeHome();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-plan-outside-'));
+    const outsideReal = path.join(outside, 'real');
+    fs.mkdirSync(outsideReal, { recursive: true });
+    const linkDir = path.join(home, 'agent-output/linkdir');
+    fs.mkdirSync(path.dirname(linkDir), { recursive: true });
+    fs.symlinkSync(outsideReal, linkDir, 'dir');
+
+    const { plan, planFile } = makePlan(home, port);
+    plan.output.useGlobalOutput = false;
+    plan.output.outputDir = linkDir;
+    plan.output.outputNameTemplate = 'escaped';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--broker', broker], home);
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(path.join(outsideReal, 'escaped.md'))).toBe(false);
+
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('error');
+    expect(runLog.errorMessage).toContain('scoped filesystem write denied');
+
+    const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
+    expect(brokerAudit).toContain('"kind":"scoped.fs"');
+    expect(brokerAudit).toContain('"decision":"deny"');
+    expect(brokerAudit).toContain('outside-root');
   });
 
   it('fails closed when the broker asset is missing', async () => {
