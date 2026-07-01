@@ -28,7 +28,7 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
-    private const val CURRENT_SCRIPT_VERSION = 9
+    private const val CURRENT_SCRIPT_VERSION = 10
 
     fun runAgent(context: Context, agentId: String): AgentRunResult {
         val appContext = context.applicationContext

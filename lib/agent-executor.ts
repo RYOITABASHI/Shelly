@@ -13,7 +13,7 @@ import { buildAgentPolicy } from './agent-policy';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 9;
+const AGENT_SCRIPT_VERSION = 10;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -774,9 +774,10 @@ dispatch_agent_action() {
       ;;
     ""|draft)
       # N2: autonomous agents auto-approve a draft→vault save. It is a local file
-      # write only (low-risk) — cli/webhook/notify still require an approval tap,
-      # and secret-guard has already forced the run on-device, so nothing leaves
-      # the device unapproved. Manual (@agent) runs keep the confirm card.
+      # write only (low-risk); notify (a local notification) is likewise auto-approved
+      # for autonomous — see the notify branch. cli/webhook still require an approval
+      # tap, and secret-guard has already forced the run on-device, so nothing leaves
+      # the device unapproved. Manual (@agent / non-autonomous) runs keep the approval.
       if [ "\${AGENT_AUTONOMOUS:-0}" != "1" ]; then
         write_action_approval_request "draft" "$preview" "$result_file"
         wait_action_approval "draft" || return 1
@@ -791,8 +792,13 @@ dispatch_agent_action() {
       return 0
       ;;
     notify)
-      write_action_approval_request "notify" "$preview" "$result_file"
-      wait_action_approval "notify" || return 1
+      # N2: autonomous agents auto-approve a notify (a local completion notification —
+      # even lower-risk than a draft file write, nothing leaves the device). Manual /
+      # non-autonomous runs still require the approval tap. Mirrors the draft branch.
+      if [ "\${AGENT_AUTONOMOUS:-0}" != "1" ]; then
+        write_action_approval_request "notify" "$preview" "$result_file"
+        wait_action_approval "notify" || return 1
+      fi
       write_native_notification_request "success" "$preview"
       return 0
       ;;

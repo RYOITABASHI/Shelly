@@ -443,7 +443,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=9');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=10');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -465,6 +465,20 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     const s = generateRunScript(agent({ type: 'local' }, false));
     const occurrences = s.split('local_llm_clear_stale_start_lock "$lock_dir"').length - 1;
     expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it('autonomous auto-approves BOTH draft and notify (cli/webhook stay gated)', () => {
+    // Unattended North Star: draft (file write) + notify (local notification) are
+    // safe pre-configured actions, so an autonomous run skips their approval tap; the
+    // dispatch is shared, so assert both are wrapped in the AGENT_AUTONOMOUS guard.
+    const s = generateRunScript(agent({ type: 'local' }, true));
+    const guards = s.split('if [ "${AGENT_AUTONOMOUS:-0}" != "1" ]; then').length - 1;
+    // EXACTLY 2 (draft + notify) — if a future change wrongly guarded cli/webhook the
+    // count would rise, so pin it so cli/webhook can never silently auto-approve.
+    expect(guards).toBe(2);
+    // cli/webhook approvals remain present (and, by the count above, unconditional).
+    expect(s).toContain('write_action_approval_request "cli"');
+    expect(s).toContain('write_action_approval_request "webhook"');
   });
 
   it('does not depend on python3 for JSON helper escaping before the driver path', () => {
