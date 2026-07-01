@@ -18,6 +18,10 @@ describe('shelly-plan-executor.js parity', () => {
     path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt'),
     'utf8',
   );
+  const terminalSessionService = fs.readFileSync(
+    path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalSessionService.kt'),
+    'utf8',
+  );
 
   it('scripts/ copy and the APK asset are byte-identical', () => {
     expect(fs.readFileSync(assetCopy, 'utf8')).toBe(fs.readFileSync(scriptCopy, 'utf8'));
@@ -40,9 +44,25 @@ describe('shelly-plan-executor.js parity', () => {
     expect(agentRuntime).toContain('return flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId');
   });
 
-  it('does not trust plan.agent.autonomous to skip action approval', () => {
+  it('passes native trust state separately from the untrusted plan file', () => {
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
-    expect(executorSrc).toContain('requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config)');
+    expect(agentRuntime).toContain('readPlanSpecAgentId(plan)');
+    expect(agentRuntime).toContain('PlanSpec agent id mismatch');
+    expect(agentRuntime).toContain('--agent-id');
+    expect(agentRuntime).toContain('--unattended 1');
+    expect(agentRuntime).toContain('--trusted-autonomous-agent-id');
+    expect(agentRuntime).toContain('--trusted-autonomous-action');
+    expect(agentRuntime).toContain('--trusted-tool-type');
+    expect(executorSrc).toContain('trustedNativeLowRiskAction(args, plan, actionType)');
+    expect(executorSrc).toContain("trustedTool === 'local' && plan.tool.type === 'local'");
     expect(executorSrc).not.toContain('if (!plan.agent.autonomous) requestActionApproval');
+    expect(executorSrc).not.toContain('plan.paths && plan.paths.home');
+  });
+
+  it('derives unattended mode from scheduled service extras before launching the agent', () => {
+    expect(terminalSessionService).toContain('val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)');
+    expect(terminalSessionService).toContain('val unattended = intervalMs > 0 || !cron.isNullOrBlank()');
+    expect(terminalSessionService).toContain('runAgentInBackground(agentId, unattended)');
+    expect(terminalSessionService).toContain('AgentRuntime.runAgent(applicationContext, agentId, unattended)');
   });
 });

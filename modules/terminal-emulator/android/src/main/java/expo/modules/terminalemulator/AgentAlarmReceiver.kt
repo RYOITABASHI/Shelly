@@ -42,6 +42,8 @@ class AgentAlarmReceiver : BroadcastReceiver() {
             val serviceIntent = Intent(app, TerminalSessionService::class.java).apply {
                 action = TerminalSessionService.ACTION_RUN_AGENT
                 putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+                putExtra(TerminalSessionService.EXTRA_INTERVAL_MS, intervalMs)
+                if (!cron.isNullOrBlank()) putExtra(TerminalSessionService.EXTRA_CRON, cron)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 app.startForegroundService(serviceIntent)

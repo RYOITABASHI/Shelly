@@ -60,10 +60,14 @@ function listMarkdownFiles(dir: string): string[] {
   return out;
 }
 
-function runExecutor(args: string[], home: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+function runExecutor(
+  args: string[],
+  home: string,
+  envOverride: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, {
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, ...envOverride },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -120,11 +124,33 @@ function runExecutorWithApproval(args: string[], home: string): Promise<{ status
   return run;
 }
 
+async function readNextActionRequest(home: string): Promise<{ file: string; request: any; sha: string }> {
+  const requestDir = path.join(home, '.shelly/agents/action-approvals');
+  for (let i = 0; i < 100; i += 1) {
+    const requests = fs.existsSync(requestDir)
+      ? fs.readdirSync(requestDir).filter((name) => name.startsWith('action-') && name.endsWith('.json'))
+      : [];
+    if (requests.length > 0) {
+      const file = path.join(requestDir, requests[0]);
+      const bytes = fs.readFileSync(file);
+      return {
+        file,
+        request: JSON.parse(bytes.toString('utf8')),
+        sha: crypto.createHash('sha256').update(bytes).digest('hex'),
+      };
+    }
+    await delay(50);
+  }
+  throw new Error('timed out waiting for action approval request');
+}
+
 describe('shelly-plan-executor host smoke', () => {
   let server: http.Server;
   let port = 0;
+  let requestCount = 0;
 
   beforeEach((done) => {
+    requestCount = 0;
     server = http.createServer((req, res) => {
       if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
         res.statusCode = 404;
@@ -137,6 +163,7 @@ describe('shelly-plan-executor host smoke', () => {
         body += chunk;
       });
       req.on('end', () => {
+        requestCount += 1;
         const parsed = JSON.parse(body);
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
@@ -216,6 +243,184 @@ describe('shelly-plan-executor host smoke', () => {
     expect(brokerAudit).toContain('"kind":"scoped.fs"');
     expect(brokerAudit).toContain('"decision":"deny"');
     expect(brokerAudit).toContain('outside-root');
+  });
+
+  it('requires the native agent id to match the PlanSpec agent id', async () => {
+    const home = makeHome();
+    const { planFile } = makePlan(home, port);
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', 'agent-other',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(47);
+    expect(requestCount).toBe(0);
+    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(0);
+    expect(result.stderr).toContain('plan agent id mismatch');
+  });
+
+  it('does not trust plan.paths.home as a runtime home fallback', async () => {
+    const home = makeHome();
+    const { planFile } = makePlan(home, port);
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--broker', broker,
+    ], '', { HOME: '' });
+
+    expect(result.status).toBe(47);
+    expect(requestCount).toBe(0);
+    expect(result.stderr).toContain('--home or absolute HOME is required');
+  });
+
+  it('fails closed before model IO for unattended runs without native low-risk trust', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--unattended', '1',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    expect(requestCount).toBe(0);
+    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(0);
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
+    expect(approvalRequests).toHaveLength(0);
+
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    expect(runLogs).toHaveLength(1);
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('skipped');
+    expect(runLog.errorMessage).toContain('not trusted for unattended');
+  });
+
+  it('allows unattended local draft only when native supplies matching trusted action and tool', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--unattended', '1',
+      '--trusted-autonomous-agent-id', plan.agent.id,
+      '--trusted-autonomous-action', 'draft',
+      '--trusted-tool-type', 'local',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    expect(requestCount).toBe(1);
+    const outputFiles = listMarkdownFiles(path.join(home, 'agent-output'));
+    expect(outputFiles).toHaveLength(1);
+    expect(fs.readFileSync(outputFiles[0], 'utf8')).toContain('fixture result: say hello');
+
+    const planAudit = fs.readFileSync(path.join(home, `.shelly/agents/logs/${plan.agent.id}/plan-executor-audit.jsonl`), 'utf8');
+    expect(planAudit).toContain('"event":"action_trusted_allow"');
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
+    expect(approvalRequests).toHaveLength(0);
+  });
+
+  it('does not let trusted action args authorize a tampered cloud tool in unattended mode', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).tool = { type: 'gemini-api', label: 'Gemini', model: 'gemini-2.5-flash', authRef: 'gemini' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--unattended', '1',
+      '--trusted-autonomous-agent-id', plan.agent.id,
+      '--trusted-autonomous-action', 'draft',
+      '--trusted-tool-type', 'local',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    expect(requestCount).toBe(0);
+    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('skipped');
+    expect(runLog.errorMessage).toContain('not trusted for unattended');
+  });
+
+  it('redacts secret-like model text from action approval request previews', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    plan.prompt = 'return gsk_abcdefghijklmnopqrstuvwxyz1234567890';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const run = runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+    const pending = await readNextActionRequest(home);
+    expect(pending.request.preview).toContain('<redacted>');
+    expect(pending.request.preview).not.toContain('gsk_abcdefghijklmnopqrstuvwxyz1234567890');
+
+    fs.mkdirSync(path.join(home, '.shelly/agents/action-approval-replies'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.shelly/agents/action-approval-replies', `action-${pending.request.runId}.reply.json`),
+      JSON.stringify({
+        runId: pending.request.runId,
+        decision: 'accept',
+        by: 'test',
+        requestSha256: pending.sha,
+        ts: new Date().toISOString(),
+      }) + '\n',
+    );
+    const result = await run;
+    expect(result.status).toBe(0);
+  });
+
+  it('redacts secret-like model text from previews and native notifications', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    plan.prompt = 'return sk-proj-abcdefghijklmnopqrstuvwxyz1234567890';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--trusted-autonomous-agent-id', plan.agent.id,
+      '--trusted-autonomous-action', 'draft',
+      '--trusted-tool-type', 'local',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLogRaw = fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8');
+    const notifyRaw = fs.readFileSync(path.join(logDir, 'native-result-notification.json'), 'utf8');
+    expect(runLogRaw).toContain('<redacted>');
+    expect(notifyRaw).toContain('<redacted>');
+    expect(runLogRaw).not.toContain('sk-proj-abcdefghijklmnopqrstuvwxyz1234567890');
+    expect(notifyRaw).not.toContain('sk-proj-abcdefghijklmnopqrstuvwxyz1234567890');
   });
 
   it('fails closed when the broker asset is missing', async () => {
