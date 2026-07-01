@@ -44,7 +44,7 @@ describe('Agent PlanSpec v1', () => {
     expect(serialized).not.toContain('Bearer ');
   });
 
-  it('marks unsupported tools and actions fail-closed in the plan', () => {
+  it('marks unsupported tools fail-closed while preserving broker-supported actions', () => {
     const spec = buildAgentPlanSpec(agent({
       tool: { type: 'cli', cli: 'codex' },
       action: { type: 'cli', command: 'rm -rf /' },
@@ -52,8 +52,32 @@ describe('Agent PlanSpec v1', () => {
 
     expect(spec.tool.type).toBe('unsupported');
     expect(spec.tool.unsupportedReason).toContain('does not support cli tools yet');
-    expect(spec.action.type).toBe('unsupported');
-    expect(spec.action.unsupportedReason).toContain('does not support cli actions yet');
+    expect(spec.action.type).toBe('cli');
+    expect(spec.action.command).toBe('rm -rf /');
+    expect(spec.action.safety?.level).toBe('CRITICAL');
+  });
+
+  it('serializes webhook and cli actions without raw authorization material', () => {
+    const webhook = buildAgentPlanSpec(agent({
+      action: { type: 'webhook', webhookUrl: 'https://hooks.example.test/incoming' },
+    }));
+    expect(webhook.action).toMatchObject({
+      type: 'webhook',
+      webhookUrl: 'https://hooks.example.test/incoming',
+    });
+
+    const cli = buildAgentPlanSpec(agent({
+      action: { type: 'cli', command: 'printf ok' },
+    }));
+    expect(cli.action).toMatchObject({
+      type: 'cli',
+      command: 'printf ok',
+    });
+    expect(cli.action.safety?.level).toBe('SAFE');
+
+    const serialized = JSON.stringify({ webhook, cli });
+    expect(serialized).not.toContain('Authorization');
+    expect(serialized).not.toContain('Bearer ');
   });
 
   it('validates schema version and agent id', () => {

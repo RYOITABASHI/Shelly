@@ -23,7 +23,7 @@ export type PlanToolType =
   | 'groq'
   | 'unsupported';
 
-export type PlanActionType = 'draft' | 'notify' | '__suppressed__' | 'unsupported';
+export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | '__suppressed__' | 'unsupported';
 
 export interface AgentPlanSpecV1 {
   kind: typeof PLAN_SPEC_KIND;
@@ -146,16 +146,7 @@ export function buildAgentPlanSpec(
 
   const actionType: NonNullable<Agent['action']>['type'] | '__suppressed__' =
     opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
-  const action: AgentPlanSpecV1['action'] =
-    actionType === 'draft' || actionType === 'notify' || actionType === '__suppressed__'
-      ? { type: actionType }
-      : {
-          type: 'unsupported' as const,
-          webhookUrl: agent.action?.webhookUrl,
-          command: agent.action?.command,
-          safety: evaluateAgentActionCommand(agent.action?.command ?? ''),
-          unsupportedReason: `PlanSpec executor does not support ${actionType} actions yet`,
-        };
+  const action: AgentPlanSpecV1['action'] = toPlanAction(actionType, agent.action);
 
   const slug = computeAgentSlug(agent.name, agent.id);
   const outputNameTemplate = sanitizeOutputTemplate(agent.outputTemplate);
@@ -205,6 +196,34 @@ export function buildAgentPlanSpec(
     policy: buildAgentPolicy(agent, agent.workspaceRoot || home),
     routeDecision,
   };
+}
+
+function toPlanAction(
+  actionType: NonNullable<Agent['action']>['type'] | '__suppressed__',
+  action?: Agent['action'],
+): AgentPlanSpecV1['action'] {
+  switch (actionType) {
+    case 'draft':
+    case 'notify':
+    case '__suppressed__':
+      return { type: actionType };
+    case 'webhook':
+      return { type: 'webhook', webhookUrl: action?.webhookUrl };
+    case 'cli':
+      return {
+        type: 'cli',
+        command: action?.command,
+        safety: evaluateAgentActionCommand(action?.command ?? ''),
+      };
+    default:
+      return {
+        type: 'unsupported',
+        webhookUrl: action?.webhookUrl,
+        command: action?.command,
+        safety: evaluateAgentActionCommand(action?.command ?? ''),
+        unsupportedReason: `PlanSpec executor does not support ${actionType} actions yet`,
+      };
+  }
 }
 
 function toPlanTool(tool: ToolChoice, unsupportedReason?: string): AgentPlanSpecV1['tool'] {
