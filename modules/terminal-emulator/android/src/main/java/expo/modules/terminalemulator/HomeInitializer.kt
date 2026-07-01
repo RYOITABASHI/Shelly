@@ -1211,6 +1211,17 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-capability-broker.js extract failed: ${e.message}")
         }
 
+        // Phase 0 PlanSpec executor canary. Invoked via node from AgentRuntime
+        // when SHELLY_PLAN_EXECUTOR=1 for a targeted agent.
+        val planExecutorScript = File(home, ".shelly-plan-executor.js")
+        try {
+            context.assets.open("shelly-plan-executor.js").use { input ->
+                planExecutorScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-plan-executor.js extract failed: ${e.message}")
+        }
+
         val agentEscalationDir = File(home, ".shelly/agents/escalations")
         agentEscalationDir.mkdirs()
         val agentEscalationReplyDir = File(context.noBackupFilesDir, "shelly-agent-escalation-replies")
