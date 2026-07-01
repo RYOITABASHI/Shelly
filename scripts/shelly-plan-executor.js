@@ -34,8 +34,11 @@ const CONFIG_ENV_KEYS = new Set([
   'SHELLY_AGENT_OUTPUT_TARGET',
   'SHELLY_AGENT_TOPIC_FOLDER',
   'SHELLY_AGENT_CUSTOM_PATH',
+  'SHELLY_AGENT_EXEC_CWD',
+  'SHELLY_CONTENT_PROJECT',
   'OBSIDIAN_VAULT_PATH',
   'SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS',
+  'WEBHOOK_TIMEOUT_SECONDS',
 ]);
 
 const REDACT_PATTERNS = [
@@ -220,10 +223,12 @@ function uniqueRoots(roots) {
 function scopedRoots(paths, config) {
   const obsidianRoot = config.OBSIDIAN_VAULT_PATH || '/sdcard/Documents/ObsidianVault';
   const customRoot = config.SHELLY_AGENT_CUSTOM_PATH || path.join(paths.home, 'agent-output');
+  const contentProject = config.SHELLY_CONTENT_PROJECT || path.join(paths.home, 'projects/shelly-content-studio');
   return uniqueRoots([
     paths.tmpDir,
     path.join(paths.home, 'agent-output'),
     path.join(paths.home, 'projects/shelly-content-studio'),
+    contentProject,
     obsidianRoot,
     customRoot,
   ]);
@@ -343,28 +348,42 @@ function openAiCompatRequest(url, authRef, model, prompt) {
 
 function brokerHttp(paths, opts, plan, request) {
   const bodyFile = path.join(paths.tmpDir, `plan-request-${plan.agent.id}-${process.pid}.json`);
+  writeJsonRequest(bodyFile, request.body);
+  try {
+    return brokerHttpBodyFile(paths, opts, plan, {
+      url: request.url,
+      authRef: request.authRef,
+      bodyFile,
+      approved: request.approved,
+      timeoutSeconds: request.timeoutSeconds,
+    });
+  } finally {
+    try {
+      fs.unlinkSync(bodyFile);
+    } catch (_) {}
+  }
+}
+
+function brokerHttpBodyFile(paths, opts, plan, request) {
   const outFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}.json`);
   const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}.err`);
-  writeJsonRequest(bodyFile, request.body);
   const args = [
     '--op', 'http.request',
     '--method', 'POST',
     '--url', request.url,
-    '--body-file', bodyFile,
+    '--body-file', request.bodyFile,
     '--secret-env-file', paths.envFile,
     '--audit-log', paths.brokerAuditFile,
     '--budget-file', path.join(paths.tmpDir, `cap-budget-${plan.agent.id}.json`),
-    '--timeout-seconds', String(plan.limits && plan.limits.timeoutSeconds ? plan.limits.timeoutSeconds : 600),
+    '--timeout-seconds', String(request.timeoutSeconds || (plan.limits && plan.limits.timeoutSeconds ? plan.limits.timeoutSeconds : 600)),
     '--out', outFile,
     '--err', errFile,
   ];
   if (request.authRef) args.push('--auth-ref', request.authRef);
+  if (request.approved) args.push('--approved', '1');
   const rc = runBroker(paths, opts, args);
   const response = readFile(outFile);
   const errorText = readFile(errFile);
-  try {
-    fs.unlinkSync(bodyFile);
-  } catch (_) {}
   if (rc !== 0) {
     const status = rc === 23 ? 'unavailable' : 'error';
     throw new PlanFailure(`HTTP broker failed rc=${rc}: ${redact(errorText || response).slice(0, 300)}`, {
@@ -491,13 +510,14 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage) {
   writeAtomic(path.join(paths.logDir, `${Math.floor(ts / 1000)}.json`), JSON.stringify(log) + '\n');
 }
 
-function requestActionApproval(paths, plan, actionType, preview, resultFile, config) {
+function requestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
   ensureDir(paths.actionApprovalDir);
   ensureDir(paths.actionApprovalReplyDir);
   const runId = `${plan.agent.id}-${Math.floor(Date.now() / 1000)}-${process.pid}`;
   const requestFile = path.join(paths.actionApprovalDir, `action-${safeFilePart(runId)}.json`);
   const replyFile = path.join(paths.actionApprovalReplyDir, `action-${safeFilePart(runId)}.reply.json`);
   const timeoutSeconds = Number(config.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || process.env.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || 120);
+  const extra = details || {};
   const request = {
     runId,
     agentId: plan.agent.id,
@@ -505,11 +525,11 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     toolLabel: plan.tool.label,
     actionType,
     preview,
-    destinationHost: '',
-    command: '',
-    safetyLevel: '',
-    safetyReason: '',
-    payloadPath: '',
+    destinationHost: extra.destinationHost || '',
+    command: extra.command || '',
+    safetyLevel: extra.safetyLevel || '',
+    safetyReason: extra.safetyReason || '',
+    payloadPath: extra.payloadPath || '',
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
@@ -573,6 +593,97 @@ function resolveDraftDestination(paths, plan, config) {
   return path.join(plan.output.outputDir, rel);
 }
 
+function webhookDestinationHost(urlText) {
+  try {
+    const u = new URL(String(urlText || ''));
+    if (u.protocol !== 'https:') return '';
+    return u.host;
+  } catch (_) {
+    return '';
+  }
+}
+
+function writeWebhookPayload(file, plan, status, preview, resultText) {
+  writeAtomic(file, JSON.stringify({
+    agentId: plan.agent.id,
+    status,
+    preview,
+    toolUsed: plan.tool.label,
+    timestamp: Math.floor(Date.now() / 1000),
+    result: resultText,
+  }) + '\n');
+}
+
+function resolveCliCwd(paths, plan, config) {
+  const wanted =
+    config.SHELLY_AGENT_EXEC_CWD ||
+    config.SHELLY_CONTENT_PROJECT ||
+    path.join(paths.home, 'projects/shelly-content-studio');
+  try {
+    if (wanted && path.isAbsolute(wanted) && fs.existsSync(wanted) && fs.statSync(wanted).isDirectory()) return wanted;
+  } catch (_) {
+    // fall through to the known local output directory
+  }
+  const fallback = path.join(paths.home, 'agent-output');
+  ensureDir(fallback);
+  return fallback;
+}
+
+function brokerWorkspaceExec(paths, opts, roots, plan, commandText, cwd) {
+  const commandFile = path.join(paths.tmpDir, `plan-exec-command-${plan.agent.id}-${process.pid}.txt`);
+  const rootsFile = writeRootsFile(paths, roots);
+  const outFile = path.join(paths.logDir, `cli-action-output-${Date.now()}.txt`);
+  const errFile = path.join(paths.logDir, `cli-action-error-${Date.now()}.txt`);
+  writeAtomic(commandFile, commandText);
+  const rc = runBroker(paths, opts, [
+    '--op', 'workspace.exec',
+    '--command-file', commandFile,
+    '--cwd', cwd,
+    '--roots-file', rootsFile,
+    '--audit-log', paths.brokerAuditFile,
+    '--timeout-seconds', String(plan.limits && plan.limits.timeoutSeconds ? plan.limits.timeoutSeconds : 600),
+    '--out', outFile,
+    '--err', errFile,
+  ]);
+  try {
+    fs.unlinkSync(commandFile);
+  } catch (_) {}
+  try {
+    fs.unlinkSync(rootsFile);
+  } catch (_) {}
+  return { rc, outFile, errFile, out: readFile(outFile), err: readFile(errFile) };
+}
+
+function appendCliActionReport(resultFile, commandText, cwd, safety, execResult) {
+  const errorText = execResult.err ? `\n[stderr]\n${execResult.err}` : '';
+  const combined = `${execResult.out || ''}${errorText}`;
+  const safetyLevel = safety && safety.level ? safety.level : '';
+  const safetyReason = safety && safety.reason ? safety.reason : '';
+  fs.appendFileSync(resultFile, [
+    '',
+    '## CLI action',
+    '',
+    `Safety: ${safetyLevel} - ${safetyReason}`,
+    '',
+    `Cwd: ${cwd}`,
+    '',
+    'Command:',
+    '',
+    '```sh',
+    commandText,
+    '```',
+    '',
+    `Exit code: ${execResult.rc}`,
+    '',
+    'Output:',
+    '',
+    '```text',
+    redact(combined).slice(0, 4000),
+    '```',
+    '',
+  ].join('\n'));
+}
+
 function argTruthy(value) {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
 }
@@ -606,7 +717,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   const actionType = plan.action.type;
   const preview = previewText(resultText);
   if (actionType === '__suppressed__') return { status: 'success', preview };
-  if (actionType !== 'draft' && actionType !== 'notify') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   if (trustedNativeLowRiskAction(args, plan, actionType)) {
@@ -619,13 +730,76 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       toolType: plan.tool.type,
     });
   } else {
+    if (actionType === 'webhook') {
+      const webhookUrl = String(plan.action.webhookUrl || '').trim();
+      const host = webhookDestinationHost(webhookUrl);
+      if (!webhookUrl) {
+        const message = 'Webhook action is missing an https URL.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (!host) {
+        const message = 'Webhook action requires a valid https URL.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const payloadFile = path.join(paths.logDir, `webhook-payload-${Date.now()}.json`);
+      writeWebhookPayload(payloadFile, plan, 'success', preview, resultText);
+      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        destinationHost: host,
+        payloadPath: payloadFile,
+      });
+      try {
+        brokerHttpBodyFile(paths, opts, plan, {
+          url: webhookUrl,
+          bodyFile: payloadFile,
+          approved: true,
+          timeoutSeconds: Number(config.WEBHOOK_TIMEOUT_SECONDS || 30),
+        });
+      } catch (e) {
+        const message = e instanceof PlanFailure ? redact(e.message) : redact(String(e));
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      return { status: 'success', preview };
+    }
+    if (actionType === 'cli') {
+      const commandText = String(plan.action.command || '').trim();
+      const safety = plan.action.safety || {};
+      if (!commandText) {
+        const message = 'CLI action is missing a command.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (safety.level === 'CRITICAL') {
+        const message = `CLI action was blocked by command safety: ${safety.reason || 'critical command'}`;
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        command: commandText,
+        safetyLevel: safety.level || '',
+        safetyReason: safety.reason || '',
+      });
+      const cwd = resolveCliCwd(paths, plan, config);
+      const execResult = brokerWorkspaceExec(paths, opts, roots, plan, commandText, cwd);
+      appendCliActionReport(paths.resultFile, commandText, cwd, safety, execResult);
+      if (execResult.rc !== 0) {
+        const message = `CLI action failed with exit ${execResult.rc}.`;
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      return { status: 'success', preview };
+    }
     requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   }
   if (actionType === 'draft') {
     const dest = resolveDraftDestination(paths, plan, config);
     brokerFsWrite(paths, opts, roots, dest, paths.resultFile);
   }
-  writeNotification(paths, plan, 'success', preview);
+  if (actionType === 'draft' || actionType === 'notify') {
+    writeNotification(paths, plan, 'success', preview);
+  }
   return { status: 'success', preview };
 }
 
@@ -709,7 +883,7 @@ function run(args) {
     writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') ? '' : '\n'));
     const action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
     const durationMs = Date.now() - startedAt;
-    writeRunLog(paths, plan, action.status, action.preview, durationMs, '');
+    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '');
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',

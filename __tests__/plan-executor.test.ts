@@ -144,6 +144,20 @@ async function readNextActionRequest(home: string): Promise<{ file: string; requ
   throw new Error('timed out waiting for action approval request');
 }
 
+function writeActionReply(home: string, pending: { request: any; sha: string }, decision = 'accept'): void {
+  fs.mkdirSync(path.join(home, '.shelly/agents/action-approval-replies'), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.shelly/agents/action-approval-replies', `action-${pending.request.runId}.reply.json`),
+    JSON.stringify({
+      runId: pending.request.runId,
+      decision,
+      by: 'test',
+      requestSha256: pending.sha,
+      ts: new Date().toISOString(),
+    }) + '\n',
+  );
+}
+
 describe('shelly-plan-executor host smoke', () => {
   let server: http.Server;
   let port = 0;
@@ -380,19 +394,104 @@ describe('shelly-plan-executor host smoke', () => {
     expect(pending.request.preview).toContain('<redacted>');
     expect(pending.request.preview).not.toContain('gsk_abcdefghijklmnopqrstuvwxyz1234567890');
 
-    fs.mkdirSync(path.join(home, '.shelly/agents/action-approval-replies'), { recursive: true });
-    fs.writeFileSync(
-      path.join(home, '.shelly/agents/action-approval-replies', `action-${pending.request.runId}.reply.json`),
-      JSON.stringify({
-        runId: pending.request.runId,
-        decision: 'accept',
-        by: 'test',
-        requestSha256: pending.sha,
-        ts: new Date().toISOString(),
-      }) + '\n',
-    );
+    writeActionReply(home, pending);
     const result = await run;
     expect(result.status).toBe(0);
+  });
+
+  it('requests webhook approval with destination host and payload path, then skips on decline without sending', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'webhook', webhookUrl: 'https://hooks.example.test/incoming' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const run = runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+    const pending = await readNextActionRequest(home);
+    expect(pending.request.actionType).toBe('webhook');
+    expect(pending.request.destinationHost).toBe('hooks.example.test');
+    expect(pending.request.payloadPath).toContain('webhook-payload-');
+    expect(fs.readFileSync(pending.request.payloadPath, 'utf8')).toContain('"result":"fixture result: say hello"');
+
+    writeActionReply(home, pending, 'decline');
+    const result = await run;
+    expect(result.status).toBe(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('skipped');
+    expect(runLog.errorMessage).toContain('webhook action declined');
+    const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
+    expect(brokerAudit).toContain('"kind":"http.request"');
+    expect(brokerAudit).not.toContain('hooks.example.test');
+  });
+
+  it('runs approved cli actions through workspace.exec and appends the action report', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = {
+      type: 'cli',
+      command: 'printf ok',
+      safety: { level: 'SAFE', reason: 'No risky command pattern matched.', message: '', autoApprovable: true },
+    };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutorWithApproval([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    const resultFile = path.join(home, `.shelly/tmp/agent-result-${plan.agent.id}.md`);
+    const resultText = fs.readFileSync(resultFile, 'utf8');
+    expect(resultText).toContain('## CLI action');
+    expect(resultText).toContain('Command:');
+    expect(resultText).toContain('printf ok');
+    expect(resultText).toContain('Exit code: 0');
+    expect(resultText).toContain('ok');
+
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
+    expect(brokerAudit).toContain('"kind":"workspace.exec"');
+    expect(brokerAudit).toContain('"decision":"allow"');
+  });
+
+  it('keeps webhook and cli actions fail-closed in unattended mode', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'cli', command: 'printf ok' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--unattended', '1',
+      '--trusted-autonomous-agent-id', plan.agent.id,
+      '--trusted-autonomous-action', 'cli',
+      '--trusted-tool-type', 'local',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    expect(requestCount).toBe(0);
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
+    expect(approvalRequests).toHaveLength(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('skipped');
+    expect(runLog.errorMessage).toContain('unsupported unattended PlanSpec action: cli');
   });
 
   it('redacts secret-like model text from previews and native notifications', async () => {
