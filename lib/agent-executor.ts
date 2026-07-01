@@ -13,7 +13,7 @@ import { buildAgentPolicy } from './agent-policy';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 8;
+const AGENT_SCRIPT_VERSION = 9;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -825,7 +825,7 @@ dispatch_agent_action() {
       write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload"
       wait_action_approval "webhook" || return 1
       set +e
-      HTTP_TIMEOUT_SECONDS="\${WEBHOOK_TIMEOUT_SECONDS:-30}" http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload" "$webhook_response" "$webhook_error"
+      SHELLY_CAP_APPROVED=1 HTTP_TIMEOUT_SECONDS="\${WEBHOOK_TIMEOUT_SECONDS:-30}" http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload" "$webhook_response" "$webhook_error"
       webhook_rc=$?
       set -e
       if [ "$webhook_rc" -ne 0 ]; then
@@ -883,6 +883,31 @@ http_post_json() {
   body_file="$2"
   out_file="$3"
   err_file="$4"
+  # CAP-001/SECRET-001/HTTP-001 strangler seam. When SHELLY_CAP_BROKER=1, route
+  # the send through the capability broker: it enforces the egress allowlist,
+  # resolves an opaque \${SHELLY_CAP_AUTH_REF} to a real auth header by reading
+  # \$ENV_FILE ITSELF (so no raw "Bearer \$KEY" is built in this shell), caps the
+  # run's egress budget, and appends a redacted audit line. Flag defaults off, so
+  # the live path below is unchanged unless a device operator opts in.
+  if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ] && node_usable && [ -f "$HOME/.shelly-capability-broker.js" ]; then
+    shelly_node "$HOME/.shelly-capability-broker.js" \\
+      --method POST --url "$url" --body-file "$body_file" \\
+      --auth-ref "\${SHELLY_CAP_AUTH_REF:-}" --tainted "\${SHELLY_CAP_TAINTED:-0}" --approved "\${SHELLY_CAP_APPROVED:-0}" \\
+      --secret-env-file "$ENV_FILE" \\
+      --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+      --budget-file "$TMP_DIR/cap-budget-$AGENT_ID.json" \\
+      --timeout-seconds "\${HTTP_TIMEOUT_SECONDS:-30}" \\
+      --out "$out_file" --err "$err_file"
+    return $?
+  fi
+  # Fail-closed: if the broker was REQUESTED (flag on) but is unavailable (node
+  # unusable or the asset failed to extract), do NOT silently fall through to the
+  # legacy path — in broker mode the call site set SHELLY_CAP_AUTH_REF but no raw
+  # auth header, so the legacy send would go out unauthenticated. Refuse instead.
+  if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
+    echo "capability broker requested (SHELLY_CAP_BROKER=1) but unavailable; refusing to send unbrokered." > "$err_file"
+    return 44
+  fi
   if node_usable; then
     shelly_node - "$url" "$body_file" > "$out_file" 2> "$err_file" <<'NODEEOF'
 const fs = require('fs');
@@ -2119,6 +2144,8 @@ echo $$ > "$LOCK_FILE"
 
 # Execute tool
 rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
+# CAP-001: each run opens a fresh egress budget envelope (drop any stale counter).
+rm -f "$TMP_DIR/cap-budget-$AGENT_ID.json"
 ${toolCommand}
 
 # Check result
@@ -2313,7 +2340,11 @@ rm -f "$PROMPT_FILE"`;
 		else
 		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 		set +e
-		HTTP_AUTH_HEADER="Bearer $PERPLEXITY_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+		if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
+			  SHELLY_CAP_AUTH_REF=perplexity HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+			else
+			  HTTP_AUTH_HEADER="Bearer $PERPLEXITY_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+			fi
 		API_EXIT=$?
 		set -e
 		if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
@@ -2335,6 +2366,7 @@ rm -f "$PROMPT_FILE"`;
         url: 'https://api.cerebras.ai/v1/chat/completions',
         model: tool.model || 'qwen-3-235b-a22b-instruct-2507',
         label: 'Cerebras',
+        authRef: 'cerebras',
       });
     case 'groq':
       return openAiCompatApiCommand(escapedPrompt, resultVar, {
@@ -2344,6 +2376,7 @@ rm -f "$PROMPT_FILE"`;
         url: 'https://api.groq.com/openai/v1/chat/completions',
         model: tool.model || 'llama-3.3-70b-versatile',
         label: 'Groq',
+        authRef: 'groq',
       });
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, tool.localModel, tool.codexCmd);
@@ -2543,7 +2576,7 @@ RESULTEOF`;
 function openAiCompatApiCommand(
   escapedPrompt: string,
   resultVar: string,
-  opts: { keyVar: string; envModelVar: string; keyHint: string; url: string; model: string; label: string },
+  opts: { keyVar: string; envModelVar: string; keyHint: string; url: string; model: string; label: string; authRef: string },
 ): string {
   const model = opts.model.replace(/"/g, '\\"');
   const keyHint = opts.keyHint.replace(/'/g, "'\\''");
@@ -2560,7 +2593,11 @@ function openAiCompatApiCommand(
 	else
 	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
 	set +e
+	if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
+	SHELLY_CAP_AUTH_REF=${opts.authRef} HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	else
 	HTTP_AUTH_HEADER="Bearer $${opts.keyVar}" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+	fi
 	API_EXIT=$?
 	set -e
 	if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
@@ -2596,7 +2633,11 @@ if [ -z "\${GEMINI_API_KEY:-}" ]; then
 else
   printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
-  HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+  if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
+    SHELLY_CAP_AUTH_REF=gemini HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+  else
+    HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+  fi
   API_EXIT=$?
   set -e
   if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
