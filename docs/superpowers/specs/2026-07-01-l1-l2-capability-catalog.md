@@ -30,7 +30,9 @@
 | **既存の安全部品** | approval bridge（file-queue → native notifier → `wait_action_approval`, sha256-pin）、boundary policy（`network-send`/`secret-read`/`leaves-root` signals）、secret-guard（秘密混入時 on-device 強制）、autonomous credential policy（API キーを無人経路の env から排除）。＝**secret-by-reference と taint の“芽”は既にある** |
 | **不足** | secret-by-reference の一級化 / typed capability broker（envelope）/ 署名付き action approval / PlanSpec 型 skill manifest / MCP-to-native broker |
 
-**含意**: L2 Core の大半は**新規ネイティブでなく、既存 broker を宣言付き primitive に整理し直すリファクタ**。P0 は「Alarm 配線」ではなく「`.sh` 実行本体 → broker/PlanSpec executor への置換」。
+**含意**: L2 Core の大半は**新規ネイティブでなく、既存 broker を宣言付き primitive に整理し直すリファクタ**。P0 は「Alarm 配線」ではなく「`.sh` 実行本体 → broker/PlanSpec executor への移行」。
+
+> ⚠️ **移行は strangler（段階移行）で。big-bang 禁止。** 現状の `.sh` 経路（approval bridge / audit / secret-guard / web-ladder / memory B2 gate を焼き込み済み）は **on-device end-to-end 検証済みの LIVE 系統**。これを一括で差し替えると検証資産を全部失う。正しい順は「① 既存経路を緑のまま維持 → ② CAP-001/SECRET-001/HTTP-001 を broker として**併設**し、既存 `.sh` が呼ぶ tool 呼び出し（`http_post_json` 等）を broker 経由に**内側から**差し替え（flag＋回帰ゲート付き）→ ③ broker が個別に実機検証できてから orchestration を TS 側へ寄せる → ④ 最後に `.sh` executor を退役」。`.sh` の一括廃止は ④ であって着手点ではない。
 
 ---
 
@@ -140,13 +142,15 @@
 ## §7. Ordered Roadmap（依存順・工数）
 
 ```
-Phase 0 — 床/substrate（〜14pd）※L1 追加なし・既存権限で足りる
-  0-1  FGS→生成.sh 実行本体を廃止 → TS PlanSpec executor / broker-first に置換（P0 の穴）
-  0-2  CAP-001 capability.envelope（grant/consent/budget/loop/audit/taint 骨格/署名）
-  0-3  SECRET-001 secret.invoke（.env raw secret 注入を縮小）
-  0-4  HTTP-001 http.request＋egress allowlist
-  0-5  FS-001 scoped.fs（workspace 越境バグの構造修正）
-  0-6  EXEC-001 を command template / cwd jail / timeout / secret-env 禁止に制限
+Phase 0 — 床/substrate（〜14pd）※L1 追加なし・既存権限で足りる／strangler 移行・既存 .sh 経路は緑のまま
+  0-1  CAP-001 capability.envelope を broker として「併設」導入。既存 .sh 経路の tool 呼び出しを
+       envelope 経由に flag＋回帰ゲート付きで内側から通す（.sh 一括廃止はしない）
+  0-2  SECRET-001 secret.invoke（.env raw secret 注入を縮小・secret-by-reference 化）
+  0-3  HTTP-001 http.request＋egress allowlist（既存 http_post_json/http_get_text/webhook を統合）
+  0-4  FS-001 scoped.fs（workspace 越境バグの構造修正）
+  0-5  EXEC-001 を command template / cwd jail / timeout / secret-env 禁止に制限
+  0-6  broker が個別に実機検証できてから orchestration を TS PlanSpec executor へ寄せ、
+       最後に .sh executor を退役（＝移行の終点。着手点ではない）
   ← ここが済むまで planner / skill 自動登録に進まない
 
 Phase 1 — 反応＋永続＋脳（〜10pd）
@@ -186,7 +190,7 @@ Phase 5 — egress 封じ込め・防御の本丸（stretch・〜15pd+）
 ## §8. 確定した設計判断（不変条件）
 
 1. **床が先、planner/capability 拡張は後**（6ソース一致）。
-2. **P0 ＝ `.sh` 実行本体の broker/PlanSpec 化**（Alarm 配線は完成済み）。
+2. **P0 ＝ `.sh` 実行本体の broker/PlanSpec 化**（Alarm 配線は完成済み）。ただし **strangler 移行**で。現状 `.sh` 経路は on-device 検証済み LIVE 系統なので、broker を併設して内側から差し替え、緑を保ったまま段階移行する。**big-bang の一括置換は禁止。**
 3. **記憶は残す**が FS-001＋sqlite 上の薄い primitive として（North Star＝Hermes と GPT/Codex の「新ネイティブ不要」を両立）。
 4. **Accessibility は最後**。taint と never-auto-approve が熟すまで積まない（早期投入＝trifecta 最悪化）。
 5. **NOTIFY-001 が最大の梃子、UI-001 が最大の落とし穴**。
