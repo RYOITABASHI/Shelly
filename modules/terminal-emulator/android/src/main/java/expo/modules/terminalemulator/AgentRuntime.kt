@@ -31,7 +31,17 @@ object AgentRuntime {
     private const val CURRENT_SCRIPT_VERSION = 10
     private const val CURRENT_PLAN_SPEC_VERSION = 1
 
-    fun runAgent(context: Context, agentId: String, tainted: Boolean = false): AgentRunResult {
+    private data class TrustedPlanLaunch(
+        val actionType: String,
+        val toolType: String
+    )
+
+    fun runAgent(
+        context: Context,
+        agentId: String,
+        tainted: Boolean = false,
+        unattended: Boolean = false
+    ): AgentRunResult {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
@@ -46,7 +56,7 @@ object AgentRuntime {
         val bashPath = LibExtractor.getBashPath(appContext)
 
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, unattended)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -142,7 +152,8 @@ object AgentRuntime {
         homeDir: File,
         libDir: File,
         bashPath: String,
-        agentId: String
+        agentId: String,
+        unattended: Boolean
     ): AgentRunResult {
         val libPath = libDir.absolutePath
         val planPath = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json").absolutePath
@@ -167,6 +178,14 @@ object AgentRuntime {
             NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
             return AgentRunResult(agentId, 126, "", message)
         }
+        val planAgentId = readPlanSpecAgentId(plan)
+        if (planAgentId != agentId) {
+            val message = "PlanSpec agent id mismatch: plan=$planAgentId expected=$agentId"
+            Log.e(TAG, message)
+            writeReceiverLog(homeDir, agentId, "error", message)
+            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            return AgentRunResult(agentId, 127, "", message)
+        }
         if (!executor.isFile || !broker.isFile) {
             val message = "PlanSpec executor assets missing: executor=${executor.isFile} broker=${broker.isFile}"
             Log.e(TAG, message)
@@ -174,6 +193,7 @@ object AgentRuntime {
             NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
             return AgentRunResult(agentId, 127, "", message)
         }
+        val trustedLaunch = trustedPlanLaunch(homeDir, agentId)
 
         val command = buildString {
             append("export PATH=")
@@ -197,15 +217,28 @@ object AgentRuntime {
             append(shellQuote(executorPath))
             append(" --plan-file ")
             append(shellQuote(planPath))
+            append(" --agent-id ")
+            append(shellQuote(agentId))
             append(" --home ")
             append(shellQuote(homeDir.absolutePath))
             append(" --lib-dir ")
             append(shellQuote(libPath))
             append(" --broker ")
             append(shellQuote(brokerPath))
+            if (unattended) {
+                append(" --unattended 1")
+            }
+            if (trustedLaunch != null) {
+                append(" --trusted-autonomous-agent-id ")
+                append(shellQuote(agentId))
+                append(" --trusted-autonomous-action ")
+                append(shellQuote(trustedLaunch.actionType))
+                append(" --trusted-tool-type ")
+                append(shellQuote(trustedLaunch.toolType))
+            }
         }
 
-        Log.i(TAG, "Agent $agentId starting via PlanSpec executor plan=$planPath version=$planVersion")
+        Log.i(TAG, "Agent $agentId starting via PlanSpec executor plan=$planPath version=$planVersion unattended=$unattended trustedAction=${trustedLaunch?.actionType ?: "-"} trustedTool=${trustedLaunch?.toolType ?: "-"}")
         val actionApprovalNotifierStop = AtomicBoolean(false)
         val actionApprovalNotifier = startActionApprovalNotifier(context, actionApprovalNotifierStop)
         val result = try {
@@ -330,10 +363,45 @@ object AgentRuntime {
         }
     }
 
+    private fun readPlanSpecAgentId(plan: File): String {
+        return try {
+            JSONObject(plan.readText()).optJSONObject("agent")?.optString("id").orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     private fun shouldRunPlanExecutor(homeDir: File, agentId: String): Boolean {
         val flags = readAgentEnvFlags(homeDir)
         if (!isTruthy(flags["SHELLY_PLAN_EXECUTOR"])) return false
         return flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId
+    }
+
+    private fun trustedPlanLaunch(homeDir: File, agentId: String): TrustedPlanLaunch? {
+        val agentFile = File(homeDir, ".shelly/agents/$agentId.json")
+        if (!agentFile.isFile) return null
+        return try {
+            val json = JSONObject(agentFile.readText())
+            if (json.optString("id") != agentId) return null
+            if (!json.optBoolean("autonomous", false)) return null
+            val actionType = json.optJSONObject("action")
+                ?.optString("type")
+                ?.takeIf { it.isNotBlank() }
+                ?: "draft"
+            if (actionType != "draft" && actionType != "notify") return null
+            val toolType = json.optJSONObject("tool")
+                ?.optString("type")
+                ?.takeIf { it.isNotBlank() }
+                ?: return null
+            // Phase 0 canary only trusts deterministic local unattended effects.
+            // Cloud/web/auto routes stay manual-gated until PlanSpec integrity is
+            // signed or native can recompute the full TS route decision.
+            if (toolType != "local") return null
+            TrustedPlanLaunch(actionType = actionType, toolType = toolType)
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to read trusted PlanSpec launch state for $agentId", e)
+            null
+        }
     }
 
     private fun readAgentEnvFlags(homeDir: File): Map<String, String> {

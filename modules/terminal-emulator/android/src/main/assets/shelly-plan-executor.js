@@ -194,7 +194,7 @@ function sleepMs(ms) {
 }
 
 function previewText(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+  return redact(String(text || '')).replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 function sanitizeRelPath(value) {
@@ -573,14 +573,54 @@ function resolveDraftDestination(paths, plan, config) {
   return path.join(plan.output.outputDir, rel);
 }
 
-function dispatchAction(paths, opts, plan, config, roots, resultText) {
+function argTruthy(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function trustedNativeLowRiskAction(args, plan, actionType) {
+  const trustedAgentId = String(args['trusted-autonomous-agent-id'] || '').trim();
+  const trustedAction = String(args['trusted-autonomous-action'] || '').trim();
+  const trustedTool = String(args['trusted-tool-type'] || '').trim();
+  if (trustedAgentId !== plan.agent.id) return false;
+  if (trustedAction !== 'draft' && trustedAction !== 'notify') return false;
+  if (trustedAction !== actionType) return false;
+  // Native only emits this for deterministic local autonomous agents. This keeps
+  // a tampered plan from turning a low-risk file/notify action into key spend.
+  return trustedTool === 'local' && plan.tool.type === 'local';
+}
+
+function unattendedPreflightFailure(args, plan) {
+  if (!argTruthy(args.unattended)) return '';
+  const actionType = plan.action.type;
+  if (actionType === '__suppressed__') return '';
+  if (actionType !== 'draft' && actionType !== 'notify') {
+    return `unsupported unattended PlanSpec action: ${actionType}`;
+  }
+  if (!trustedNativeLowRiskAction(args, plan, actionType)) {
+    return `${actionType} action is not trusted for unattended PlanSpec execution`;
+  }
+  return '';
+}
+
+function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args) {
   const actionType = plan.action.type;
   const preview = previewText(resultText);
   if (actionType === '__suppressed__') return { status: 'success', preview };
   if (actionType !== 'draft' && actionType !== 'notify') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
-  requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
+  if (trustedNativeLowRiskAction(args, plan, actionType)) {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'action_trusted_allow',
+      agentId: plan.agent.id,
+      actionType,
+      toolType: plan.tool.type,
+    });
+  } else {
+    requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
+  }
   if (actionType === 'draft') {
     const dest = resolveDraftDestination(paths, plan, config);
     brokerFsWrite(paths, opts, roots, dest, paths.resultFile);
@@ -602,7 +642,14 @@ function mirrorBrokerAudit(paths, plan) {
 
 function run(args) {
   const plan = loadPlan(args['plan-file']);
-  const home = args.home || process.env.HOME || (plan.paths && plan.paths.home);
+  const expectedAgentId = String(args['agent-id'] || '').trim();
+  if (expectedAgentId && expectedAgentId !== plan.agent.id) {
+    throw new PlanFailure(`plan agent id mismatch: expected ${expectedAgentId}`, { exitCode: EXIT.PLAN_DENY });
+  }
+  const home = args.home || process.env.HOME;
+  if (!home || !path.isAbsolute(home)) {
+    throw new PlanFailure('--home or absolute HOME is required', { exitCode: EXIT.PLAN_DENY });
+  }
   const paths = runtimePaths(home, plan.agent.id);
   const opts = {
     libDir: args['lib-dir'] || process.env.SHELLY_LIB_DIR || '',
@@ -623,7 +670,24 @@ function run(args) {
     schemaVersion: plan.schemaVersion,
     toolType: plan.tool.type,
     actionType: plan.action.type,
+    unattended: argTruthy(args.unattended),
   });
+
+  const unattendedFailure = unattendedPreflightFailure(args, plan);
+  if (unattendedFailure) {
+    const message = redact(unattendedFailure);
+    writeNotification(paths, plan, 'skipped', message);
+    writeRunLog(paths, plan, 'skipped', message, Date.now() - startedAt, message);
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'plan_finish',
+      status: 'skipped',
+      reason: message,
+      durationMs: Date.now() - startedAt,
+    });
+    return EXIT.OK;
+  }
 
   if (!acquireLock(paths)) {
     const message = 'previous run still active';
@@ -643,7 +707,7 @@ function run(args) {
     const response = brokerHttp(paths, opts, plan, request);
     const resultText = extractModelContent(plan.tool.type, response);
     writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') ? '' : '\n'));
-    const action = dispatchAction(paths, opts, plan, config, roots, resultText);
+    const action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, '');
     appendJsonl(paths.planAuditFile, {
