@@ -197,16 +197,6 @@ function previewText(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
-function lexicalNormalize(p) {
-  return path.resolve('/', String(p || ''));
-}
-
-function isWithin(root, target) {
-  const r = lexicalNormalize(root).replace(/\/$/, '');
-  const t = lexicalNormalize(target);
-  return t === r || t.startsWith(r + '/');
-}
-
 function sanitizeRelPath(value) {
   const cleaned = String(value || '')
     .replace(/[^A-Za-z0-9 _./{}-]+/g, '')
@@ -227,21 +217,16 @@ function uniqueRoots(roots) {
   return out;
 }
 
-function scopedRoots(paths, config, plan) {
+function scopedRoots(paths, config) {
   const obsidianRoot = config.OBSIDIAN_VAULT_PATH || '/sdcard/Documents/ObsidianVault';
   const customRoot = config.SHELLY_AGENT_CUSTOM_PATH || path.join(paths.home, 'agent-output');
-  const baseRoots = uniqueRoots([
+  return uniqueRoots([
     paths.tmpDir,
     path.join(paths.home, 'agent-output'),
     path.join(paths.home, 'projects/shelly-content-studio'),
     obsidianRoot,
     customRoot,
   ]);
-  const outputDir = plan.output && plan.output.outputDir;
-  if (outputDir && baseRoots.some((root) => isWithin(root, outputDir))) {
-    baseRoots.push(outputDir);
-  }
-  return uniqueRoots(baseRoots);
 }
 
 function writeRootsFile(paths, roots) {
@@ -595,7 +580,7 @@ function dispatchAction(paths, opts, plan, config, roots, resultText) {
   if (actionType !== 'draft' && actionType !== 'notify') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
-  if (!plan.agent.autonomous) requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
+  requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   if (actionType === 'draft') {
     const dest = resolveDraftDestination(paths, plan, config);
     brokerFsWrite(paths, opts, roots, dest, paths.resultFile);
@@ -628,7 +613,7 @@ function run(args) {
   ensureDir(paths.logDir);
 
   const config = parseConfigEnv(paths.envFile);
-  const roots = scopedRoots(paths, config, plan);
+  const roots = scopedRoots(paths, config);
   const startedAt = Date.now();
   appendJsonl(paths.planAuditFile, {
     ts: new Date().toISOString(),

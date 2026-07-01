@@ -39,4 +39,10 @@ describe('shelly-plan-executor.js parity', () => {
     expect(agentRuntime).toContain('SHELLY_PLAN_EXECUTOR_AGENT_ID');
     expect(agentRuntime).toContain('return flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId');
   });
+
+  it('does not trust plan.agent.autonomous to skip action approval', () => {
+    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
+    expect(executorSrc).toContain('requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config)');
+    expect(executorSrc).not.toContain('if (!plan.agent.autonomous) requestActionApproval');
+  });
 });
