@@ -88,6 +88,31 @@ function runBroker(
   });
 }
 
+function runBrokerArgs(dir: string, argv: string[], env?: Record<string, string>): Promise<RunResult> {
+  const outFile = path.join(dir, 'out.txt');
+  const errFile = path.join(dir, 'err.txt');
+  const auditFile = path.join(dir, 'audit.jsonl');
+  const fullArgv = [
+    BROKER,
+    ...argv,
+    '--audit-log',
+    auditFile,
+    '--out',
+    outFile,
+    '--err',
+    errFile,
+  ];
+  return new Promise((resolve) => {
+    execFile('node', fullArgv, { encoding: 'utf8', env: { ...process.env, ...(env || {}) } }, (err: any) => {
+      const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+      const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
+      const auditText = read(auditFile).trim();
+      const audit = auditText ? auditText.split('\n').map((l) => JSON.parse(l)) : [];
+      resolve({ code, out: read(outFile), err: read(errFile), audit });
+    });
+  });
+}
+
 describe('shelly-capability-broker: policy gates (no network)', () => {
   let dir: string;
   beforeEach(() => {
@@ -183,5 +208,241 @@ describe('shelly-capability-broker: secret injection + send (loopback server)', 
     expect(budget.calls).toBe(1);
     // no auth header was sent for an un-authed call
     expect(lastAuthHeader).toBeUndefined();
+  });
+});
+
+describe('shelly-capability-broker: FS-001 scoped.fs', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = makeDir();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('writes inside a declared root and records a scoped.fs audit', async () => {
+    const root = path.join(dir, 'root');
+    const input = path.join(root, 'input.txt');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.writeFileSync(input, 'ok');
+    fs.writeFileSync(roots, root + '\n');
+    const dest = path.join(root, 'nested', 'result.md');
+
+    const r = await runBrokerArgs(dir, ['--op', 'fs.write', '--path', dest, '--input-file', input, '--roots-file', roots]);
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(dest, 'utf8')).toBe('ok');
+    expect(r.audit[0].kind).toBe('scoped.fs');
+    expect(r.audit[0].decision).toBe('allow');
+  });
+
+  it('denies writes outside declared roots', async () => {
+    const root = path.join(dir, 'root');
+    const outside = path.join(dir, 'outside');
+    const input = path.join(root, 'input.txt');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.writeFileSync(input, 'nope');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'fs.write', '--path', path.join(outside, 'x.md'), '--input-file', input, '--roots-file', roots]);
+    expect(r.code).toBe(45);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('outside-root');
+    expect(fs.existsSync(path.join(outside, 'x.md'))).toBe(false);
+  });
+
+  it('denies writes through an in-root symlink that points outside', async () => {
+    const root = path.join(dir, 'root');
+    const outside = path.join(dir, 'outside');
+    const input = path.join(root, 'input.txt');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(root, 'link-out'), 'dir');
+    fs.writeFileSync(input, 'nope');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'fs.write', '--path', path.join(root, 'link-out', 'x.md'), '--input-file', input, '--roots-file', roots]);
+    expect(r.code).toBe(45);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('outside-root');
+    expect(fs.existsSync(path.join(outside, 'x.md'))).toBe(false);
+  });
+
+  it('denies writes to an in-root dangling symlink whose target is outside', async () => {
+    const root = path.join(dir, 'root');
+    const outside = path.join(dir, 'outside');
+    const input = path.join(root, 'input.txt');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(path.join(outside, 'evil.txt'), path.join(root, 'link.md'), 'file');
+    fs.writeFileSync(input, 'payload');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'fs.write', '--path', path.join(root, 'link.md'), '--input-file', input, '--roots-file', roots]);
+    expect(r.code).toBe(45);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('outside-root');
+    expect(fs.existsSync(path.join(outside, 'evil.txt'))).toBe(false);
+  });
+
+  it('denies writes below an in-root dangling symlink directory whose target is outside', async () => {
+    const root = path.join(dir, 'root');
+    const outside = path.join(dir, 'outside');
+    const input = path.join(root, 'input.txt');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(path.join(outside, 'missing-dir'), path.join(root, 'link-dir'), 'dir');
+    fs.writeFileSync(input, 'payload');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'fs.write', '--path', path.join(root, 'link-dir', 'evil.txt'), '--input-file', input, '--roots-file', roots]);
+    expect(r.code).toBe(45);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('outside-root');
+    expect(fs.existsSync(path.join(outside, 'missing-dir', 'evil.txt'))).toBe(false);
+  });
+
+  it('denies fs.write input files outside declared roots', async () => {
+    const root = path.join(dir, 'root');
+    const input = path.join(dir, 'input.txt');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.writeFileSync(input, 'secret-ish');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'fs.write', '--path', path.join(root, 'x.md'), '--input-file', input, '--roots-file', roots]);
+    expect(r.code).toBe(45);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].reason).toContain('input file is outside');
+    expect(r.audit[0].path).toBe(path.join(root, 'x.md'));
+    expect(fs.existsSync(path.join(root, 'x.md'))).toBe(false);
+  });
+});
+
+describe('shelly-capability-broker: EXEC-001 workspace.exec', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = makeDir();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('executes inside a root with API-key-like env stripped', async () => {
+    const root = path.join(dir, 'workspace');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(roots, root + '\n');
+    fs.writeFileSync(command, 'env');
+
+    const r = await runBrokerArgs(
+      dir,
+      ['--op', 'workspace.exec', '--command-file', command, '--cwd', root, '--roots-file', roots, '--timeout-seconds', '5'],
+      { GEMINI_API_KEY: 'AIzaSECRETSECRETSECRETSECRETSECRETSECRET' },
+    );
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain('GEMINI_API_KEY');
+    expect(r.out + r.err + JSON.stringify(r.audit)).not.toContain('AIzaSECRET');
+    expect(r.audit[0].kind).toBe('workspace.exec');
+    expect(r.audit[0].decision).toBe('allow');
+  });
+
+  it('allows curated cat only for files inside declared roots', async () => {
+    const root = path.join(dir, 'workspace');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    const inside = path.join(root, 'note.txt');
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(inside, 'VISIBLE');
+    fs.writeFileSync(command, 'cat note.txt');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'workspace.exec', '--command-file', command, '--cwd', root, '--roots-file', roots]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('VISIBLE');
+    expect(r.audit[0].decision).toBe('allow');
+  });
+
+  it('denies curated path arguments outside declared roots', async () => {
+    const root = path.join(dir, 'workspace');
+    const outside = path.join(dir, 'outside');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    const secret = path.join(outside, 'secret.txt');
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(secret, 'TOPSECRET');
+    fs.writeFileSync(command, `cat ${secret}`);
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'workspace.exec', '--command-file', command, '--cwd', root, '--roots-file', roots]);
+    expect(r.code).toBe(46);
+    expect(r.out + r.err + JSON.stringify(r.audit)).not.toContain('TOPSECRET');
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('outside-root');
+  });
+
+  it('denies unsupported raw shell commands', async () => {
+    const root = path.join(dir, 'workspace');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(command, 'bash -lc cat /tmp/secret.txt');
+    fs.writeFileSync(roots, root + '\n');
+
+    const r = await runBrokerArgs(dir, ['--op', 'workspace.exec', '--command-file', command, '--cwd', root, '--roots-file', roots]);
+    expect(r.code).toBe(46);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('unsupported-command');
+  });
+
+  it('denies cwd outside roots', async () => {
+    const root = path.join(dir, 'workspace');
+    const outside = path.join(dir, 'outside');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(roots, root + '\n');
+    fs.writeFileSync(command, 'printf ok');
+
+    const r = await runBrokerArgs(dir, ['--op', 'workspace.exec', '--command-file', command, '--cwd', outside, '--roots-file', roots]);
+    expect(r.code).toBe(46);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('outside-root');
+  });
+
+  it('hard-denies CRITICAL commands', async () => {
+    const root = path.join(dir, 'workspace');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(roots, root + '\n');
+    fs.writeFileSync(command, 'rm -rf /');
+
+    const r = await runBrokerArgs(dir, ['--op', 'workspace.exec', '--command-file', command, '--cwd', root, '--roots-file', roots]);
+    expect(r.code).toBe(46);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.audit[0].signals).toContain('critical-command');
+  });
+
+  it('enforces timeout', async () => {
+    const root = path.join(dir, 'workspace');
+    const roots = path.join(dir, 'roots.txt');
+    fs.mkdirSync(root);
+    const command = path.join(root, 'cmd.sh');
+    fs.writeFileSync(roots, root + '\n');
+    fs.writeFileSync(command, 'sleep 2');
+
+    const r = await runBrokerArgs(dir, ['--op', 'workspace.exec', '--command-file', command, '--cwd', root, '--roots-file', roots, '--timeout-seconds', '1']);
+    expect(r.code).toBe(124);
+    expect(r.err).toContain('timed out');
+    expect(r.audit[0].exitCode).toBe(124);
   });
 });

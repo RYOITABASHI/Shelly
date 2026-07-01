@@ -251,12 +251,12 @@ describe('dated-folder output template (N4)', () => {
     expect(sanitizeOutputTemplate('../../etc/{slug}')).toBe('etc/{slug}');
   });
 
-  it('the generated save uses the template (placeholder substitution + dir create)', () => {
+  it('the generated save uses the template (placeholder substitution + scoped write)', () => {
     const s = generateRunScript(agent({ type: 'local' }));
     expect(s).toContain('OUTPUT_NAME_TEMPLATE=');
     expect(s).toContain('s|{date}|$DATE|g');
     expect(s).toContain('s|{slug}|$SLUG|g');
-    expect(s).toContain('mkdir -p "$(dirname "$SAVED_FILE")"');
+    expect(s).toContain('cap_fs_write_file "$SAVED_FILE" "$result_file"');
     // The old hardcoded flat name is gone.
     expect(s).not.toContain('SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"');
   });
@@ -443,7 +443,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=11');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=12');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -651,7 +651,8 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(cli).toContain("ACTION_COMMAND_SAFETY_LEVEL='HIGH'");
     expect(cli).toContain('write_action_approval_request "cli" "$preview" "$result_file"');
     expect(cli).toContain('wait_action_approval "cli" || return 1');
-    expect(cli).toContain('bash -lc "$ACTION_COMMAND" > "$cli_output" 2>&1');
+    expect(cli).toContain('cap_workspace_exec "$ACTION_COMMAND" "$CLI_EXEC_CWD" "$cli_output" "$cli_error"');
+    expect(cli).toContain('bash -lc "$command_text" > "$out_file" 2>&1');
     expect(cli).not.toContain('eval "$ACTION_COMMAND"');
   });
 });
