@@ -1199,6 +1199,18 @@ patchCodex(libDir);
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-agent-driver.js extract failed: ${e.message}")
         }
+        // Phase 0 床: CAP-001/SECRET-001/HTTP-001 capability broker. Invoked via
+        // node from the agent .sh when SHELLY_CAP_BROKER=1; only needs to be
+        // readable, matching the gate/driver helpers above.
+        val capabilityBrokerScript = File(home, ".shelly-capability-broker.js")
+        try {
+            context.assets.open("shelly-capability-broker.js").use { input ->
+                capabilityBrokerScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-capability-broker.js extract failed: ${e.message}")
+        }
+
         val agentEscalationDir = File(home, ".shelly/agents/escalations")
         agentEscalationDir.mkdirs()
         val agentEscalationReplyDir = File(context.noBackupFilesDir, "shelly-agent-escalation-replies")
