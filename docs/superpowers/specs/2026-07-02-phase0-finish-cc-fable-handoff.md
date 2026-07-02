@@ -39,7 +39,7 @@
    C-3 `.sh` executor 退役ステージング: C-2 が全機能 parity green になって初めて、生成 .sh の materialize/版 gate を段階撤去する設計を Plan で起こす（この /goal では設計＋足場まで、一括退役はしない）。
    C-4+ Phase 0 実装が一通り済んだら Phase 1 に進む（この doc の §CC-P1 を読んで続ける）。ただし Phase 1 も全部 flag 既定 OFF＋オフライン緑＝「実装されるが有効化はされない」。未検証の床の上に能力を有効化しない。新 Manifest 権限はレポートで明示（要 rebuild）。
 
-4. verify: 各チャンクは pnpm check + jest + bash -n が PASS。実機（app-uid RUN・redacted audit・completion 通知・.sh parity・STOP-ALL 拒否）は Codex 監視/人間が閉じるので、実機必要項目は DEFERRED に「実機待ち」で残す。offline 緑≠実機緑を忘れない（LD_PRELOAD の教訓）。
+4. verify（検証は必須・後回しにしない）: 各チャンクは (a) pnpm check + jest + bash -n を PASS させ push→build、(b) **その build を Codex 監視が実機検証する（実エージェント RUN を `am` 発火し logcat/通知/`/sdcard`出力で PASS 確認）＝必須ゲート**。CC は (a) 完了で次チャンクに進んでよい（ブロックしない）が、monitor が回帰/実機バグ（LD_PRELOAD の様な device-only）を報告したら**最優先で直す**。app-uid 直叩きハーネス（`node /sdcard/shelly-plan-verify.js`）と app-private 監査の深い中身だけは release で `run-as` 不可＝人間タップが要るので、その項目のみ「人間タップ待ち」と明記（それ以外を「実機待ち」で溜めない）。offline 緑≠実機緑（LD_PRELOAD の教訓）。
 
 5. 停止条件: 「行けるとこまで」= チャンク単位で offline-green＋レビュー APPROVE＋cc/phase0-fs-exec push を積み上げる。各チャンク完了ごとに ①commit SHA ②offline で確認したこと ③実機待ち項目 ④次チャンク を報告し DEFERRED 更新。設計に迷ったら大改修せず Plan サブエージェント相談。夜間で判断不能な設計分岐に当たったら、その手前で停止して AskUserQuestion 相当のメモを残す（勝手に大きな方針転換をしない）。
 ```
@@ -49,7 +49,7 @@
 ## §MON. Codex（wireless adb）実機監視（そのまま貼る）
 
 ```
-Shelly の Phase 0 実機監視を担当する。あなたは wireless adb で実機に接続済み。実装はしない（CC が別途行う）。目的は「CC が push→ビルドした成果を実機で確認/監視し、結果を報告する」。
+Shelly の Phase 0/1 実機**検証**を担当する（監視ではなく検証ゲート）。あなたは wireless adb で実機に接続済み。実装はしない（CC が別途行う）。目的は「CC が push→ビルドした各チャンクを実機で検証し、PASS/回帰/実機バグを CC に返す」。検証は後回しにしない＝新 build が出るたびに検証を回す。
 
 前提/制約: release ビルドなので run-as 不可＝adb(shell uid) から app-uid で直接ハーネスを走らせられない。app-private（$HOME/.shelly/...）も adb 直読不可。だから観測は (a) am で実エージェント RUN を発火（native→executor 本番経路）(b) logcat (c) /sdcard 出力 (d) 通知 で行う。スクショ禁止（screencap/screenrecord/--record は使わない、テキストのみ）。秘密の値を出力しない。
 
