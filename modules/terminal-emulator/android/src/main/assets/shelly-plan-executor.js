@@ -36,6 +36,7 @@ const CONFIG_ENV_KEYS = new Set([
   'SHELLY_AGENT_CUSTOM_PATH',
   'SHELLY_AGENT_EXEC_CWD',
   'SHELLY_CONTENT_PROJECT',
+  'SOURCE_REGISTRY_FILE',
   'OBSIDIAN_VAULT_PATH',
   'SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS',
   'WEBHOOK_TIMEOUT_SECONDS',
@@ -649,8 +650,85 @@ function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
   // aborts before the mirror). The terminal draft path lets the failure propagate.
   try {
     for (const target of targets) brokerFsWrite(paths, opts, roots, target, paths.resultFile);
+    // save_draft_result appends source URLs to the shared dedup registry AFTER the
+    // write, inside set -e — a failed write aborts before it. Keep it inside the try
+    // so a swallowed bestEffort write failure also skips the registry (parity).
+    registerSourceUrls(paths, config, plan);
   } catch (e) {
     if (!bestEffort) throw e;
+  }
+}
+
+// Mirror of the .sh register_source_urls: append https URLs found in the draft to a
+// shared per-project registry TSV (timestamp, agentId, toolLabel, url), deduped on
+// the url column, under a mkdir mutex. Fixed path (no model-controlled path), best
+// effort — a registry hiccup must never fail the run. No-op when the sources/ dir is
+// absent (parity with the .sh, whose `>>` silently fails without it).
+function registerSourceUrls(paths, config, plan) {
+  try {
+    const contentProject = config.SHELLY_CONTENT_PROJECT || path.join(paths.home, 'projects/shelly-content-studio');
+    const registryFile = config.SOURCE_REGISTRY_FILE || path.join(contentProject, 'sources', 'source-registry.tsv');
+
+    let text = '';
+    try {
+      text = fs.readFileSync(paths.resultFile, 'utf8');
+    } catch (_) {
+      return;
+    }
+    const seen = new Set();
+    // The .sh uses line-oriented `grep -Eo`, so a match never spans a newline; exclude
+    // \t\r\n from the class so adjacent-line URLs don't merge into one bogus entry.
+    const matches = text.match(/https?:\/\/[^\][ )<>"'\t\r\n]+/g) || [];
+    for (const raw of matches) {
+      // Match the .sh: `sed 's/[.,;)]$//'` strips exactly one trailing char.
+      const url = raw.replace(/[.,;)]$/, '');
+      if (url) seen.add(url);
+    }
+    // `sort -u` in the .sh: unique + sorted before appending.
+    const urls = Array.from(seen).sort();
+    if (!urls.length) return;
+
+    // The .sh creates the registry dir/file unconditionally at startup (mkdir -p +
+    // touch, lib/agent-executor.ts), so register_source_urls always has a target.
+    fs.mkdirSync(path.dirname(registryFile), { recursive: true });
+    const lockDir = `${registryFile}.lock`;
+    let locked = false;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        fs.mkdirSync(lockDir);
+        locked = true;
+        break;
+      } catch (_) {
+        sleepMs(1000);
+      }
+    }
+    try {
+      let existing = '';
+      try {
+        existing = fs.readFileSync(registryFile, 'utf8');
+      } catch (_) {
+        /* first write */
+      }
+      const known = new Set(existing.split('\n').map((line) => line.split('\t')[3]).filter(Boolean));
+      const toolLabel = (plan.tool && plan.tool.label) || '';
+      const ts = new Date().toISOString();
+      let append = '';
+      for (const url of urls) {
+        if (!known.has(url)) {
+          append += `${ts}\t${plan.agent.id}\t${toolLabel}\t${url}\n`;
+          known.add(url);
+        }
+      }
+      if (append) fs.appendFileSync(registryFile, append);
+    } finally {
+      if (locked) {
+        try {
+          fs.rmdirSync(lockDir);
+        } catch (_) {}
+      }
+    }
+  } catch (_) {
+    /* best-effort registry bookkeeping — never fail the run */
   }
 }
 

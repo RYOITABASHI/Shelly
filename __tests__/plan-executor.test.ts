@@ -532,6 +532,49 @@ describe('shelly-plan-executor host smoke', () => {
     expect(JSON.parse(fs.readFileSync(path.join(runLogDir, runLogs[0]), 'utf8')).status).toBe('success');
   });
 
+  it('appends newline-separated draft source URLs to the shared registry, deduped (.sh parity)', async () => {
+    const home = makeHome();
+    const contentProject = path.join(home, 'content');
+    fs.mkdirSync(path.join(contentProject, 'sources'), { recursive: true });
+    const { plan, planFile } = makePlan(home, port);
+    plan.output.useGlobalOutput = false;
+    plan.output.outputDir = path.join(contentProject, 'drafts/x');
+    plan.output.outputNameTemplate = '{date}-{slug}';
+    // URLs on separate lines: the line-oriented .sh grep must not merge them.
+    plan.prompt = 'refs:\nhttps://a.example/x\nhttps://b.example/y';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_CONTENT_PROJECT='${contentProject}'\n`);
+
+    const registry = path.join(contentProject, 'sources', 'source-registry.tsv');
+    await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    const rows1 = fs.readFileSync(registry, 'utf8').trim().split('\n');
+    expect(rows1).toHaveLength(2);
+    // Column 4 (tab-separated) is the URL; adjacent-line URLs stay separate, not merged.
+    expect(rows1.map((r) => r.split('\t')[3])).toEqual(['https://a.example/x', 'https://b.example/y']);
+
+    // Re-running the same agent must not duplicate URLs already in the registry.
+    await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    expect(fs.readFileSync(registry, 'utf8').trim().split('\n')).toHaveLength(2);
+  });
+
+  it('creates the source registry on a fresh content-studio project (.sh parity)', async () => {
+    const home = makeHome();
+    const contentProject = path.join(home, 'fresh-content');
+    // No pre-existing sources/ dir: the .sh mkdir -p's it at startup, so URLs still register.
+    const { plan, planFile } = makePlan(home, port);
+    plan.output.useGlobalOutput = false;
+    plan.output.outputDir = path.join(contentProject, 'drafts/x');
+    plan.prompt = 'ref https://c.example/z';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_CONTENT_PROJECT='${contentProject}'\n`);
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    expect(result.status).toBe(0);
+    const registry = path.join(contentProject, 'sources', 'source-registry.tsv');
+    expect(fs.existsSync(registry)).toBe(true);
+    expect(fs.readFileSync(registry, 'utf8')).toContain('https://c.example/z');
+  });
+
   it('mirrors a content-studio draft into the keyword-routed Obsidian vault (.sh parity)', async () => {
     const home = makeHome();
     const vault = path.join(home, 'vault');
