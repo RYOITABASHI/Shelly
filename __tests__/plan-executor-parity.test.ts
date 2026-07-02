@@ -65,4 +65,34 @@ describe('shelly-plan-executor.js parity', () => {
     expect(terminalSessionService).toContain('runAgentInBackground(agentId, unattended)');
     expect(terminalSessionService).toContain('AgentRuntime.runAgent(applicationContext, agentId, unattended)');
   });
+
+  it('launches the executor via linker64 node with SHELLY_LIB_DIR and the plan version gate', () => {
+    // Startup contract: bionic node under the dynamic linker, lib dir exported,
+    // and the schema-version gate that refuses a stale on-disk PlanSpec.
+    expect(agentRuntime).toContain('/system/bin/linker64');
+    expect(agentRuntime).toContain('"$libPath/node"');
+    expect(agentRuntime).toContain('export SHELLY_LIB_DIR=');
+    expect(agentRuntime).toContain('planVersion != CURRENT_PLAN_SPEC_VERSION');
+  });
+
+  it('never falls back to the .sh runner once the PlanSpec path is chosen', () => {
+    // shouldRunPlanExecutor => `return runPlanAgent(...)`, so the flag-gated canary
+    // returns its own result and can never source run-agent-<id>.sh on failure.
+    expect(agentRuntime).toContain('return runPlanAgent(');
+  });
+
+  it('does not pass LD_PRELOAD to the leaf node (bionic OpenSSL crash guard)', () => {
+    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
+    // The exec wrapper preload is only for shell/codex exec, not the pure-node
+    // broker/executor: it corrupts node's OpenSSL config read on device.
+    expect(agentRuntime).not.toContain('LD_PRELOAD');
+    expect(executorSrc).toContain('delete env.LD_PRELOAD');
+  });
+
+  it('honors the STOP-ALL kill-switch in both the native gate and the executor', () => {
+    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
+    expect(agentRuntime).toContain('.shelly/agents/.halted');
+    expect(executorSrc).toContain('paths.haltSentinel');
+    expect(executorSrc).toContain("haltSentinel: path.join(agentsDir, '.halted')");
+  });
 });

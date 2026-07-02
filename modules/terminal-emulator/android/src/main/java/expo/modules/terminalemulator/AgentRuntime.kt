@@ -155,6 +155,19 @@ object AgentRuntime {
         val executor = File(executorPath)
         val broker = File(brokerPath)
 
+        // Global kill-switch (STOP ALL). haltAllAgents uninstalls schedules and drops
+        // this sentinel; refuse here so a still-in-flight alarm or a direct `am` fire
+        // never launches the executor. Fail-closed. This native gate stays silent
+        // (halt is user-initiated and schedules are already torn down — avoid per-fire
+        // notification spam); the executor's own kill-switch skip still records a
+        // skipped run log/notification if it is ever invoked directly (am/harness).
+        if (File(homeDir, ".shelly/agents/.halted").isFile) {
+            val message = "All agents are stopped (global kill-switch is on)."
+            Log.i(TAG, "Agent $agentId refused: $message")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 130, "", message)
+        }
+
         if (!plan.isFile) {
             val message = "missing PlanSpec: $planPath"
             Log.e(TAG, message)
