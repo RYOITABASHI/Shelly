@@ -249,9 +249,16 @@ function childEnv(paths, opts) {
   if (libDir) {
     env.LD_LIBRARY_PATH = libDir;
     env.PATH = `${libDir}:${libDir}/node_modules/npm/bin:${libDir}/node_modules/.bin:${env.PATH || ''}`;
-    const preload = path.join(libDir, 'libexec_wrapper.so');
-    if (fs.existsSync(preload)) env.LD_PRELOAD = preload;
   }
+  // The broker is a leaf bionic-node process: its workspace.exec curates commands
+  // in-node (cat/ls/grep/printf/… implemented in JS) and never execs an app-data
+  // binary, so it does NOT need the Knox exec-wrapper. Inheriting
+  // LD_PRELOAD=libexec_wrapper.so (set globally by shelly-exec.c on the launching
+  // shell) BREAKS node's OpenSSL config load on-device — verified on hardware:
+  // "BIO_new_file:Bad file descriptor" on openssl.cnf → node aborts → every broker
+  // call fails. Drop it here (mirrors the llama-server launcher, which unsets
+  // LD_PRELOAD before its own linker64 launch for the same class of reason).
+  delete env.LD_PRELOAD;
   return env;
 }
 
