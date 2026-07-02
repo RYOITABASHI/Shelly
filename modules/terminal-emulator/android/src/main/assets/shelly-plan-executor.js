@@ -579,6 +579,9 @@ function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
+// Mirrors the .sh save_draft_result destination logic (lib/agent-executor.ts).
+// Returns { dest, rel, useGlobalOutput }: `rel` is the content-studio relative
+// filename reused by the Obsidian mirror; it is empty for the global-output path.
 function resolveDraftDestination(paths, plan, config) {
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
@@ -588,9 +591,10 @@ function resolveDraftDestination(paths, plan, config) {
     const target = config.SHELLY_AGENT_OUTPUT_TARGET || 'local';
     if (target === 'obsidian') base = config.OBSIDIAN_VAULT_PATH || '/sdcard/Documents/ObsidianVault';
     if (target === 'custom') base = config.SHELLY_AGENT_CUSTOM_PATH || path.join(paths.home, 'agent-output');
-    const topic = sanitizeRelPath(config.SHELLY_AGENT_TOPIC_FOLDER || '');
+    // The .sh appends SHELLY_AGENT_TOPIC_FOLDER only for obsidian/custom, never local.
+    const topic = target === 'obsidian' || target === 'custom' ? sanitizeRelPath(config.SHELLY_AGENT_TOPIC_FOLDER || '') : '';
     const topicPart = topic && topic !== '{date}-{slug}' ? topic : '';
-    return path.join(base, topicPart, date, `${date}_${plan.output.slug}.md`);
+    return { dest: path.join(base, topicPart, date, `${date}_${plan.output.slug}.md`), rel: '', useGlobalOutput: true };
   }
   const template = sanitizeRelPath(plan.output && plan.output.outputNameTemplate);
   let rel = template
@@ -598,7 +602,35 @@ function resolveDraftDestination(paths, plan, config) {
     .replace(/\{slug\}/g, plan.output && plan.output.slug ? plan.output.slug : plan.agent.id)
     .replace(/\{time\}/g, time);
   if (!/\.(md|markdown|txt)$/i.test(rel)) rel += '.md';
-  return path.join(plan.output.outputDir, rel);
+  return { dest: path.join(plan.output.outputDir, rel), rel, useGlobalOutput: false };
+}
+
+// Keyword-routed Obsidian subfolder for content-studio agents. Mirrors the
+// `case "$OUTPUT_DIR"` map in the .sh save_draft_result (order-sensitive: first
+// match wins, matching bash `case`).
+function obsidianTargetFor(outputDir) {
+  const dir = String(outputDir || '');
+  if (dir.includes('drafts/substack')) return '50_Drafts/Substack';
+  if (dir.includes('drafts/x')) return '50_Drafts/X';
+  if (dir.includes('drafts/articles')) return '50_Drafts/Substack';
+  if (dir.includes('sources')) return '20_Literature/Papers';
+  if (dir.includes('images/prompts')) return '60_Experiments/Image_Prompts';
+  if (dir.includes('evals')) return '90_Log/Agent_Evals';
+  return '90_Log/Agent_Output';
+}
+
+// The content-studio Obsidian mirror destination, or null when no vault is
+// configured/present (the .sh guards on `[ -n "$OBSIDIAN_VAULT_PATH" ] && [ -d ]`
+// and silently skips otherwise). The write itself is broker-routed and root-jailed.
+function resolveObsidianMirror(plan, config, rel) {
+  const vault = String(config.OBSIDIAN_VAULT_PATH || '').trim();
+  if (!vault || !rel) return null;
+  try {
+    if (!fs.statSync(vault).isDirectory()) return null;
+  } catch (_) {
+    return null;
+  }
+  return path.join(vault, obsidianTargetFor(plan.output && plan.output.outputDir), rel);
 }
 
 function webhookDestinationHost(urlText) {
@@ -854,8 +886,15 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   }
   if (actionType === 'draft') {
-    const dest = resolveDraftDestination(paths, plan, config);
+    const { dest, rel, useGlobalOutput } = resolveDraftDestination(paths, plan, config);
     brokerFsWrite(paths, opts, roots, dest, paths.resultFile);
+    if (!useGlobalOutput) {
+      // Content-studio agents also mirror the draft into the Obsidian vault.
+      // Fatal on failure when the vault exists (parity with the .sh, which runs
+      // the mirror under `set -euo pipefail` with no `|| true`).
+      const mirror = resolveObsidianMirror(plan, config, rel);
+      if (mirror) brokerFsWrite(paths, opts, roots, mirror, paths.resultFile);
+    }
   }
   if (actionType === 'draft' || actionType === 'notify') {
     writeNotification(paths, plan, 'success', preview);
