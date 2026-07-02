@@ -227,6 +227,44 @@ describe('shelly-plan-executor host smoke', () => {
     expect(planAudit).toContain('"event":"plan_finish"');
   });
 
+  it('refuses to run when the global kill-switch (.halted) sentinel is present', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    fs.writeFileSync(path.join(home, '.shelly/agents/.halted'), 'halted\n');
+
+    const result = await runExecutor([executor, '--plan-file', planFile, '--home', home, '--broker', broker], home);
+
+    expect(result.status).toBe(0);
+    // Fail-closed before any model IO: the loopback fixture is never hit.
+    expect(requestCount).toBe(0);
+    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(0);
+
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('skipped');
+    expect(runLog.errorMessage).toContain('global kill-switch');
+
+    const planAudit = fs.readFileSync(path.join(logDir, 'plan-executor-audit.jsonl'), 'utf8');
+    expect(planAudit).toContain('"status":"skipped"');
+    // Broker was never invoked, so no broker audit file was produced.
+    expect(fs.existsSync(path.join(logDir, 'agent-driver-audit.jsonl'))).toBe(false);
+  });
+
+  it('writes the native-result-notification.json completion request on a successful draft', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--broker', broker], home);
+    expect(result.status).toBe(0);
+
+    const notifyFile = path.join(home, `.shelly/agents/logs/${plan.agent.id}/native-result-notification.json`);
+    expect(fs.existsSync(notifyFile)).toBe(true);
+    const notify = JSON.parse(fs.readFileSync(notifyFile, 'utf8'));
+    expect(notify).toMatchObject({ agentId: plan.agent.id, status: 'success' });
+    expect(notify.preview).toContain('fixture result: say hello');
+  });
+
   it('denies a symlink outputDir instead of adding it as a scoped root', async () => {
     const home = makeHome();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-plan-outside-'));

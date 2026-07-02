@@ -129,6 +129,7 @@ function runtimePaths(home, agentId) {
     logsDir,
     logDir,
     envFile: path.join(agentsDir, '.env'),
+    haltSentinel: path.join(agentsDir, '.halted'),
     resultFile: path.join(tmpDir, `agent-result-${agentId}.md`),
     lockFile: path.join(locksDir, `${agentId}.pid`),
     notifyFile: path.join(logDir, 'native-result-notification.json'),
@@ -873,6 +874,23 @@ function mirrorBrokerAudit(paths, plan) {
   }
 }
 
+// Shared epilogue for the pre-run refuse paths (kill-switch, unattended-not-trusted):
+// notify + run log + a `plan_finish status:skipped` audit line, then exit cleanly.
+function finishSkipped(paths, plan, startedAt, message) {
+  const durationMs = Date.now() - startedAt;
+  writeNotification(paths, plan, 'skipped', message);
+  writeRunLog(paths, plan, 'skipped', message, durationMs, message);
+  appendJsonl(paths.planAuditFile, {
+    ts: new Date().toISOString(),
+    kind: 'plan.executor',
+    event: 'plan_finish',
+    status: 'skipped',
+    reason: message,
+    durationMs,
+  });
+  return EXIT.OK;
+}
+
 function run(args) {
   const plan = loadPlan(args['plan-file']);
   const expectedAgentId = String(args['agent-id'] || '').trim();
@@ -906,20 +924,17 @@ function run(args) {
     unattended: argTruthy(args.unattended),
   });
 
+  // Global kill-switch (STOP ALL). haltAllAgents drops a `.halted` sentinel and
+  // uninstalls schedules; this is the native/executor-side defense in depth so a
+  // still-in-flight alarm or a direct `am` fire is refused before any model IO,
+  // not just JS-initiated runs. Fail-closed: refuse (skip), never run.
+  if (fs.existsSync(paths.haltSentinel)) {
+    return finishSkipped(paths, plan, startedAt, 'All agents are stopped (global kill-switch is on).');
+  }
+
   const unattendedFailure = unattendedPreflightFailure(args, plan);
   if (unattendedFailure) {
-    const message = redact(unattendedFailure);
-    writeNotification(paths, plan, 'skipped', message);
-    writeRunLog(paths, plan, 'skipped', message, Date.now() - startedAt, message);
-    appendJsonl(paths.planAuditFile, {
-      ts: new Date().toISOString(),
-      kind: 'plan.executor',
-      event: 'plan_finish',
-      status: 'skipped',
-      reason: message,
-      durationMs: Date.now() - startedAt,
-    });
-    return EXIT.OK;
+    return finishSkipped(paths, plan, startedAt, redact(unattendedFailure));
   }
 
   if (!acquireLock(paths)) {
