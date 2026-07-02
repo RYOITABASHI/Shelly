@@ -614,6 +614,58 @@ function writeWebhookPayload(file, plan, status, preview, resultText) {
   }) + '\n');
 }
 
+const CRITICAL_COMMAND_PATTERNS = [
+  {
+    pattern: /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(\/|~\/?\s*$|\/\*|~\/\*)/i,
+    reason: 'Root or home directory recursive removal is critical.',
+  },
+  {
+    pattern: /rm\s+-rf\s+\/(?:usr|bin|lib|etc|boot|sys|proc|dev|sbin)/i,
+    reason: 'System directory removal is critical.',
+  },
+  {
+    pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/,
+    reason: 'Fork bomb command is critical.',
+  },
+  {
+    pattern: /dd\s+if=\/dev\/(?:zero|random|urandom)\s+of=\/dev\/(?:sd[a-z]|nvme|mmcblk)/i,
+    reason: 'Direct storage overwrite is critical.',
+  },
+  {
+    pattern: /mkfs\s+.*\/dev\/(?:sd[a-z]|nvme|mmcblk)/i,
+    reason: 'Storage device format is critical.',
+  },
+  {
+    pattern: />\s*\/dev\/(?:sd[a-z]|nvme|mmcblk)/i,
+    reason: 'Direct storage device write is critical.',
+  },
+  {
+    pattern: /shred\s+.*\/dev\//i,
+    reason: 'Device shred command is critical.',
+  },
+];
+
+function recomputeCliSafety(commandText, declaredSafety) {
+  const cleaned = String(commandText || '').replace(/#[^\n]*/g, '').trim();
+  for (const { pattern, reason } of CRITICAL_COMMAND_PATTERNS) {
+    if (pattern.test(cleaned)) {
+      return {
+        level: 'CRITICAL',
+        reason,
+        message: 'Executor-side command safety blocked a critical command.',
+        matchedPattern: pattern.source,
+      };
+    }
+  }
+  const safety = declaredSafety && typeof declaredSafety === 'object' ? declaredSafety : {};
+  return {
+    level: safety.level || 'SAFE',
+    reason: safety.reason || 'No critical command pattern matched.',
+    message: safety.message || '',
+    matchedPattern: safety.matchedPattern || '',
+  };
+}
+
 function resolveCliCwd(paths, plan, config) {
   const wanted =
     config.SHELLY_AGENT_EXEC_CWD ||
@@ -747,7 +799,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       writeWebhookPayload(payloadFile, plan, 'success', preview, resultText);
       requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         destinationHost: host,
-        payloadPath: payloadFile,
+        payloadPath: path.basename(payloadFile),
       });
       try {
         brokerHttpBodyFile(paths, opts, plan, {
@@ -765,7 +817,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     }
     if (actionType === 'cli') {
       const commandText = String(plan.action.command || '').trim();
-      const safety = plan.action.safety || {};
+      const safety = recomputeCliSafety(commandText, plan.action.safety || {});
       if (!commandText) {
         const message = 'CLI action is missing a command.';
         writeNotification(paths, plan, 'error', message);

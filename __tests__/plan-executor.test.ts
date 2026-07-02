@@ -399,7 +399,7 @@ describe('shelly-plan-executor host smoke', () => {
     expect(result.status).toBe(0);
   });
 
-  it('requests webhook approval with destination host and payload path, then skips on decline without sending', async () => {
+  it('requests webhook approval with destination host and redacted payload path, then skips on decline without sending', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
     (plan as any).action = { type: 'webhook', webhookUrl: 'https://hooks.example.test/incoming' };
@@ -415,8 +415,10 @@ describe('shelly-plan-executor host smoke', () => {
     const pending = await readNextActionRequest(home);
     expect(pending.request.actionType).toBe('webhook');
     expect(pending.request.destinationHost).toBe('hooks.example.test');
-    expect(pending.request.payloadPath).toContain('webhook-payload-');
-    expect(fs.readFileSync(pending.request.payloadPath, 'utf8')).toContain('"result":"fixture result: say hello"');
+    expect(pending.request.payloadPath).toMatch(/^webhook-payload-\d+\.json$/);
+    expect(pending.request.payloadPath).not.toContain(home);
+    const actualPayloadPath = path.join(home, `.shelly/agents/logs/${plan.agent.id}`, pending.request.payloadPath);
+    expect(fs.readFileSync(actualPayloadPath, 'utf8')).toContain('"result":"fixture result: say hello"');
 
     writeActionReply(home, pending, 'decline');
     const result = await run;
@@ -462,6 +464,38 @@ describe('shelly-plan-executor host smoke', () => {
     const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
     expect(brokerAudit).toContain('"kind":"workspace.exec"');
     expect(brokerAudit).toContain('"decision":"allow"');
+  });
+
+  it('recomputes cli safety in the executor and blocks critical command tampering', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = {
+      type: 'cli',
+      command: 'rm -rf /',
+      safety: { level: 'SAFE', reason: 'tampered safe classification', message: '', autoApprovable: true },
+    };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
+    expect(approvalRequests).toHaveLength(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('error');
+    expect(runLog.errorMessage).toContain('blocked by command safety');
+    const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
+    expect(brokerAudit).toContain('"kind":"http.request"');
+    expect(brokerAudit).not.toContain('"kind":"workspace.exec"');
   });
 
   it('keeps webhook and cli actions fail-closed in unattended mode', async () => {
