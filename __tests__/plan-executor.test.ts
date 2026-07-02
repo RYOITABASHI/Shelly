@@ -504,6 +504,52 @@ describe('shelly-plan-executor host smoke', () => {
     expect(brokerAudit).toContain('"decision":"allow"');
   });
 
+  it('mirrors a content-studio draft into the keyword-routed Obsidian vault (.sh parity)', async () => {
+    const home = makeHome();
+    const vault = path.join(home, 'vault');
+    fs.mkdirSync(vault, { recursive: true });
+    const { plan, planFile } = makePlan(home, port);
+    plan.output.useGlobalOutput = false;
+    plan.output.outputDir = path.join(home, 'projects/shelly-content-studio/drafts/x');
+    plan.output.outputNameTemplate = '{date}-{slug}';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nOBSIDIAN_VAULT_PATH='${vault}'\n`);
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    expect(result.status).toBe(0);
+
+    const primary = listMarkdownFiles(plan.output.outputDir);
+    expect(primary).toHaveLength(1);
+    // drafts/x -> 50_Drafts/X keyword route (lib/agent-executor.ts save_draft_result).
+    const mirror = listMarkdownFiles(path.join(vault, '50_Drafts/X'));
+    expect(mirror).toHaveLength(1);
+    expect(fs.readFileSync(mirror[0], 'utf8')).toBe(fs.readFileSync(primary[0], 'utf8'));
+    expect(fs.readFileSync(mirror[0], 'utf8')).toContain('fixture result: say hello');
+    // Both writes went through the broker's scoped.fs (root-jailed), not raw fs.
+    const brokerAudit = fs.readFileSync(path.join(home, `.shelly/agents/logs/${plan.agent.id}/agent-driver-audit.jsonl`), 'utf8');
+    const scopedWrites = brokerAudit.split('\n').filter((l) => l.includes('"kind":"scoped.fs"') && l.includes('"decision":"allow"'));
+    expect(scopedWrites.length).toBe(2);
+  });
+
+  it('skips the Obsidian mirror when no vault directory is present (silent, like the .sh)', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    plan.output.useGlobalOutput = false;
+    plan.output.outputDir = path.join(home, 'projects/shelly-content-studio/drafts/x');
+    plan.output.outputNameTemplate = '{date}-{slug}';
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    // OBSIDIAN_VAULT_PATH points at a non-existent dir: the mirror must be skipped, run still succeeds.
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nOBSIDIAN_VAULT_PATH='${path.join(home, 'no-vault')}'\n`);
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    expect(result.status).toBe(0);
+    expect(listMarkdownFiles(plan.output.outputDir)).toHaveLength(1);
+    expect(fs.existsSync(path.join(home, 'no-vault'))).toBe(false);
+    const runLogDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(runLogDir).filter((name) => /^\d+\.json$/.test(name));
+    expect(JSON.parse(fs.readFileSync(path.join(runLogDir, runLogs[0]), 'utf8')).status).toBe('success');
+  });
+
   it('recomputes cli safety in the executor and blocks critical command tampering', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
