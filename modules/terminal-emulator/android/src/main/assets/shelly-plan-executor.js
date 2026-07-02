@@ -633,6 +633,27 @@ function resolveObsidianMirror(plan, config, rel) {
   return path.join(vault, obsidianTargetFor(plan.output && plan.output.outputDir), rel);
 }
 
+// Write the draft to its primary destination and (for content-studio) the Obsidian
+// mirror, both through the root-jailed broker fs.write. `bestEffort` mirrors the .sh:
+// the terminal `draft` action runs save_draft_result under `set -e` (fatal), while an
+// orchestration `__suppressed__` step runs it `2>/dev/null || true` (swallow errors).
+function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
+  const { dest, rel, useGlobalOutput } = resolveDraftDestination(paths, plan, config);
+  const targets = [dest];
+  if (!useGlobalOutput) {
+    const mirror = resolveObsidianMirror(plan, config, rel);
+    if (mirror) targets.push(mirror);
+  }
+  // In bestEffort mode the whole sequence is swallowed on the FIRST failure, matching
+  // the .sh `save_draft_result ... || true` under `set -e` (a failed primary write
+  // aborts before the mirror). The terminal draft path lets the failure propagate.
+  try {
+    for (const target of targets) brokerFsWrite(paths, opts, roots, target, paths.resultFile);
+  } catch (e) {
+    if (!bestEffort) throw e;
+  }
+}
+
 function webhookDestinationHost(urlText) {
   try {
     const u = new URL(String(urlText || ''));
@@ -808,7 +829,12 @@ function unattendedPreflightFailure(args, plan) {
 function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args) {
   const actionType = plan.action.type;
   const preview = previewText(resultText);
-  if (actionType === '__suppressed__') return { status: 'success', preview };
+  if (actionType === '__suppressed__') {
+    // Orchestration non-final step: still save the draft (so the next step can read
+    // it) but request no approval and fire no notification. Best-effort, like the .sh.
+    writeDraftOutputs(paths, opts, plan, config, roots, true);
+    return { status: 'success', preview };
+  }
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
@@ -886,15 +912,9 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   }
   if (actionType === 'draft') {
-    const { dest, rel, useGlobalOutput } = resolveDraftDestination(paths, plan, config);
-    brokerFsWrite(paths, opts, roots, dest, paths.resultFile);
-    if (!useGlobalOutput) {
-      // Content-studio agents also mirror the draft into the Obsidian vault.
-      // Fatal on failure when the vault exists (parity with the .sh, which runs
-      // the mirror under `set -euo pipefail` with no `|| true`).
-      const mirror = resolveObsidianMirror(plan, config, rel);
-      if (mirror) brokerFsWrite(paths, opts, roots, mirror, paths.resultFile);
-    }
+    // Terminal draft: primary + (content-studio) Obsidian mirror, fatal on failure
+    // (parity with the .sh save_draft_result under `set -euo pipefail`).
+    writeDraftOutputs(paths, opts, plan, config, roots, false);
   }
   if (actionType === 'draft' || actionType === 'notify') {
     writeNotification(paths, plan, 'success', preview);
