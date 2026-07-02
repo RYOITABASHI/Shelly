@@ -29,7 +29,7 @@ object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
     private const val CURRENT_SCRIPT_VERSION = 12
-    private const val CURRENT_PLAN_SPEC_VERSION = 1
+    private const val CURRENT_PLAN_SPEC_VERSION = 2
 
     private data class TrustedPlanLaunch(
         val actionType: String,

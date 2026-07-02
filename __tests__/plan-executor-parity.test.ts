@@ -95,4 +95,12 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain('paths.haltSentinel');
     expect(executorSrc).toContain("haltSentinel: path.join(agentsDir, '.halted')");
   });
+
+  it('applies the needsWeb no-URL fail-closed guard in the executor (both copies)', () => {
+    // Security check: a needsWeb collection with no source URL must fail closed before
+    // dispatch. Enforced identically in the script and the byte-identical asset mirror.
+    const guard = 'if (plan.needsWeb && !/https?:\\/\\//.test(resultText))';
+    expect(fs.readFileSync(scriptCopy, 'utf8')).toContain(guard);
+    expect(fs.readFileSync(assetCopy, 'utf8')).toContain(guard);
+  });
 });

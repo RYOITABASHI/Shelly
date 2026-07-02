@@ -532,6 +532,40 @@ describe('shelly-plan-executor host smoke', () => {
     expect(JSON.parse(fs.readFileSync(path.join(runLogDir, runLogs[0]), 'utf8')).status).toBe('success');
   });
 
+  it('fails closed when a needsWeb collection produced no source URL (ladder-escalatable)', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).needsWeb = true;
+    // Default prompt 'say hello' -> the loopback fixture returns a URL-less "essay".
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    // The guard throws before dispatch, so no approval is needed and no draft is written.
+    const result = await runExecutor([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    expect(result.status).toBe(0); // handled soft-failure
+
+    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLog = JSON.parse(
+      fs.readFileSync(path.join(logDir, fs.readdirSync(logDir).filter((n) => /^\d+\.json$/.test(n))[0]), 'utf8'),
+    );
+    // status:error -> agent-manager attemptFailed() -> the foreground ladder escalates.
+    expect(runLog.status).toBe('error');
+    expect(runLog.errorMessage).toContain('no primary-source links');
+  });
+
+  it('does not fire the needsWeb guard when the result carries a source URL', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).needsWeb = true;
+    plan.prompt = 'see https://src.example/paper'; // fixture echoes the URL into the result
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
+    expect(result.status).toBe(0);
+    // Result has a URL, so the guard is inert and the draft is written normally.
+    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(1);
+  });
+
   it('appends newline-separated draft source URLs to the shared registry, deduped (.sh parity)', async () => {
     const home = makeHome();
     const contentProject = path.join(home, 'content');

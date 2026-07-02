@@ -12,7 +12,7 @@ import {
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
 
-export const PLAN_SPEC_SCHEMA_VERSION = 1;
+export const PLAN_SPEC_SCHEMA_VERSION = 2;
 export const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 export type PlanToolType =
@@ -35,6 +35,9 @@ export interface AgentPlanSpecV1 {
     autonomous: boolean;
     autonomyLevel: NonNullable<Agent['autonomyLevel']>;
   };
+  /** True for research-collection agents: the executor fails-closed on a URL-less
+   *  result so the escalation ladder retries instead of drafting a sourceless essay. */
+  needsWeb: boolean;
   prompt: string;
   tool: {
     type: PlanToolType;
@@ -157,6 +160,7 @@ export function buildAgentPlanSpec(
     kind: PLAN_SPEC_KIND,
     schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
     generatedAt: Date.now(),
+    needsWeb: promptSignals.needsWeb,
     agent: {
       id: agent.id,
       name: agent.name,

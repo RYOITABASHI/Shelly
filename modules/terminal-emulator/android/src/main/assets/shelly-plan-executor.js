@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const PLAN_SPEC_SCHEMA_VERSION = 1;
+const PLAN_SPEC_SCHEMA_VERSION = 2;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 const EXIT = {
@@ -1092,6 +1092,16 @@ function run(args) {
     const response = brokerHttp(paths, opts, plan, request);
     const resultText = extractModelContent(plan.tool.type, response);
     writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') ? '' : '\n'));
+    // needsWeb North Star guard (mirrors the .sh no-URL soft-failure): a research
+    // collection that produced no primary-source link is a soft failure, not a green
+    // result — fail closed (status:error, handled) BEFORE dispatch so no sourceless
+    // essay is drafted/mirrored, and the foreground ladder escalates on the run log.
+    if (plan.needsWeb && !/https?:\/\//.test(resultText)) {
+      throw new PlanFailure(
+        'Collection produced no primary-source links (the backend described a workflow instead of collecting).',
+        { status: 'error', exitCode: EXIT.OK, handled: true },
+      );
+    }
     const action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '');
