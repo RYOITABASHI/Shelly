@@ -85,8 +85,9 @@ describe('shelly-plan-executor.js parity', () => {
   it('does not pass LD_PRELOAD to the leaf node (bionic OpenSSL crash guard)', () => {
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
     // The exec wrapper preload is only for shell/codex exec, not the pure-node
-    // broker/executor: it corrupts node's OpenSSL config read on device.
-    expect(agentRuntime).not.toContain('LD_PRELOAD');
+    // broker/executor: explicitly clear it before launching bionic node.
+    expect(agentRuntime).toContain('unset LD_PRELOAD && /system/bin/linker64');
+    expect(agentRuntime).not.toContain('export LD_PRELOAD');
     expect(executorSrc).toContain('delete env.LD_PRELOAD');
   });
 

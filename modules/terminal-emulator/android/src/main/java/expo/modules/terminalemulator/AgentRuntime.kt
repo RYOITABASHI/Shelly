@@ -224,7 +224,20 @@ object AgentRuntime {
             append(shellQuote("${homeDir.absolutePath}/.shelly-ssl/ca-certificates.crt"))
             append(" && export NODE_EXTRA_CA_CERTS=")
             append(shellQuote("${homeDir.absolutePath}/.shelly-ssl/ca-certificates.crt"))
-            append(" && /system/bin/linker64 ")
+            // Drop the exec-wrapper LD_PRELOAD (set globally by shelly-exec.c on this
+            // launching shell) before the linker64 node launch. Inherited into bionic
+            // node, the wrapper's fs/open interposition corrupts node's file-descriptor
+            // ops and SIGABRTs it: reading the .js entry module aborts on
+            // "Assertion failed: (0) == uv_fs_close(...)" in node::ReadFileSync
+            // (shouldUseESMLoader), and OpenSSL's config read fails with
+            // "BIO_new_file:Bad file descriptor" on openssl.cnf — so the executor never
+            // runs on-device. Confirmed on hardware: the identical launch aborts (134)
+            // with LD_PRELOAD and succeeds (0) without it. The executor and broker are
+            // leaf node processes that never exec an app-data binary, so they do not
+            // need the wrapper. Mirrors the llama-server launcher and the broker
+            // childEnv (which also drops it). Device-only bug — the host harness spawns
+            // the executor without this inherited preload, so it cannot reproduce it.
+            append(" && unset LD_PRELOAD && /system/bin/linker64 ")
             append(shellQuote("$libPath/node"))
             append(" ")
             append(shellQuote(executorPath))
