@@ -31,6 +31,15 @@ export interface LadderEnv {
   /** Groq free-tier key present. */
   hasGroqKey: boolean;
   /**
+   * Perplexity / Gemini key present. Optional: absent means UNKNOWN and is
+   * treated as present (conservative — a usable backend is never wrongly
+   * skipped; a keyless one just fails-and-escalates as before). When known
+   * false, the ladder preflight drops the keyless candidate so the run never
+   * wastes an attempt on a backend that cannot authenticate.
+   */
+  hasPerplexityKey?: boolean;
+  hasGeminiKey?: boolean;
+  /**
    * N1: the user gave informed consent for autonomous agents to use cloud API
    * keys (Gemini/Perplexity) UNATTENDED on web-mandatory tasks. Default OFF →
    * fail-closed (autonomous web stays Codex-only). secret-guard still wins.
@@ -63,6 +72,18 @@ function toolKey(t: ToolChoice): string {
   if (t.type === 'cli') return `cli:${t.cli}`;
   if (t.type === 'local') return 'local';
   return t.type;
+}
+
+/**
+ * Key preflight (G4 P1): is this tool's API key known to be MISSING? Unknown
+ * (env field absent) counts as present so we only skip when certain.
+ */
+function keyKnownMissing(tool: ToolChoice, env: LadderEnv): boolean {
+  if (tool.type === 'perplexity') return env.hasPerplexityKey === false;
+  if (tool.type === 'gemini-api') return env.hasGeminiKey === false;
+  if (tool.type === 'cerebras') return !env.hasCerebrasKey;
+  if (tool.type === 'groq') return !env.hasGroqKey;
+  return false;
 }
 
 function dedupe(tools: ToolChoice[]): ToolChoice[] {
@@ -104,19 +125,41 @@ export function resolveEscalationLadder(agent: Agent, env: LadderEnv): Escalatio
       // halts at the free tier rather than burning Codex/paid quota.
       if (env.autonomousCloudConsent) {
         const consented = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
-        const tools = env.autonomousCloudStop ? [consented] : [consented, CODEX];
-        return {
-          tools,
-          noEscalation: false,
-          guard: decision.guard,
-          why: `Web-mandatory ${web.webDomain} task; autonomous cloud opt-in → ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini (grounded)'}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
-        };
+        // Key preflight: consent without the backend's key cannot work — fall
+        // through to the fail-closed no-consent path (Codex/OAuth only) instead
+        // of wasting the run on an unauthenticated request. 'stop' only governs
+        // 429 quota exhaustion, not a missing key, so it doesn't keep a dead
+        // keyless backend in the ladder.
+        if (!keyKnownMissing(consented, env)) {
+          const tools = env.autonomousCloudStop ? [consented] : [consented, CODEX];
+          return {
+            tools,
+            noEscalation: false,
+            guard: decision.guard,
+            why: `Web-mandatory ${web.webDomain} task; autonomous cloud opt-in → ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini (grounded)'}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
+          };
+        }
       }
       // No consent (fail-closed): api-key web backends are excluded, so the only
-      // web-capable option is Codex (OAuth shell).
-      return { tools: [CODEX], noEscalation: false, guard: decision.guard, why: 'Web-mandatory task; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity).' };
+      // web-capable option is Codex (OAuth shell). Distinguish the keyless
+      // consented case in the why — "enable cloud opt-in" would misdiagnose it.
+      const why = env.autonomousCloudConsent
+        ? `Web-mandatory task; cloud opt-in is on but the ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini'} key is not configured → Codex only.`
+        : 'Web-mandatory task; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity).';
+      return { tools: [CODEX], noEscalation: false, guard: decision.guard, why };
     }
     const webPrimary = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
+    // Key preflight: a keyless web primary can't authenticate — go straight to
+    // Codex (web-capable via its shell) instead of burning an attempt. Local /
+    // Cerebras / Groq stay excluded (they would hallucinate a template).
+    if (keyKnownMissing(webPrimary, env)) {
+      return {
+        tools: [CODEX],
+        noEscalation: false,
+        guard: decision.guard,
+        why: `Web-mandatory ${web.webDomain} task; ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini'} key not configured → Codex directly; non-web backends excluded.`,
+      };
+    }
     return {
       tools: dedupe([webPrimary, CODEX]),
       noEscalation: false,
@@ -144,11 +187,22 @@ export function resolveEscalationLadder(agent: Agent, env: LadderEnv): Escalatio
 
   // Attended: domain/scorer primary first, then on-device, then the free cloud
   // tier (only when keyed), then Codex last to preserve its quota.
-  const ladder: ToolChoice[] = [primary, LOCAL];
+  //
+  // Key preflight (G4 P1): when the AUTO scorer picked an api-key backend whose
+  // key is known missing, drop it so the run degrades to local upfront instead
+  // of failing an attempt on an unauthenticated request. An EXPLICITLY
+  // configured tool (guard 'configured-tool') is kept even keyless — its
+  // "add <KEY> to .env" error is the legible signal of the misconfiguration,
+  // and the ladder still climbs past it.
+  const dropKeylessPrimary = agent.tool.type === 'auto' && keyKnownMissing(primary, env);
+  const ladder: ToolChoice[] = dropKeylessPrimary ? [LOCAL] : [primary, LOCAL];
   if (env.hasCerebrasKey) ladder.push({ type: 'cerebras' });
   if (env.hasGroqKey) ladder.push({ type: 'groq' });
   ladder.push(CODEX);
-  return { tools: dedupe(ladder), noEscalation: false, guard: decision.guard, why: decision.why };
+  const why = dropKeylessPrimary
+    ? `${decision.why} (${primary.type} key not configured → degraded to on-device first.)`
+    : decision.why;
+  return { tools: dedupe(ladder), noEscalation: false, guard: decision.guard, why };
 }
 
 /** First line written by the shell's local_context_fallback (agent-executor.ts). */

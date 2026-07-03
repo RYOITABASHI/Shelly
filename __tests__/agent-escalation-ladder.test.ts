@@ -149,6 +149,80 @@ describe('resolveEscalationLadder — web-mandatory tasks exclude non-web backen
   });
 });
 
+describe('resolveEscalationLadder — key preflight (G4 P1: keyless cloud degrades upfront)', () => {
+  const NO_CLOUD_KEYS: LadderEnv = {
+    hasCerebrasKey: false,
+    hasGroqKey: false,
+    hasPerplexityKey: false,
+    hasGeminiKey: false,
+  };
+
+  it('auto-scorer research task with no Perplexity key → degrades to local first (no wasted hop)', () => {
+    const l = resolveEscalationLadder(
+      mk({ prompt: 'find the latest research paper with citations' }),
+      NO_CLOUD_KEYS,
+    );
+    expect(types(l)[0]).toBe('local');
+    expect(types(l)).not.toContain('perplexity');
+    expect(types(l).at(-1)).toBe('cli:codex');
+    expect(l.why).toContain('key not configured');
+  });
+
+  it('unknown key state (fields absent) keeps the scorer primary — never wrongly skipped', () => {
+    const l = resolveEscalationLadder(
+      mk({ prompt: 'find the latest research paper with citations' }),
+      NO_KEYS, // hasPerplexityKey/hasGeminiKey absent → unknown → assumed present
+    );
+    expect(types(l)[0]).toBe('perplexity');
+  });
+
+  it('EXPLICITLY configured keyless tool is kept (its missing-key error is the signal)', () => {
+    const l = resolveEscalationLadder(
+      mk({ tool: { type: 'perplexity', model: 'sonar-deep-research' } }),
+      NO_CLOUD_KEYS,
+    );
+    expect(types(l)[0]).toBe('perplexity');
+  });
+
+  it('web-mandatory general task with no Gemini key → Codex directly, local still excluded', () => {
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて' }), NO_CLOUD_KEYS);
+    expect(types(l)).toEqual(['cli:codex']);
+    expect(types(l)).not.toContain('local');
+  });
+
+  it('web-mandatory academic task with no Perplexity key → Codex directly', () => {
+    const l = resolveEscalationLadder(mk({ prompt: '最新の論文を集めて' }), NO_CLOUD_KEYS);
+    expect(types(l)).toEqual(['cli:codex']);
+  });
+
+  it('N1: autonomous cloud consent with a keyless backend falls to the fail-closed Codex path', () => {
+    const consentNoKeys: LadderEnv = { ...NO_CLOUD_KEYS, autonomousCloudConsent: true };
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて', autonomous: true }), consentNoKeys);
+    expect(types(l)).toEqual(['cli:codex']);
+    // The why must diagnose the missing key, not suggest enabling the (already
+    // enabled) cloud opt-in.
+    expect(l.why).toContain('key is not configured');
+  });
+
+  it('N1: stop policy does not keep a keyless consented backend (missing key ≠ 429)', () => {
+    const consentStopNoKeys: LadderEnv = {
+      ...NO_CLOUD_KEYS,
+      autonomousCloudConsent: true,
+      autonomousCloudStop: true,
+    };
+    const l = resolveEscalationLadder(mk({ prompt: 'ニュースを集めて', autonomous: true }), consentStopNoKeys);
+    expect(types(l)).toEqual(['cli:codex']);
+  });
+
+  it('keyed web primary is unchanged by the preflight', () => {
+    const l = resolveEscalationLadder(
+      mk({ prompt: 'ニュースを集めて' }),
+      { ...NO_CLOUD_KEYS, hasGeminiKey: true },
+    );
+    expect(types(l)).toEqual(['gemini-api', 'cli:codex']);
+  });
+});
+
 describe('failure detection', () => {
   it('isLocalFallbackDigest matches the shell digest marker', () => {
     expect(isLocalFallbackDigest('# Local Context Fallback\n\nLocal LLM was unavailable...')).toBe(true);

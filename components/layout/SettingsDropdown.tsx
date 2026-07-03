@@ -34,7 +34,7 @@ import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
-import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
@@ -814,12 +814,14 @@ function AgentsSection({ visible }: { visible: boolean }) {
       if (!ok) return;
     }
     updateSettings({ autonomousCloudConsent: !cloudConsent });
-    await flushPendingAgentEnvSync('Autonomous Cloud');
+    // Consent flush also re-bakes autonomous agents' on-disk scripts so a
+    // scheduled fire picks up the toggle immediately (N1 follow-up).
+    await flushAutonomousCloudEnvSync('Autonomous Cloud');
   };
 
   const toggleExhaustion = async () => {
     updateSettings({ autonomousCloudOnExhaustion: cloudExhaustion === 'stop' ? 'escalate' : 'stop' });
-    await flushPendingAgentEnvSync('Autonomous Cloud');
+    await flushAutonomousCloudEnvSync('Autonomous Cloud');
   };
 
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = React.useState(false);

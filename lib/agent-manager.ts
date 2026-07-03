@@ -345,6 +345,42 @@ async function materializeAgent(
 }
 
 /**
+ * N1 follow-up: the autonomous-cloud consent flags are BAKED into each agent's
+ * on-disk run script at materialize time, so a mid-session settings toggle
+ * leaves the scripts the UNATTENDED alarm/native fires read stale until the
+ * next app-launch startup repair. Call this right AFTER the consent env flush
+ * (the .env write must land first — materializeAgent reads consent from disk)
+ * so every autonomous agent's script re-bakes with the new consent immediately.
+ * Alarms are untouched (the PendingIntent doesn't encode consent). Best-effort:
+ * a failed re-bake self-heals on the next startup repair / foreground run.
+ *
+ * Deliberately includes DISABLED agents: setAgentEnabled(true) re-installs the
+ * alarm without re-materializing, so skipping a disabled agent here would let a
+ * consent REVOKED while it was disabled survive in its baked script — the next
+ * unattended fire after re-enable would still use the keyed web backend. With
+ * installAlarm=false a disabled agent's re-bake writes files only (no schedule),
+ * and the metadata keeps enabled:false.
+ */
+export async function rematerializeAutonomousAgents(
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const autonomousAgents = useAgentStore
+    .getState()
+    .agents.filter((agent) => agent.autonomous);
+  for (const agent of autonomousAgents) {
+    // Skip agents deleted while iterating — re-materializing a captured
+    // snapshot would rewrite its <id>.json and resurrect it (same guard as
+    // the startup repair).
+    if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
+    try {
+      await materializeAgent(agent, runCommand, false, false);
+    } catch (error) {
+      logWarn('AgentEnvSync', `failed to re-bake consent into agent ${agent.id}`, error);
+    }
+  }
+}
+
+/**
  * Build the EFFECTIVE agent whose prompt is prefixed with recalled memory (G2)
  * and a reused skill recipe (G3). Both blocks flow through generateRunScript →
  * resolveAgentRoute, which scans agent.prompt with secret-guard, so a secret
@@ -466,8 +502,12 @@ export async function runAgentNow(
 async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): Promise<LadderEnv> {
   try {
     const out = await runCommand(
-      `for k in CEREBRAS_API_KEY GROQ_API_KEY; do ` +
-        `grep -qE "^$k=.+" "$HOME/.shelly/agents/.env" 2>/dev/null && echo "$k=1" || echo "$k=0"; done; ` +
+      // Key-present check must reject a CLEARED key: settings-store writes values
+      // via dotenvValue() (always single-quoted), so an emptied key remains in the
+      // file as KEY=''. Require a non-quote char after the optional opening quote —
+      // `.+` would match the two bare quotes and misreport the key as present.
+      `for k in CEREBRAS_API_KEY GROQ_API_KEY PERPLEXITY_API_KEY GEMINI_API_KEY; do ` +
+        `grep -qE "^$k=['\\"]?[^'\\"]" "$HOME/.shelly/agents/.env" 2>/dev/null && echo "$k=1" || echo "$k=0"; done; ` +
         // N1: the autonomous-cloud consent flags are written by settings-store as
         // explicit 0/1 (not "key present"), so read their VALUE, defaulting to 0.
         `for k in SHELLY_AUTONOMOUS_CLOUD SHELLY_AUTONOMOUS_CLOUD_STOP; do ` +
@@ -476,6 +516,10 @@ async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): 
     return {
       hasCerebrasKey: /CEREBRAS_API_KEY=1/.test(out),
       hasGroqKey: /GROQ_API_KEY=1/.test(out),
+      // G4 P1 key preflight: known-missing Perplexity/Gemini keys let the
+      // ladder skip a backend that cannot authenticate (auto-scorer picks only).
+      hasPerplexityKey: /PERPLEXITY_API_KEY=1/.test(out),
+      hasGeminiKey: /GEMINI_API_KEY=1/.test(out),
       // Consent defaults OFF (fail-closed) when the flag is absent/unreadable.
       // Anchor to an exact `1` (optionally quoted — settings-store writes the
       // value via dotenvValue() which wraps it as '1', so the .env line is
@@ -510,8 +554,13 @@ async function runEscalatingAttempts(
   const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs);
 
   // Restore the agent's own (un-overridden) script so a later scheduled fire uses
-  // the configured tool / fresh route, not the last escalation override.
-  if (!ladder.noEscalation && ladder.tools.length > 1) {
+  // the configured tool / fresh route, not the last escalation override. Any
+  // non-noEscalation ladder pins the attempt tool into the on-disk script — even
+  // a SINGLE-element one (e.g. keyless web-mandatory → [Codex]) — so restore
+  // whenever an override could have been written, not only on multi-tool ladders
+  // (otherwise adding the missing key later wouldn't reach the alarm path until
+  // an unrelated re-materialize).
+  if (!ladder.noEscalation) {
     try {
       await materializeAgent(agent, runCommand, false);
     } catch (error) {

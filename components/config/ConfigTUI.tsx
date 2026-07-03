@@ -37,7 +37,7 @@ import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt
 import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
-import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 
@@ -611,11 +611,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         } else {
           updateSettings({ [def.key]: rawValue } as any);
           if (
-            def.type === 'secret' ||
-            def.key === 'geminiModel' ||
             def.key === 'autonomousCloudConsent' ||
             def.key === 'autonomousCloudOnExhaustion'
           ) {
+            // Consent flush also re-bakes autonomous agents' on-disk scripts so
+            // a scheduled fire picks up the toggle immediately (N1 follow-up).
+            await flushAutonomousCloudEnvSync(def.label);
+          } else if (def.type === 'secret' || def.key === 'geminiModel') {
             await flushPendingAgentEnvSync(def.label);
           }
         }
