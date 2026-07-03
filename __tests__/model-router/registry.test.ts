@@ -23,4 +23,12 @@ describe('MODEL-001 registry parity with the cloud/local source of truth', () =>
     const ids = MODEL_REGISTRY.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it('web-capable set mirrors the live escalation ladder (Gemini grounded + Perplexity)', () => {
+    // agent-escalation-ladder.ts web primaries: general → Gemini (grounded),
+    // academic → Perplexity. Both must be web-capable here or a flag-ON would
+    // mis-route general web tasks to the paid deep-research tier (or deny).
+    const web = MODEL_REGISTRY.filter((c) => c.capabilities.web).map((c) => c.id).sort();
+    expect(web).toEqual(['gemini-api', 'perplexity']);
+  });
 });

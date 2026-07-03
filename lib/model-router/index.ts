@@ -15,3 +15,7 @@ export {
   toRunRequirements,
   candidateToToolChoice,
 } from './wiring';
+// Phase A shadow comparator: flag-OFF diagnostic (read-only, changes no route),
+// so unlike provider-invoke it IS part of the dormant public surface.
+export { compareRouteDecision } from './shadow';
+export type { RouteShadowResult } from './shadow';

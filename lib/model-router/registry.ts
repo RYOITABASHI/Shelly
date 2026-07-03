@@ -59,7 +59,14 @@ export const MODEL_REGISTRY: readonly ModelCandidate[] = [
     toolType: 'gemini-api',
     isLocal: false,
     credentialClass: 'api-key',
-    capabilities: { web: false, taskKinds: ['code', 'research', 'prose', 'transform', 'general'] },
+    // web: true — Gemini (grounded) is the live ladder's PRIMARY for GENERAL
+    // web-mandatory tasks (lib/agent-escalation-ladder.ts: webDomain 'general'
+    // → GEMINI before Codex; 'academic' → Perplexity). Before this the registry's
+    // only web-capable entry was perplexity, so a future flag-ON would have
+    // mis-routed every general news/collection task to the paid deep-research
+    // tier. Ranking keeps the ladder's order among the web-eligible pair:
+    // gemini (cost 'low') sorts ahead of perplexity (cost 'medium').
+    capabilities: { web: true, taskKinds: ['code', 'research', 'prose', 'transform', 'general'] },
     cost: 'low',
     latency: 'fast',
     preference: 60,
