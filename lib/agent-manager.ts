@@ -1306,9 +1306,20 @@ export function generateSaveCommand(agent: Agent): string {
   return `mkdir -p ${shellQuote(dir)} && echo '${escaped}' > ${shellQuote(`${dir}/${agent.id}.json`)}`;
 }
 
+/**
+ * Atomic write: `cat > path` would TRUNCATE in place, so an alarm-fired run
+ * already reading the script (bash reads scripts incrementally) could execute
+ * a garbled tail — consent re-bake / startup repair / ladder overrides all
+ * rewrite live scripts. Write to a unique tmp in the same dir and rename
+ * (atomic on the same filesystem). A rename replaces the inode, dropping the
+ * exec bit `cat >` used to preserve — carry it over from the existing file
+ * before the mv so a fire between mv and the caller's chmod +x still runs.
+ */
 function writeFileCommand(path: string, content: string): string {
   const marker = `SHELLY_AGENT_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
-  return `mkdir -p "$(dirname ${shellQuote(path)})" && cat > ${shellQuote(path)} <<'${marker}'
+  const target = shellQuote(path);
+  const tmp = shellQuote(`${path}.${marker}.tmp`);
+  return `mkdir -p "$(dirname ${target})" && cat > ${tmp} <<'${marker}' && { [ ! -x ${target} ] || chmod +x ${tmp}; } && mv -f ${tmp} ${target}
 ${content}
 ${marker}`;
 }
