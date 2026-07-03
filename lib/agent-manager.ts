@@ -21,6 +21,11 @@ import {
   recallMemoryNotes,
   writeMemoryNote,
 } from './agent-memory';
+// MEMORY-001 shadow seam (dormant): flag + shadow entry imported from their own
+// modules (not the '@/lib/memory' index) so host memory tests that import the
+// index never transitively load expo-file-system via fs-expo.
+import { MEMORY_ENABLED } from './memory/wiring';
+import { shadowMemoryRecall } from './memory/shadow';
 import {
   buildSkillInjectionContext,
   bumpSkillUsage,
@@ -363,6 +368,13 @@ async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
   // Phase 1 memory recall.
   try {
     const notes = await readMemoryNotes(agent.id);
+    // MEMORY-001 shadow read (strangler, flag-OFF today): when enabled, mirror
+    // the notes into the new store and log recall divergence WITHOUT changing
+    // what gets injected — the G2 result below stays authoritative. Guarded
+    // twice (flag + catch) so a shadow failure can never break the live run.
+    if (MEMORY_ENABLED) {
+      await shadowMemoryRecall(agent, notes).catch(() => {});
+    }
     if (notes.length > 0) {
       const relevant = recallMemoryNotes(notes, `${agent.name}\n${agent.prompt}`);
       const recallContext = buildRecallContext(relevant);
