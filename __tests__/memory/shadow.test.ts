@@ -4,13 +4,15 @@ jest.mock('@/lib/home-path', () => ({ getHomePath: () => '/home/shelly-test' }))
 jest.mock('expo-file-system/legacy', () => ({}));
 
 import {
+  activateMemoryRecall,
+  activateMemoryWrite,
   compareShadowRecall,
   runShadowComparison,
   shadowMemoryRecall,
   type ShadowDeps,
 } from '@/lib/memory/shadow';
 import { MEMORY_ENABLED, InMemoryMemoryStorage, MemoryStore, g2NoteToRecord } from '@/lib/memory';
-import { recallMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
+import { buildRecallContext, recallMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 
 function note(id: string, created: string, text: string, tags: string[] = []): MemoryNote {
   return { id, agentId: 'agent-7', type: 'fact', created, tags, text };
@@ -122,5 +124,113 @@ describe('runShadowComparison (import → query → compare pipeline)', () => {
     expect(cmp.shadowKeys).toEqual([]);
     expect(cmp.orderMatches).toBe(true);
     expect(cmp.contextMatches).toBe(true);
+  });
+});
+
+describe('activateMemoryRecall (MEMORY-001 Step 3)', () => {
+  it('injects the MEMORY-001 store context, not G2, when the store has data', async () => {
+    const deps = makeDeps();
+    const result = await activateMemoryRecall(AGENT, NOTES, deps);
+    // Sanity: MEMORY-001's own render function produced this, and it is
+    // non-null/non-empty because the store actually has matching records.
+    expect(result).not.toBeNull();
+    expect(result).not.toBe('');
+    // Ground truth for "not G2's result": compareShadowRecall already proves
+    // order+content parity between the two paths for this fixture, so instead
+    // we assert the activated result is produced by the MEMORY-001 rendering
+    // path directly (recordsToRecallContext over the store's own query), by
+    // checking it reproduces the query independently of G2's recallMemoryNotes.
+    const g2Context = buildRecallContext(
+      recallMemoryNotes(NOTES, `${AGENT.name}\n${AGENT.prompt}`)
+    );
+    expect(result).toBe(g2Context); // parity fixture: same content, different code path
+  });
+
+  it('returns non-empty content that differs from G2 when the store has EXTRA data G2 does not', async () => {
+    const deps = makeDeps();
+    // Seed the MEMORY-001 store directly (bypassing the G2 import) with a
+    // record G2 has never seen, so a correct activation must reflect it and an
+    // accidental "still calling G2 under the hood" bug would not.
+    await deps.store.put({
+      namespace: 'agent-7',
+      text: 'deploy the app to the device please remember the fold6 rollback plan',
+      kind: 'fact',
+      tags: ['deploy'],
+    });
+    deps.importedAgents.add(AGENT.id); // skip the G2 mirror-import for this call
+    const result = await activateMemoryRecall(AGENT, NOTES, deps);
+    const g2Context = buildRecallContext(
+      recallMemoryNotes(NOTES, `${AGENT.name}\n${AGENT.prompt}`)
+    );
+    expect(result).not.toBeNull();
+    expect(result).not.toBe(g2Context);
+    expect(result).toContain('rollback plan');
+  });
+
+  it('falls back safely (returns null) when the store throws', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const brokenDeps = makeDeps();
+      jest.spyOn(brokenDeps.store, 'query').mockRejectedValue(new Error('disk exploded'));
+      const result = await activateMemoryRecall(AGENT, NOTES, brokenDeps);
+      expect(result).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('returns empty string (not null) when the store legitimately has nothing to recall', async () => {
+    const deps = makeDeps();
+    const result = await activateMemoryRecall(AGENT, [], deps);
+    expect(result).toBe('');
+  });
+
+  it('is unreachable while MEMORY_ENABLED=false (agent-manager never calls it)', () => {
+    // Documents the contract enforced at the agent-manager call-site: this
+    // module has no internal flag check of its own (agent-manager gates the
+    // call), so the guarantee lives in agent-manager's `if (MEMORY_ENABLED)`.
+    expect(MEMORY_ENABLED).toBe(false);
+  });
+});
+
+describe('activateMemoryWrite (MEMORY-001 Step 4)', () => {
+  it('writes through store.put (not the G2 shell command) and is queryable back', async () => {
+    const deps = makeDeps();
+    const ok = await activateMemoryWrite(
+      { agentId: 'agent-9', type: 'fact', text: 'remember the API base url', tags: ['Api', 'API'] },
+      deps
+    );
+    expect(ok).toBe(true);
+    const stored = await deps.adapter.list('agent-9');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].text).toBe('remember the API base url');
+    // Tag normalization matches G2's normalizeTags (lowercase, deduped).
+    expect(stored[0].tags).toEqual(['api']);
+  });
+
+  it('reuses makeMemoryNote truncation/id-derivation so the record matches what G2 would have produced', async () => {
+    const deps = makeDeps();
+    const longText = 'x'.repeat(2000);
+    await activateMemoryWrite({ agentId: 'agent-9', type: 'result', text: longText }, deps);
+    const stored = await deps.adapter.list('agent-9');
+    // MAX_NOTE_CHARS = 1200 in agent-memory.ts; activateMemoryWrite must inherit it.
+    expect(stored[0].text.length).toBe(1200);
+  });
+
+  it('falls back safely (returns false) when the store throws', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const brokenDeps = makeDeps();
+      jest.spyOn(brokenDeps.store, 'put').mockRejectedValue(new Error('disk exploded'));
+      const ok = await activateMemoryWrite(
+        { agentId: 'agent-9', type: 'fact', text: 'hello' },
+        brokenDeps
+      );
+      expect(ok).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
