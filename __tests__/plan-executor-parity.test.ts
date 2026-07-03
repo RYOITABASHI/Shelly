@@ -91,6 +91,15 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain('delete env.LD_PRELOAD');
   });
 
+  it('resets the per-run CAP budget envelope at run start (wall-time-budget guard)', () => {
+    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
+    // The broker budget file is keyed per-agent and persists; without a per-run
+    // reset the wall-time budget runs from the first-ever run and every later run
+    // fails rc=42 "wall-time budget exhausted" (found in device-verify). Match the
+    // .sh path which rm's it at run start.
+    expect(executorSrc).toMatch(/fs\.rmSync\(path\.join\(paths\.tmpDir, `cap-budget-\$\{plan\.agent\.id\}\.json`\)/);
+  });
+
   it('honors the STOP-ALL kill-switch in both the native gate and the executor', () => {
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
     expect(agentRuntime).toContain('.shelly/agents/.halted');

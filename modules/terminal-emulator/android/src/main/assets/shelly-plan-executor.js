@@ -1087,6 +1087,15 @@ function run(args) {
     return EXIT.OK;
   }
 
+  // Each run opens a fresh CAP-001 egress budget envelope. The broker's budget file
+  // (cap-budget-<agentId>.json) is keyed per-agent and persists across runs; without
+  // this reset the wall-time budget is measured from the first-ever run, so every run
+  // spuriously fails rc=42 "wall-time budget exhausted" ~10 min after the first
+  // (found in device-verify). The .sh path already rm's it at run start; mirror it.
+  try {
+    fs.rmSync(path.join(paths.tmpDir, `cap-budget-${plan.agent.id}.json`), { force: true });
+  } catch (_) {}
+
   try {
     const request = modelRequest(plan, config);
     const response = brokerHttp(paths, opts, plan, request);
