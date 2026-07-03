@@ -33,6 +33,55 @@ object AgentAlarmScheduler {
     private const val TAG = "AgentAlarmScheduler"
     private const val PREFS = "shelly_agent_ids"
 
+    // ── L1 BOOT-AUTOSTART (dormant, flag-OFF) ──────────────────────────────────
+    // AlarmManager alarms are cleared on reboot, so scheduled agents stop firing
+    // after a restart. When the boot-autostart flag is enabled, schedule()
+    // persists {agentId -> intervalMs|cron} here and BootCompletedReceiver re-arms
+    // them on BOOT_COMPLETED. Default OFF => nothing is persisted and the boot
+    // receiver no-ops, so the live scheduling behavior is byte-preserved.
+    private const val BOOT_PREFS = "shelly_boot_autostart"
+    private const val BOOT_SCHEDULES = "shelly_boot_schedules"
+    private const val BOOT_ENABLED_KEY = "enabled"
+    private const val BOOT_FIELD_SEP = "\u0001" // control char, never in a cron string
+
+    /** Native enable flag for boot autostart. Defaults false (dormant). */
+    fun bootAutostartEnabled(context: Context): Boolean =
+        context.getSharedPreferences(BOOT_PREFS, Context.MODE_PRIVATE)
+            .getBoolean(BOOT_ENABLED_KEY, false)
+
+    private fun persistScheduleForBoot(context: Context, agentId: String, intervalMs: Long, cron: String?) {
+        context.getSharedPreferences(BOOT_SCHEDULES, Context.MODE_PRIVATE)
+            .edit()
+            .putString(agentId, "$intervalMs$BOOT_FIELD_SEP${cron ?: ""}")
+            .apply()
+    }
+
+    private fun forgetScheduleForBoot(context: Context, agentId: String) {
+        context.getSharedPreferences(BOOT_SCHEDULES, Context.MODE_PRIVATE)
+            .edit().remove(agentId).apply()
+    }
+
+    /** Re-arm every persisted scheduled agent (called by BootCompletedReceiver on
+     *  boot). Returns the count re-armed. No-op unless the flag is enabled. */
+    fun rearmAllFromPersistedSchedules(context: Context): Int {
+        if (!bootAutostartEnabled(context)) return 0
+        val prefs = context.getSharedPreferences(BOOT_SCHEDULES, Context.MODE_PRIVATE)
+        var count = 0
+        for ((agentId, raw) in prefs.all) {
+            if (agentId.isNullOrBlank() || raw !is String) continue
+            val parts = raw.split(BOOT_FIELD_SEP)
+            val intervalMs = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+            val cron = parts.getOrNull(1)?.ifBlank { null }
+            try {
+                if (scheduleNext(context, agentId, intervalMs, cron)) count++
+            } catch (e: Exception) {
+                Log.e(TAG, "Boot re-arm failed for $agentId", e)
+            }
+        }
+        Log.i(TAG, "Boot re-armed $count scheduled agent(s)")
+        return count
+    }
+
     private fun piFlags(): Int =
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
@@ -84,6 +133,9 @@ object AgentAlarmScheduler {
         val pi = runServicePendingIntent(context, agentId, intervalMs, cron)
         setExactWhileIdle(am, triggerAtMs, pi)
         Log.i(TAG, "Scheduled agent $agentId at $triggerAtMs (interval=${intervalMs}ms, cron=${cron ?: "-"})")
+        // Dormant boot-autostart: only persist when enabled, so the live path is
+        // byte-preserved with the flag OFF.
+        if (bootAutostartEnabled(context)) persistScheduleForBoot(context, agentId, intervalMs, cron)
     }
 
     /** Re-arm the next fire (called by the service after a run, or the legacy receiver). */
@@ -99,6 +151,7 @@ object AgentAlarmScheduler {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         try { am.cancel(runServicePendingIntent(context, agentId, 0L, null)) } catch (_: Exception) {}
         try { am.cancel(legacyBroadcastPendingIntent(context, agentId)) } catch (_: Exception) {}
+        if (bootAutostartEnabled(context)) forgetScheduleForBoot(context, agentId)
         Log.i(TAG, "Cancelled agent $agentId (service + legacy)")
     }
 

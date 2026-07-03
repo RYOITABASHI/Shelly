@@ -85,6 +85,13 @@ const config: ExpoConfig & { android?: any } = {
       // runs). Declared here so a clean `expo prebuild` keeps it — the checked-in
       // AndroidManifest survives today only because CI prebuilds WITHOUT --clean.
       "SCHEDULE_EXACT_ALARM",
+      // L1 boot-autostart (BOOT-AUTOSTART floor, flag-OFF): re-arm scheduled
+      // agents after a reboot (AlarmManager alarms are cleared on restart) and
+      // request exemption from Doze battery optimization so unattended fires
+      // survive. Declared here so a clean `expo prebuild` keeps them. The boot
+      // receiver is dormant until its native enable flag is flipped.
+      "RECEIVE_BOOT_COMPLETED",
+      "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
       "MANAGE_EXTERNAL_STORAGE",
       "REQUEST_INSTALL_PACKAGES",
     ],

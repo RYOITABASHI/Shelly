@@ -1,0 +1,12 @@
+jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
+  __esModule: true,
+  default: { scheduleAgent: jest.fn(), cancelAgent: jest.fn() },
+}));
+
+import { BOOT_AUTOSTART_ENABLED } from '@/lib/boot-autostart';
+
+describe('BOOT-AUTOSTART dormancy', () => {
+  it('ships disabled on the TS side (the native flag is independently default-false)', () => {
+    expect(BOOT_AUTOSTART_ENABLED).toBe(false);
+  });
+});
