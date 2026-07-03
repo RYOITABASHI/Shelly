@@ -26,12 +26,10 @@
 
 import type { Agent } from '@/store/types';
 import { resolveAgentRoute, AgentRouteResolution } from '@/lib/agent-tool-router';
-import { detectRouteSignals } from '@/lib/agent-router-scoring';
-import { scanForSecrets } from '@/lib/secret-guard';
 import { credentialClass } from '@/lib/agent-credential-policy';
 import { selectModel } from './select';
 import { MODEL_REGISTRY } from './registry';
-import { toRunRequirements, candidateToToolChoice } from './wiring';
+import { toRunRequirementsFromAgent, candidateToToolChoice } from './wiring';
 import type { RunRequirements, SelectionResult } from './types';
 
 export interface RouteShadowResult {
@@ -49,46 +47,27 @@ export interface RouteShadowResult {
   unexpectedDivergence: string | null;
 }
 
-// MIRRORS lib/agent-tool-router.ts textForSecretScan byte-for-byte. It is
-// private there and this increment must leave agent-tool-router untouched, so
-// it is replicated instead of exported. Drift is not silent: the invariant
-// below also triggers on live guard==='secret', so a replica that misses a
-// field live scans fails secretInvariantHolds in the corpus test.
-function textForSecretScan(agent: Agent): string {
-  return [
-    agent.name,
-    agent.description,
-    agent.prompt,
-    agent.outputTemplate,
-    agent.action?.webhookUrl,
-    agent.action?.command,
-  ].filter(Boolean).join('\n');
-}
-
 export function compareRouteDecision(agent: Agent): RouteShadowResult {
-  // Derive RunRequirements exactly the way the cutover will (wiring.ts
-  // toRunRequirements): taskKind/needsWeb from the live route signals (TaskKind
-  // mirrors TaskCategory byte-for-byte, types.ts), touchesSecrets from the same
-  // scanForSecrets over the same field set the live selector scans, unattended
-  // from the autonomous flag (scheduled fires run with no human present).
-  const secret = scanForSecrets(textForSecretScan(agent));
-  const signals = detectRouteSignals(agent.prompt);
-  const requirements = toRunRequirements({
-    taskKind: signals.category,
-    needsWeb: signals.needsWeb,
-    secret,
-    unattended: agent.autonomous === true,
-  });
+  // Derive RunRequirements via the SHARED helper (wiring.ts
+  // toRunRequirementsFromAgent) — Phase B's live cutover attempt in
+  // resolveAgentRoute's secret branch uses the exact same function, so the
+  // shadow comparator and the live flip can never drift on how
+  // taskKind/needsWeb/touchesSecrets/unattended are read off an Agent.
+  const requirements = toRunRequirementsFromAgent(agent);
 
   const live = resolveAgentRoute(agent);
   const shadow = selectModel(requirements, MODEL_REGISTRY);
 
   // Secret invariant. Triggered by EITHER side seeing a secret (belt and
-  // braces against textForSecretScan replica drift — see above). Live must be
-  // the forced on-device secret route with a local-credential tool; shadow must
-  // choose a candidate passing the same conjunction eligibility.ts predicate #0
+  // braces — requirements.touchesSecrets comes from the SHARED
+  // toRunRequirementsFromAgent scan, live.decision.guard==='secret' comes from
+  // resolveAgentRoute's own independent scanForSecrets call; checking both
+  // means a hypothetical future drift between the two call-sites still fails
+  // closed here instead of silently passing). Live must be the forced
+  // on-device secret route with a local-credential tool; shadow must choose a
+  // candidate passing the same conjunction eligibility.ts predicate #0
   // requires (isLocal && credentialClass==='local'), or deny outright.
-  const secretSeen = secret.hasSecret || live.decision.guard === 'secret';
+  const secretSeen = requirements.touchesSecrets || live.decision.guard === 'secret';
   const liveLocal =
     live.decision.guard === 'secret' &&
     live.decision.route === 'on-device' &&
