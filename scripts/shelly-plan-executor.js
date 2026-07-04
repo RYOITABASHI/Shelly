@@ -17,6 +17,19 @@ const { spawnSync } = require('child_process');
 const PLAN_SPEC_SCHEMA_VERSION = 1;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
+// 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
+// Master dormancy switch for the EXECUTOR half. Mirrors, byte-for-byte in intent,
+// lib/signed-approval/wiring.ts's SIGNED_APPROVAL_ENABLED (a separate TS constant
+// because this file is plain CommonJS and cannot import .ts at runtime). The two
+// constants MUST be flipped together at the flag-ON cutover described there
+// (step 2: "the PlanSpec executor's requestActionApproval accept-path calls
+// verifyApprovalReply instead of the current runId + requestSha256 equality
+// check"). While false, requestActionApproval's accept-path runs the exact
+// naive-equality check that shipped before this file existed — byte-identical
+// live behavior is the load-bearing invariant here, not the new verifier code
+// (which is fully implemented below but never invoked).
+const SIGNED_APPROVAL_ENABLED = false;
+
 const EXIT = {
   OK: 0,
   PLAN_DENY: 47,
@@ -520,6 +533,211 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage) {
   writeAtomic(path.join(paths.logDir, `${Math.floor(ts / 1000)}.json`), JSON.stringify(log) + '\n');
 }
 
+// ─── 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 executor-side verifier ───
+//
+// Dormant while SIGNED_APPROVAL_ENABLED is false (see the constant's comment up
+// top). Everything in this section is a faithful plain-JS port of
+// lib/signed-approval/{canonical,verify,nonce-store}.ts — the source of truth —
+// plus a DER-key loader mirroring shelly-agent-driver.js's
+// ensureEscalationVerifierKey (~line 907 there). Ported, not reinvented, so the
+// host-tested TS policy and this executor implementation cannot silently drift:
+// same field order, same version tags, same check order, same fail-closed shape.
+
+// Mirrors lib/signed-approval/canonical.ts encodeFields: JSON.stringify of a
+// fixed-order array. Deterministic and injective (JSON escapes embedded
+// newlines/quotes so no field can shift content across a boundary to forge a
+// colliding hash) — see that file's header comment for the full rationale.
+function signedApprovalEncodeFields(fields) {
+  return JSON.stringify(fields);
+}
+
+// Verbatim port of lib/signed-approval/canonical.ts canonicalRequest. Same
+// version tag, same field order (fixed order, not JSON key order) as the source.
+function canonicalApprovalRequest(request) {
+  return signedApprovalEncodeFields([
+    'shelly-agent-action-approval-request-v1',
+    String(request.runId),
+    String(request.agentId),
+    String(request.agentName),
+    String(request.toolLabel),
+    String(request.actionType),
+    String(request.preview),
+    String(request.destinationHost || ''),
+    String(request.command || ''),
+    String(request.safetyLevel || ''),
+    String(request.safetyReason || ''),
+    String(request.payloadPath || ''),
+    String(request.resultPath || ''),
+    String(request.ts),
+    String(request.expiresAt),
+    String(request.nonce),
+  ]);
+}
+
+// Verbatim port of lib/signed-approval/canonical.ts approvalReplySignatureMessage.
+// Same version tag, same field order as the source.
+function approvalReplySignatureMessage(fields) {
+  return signedApprovalEncodeFields([
+    'shelly-agent-action-approval-v1',
+    String(fields.runId),
+    String(fields.actionType),
+    String(fields.decision),
+    String(fields.ts || ''),
+    String(fields.requestSha256),
+    String(fields.nonce),
+  ]);
+}
+
+// Per-call, in-memory single-use nonce tracker (mirrors
+// lib/signed-approval/nonce-store.ts InMemoryNonceStore's semantics exactly:
+// true the first time a nonce is seen, false on replay). A durable
+// cross-process ledger (like AgentEscalationBridge.registerActionNonce on the
+// native/driver side) is NOT needed here: one requestActionApproval call is one
+// approval request/reply cycle within a SINGLE executor process invocation (the
+// executor requests approval once per action, polls for the one reply file, and
+// the process exits shortly after) — there is no second call in this process to
+// replay a nonce against, so a Set scoped to the call is sufficient. A future
+// reader should not read the lack of durability here as an oversight; it's a
+// different lifetime than Tier A's long-lived driver process.
+function makeSignedApprovalNonceStore() {
+  const used = new Set();
+  return {
+    consume(nonce) {
+      if (!nonce || used.has(nonce)) return false;
+      used.add(nonce);
+      return true;
+    },
+  };
+}
+
+// DER-key loader for the signed-approval verifier key. Mirrors
+// shelly-agent-driver.js's ensureEscalationVerifierKey fail-closed shape
+// EXACTLY, but is a SEPARATE cache/key from config.escalationVerifierPublicKey
+// (that field is the UNRELATED Tier A codex-escalation mechanism's key; this one
+// is Tier B action-approval's own key, config.signedApprovalVerifierPublicKey).
+// Loads at most once per config object and caches the parsed key so a later
+// same-uid overwrite of the DER file cannot swap the trust anchor mid-run.
+// Fails closed (leaves the cached key null, so every verify call fails closed)
+// if: the file can't be read, OR a configured pin doesn't match the actual
+// hash, OR no pin is configured and unpinned keys aren't explicitly allowed.
+function ensureSignedApprovalVerifierKey(config, audit) {
+  if (config.signedApprovalVerifierLoaded) return;
+  config.signedApprovalVerifierLoaded = true;
+  let der;
+  try {
+    der = fs.readFileSync(config.signedApprovalPublicKeyPath);
+  } catch (error) {
+    config.signedApprovalVerifierPublicKey = null;
+    audit('signed_approval_verifier_key_unavailable', {
+      path: config.signedApprovalPublicKeyPath,
+      error: error.message,
+    });
+    return;
+  }
+  const actualSha256 = sha256Hex(der);
+  if (config.signedApprovalPublicKeySha256) {
+    if (actualSha256 !== config.signedApprovalPublicKeySha256) {
+      config.signedApprovalVerifierPublicKey = null;
+      audit('signed_approval_verifier_key_untrusted', {
+        path: config.signedApprovalPublicKeyPath,
+        expectedSha256: config.signedApprovalPublicKeySha256,
+        actualSha256,
+      });
+      return;
+    }
+  } else if (config.allowUnpinnedSignedApprovalVerifierKey) {
+    audit('signed_approval_verifier_key_unpinned', {
+      path: config.signedApprovalPublicKeyPath,
+      actualSha256,
+      note: 'host/dev only: a same-uid agent could swap this key',
+    });
+  } else {
+    // Production default: no pin AND not explicitly allowed → refuse the key so
+    // a launcher that forgot to inject the pin fails closed instead of silently
+    // trusting a swappable key. (SIGNED_APPROVAL_ENABLED is false today, so this
+    // branch cannot yet be reached from a live run — native doesn't pass
+    // --signed-approval-public-key-sha256 until Migration step 1 lands.)
+    config.signedApprovalVerifierPublicKey = null;
+    audit('signed_approval_verifier_key_unpinned_refused', {
+      path: config.signedApprovalPublicKeyPath,
+      actualSha256,
+      note: 'no --signed-approval-public-key-sha256 pin and unpinned keys not allowed; key refused, replies fail closed',
+    });
+    return;
+  }
+  try {
+    config.signedApprovalVerifierPublicKey = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+  } catch (error) {
+    config.signedApprovalVerifierPublicKey = null;
+    audit('signed_approval_verifier_key_parse_error', {
+      path: config.signedApprovalPublicKeyPath,
+      error: error.message,
+    });
+  }
+}
+
+// Allowlist pinned BEFORE the signature is verified (algorithm-confusion
+// defense — mirrors lib/signed-approval/verify.ts's allowedSigAlgs check, which
+// itself mirrors Tier A hardcoding RSA-SHA256). NOTE: this is the reply's OWN
+// sigAlg string, i.e. the Android Keystore/Java-side algorithm name
+// ('SHA256withRSA'), NOT node:crypto's createVerify algorithm name
+// ('RSA-SHA256') used below — the two strings name the same scheme from two
+// different APIs and must not be swapped.
+const SIGNED_APPROVAL_ALLOWED_SIG_ALGS = ['SHA256withRSA'];
+
+// Verbatim port of lib/signed-approval/verify.ts verifyApprovalReply's exact
+// check order: decision validity -> author -> sigAlg allowlist (BEFORE the
+// signature is verified) -> runId -> actionType -> request hash recomputed from
+// canonicalApprovalRequest AND compared against BOTH request.requestSha256 and
+// reply.requestSha256 -> expiry -> nonce match -> key pin (fail closed on an
+// empty pin) -> signature verify (node:crypto RSA-SHA256, mirroring
+// shelly-agent-driver.js verifyEscalationReplySignature's shape) -> nonce
+// CONSUMED LAST, only after the signature verifies, so a forged reply can never
+// burn a valid nonce.
+function verifySignedApprovalReply(request, reply, deps) {
+  const fail = (reason) => ({ ok: false, reason });
+  const VALID_DECISIONS = new Set(['accept', 'decline']);
+
+  if (!reply || !VALID_DECISIONS.has(reply.decision)) return fail('bad-decision');
+  if (reply.by !== (deps.expectedBy || 'human')) return fail('bad-author');
+  if (!deps.allowedSigAlgs.includes(reply.sigAlg)) return fail('bad-sig-alg');
+  if (reply.runId !== request.runId) return fail('runid-mismatch');
+  if (reply.actionType !== request.actionType) return fail('action-mismatch');
+
+  const expectedRequestSha = sha256Hex(canonicalApprovalRequest(request));
+  if (request.requestSha256 !== expectedRequestSha) return fail('request-sha-mismatch');
+  if (reply.requestSha256 !== expectedRequestSha) return fail('request-sha-mismatch');
+
+  if (Date.now() > request.expiresAt) return fail('expired');
+  if (reply.nonce !== request.nonce) return fail('nonce-mismatch');
+
+  // Fail closed if the pin itself is empty/unset (a vacuous pin is no pin). The
+  // trusted verifier key is the load-bearing side; reply.keySha256 is
+  // attacker-controlled and ANDed in, so it can only ever reject, never bypass.
+  const publicKey = deps.publicKey;
+  if (!deps.expectedKeySha256 || !publicKey || deps.publicKeySha256 !== deps.expectedKeySha256 || reply.keySha256 !== deps.expectedKeySha256) {
+    return fail('key-pin-mismatch');
+  }
+
+  try {
+    const message = approvalReplySignatureMessage(reply);
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(message, 'utf8');
+    verifier.end();
+    if (!verifier.verify(publicKey, Buffer.from(reply.signature || '', 'base64'))) {
+      return fail('bad-signature');
+    }
+  } catch (_) {
+    return fail('bad-signature');
+  }
+
+  // Single-use LAST: only a fully-valid reply consumes the nonce; a replay of an
+  // already-consumed nonce fails here instead of at nonce-mismatch.
+  if (!deps.nonceStore.consume(reply.nonce)) return fail('nonce-replay');
+
+  return { ok: true, reason: 'ok' };
+}
+
 function requestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
   ensureDir(paths.actionApprovalDir);
   ensureDir(paths.actionApprovalReplyDir);
@@ -549,9 +767,39 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
+    // Per-request single-use nonce (Tier A parity, lib/signed-approval/types.ts
+    // ApprovalRequest.nonce). Written into the request regardless of
+    // SIGNED_APPROVAL_ENABLED so a future signed reply can bind to it; the naive
+    // equality path below ignores it entirely, so this is not a behavior change.
+    nonce: crypto.randomBytes(16).toString('hex'),
   };
+  // 署名付き承認 (SIGNED-APPROVAL): request.requestSha256 is the sha256 of the
+  // CANONICAL field encoding (canonicalApprovalRequest, the fixed-order tagged
+  // array from lib/signed-approval/canonical.ts) -- NOT of the raw JSON file
+  // bytes below. These are two DIFFERENT hashes of the same data for two
+  // DIFFERENT consumers: this canonical hash is what a real signer would read
+  // from the on-disk request and echo into SignedApprovalReply.requestSha256
+  // (lib/signed-approval/types.ts: "sha256 hex of the canonical request, bound
+  // into the reply"), and what verifySignedApprovalReply recomputes to check
+  // self-consistency + reply-binding. Set BEFORE writeAtomic so a real signer's
+  // on-disk view includes it; canonicalApprovalRequest() does not read this
+  // field, so setting it here does not change what gets hashed. An earlier
+  // version of this fix set request.requestSha256 to sha256File(requestFile)
+  // (the FILE-BYTES hash used below by the unrelated naive-equality path) --
+  // a structurally different value that would have made the signed-approval
+  // accept-path self-DoS on every reply, valid or not. Found and corrected
+  // before the flag was ever enabled -- see docs/superpowers/DEFERRED.md.
+  request.requestSha256 = sha256Hex(canonicalApprovalRequest(request));
   writeAtomic(requestFile, JSON.stringify(request) + '\n');
+  // Unrelated to the above: sha256 of the ACTUAL on-disk file bytes, used ONLY
+  // by today's naive equality check a few lines down (`reply.requestSha256 !==
+  // requestSha256`) -- untouched, byte-identical to pre-signed-approval
+  // behavior. Native's reply-writer independently hashes whatever bytes it
+  // reads back from this same file, so adding a field to the request object
+  // before writing does not break that comparison (both sides hash the real
+  // file, not a fixed shape).
   const requestSha256 = sha256File(requestFile);
+  const nonceStore = SIGNED_APPROVAL_ENABLED ? makeSignedApprovalNonceStore() : null;
   const deadline = Date.now() + Math.max(1, timeoutSeconds) * 1000;
   while (Date.now() < deadline) {
     if (fs.existsSync(replyFile)) {
@@ -565,6 +813,34 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
         fs.unlinkSync(replyFile);
         fs.unlinkSync(requestFile);
       } catch (_) {}
+
+      if (SIGNED_APPROVAL_ENABLED && reply && reply.sigAlg && reply.signature && reply.keySha256 && reply.nonce) {
+        // Migration step 2 (lib/signed-approval/wiring.ts): a signed reply
+        // replaces the naive runId+requestSha256 equality check with the full
+        // verifyApprovalReply policy. Dormant: SIGNED_APPROVAL_ENABLED is false
+        // today, so this branch never executes in production.
+        ensureSignedApprovalVerifierKey(config, (event, fields) => appendJsonl(paths.planAuditFile, {
+          ts: new Date().toISOString(),
+          kind: 'plan.executor',
+          event,
+          agentId: plan.agent.id,
+          ...fields,
+        }));
+        const result = verifySignedApprovalReply(request, reply, {
+          publicKey: config.signedApprovalVerifierPublicKey,
+          publicKeySha256: config.signedApprovalVerifierPublicKey ? config.signedApprovalPublicKeySha256 : '',
+          expectedKeySha256: config.signedApprovalPublicKeySha256 || '',
+          allowedSigAlgs: SIGNED_APPROVAL_ALLOWED_SIG_ALGS,
+          nonceStore,
+        });
+        if (result.ok && reply.decision === 'accept') return;
+        throw new ActionSkipped(`${actionType} action declined`);
+      }
+
+      // Naive equality check — today's (and, while SIGNED_APPROVAL_ENABLED is
+      // false, the ONLY) accept-path. Byte-identical to pre-signed-approval
+      // behavior; do not add any signature-aware branching above this that could
+      // change what this path does when the flag is false.
       if (!reply || reply.runId !== runId || reply.requestSha256 !== requestSha256) {
         continue;
       }
@@ -585,6 +861,13 @@ function safeFilePart(value) {
 
 function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+// Used by the signed-approval verifier (canonicalApprovalRequest hashing, DER
+// key-pin hashing) below; sha256File above hashes file bytes, this hashes an
+// already-in-memory string/Buffer.
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 // Mirrors the .sh save_draft_result destination logic (lib/agent-executor.ts).
@@ -1119,6 +1402,14 @@ function run(args) {
   ensureDir(paths.logDir);
 
   const config = parseConfigEnv(paths.envFile);
+  // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 dormant wiring. Native does
+  // not pass these flags yet (Migration step 1, AgentActionApprovalBridge signing,
+  // is explicitly deferred), so these default to empty/unavailable. Harmless
+  // while SIGNED_APPROVAL_ENABLED is false: ensureSignedApprovalVerifierKey /
+  // verifySignedApprovalReply are only ever reached from that dormant branch.
+  config.signedApprovalPublicKeyPath = args['signed-approval-public-key'] || '';
+  config.signedApprovalPublicKeySha256 = args['signed-approval-public-key-sha256'] || '';
+  config.allowUnpinnedSignedApprovalVerifierKey = argTruthy(args['allow-unpinned-signed-approval-verifier-key']);
   const roots = scopedRoots(paths, config);
   const startedAt = Date.now();
   appendJsonl(paths.planAuditFile, {
@@ -1240,4 +1531,14 @@ module.exports = {
   runtimePaths,
   parseConfigEnv,
   isLoopbackUrl,
+  // 署名付き承認 (SIGNED-APPROVAL) Migration step 2 — exported for host unit tests
+  // only (see __tests__/plan-executor-signed-approval.test.ts). Not part of the
+  // executor's CLI surface; SIGNED_APPROVAL_ENABLED gates all production use.
+  SIGNED_APPROVAL_ENABLED,
+  SIGNED_APPROVAL_ALLOWED_SIG_ALGS,
+  canonicalApprovalRequest,
+  approvalReplySignatureMessage,
+  verifySignedApprovalReply,
+  makeSignedApprovalNonceStore,
+  ensureSignedApprovalVerifierKey,
 };
