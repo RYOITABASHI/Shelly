@@ -89,6 +89,33 @@ describe('capability-envelope: classifyEgress (CAP-001 §4.3 structural rule)', 
     expect(v.signals).toContain('tainted');
     expect(v.signals).toContain('non-allowlist-host');
   });
+
+  it('requires approval for tainted input plus a live secret, even on its correctly-bound allowlisted host', () => {
+    // Host-binding only guards WHERE a secret can go; it does not guard WHAT
+    // gets said with it. A poisoned notification could still direct the agent
+    // to post attacker-chosen content to a legitimate, allowlisted webhook
+    // using our own valid key — that must not auto-allow.
+    const v = classifyEgress({
+      url: 'https://api.perplexity.ai/chat/completions',
+      authRef: 'perplexity',
+      tainted: true,
+    });
+    expect(v.decision).toBe('approve');
+    expect(v.signals).toContain('tainted');
+    expect(v.signals).toContain('secret-spend');
+    expect(v.signals).toContain('tainted-secret-spend');
+    // Must not also carry non-allowlist-host — the host IS allowlisted here.
+    expect(v.signals).not.toContain('non-allowlist-host');
+  });
+
+  it('untainted secret spend against its bound host still auto-allows (no behavior change for today\'s live callers)', () => {
+    const v = classifyEgress({
+      url: 'https://api.perplexity.ai/chat/completions',
+      authRef: 'perplexity',
+      tainted: false,
+    });
+    expect(v.decision).toBe('allow');
+  });
 });
 
 describe('capability-envelope: checkBudget (CAP-001 fail-closed)', () => {

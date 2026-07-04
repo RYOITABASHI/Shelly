@@ -128,6 +128,20 @@ describe('shelly-capability-broker: policy gates (no network)', () => {
     expect(r.code).toBe(43);
   });
 
+  it('blocks tainted input plus a live secret fail-closed when not approved, even on the bound allowlisted host (41)', async () => {
+    const r = await runBroker(dir, {
+      url: 'https://api.perplexity.ai/chat/completions',
+      authRef: 'perplexity',
+      tainted: true,
+      env: { PERPLEXITY_API_KEY: 'pplx-SECRETSECRETSECRETSECRET' },
+    });
+    expect(r.code).toBe(41);
+    expect(r.audit[0].decision).toBe('approve');
+    expect(r.audit[0].signals).toContain('tainted-secret-spend');
+    // The secret must never appear in any output file even though it was loaded.
+    expect(r.err + r.out + JSON.stringify(r.audit)).not.toContain('pplx-SECRET');
+  });
+
   it('fails closed with BUDGET (42) when the call budget is exhausted', async () => {
     const r = await runBroker(dir, {
       url: 'https://api.groq.com/openai/v1/chat/completions',

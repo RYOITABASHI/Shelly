@@ -105,7 +105,8 @@ export type EgressSignal =
   | 'secret-spend' // an auth_ref (secret) is being used on this request
   | 'tainted' // this run consumed untrusted input (§4 taint tracking)
   | 'ref-host-mismatch' // an auth_ref was spent against a host it is not bound to
-  | 'insecure-scheme'; // non-loopback plaintext / unparseable URL
+  | 'insecure-scheme' // non-loopback plaintext / unparseable URL
+  | 'tainted-secret-spend'; // untrusted input + a live secret, even to an allowlisted, correctly-bound host
 
 export interface EgressVerdict {
   decision: EgressDecision;
@@ -124,6 +125,12 @@ export interface EgressVerdict {
  *    host but api.perplexity.ai, regardless of what a human might click.
  *  - Non-allowlist host → approve (human gate); loud when a secret or taint is
  *    also present (the trifecta case).
+ *  - Tainted input plus a live secret, even against an allowlisted and
+ *    correctly-bound host → approve. Host-binding only guards WHERE a secret
+ *    can go, not WHAT gets said with it — untrusted content could still direct
+ *    the agent to spend a legitimate secret on an attacker-chosen payload at a
+ *    legitimate destination (e.g. a poisoned notification tricking the agent
+ *    into posting attacker text to our own Slack webhook).
  *  - Allowlist host with no boundary signal → allow.
  */
 export function classifyEgress(opts: {
@@ -173,6 +180,21 @@ export function classifyEgress(opts: {
     return {
       decision: 'approve',
       reason: `host ${host} is not on the egress allowlist`,
+      signals,
+    };
+  }
+
+  // Trifecta case even on an allowlisted, correctly-bound host: untrusted input
+  // (taint) plus a live secret means the CONTENT of the request — not just its
+  // destination — may be attacker-directed (e.g. a poisoned notification
+  // tricking the agent into posting attacker-chosen text to a legitimate,
+  // allowlisted Slack webhook using our own valid key). The host-binding check
+  // above only guards where a secret can go, not what gets said with it.
+  if (tainted && authRef) {
+    signals.push('tainted-secret-spend');
+    return {
+      decision: 'approve',
+      reason: `tainted input plus a live secret ("${authRef}") to ${host} requires human approval`,
       signals,
     };
   }

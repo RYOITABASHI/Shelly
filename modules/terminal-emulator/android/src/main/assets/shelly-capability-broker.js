@@ -115,6 +115,13 @@ function isAllowlistedHost(host) {
 /**
  * The CAP-001 §4.3 structural rule. Returns { decision, reason, signals }.
  *   decision: 'allow' | 'approve' | 'deny'
+ *
+ * Tainted input plus a live secret, even against an allowlisted and
+ * correctly-bound host, also requires approval: host-binding only guards
+ * WHERE a secret can go, not WHAT gets said with it — untrusted content could
+ * still direct the agent to spend a legitimate secret on an attacker-chosen
+ * payload at a legitimate destination (e.g. a poisoned notification tricking
+ * the agent into posting attacker text to our own Slack webhook).
  */
 function classifyEgress(url, authRef, tainted) {
   const signals = [];
@@ -146,6 +153,10 @@ function classifyEgress(url, authRef, tainted) {
   if (!isAllowlistedHost(host)) {
     signals.push('non-allowlist-host');
     return { decision: 'approve', reason: 'host ' + host + ' is not on the egress allowlist', signals: signals };
+  }
+  if (tainted && authRef) {
+    signals.push('tainted-secret-spend');
+    return { decision: 'approve', reason: 'tainted input plus a live secret "' + authRef + '" to ' + host + ' requires human approval', signals: signals };
   }
   return { decision: 'allow', reason: 'host ' + host + ' is allowlisted', signals: signals };
 }
