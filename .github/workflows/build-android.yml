@@ -471,16 +471,33 @@ jobs:
           rm -rf /tmp/codex-termux-extract
           mkdir -p /tmp/codex-termux-extract
           tar xzf /tmp/codex-termux.tar.gz -C /tmp/codex-termux-extract
+          # codex-exec.bin is searched first (more specific, legacy-only name) so
+          # a real distinct binary always wins where one exists; codex.bin is the
+          # fallback, not the primary, to avoid silently collapsing the two on
+          # versions that still ship both (see fallback comment below).
           CODEX_EXEC_BIN="$(find /tmp/codex-termux-extract -type f -name codex-exec.bin | head -1)"
           CODEX_TUI_BIN="$(find /tmp/codex-termux-extract -type f -name codex.bin | head -1)"
+          if [ -z "$CODEX_EXEC_BIN" ]; then
+            # Upstream v0.142.5+ dropped the standalone exec binary; codex.bin now serves
+            # both TUI and one-shot-exec modes via the `exec` subcommand (see the upstream
+            # codex-exec wrapper script, which now does `exec codex.bin exec "$@"` instead
+            # of exec'ing a separate binary). Fall back to the shared binary — the app
+            # already invokes exec-mode with `exec` as argv[1] uniformly (bash codex()
+            # function, shelly-agent-driver.js, capability-broker's codex.exec op all pass
+            # `exec` as a subcommand, never assume codex_exec is a semantically different
+            # binary) so this is a safe, behavior-preserving fallback, not a workaround.
+            CODEX_EXEC_BIN="$CODEX_TUI_BIN"
+          fi
           CODEX_LIBCXX="$(find /tmp/codex-termux-extract -type f -name 'libc++_shared.so' | head -1)"
-          # Verify the upstream tarball still ships both binaries we depend on.
-          # If DioNanos/codex-termux ever renames or drops one of these files,
-          # the next green build would silently produce an APK with codex
-          # broken on-device. Fail loud here instead.
+          # Verify the upstream tarball still ships the binaries we depend on
+          # (either as two distinct files, or as codex.bin alone once the
+          # codex-exec.bin fallback above kicks in). If DioNanos/codex-termux
+          # ever drops codex.bin itself, or renames it, the next green build
+          # would silently produce an APK with codex broken on-device. Fail
+          # loud here instead.
           for f in "$CODEX_EXEC_BIN" "$CODEX_TUI_BIN"; do
             if [ ! -f "$f" ]; then
-              echo "FATAL: expected codex-exec.bin and codex.bin in codex-termux tarball; tarball contents:" >&2
+              echo "FATAL: expected codex.bin (and optionally a standalone codex-exec.bin) in codex-termux tarball; tarball contents:" >&2
               find /tmp/codex-termux-extract -maxdepth 4 -type f | sort >&2
               exit 1
             fi
