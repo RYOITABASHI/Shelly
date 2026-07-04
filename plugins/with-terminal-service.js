@@ -1,9 +1,20 @@
 /**
  * Expo config plugin: register TerminalSessionService as a foreground service.
  *
- * Since `expo prebuild --clean` regenerates the android/ directory, service
- * declarations must go through a config plugin rather than editing
- * AndroidManifest.xml directly.
+ * Since `expo prebuild` regenerates the android/ directory (observed: even
+ * without --clean, prebuild reported "The android project is malformed,
+ * project files will be cleared and reinitialized" and wiped android/ on a
+ * plain CI run), service/receiver declarations must go through a config
+ * plugin rather than editing AndroidManifest.xml directly. A hand-edited
+ * <receiver> with no corresponding plugin is silently dropped on the next
+ * prebuild — this is exactly what happened to BootCompletedReceiver (added
+ * directly to the checked-in manifest in commit 58a378834): it parsed fine
+ * from source, round-tripped fine through xml2js, yet was absent from every
+ * built APK because CI's `expo prebuild` step never preserved it. Confirmed
+ * via 4 on-device reboot cycles (BootCompletedReceiver never in
+ * `dumpsys activity broadcasts history`) and locally reproduced by running
+ * `npx expo prebuild --platform android` and diffing the regenerated
+ * manifest.
  *
  * This plugin:
  * - Adds the <service> element for TerminalSessionService
@@ -19,6 +30,8 @@
  *   permission may bind", and BIND_NOTIFICATION_LISTENER_SERVICE is a
  *   system-signature permission only the OS holds — this is the standard,
  *   required declaration for a NotificationListenerService.
+ * - Registers BootCompletedReceiver (L1 boot-autostart floor, dormant until
+ *   the native enable flag is flipped — see AgentAlarmScheduler.kt)
  */
 const { withAndroidManifest } = require("expo/config-plugins");
 
@@ -77,6 +90,40 @@ function withTerminalService(config) {
           "android:name": receiverName,
           "android:exported": "false",
         },
+      });
+    }
+
+    // Register BootCompletedReceiver (L1 boot-autostart floor, dormant/flag-OFF
+    // — see AgentAlarmScheduler.bootAutostartEnabled). exported=true is required
+    // to receive the system BOOT_COMPLETED broadcast. No android:permission
+    // attribute: that would require the SENDER (system_server) to hold the
+    // named permission, which observably breaks delivery (dumpsys showed
+    // "Permission Denial ... due to sender null (uid 1000)" for other apps'
+    // receivers using that mistaken pattern). The <uses-permission> declared
+    // via app.config.ts's permissions list is what actually grants this app
+    // the ability to receive the broadcast.
+    const bootReceiverName =
+      "expo.modules.terminalemulator.BootCompletedReceiver";
+    const bootReceiverExists = application.receiver.find(
+      (r) => r.$?.["android:name"] === bootReceiverName
+    );
+    if (!bootReceiverExists) {
+      application.receiver.push({
+        $: {
+          "android:name": bootReceiverName,
+          "android:exported": "true",
+        },
+        "intent-filter": [
+          {
+            action: [
+              {
+                $: {
+                  "android:name": "android.intent.action.BOOT_COMPLETED",
+                },
+              },
+            ],
+          },
+        ],
       });
     }
 
