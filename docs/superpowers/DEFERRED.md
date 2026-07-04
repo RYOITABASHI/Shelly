@@ -14,6 +14,47 @@
 
 ---
 
+## 🟡 現状サマリ (2026-07-04、v7.0.0 build 1720 実機 security smoke)
+
+**Test A: unattended out-of-workspace write 即時拒否の途中結果**。
+Galaxy Z Fold6 / Android 16 / `dev.shelly.terminal` `versionName=7.0.0`, `versionCode=1720` / wireless adb `192.168.1.5:35223` で確認。
+
+| 項目 | 状態 | 根拠 |
+|---|---|---|
+| attended manual run の CLI approval notification | ✅ PASS | `Approval notification posted via FGS observer run=agent-mr5mb9t4-1783124571-12001` |
+| ユーザー拒否後の書き込み抑止 | ✅ PASS | `/sdcard/shelly_outside_workspace_probe.txt: No such file or directory` |
+| 拒否 action の記録 | ✅ PASS | `act=expo.modules.terminalemulator.scouter.AGENT_ACTION_DENY` |
+| audit jsonl の `escalation_requested` | ⚠ 未確認 | app が non-debuggable のため `run-as dev.shelly.terminal` 不可。Shelly 内 terminal で見えた範囲は `http.request` allow のみ |
+| unattended scheduled run の即時拒否 | ⏳ 未実施 | `escalation_denied_unattended` と「通知なし」を次に確認 |
+
+検証した agent:
+- `agent-mr5mb9t4`
+- Prompt: `CLIで /sdcard/shelly_outside_workspace_probe.txt に test と書き込んで`
+- Action: `command`
+- Run path: `Autonomous Codex`
+- Command: `sh -c 'echo test > /sdcard/shelly_outside_workspace_probe.txt'`
+- Manual run log: `unattended=false trustedAction=- trustedTool=- codexEscalation=false`
+
+重要ログ抜粋:
+
+```text
+07-04 09:22:26.969 I/AgentRuntime: Agent agent-mr5mb9t4 starting via PlanSpec executor ... unattended=false trustedAction=- trustedTool=- codexEscalation=false
+07-04 09:22:51.994 I/TerminalSessionService: Approval notification posted via FGS observer run=agent-mr5mb9t4-1783124571-12001
+07-04 09:22:53.844 I/ReactNativeJS: [Shelly][AgentActionApproval] approval notification posted run=agent-mr5mb9t4-1783124571-12001 action=cli
+07-04 09:24:28.222 I/ActivityTaskManager: START ... act=expo.modules.terminalemulator.scouter.AGENT_ACTION_DENY ... cmp=dev.shelly.terminal/expo.modules.terminalemulator.scouter.ScouterWidgetPromptActivity
+07-04 09:24:28.950 I/AgentRuntime: Agent agent-mr5mb9t4 completed via PlanSpec executor
+```
+
+次にやること:
+1. 同じ agent を scheduled/unattended で発火させる。
+2. `logcat` / Shelly terminal audit で `escalation_denied_unattended` を確認する。
+3. unattended 発火時に `scouter_approval` notification が出ないことを確認する。
+4. 可能なら Shelly terminal で以下を実行して audit の該当行を確認する。
+
+```sh
+grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits/agent-mr5mb9t4-agent-driver-audit.jsonl
+```
+
 ## 🟢 現状サマリ (2026-05-14、v5.3.1 release surface)
 
 **リリース判断**: Claude Code CLI / Codex CLI を正式対応、Gemini CLI は Experimental に降格。AI Pane / background agents は Gemini API / Cerebras / Groq / Perplexity / OpenAI-compatible local などの明示的 API provider 経路で提供する。Claude Code subscription/CLI を hidden background worker として使わない。
@@ -2094,6 +2135,7 @@ claude() {
 - **2026-06-24**: N4 着手（quota 非依存・North Star 直結）。(a) 空スラグ修正＝CJK のみのエージェント名が `2026-06-24-.md` になるバグ（slug が `[^a-z0-9]` strip で空）を CJK 保持＋id fallback で修正、(b) dead field だった `outputTemplate` を保存パスに配線（`{date}/{slug}/{time}` プレースホルダ、日付フォルダ `/` 対応、`..`/絶対パス除去、Obsidian ミラーも同名）、(c) 複数曜日 cron（`0 8 * * 1,5` = 月/金）を TS+Kotlin 両パーサに追加（従来は単一 dow のみで未発火）。commit fa10617 / c80bb04、全 387 テスト緑、レビュー APPROVE。実機検証は新ビルドで（保存系は quota 非依存で確認可）。
 - **2026-06-24**: ニュース収集エージェントの「偽成功」を切り分け→真因は**ルーティング**（収集が Web 非対応 local LLM に振られ空テンプレ幻覚）と確定。`needsWeb`（収集動詞＋鮮度語）routing を実装し非Web backend 除外＋`Gemini(grounded)→Codex`/学術`Perplexity`/自律`Codexのみ`に（commit 203428c, 全376テスト緑, レビュー APPROVE）。実機 end-to-end は**両 web backend の quota 枯渇（Gemini free-tier `limit:0` on gemini-2.0-flash / Codex usage limit リセット 6/24 23:51）でブロック**→「Web-mandatory routing 検証待ち」エントリに手順同梱で P1 登録。端末ネット OK・Codex sandbox=danger-full-access・Gemini キー疎通(403→429)は確認済み。
 - **2026-06-19**: Secretary MVP (Phase 0) 着手時、ユーザーから「ウィジェットからもいける導線」提案。既存 `ScouterWidgetProvider.kt` (home-screen AppWidget, 2026-06-10 実機 PASS) が tap PendingIntent / deep-link / 承認ピル配線を既に持つと確認。trigger (deep-link 1本) + status (snapshot 2フィールド) は安価な fast-follow として P2 登録。スケジュール承認はウィジェットに置かず通知側 (B5, run-id 束縛・単回・期限付き) に集約と判断。コアループ着地後に着手。
+- **2026-07-04**: v7.0.0 build 1720 実機 security smoke。attended manual run の CLI approval notification と拒否後の `/sdcard` 書き込み抑止は PASS。unattended scheduled run の `escalation_denied_unattended` と通知なしは未実施として継続。
 
 ---
 
