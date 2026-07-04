@@ -62,5 +62,25 @@
       <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shelly_file_provider_paths"/>
     </provider>
     <receiver android:name="expo.modules.terminalemulator.AgentAlarmReceiver" android:exported="false"/>
+    <!-- NOTIFY-001 Increment 0 (dormant, plumbing-only — see
+         ShellyNotificationListener.notificationListenerEnabled, default false).
+         This hand-written copy is for readability only; the copy that actually
+         survives a prebuild wipe is the one registered by
+         plugins/with-terminal-service.js (see the CI-prebuild-wipe lesson in
+         that file's header comment) — do not rely on this block alone.
+         android:permission on a <service> is a DIFFERENT mechanism than the
+         receiver-level android:permission mistake fixed for
+         BootCompletedReceiver above: here it restricts who may BIND to this
+         service, and BIND_NOTIFICATION_LISTENER_SERVICE is a system-signature
+         permission only the OS holds — this is the standard, required
+         declaration for a NotificationListenerService. No <uses-permission> is
+         needed: the actual grant is the user manually enabling this listener
+         under Settings > Notification access (Settings.Secure.ENABLED_NOTIFICATION_LISTENERS),
+         not a manifest permission. -->
+    <service android:name="expo.modules.terminalemulator.ShellyNotificationListener" android:exported="true" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+      <intent-filter>
+        <action android:name="android.service.notification.NotificationListenerService"/>
+      </intent-filter>
+    </service>
   </application>
 </manifest>

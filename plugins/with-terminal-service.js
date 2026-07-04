@@ -11,6 +11,14 @@
  * - Sets stopWithTask=false so onTaskRemoved() fires instead of auto-kill
  * - Registers AgentAlarmReceiver (legacy bridge for alarms armed by older builds;
  *   new alarms target the service directly via getForegroundService)
+ * - Registers ShellyNotificationListener (NOTIFY-001 Increment 0, dormant
+ *   plumbing-only until the native enable flag is flipped — see
+ *   ShellyNotificationListener.kt). android:permission on THIS element is
+ *   correct (unlike the receiver-level mistake fixed for BootCompletedReceiver):
+ *   for a <service>, android:permission means "only callers holding this
+ *   permission may bind", and BIND_NOTIFICATION_LISTENER_SERVICE is a
+ *   system-signature permission only the OS holds — this is the standard,
+ *   required declaration for a NotificationListenerService.
  */
 const { withAndroidManifest } = require("expo/config-plugins");
 
@@ -69,6 +77,42 @@ function withTerminalService(config) {
           "android:name": receiverName,
           "android:exported": "false",
         },
+      });
+    }
+
+    // Register ShellyNotificationListener (NOTIFY-001 Increment 0, dormant
+    // plumbing-only — see ShellyNotificationListener.notificationListenerEnabled,
+    // default false). exported=true + the BIND_NOTIFICATION_LISTENER_SERVICE
+    // permission on the <service> element is the standard, required Android
+    // pattern: it restricts BINDING to callers holding that system-signature
+    // permission (only the OS), which is a different mechanism than the
+    // receiver-level android:permission mistake fixed for BootCompletedReceiver
+    // (that required the SENDER to hold the permission and broke delivery).
+    const notificationListenerName =
+      "expo.modules.terminalemulator.ShellyNotificationListener";
+    const notificationListenerExists = application.service.find(
+      (s) => s.$?.["android:name"] === notificationListenerName
+    );
+    if (!notificationListenerExists) {
+      application.service.push({
+        $: {
+          "android:name": notificationListenerName,
+          "android:exported": "true",
+          "android:permission":
+            "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+        },
+        "intent-filter": [
+          {
+            action: [
+              {
+                $: {
+                  "android:name":
+                    "android.service.notification.NotificationListenerService",
+                },
+              },
+            ],
+          },
+        ],
       });
     }
 

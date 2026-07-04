@@ -14,6 +14,7 @@ import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -787,6 +788,34 @@ class TerminalEmulatorModule : Module() {
                 } catch (fallbackErr: Exception) {
                     Log.w("TerminalEmulator", "Cannot open all-files-access settings", fallbackErr)
                 }
+            }
+            null
+        }
+
+        // NOTIFY-001 Increment 0 (dormant, plumbing-only): permission-check +
+        // deep-link helpers for the notification-listener Special Access grant.
+        // This is a runtime OS-level listener-enable list
+        // (Settings.Secure.ENABLED_NOTIFICATION_LISTENERS), not a manifest
+        // permission — mirrors the hasAllFilesAccess/requestAllFilesAccess and
+        // isIgnoringBatteryOptimizations/requestBatteryOptimizationExemption
+        // pairs above.
+        AsyncFunction("hasNotificationListenerAccess") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val granted = NotificationManagerCompat.getEnabledListenerPackages(context)
+                .contains(context.packageName)
+            Log.i("TerminalEmulator", "hasNotificationListenerAccess: granted=$granted")
+            granted
+        }
+
+        AsyncFunction("requestNotificationListenerAccess") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            try {
+                val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.w("TerminalEmulator", "Cannot open notification-listener-access settings", e)
             }
             null
         }
