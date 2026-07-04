@@ -42,11 +42,23 @@ describe('BOOT-AUTOSTART Manifest + native parity (dormant, flag-OFF)', () => {
     expect(manifest).toContain('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS');
   });
 
-  it('registers BootCompletedReceiver for BOOT_COMPLETED (exported, permission-guarded)', () => {
+  it('registers BootCompletedReceiver for BOOT_COMPLETED (exported, no receiver-level permission)', () => {
     expect(manifest).toContain('expo.modules.terminalemulator.BootCompletedReceiver');
     expect(manifest).toContain('android.intent.action.BOOT_COMPLETED');
     expect(manifest).toContain('android:exported="true"');
-    expect(manifest).toContain('android:permission="android.permission.RECEIVE_BOOT_COMPLETED"');
+    // Device-verify (2026-07-04) found android:permission="..." on the <receiver>
+    // element itself silently broke delivery: that attribute requires the SENDER
+    // (system_server) to hold the named permission, which dumpsys activity
+    // broadcasts history showed being denied for other apps' receivers using
+    // this same mistaken pattern ("Permission Denial ... due to sender null
+    // (uid 1000)"). The <uses-permission> at the manifest root (asserted above)
+    // is what actually grants receiving rights; the receiver itself must NOT
+    // additionally declare android:permission for BOOT_COMPLETED.
+    const receiverBlock = manifest.slice(
+      manifest.indexOf('<receiver android:name="expo.modules.terminalemulator.BootCompletedReceiver"'),
+      manifest.indexOf('</receiver>', manifest.indexOf('BootCompletedReceiver')) + '</receiver>'.length,
+    );
+    expect(receiverBlock).not.toContain('android:permission');
   });
 
   it('the boot receiver is flag-gated (no-op when autostart is disabled)', () => {
