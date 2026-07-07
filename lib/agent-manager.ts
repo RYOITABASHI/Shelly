@@ -202,6 +202,7 @@ export function createAgent(params: {
   description: string;
   prompt: string;
   schedule: string | null;
+  notificationTrigger?: Agent['notificationTrigger'];
   tool: ToolChoice;
   autonomous?: boolean;
   autonomyLevel?: Agent['autonomyLevel'];
@@ -224,6 +225,7 @@ export function createAgent(params: {
     description: params.description,
     prompt: params.prompt,
     schedule: params.schedule,
+    notificationTrigger: params.notificationTrigger ?? null,
     tool: params.tool,
     autonomous: params.autonomous || undefined,
     autonomyLevel: params.autonomous ? (params.autonomyLevel ?? 'L2') : undefined,

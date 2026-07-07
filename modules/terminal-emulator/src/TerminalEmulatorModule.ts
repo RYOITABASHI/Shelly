@@ -30,6 +30,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   hasAllFilesAccess(): Promise<boolean>;
   /** bug #92: Fires the per-package all-files-access settings intent. No-op when already granted or API < 30. */
   requestAllFilesAccess(): Promise<void>;
+  /** NOTIFY-001 Increment 0: OS-level "Notification access" special permission check (Settings.Secure.ENABLED_NOTIFICATION_LISTENERS). */
+  hasNotificationListenerAccess(): Promise<boolean>;
+  /** NOTIFY-001 Increment 0: opens Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS so the user can grant notification-listener access. */
+  requestNotificationListenerAccess(): Promise<void>;
+  /** NOTIFY-001 Increment 2: reads Shelly's own dormant flag (SharedPreferences, default false) gating the notification-trigger feature. */
+  getNotificationTriggerEnabled(): Promise<boolean>;
+  /** NOTIFY-001 Increment 2: writes Shelly's own dormant flag gating the notification-trigger feature. */
+  setNotificationTriggerEnabled(enabled: boolean): Promise<void>;
   testExecve(): Promise<{ success: boolean; result?: string; error?: string }>;
   scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;

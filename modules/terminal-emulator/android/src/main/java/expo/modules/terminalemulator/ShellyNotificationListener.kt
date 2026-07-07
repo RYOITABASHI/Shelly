@@ -55,8 +55,8 @@ import java.io.File
 class ShellyNotificationListener : NotificationListenerService() {
     companion object {
         private const val TAG = "ShellyNotificationListener"
-        private const val PREFS = "shelly_notification_listener"
-        private const val ENABLED_KEY = "enabled"
+        const val PREFS = "shelly_notification_listener"
+        const val ENABLED_KEY = "enabled"
 
         /** Native enable flag for the notification listener. Defaults false (dormant). */
         fun notificationListenerEnabled(context: Context): Boolean =

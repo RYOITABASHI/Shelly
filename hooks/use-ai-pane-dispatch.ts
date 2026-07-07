@@ -1048,6 +1048,7 @@ export function useAIPaneDispatch(paneId: string) {
             confirmed.orchestrationSteps && confirmed.orchestrationSteps.length >= 2
               ? { steps: confirmed.orchestrationSteps }
               : undefined,
+          notificationTrigger: confirmed.notificationTrigger,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
         });
         await installAgent(created, runAgentShellCommand);

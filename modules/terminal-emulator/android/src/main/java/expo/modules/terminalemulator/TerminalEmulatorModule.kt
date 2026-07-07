@@ -820,6 +820,29 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // NOTIFY-001 Increment 2: read/write the app's own internal dormant
+        // flag that gates the notification-trigger feature. This is separate
+        // from hasNotificationListenerAccess/requestNotificationListenerAccess
+        // above, which deal with the Android OS "Notification access" special
+        // permission — this flag is Shelly's own SharedPreferences-backed
+        // kill switch (default false) checked at the top of
+        // ShellyNotificationListener.onNotificationPosted.
+        AsyncFunction("getNotificationTriggerEnabled") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val enabled = ShellyNotificationListener.notificationListenerEnabled(context)
+            Log.i("TerminalEmulator", "getNotificationTriggerEnabled: enabled=$enabled")
+            enabled
+        }
+
+        AsyncFunction("setNotificationTriggerEnabled") { enabled: Boolean ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            context.getSharedPreferences(ShellyNotificationListener.PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(ShellyNotificationListener.ENABLED_KEY, enabled)
+                .apply()
+            Log.i("TerminalEmulator", "setNotificationTriggerEnabled: enabled=$enabled")
+            null
+        }
+
         AsyncFunction("installApk") { apkPath: String ->
             val context = requireReactContext()
             try {

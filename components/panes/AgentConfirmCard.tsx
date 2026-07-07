@@ -16,7 +16,7 @@
  * This is presentational + local edit state only. The caller wires Confirm to
  * createAgent + installAgent, and Cancel to discard.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
@@ -26,6 +26,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -44,6 +45,8 @@ export interface ConfirmedAgentDraft {
   skillId?: string;
   /** Phase 4: ordered step instructions for a multi-step (orchestrated) agent. */
   orchestrationSteps?: string[];
+  /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
+  notificationTrigger?: { packageNames: string[] } | null;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
@@ -57,6 +60,28 @@ function clampInt(raw: string, min: number, max: number): number {
   const n = parseInt(raw.replace(/[^\d]/g, ''), 10);
   if (Number.isNaN(n)) return min;
   return Math.max(min, Math.min(max, n));
+}
+
+// NOTIFY-001 Increment 2: free-text, comma/newline-separated Android package names.
+const ANDROID_PACKAGE_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/;
+
+function parseNotificationTriggerPackages(raw: string): { valid: string[]; skippedCount: number } {
+  const tokens = raw
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const seen = new Set<string>();
+  const valid: string[] = [];
+  let skippedCount = 0;
+  for (const token of tokens) {
+    if (ANDROID_PACKAGE_NAME_RE.test(token) && !seen.has(token)) {
+      seen.add(token);
+      valid.push(token);
+    } else if (!seen.has(token)) {
+      skippedCount += 1;
+    }
+  }
+  return { valid, skippedCount };
 }
 
 interface Props {
@@ -123,6 +148,16 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [command, setCommand] = useState(draft.action.command ?? '');
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
+  // NOTIFY-001 Increment 2: free-text package allowlist. No NL-parse producer yet
+  // (ParsedAgentDraft carries no notificationTrigger field), so this always starts empty.
+  const [notificationPackagesRaw, setNotificationPackagesRaw] = useState('');
+  // null = not yet loaded from the native bridge — avoid flashing a wrong hint.
+  const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    TerminalEmulator.getNotificationTriggerEnabled()
+      .then(setNotificationTriggerEnabled)
+      .catch(() => setNotificationTriggerEnabled(false));
+  }, []);
   // N1: an autonomous run normally uses the gated Codex driver (no API keys). But
   // with explicit cloud consent, a WEB-MANDATORY task keeps its scored web backend
   // (Gemini/Perplexity) — generateRunScript honours the same exception and bakes a
@@ -244,6 +279,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
     // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
     const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb);
+    const { valid: notificationPackages } = parseNotificationTriggerPackages(notificationPackagesRaw);
     onConfirm({
       name: name.trim(),
       prompt: draft.prompt,
@@ -259,6 +295,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       skillId: useSkill ? draft.matchedSkill?.id : undefined,
       // Phase 4: carry detected multi-step instructions through to createAgent.
       orchestrationSteps: draft.orchestrationSteps,
+      // NOTIFY-001 Increment 2: carry the parsed package allowlist through to createAgent.
+      notificationTrigger: notificationPackages.length > 0 ? { packageNames: notificationPackages } : null,
     });
   };
 
@@ -471,6 +509,32 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           />
           <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.cli_warning')}</Text>
         </>
+      )}
+
+      {/* Notification trigger (NOTIFY-001 Increment 2) */}
+      <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.notification_trigger_label')}</Text>
+      <TextInput
+        value={notificationPackagesRaw}
+        onChangeText={setNotificationPackagesRaw}
+        autoCapitalize="none"
+        multiline
+        placeholder={t('agentcard.notification_trigger_placeholder')}
+        placeholderTextColor={colors.inactive}
+        style={[styles.input, fieldBg]}
+      />
+      {(() => {
+        const { valid, skippedCount } = parseNotificationTriggerPackages(notificationPackagesRaw);
+        if (valid.length === 0 && skippedCount === 0) return null;
+        return (
+          <Text style={[styles.warn, { color: colors.muted }]}>
+            {t('agentcard.notification_trigger_hint_count', { valid: valid.length, skipped: skippedCount })}
+          </Text>
+        );
+      })()}
+      {notificationTriggerEnabled === false && (
+        <Text style={[styles.warn, { color: colors.warning }]}>
+          {t('agentcard.notification_trigger_hint_disabled')}
+        </Text>
       )}
 
       {/* Run on */}
