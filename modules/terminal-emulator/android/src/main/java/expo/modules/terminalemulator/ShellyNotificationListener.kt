@@ -2,25 +2,43 @@ package expo.modules.terminalemulator
 
 import android.app.Notification
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import org.json.JSONObject
+import java.io.File
 
 /**
- * NOTIFY-001 Increment 0 (dormant, flag-OFF): pure plumbing for cross-app
- * notification read + reply.
+ * NOTIFY-001 Increment 0+1 (flag-gated, default OFF): cross-app notification
+ * read + trigger-and-react agent dispatch.
  *
- * This is Increment 0 ONLY — plumbing, nothing downstream consumes this yet.
  * The L1/L2 capability catalog
  * (docs/superpowers/specs/2026-07-01-l1-l2-capability-catalog.md) flags
  * NOTIFY-001 as CRITICAL risk: "all notifications = perfect exfiltration
- * source, untrusted firehose". Any FUTURE increment that lets notification
- * content reach an agent prompt MUST classify it as tainted per CAP-001
- * (see lib/capability-envelope.ts's classifyEgress) — untrusted notification
- * text is exactly the kind of attacker-reachable input that taint-tracking
- * exists to contain (a poisoned notification could otherwise trick an agent
- * into spending a live secret or egressing to a non-allowlist host). Increment
- * 0 does not forward anything anywhere, so there is nothing to taint-tag yet.
+ * source, untrusted firehose". Increment 1 is the first increment that lets a
+ * notification's ARRIVAL (package name only — never title/text content)
+ * reach an agent: when the flag is on and at least one on-disk agent has
+ * opted in via `notificationTrigger.packageNames`, a matching notification
+ * fires that agent as an immediate one-shot run with `tainted=true` threaded
+ * all the way through TerminalSessionService.ACTION_RUN_AGENT →
+ * AgentRuntime.runAgent → the PlanSpec executor → the capability broker's
+ * http.request op, per CAP-001 (see lib/capability-envelope.ts's
+ * classifyEgress). Untrusted notification-triggered input is exactly the
+ * kind of attacker-reachable input that taint-tracking exists to contain (a
+ * poisoned/spoofed notification could otherwise trick an agent into
+ * spending a live secret or egressing to a non-allowlist host) — so the
+ * whole triggered run is coarsely tainted, not just the notification text
+ * itself (which this increment still never reads for dispatch purposes;
+ * only the sender package name is used to look up a match).
+ *
+ * This is a trigger-and-react design, not an inbox: no captured notification
+ * is ever persisted to a new directory. The lookup reads the SAME on-disk
+ * agent cards ($HOME/.shelly/agents/*.json) that already exist for every
+ * other run path, and firing is a plain Intent to TerminalSessionService,
+ * identical in shape to a manual "Once" run (no interval/cron extras) — no
+ * new storage is introduced by this increment.
  *
  * Dormant discipline mirrors BootCompletedReceiver.kt exactly: gate on a
  * SharedPreferences-backed flag (default false) at the very top of
@@ -29,7 +47,10 @@ import android.util.Log
  * not even for logging. Only once the flag is on do we read the four named
  * extras fields (never the whole Bundle — it can carry large image/media
  * attachments) and even then, for this increment, only log field lengths and
- * package name, never raw third-party notification content into logcat.
+ * package name, never raw third-party notification content into logcat. The
+ * second natural gate is data-driven, not a flag: if no on-disk agent has
+ * `notificationTrigger` set, the lookup below matches nothing and no run is
+ * ever fired.
  */
 class ShellyNotificationListener : NotificationListenerService() {
     companion object {
@@ -72,8 +93,81 @@ class ShellyNotificationListener : NotificationListenerService() {
                 "Notification captured (dormant consumer): pkg=$packageName " +
                     "titleLen=${title?.length ?: 0} textLen=${text?.length ?: 0} postTime=$postTime",
             )
+
+            // Increment 1: look up any agent(s) that opted into this package via
+            // notificationTrigger.packageNames, and fire each as an immediate,
+            // one-shot, tainted run. Wrapped in its own try so a lookup/dispatch
+            // failure can never take down onNotificationPosted (this runs on the
+            // system notification-listener binder thread).
+            try {
+                val matchedAgentIds = findAgentsTriggeredBy(context, packageName)
+                for (agentId in matchedAgentIds) {
+                    Log.i(TAG, "Notification from $packageName triggering agent $agentId (tainted run)")
+                    fireAgentRun(context, agentId)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Notification-trigger agent lookup/dispatch failed defensively", e)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Notification capture failed defensively", e)
+        }
+    }
+
+    /**
+     * Scans $HOME/.shelly/agents/*.json (NOT recursive — does not descend into
+     * plans/, which holds PlanSpec files, not agent cards) for enabled agents
+     * whose notificationTrigger.packageNames contains [packageName] (exact,
+     * case-sensitive match). A single malformed agent file is skipped
+     * defensively so it can't block the rest of the scan.
+     */
+    private fun findAgentsTriggeredBy(context: Context, packageName: String): List<String> {
+        val homeDir = HomeInitializer.getHomeDir(context)
+        val agentsDir = File(homeDir, ".shelly/agents")
+        val files = agentsDir.listFiles { file -> file.isFile && file.name.endsWith(".json") }
+            ?: return emptyList()
+
+        val matched = mutableListOf<String>()
+        for (file in files) {
+            try {
+                val expectedId = file.name.removeSuffix(".json")
+                val json = JSONObject(file.readText())
+                if (json.optString("id") != expectedId) continue
+                if (!json.optBoolean("enabled", false)) continue
+                val packageNames = json.optJSONObject("notificationTrigger")
+                    ?.optJSONArray("packageNames")
+                    ?: continue
+                var matchesPackage = false
+                for (i in 0 until packageNames.length()) {
+                    if (packageNames.optString(i) == packageName) {
+                        matchesPackage = true
+                        break
+                    }
+                }
+                if (matchesPackage) matched.add(expectedId)
+            } catch (e: Exception) {
+                Log.w(TAG, "Skipping malformed agent file ${file.name} during notification-trigger scan", e)
+            }
+        }
+        return matched
+    }
+
+    /**
+     * Fires an immediate, one-shot, tainted run of [agentId] — same shape as a
+     * manual "Once" run (no EXTRA_INTERVAL_MS/EXTRA_CRON, so
+     * TerminalSessionService computes unattended=false). The STOP-ALL
+     * kill-switch check already lives inside TerminalSessionService's
+     * ACTION_RUN_AGENT handler, so it is not duplicated here.
+     */
+    private fun fireAgentRun(context: Context, agentId: String) {
+        val intent = Intent(context, TerminalSessionService::class.java).apply {
+            action = TerminalSessionService.ACTION_RUN_AGENT
+            putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+            putExtra(TerminalSessionService.EXTRA_TAINTED, true)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
         }
     }
 

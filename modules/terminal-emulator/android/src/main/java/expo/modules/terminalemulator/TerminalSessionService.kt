@@ -43,6 +43,7 @@ class TerminalSessionService : Service() {
         // receiver, so the re-schedule loop lives here).
         const val EXTRA_INTERVAL_MS = "interval_ms"
         const val EXTRA_CRON = "cron"
+        const val EXTRA_TAINTED = "tainted"
 
         /**
          * Authoritative session registry. Lives here (Service companion) rather
@@ -87,8 +88,9 @@ class TerminalSessionService : Service() {
                     startForegroundWithNotification(null)
                     return START_STICKY
                 }
+                val tainted = intent.getBooleanExtra(EXTRA_TAINTED, false)
                 startForegroundWithNotification("Agent running in background")
-                runAgentInBackground(agentId)
+                runAgentInBackground(agentId, tainted)
                 // Alarm-fired runs carry interval/cron — re-arm the next fire here now
                 // that the alarm targets this service directly (no receiver in the
                 // loop). A manual run (no interval/cron extras) is a no-op.
@@ -228,7 +230,7 @@ class TerminalSessionService : Service() {
         nm.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun runAgentInBackground(agentId: String) {
+    private fun runAgentInBackground(agentId: String, tainted: Boolean = false) {
         activeAgentRuns.incrementAndGet()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
@@ -240,7 +242,7 @@ class TerminalSessionService : Service() {
             try {
                 // AgentRuntime announces the run outcome itself (agent-result /
                 // error notification); we don't need its return value here.
-                AgentRuntime.runAgent(applicationContext, agentId)
+                AgentRuntime.runAgent(applicationContext, agentId, tainted)
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)
             } finally {
