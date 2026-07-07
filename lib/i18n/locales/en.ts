@@ -178,6 +178,17 @@ const en: Record<string, string> = {
   'agents.cloud_consent_title': 'Autonomous cloud access',
   'agents.cloud_consent_body': 'Autonomous agents will use your configured cloud API keys (Gemini / Perplexity) UNATTENDED for web tasks.\n\n• Your key authenticates the request and is NEVER sent to the model.\n• A scheduled agent will consume your quota/cost without asking each time (Gemini free tier; Perplexity is paid).\n• Secrets are still always kept on-device; sending/running still needs your approval.\n\nEnable?',
   'agents.cloud_consent_enable': 'Enable',
+  'agents.notification_trigger': 'Notification Triggers',
+  'agents.notification_trigger_enabled': 'Notification triggers enabled',
+  'agents.notification_trigger_disabled': 'Notification triggers disabled',
+  'agents.notification_trigger_failed': 'Notification trigger toggle failed',
+  'agents.notification_os_access': 'Notification Access (OS)',
+  'agents.notification_os_access_a11y': 'Check or grant Android notification access',
+  'agents.notification_os_access_title': 'Notification access',
+  'agents.notification_os_access_granted': 'Already granted — Shelly can read notifications for the trigger feature.',
+  'agents.notification_os_access_not_granted': 'Not granted yet. Opening Android Settings — enable "Shelly" under Notification access, then return here.',
+  'agents.notification_os_access_open_settings': 'OK',
+  'agents.notification_os_access_failed': 'Notification access check failed',
 
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',

@@ -178,6 +178,17 @@ const ja: Record<string, string> = {
   'agents.cloud_consent_title': '自律エージェントのクラウド利用',
   'agents.cloud_consent_body': '自律エージェントが、設定済みのクラウドAPIキー(Gemini/Perplexity)を無人でWebタスクに使用します。\n\n• キーはプロバイダ認証に使われ、モデルには送信されません。\n• スケジュール実行が毎回確認なしであなたのクォータ/課金を消費します（Gemini=無料枠、Perplexityは有料）。\n• 機密情報は常にローカルに留まり、送信/実行には引き続き承認が必要です。\n\n有効にしますか？',
   'agents.cloud_consent_enable': '有効にする',
+  'agents.notification_trigger': '通知トリガー',
+  'agents.notification_trigger_enabled': '通知トリガーを有効にしました',
+  'agents.notification_trigger_disabled': '通知トリガーを無効にしました',
+  'agents.notification_trigger_failed': '通知トリガーの切り替えに失敗しました',
+  'agents.notification_os_access': '通知へのアクセス（OS）',
+  'agents.notification_os_access_a11y': 'Android の通知アクセス権限を確認または許可',
+  'agents.notification_os_access_title': '通知アクセス',
+  'agents.notification_os_access_granted': '許可済みです。Shellyは通知トリガー機能のために通知を読み取れます。',
+  'agents.notification_os_access_not_granted': 'まだ許可されていません。Android の設定を開きます。「通知へのアクセス」で Shelly を有効にしてから戻ってください。',
+  'agents.notification_os_access_open_settings': 'OK',
+  'agents.notification_os_access_failed': '通知アクセスの確認に失敗しました',
 
   // ── エージェント確認/プレビューカード (Phase 0 §2.1) ────────────
   'agentcard.title': 'このエージェントを登録しますか？',
