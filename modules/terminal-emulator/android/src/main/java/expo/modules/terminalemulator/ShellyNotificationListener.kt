@@ -9,6 +9,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * NOTIFY-001 Increment 0+1 (flag-gated, default OFF): cross-app notification
@@ -51,6 +52,13 @@ import java.io.File
  * second natural gate is data-driven, not a flag: if no on-disk agent has
  * `notificationTrigger` set, the lookup below matches nothing and no run is
  * ever fired.
+ *
+ * On-device testing with a real mail app (Spark) showed the OS can deliver
+ * several rapid onNotificationPosted calls for what a user perceives as one
+ * logical event (initial post, then removed+reposted, then updated again),
+ * each independently matching the same agent — so a per-agent debounce
+ * (see [shouldFireNow]) suppresses repeat fires of the same agent within a
+ * short window, without persisting anything new to disk.
  */
 class ShellyNotificationListener : NotificationListenerService() {
     companion object {
@@ -62,6 +70,31 @@ class ShellyNotificationListener : NotificationListenerService() {
         fun notificationListenerEnabled(context: Context): Boolean =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getBoolean(ENABLED_KEY, false)
+
+        /** Minimum time between two notification-triggered runs of the SAME agent.
+         *  Notification-posting apps (mail/chat sync) commonly emit several rapid
+         *  onNotificationPosted calls for what a user perceives as one logical
+         *  event (post, remove+repost, content update) — without this, a single
+         *  "new mail" event can fire the same agent ~10x in a few seconds
+         *  (confirmed on-device). In-memory only, not persisted: this is a
+         *  best-effort anti-spam guard, not a security boundary, and resets
+         *  cleanly on process restart (a genuinely new notification after
+         *  restart is a legitimate re-trigger, not a bug to guard against). */
+        private const val TRIGGER_DEBOUNCE_MS = 60_000L
+        private val lastTriggeredAtMs = ConcurrentHashMap<String, Long>()
+
+        /** Returns true (and records the fire) if [agentId] may fire now; false if
+         *  it fired within the last [TRIGGER_DEBOUNCE_MS] and this call should be
+         *  suppressed as a burst repeat. */
+        private fun shouldFireNow(agentId: String): Boolean {
+            val now = System.currentTimeMillis()
+            val last = lastTriggeredAtMs[agentId]
+            if (last != null && now - last < TRIGGER_DEBOUNCE_MS) {
+                return false
+            }
+            lastTriggeredAtMs[agentId] = now
+            return true
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -102,6 +135,10 @@ class ShellyNotificationListener : NotificationListenerService() {
             try {
                 val matchedAgentIds = findAgentsTriggeredBy(context, packageName)
                 for (agentId in matchedAgentIds) {
+                    if (!shouldFireNow(agentId)) {
+                        Log.i(TAG, "Notification from $packageName matched agent $agentId but debounced (fired within last ${TRIGGER_DEBOUNCE_MS}ms)")
+                        continue
+                    }
                     Log.i(TAG, "Notification from $packageName triggering agent $agentId (tainted run)")
                     fireAgentRun(context, agentId)
                 }
