@@ -27,6 +27,7 @@ import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
+import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import {
   deleteSkillRecipe,
   distillSkillFromRun,
@@ -138,6 +139,8 @@ export function Sidebar() {
   const wasAgentsSectionOpenRef = React.useRef(mode === 'expanded' && openSections.tasks);
   const [addRepoVisible, setAddRepoVisible] = useState(false);
   const [repoInput, setRepoInput] = useState('');
+  const [notifTriggerAgent, setNotifTriggerAgent] = useState<Agent | null>(null);
+  const [notifTriggerDraft, setNotifTriggerDraft] = useState('');
 
   /**
    * bug #73: validate a repo path before adding it. Previously the UI
@@ -663,12 +666,11 @@ export function Sidebar() {
     try {
       await installAgent(updated, runCommandForAgentSync);
     } catch (error) {
-      useAgentStore.getState().updateAgent(agent.id, {
-        autonomous: agent.autonomous,
-        autonomyLevel: agent.autonomyLevel,
-        workspaceRoot: agent.workspaceRoot,
-        tool: agent.tool,
-      });
+      const rollback: Partial<Agent> = {};
+      for (const key of Object.keys(partial) as (keyof Agent)[]) {
+        (rollback as any)[key] = agent[key];
+      }
+      useAgentStore.getState().updateAgent(agent.id, rollback);
       Alert.alert(t('sidebar.agent_update_failed_title'), error instanceof Error ? error.message : String(error));
     }
   }, [runCommandForAgentSync, t]);
@@ -822,6 +824,10 @@ export function Sidebar() {
                   <Pressable
                     style={styles.taskInfo}
                     onPress={() => void showAgentDetail(agent)}
+                    onLongPress={() => {
+                      setNotifTriggerAgent(agent);
+                      setNotifTriggerDraft(agent.notificationTrigger?.packageNames.join('\n') ?? '');
+                    }}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >
@@ -1221,6 +1227,63 @@ export function Sidebar() {
         </Pressable>
       </Modal>
 
+      {/* Notification-trigger edit modal */}
+      <Modal
+        visible={!!notifTriggerAgent}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNotifTriggerAgent(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setNotifTriggerAgent(null)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>
+              {t('sidebar.agent_notification_trigger_modal_title', { name: notifTriggerAgent?.name ?? '' })}
+            </Text>
+            <TextInput
+              style={styles.modalInput}
+              value={notifTriggerDraft}
+              onChangeText={setNotifTriggerDraft}
+              placeholder={t('agentcard.notification_trigger_placeholder')}
+              placeholderTextColor={C.text2}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+            />
+            {(() => {
+              const { valid, skippedCount } = parseNotificationTriggerPackages(notifTriggerDraft);
+              if (valid.length === 0 && skippedCount === 0) return null;
+              return (
+                <Text style={styles.modalHint}>
+                  {t('agentcard.notification_trigger_hint_count', { valid: valid.length, skipped: skippedCount })}
+                </Text>
+              );
+            })()}
+            <View style={styles.modalBtns}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setNotifTriggerAgent(null)}
+              >
+                <Text style={styles.modalCancelText}>{t('common.cancel')}</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalAddBtn, { backgroundColor: C.accent }]}
+                onPress={() => {
+                  const agent = notifTriggerAgent;
+                  if (!agent) return;
+                  const { valid } = parseNotificationTriggerPackages(notifTriggerDraft);
+                  void persistAgentUpdate(agent, {
+                    notificationTrigger: valid.length ? { packageNames: valid } : null,
+                  });
+                  setNotifTriggerAgent(null);
+                }}
+              >
+                <Text style={styles.modalAddText}>{t('common.save')}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Collapse toggle */}
       <Pressable
         style={[styles.toggleBtn, { borderTopColor: C.border }]}
@@ -1573,6 +1636,12 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: 12,
     color: C.text1,
+    marginBottom: 12,
+  },
+  modalHint: {
+    color: C.text2,
+    fontSize: F.badge.size,
+    fontFamily: F.family,
     marginBottom: 12,
   },
   modalBtns: {

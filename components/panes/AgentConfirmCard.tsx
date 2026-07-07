@@ -26,6 +26,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
+import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export interface ConfirmedAgentDraft {
@@ -60,28 +61,6 @@ function clampInt(raw: string, min: number, max: number): number {
   const n = parseInt(raw.replace(/[^\d]/g, ''), 10);
   if (Number.isNaN(n)) return min;
   return Math.max(min, Math.min(max, n));
-}
-
-// NOTIFY-001 Increment 2: free-text, comma/newline-separated Android package names.
-const ANDROID_PACKAGE_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/;
-
-function parseNotificationTriggerPackages(raw: string): { valid: string[]; skippedCount: number } {
-  const tokens = raw
-    .split(/[,\n]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const seen = new Set<string>();
-  const valid: string[] = [];
-  let skippedCount = 0;
-  for (const token of tokens) {
-    if (ANDROID_PACKAGE_NAME_RE.test(token) && !seen.has(token)) {
-      seen.add(token);
-      valid.push(token);
-    } else if (!seen.has(token)) {
-      skippedCount += 1;
-    }
-  }
-  return { valid, skippedCount };
 }
 
 interface Props {
