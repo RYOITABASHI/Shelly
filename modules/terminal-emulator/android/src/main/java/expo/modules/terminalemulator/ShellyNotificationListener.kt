@@ -35,10 +35,10 @@ import java.io.File
  *
  * This is a trigger-and-react design, not an inbox: no captured notification
  * is ever persisted to a new directory. The lookup reads the SAME on-disk
- * agent cards ($HOME/.shelly/agents/*.json) that already exist for every
- * other run path, and firing is a plain Intent to TerminalSessionService,
- * identical in shape to a manual "Once" run (no interval/cron extras) — no
- * new storage is introduced by this increment.
+ * agent cards (the per-agent JSON files under $HOME/.shelly/agents) that
+ * already exist for every other run path, and firing is a plain Intent to
+ * TerminalSessionService, identical in shape to a manual "Once" run (no
+ * interval/cron extras) — no new storage is introduced by this increment.
  *
  * Dormant discipline mirrors BootCompletedReceiver.kt exactly: gate on a
  * SharedPreferences-backed flag (default false) at the very top of
@@ -114,9 +114,10 @@ class ShellyNotificationListener : NotificationListenerService() {
     }
 
     /**
-     * Scans $HOME/.shelly/agents/*.json (NOT recursive — does not descend into
-     * plans/, which holds PlanSpec files, not agent cards) for enabled agents
-     * whose notificationTrigger.packageNames contains [packageName] (exact,
+     * Scans the per-agent JSON files under $HOME/.shelly/agents (NOT
+     * recursive — does not descend into plans/, which holds PlanSpec files,
+     * not agent cards) for enabled agents whose
+     * notificationTrigger.packageNames contains [packageName] (exact,
      * case-sensitive match). A single malformed agent file is skipped
      * defensively so it can't block the rest of the scan.
      */
