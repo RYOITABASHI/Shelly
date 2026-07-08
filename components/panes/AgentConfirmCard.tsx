@@ -8,7 +8,7 @@
  * requires one human Confirm. The card doubles as the edit UI (§2.1): name, schedule,
  * action, and route (Run-on pin) are all editable inline.
  *
- * HARD REQUIREMENT (§2.1): Confirm is disabled until a valid schedule (one of the 3
+ * HARD REQUIREMENT (§2.1): Confirm is disabled until a valid schedule (one of the 4
  * whitelisted cron shapes) is set. When the parser could not produce a confident
  * schedule, the card forces a manual selection — we never register an agent that will
  * never fire.
@@ -249,6 +249,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           { key: 'daily', label: t('agentcard.freq_daily') },
           { key: 'weekly', label: t('agentcard.freq_weekly') },
           { key: 'interval', label: t('agentcard.freq_interval') },
+          { key: 'hourly', label: t('agentcard.freq_hourly') },
           // Multi-day presets (e.g. Mon/Fri) surface a read-through 'custom' chip
           // labelled with the weekdays so the schedule isn't silently flattened.
           ...(frequency === 'custom'
@@ -263,15 +264,17 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         <Text style={[styles.warn, { color: colors.muted }]}>
           {t(autonomous ? 'agentcard.once_autonomous_hint' : 'agentcard.once_hint')}
         </Text>
-      ) : frequency === 'interval' ? (
+      ) : frequency === 'interval' || frequency === 'hourly' ? (
         <View style={styles.row}>
           <TextInput
             value={String(interval)}
-            onChangeText={(v) => setInterval(clampInt(v, 1, 59))}
+            onChangeText={(v) => setInterval(clampInt(v, 1, frequency === 'hourly' ? 23 : 59))}
             keyboardType="number-pad"
             style={[styles.inputSmall, fieldBg]}
           />
-          <Text style={[styles.unit, { color: colors.foreground }]}>{t('agentcard.minutes_every')}</Text>
+          <Text style={[styles.unit, { color: colors.foreground }]}>
+            {t(frequency === 'hourly' ? 'agentcard.interval_hours' : 'agentcard.minutes_every')}
+          </Text>
         </View>
       ) : (
         <>
@@ -477,6 +480,7 @@ function scheduleHuman(
 ): string {
   const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
+  if (f === 'hourly') return t('agentcard.sched_hourly', { n: interval });
   if (f === 'custom') {
     const days = customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・');
     return t('agentcard.sched_weekly', { day: days, time: hhmm });

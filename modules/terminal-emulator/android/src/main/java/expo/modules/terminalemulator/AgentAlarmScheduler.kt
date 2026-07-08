@@ -124,9 +124,10 @@ object AgentAlarmScheduler {
     }
 
     /**
-     * Cron -> next fire epoch ms. Supports the 3 whitelisted shapes the JS scheduler
-     * (lib/agent-scheduler.ts) emits: every-N-min (*​/N * * * *), daily (m h * * *),
-     * and weekly single/CSV DOW (m h * * 1,5). Returns null for anything else.
+     * Cron -> next fire epoch ms. Supports the 4 whitelisted shapes the JS scheduler
+     * (lib/agent-scheduler.ts) emits: every-N-min (*​/N * * * *), every-N-hour
+     * (0 *​/N * * *), daily (m h * * *), and weekly single/CSV DOW (m h * * 1,5).
+     * Returns null for anything else.
      * Mirrors the logic previously in AgentAlarmReceiver.nextTriggerAt verbatim.
      */
     fun nextTriggerAt(cron: String?): Long? {
@@ -153,6 +154,22 @@ object AgentAlarmScheduler {
                 target.set(Calendar.MINUTE, nextMinute % 60)
             } else {
                 target.set(Calendar.MINUTE, nextMinute)
+            }
+            return target.timeInMillis
+        }
+
+        val everyHour = Regex("^\\*/(\\d+)$").matchEntire(hour)?.groupValues?.get(1)?.toIntOrNull()
+        if (everyHour != null && everyHour > 0 && minute == "0" && dayOfMonth == "*" && month == "*" && dayOfWeek == "*") {
+            target.set(Calendar.MINUTE, 0)
+            target.set(Calendar.SECOND, 0)
+            target.set(Calendar.MILLISECOND, 0)
+            val currentHour = now.get(Calendar.HOUR_OF_DAY)
+            val nextHour = ((currentHour + 1 + everyHour - 1) / everyHour) * everyHour
+            if (nextHour >= 24) {
+                target.add(Calendar.DAY_OF_YEAR, 1)
+                target.set(Calendar.HOUR_OF_DAY, nextHour % 24)
+            } else {
+                target.set(Calendar.HOUR_OF_DAY, nextHour)
             }
             return target.timeInMillis
         }

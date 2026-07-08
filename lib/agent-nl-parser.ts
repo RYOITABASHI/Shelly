@@ -7,8 +7,9 @@
  * phrasings AND the fallback the spec requires when the LLM parse is unavailable (§3:
  * "NL parse must never hard-block registration").
  *
- * HARD REQUIREMENT (§2.1): the schedule MUST be one of the scheduler's 3 cron shapes —
- *   every-N-minutes (N=1..59) | daily "M H * * *" | weekly "M H * * D" (D=0..6)
+ * HARD REQUIREMENT (§2.1): the schedule MUST be one of the scheduler's whitelisted cron
+ *   shapes — every-N-minutes (N=1..59) | every-N-hours, fixed minute 0 (N=1..23) |
+ *   daily "M H * * *" | weekly "M H * * D" (D=0..6)
  * (see lib/agent-scheduler.ts). If a confident schedule cannot be produced, we return
  * `schedule: null` with `scheduleConfident: false` so the confirmation card forces a manual
  * selection — we NEVER silently register an agent that will never fire.
@@ -146,7 +147,7 @@ interface ScheduleResult {
   suggestedDowList?: string;
 }
 
-/** Parse the schedule, constrained to the 3 whitelisted cron shapes. */
+/** Parse the schedule, constrained to the whitelisted cron shapes. */
 function parseSchedule(text: string): ScheduleResult {
   const lower = text.toLowerCase();
 
@@ -170,10 +171,24 @@ function parseSchedule(text: string): ScheduleResult {
     };
   }
 
-  // Hour-interval ("N時間ごと"/"every N hours") is NOT in the whitelist (`0 */N * * *`
-  // is rejected by the scheduler), so it must fall to manual selection.
-  if (/(\d+)\s*時間\s*(?:ごと|おき|毎)/.test(text) || /every\s+\d+\s*hours?\b/.test(lower)) {
-    return { schedule: null, confident: false, label: '未設定（時間間隔は非対応・要選択）' };
+  // ── 1b. Every-N-hours interval → `0 */N * * *` (N must be 1..23) ──
+  const hourIntervalJp = text.match(/(\d+)\s*時間\s*(?:ごと|おき|毎)/);
+  const hourIntervalEn = lower.match(/every\s+(\d+)\s*hours?\b/);
+  const hourIntervalN = hourIntervalJp
+    ? parseInt(hourIntervalJp[1], 10)
+    : hourIntervalEn
+    ? parseInt(hourIntervalEn[1], 10)
+    : null;
+  if (hourIntervalN !== null) {
+    if (hourIntervalN >= 1 && hourIntervalN <= 23) {
+      return { schedule: `0 */${hourIntervalN} * * *`, confident: true, label: `${hourIntervalN}時間おき` };
+    }
+    // 24+ hours or 0 cannot be expressed by `0 */N * * *` → force manual selection.
+    return {
+      schedule: null,
+      confident: false,
+      label: '未設定（時間間隔は1〜23の範囲外・要選択）',
+    };
   }
 
   // Biweekly / Nth-weekday / N-times-a-week cadences are NOT expressible in the

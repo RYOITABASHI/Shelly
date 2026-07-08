@@ -8,7 +8,7 @@
  * a custom multi-day list ("M H * * D,D,...") — the simple weekday selector can't
  * hold the list, so it is round-tripped verbatim (e.g. Mon/Fri = "1,5").
  */
-export type Frequency = 'once' | 'daily' | 'weekly' | 'interval' | 'custom';
+export type Frequency = 'once' | 'daily' | 'weekly' | 'interval' | 'hourly' | 'custom';
 
 export interface DecodedCron {
   frequency: Frequency;
@@ -38,6 +38,10 @@ export function decodeCron(cron: string | null): DecodedCron {
   const everyMin = min.match(/^\*\/(\d+)$/);
   if (everyMin && hour === '*') {
     return { ...FALLBACK, frequency: 'interval', interval: parseInt(everyMin[1], 10) };
+  }
+  const everyHour = hour.match(/^\*\/(\d+)$/);
+  if (everyHour && min === '0') {
+    return { ...FALLBACK, frequency: 'hourly', interval: parseInt(everyHour[1], 10) };
   }
   if (/^\d+$/.test(min) && /^\d+$/.test(hour)) {
     if (/^\d+$/.test(dow)) {
@@ -85,6 +89,10 @@ export function buildCron(
   if (f === 'interval') {
     if (!Number.isInteger(interval) || interval < 1 || interval > 59) return null;
     return `*/${interval} * * * *`;
+  }
+  if (f === 'hourly') {
+    if (!Number.isInteger(interval) || interval < 1 || interval > 23) return null;
+    return `0 */${interval} * * *`;
   }
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;

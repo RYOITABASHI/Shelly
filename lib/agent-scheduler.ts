@@ -32,6 +32,12 @@ export function cronToIntervalMs(cron: string): number | null {
     return n >= 1 ? n * 60 * 1000 : null; // reject "*/0" (would be a 0ms interval)
   }
 
+  const everyHourMatch = hour.match(/^\*\/(\d+)$/);
+  if (everyHourMatch && min === '0' && dom === '*' && mon === '*' && dow === '*') {
+    const n = parseInt(everyHourMatch[1], 10);
+    return n >= 1 ? n * 60 * 60 * 1000 : null; // reject "*/0" (would be a 0ms interval)
+  }
+
   if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && dow === '*') {
     return 24 * 60 * 60 * 1000;
   }
@@ -67,6 +73,24 @@ export function nextTriggerMs(cron: string): number {
         target.setMinutes(nextMinute % 60);
       } else {
         target.setMinutes(nextMinute);
+      }
+      return target.getTime();
+    }
+  }
+
+  const everyHourMatch = hour.match(/^\*\/(\d+)$/);
+  if (everyHourMatch && min === '0') {
+    const intervalHour = parseInt(everyHourMatch[1], 10);
+    if (intervalHour > 0) {
+      const nextHour = Math.ceil((now.getHours() + 1) / intervalHour) * intervalHour;
+      target.setMinutes(0);
+      target.setSeconds(0);
+      target.setMilliseconds(0);
+      if (nextHour >= 24) {
+        target.setDate(target.getDate() + 1);
+        target.setHours(nextHour % 24);
+      } else {
+        target.setHours(nextHour);
       }
       return target.getTime();
     }
@@ -123,6 +147,20 @@ export function lastTriggerMs(cron: string): number | null {
       target.setMilliseconds(0);
       target.setMinutes(prevMinute);
       if (target.getTime() > now.getTime()) target.setMinutes(prevMinute - intervalMin);
+      return target.getTime();
+    }
+  }
+
+  const everyHourMatch = hour.match(/^\*\/(\d+)$/);
+  if (everyHourMatch && min === '0') {
+    const intervalHour = parseInt(everyHourMatch[1], 10);
+    if (intervalHour > 0) {
+      const prevHour = Math.floor(now.getHours() / intervalHour) * intervalHour;
+      target.setMinutes(0);
+      target.setSeconds(0);
+      target.setMilliseconds(0);
+      target.setHours(prevHour);
+      if (target.getTime() > now.getTime()) target.setHours(prevHour - intervalHour);
       return target.getTime();
     }
   }

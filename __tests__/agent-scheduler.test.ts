@@ -49,6 +49,11 @@ describe('cronToIntervalMs — multi-day schedules are now schedulable', () => {
     expect(cronToIntervalMs('*/0 * * * *')).toBeNull(); // 0ms interval is invalid
     expect(cronToIntervalMs('0 8 * * 1,9')).toBeNull(); // 9 is not a valid day
   });
+
+  it('handles the "every N hours" shape ("0 */N * * *") — the inverse of the minute-interval shape', () => {
+    expect(cronToIntervalMs('0 */3 * * *')).toBe(3 * 60 * 60 * 1000);
+    expect(cronToIntervalMs('0 */0 * * *')).toBeNull(); // 0ms interval is invalid
+  });
 });
 
 describe('nextTriggerMs — soonest of the listed days', () => {
@@ -82,6 +87,15 @@ describe('nextTriggerMs — soonest of the listed days', () => {
     expect(Number.isFinite(ms)).toBe(true);
     expect(ms).toBeGreaterThan(Date.now());
   });
+
+  it('every-N-hours: lands on the next hour boundary that is a multiple of N, in the future', () => {
+    const ms = nextTriggerMs('0 */3 * * *');
+    const d = new Date(ms);
+    expect(ms).toBeGreaterThan(Date.now());
+    expect(d.getHours() % 3).toBe(0);
+    expect(d.getMinutes()).toBe(0);
+    expect(ms - Date.now()).toBeLessThanOrEqual(3 * 60 * 60 * 1000);
+  });
 });
 
 describe('lastTriggerMs — most recent past fire (missed-run detection)', () => {
@@ -111,8 +125,17 @@ describe('lastTriggerMs — most recent past fire (missed-run detection)', () =>
     expect(d.getMinutes() % 15).toBe(0);
   });
 
+  it('every-N-hours: returns the most recent N-hour boundary at or before now', () => {
+    const ms = lastTriggerMs('0 */3 * * *')!;
+    const d = new Date(ms);
+    expect(ms).toBeLessThanOrEqual(Date.now());
+    expect(Date.now() - ms).toBeLessThan(3 * 60 * 60 * 1000);
+    expect(d.getHours() % 3).toBe(0);
+    expect(d.getMinutes()).toBe(0);
+  });
+
   it('past fire is before now and the next fire is after now (coherent window)', () => {
-    for (const cron of ['0 8 * * *', '0 8 * * 1,5', '*/30 * * * *']) {
+    for (const cron of ['0 8 * * *', '0 8 * * 1,5', '*/30 * * * *', '0 */3 * * *']) {
       const last = lastTriggerMs(cron)!;
       const next = nextTriggerMs(cron);
       expect(last).toBeLessThanOrEqual(Date.now());

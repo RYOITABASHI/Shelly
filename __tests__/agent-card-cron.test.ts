@@ -43,6 +43,16 @@ describe('agent confirm-card cron codec', () => {
     expect(decodeCron(null).frequency).toBe('daily'); // fallback
   });
 
+  it('decodes the "every N hours" shape ("0 */N * * *") — the inverse of the minute-interval shape', () => {
+    const d = decodeCron('0 */3 * * *');
+    expect(d.frequency).toBe('hourly');
+    expect(d.interval).toBe(3);
+    expect(decodeCron('0 */1 * * *').interval).toBe(1);
+    // Regression: before this fix, "0 */3 * * *" had no matching branch and fell
+    // through to the FALLBACK's frequency, silently mis-decoding as 'daily'.
+    expect(decodeCron('0 */3 * * *').frequency).not.toBe('daily');
+  });
+
   it('builds the simple shapes and rejects invalid input', () => {
     expect(buildCron('daily', 8, 0, 1, 15, '')).toBe('0 8 * * *');
     expect(buildCron('weekly', 9, 0, 5, 15, '')).toBe('0 9 * * 5');
@@ -50,6 +60,13 @@ describe('agent confirm-card cron codec', () => {
     expect(buildCron('once', 8, 0, 1, 15, '')).toBeNull();
     expect(buildCron('custom', 8, 0, 1, 15, 'bad')).toBeNull();
     expect(buildCron('interval', 0, 0, 0, 99, '')).toBeNull(); // interval out of range
+  });
+
+  it('builds and round-trips the "every N hours" shape, enforcing the 1..23 range', () => {
+    expect(buildCron('hourly', 0, 0, 0, 3, '')).toBe('0 */3 * * *'); // round-trip
+    expect(buildCron('hourly', 0, 0, 0, 0, '')).toBeNull(); // 0 rejected — below range
+    expect(buildCron('hourly', 0, 0, 0, 24, '')).toBeNull(); // 24 rejected — above range (max 23)
+    expect(buildCron('hourly', 0, 0, 0, 23, '')).toBe('0 */23 * * *'); // boundary, valid
   });
 
   it('rejects an out-of-range custom DOW list', () => {
