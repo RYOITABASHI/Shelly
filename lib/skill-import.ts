@@ -351,18 +351,22 @@ async function listSkillMetaDir<T>(
 }
 
 export async function listQuarantinedSkills(home: string): Promise<QuarantinedSkill[]> {
-  return listSkillMetaDir<QuarantinedSkill>(quarantineDir(home), (meta) => ({
-    name: meta.name,
-    description: meta.description,
-    sourcePath: meta.sourcePath,
-    importedAt: meta.importedAt,
-    warnings: meta.warnings ?? [],
-  }));
+  return listSkillMetaDir<QuarantinedSkill>(quarantineDir(home), (meta) => {
+    if (!meta.name?.trim() || !meta.description?.trim()) return null;
+    return {
+      name: meta.name,
+      description: meta.description,
+      sourcePath: meta.sourcePath,
+      importedAt: meta.importedAt,
+      warnings: meta.warnings ?? [],
+    };
+  });
 }
 
 export async function listImportedSkills(home: string): Promise<ImportedSkill[]> {
   return listSkillMetaDir<ImportedSkill>(importedDir(home), (meta, body) => {
     if (!meta.approvedAt) return null;
+    if (!meta.name?.trim() || !meta.description?.trim()) return null;
     return {
       name: meta.name,
       description: meta.description,
@@ -411,6 +415,9 @@ export async function promoteSkillFromQuarantine(
     meta = JSON.parse(moveResult.stdout);
   } catch {
     meta = {};
+  }
+  if (!meta.name || typeof meta.name !== 'string' || !meta.name.trim()) {
+    return { ok: false, error: 'quarantine metadata is missing or corrupted, cannot promote' };
   }
   meta.approvedAt = new Date().toISOString();
   const marker = `SHELLY_SKILLMETA_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;

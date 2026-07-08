@@ -926,7 +926,7 @@ export function Sidebar() {
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.imported_skill_detail_a11y', { name: skill.name })}
                   >
-                    <Text style={styles.taskName} numberOfLines={1}>{skill.name.toUpperCase()}</Text>
+                    <Text style={styles.taskName} numberOfLines={1}>{(skill.name || '').toUpperCase()}</Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
                       {truncateSkillDescription(skill.description)}
                     </Text>
@@ -942,7 +942,7 @@ export function Sidebar() {
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.imported_skill_detail_a11y', { name: skill.name })}
                   >
-                    <Text style={styles.taskName} numberOfLines={1}>{skill.name.toUpperCase()}</Text>
+                    <Text style={styles.taskName} numberOfLines={1}>{(skill.name || '').toUpperCase()}</Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
                       {truncateSkillDescription(skill.description)}
                     </Text>
