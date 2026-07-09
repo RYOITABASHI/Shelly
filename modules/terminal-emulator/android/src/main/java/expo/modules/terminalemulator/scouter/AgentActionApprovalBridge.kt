@@ -23,7 +23,10 @@ data class AgentActionApprovalRequest(
     val resultPath: String?,
     val ts: String?,
     val expiresAt: Long?,
-    val requestSha256: String?
+    val requestSha256: String?,
+    val intentMode: String?,
+    val intentTarget: String?,
+    val intentShareText: String?
 ) {
     val key: String get() = listOf(
         runId,
@@ -96,12 +99,15 @@ object AgentActionApprovalBridge {
         "ts" to request.ts,
         "expiresAt" to request.expiresAt,
         "requestSha256" to request.requestSha256,
+        "intentMode" to request.intentMode,
+        "intentTarget" to request.intentTarget,
+        "intentShareText" to request.intentShareText,
     )
 
     private fun fromJson(raw: JSONObject, requestSha256: String?): AgentActionApprovalRequest? {
         val runId = raw.optString("runId").trim().takeIf { it.isNotBlank() } ?: return null
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,
@@ -118,7 +124,10 @@ object AgentActionApprovalBridge {
             resultPath = raw.optString("resultPath").trim().takeIf { it.isNotBlank() },
             ts = raw.optString("ts").trim().takeIf { it.isNotBlank() },
             expiresAt = raw.optLong("expiresAt").takeIf { it > 0L },
-            requestSha256 = requestSha256
+            requestSha256 = requestSha256,
+            intentMode = raw.optString("intentMode").trim().takeIf { it.isNotBlank() },
+            intentTarget = raw.optString("intentTarget").trim().takeIf { it.isNotBlank() },
+            intentShareText = raw.optString("intentShareText").takeIf { it.isNotBlank() }
         )
     }
 

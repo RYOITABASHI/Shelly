@@ -34,6 +34,7 @@
   <string name="scouter_notification_agent_action_what_notify">完了を通知します</string>
   <string name="scouter_notification_agent_action_what_webhook">Webhook に送信します</string>
   <string name="scouter_notification_agent_action_what_cli">コマンドを実行します</string>
+  <string name="scouter_notification_agent_action_what_intent">アプリを起動または内容を共有します</string>
   <string name="scouter_notification_agent_action_preview">内容: %1$s</string>
   <string name="scouter_notification_agent_result_done">「%1$s」が完了しました</string>
   <string name="scouter_notification_agent_result_skipped">「%1$s」をスキップしました</string>
@@ -45,6 +46,8 @@
   <string name="scouter_notification_agent_action_safety">安全度: %1$s</string>
   <string name="scouter_notification_agent_action_reason">理由: %1$s</string>
   <string name="scouter_notification_agent_action_cli_review_required">CLI アクションはアプリ内でコマンド全文の確認が必要です。</string>
+  <string name="scouter_notification_agent_action_intent_target">対象: %1$s</string>
+  <string name="scouter_notification_agent_action_intent_review_required">Intent アクションはアプリ内での確認が必要です。</string>
   <string name="scouter_notification_agent_escalation_title">エージェント %1$s: 境界操作を許可しますか？</string>
   <string name="scouter_notification_agent_escalation_truncated">長いコマンドです: %1$d 文字。許可前に Shelly で全文を確認してください。</string>
   <string name="scouter_notification_agent_escalation_reason">理由: %1$s</string>

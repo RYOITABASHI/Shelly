@@ -211,8 +211,14 @@ const en: Record<string, string> = {
   'agentcard.action_notify': 'notify',
   'agentcard.action_webhook': 'webhook',
   'agentcard.action_cli': 'command',
+  'agentcard.action_intent': 'App / Share',
   'agentcard.command_placeholder': 'command to run with the result',
   'agentcard.cli_warning': 'Commands never auto-run — each run needs in-app confirmation.',
+  'agentcard.intent_mode_launch': 'Launch app',
+  'agentcard.intent_mode_share': 'Share',
+  'agentcard.intent_target_placeholder': 'Package name or URL (e.g. com.google.android.apps.maps)',
+  'agentcard.intent_share_text_placeholder': 'Text to share (optional, {{result}} inserts the run result)',
+  'agentcard.intent_warning': 'This always requires your approval before it runs — never automatic.',
   'agentcard.notification_trigger_label': 'Notification triggers (optional)',
   'agentcard.notification_trigger_placeholder': 'e.g. com.whatsapp, com.slack',
   'agentcard.notification_trigger_hint_count': '{{valid}} valid, {{skipped}} skipped',
@@ -1653,6 +1659,12 @@ const en: Record<string, string> = {
   'agent_action_confirm_decline': 'Decline',
   'agent_action_confirm_not_ready': 'The action approval request is no longer available.',
   'agent_action_confirm_expired': 'The action approval request has expired.',
+  'agent_action_confirm_title_intent': 'Confirm app action',
+  'agent_action_confirm_body_intent': 'This autonomous agent is requesting to launch another app or share content. Review the target before allowing it.',
+  'agent_action_confirm_intent_mode': 'Mode',
+  'agent_action_confirm_intent_target': 'Target',
+  'agent_action_confirm_intent_share_text': 'Share text',
+  'agent_action_confirm_intent_failed': 'Failed to fire the app action. The request was declined.',
 };
 
 export default en;

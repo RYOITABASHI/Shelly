@@ -44,6 +44,7 @@
   <string name="scouter_notification_agent_action_what_notify">Will send a completion notification</string>
   <string name="scouter_notification_agent_action_what_webhook">Will post to the webhook</string>
   <string name="scouter_notification_agent_action_what_cli">Will run a command</string>
+  <string name="scouter_notification_agent_action_what_intent">Will launch an app or share content</string>
   <string name="scouter_notification_agent_action_preview">Content: %1$s</string>
   <string name="scouter_notification_agent_result_done">“%1$s” finished</string>
   <string name="scouter_notification_agent_result_skipped">“%1$s” skipped</string>
@@ -55,6 +56,8 @@
   <string name="scouter_notification_agent_action_safety">Safety: %1$s</string>
   <string name="scouter_notification_agent_action_reason">Reason: %1$s</string>
   <string name="scouter_notification_agent_action_cli_review_required">CLI actions require in-app command review.</string>
+  <string name="scouter_notification_agent_action_intent_target">Target: %1$s</string>
+  <string name="scouter_notification_agent_action_intent_review_required">Intent actions require in-app review.</string>
   <string name="scouter_notification_agent_escalation_title">Agent %1$s: approve boundary op?</string>
   <string name="scouter_notification_agent_escalation_truncated">Long command: %1$d characters; review the full request in Shelly before allowing.</string>
   <string name="scouter_notification_agent_escalation_reason">Reason: %1$s</string>

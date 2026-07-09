@@ -145,6 +145,7 @@ class NotificationDispatcher(private val context: Context) {
                 "notify" -> context.getString(R.string.scouter_notification_agent_action_what_notify)
                 "webhook" -> context.getString(R.string.scouter_notification_agent_action_what_webhook)
                 "cli" -> context.getString(R.string.scouter_notification_agent_action_what_cli)
+                "intent" -> context.getString(R.string.scouter_notification_agent_action_what_intent)
                 else -> request.actionType
             }
             val previewText = request.preview.takeIf { it.isNotBlank() }?.redactForScouter()
@@ -169,13 +170,19 @@ class NotificationDispatcher(private val context: Context) {
                     request.safetyReason?.let { context.getString(R.string.scouter_notification_agent_action_reason, it.redactForScouter()) },
                     context.getString(R.string.scouter_notification_agent_action_cli_review_required),
                 ).joinToString("\n")
+                "intent" -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
+                    request.intentMode?.let { context.getString(R.string.scouter_notification_agent_action_intent_target, "$it: ${request.intentTarget.orEmpty()}".redactForScouter()) },
+                    context.getString(R.string.scouter_notification_agent_action_intent_review_required),
+                ).joinToString("\n")
                 else -> listOfNotNull(
                     engineLine,
                     actionPhrase,
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
             }
-            val actions = if (request.actionType == "cli") {
+            val actions = if (request.actionType == "cli" || request.actionType == "intent") {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
                     action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, requestSha256)),

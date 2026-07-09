@@ -211,8 +211,14 @@ const ja: Record<string, string> = {
   'agentcard.action_notify': '通知',
   'agentcard.action_webhook': 'Webhook',
   'agentcard.action_cli': 'コマンド',
+  'agentcard.action_intent': 'アプリ起動・共有',
   'agentcard.command_placeholder': '結果を渡して実行するコマンド',
   'agentcard.cli_warning': 'コマンドは自動実行されません — 実行ごとにアプリ内で確認が必要です。',
+  'agentcard.intent_mode_launch': 'アプリを起動',
+  'agentcard.intent_mode_share': '共有',
+  'agentcard.intent_target_placeholder': 'パッケージ名またはURL（例: com.google.android.apps.maps）',
+  'agentcard.intent_share_text_placeholder': '共有するテキスト（任意、{{result}}で実行結果を挿入）',
+  'agentcard.intent_warning': '実行前に必ず承認が必要です — 自動実行はされません。',
   'agentcard.notification_trigger_label': '通知トリガー（任意）',
   'agentcard.notification_trigger_placeholder': '例: com.whatsapp, com.slack',
   'agentcard.notification_trigger_hint_count': '有効 {{valid}} 件、スキップ {{skipped}} 件',
@@ -1652,6 +1658,12 @@ const ja: Record<string, string> = {
   'agent_action_confirm_decline': '拒否',
   'agent_action_confirm_not_ready': 'アクション承認リクエストを利用できません。',
   'agent_action_confirm_expired': 'アクション承認リクエストの期限が切れています。',
+  'agent_action_confirm_title_intent': 'アプリ操作の確認',
+  'agent_action_confirm_body_intent': '自律エージェントが他のアプリの起動またはコンテンツの共有を要求しています。許可する前に対象を確認してください。',
+  'agent_action_confirm_intent_mode': 'モード',
+  'agent_action_confirm_intent_target': '対象',
+  'agent_action_confirm_intent_share_text': '共有テキスト',
+  'agent_action_confirm_intent_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
 };
 
 export default ja;

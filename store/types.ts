@@ -497,9 +497,10 @@ export type ToolChoice =
  *
  * Approval tiering by blast radius (Phase 0 §2.6) is enforced at the approval layer,
  * keyed off `type`: draft/notify = one-tap; webhook = one-tap with host+payload shown;
- * cli = never one-tap (in-app confirm, routed through command-safety).
+ * cli/intent = never one-tap (in-app Review before Allow) — intent additionally shows
+ * the resolved target app/URI/share-text so the user sees exactly what will fire.
  */
-export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli';
+export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -507,6 +508,21 @@ export interface AgentAction {
   webhookUrl?: string;
   /** cli: command template run with the result. Highest privilege — never one-tap. */
   command?: string;
+  // TODO(INTENT-001): if a future extra needs a secret, express it as an authRef
+  // pointer (see CustomAuthRefMeta's shape) resolved only inside fireAgentIntent,
+  // never in the plan/request/preview/log — see SECRET-001. Not needed for v1.
+  /** intent: 'launch' opens another app (by package name or a URI the OS resolves
+   *  via ACTION_VIEW); 'share' hands text to the OS share sheet (ACTION_SEND).
+   *  Never one-tap — always routes through in-app Review (same tier as cli). */
+  intentMode?: 'launch' | 'share';
+  /** intent/launch: a package name OR a URI (geo:, https:, market:, custom scheme).
+   *  intent/share: unused in v1 (no preferred-package hint — plain OS chooser). */
+  intentTarget?: string;
+  /** intent/share: ACTION_SEND EXTRA_TEXT content. May contain the literal
+   *  placeholder "{{result}}", string-replaced (no template engine) with the
+   *  agent's run preview text at request-build time, BEFORE the approval request
+   *  is written — so native/RN code only ever sees the final resolved string. */
+  intentShareText?: string;
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */

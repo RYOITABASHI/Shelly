@@ -164,7 +164,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent';
     preview?: string | null;
     destinationHost?: string | null;
     command?: string | null;
@@ -175,11 +175,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
     expiresAt?: number | null;
     requestSha256?: string | null;
+    intentMode?: 'launch' | 'share' | null;
+    intentTarget?: string | null;
+    intentShareText?: string | null;
   }>;
   notifyAgentActionApprovalNeeded?(request: {
     runId: string;
     agentId?: string | null;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent';
     preview?: string | null;
     destinationHost?: string | null;
     command?: string | null;
@@ -189,6 +192,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     resultPath?: string | null;
     ts?: string | null;
     expiresAt?: number | null;
+    intentMode?: 'launch' | 'share' | null;
+    intentTarget?: string | null;
+    intentShareText?: string | null;
   }): Promise<void>;
   resolveAgentActionApproval?(
     runId: string,
@@ -196,6 +202,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     expectedRequestSha256?: string | null
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
+  fireAgentIntent?(mode: 'launch' | 'share', target: string, shareText?: string | null): Promise<void>;
   returnToHome?(): Promise<void>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
