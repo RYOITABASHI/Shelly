@@ -37,6 +37,7 @@ import {
 import {
   listQuarantinedSkills,
   listImportedSkills,
+  importSkillToQuarantine,
   promoteSkillFromQuarantine,
   rejectQuarantinedSkill,
   deleteImportedSkill,
@@ -337,6 +338,46 @@ export function Sidebar() {
   React.useEffect(() => {
     void loadImportedSkills();
   }, [loadImportedSkills]);
+
+  // Inline "+ IMPORT SKILL" form (SKILL-001 import trigger). The user types a
+  // path to a SKILL.md folder (the terminal-first flow: git clone / curl it
+  // into place first, then paste the path here) — no native file picker.
+  // Same expand/collapse + saving-flag shape as SettingsDropdown's
+  // CustomAuthRefsSection, adapted to Sidebar's narrower rows.
+  const [skillImportOpen, setSkillImportOpen] = React.useState(false);
+  const [skillImportPath, setSkillImportPath] = React.useState('');
+  const [skillImporting, setSkillImporting] = React.useState(false);
+
+  const handleImportSkill = React.useCallback(async () => {
+    const path = skillImportPath.trim();
+    if (!path) return;
+    setSkillImporting(true);
+    try {
+      // Path-shape validation (absolute or ~) lives in importSkillToQuarantine
+      // itself — its errors are surfaced below, not duplicated here.
+      const result = await importSkillToQuarantine(path, runSkillImportCommand);
+      if (result.ok) {
+        setSkillImportPath('');
+        setSkillImportOpen(false);
+        ToastAndroid.show(
+          t('sidebar.skill_import_success', { name: result.name ?? path }),
+          ToastAndroid.SHORT,
+        );
+        await loadImportedSkills();
+      } else {
+        // Keep the form open (input intact) so the user can fix and retry.
+        const lines = [...result.errors, ...result.warnings.map((w) => `⚠ ${w}`)];
+        Alert.alert(
+          t('sidebar.skill_action_failed_title'),
+          lines.join('\n') || t('sidebar.skill_action_failed_generic'),
+        );
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    } finally {
+      setSkillImporting(false);
+    }
+  }, [skillImportPath, runSkillImportCommand, loadImportedSkills, t]);
 
   const handleApproveImportedSkill = React.useCallback(async (name: string) => {
     try {
@@ -951,6 +992,58 @@ export function Sidebar() {
               ))}
             </>
           )}
+          {/* Import trigger — always rendered (including the empty state, so a
+              first-time user has an obvious way to get started). Expands into
+              an inline path input; validation + quarantine copy happen in
+              lib/skill-import.ts's importSkillToQuarantine. */}
+          {!skillImportOpen ? (
+            <Pressable
+              style={styles.addRow}
+              onPress={() => setSkillImportOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={t('sidebar.skill_import_button')}
+            >
+              <Text style={[styles.addRowText, { color: C.accent }]}>{t('sidebar.skill_import_button')}</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.skillImportForm}>
+              <TextInput
+                style={styles.skillImportInput}
+                value={skillImportPath}
+                onChangeText={setSkillImportPath}
+                placeholder={t('sidebar.skill_import_placeholder')}
+                placeholderTextColor={C.text3}
+                autoCapitalize="none"
+                autoCorrect={false}
+                spellCheck={false}
+                autoFocus
+                editable={!skillImporting}
+                onSubmitEditing={() => void handleImportSkill()}
+              />
+              <View style={styles.skillImportBtns}>
+                <Pressable
+                  style={styles.modalCancelBtn}
+                  onPress={() => { setSkillImportPath(''); setSkillImportOpen(false); }}
+                  disabled={skillImporting}
+                >
+                  <Text style={styles.modalCancelText}>{t('common.cancel')}</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.modalAddBtn,
+                    { backgroundColor: C.accent },
+                    skillImporting && styles.agentRowDisabled,
+                  ]}
+                  onPress={() => void handleImportSkill()}
+                  disabled={skillImporting}
+                >
+                  <Text style={styles.modalAddText}>
+                    {skillImporting ? '…' : t('sidebar.skill_import_confirm')}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
         </SidebarSection>
 
         {/* QUICK LAUNCH — one-tap CLI shortcuts
@@ -1203,6 +1296,30 @@ const styles = StyleSheet.create({
     width: S.agentDotSize,
     height: S.agentDotSize,
     borderRadius: S.agentDotSize / 2,
+  },
+  // Imported-skills inline import form (SKILL-001) — a slimmer sibling of the
+  // add-repo modal's input, sized for the narrow sidebar column.
+  skillImportForm: {
+    paddingHorizontal: P.sidebarItem.px,
+    paddingVertical: 4,
+    gap: 6,
+  },
+  skillImportInput: {
+    height: 28,
+    backgroundColor: C.bgDeep,
+    borderRadius: 6,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
+    paddingHorizontal: 8,
+    paddingVertical: 0,
+    fontFamily: F.family,
+    fontSize: F.sidebarItem.size,
+    color: C.text1,
+  },
+  skillImportBtns: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 6,
   },
   taskInfo: {
     flex: 1,
