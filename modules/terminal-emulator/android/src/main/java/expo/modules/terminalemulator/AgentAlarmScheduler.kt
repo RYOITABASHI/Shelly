@@ -175,6 +175,34 @@ object AgentAlarmScheduler {
         }
 
         val parsedMinute = minute.toIntOrNull()
+
+        // Daily-multi (comma-separated hour list, e.g. "8,21"), single shared minute.
+        // Must be checked BEFORE the single-hour toIntOrNull() guard below: hour.toIntOrNull()
+        // returns null for any comma-bearing string, so that guard would swallow this case
+        // and return null before we ever got to look at it.
+        if (parsedMinute != null && dayOfMonth == "*" && month == "*" && dayOfWeek == "*" &&
+            Regex("^\\d+(,\\d+)+$").matches(hour)
+        ) {
+            val parsedHours = hour.split(",").map { it.toIntOrNull() }
+            if (parsedHours.any { it == null || it !in 0..23 }) return null
+            val hours = parsedHours.filterNotNull().distinct().sorted()
+            var best: Long? = null
+            for (h in hours) {
+                val candidate = now.clone() as Calendar
+                candidate.set(Calendar.HOUR_OF_DAY, h)
+                candidate.set(Calendar.MINUTE, parsedMinute)
+                candidate.set(Calendar.SECOND, 0)
+                candidate.set(Calendar.MILLISECOND, 0)
+                if (candidate.timeInMillis <= now.timeInMillis) {
+                    candidate.add(Calendar.DAY_OF_YEAR, 1)
+                }
+                if (best == null || candidate.timeInMillis < best!!) {
+                    best = candidate.timeInMillis
+                }
+            }
+            return best
+        }
+
         val parsedHour = hour.toIntOrNull()
         if (parsedMinute == null || parsedHour == null || dayOfMonth != "*" || month != "*") return null
 

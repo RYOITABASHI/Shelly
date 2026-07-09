@@ -95,6 +95,19 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [frequency, setFrequency] = useState<Frequency>(initialFrequency);
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
+  // 'daily-multi' extra times (hours only — the minute is always the single shared
+  // value above, per contract: a daily-multi schedule can't have per-time minutes).
+  // `hour` above is the anchor/base time; extraHours holds any additional times
+  // added via the "+ Add another time" affordance. Seeded from a decoded multi-time
+  // cron's hourList when the draft itself was a confident 'daily-multi' parse.
+  const [extraHours, setExtraHours] = useState<number[]>(() =>
+    initialFrequency === 'daily-multi'
+      ? decoded.hourList
+          .split(',')
+          .map((h) => parseInt(h, 10))
+          .filter((h) => h !== hour)
+      : [],
+  );
   // When the time is only a placeholder (recurrence stated without one), Confirm is
   // gated until the user actually touches the time — "force a manual time pick"
   // rather than letting an unreviewed 08:00 register in one tap.
@@ -132,10 +145,51 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [useSkill, setUseSkill] = useState<boolean>(!!draft.matchedSkill);
 
   const isOnce = frequency === 'once';
-  const cron = useMemo(
-    () => buildCron(frequency, hour, minute, weekday, interval, customDow),
-    [frequency, hour, minute, weekday, interval, customDow],
+  // The full daily-multi time list (base `hour` + `extraHours`, deduped+sorted) —
+  // used for the cron hourList arg, the summary text, and the add/remove/cap logic.
+  const MAX_DAILY_TIMES = 4;
+  const dailyMultiHours = useMemo(
+    () => Array.from(new Set([hour, ...extraHours])).sort((a, b) => a - b),
+    [hour, extraHours],
   );
+  const hourListArg = frequency === 'daily-multi' ? dailyMultiHours.join(',') : '';
+  const cron = useMemo(
+    () => buildCron(frequency, hour, minute, weekday, interval, customDow, hourListArg),
+    [frequency, hour, minute, weekday, interval, customDow, hourListArg],
+  );
+
+  // "+ Add another time" (daily-multi). Reuses the current shared `minute` — no
+  // second minute picker. Picks the next unused hour as a starting default so the
+  // new entry is immediately a valid, distinct time; the user can retype it.
+  const addDailyTime = () => {
+    if (dailyMultiHours.length >= MAX_DAILY_TIMES) return;
+    let candidate = (dailyMultiHours[dailyMultiHours.length - 1] + 1) % 24;
+    while (dailyMultiHours.includes(candidate)) candidate = (candidate + 1) % 24;
+    setExtraHours((prev) => [...prev, candidate]);
+    setFrequency('daily-multi');
+    setTimeTouched(true);
+  };
+  const updateExtraHour = (index: number, raw: string) => {
+    const next = clampInt(raw, 0, 23);
+    setExtraHours((prev) => {
+      // Reject a value that collides with the base hour or another extra
+      // entry, rather than silently deduping down to <2 distinct hours —
+      // that would leave frequency stuck at 'daily-multi' while buildCron
+      // rejects the collapsed list, disabling Confirm with no visible reason.
+      const collides = next === hour || prev.some((h, i) => i !== index && h === next);
+      if (collides) return prev;
+      return prev.map((h, i) => (i === index ? next : h));
+    });
+    setTimeTouched(true);
+  };
+  // Removing an extra time back down to just the base hour demotes 'daily-multi'
+  // back to plain 'daily' and hides the chip row again — mirrors the weekday
+  // chips' custom→weekly demotion on dropping to a single day.
+  const removeExtraHour = (index: number) => {
+    const next = extraHours.filter((_, i) => i !== index);
+    setExtraHours(next);
+    if (next.length === 0) setFrequency('daily');
+  };
 
   // The weekday chips are shown for both 'weekly' (single) and 'custom' (multi).
   // selectedDays is the unified selection; toggling reconciles the frequency:
@@ -176,7 +230,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // The placeholder-time gate only applies to clock-time frequencies. If the user
   // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
   // uses an HH:MM), there's nothing to confirm — don't deadlock Confirm.
-  const freqUsesClockTime = frequency === 'daily' || frequency === 'weekly' || frequency === 'custom';
+  const freqUsesClockTime =
+    frequency === 'daily' || frequency === 'weekly' || frequency === 'custom' || frequency === 'daily-multi';
   const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
   const canConfirm =
     (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid;
@@ -219,7 +274,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           schedule: isOnce
             ? t('agentcard.sched_once')
             : cron
-            ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow)
+            ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow, dailyMultiHours)
             : t('agentcard.schedule_unset'),
           route: autonomous
             ? keepWebTool
@@ -255,6 +310,12 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           ...(frequency === 'custom'
             ? [{ key: 'custom', label: customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・') }]
             : []),
+          // Multi-time preset (e.g. 08・21) surfaces the same kind of read-through
+          // chip as 'custom' above, so the segmented control still shows something
+          // highlighted once "+ Add another time" has promoted daily→daily-multi.
+          ...(frequency === 'daily-multi'
+            ? [{ key: 'daily-multi', label: dailyMultiHours.map((h) => String(h).padStart(2, '0')).join('・') }]
+            : []),
         ]}
         value={frequency}
         onChange={(k) => setFrequency(k as Frequency)}
@@ -282,7 +343,12 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             <TextInput
               value={String(hour).padStart(2, '0')}
               onChangeText={(v) => {
-                setHour(clampInt(v, 0, 23));
+                const next = clampInt(v, 0, 23);
+                // Same collision guard as updateExtraHour — the base hour is
+                // also part of the daily-multi list, so it must not be
+                // allowed to collapse the distinct-hour count below 2 either.
+                if (frequency === 'daily-multi' && extraHours.includes(next)) return;
+                setHour(next);
                 setTimeTouched(true);
               }}
               keyboardType="number-pad"
@@ -301,6 +367,53 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           </View>
           {timeIsPlaceholder && (
             <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.time_placeholder_hint')}</Text>
+          )}
+          {(frequency === 'daily' || frequency === 'daily-multi') && (
+            <>
+              <TouchableOpacity
+                onPress={addDailyTime}
+                disabled={dailyMultiHours.length >= MAX_DAILY_TIMES}
+                style={styles.addTimeBtn}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={{
+                    color: dailyMultiHours.length >= MAX_DAILY_TIMES ? colors.inactive : colors.accent,
+                    fontSize: 12,
+                  }}
+                >
+                  {t('agentcard.add_time')}
+                </Text>
+              </TouchableOpacity>
+              {frequency === 'daily-multi' && (
+                <>
+                  <View style={styles.weekRow}>
+                    {extraHours.map((h, i) => {
+                      const hhmm = `${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+                      return (
+                        <View key={i} style={[styles.timeChip, { borderColor: colors.border }]}>
+                          <TextInput
+                            value={String(h).padStart(2, '0')}
+                            onChangeText={(v) => updateExtraHour(i, v)}
+                            keyboardType="number-pad"
+                            style={[styles.timeChipInput, { color: colors.foreground }]}
+                          />
+                          <Text style={{ color: colors.foreground, fontSize: 12 }}>{`:${String(minute).padStart(2, '0')}`}</Text>
+                          <TouchableOpacity
+                            onPress={() => removeExtraHour(i)}
+                            accessibilityLabel={t('agentcard.remove_time', { time: hhmm })}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                          >
+                            <Text style={{ color: colors.muted, fontSize: 12, marginLeft: 2 }}>✕</Text>
+                          </TouchableOpacity>
+                        </View>
+                      );
+                    })}
+                  </View>
+                  <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.daily_multi_hint')}</Text>
+                </>
+              )}
+            </>
           )}
           {showWeekdays && (
             <>
@@ -477,10 +590,16 @@ function scheduleHuman(
   interval: number,
   t: (k: string, p?: Record<string, string | number>) => string,
   customDow = '',
+  dailyMultiHours: number[] = [],
 ): string {
   const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
   if (f === 'hourly') return t('agentcard.sched_hourly', { n: interval });
+  if (f === 'daily-multi') {
+    const hours = dailyMultiHours.length > 0 ? dailyMultiHours : [hour];
+    const times = hours.map((h) => `${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')}`).join('・');
+    return t('agentcard.sched_daily_multi', { times });
+  }
   if (f === 'custom') {
     const days = customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・');
     return t('agentcard.sched_weekly', { day: days, time: hhmm });
@@ -538,6 +657,17 @@ const styles = StyleSheet.create({
   unit: { fontSize: 14 },
   weekRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 5 },
   weekDay: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  addTimeBtn: { marginTop: 5, alignSelf: 'flex-start' },
+  timeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    gap: 2,
+  },
+  timeChipInput: { fontSize: 12, minWidth: 18, padding: 0, textAlign: 'right' },
   segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, overflow: 'hidden', marginTop: 3 },
   segment: { flex: 1, paddingVertical: 6, alignItems: 'center' },
   autoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 7 },

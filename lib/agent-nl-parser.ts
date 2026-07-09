@@ -81,24 +81,60 @@ interface ParsedTime {
   minute: number;
 }
 
+// ── Time-match interpreters ──────────────────────────────────────────────
+// Each function turns a single regex match into a ParsedTime (or null when the
+// resulting hour/minute is out of range). These are the SOLE source of truth
+// for "what does this match mean" — both the singular extractTime() and the
+// plural extractTimes() call them, so JP/EN AM-PM arithmetic can never drift
+// between the two paths.
+
+/** Interpret a match of the JP `(meridiem)? N時 (半|M分)?` pattern. */
+function interpretJpMatch(match: RegExpMatchArray): ParsedTime | null {
+  let hour = parseInt(match[2], 10);
+  let minute = 0;
+  if (match[3] === '半') minute = 30;
+  else if (match[4] !== undefined) minute = parseInt(match[4], 10);
+  const meridiem = match[1];
+  if ((meridiem === '午後' || meridiem === '夜' || meridiem === '夕方' || meridiem === '晩' || meridiem === '昼') && hour < 12) {
+    // 昼1時=13:00 … 昼3時=15:00; 昼12時 stays 12:00 (guarded by hour < 12).
+    hour += 12;
+  } else if ((meridiem === '午前' || meridiem === '朝' || meridiem === '深夜') && hour === 12) {
+    hour = 0; // 午前12時/深夜12時 = 0:00
+  }
+  if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+  return null;
+}
+
+/** Interpret a match of the EN `at N(:MM)?(am/pm)?` or `H:MM(am/pm)?` pattern
+ *  (both share the same 3-group shape: hour, optional minute, optional meridiem). */
+function interpretEnHourMinuteMatch(match: RegExpMatchArray): ParsedTime | null {
+  let hour = parseInt(match[1], 10);
+  const minute = match[2] !== undefined ? parseInt(match[2], 10) : 0;
+  const mer = match[3]?.toLowerCase();
+  if (mer === 'pm' && hour < 12) hour += 12;
+  else if (mer === 'am' && hour === 12) hour = 0;
+  if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+  return null;
+}
+
+/** Interpret a match of the EN bare `H am/pm` pattern. */
+function interpretEnMeridiemOnlyMatch(match: RegExpMatchArray): ParsedTime | null {
+  let hour = parseInt(match[1], 10);
+  const mer = match[2].toLowerCase();
+  if (mer === 'pm' && hour < 12) hour += 12;
+  else if (mer === 'am' && hour === 12) hour = 0;
+  if (hour >= 0 && hour <= 23) return { hour, minute: 0 };
+  return null;
+}
+
 /** Extract a time-of-day from JP or EN text. Returns null when none is found. */
 function extractTime(text: string): ParsedTime | null {
   // JP: optional meridiem + N時 + (半 | M分)
   //   "午後8時半" "夜8時" "朝7時30分" "8時"
   const jp = text.match(/(午前|午後|朝|夜|夕方|晩|深夜|昼)?\s*(\d{1,2})\s*時\s*(半|(\d{1,2})\s*分)?/);
   if (jp) {
-    let hour = parseInt(jp[2], 10);
-    let minute = 0;
-    if (jp[3] === '半') minute = 30;
-    else if (jp[4] !== undefined) minute = parseInt(jp[4], 10);
-    const meridiem = jp[1];
-    if ((meridiem === '午後' || meridiem === '夜' || meridiem === '夕方' || meridiem === '晩' || meridiem === '昼') && hour < 12) {
-      // 昼1時=13:00 … 昼3時=15:00; 昼12時 stays 12:00 (guarded by hour < 12).
-      hour += 12;
-    } else if ((meridiem === '午前' || meridiem === '朝' || meridiem === '深夜') && hour === 12) {
-      hour = 0; // 午前12時/深夜12時 = 0:00
-    }
-    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+    const t = interpretJpMatch(jp);
+    if (t) return t;
   }
 
   // EN/numeric. Ordered branches; a bare standalone number is NOT a time (ambiguous).
@@ -111,21 +147,75 @@ function extractTime(text: string): ParsedTime | null {
   const meridiemOnly = at || colon ? null : text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
   const m = at || colon;
   if (m) {
-    let hour = parseInt(m[1], 10);
-    const minute = m[2] !== undefined ? parseInt(m[2], 10) : 0;
-    const mer = m[3]?.toLowerCase();
-    if (mer === 'pm' && hour < 12) hour += 12;
-    else if (mer === 'am' && hour === 12) hour = 0;
-    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+    const t = interpretEnHourMinuteMatch(m);
+    if (t) return t;
   } else if (meridiemOnly) {
-    let hour = parseInt(meridiemOnly[1], 10);
-    const mer = meridiemOnly[2].toLowerCase();
-    if (mer === 'pm' && hour < 12) hour += 12;
-    else if (mer === 'am' && hour === 12) hour = 0;
-    if (hour >= 0 && hour <= 23) return { hour, minute: 0 };
+    const t = interpretEnMeridiemOnlyMatch(meridiemOnly);
+    if (t) return t;
   }
 
   return null;
+}
+
+/**
+ * Extract MULTIPLE non-overlapping times from JP or EN text (Track B: "daily-multi"
+ * — e.g. "毎日朝8:00と夜21:00に" / "every day at 8am and 9pm"). Reuses the exact
+ * same interpreters as extractTime() so plural parsing can never drift from the
+ * singular path. Builds a FRESH global RegExp per pattern per call — never reuses
+ * a shared/module-level `g`-flagged RegExp, whose `lastIndex` would leak state
+ * across calls.
+ *
+ * Each of the 4 sub-patterns (mirroring extractTime's precedence: JP=0 highest,
+ * EN "at"=1, EN colon=2, EN bare meridiem=3) is scanned independently across the
+ * whole text. Hits are sorted by start position (ties broken by priority), then
+ * walked left-to-right accepting only non-overlapping spans — so e.g. "at 8:30pm"
+ * (EN "at", priority 1) wins over the overlapping bare "8:30pm" (colon, priority 2)
+ * reading of the same substring. Exact-duplicate {hour,minute} results are deduped.
+ * Returned in text-encounter order.
+ */
+function extractTimes(text: string): ParsedTime[] {
+  interface TimeHit {
+    start: number;
+    end: number;
+    priority: number;
+    time: ParsedTime;
+  }
+  const hits: TimeHit[] = [];
+
+  for (const m of text.matchAll(new RegExp(/(午前|午後|朝|夜|夕方|晩|深夜|昼)?\s*(\d{1,2})\s*時\s*(半|(\d{1,2})\s*分)?/.source, 'g'))) {
+    const t = interpretJpMatch(m);
+    if (t) hits.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, priority: 0, time: t });
+  }
+  for (const m of text.matchAll(new RegExp(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/.source, 'gi'))) {
+    const t = interpretEnHourMinuteMatch(m);
+    if (t) hits.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, priority: 1, time: t });
+  }
+  for (const m of text.matchAll(new RegExp(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/.source, 'gi'))) {
+    const t = interpretEnHourMinuteMatch(m);
+    if (t) hits.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, priority: 2, time: t });
+  }
+  for (const m of text.matchAll(new RegExp(/\b(\d{1,2})\s*(am|pm)\b/.source, 'gi'))) {
+    const t = interpretEnMeridiemOnlyMatch(m);
+    if (t) hits.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, priority: 3, time: t });
+  }
+
+  hits.sort((a, b) => a.start - b.start || a.priority - b.priority);
+
+  const accepted: TimeHit[] = [];
+  for (const hit of hits) {
+    const overlaps = accepted.some((a) => hit.start < a.end && hit.end > a.start);
+    if (!overlaps) accepted.push(hit);
+  }
+
+  const seen = new Set<string>();
+  const result: ParsedTime[] = [];
+  for (const hit of accepted) {
+    const key = `${hit.time.hour}:${hit.time.minute}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(hit.time);
+  }
+  return result;
 }
 
 function fmtTime(t: ParsedTime): string {
@@ -269,6 +359,34 @@ function parseSchedule(text: string): ScheduleResult {
 
   // ── 3. Daily → `M H * * *` (explicit daily marker + a time) ──
   if (dailyMarker) {
+    // 3a. Multiple specific times per day ("毎日朝8:00と夜21:00に" / "every day at
+    // 8am and 9pm") → `M H1,H2,... * * *`, one shared minute across all hours.
+    // Only reachable here (no weekday qualifier — §2's dowList branch already
+    // returned above), so this never touches the weekly path.
+    const times = extractTimes(text);
+    if (times.length >= 2) {
+      if (times.length > 4) {
+        // Cap: max 4 times/day.
+        return { schedule: null, confident: false, label: '未設定（1日4件までのみ対応・要選択）' };
+      }
+      const minutes = new Set(times.map((t) => t.minute));
+      if (minutes.size > 1) {
+        // Different minutes per time is explicitly OUT OF SCOPE — never silently
+        // collapse/drop one time. Force manual selection instead.
+        return { schedule: null, confident: false, label: '未設定（時刻ごとに分が異なる場合は要選択）' };
+      }
+      const minute = times[0].minute;
+      const hourList = [...new Set(times.map((t) => t.hour))].sort((a, b) => a - b);
+      if (hourList.length >= 2) {
+        const hhmmList = hourList.map((h) => fmtTime({ hour: h, minute })).join('・');
+        return {
+          schedule: `${minute} ${hourList.join(',')} * * *`,
+          confident: true,
+          label: `毎日 ${hhmmList}`,
+        };
+      }
+    }
+
     if (time) {
       return {
         schedule: `${time.minute} ${time.hour} * * *`,
@@ -403,6 +521,25 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
       // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
       .replace(/(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
+      // Colon-form JP time list following a daily marker ("毎日朝8:00と夜21:00に…").
+      // The 時-based strip above requires a literal 時 char and never matches this
+      // colon form, so it survived untouched — this is the daily-multi companion.
+      // Bounded by the same 、。 boundary chars as the 時-based strip above.
+      .replace(
+        /(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?\d{1,2}:\d{2}(?:\s*(?:と|・|、|,|，|および|＆|&)\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}:\d{2})*\s*(に|の)?/,
+        '',
+      )
+      // 時-form JP multi-time LEFTOVER ("毎日朝8時と夜21時に…"). The 時-based strip
+      // above is lazy and only consumes the FIRST 時 occurrence ("毎日朝8時"), leaving
+      // a dangling "と夜21時に" (or, in a mixed 時+colon phrasing, "と夜21:00に")
+      // continuation fragment in the string it hands to this replace. Anchored to the
+      // START of the (already-reduced) string — it can only ever match a leftover
+      // conjunction-prefixed time clause, never a legitimate prompt that happens to
+      // begin with "と" on its own.
+      .replace(
+        /^\s*(?:と|・|、|,|，|および|＆|&)\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*(?:時(?:半|\d{1,2}分)?|:\d{2})(?:\s*(?:と|・|、|,|，|および|＆|&)\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*(?:時(?:半|\d{1,2}分)?|:\d{2}))*\s*(に|の)?/,
+        '',
+      )
       // No-毎週 multi-day path. Two narrow strips, each requiring a trailing 時 so a
       // non-schedule opener is untouched:
       //  (A) a leading 曜-qualified weekday clause ("月曜と金曜の朝8時に…").

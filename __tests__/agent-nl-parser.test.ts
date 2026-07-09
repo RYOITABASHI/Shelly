@@ -184,6 +184,49 @@ describe('parseAgentNL — daily (EN)', () => {
   });
 });
 
+describe('parseAgentNL — "daily-multi" (multiple specific times per day)', () => {
+  it('毎日朝8:00と夜21:00に (colon form) → shared-minute multi-hour cron, confident', () => {
+    const d = parseAgentNL('毎日朝8:00と夜21:00にニュースをまとめて');
+    expect(d.schedule).toBe('0 8,21 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('every day at 8am and 9pm (EN) → shared-minute multi-hour cron, confident', () => {
+    const d = parseAgentNL('every day at 8am and 9pm send a summary');
+    expect(d.schedule).toBe('0 8,21 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('毎日8時 (plain single time) is unaffected by the new multi-time path', () => {
+    expect(parseAgentNL('毎日8時にニュースをまとめて').schedule).toBe('0 8 * * *');
+  });
+
+  it('differing minutes between the two times is out of scope → not confident, no silent drop', () => {
+    const d = parseAgentNL('毎日8時15分と21時45分にニュースをまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+  });
+
+  // Bug-fix regressions (found via pre-push adversarial review, just fixed in
+  // derivePrompt): the pre-existing single-時 schedule strip only consumed the
+  // FIRST "毎日朝8時" occurrence, leaving a dangling "と夜21時に" / "と夜21:00に"
+  // leftover fragment in the prompt sent to the agent. A companion leftover-strip
+  // regex now removes it. These pin the fix.
+  it('kanji-時 form, two times joined by と: prompt drops BOTH time clauses entirely', () => {
+    const d = parseAgentNL('毎日朝8時と夜21時にAをやって');
+    expect(d.prompt).toBe('Aをやって');
+  });
+
+  it('mixed 時-form + colon-form: prompt drops BOTH time clauses (colon-shaped leftover)', () => {
+    const d = parseAgentNL('毎日朝8時と夜21:00にAをやって');
+    expect(d.prompt).toBe('Aをやって');
+  });
+
+  it('the schedule side of the kanji-時 two-time case was already correct before the prompt fix', () => {
+    expect(parseAgentNL('毎日朝8時と夜21時にAをやって').schedule).toBe('0 8,21 * * *');
+  });
+});
+
 describe('parseAgentNL — cross-model (Codex) review fixes', () => {
   // G-1: "1日1回" family = once per day → daily marker.
   it('1日1回 / 1日に1回 / 一日一回 are recognised as a daily recurrence', () => {

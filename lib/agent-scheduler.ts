@@ -20,6 +20,20 @@ export function parseDowList(dow: string): number[] | null {
   return Array.from(new Set(days)).sort((a, b) => a - b);
 }
 
+// An hour field of a single hour OR a comma list (e.g. "8,21" = 8am & 9pm), used
+// by the 'daily-multi' multiple-times-per-day schedule.
+const HOUR_LIST_RE = /^\d+(,\d+)*$/;
+
+/** Parse a cron hour field into sorted, de-duped 0–23. Rejects out-of-range
+ *  values (whole list is rejected, not silently dropped — mirrors parseDowList).
+ *  Unlike DOW, hour has no 0/24 wraparound alias, so no modulo normalisation. */
+export function parseHourList(hour: string): number[] | null {
+  if (!HOUR_LIST_RE.test(hour)) return null;
+  const nums = hour.split(',').map((h) => parseInt(h, 10));
+  if (nums.some((n) => n < 0 || n > 23)) return null;
+  return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
 export function cronToIntervalMs(cron: string): number | null {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return null;
@@ -47,6 +61,15 @@ export function cronToIntervalMs(cron: string): number | null {
   // (AgentAlarmReceiver.nextTriggerAt), so a daily net is safe and never skips a
   // listed day even if a later parse fails. parseDowList rejects out-of-range dow.
   if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*' && parseDowList(dow)) {
+    return 24 * 60 * 60 * 1000;
+  }
+
+  // Multiple specific times per day (e.g. "8,21" = 8am & 9pm, 'daily-multi').
+  // Same 24h-net reasoning as above: the native receiver re-arms precisely.
+  const hourList = /^\d+$/.test(min) && dom === '*' && mon === '*' && dow === '*'
+    ? parseHourList(hour)
+    : null;
+  if (hourList && hourList.length >= 2) {
     return 24 * 60 * 60 * 1000;
   }
 
@@ -120,6 +143,28 @@ export function nextTriggerMs(cron: string): number {
     return best;
   }
 
+  // Multiple specific times per day (e.g. "8,21" = 8am & 9pm, 'daily-multi'):
+  // pick the SOONEST of the listed hours (shared minute) — today if still
+  // ahead, else tomorrow. Must return early: the generic /^\d+$/.test(hour)
+  // check above silently no-ops on a comma-hour string, so target would
+  // otherwise be left at "now"'s hour and fall through to a garbage trigger.
+  const hourListNext = /^\d+$/.test(min) && dom === '*' && mon === '*' && dow === '*'
+    ? parseHourList(hour)
+    : null;
+  if (hourListNext && hourListNext.length >= 2) {
+    const m = parseInt(min, 10);
+    let best = Infinity;
+    for (const h of hourListNext) {
+      const candidate = new Date(now);
+      candidate.setHours(h, m, 0, 0);
+      if (candidate.getTime() <= now.getTime()) {
+        candidate.setDate(candidate.getDate() + 1);
+      }
+      best = Math.min(best, candidate.getTime());
+    }
+    return best;
+  }
+
   if (target.getTime() <= now.getTime()) {
     target.setDate(target.getDate() + 1);
   }
@@ -180,6 +225,28 @@ export function lastTriggerMs(cron: string): number | null {
       let daysSince = (candidate.getDay() - day + 7) % 7;
       if (daysSince === 0 && candidate.getTime() > now.getTime()) daysSince = 7;
       candidate.setDate(candidate.getDate() - daysSince);
+      best = Math.max(best, candidate.getTime());
+    }
+    return best === -Infinity ? null : best;
+  }
+
+  // Multiple specific times per day (e.g. "8,21" = 8am & 9pm, 'daily-multi'):
+  // mirror nextTriggerMs backward — pick the MOST RECENT of the listed hours
+  // (shared minute) that is at or before now. Early return for the same
+  // reason as nextTriggerMs: a comma-hour string silently no-ops the generic
+  // /^\d+$/.test(hour) check above.
+  const hourListLast = /^\d+$/.test(min) && dom === '*' && mon === '*' && dow === '*'
+    ? parseHourList(hour)
+    : null;
+  if (hourListLast && hourListLast.length >= 2) {
+    const m = parseInt(min, 10);
+    let best = -Infinity;
+    for (const h of hourListLast) {
+      const candidate = new Date(now);
+      candidate.setHours(h, m, 0, 0);
+      if (candidate.getTime() > now.getTime()) {
+        candidate.setDate(candidate.getDate() - 1);
+      }
       best = Math.max(best, candidate.getTime());
     }
     return best === -Infinity ? null : best;
