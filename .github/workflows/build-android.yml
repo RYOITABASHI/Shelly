@@ -836,18 +836,29 @@ jobs:
           CODEX_RUNTIME_MANIFEST_NAME: codex-runtime.json
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            update_tag="${DEV_UPDATE_TAG}"
-            update_title="Shelly Android dev"
-            release_note_heading="Workflow dispatch Android dev build."
-            android_release_extra_args=(--prerelease)
-            publish_codex_runtime=0
-          else
+          # Gate stable-vs-dev on the ref being built, not on how the run was
+          # triggered. Before this fix, every workflow_dispatch run — including
+          # ones explicitly dispatched with --ref main (the daily Bump Codex
+          # Runtime job does exactly this in bump-codex-runtime.yml's "Commit
+          # bump to main and trigger release build" step, since a push made
+          # with GITHUB_TOKEN cannot retrigger workflows and must fall back to
+          # `gh workflow run ... --ref main`) — was misclassified as a
+          # dev/pre-release build. That silently starved android-latest and
+          # codex-runtime-latest of every automated Codex version bump, while
+          # feature-branch workflow_dispatch test builds correctly stayed on
+          # the dev channel. Branching on the ref instead fixes both cases.
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             update_tag="${STABLE_UPDATE_TAG}"
             update_title="Shelly Android latest"
             release_note_heading="Rolling Android update build."
             android_release_extra_args=()
             publish_codex_runtime=1
+          else
+            update_tag="${DEV_UPDATE_TAG}"
+            update_title="Shelly Android dev"
+            release_note_heading="Workflow dispatch Android dev build."
+            android_release_extra_args=(--prerelease)
+            publish_codex_runtime=0
           fi
 
           apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
