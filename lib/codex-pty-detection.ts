@@ -58,7 +58,7 @@ export function detectCodexLaunchFailureText(output: string): boolean {
       hasNativeCrash = true;
       lastFailureLine = index;
     }
-    if (/\b(?:linker64|codex_tui|codex_exec|SHELLY_CODEX_EXEC_PATH|SHELLY_LD_LIBRARY_PATH|LD_LIBRARY_PATH)\b/i.test(line)) {
+    if (/\b(?:linker64|codex_tui|SHELLY_CODEX_EXEC_PATH|SHELLY_LD_LIBRARY_PATH|LD_LIBRARY_PATH)\b/i.test(line)) {
       hasCodexLauncher = true;
     }
   });

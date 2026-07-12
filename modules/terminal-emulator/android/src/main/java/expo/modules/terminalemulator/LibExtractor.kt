@@ -121,13 +121,10 @@ object LibExtractor {
         // bug #139 (2026-04-27): libproot/libtalloc removed — the proot
         // routing path was replaced by direct linker64 invocation of
         // codex-termux native binaries, see HomeInitializer.kt comment.
-        // codex native binary (ET_DYN, built from codex-termux for Android/bionic)
-        // exec variant: 1-shot runner for `codex exec/resume/review` subcommands
-        "lib/arm64-v8a/libcodex_exec.so" to "codex_exec",
-        // tui variant: full interactive REPL (used when `codex` is invoked with
-        // no subcommand, or with a bare prompt). Newer codex-termux npm-pack
-        // releases may also include libc++_shared.so; keep it next to the
-        // binaries so RUNPATH=$ORIGIN can resolve it if upstream starts needing it.
+        // Unified Codex native binary (ET_DYN, built from codex-termux for
+        // Android/bionic). `codex exec ...` is routed by passing the `exec`
+        // subcommand to this same binary; newer codex-termux packages no longer
+        // ship a separate codex-exec binary.
         "lib/arm64-v8a/libcodex_tui.so" to "codex_tui",
         "lib/arm64-v8a/libcodex_cxx_shared.so" to "libc++_shared.so",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
@@ -163,7 +160,6 @@ object LibExtractor {
         // cannot make the update surface report an older "Codex current"
         // after a successful Shelly APK update.
         "node",
-        "codex_exec",
         "codex_tui",
         "libc++_shared.so",
         "shelly_shell",

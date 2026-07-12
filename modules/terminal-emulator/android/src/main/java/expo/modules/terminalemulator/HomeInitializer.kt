@@ -45,7 +45,7 @@ function patchCodex(libDir) {
   if (!s.includes(needle)) {
     throw new Error("[patch] codex.js drift: spawn needle missing at " + p);
   }
-  const replacement = 'spawn("/system/bin/linker64", ["' + libDir + '/codex_exec", ...process.argv.slice(2)] /*shelly-codex*/';
+  const replacement = 'spawn("/system/bin/linker64", ["' + libDir + '/codex_tui", ...process.argv.slice(2)] /*shelly-codex*/';
   s = s.replace(needle, replacement);
   fs.writeFileSync(p, s);
   console.log("[patch] codex.js OK (at " + p + ")");
@@ -120,9 +120,9 @@ patchCodex(libDir);
      *        with full proot args (rootfs, bind mounts, -0).
      *    24: bug #76 final — abandon proot approach entirely. Bundle the
      *        codex-termux Android-native binary (ET_DYN, bionic-linked)
-     *        as libcodex_exec.so in jniLibs. The sed patch now replaces
-     *        the upstream musl binaryPath with the bundled codex_exec
-     *        via linker64 — same as node/git/bash. No proot, no rootfs.
+     *        in jniLibs. The sed patch now replaces the upstream musl
+     *        binaryPath with Shelly's bundled native Codex binary via
+     *        linker64 — same as node/git/bash. No proot, no rootfs.
      *    25: bug #96 — `coreutils --coreutils-prog=sed` silently fails
      *        because the bundled coreutils single-binary has no sed applet.
      *        That left every v0.1.0 install with an unpatched codex.js
@@ -334,7 +334,7 @@ patchCodex(libDir);
      *        extracted from APK asset on every launch) and wire
      *        SSL_CERT_FILE / SSL_CERT_DIR / CURL_CA_BUNDLE /
      *        NODE_EXTRA_CA_CERTS / REQUESTS_CA_BUNDLE so bundled
-     *        curl/node/codex_exec/python stop failing HTTPS because
+     *        curl/node/Codex/python stop failing HTTPS because
      *        Android's system trust store is in a location openssl/rustls
      *        don't probe. Prerequisite for Track 1 codex native login
      *        (rustls was bailing with "no native root CA certificates
@@ -371,10 +371,10 @@ patchCodex(libDir);
     //  42: codex TUI wiring — codex() bash function routes bare/free-form
     //     invocation and `resume` to `codex_tui` (new LibExtractor entry,
     //     upstream ratatui-based REPL) and known non-interactive subcommands
-    //     (exec/review/help/mcp/completion/login/logout) to `codex_exec` for 1-shot
-    //     execution. Fixes bug #114 "codex-termux has no interactive mode"
-    //     — the TUI binary was always shipped in the npm tarball but CI
-    //     was only copying codex-exec.bin into jniLibs.
+    //     through the native Codex dispatcher. Fixes bug #114
+    //     "codex-termux has no interactive mode" — the TUI binary was always
+    //     shipped in the npm tarball but CI was only copying codex-exec.bin
+    //     into jniLibs.
     //  43: drop dead TMPDIR/TMP/TEMP exports (cli.js never calls os.tmpdir;
     //     verified via grep — see #102 investigation in
     //     specs/2026-04-20-overnight-fix-handoff.md). Add explicit
@@ -984,15 +984,15 @@ patchCodex(libDir);
     //      executable from /proc/self/exe, which is /system/bin/linker64 when
     //      Shelly launches app-private ELFs through the Android linker. Preload
     //      Shelly's exec wrapper for Codex only and pass the real selected
-    //      codex_exec/codex_tui path so the wrapper can rewrite
+    //      Codex binary path so the wrapper can rewrite
     //      `linker64 --codex-run-as-fs-helper` to
     //      `linker64 <codex binary> --codex-run-as-fs-helper`.
     // 202: Keep the fs-helper rewrite, but let Codex/Rust posix_spawn calls
     //      pass through the real bionic implementation after Shelly path/env
     //      rewriting. Normal Codex child processes also drop LD_PRELOAD so the
     //      wrapper does not leak into shell/apply_patch subprocesses.
-    // 203: Make Codex current_exe() see the real selected codex_exec/codex_tui
-    //      path by overriding /proc/self/exe readlink in the Codex-scoped
+    // 203: Make Codex current_exe() see the real selected Codex binary path
+    //      by overriding /proc/self/exe readlink in the Codex-scoped
     //      exec wrapper. This fixes fs-helper setup before helper spawn.
     // 204: Also redirect Codex-scoped open/openat of /proc/self/exe to the
     //      selected codex binary so ELF self-inspection does not mmap linker64.
@@ -1056,7 +1056,10 @@ patchCodex(libDir);
     //      230: git() now preloads libexec_wrapper.so so its child HTTPS transport
     //      helper (git-remote-https) execs through linker64 — fixes "cannot exec
     //      'remote-https': Permission denied" on git fetch/push/clone over HTTPS.
-    private const val BASHRC_VERSION = 230
+    // 231: Codex v0.142.2+ unified binary layout. Stop requiring codex_exec;
+    //      route `codex exec ...` as `codex_tui exec ...` so fs-helper
+    //      self-relaunch sees the same SHELLY_CODEX_EXEC_PATH as the process.
+    private const val BASHRC_VERSION = 231
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1074,7 +1077,7 @@ patchCodex(libDir);
 
         // bug #76 / #139 (2026-04-27): the Alpine rootfs + proot wrapper
         // path was fully replaced by the DioNanos codex-termux native
-        // binaries (libcodex_exec.so / libcodex_tui.so). Nothing in the
+        // binary (libcodex_tui.so). Nothing in the
         // bashrc generation invokes `$HOME/bin/proot` anymore. Removed the rootfs extract
         // and proot wrapper to drop ~4 MB from the APK and ~8 MB from
         // on-disk footprint. libproot.so / libtalloc.so removed from
@@ -1251,7 +1254,7 @@ patchCodex(libDir);
         //      exist. Affects fetch(), https module, undici, anything
         //      TLS-using. `NODE_EXTRA_CA_CERTS` augments the empty
         //      default set.
-        //   3. Bundled bionic `codex_exec` (ChatGPT subscription auth via
+        //   3. Bundled bionic `codex_tui` (ChatGPT subscription auth via
         //      rustls) — Rust's native-tls sees zero roots on Android,
         //      fails login with "no native root CA certificates found"
         //      observed during smoke test 2026-04-19. SSL_CERT_FILE is
@@ -1524,11 +1527,9 @@ patchCodex(libDir);
             sb.appendLine("  echo '[shelly] Codex login OK; starting Codex.'")
             sb.appendLine("fi")
             sb.appendLine("__runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
-            sb.appendLine("__runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
             sb.appendLine("__tui=\"\$SHELLY_LIB_DIR/codex_tui\"")
-            sb.appendLine("__exec=\"\$SHELLY_LIB_DIR/codex_exec\"")
             sb.appendLine("__runtime_ready=0")
-            sb.appendLine("if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$__runtime_exec\" ] && [ -x \"\$__runtime_tui\" ]; then")
+            sb.appendLine("if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$__runtime_tui\" ]; then")
             sb.appendLine("  __runtime_ready=1")
             sb.appendLine("fi")
             sb.appendLine("__shelly_codex_alias_for() {")
@@ -1597,7 +1598,7 @@ patchCodex(libDir);
             sb.appendLine("    [ \"\$__sandbox_seen\" = 0 ] && set -- --sandbox danger-full-access \"\$@\"")
             sb.appendLine("    set -- --cd \"\$__cd_canon\" --add-dir \"\$__cd_canon\" --skip-git-repo-check \"\$@\"")
             sb.appendLine("  fi")
-            sb.appendLine("  __shelly_codex_run_exec \"\$__exec\" \"\$@\"")
+            sb.appendLine("  __shelly_codex_run_tui \"\$__tui\" exec \"\$@\"")
             sb.appendLine("  exit \$?")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_strip_exec_and_run() {")
@@ -1644,30 +1645,6 @@ patchCodex(libDir);
             sb.appendLine("__shelly_codex_native_crash_rc() {")
             sb.appendLine("  case \"\$1\" in 132|133|134|135|139) return 0 ;; *) return 1 ;; esac")
             sb.appendLine("}")
-            sb.appendLine("__shelly_codex_run_exec() {")
-            sb.appendLine("  __primary=\"\$1\"")
-            sb.appendLine("  shift || true")
-            sb.appendLine("  __codex_bin_dir=\"\${__primary%/*}\"")
-            sb.appendLine("  SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__primary\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$__codex_bin_dir:\$SHELLY_LIB_DIR\" /system/bin/linker64 \"\$__primary\" \"\$@\"")
-            sb.appendLine("  __rc=\$?")
-            sb.appendLine("  if [ \"\$__primary\" != \"\$SHELLY_LIB_DIR/codex_exec\" ] && [ -x \"\$SHELLY_LIB_DIR/codex_exec\" ]; then")
-            sb.appendLine("    if __shelly_codex_native_crash_rc \"\$__rc\"; then")
-            sb.appendLine("      __shelly_codex_mark_tui_failed \"\$__primary\"")
-            sb.appendLine("      echo '[shelly] Codex app-data runtime crashed; retrying bundled runtime.' >&2")
-            sb.appendLine("      __fallback=\"\$SHELLY_LIB_DIR/codex_exec\"")
-            sb.appendLine("      __codex_bin_dir=\"\${__fallback%/*}\"")
-            sb.appendLine("      SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME=1 SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__fallback\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$__codex_bin_dir:\$SHELLY_LIB_DIR\" /system/bin/linker64 \"\$__fallback\" \"\$@\"")
-            sb.appendLine("      __fallback_rc=\$?")
-            sb.appendLine("      if __shelly_codex_native_crash_rc \"\$__fallback_rc\"; then")
-            sb.appendLine("        echo \"codex: launch failed; bundled runtime exited with native crash code \$__fallback_rc\" >&2")
-            sb.appendLine("      fi")
-            sb.appendLine("      return \$__fallback_rc")
-            sb.appendLine("    fi")
-            sb.appendLine("  elif __shelly_codex_native_crash_rc \"\$__rc\"; then")
-            sb.appendLine("    echo \"codex: launch failed; bundled runtime exited with native crash code \$__rc\" >&2")
-            sb.appendLine("  fi")
-            sb.appendLine("  return \$__rc")
-            sb.appendLine("}")
             sb.appendLine("__shelly_codex_run_tui() {")
             sb.appendLine("  __primary=\"\$1\"")
             sb.appendLine("  shift || true")
@@ -1712,11 +1689,11 @@ patchCodex(libDir);
             sb.appendLine("done")
             sb.appendLine("case \"\$__dispatch\" in")
             sb.appendLine("  exec)")
-            sb.appendLine("    [ \"\$__runtime_ready\" = \"1\" ] && __exec=\"\$__runtime_exec\"")
-            sb.appendLine("    if [ -x \"\$__exec\" ]; then")
+            sb.appendLine("    [ \"\$__runtime_ready\" = \"1\" ] && __tui=\"\$__runtime_tui\"")
+            sb.appendLine("    if [ -x \"\$__tui\" ]; then")
             sb.appendLine("      __shelly_codex_strip_exec_and_run \"\$@\"")
             sb.appendLine("    fi")
-            sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
+            sb.appendLine("    echo \"codex: codex_tui binary missing at \$__tui\" >&2")
             sb.appendLine("    exit 127")
             sb.appendLine("    ;;")
             sb.appendLine("  resume)")
@@ -1729,20 +1706,21 @@ patchCodex(libDir);
             sb.appendLine("    exit 127")
             sb.appendLine("    ;;")
             sb.appendLine("  review)")
-            sb.appendLine("    [ \"\$__runtime_ready\" = \"1\" ] && __exec=\"\$__runtime_exec\"")
-            sb.appendLine("    if [ -x \"\$__exec\" ]; then")
-            sb.appendLine("      __shelly_codex_prepare_exec_args \"\$@\"")
+            sb.appendLine("    [ \"\$__runtime_ready\" = \"1\" ] && __tui=\"\$__runtime_tui\"")
+            sb.appendLine("    if [ -x \"\$__tui\" ]; then")
+            sb.appendLine("      __shelly_codex_run_tui \"\$__tui\" \"\$@\"")
+            sb.appendLine("      exit \$?")
             sb.appendLine("    fi")
-            sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
+            sb.appendLine("    echo \"codex: codex_tui binary missing at \$__tui\" >&2")
             sb.appendLine("    exit 127")
             sb.appendLine("    ;;")
             sb.appendLine("  help)")
-            sb.appendLine("    [ \"\$__runtime_ready\" = \"1\" ] && __exec=\"\$__runtime_exec\"")
-            sb.appendLine("    if [ -x \"\$__exec\" ]; then")
-            sb.appendLine("      __shelly_codex_run_exec \"\$__exec\" \"\$@\"")
+            sb.appendLine("    [ \"\$__runtime_ready\" = \"1\" ] && __tui=\"\$__runtime_tui\"")
+            sb.appendLine("    if [ -x \"\$__tui\" ]; then")
+            sb.appendLine("      __shelly_codex_run_tui \"\$__tui\" \"\$@\"")
             sb.appendLine("      exit \$?")
             sb.appendLine("    fi")
-            sb.appendLine("    echo \"codex: codex_exec binary missing at \$__exec\" >&2")
+            sb.appendLine("    echo \"codex: codex_tui binary missing at \$__tui\" >&2")
             sb.appendLine("    exit 127")
             sb.appendLine("    ;;")
             sb.appendLine("esac")
@@ -1775,7 +1753,7 @@ patchCodex(libDir);
             sb.appendLine("export BROWSER=\"\$HOME/bin/xdg-open\"")
             // v39: point every bundled TLS client at the Mozilla CA bundle
             // we extract to ~/.shelly-ssl/. Without these exports curl/node/
-            // codex_exec all fail HTTPS because Android's system trust
+            // codex_tui all fail HTTPS because Android's system trust
             // store is not in any of the locations openssl/rustls probe by
             // default. See HomeInitializer.initialize() above for the
             // extraction step and BASHRC_VERSION 39 comment for rationale.
@@ -2104,24 +2082,19 @@ patchCodex(libDir);
             sb.appendLine("})();")
             sb.appendLine("__SHELLY_NODE_COMPAT_PRELOAD__")
             sb.appendLine("__shelly_chmod 600 \"\$__shelly_node_compat_preload\" 2>/dev/null || true")
-            // codex: route `codex` (no args / options / bare prompt) and
-            // `codex resume` to the full ratatui TUI binary, and known
-            // non-interactive `exec/review/help` subcommands to the lighter
-            // 1-shot exec binary. Both ship in the
-            // pinned codex-termux tarball but Shelly historically
-            // only extracted codex_exec; codex_tui is added in v42+.
-            // Errors out with guidance if a required binary is missing rather
-            // than silently routing to the other one.
+            // codex: v0.142.2+ codex-termux ships one unified binary. Route
+            // `codex exec ...` by passing the exec subcommand to codex_tui,
+            // matching upstream's codex-exec shell wrapper. Keeping a single
+            // selected binary path also keeps SHELLY_CODEX_EXEC_PATH aligned
+            // with /proc/self/exe and fs-helper self-relaunch.
             sb.appendLine("__shelly_codex_runtime_ready() {")
-            sb.appendLine("  [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$HOME/.shelly-runtime/codex/current/codex_exec\" ] && [ -x \"\$HOME/.shelly-runtime/codex/current/codex_tui\" ]")
+            sb.appendLine("  [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$HOME/.shelly-runtime/codex/current/codex_tui\" ]")
             sb.appendLine("}")
             sb.appendLine("codex() {")
             sb.appendLine("  local __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  local __exec=\"$libDir/codex_exec\"")
             sb.appendLine("  local __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
-            sb.appendLine("  local __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
             sb.appendLine("  local __runtime_ready=0")
-            sb.appendLine("  if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$__runtime_exec\" ] && [ -x \"\$__runtime_tui\" ]; then")
+            sb.appendLine("  if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$__runtime_tui\" ]; then")
             sb.appendLine("    __runtime_ready=1")
             sb.appendLine("  fi")
             sb.appendLine("  local __first=\"\${1:-}\"")
@@ -2255,32 +2228,6 @@ patchCodex(libDir);
             sb.appendLine("    fi")
             sb.appendLine("    return \$__rc")
             sb.appendLine("  }")
-            sb.appendLine("  __shelly_codex_run_exec() {")
-            sb.appendLine("    local __primary=\"\$1\"")
-            sb.appendLine("    shift || true")
-            sb.appendLine("    __shelly_paste_tui_begin")
-            sb.appendLine("    local __chosen_exec_dir=\"\${__primary%/*}\"")
-            sb.appendLine("    SHELLY_LIB_DIR=\"$libDir\" SHELLY_LD_LIBRARY_PATH=\"\$__chosen_exec_dir:$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__primary\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__primary\" \"\$@\"")
-            sb.appendLine("    local __rc=\$?")
-            sb.appendLine("    __shelly_paste_tui_end")
-            sb.appendLine("    if [ \"\$__primary\" != \"\$__exec\" ] && [ -x \"\$__exec\" ]; then")
-            sb.appendLine("      if __shelly_codex_native_crash_rc \"\$__rc\"; then")
-            sb.appendLine("        __shelly_codex_mark_tui_failed \"\$__primary\"")
-            sb.appendLine("        echo '[shelly] Codex app-data runtime crashed; retrying bundled runtime.' >&2")
-            sb.appendLine("        __shelly_paste_tui_begin")
-            sb.appendLine("        local __fallback_exec_dir=\"\${__exec%/*}\"")
-            sb.appendLine("        SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME=1 SHELLY_LIB_DIR=\"$libDir\" SHELLY_LD_LIBRARY_PATH=\"\$__fallback_exec_dir:$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__exec\" \"\$@\"")
-            sb.appendLine("        __rc=\$?")
-            sb.appendLine("        __shelly_paste_tui_end")
-            sb.appendLine("        if __shelly_codex_native_crash_rc \"\$__rc\"; then")
-            sb.appendLine("          echo \"codex: launch failed; bundled runtime exited with native crash code \$__rc\" >&2")
-            sb.appendLine("        fi")
-            sb.appendLine("      fi")
-            sb.appendLine("    elif __shelly_codex_native_crash_rc \"\$__rc\"; then")
-            sb.appendLine("      echo \"codex: launch failed; bundled runtime exited with native crash code \$__rc\" >&2")
-            sb.appendLine("    fi")
-            sb.appendLine("    return \$__rc")
-            sb.appendLine("  }")
             sb.appendLine("  local __prev=''")
             sb.appendLine("  for __arg in \"\$@\"; do")
             sb.appendLine("    if [ \"\$__prev\" = '-m' ] || [ \"\$__prev\" = '--model' ] || [ \"\$__prev\" = '-c' ] || [ \"\$__prev\" = '--config' ] || [ \"\$__prev\" = '-C' ] || [ \"\$__prev\" = '--cd' ] || [ \"\$__prev\" = '-s' ] || [ \"\$__prev\" = '--sandbox' ]; then")
@@ -2304,20 +2251,16 @@ patchCodex(libDir);
             sb.appendLine("        ;;")
             sb.appendLine("    esac")
             sb.appendLine("  done")
-            sb.appendLine("  # Known codex subcommands handled by the 1-shot exec binary.")
-            sb.appendLine("  # (login/logout are intentionally NOT listed — Shelly implements")
-            sb.appendLine("  # auth via the separate codex-login pure-JS helper since the fork")
-            sb.appendLine("  # compiled out device-auth. mcp/completion are hit through TUI")
-            sb.appendLine("  # too since the fork's help output only exposes exec/resume/review.)")
-            sb.appendLine("  # `resume` must stay on the TUI binary; codex_exec treats it as a")
-            sb.appendLine("  # non-interactive command and errors with \"No prompt provided\".")
+            sb.appendLine("  # All public Codex entry points go through the unified codex_tui binary.")
+            sb.appendLine("  # `exec` needs option injection after the subcommand, so that branch")
+            sb.appendLine("  # removes the user's dispatch token and re-adds it before prepared args.")
             sb.appendLine("  # _run already invokes /system/bin/linker64 \"\$@\", so we pass the")
             sb.appendLine("  # binary path as first arg (NOT prepending linker64 again).")
             sb.appendLine("  case \"\$__dispatch\" in")
             sb.appendLine("    exec)")
-            sb.appendLine("      local __chosen_exec=\"\$__exec\"")
-            sb.appendLine("      [ \"\$__runtime_ready\" = \"1\" ] && __chosen_exec=\"\$__runtime_exec\"")
-            sb.appendLine("      if [ -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("      local __chosen_tui=\"\$__tui\"")
+            sb.appendLine("      [ \"\$__runtime_ready\" = \"1\" ] && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("      if [ -x \"\$__chosen_tui\" ]; then")
             sb.appendLine("        local -a __exec_args=()")
             sb.appendLine("        local __removed_exec=0")
             sb.appendLine("        local __takes_value=0")
@@ -2362,10 +2305,10 @@ patchCodex(libDir);
             sb.appendLine("          __exec_args+=(\"\$__arg\")")
             sb.appendLine("        done")
             sb.appendLine("        __shelly_codex_prepare_args 1 \"\${__exec_args[@]}\"")
-            sb.appendLine("        __shelly_codex_run_exec \"\$__chosen_exec\" \"\${__codex_args[@]}\"")
+            sb.appendLine("        __shelly_codex_run_tui \"\$__chosen_tui\" exec \"\${__codex_args[@]}\"")
             sb.appendLine("        return \$?")
             sb.appendLine("      else")
-            sb.appendLine("        echo \"codex: codex_exec binary missing at \$__exec — update or reinstall Shelly\" >&2")
+            sb.appendLine("        echo \"codex: codex_tui binary missing at \$__tui — update or reinstall Shelly\" >&2")
             sb.appendLine("        return 127")
             sb.appendLine("      fi")
             sb.appendLine("      ;;")
@@ -2381,25 +2324,24 @@ patchCodex(libDir);
             sb.appendLine("      fi")
             sb.appendLine("      ;;")
             sb.appendLine("    review)")
-            sb.appendLine("      local __chosen_exec=\"\$__exec\"")
-            sb.appendLine("      [ \"\$__runtime_ready\" = \"1\" ] && __chosen_exec=\"\$__runtime_exec\"")
-            sb.appendLine("      if [ -x \"\$__chosen_exec\" ]; then")
-            sb.appendLine("        __shelly_codex_prepare_args 1 \"\$@\"")
-            sb.appendLine("        __shelly_codex_run_exec \"\$__chosen_exec\" \"\${__codex_args[@]}\"")
+            sb.appendLine("      local __chosen_tui=\"\$__tui\"")
+            sb.appendLine("      [ \"\$__runtime_ready\" = \"1\" ] && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("      if [ -x \"\$__chosen_tui\" ]; then")
+            sb.appendLine("        __shelly_codex_run_tui \"\$__chosen_tui\" \"\$@\"")
             sb.appendLine("        return \$?")
             sb.appendLine("      else")
-            sb.appendLine("        echo \"codex: codex_exec binary missing at \$__exec — update or reinstall Shelly\" >&2")
+            sb.appendLine("        echo \"codex: codex_tui binary missing at \$__tui — update or reinstall Shelly\" >&2")
             sb.appendLine("        return 127")
             sb.appendLine("      fi")
             sb.appendLine("      ;;")
             sb.appendLine("    help)")
-            sb.appendLine("      local __chosen_exec=\"\$__exec\"")
-            sb.appendLine("      [ \"\$__runtime_ready\" = \"1\" ] && __chosen_exec=\"\$__runtime_exec\"")
-            sb.appendLine("      if [ -x \"\$__chosen_exec\" ]; then")
-            sb.appendLine("        __shelly_codex_run_exec \"\$__chosen_exec\" \"\$@\"")
+            sb.appendLine("      local __chosen_tui=\"\$__tui\"")
+            sb.appendLine("      [ \"\$__runtime_ready\" = \"1\" ] && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("      if [ -x \"\$__chosen_tui\" ]; then")
+            sb.appendLine("        __shelly_codex_run_tui \"\$__chosen_tui\" \"\$@\"")
             sb.appendLine("        return \$?")
             sb.appendLine("      else")
-            sb.appendLine("        echo \"codex: codex_exec binary missing at \$__exec — update or reinstall Shelly\" >&2")
+            sb.appendLine("        echo \"codex: codex_tui binary missing at \$__tui — update or reinstall Shelly\" >&2")
             sb.appendLine("        return 127")
             sb.appendLine("      fi")
             sb.appendLine("      ;;")
@@ -2425,19 +2367,15 @@ patchCodex(libDir);
             // of requiring the user to switch apps manually.
             sb.appendLine("codex-login() { _run $libDir/node \"\$HOME/.shelly-codex-auth.js\" \"\$@\"; }")
             sb.appendLine("shelly-codex-smoke() {")
-            sb.appendLine("  local __stamp __dir __log __exec __tui __runtime_exec __runtime_tui __chosen_exec __chosen_tui")
+            sb.appendLine("  local __stamp __dir __log __tui __runtime_tui __chosen_tui")
             sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
             sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-smoke-\$__stamp.log\"")
-            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
             sb.appendLine("  __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
             sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
-            sb.appendLine("  __chosen_exec=\"\$__exec\"")
             sb.appendLine("  __chosen_tui=\"\$__tui\"")
             sb.appendLine("  if __shelly_codex_runtime_ready; then")
-            sb.appendLine("    __chosen_exec=\"\$__runtime_exec\"")
             sb.appendLine("    __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  fi")
             sb.appendLine("  {")
@@ -2446,26 +2384,21 @@ patchCodex(libDir);
             sb.appendLine("    echo \"[codex-smoke] log=\$__log\"")
             sb.appendLine("    echo \"[codex-smoke] libdir=$libDir\"")
             sb.appendLine("    echo \"[codex-smoke] codex_home=\${CODEX_HOME:-\$HOME/.codex}\"")
-            sb.appendLine("    echo \"[codex-smoke] exec=\$__chosen_exec\"")
             sb.appendLine("    echo \"[codex-smoke] tui=\$__chosen_tui\"")
             sb.appendLine("    echo \"[codex-smoke] binaries\"")
-            sb.appendLine("    /system/bin/toybox ls -l \"$libDir/codex_exec\" \"$libDir/codex_tui\" \"$libDir/libc++_shared.so\" \"$libDir/node\" 2>&1 || true")
+            sb.appendLine("    /system/bin/toybox ls -l \"$libDir/codex_tui\" \"$libDir/libc++_shared.so\" \"$libDir/node\" 2>&1 || true")
             sb.appendLine("    echo \"[codex-smoke] T0 wrapper codex --version\"")
             sb.appendLine("    codex --version")
             sb.appendLine("    local __rc0=\$?")
             sb.appendLine("    echo \"[codex-smoke] T0 rc=\$__rc0\"")
-            sb.appendLine("    echo \"[codex-smoke] T1 direct codex_exec --version\"")
-            sb.appendLine("    SHELLY_LD_LIBRARY_PATH=\"\${__chosen_exec%/*}:$libDir\" _run \"\$__chosen_exec\" --version")
+            sb.appendLine("    echo \"[codex-smoke] T1 direct codex_tui --version\"")
+            sb.appendLine("    SHELLY_LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" _run \"\$__chosen_tui\" --version")
             sb.appendLine("    local __rc1=\$?")
             sb.appendLine("    echo \"[codex-smoke] T1 rc=\$__rc1\"")
-            sb.appendLine("    echo \"[codex-smoke] T2 direct codex_tui --version\"")
-            sb.appendLine("    SHELLY_LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" _run \"\$__chosen_tui\" --version")
+            sb.appendLine("    echo \"[codex-smoke] T2 direct codex_tui exec --help\"")
+            sb.appendLine("    SHELLY_LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" _run \"\$__chosen_tui\" exec --help | sed -n '1,40p'")
             sb.appendLine("    local __rc2=\$?")
             sb.appendLine("    echo \"[codex-smoke] T2 rc=\$__rc2\"")
-            sb.appendLine("    echo \"[codex-smoke] T3 direct codex_exec --help\"")
-            sb.appendLine("    SHELLY_LD_LIBRARY_PATH=\"\${__chosen_exec%/*}:$libDir\" _run \"\$__chosen_exec\" --help | sed -n '1,40p'")
-            sb.appendLine("    local __rc3=\${PIPESTATUS[0]:-1}")
-            sb.appendLine("    echo \"[codex-smoke] T3 rc=\$__rc3\"")
             sb.appendLine("    echo \"[codex-smoke] T4 auth file check\"")
             sb.appendLine("    local __auth=\"\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
             sb.appendLine("    if [ -s \"\$__auth\" ]; then")
@@ -2476,7 +2409,7 @@ patchCodex(libDir);
             sb.appendLine("      local __rc4=2")
             sb.appendLine("    fi")
             sb.appendLine("    echo \"[codex-smoke] T4 rc=\$__rc4\"")
-            sb.appendLine("    echo \"[codex-smoke] result wrapper=\$__rc0 exec_version=\$__rc1 tui_version=\$__rc2 exec_help=\$__rc3 auth=\$__rc4\"")
+            sb.appendLine("    echo \"[codex-smoke] result wrapper=\$__rc0 tui_version=\$__rc1 tui_exec_help=\$__rc2 auth=\$__rc4\"")
             sb.appendLine("    if [ \"\$__rc0\" -eq 0 ] || [ \"\$__rc1\" -eq 0 ] || [ \"\$__rc2\" -eq 0 ]; then return 0; fi")
             sb.appendLine("    return 1")
             sb.appendLine("  } 2>&1 | tee \"\$__log\"")
@@ -2485,25 +2418,25 @@ patchCodex(libDir);
             sb.appendLine("  return \"\$__smoke_rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-codex-canary() {")
-            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __prompt __out __rc __matched")
+            sb.appendLine("  local __stamp __dir __log __tui __runtime_tui __chosen_tui __nonce __prompt __out __rc __matched")
             sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
             sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-canary-\$__stamp.log\"")
-            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
-            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
-            sb.appendLine("  __chosen_exec=\"\$__exec\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  __tui=\"$libDir/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __chosen_tui=\"\$__tui\"")
+            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __prompt=\"Reply with exactly this token and nothing else: \$__nonce\"")
             sb.appendLine("  {")
             sb.appendLine("    echo \"[codex-canary] date=\$__stamp\"")
             sb.appendLine("    echo \"[codex-canary] bashrc=\$BASHRC_VERSION\"")
             sb.appendLine("    echo \"[codex-canary] log=\$__log\"")
-            sb.appendLine("    echo \"[codex-canary] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-canary] tui=\$__chosen_tui\"")
             sb.appendLine("    echo \"[codex-canary] nonce=\$__nonce\"")
             sb.appendLine("    echo \"[codex-canary] auth=\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
-            sb.appendLine("    if [ ! -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("    if [ ! -x \"\$__chosen_tui\" ]; then")
             sb.appendLine("      echo \"[codex-canary] missing executable\"")
             sb.appendLine("      return 127")
             sb.appendLine("    fi")
@@ -2512,7 +2445,7 @@ patchCodex(libDir);
             sb.appendLine("      return 2")
             sb.appendLine("    fi")
             sb.appendLine("    echo \"[codex-canary] running codex exec canary\"")
-            sb.appendLine("    __out=\$(HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 120 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_exec%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 120 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_tui\" exec \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,120p'")
             sb.appendLine("    __matched=0")
@@ -2525,15 +2458,15 @@ patchCodex(libDir);
             sb.appendLine("  return \"\$__canary_rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-codex-edit-canary() {")
-            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __work __prompt __out __rc __file_rc __matched")
+            sb.appendLine("  local __stamp __dir __log __tui __runtime_tui __chosen_tui __nonce __work __prompt __out __rc __file_rc __matched")
             sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
             sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-edit-canary-\$__stamp.log\"")
-            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
-            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
-            sb.appendLine("  __chosen_exec=\"\$__exec\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  __tui=\"$libDir/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __chosen_tui=\"\$__tui\"")
+            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_EDIT_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-edit-canary-\$__stamp\"")
             sb.appendLine("  __prompt=\"In the current working directory, create or overwrite result.txt. Write exactly the token between <token> and </token>, excluding the tags: <token>\$__nonce</token>. Then reply with exactly DONE.\"")
@@ -2541,11 +2474,11 @@ patchCodex(libDir);
             sb.appendLine("    echo \"[codex-edit-canary] date=\$__stamp\"")
             sb.appendLine("    echo \"[codex-edit-canary] bashrc=\$BASHRC_VERSION\"")
             sb.appendLine("    echo \"[codex-edit-canary] log=\$__log\"")
-            sb.appendLine("    echo \"[codex-edit-canary] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-edit-canary] tui=\$__chosen_tui\"")
             sb.appendLine("    echo \"[codex-edit-canary] work=\$__work\"")
             sb.appendLine("    echo \"[codex-edit-canary] nonce=\$__nonce\"")
             sb.appendLine("    echo \"[codex-edit-canary] auth=\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
-            sb.appendLine("    if [ ! -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("    if [ ! -x \"\$__chosen_tui\" ]; then")
             sb.appendLine("      echo \"[codex-edit-canary] missing executable\"")
             sb.appendLine("      return 127")
             sb.appendLine("    fi")
@@ -2556,7 +2489,7 @@ patchCodex(libDir);
             sb.appendLine("    rm -rf \"\$__work\"")
             sb.appendLine("    mkdir -p \"\$__work\" || return 3")
             sb.appendLine("    echo \"[codex-edit-canary] running codex exec edit canary\"")
-            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 180 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_exec%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 180 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_tui\" exec \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,160p'")
             sb.appendLine("    echo \"[codex-edit-canary] files\"")
@@ -2581,15 +2514,15 @@ patchCodex(libDir);
             sb.appendLine("  return \"\$__canary_rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-codex-repo-canary() {")
-            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __work __prompt __out __rc __readme_rc __notes_rc")
+            sb.appendLine("  local __stamp __dir __log __tui __runtime_tui __chosen_tui __nonce __work __prompt __out __rc __readme_rc __notes_rc")
             sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
             sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-repo-canary-\$__stamp.log\"")
-            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
-            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
-            sb.appendLine("  __chosen_exec=\"\$__exec\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  __tui=\"$libDir/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __chosen_tui=\"\$__tui\"")
+            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_REPO_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-repo-canary-\$__stamp\"")
             sb.appendLine("  __prompt=\"This directory is a tiny project. Edit README.md by appending one new line containing exactly the token between <token> and </token>, excluding the tags: <token>\$__nonce</token>. Also create notes.txt containing exactly READY. Then reply with exactly DONE.\"")
@@ -2597,11 +2530,11 @@ patchCodex(libDir);
             sb.appendLine("    echo \"[codex-repo-canary] date=\$__stamp\"")
             sb.appendLine("    echo \"[codex-repo-canary] bashrc=\$BASHRC_VERSION\"")
             sb.appendLine("    echo \"[codex-repo-canary] log=\$__log\"")
-            sb.appendLine("    echo \"[codex-repo-canary] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-repo-canary] tui=\$__chosen_tui\"")
             sb.appendLine("    echo \"[codex-repo-canary] work=\$__work\"")
             sb.appendLine("    echo \"[codex-repo-canary] nonce=\$__nonce\"")
             sb.appendLine("    echo \"[codex-repo-canary] auth=\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
-            sb.appendLine("    if [ ! -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("    if [ ! -x \"\$__chosen_tui\" ]; then")
             sb.appendLine("      echo \"[codex-repo-canary] missing executable\"")
             sb.appendLine("      return 127")
             sb.appendLine("    fi")
@@ -2614,7 +2547,7 @@ patchCodex(libDir);
             sb.appendLine("    printf '%s\\n' '# Shelly Codex Repo Canary' '' 'Initial project file.' > \"\$__work/README.md\"")
             sb.appendLine("    printf '%s\\n' 'console.log(\"hello from Shelly\");' > \"\$__work/src/app.js\"")
             sb.appendLine("    echo \"[codex-repo-canary] running codex exec repo canary\"")
-            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_exec%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_exec\" \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(cd \"\$__work\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_tui\" exec \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,180p'")
             sb.appendLine("    echo \"[codex-repo-canary] files\"")
@@ -2635,15 +2568,15 @@ patchCodex(libDir);
             sb.appendLine("  return \"\$__canary_rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-codex-patch-canary() {")
-            sb.appendLine("  local __stamp __dir __log __exec __runtime_exec __chosen_exec __nonce __work __work_canon __work_alias __work_canon_alias __prompt __out __rc __readme_rc __helper_error __patch_rejected __edit_tool __shell_tool")
+            sb.appendLine("  local __stamp __dir __log __tui __runtime_tui __chosen_tui __nonce __work __work_canon __work_alias __work_canon_alias __prompt __out __rc __readme_rc __helper_error __patch_rejected __edit_tool __shell_tool")
             sb.appendLine("  __stamp=\$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)")
             sb.appendLine("  __dir=\"\$( __shelly_debug_dir 2>/dev/null || echo /sdcard/Download/shelly-debug )\"")
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-patch-canary-\$__stamp.log\"")
-            sb.appendLine("  __exec=\"$libDir/codex_exec\"")
-            sb.appendLine("  __runtime_exec=\"\$HOME/.shelly-runtime/codex/current/codex_exec\"")
-            sb.appendLine("  __chosen_exec=\"\$__exec\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_exec=\"\$__runtime_exec\"")
+            sb.appendLine("  __tui=\"$libDir/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __chosen_tui=\"\$__tui\"")
+            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_PATCH_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-patch-canary-\$__stamp\"")
             sb.appendLine("  __prompt=\"\$(cat <<EOF")
@@ -2663,11 +2596,11 @@ patchCodex(libDir);
             sb.appendLine("    echo \"[codex-patch-canary] date=\$__stamp\"")
             sb.appendLine("    echo \"[codex-patch-canary] bashrc=\$BASHRC_VERSION\"")
             sb.appendLine("    echo \"[codex-patch-canary] log=\$__log\"")
-            sb.appendLine("    echo \"[codex-patch-canary] exec=\$__chosen_exec\"")
+            sb.appendLine("    echo \"[codex-patch-canary] tui=\$__chosen_tui\"")
             sb.appendLine("    echo \"[codex-patch-canary] work=\$__work\"")
             sb.appendLine("    echo \"[codex-patch-canary] nonce=\$__nonce\"")
             sb.appendLine("    echo \"[codex-patch-canary] auth=\${CODEX_HOME:-\$HOME/.codex}/auth.json\"")
-            sb.appendLine("    if [ ! -x \"\$__chosen_exec\" ]; then")
+            sb.appendLine("    if [ ! -x \"\$__chosen_tui\" ]; then")
             sb.appendLine("      echo \"[codex-patch-canary] missing executable\"")
             sb.appendLine("      return 127")
             sb.appendLine("    fi")
@@ -2697,7 +2630,7 @@ patchCodex(libDir);
             sb.appendLine("      (cd \"\$__work_canon\" && git init -q && git add README.md && git -c user.email=shelly@local -c user.name=Shelly commit -q -m init) >/dev/null 2>&1 || true")
             sb.appendLine("    fi")
             sb.appendLine("    echo \"[codex-patch-canary] running codex exec patch canary\"")
-            sb.appendLine("    __out=\$(cd \"\$__work_canon\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_exec\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_exec%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_exec\" --sandbox danger-full-access --cd \"\$__work_canon\" --add-dir \"\$__work_canon\" --add-dir \"\$__work\" --add-dir \"\$__work_alias\" --add-dir \"\$__work_canon_alias\" --skip-git-repo-check \"\$__prompt\" 2>&1)")
+            sb.appendLine("    __out=\$(cd \"\$__work_canon\" && HOME=\"\$HOME\" CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.codex}\" TERM=\"\${TERM:-xterm-256color}\" TMPDIR=\"\${TMPDIR:-\$HOME/.tmp}\" PATH=\"\$HOME/bin:$libDir:\${PATH:-/system/bin:/vendor/bin}\" timeout 240 /system/bin/env SHELLY_LIB_DIR=\"$libDir\" SHELLY_CODEX_EXEC_PATH=\"\$__chosen_tui\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"$libDir/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\${__chosen_tui%/*}:$libDir\" /system/bin/linker64 \"\$__chosen_tui\" exec --sandbox danger-full-access --cd \"\$__work_canon\" --add-dir \"\$__work_canon\" --add-dir \"\$__work\" --add-dir \"\$__work_alias\" --add-dir \"\$__work_canon_alias\" --skip-git-repo-check \"\$__prompt\" 2>&1)")
             sb.appendLine("    __rc=\$?")
             sb.appendLine("    printf '%s\\n' \"\$__out\" | sed -n '1,220p'")
             sb.appendLine("    echo \"[codex-patch-canary] README.md\"")

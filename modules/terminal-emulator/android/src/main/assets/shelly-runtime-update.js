@@ -43,6 +43,8 @@ function parseVersion(output) {
 function runVersion(file, libDir, options = {}) {
   if (!file || !exists(file)) return { ok: false, file, output: 'missing' };
   const runtimeLib = path.dirname(file);
+  const probeArgs = Array.isArray(options.args) ? options.args : ['--version'];
+  const requireVersion = options.requireVersion !== false;
   const env = {
     ...process.env,
     LD_LIBRARY_PATH: [runtimeLib, libDir || LIB].filter(Boolean).join(':'),
@@ -54,18 +56,19 @@ function runVersion(file, libDir, options = {}) {
     env.SHELLY_CODEX_PROC_EXE_SHIM = '1';
     env.SHELLY_CODEX_PROC_EXE_OPEN_SHIM = '1';
   }
-  const result = cp.spawnSync('/system/bin/linker64', [file, '--version'], {
+  const result = cp.spawnSync('/system/bin/linker64', [file, ...probeArgs], {
     encoding: 'utf8',
     timeout: 15000,
     env,
   });
   const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+  const version = parseVersion(output);
   return {
-    ok: result.status === 0 && Boolean(parseVersion(output)),
+    ok: result.status === 0 && (!requireVersion || Boolean(version)),
     file,
     code: result.status,
     output,
-    version: parseVersion(output),
+    version,
   };
 }
 
@@ -73,8 +76,7 @@ function isHealthyRuntime(dir = currentLink) {
   return Boolean(
     exists(path.join(dir, '.healthy')) &&
     exists(path.join(dir, 'manifest.json')) &&
-    isExecutable(path.join(dir, 'codex_tui')) &&
-    isExecutable(path.join(dir, 'codex_exec')),
+    isExecutable(path.join(dir, 'codex_tui')),
   );
 }
 
@@ -98,9 +100,7 @@ function probeCodex() {
   const active = activeCodexBase();
   const candidates = [
     path.join(active.base, 'codex_tui'),
-    path.join(active.base, 'codex_exec'),
     path.join(LIB, 'codex_tui'),
-    path.join(LIB, 'codex_exec'),
   ];
   const tried = [];
   for (const file of candidates) {
@@ -249,7 +249,7 @@ function installFromEnvSync() {
       throw new Error(`sha256 mismatch: expected ${manifest.sha256}, got ${actual}`);
     }
     runTarExtract(archive, staging);
-    for (const name of ['codex_exec', 'codex_tui']) {
+    for (const name of ['codex_tui']) {
       const file = path.join(staging, name);
       if (!exists(file)) throw new Error(`${name} missing from Codex runtime`);
       fs.chmodSync(file, 0o700);
@@ -258,21 +258,27 @@ function installFromEnvSync() {
     if (exists(cxx)) fs.chmodSync(cxx, 0o600);
 
     const tui = runVersion(path.join(staging, 'codex_tui'), LIB, { wrap: true });
-    const exec = runVersion(path.join(staging, 'codex_exec'), LIB, { wrap: true });
-    if (!tui.ok || !exec.ok) {
-      throw new Error(`Codex runtime smoke failed: tui=${tui.output || tui.code}; exec=${exec.output || exec.code}`);
+    if (!tui.ok) {
+      throw new Error(`Codex runtime smoke failed: tui=${tui.output || tui.code}`);
+    }
+    const tuiExecHelp = runVersion(path.join(staging, 'codex_tui'), LIB, {
+      wrap: true,
+      args: ['exec', '--help'],
+      requireVersion: false,
+    });
+    if (!tuiExecHelp.ok) {
+      throw new Error(`Codex runtime exec smoke failed: tui_exec_help=${tuiExecHelp.output || tuiExecHelp.code}`);
     }
     const tuiVersion = tui.version;
-    const execVersion = exec.version;
-    if (tuiVersion !== manifest.version || execVersion !== manifest.version) {
-      throw new Error(`Codex runtime version mismatch: manifest=${manifest.version}, tui=${tuiVersion}, exec=${execVersion}`);
+    if (tuiVersion !== manifest.version) {
+      throw new Error(`Codex runtime version mismatch: manifest=${manifest.version}, tui=${tuiVersion}`);
     }
 
     fs.writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify({
       ...manifest,
       smoke: {
         codex_tui: tui.output,
-        codex_exec: exec.output,
+        codex_tui_exec_help: tuiExecHelp.output,
       },
     }, null, 2) + '\n', { mode: 0o600 });
     fs.writeFileSync(path.join(staging, '.healthy'), `${new Date().toISOString()}\n`, { mode: 0o600 });

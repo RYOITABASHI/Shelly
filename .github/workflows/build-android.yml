@@ -117,7 +117,6 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libassuan.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libksba.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
@@ -402,7 +401,7 @@ jobs:
             fi
           done
 
-      - name: Download codex-termux Android binaries (exec + TUI)
+      - name: Download codex-termux Android binary
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -471,31 +470,27 @@ jobs:
           rm -rf /tmp/codex-termux-extract
           mkdir -p /tmp/codex-termux-extract
           tar xzf /tmp/codex-termux.tar.gz -C /tmp/codex-termux-extract
-          CODEX_EXEC_BIN="$(find /tmp/codex-termux-extract -type f -name codex-exec.bin | head -1)"
           CODEX_TUI_BIN="$(find /tmp/codex-termux-extract -type f -name codex.bin | head -1)"
           CODEX_LIBCXX="$(find /tmp/codex-termux-extract -type f -name 'libc++_shared.so' | head -1)"
-          # Verify the upstream tarball still ships both binaries we depend on.
-          # If DioNanos/codex-termux ever renames or drops one of these files,
+          # Verify the upstream tarball still ships the unified binary we depend on.
+          # If DioNanos/codex-termux ever renames or drops this file,
           # the next green build would silently produce an APK with codex
           # broken on-device. Fail loud here instead.
-          for f in "$CODEX_EXEC_BIN" "$CODEX_TUI_BIN"; do
-            if [ ! -f "$f" ]; then
-              echo "FATAL: expected codex-exec.bin and codex.bin in codex-termux tarball; tarball contents:" >&2
-              find /tmp/codex-termux-extract -maxdepth 4 -type f | sort >&2
-              exit 1
-            fi
-          done
-          # 1-shot exec binary (used by `codex exec/resume/review` subcommands)
-          cp "$CODEX_EXEC_BIN" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
-          # Full TUI binary (used by `codex` with no subcommand — interactive mode)
+          if [ ! -f "$CODEX_TUI_BIN" ]; then
+            echo "FATAL: expected codex.bin in codex-termux tarball; tarball contents:" >&2
+            find /tmp/codex-termux-extract -maxdepth 4 -type f | sort >&2
+            exit 1
+          fi
+          # Unified Codex binary. `codex exec ...` is dispatched by passing the
+          # `exec` subcommand to this same binary, matching upstream codex-exec.
           cp "$CODEX_TUI_BIN" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           if [ -n "$CODEX_LIBCXX" ] && [ -f "$CODEX_LIBCXX" ]; then
             cp "$CODEX_LIBCXX" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
             chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
           fi
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
+          rm -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
+          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
 
       - name: Package Codex runtime update
@@ -505,9 +500,8 @@ jobs:
           runtime_dir="${RUNNER_TEMP}/codex-runtime"
           rm -rf "${runtime_dir}"
           mkdir -p "${runtime_dir}"
-          cp "${JNILIBS}/libcodex_exec.so" "${runtime_dir}/codex_exec"
           cp "${JNILIBS}/libcodex_tui.so" "${runtime_dir}/codex_tui"
-          chmod 755 "${runtime_dir}/codex_exec" "${runtime_dir}/codex_tui"
+          chmod 755 "${runtime_dir}/codex_tui"
           if [ -f "${JNILIBS}/libcodex_cxx_shared.so" ]; then
             cp "${JNILIBS}/libcodex_cxx_shared.so" "${runtime_dir}/libc++_shared.so"
             chmod 755 "${runtime_dir}/libc++_shared.so"
