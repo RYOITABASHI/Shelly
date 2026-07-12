@@ -10,6 +10,7 @@ export type SidebarMode = 'expanded' | 'icons' | 'hidden';
 export type SidebarSection =
   | 'tasks'
   | 'skills'
+  | 'importedSkills'
   | 'repos'
   | 'files'
   | 'device'
@@ -131,6 +132,7 @@ function defaultOpenSections(): Record<SidebarSection, boolean> {
   return {
     tasks: true,
     skills: false,
+    importedSkills: false,
     repos: true,
     files: true,
     device: true,
