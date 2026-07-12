@@ -300,12 +300,10 @@ function androidLauncherContext() {
 function runtimeCodexTuiPath(home) {
   if (!home || process.env.SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME === '1') return '';
   const current = path.join(home, '.shelly-runtime/codex/current');
-  const execPath = path.join(current, 'codex_exec');
   const tuiPath = path.join(current, 'codex_tui');
   if (
     existingPath(path.join(current, '.healthy')) &&
     existingPath(path.join(current, 'manifest.json')) &&
-    existingPath(execPath) &&
     existingPath(tuiPath)
   ) {
     return tuiPath;

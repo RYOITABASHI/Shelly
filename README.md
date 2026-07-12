@@ -475,15 +475,15 @@ Currently registered:
 - **Command safety** — regex-based 5-level risk assessment (seatbelt, not firewall — see [Security](#security))
 - **Workspace isolation** — per-project cwd / env / AI context
 - **Background agents** — `@agent list`, `@agent status`, `@agent run <name>`, `@agent stop <name>`, `@agent history <name>`, or `@agent <natural language>` to create one. Scheduled agents run through AlarmManager when configured.
-- **Managed Codex runtime updater** — the Updates UI reads the public `codex-runtime-latest/codex-runtime.json` manifest, downloads the tarball, verifies SHA-256, smoke-tests both `codex_tui` and `codex_exec` with `--version`, then promotes the runtime under `~/.shelly-runtime/codex/current`. The new runtime is used by newly opened terminal tabs; **Reset** falls back to the APK-bundled runtime.
+- **Managed Codex runtime updater** — the Updates UI reads the public `codex-runtime-latest/codex-runtime.json` manifest, downloads the tarball, verifies SHA-256, smoke-tests `codex_tui --version` and `codex_tui exec --help`, then promotes the runtime under `~/.shelly-runtime/codex/current`. The new runtime is used by newly opened terminal tabs; **Reset** falls back to the APK-bundled runtime.
 - **`shelly-doctor`** — diagnostic command that checks shell/native binary presence, bundled Codex binaries, JS dispatcher, local LLM endpoints, and whether `~/.codex/auth.json` is present; run it when something feels broken
 
 </details>
 
 ### Codex Runtime
 
-- **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle pinned Android-native `codex_exec` / `codex_tui` binaries from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
-- **Managed promotion** — a new runtime candidate is promoted only after download, SHA-256 verification, extraction, executable checks, and matching `--version` smoke checks for both `codex_tui` and `codex_exec`.
+- **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the pinned Android-native unified `codex_tui` binary from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
+- **Managed promotion** — a new runtime candidate is promoted only after download, SHA-256 verification, extraction, executable checks, and `codex_tui --version` / `codex_tui exec --help` smoke checks.
 - **Repair / reset path** — if the app-data runtime is broken or unwanted, the Updates UI can repair it from the latest runtime release or reset to the APK-bundled Codex runtime.
 
 ---
@@ -511,7 +511,7 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Codex CLI launch/auth | ✅ supported; bare `codex` runs over the native PTY, using Shelly device-code auth before TUI launch |
-| Codex managed native runtime (`codex_exec` / `codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` smoke-tested, repair / reset to bundled runtime) | ✅ managed latest |
+| Codex managed native runtime (`codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` and `exec --help` smoke-tested, repair / reset to bundled runtime) | ✅ managed latest |
 | Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
 | Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
@@ -616,7 +616,7 @@ flowchart TB
   TP --> KT --> JNI
   JNI --> SH["App-owned shell\nbash, git, node, python"]
   JNI --> WR["exec wrapper\nlinker64 and LD_PRELOAD"]
-  SH --> CX["Codex runtime\ncodex_tui and codex_exec"]
+  SH --> CX["Codex runtime\nunified codex_tui"]
   TP --> TV
 
   subgraph A["Agent context"]
@@ -758,7 +758,7 @@ drift out of sync with this page:
 | APK size | ~800 MB | bundles bash / Node.js / Python 3 / git / ripgrep / … plus the Codex runtime as real binaries, not shims |
 | Codex runtime | shipped + managed on its own lane (~160 MB) | promoted separately so it can move faster than the APK |
 | Release verification | SHA-256 checked before the installer handoff | the updater refuses an APK whose hash doesn't match the manifest |
-| Runtime verification | SHA-256 + `codex_tui` / `codex_exec --version` smoke tests | a runtime candidate is only promoted after it actually runs |
+| Runtime verification | SHA-256 + `codex_tui --version` / `codex_tui exec --help` smoke tests | a runtime candidate is only promoted after it actually runs |
 | CI per release | lint · typecheck · unit tests · native release build · signed APK + manifest publish | every release artifact is built and verified by GitHub Actions |
 
 The point: a large APK, a separately managed Codex runtime, and a CI pipeline

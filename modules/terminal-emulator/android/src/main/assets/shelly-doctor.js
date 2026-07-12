@@ -59,11 +59,17 @@ function securityFile(file, shouldBePrivate = false) {
   };
 }
 
-function runVersion(file) {
+function runVersion(file, args = ['--version']) {
   if (!exists(file)) return { ok: false, output: 'missing' };
-  const env = { ...process.env, LD_LIBRARY_PATH: LIB };
+  const env = {
+    ...process.env,
+    LD_LIBRARY_PATH: LIB,
+    SHELLY_CODEX_EXEC_PATH: file,
+    SHELLY_CODEX_PROC_EXE_SHIM: '1',
+    SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
+  };
   delete env.LD_PRELOAD;
-  const result = cp.spawnSync('/system/bin/linker64', [file, '--version'], {
+  const result = cp.spawnSync('/system/bin/linker64', [file, ...args], {
     encoding: 'utf8',
     timeout: 15000,
     env,
@@ -106,10 +112,8 @@ function shellCheck() {
 
 function codexReport() {
   const tui = path.join(LIB, 'codex_tui');
-  const exec = path.join(LIB, 'codex_exec');
   return {
-    tui: { file: tui, info: statInfo(tui), version: runVersion(tui) },
-    exec: { file: exec, info: statInfo(exec), version: runVersion(exec) },
+    tui: { file: tui, info: statInfo(tui), version: runVersion(tui), execHelp: runVersion(tui, ['exec', '--help']) },
     jsDispatcher: statInfo(path.join(LIB, 'node_modules/@openai/codex/bin/codex.js')),
     auth: statInfo(path.join(HOME, '.codex/auth.json')),
   };
