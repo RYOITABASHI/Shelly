@@ -8,6 +8,16 @@ import {
 } from '@/lib/workflow-manager';
 import { useSettingsStore, DEFAULT_SETTINGS } from '@/store/settings-store';
 import { useCosmeticStore } from '@/store/cosmetic-store';
+import { execCommand } from '@/hooks/use-native-exec';
+import { getHomePath } from '@/lib/home-path';
+import {
+  SKILL_NAME_RE,
+  importSkillToQuarantine,
+  listQuarantinedSkills,
+  listImportedSkills,
+  rejectQuarantinedSkill,
+  deleteImportedSkill,
+} from '@/lib/skill-import';
 
 type ShellState = {
   cwd: string;
@@ -604,6 +614,141 @@ export async function executeCommand(
         return { lines: [], newState: {} };
       }
 
+      // ── shelly skill ─────────────────────────────────────────────────────────
+      if (sub === 'skill') {
+        const skillSub = args[1];
+        const home = getHomePath();
+
+        const truncate = (text: string, max = 80): string =>
+          text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+        switch (skillSub) {
+          case 'import': {
+            const path = args[2];
+            if (!path || !(path.startsWith('/') || path.startsWith('~'))) {
+              return {
+                lines: [
+                  ...err('Usage: shelly skill import <absolute-or-~-path>'),
+                  ...err("Hint: relative paths aren't supported — use an absolute path or one starting with ~."),
+                ],
+                newState: {},
+              };
+            }
+            const result = await importSkillToQuarantine(path, execCommand);
+            if (result.ok) {
+              return {
+                lines: [
+                  ...out(`Imported '${result.name}' into quarantine. Run 'shelly skill approve ${result.name}' to review and enable it.`),
+                  ...result.warnings.flatMap((w) => info(`  • ${w}`)),
+                ],
+                newState: {},
+              };
+            }
+            return {
+              lines: [
+                ...result.errors.flatMap((e) => err(`  • ${e}`)),
+                ...result.warnings.flatMap((w) => info(`  • ${w}`)),
+              ],
+              newState: {},
+            };
+          }
+
+          case 'list': {
+            const [quarantined, imported] = await Promise.all([
+              listQuarantinedSkills(home),
+              listImportedSkills(home),
+            ]);
+            const renderEntry = (name: string, description: string) =>
+              `  ${name} — ${truncate(description)}`;
+            const lines = [
+              'Quarantined (pending approval):',
+              ...(quarantined.length > 0
+                ? quarantined.map((s) => renderEntry(s.name, s.description))
+                : ['  (none)']),
+              '',
+              'Approved:',
+              ...(imported.length > 0
+                ? imported.map((s) => renderEntry(s.name, s.description))
+                : ['  (none)']),
+            ];
+            return { lines: out(...lines), newState: {} };
+          }
+
+          case 'approve': {
+            const name = args[2];
+            if (!name || !SKILL_NAME_RE.test(name)) {
+              return { lines: err('Usage: shelly skill approve <name>'), newState: {} };
+            }
+            const quarantined = await listQuarantinedSkills(home);
+            if (!quarantined.some((s) => s.name === name)) {
+              return {
+                lines: err(`No quarantined skill named '${name}'. Run 'shelly skill list' to see what's pending.`),
+                newState: {},
+              };
+            }
+            // NEVER auto-promote here — this only opens the review dialog. The
+            // actual approval is a human tap on "Approve" in that dialog, so a
+            // scripted/pasted CLI command alone can never silently enable a skill.
+            useSettingsStore.getState().setPendingSkillApprovalName(name);
+            return { lines: info(`Opening review for '${name}'…`), newState: {} };
+          }
+
+          case 'reject': {
+            const name = args[2];
+            if (!name || !SKILL_NAME_RE.test(name)) {
+              return { lines: err('Usage: shelly skill reject <name>'), newState: {} };
+            }
+            const quarantined = await listQuarantinedSkills(home);
+            if (!quarantined.some((s) => s.name === name)) {
+              return {
+                lines: err(`No quarantined skill named '${name}'. Run 'shelly skill list' to see what's pending.`),
+                newState: {},
+              };
+            }
+            const result = await rejectQuarantinedSkill(name, home, execCommand);
+            if (!result.ok) {
+              return { lines: err(result.error ?? `Failed to reject skill '${name}'`), newState: {} };
+            }
+            return { lines: out(`Rejected quarantined skill '${name}'.`), newState: {} };
+          }
+
+          case 'remove': {
+            const name = args[2];
+            if (!name || !SKILL_NAME_RE.test(name)) {
+              return { lines: err('Usage: shelly skill remove <name>'), newState: {} };
+            }
+            const imported = await listImportedSkills(home);
+            if (!imported.some((s) => s.name === name)) {
+              return {
+                lines: err(`No approved skill named '${name}'. Run 'shelly skill list' to see what's available.`),
+                newState: {},
+              };
+            }
+            const result = await deleteImportedSkill(name, home, execCommand);
+            if (!result.ok) {
+              return { lines: err(result.error ?? `Failed to remove skill '${name}'`), newState: {} };
+            }
+            return { lines: out(`Removed approved skill '${name}'.`), newState: {} };
+          }
+
+          default: {
+            return {
+              lines: out(
+                'Usage: shelly skill <subcommand>',
+                '',
+                'Subcommands:',
+                '  import <path>   Import a local SKILL.md into quarantine for review',
+                '  list            List quarantined and approved skills',
+                '  approve <name>  Open the quarantine review dialog for a skill',
+                '  reject <name>   Discard a quarantined skill',
+                '  remove <name>   Delete an approved skill'
+              ),
+              newState: {},
+            };
+          }
+        }
+      }
+
       if (sub !== 'workflow') {
         return {
           lines: out(
@@ -613,7 +758,8 @@ export async function executeCommand(
             '  shelly config    View and edit settings',
             '  shelly voice     Open full-screen voice chat',
             '  shelly setup     Interactive setup wizard',
-            '  shelly workflow  Manage saved workflows'
+            '  shelly workflow  Manage saved workflows',
+            '  shelly skill     Import and manage SKILL.md skills'
           ),
           newState: {},
         };

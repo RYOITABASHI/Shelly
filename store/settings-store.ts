@@ -155,6 +155,10 @@ interface SettingsState {
   showConfigTUI: boolean;
   showVoiceMode: boolean;
   showScouterDetail: boolean;
+  /** Ephemeral, non-persisted UI trigger: set by `shelly skill approve <name>`
+   *  to open the quarantine-review dialog for that skill. Approval itself only
+   *  happens from a human tap in that dialog — never from this field alone. */
+  pendingSkillApprovalName: string | null;
 
   loadSettings: () => Promise<void>;
   updateSettings: (partial: Partial<AppSettings>) => void;
@@ -162,6 +166,7 @@ interface SettingsState {
   setShowConfigTUI: (show: boolean) => void;
   setShowVoiceMode: (show: boolean) => void;
   setShowScouterDetail: (show: boolean) => void;
+  setPendingSkillApprovalName: (name: string | null) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -170,6 +175,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   showConfigTUI: false,
   showVoiceMode: false,
   showScouterDetail: false,
+  pendingSkillApprovalName: null,
 
   loadSettings: async () => {
     try {
@@ -308,5 +314,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),
   setShowVoiceMode: (show: boolean) => set({ showVoiceMode: show }),
+  setPendingSkillApprovalName: (name: string | null) => set({ pendingSkillApprovalName: name }),
   setShowScouterDetail: (show: boolean) => set({ showScouterDetail: show }),
 }));

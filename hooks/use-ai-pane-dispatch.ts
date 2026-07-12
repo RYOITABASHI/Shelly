@@ -45,6 +45,8 @@ import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
+import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
+import { getHomePath } from '@/lib/home-path';
 import type { ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
 import { tryAutoStageFromTerminal, getStagedEdit } from '@/lib/ai-edit';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -293,7 +295,11 @@ export function useAIPaneDispatch(paneId: string) {
             // Phase 2a: surface a matching reusable skill so the confirm card can
             // offer gated reuse ("use skill X?"). Best-effort; never blocks the card.
             try {
-              const matched = matchSkillRecipes(promptText, await readSkillRecipes(), 1)[0];
+              const matched = matchSkillRecipes(
+                promptText,
+                [...(await readSkillRecipes()), ...(await readApprovedImportedSkillsAsRecipes(getHomePath()))],
+                1,
+              )[0];
               if (matched) {
                 draft.matchedSkill = { id: matched.id, name: matched.name, successCount: matched.successCount };
               }

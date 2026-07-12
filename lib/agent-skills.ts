@@ -39,6 +39,9 @@ export interface SkillRecipe {
   lastUsed: string;
   /** ISO-8601. */
   created: string;
+  /** Where this recipe came from: distilled from agent runs (default/omitted)
+   *  vs. imported from a local SKILL.md via the SKILL-001 quarantine flow. */
+  source?: 'distilled' | 'imported';
 }
 
 /** Obsidian Vault folder for agent skills (sibling of 90_Agent_Memory). */
@@ -336,7 +339,10 @@ export function bumpSkillUsage(recipe: SkillRecipe, timestamp?: number): SkillRe
   };
 }
 
-function deriveTrigger(taskText: string): string {
+/** Exported so lib/skill-import.ts (SKILL-001) can derive an imported skill's
+ *  trigger from its description with the same tokenizer, instead of
+ *  reimplementing this logic. */
+export function deriveTrigger(taskText: string): string {
   const tokens = [...tokenizeForMatch(taskText)].slice(0, 8);
   return tokens.length ? tokens.join(' ') : taskText.trim().slice(0, 80);
 }

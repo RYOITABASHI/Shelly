@@ -12,6 +12,7 @@ import {
   Modal,
   Alert,
   AppState,
+  ToastAndroid,
 } from 'react-native';
 import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -33,6 +34,19 @@ import {
   writeSkillRecipe,
   type SkillRecipe,
 } from '@/lib/agent-skills';
+import {
+  listQuarantinedSkills,
+  listImportedSkills,
+  promoteSkillFromQuarantine,
+  rejectQuarantinedSkill,
+  deleteImportedSkill,
+  quarantineDir,
+  importedDir,
+  type QuarantinedSkill,
+  type ImportedSkill,
+  type RunCommand,
+} from '@/lib/skill-import';
+import { getHomePath } from '@/lib/home-path';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
@@ -76,6 +90,22 @@ function formatWhen(ms: number): string {
 
 function isUiAutonomousTool(tool: ToolChoice): boolean {
   return tool.type === 'cli' || tool.type === 'local';
+}
+
+// SKILL-001 row preview length — matches the ~60-80 char range other sidebar
+// meta lines use (e.g. showAgentDetail's step/instruction slices).
+const IMPORTED_SKILL_DESC_TRUNCATE = 72;
+function truncateSkillDescription(description: string): string {
+  const trimmed = (description || '').trim();
+  return trimmed.length > IMPORTED_SKILL_DESC_TRUNCATE
+    ? `${trimmed.slice(0, IMPORTED_SKILL_DESC_TRUNCATE)}…`
+    : trimmed;
+}
+
+// Local single-quote POSIX shell escaping — same pattern each file that shells
+// out defines locally (lib/agent-skills.ts, components/layout/FileTree.tsx).
+function shellQuoteSidebar(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
 export function Sidebar() {
@@ -274,6 +304,163 @@ export function Sidebar() {
       ]
     );
   }, [t, handleDeleteSkill]);
+
+  // SKILL-001: locally-imported SKILL.md skills (agentskills.io-style), distinct
+  // from the G3 distilled recipes above. Two-stage lifecycle: quarantine (parsed,
+  // not yet trusted) → approved (promoted, usable). Both lists are read fresh
+  // from disk via lib/skill-import.ts — no separate persisted store.
+  const [quarantinedSkills, setQuarantinedSkills] = React.useState<QuarantinedSkill[]>([]);
+  const [importedSkills, setImportedSkills] = React.useState<ImportedSkill[]>([]);
+
+  // Shaped exactly like RunCommand — pass straight through to skill-import.ts's
+  // mutating calls rather than runCommandForAgentSync, whose string-returning /
+  // throw-on-failure shape doesn't match {stdout, stderr, exitCode}.
+  const runSkillImportCommand = React.useCallback<RunCommand>(
+    (cmd: string) => TerminalEmulator.execCommand(cmd, 30_000),
+    [],
+  );
+
+  const loadImportedSkills = React.useCallback(async () => {
+    const home = getHomePath();
+    try {
+      const [quarantined, imported] = await Promise.all([
+        listQuarantinedSkills(home),
+        listImportedSkills(home),
+      ]);
+      setQuarantinedSkills(quarantined);
+      setImportedSkills(imported);
+    } catch {
+      setQuarantinedSkills([]);
+      setImportedSkills([]);
+    }
+  }, []);
+  React.useEffect(() => {
+    void loadImportedSkills();
+  }, [loadImportedSkills]);
+
+  const handleApproveImportedSkill = React.useCallback(async (name: string) => {
+    try {
+      const result = await promoteSkillFromQuarantine(name, getHomePath(), runSkillImportCommand);
+      if (result.ok) {
+        ToastAndroid.show(t('sidebar.skill_approved_toast'), ToastAndroid.SHORT);
+        await loadImportedSkills();
+      } else {
+        Alert.alert(t('sidebar.skill_action_failed_title'), result.error || t('sidebar.skill_action_failed_generic'));
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runSkillImportCommand, loadImportedSkills, t]);
+
+  const handleRejectImportedSkill = React.useCallback(async (name: string) => {
+    try {
+      const result = await rejectQuarantinedSkill(name, getHomePath(), runSkillImportCommand);
+      if (result.ok) {
+        await loadImportedSkills();
+      } else {
+        Alert.alert(t('sidebar.skill_action_failed_title'), result.error || t('sidebar.skill_action_failed_generic'));
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runSkillImportCommand, loadImportedSkills, t]);
+
+  const handleRemoveImportedSkill = React.useCallback(async (name: string) => {
+    try {
+      const result = await deleteImportedSkill(name, getHomePath(), runSkillImportCommand);
+      if (result.ok) {
+        await loadImportedSkills();
+      } else {
+        Alert.alert(t('sidebar.skill_action_failed_title'), result.error || t('sidebar.skill_action_failed_generic'));
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runSkillImportCommand, loadImportedSkills, t]);
+
+  // Tap a row → review dialog. Reads the on-disk bundle's file listing
+  // (filenames only, never contents — a bundled scripts/ dir is purely
+  // informational here, this UI never offers to run it) so the human can see
+  // what ships alongside SKILL.md before approving.
+  const showImportedSkillDetail = React.useCallback(async (
+    skill: QuarantinedSkill | ImportedSkill,
+    status: 'quarantined' | 'approved',
+  ) => {
+    const home = getHomePath();
+    // The skill's own on-disk copy — quarantineDir/importedDir (from
+    // lib/skill-import.ts) are where the copy actually lives, NOT
+    // QuarantinedSkill.sourcePath (that's the original external path it was
+    // imported from, shown separately below as metadata).
+    const dirPath = status === 'quarantined'
+      ? `${quarantineDir(home)}/${skill.name}`
+      : `${importedDir(home)}/${skill.name}`;
+    let files: string[] = [];
+    try {
+      const result = await runSkillImportCommand(`ls -1 ${shellQuoteSidebar(dirPath)} 2>/dev/null`);
+      if (result.exitCode === 0) {
+        files = result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+      }
+    } catch {
+      files = [];
+    }
+
+    const lines: string[] = [skill.description];
+    if (status === 'quarantined') {
+      const q = skill as QuarantinedSkill;
+      lines.push('', `${t('sidebar.imported_skill_source')}: ${q.sourcePath}`);
+      if (q.warnings.length > 0) {
+        lines.push('', `${t('sidebar.imported_skill_warnings')}:`, ...q.warnings.map((w) => `⚠ ${w}`));
+      }
+    } else {
+      const im = skill as ImportedSkill;
+      lines.push('', im.body.slice(0, 400));
+    }
+    lines.push(
+      '',
+      `${t('sidebar.imported_skill_files')}: ${files.length ? files.join(', ') : t('sidebar.imported_skill_files_none')}`,
+    );
+
+    const body = lines.join('\n');
+
+    if (status === 'quarantined') {
+      Alert.alert(skill.name, body, [
+        { text: t('sidebar.skill_approve'), onPress: () => void handleApproveImportedSkill(skill.name) },
+        { text: t('sidebar.skill_reject'), style: 'destructive', onPress: () => void handleRejectImportedSkill(skill.name) },
+        { text: t('common.close'), style: 'cancel' },
+      ]);
+    } else {
+      Alert.alert(skill.name, body, [
+        { text: t('sidebar.skill_remove'), style: 'destructive', onPress: () => void handleRemoveImportedSkill(skill.name) },
+        { text: t('common.close'), style: 'cancel' },
+      ]);
+    }
+  }, [t, runSkillImportCommand, handleApproveImportedSkill, handleRejectImportedSkill, handleRemoveImportedSkill]);
+
+  // Auto-open the quarantine review dialog when a pseudo-shell command (or
+  // similar) requests it via settings-store. Single-shot: cleared right after
+  // firing (or when no longer found — e.g. already approved/rejected by the
+  // time this fires) so re-opening the Sidebar never re-triggers it.
+  const pendingSkillApprovalName = useSettingsStore((s) => s.pendingSkillApprovalName);
+  React.useEffect(() => {
+    if (!pendingSkillApprovalName) return;
+    const name = pendingSkillApprovalName;
+    (async () => {
+      let match = quarantinedSkills.find((s) => s.name === name);
+      if (!match) {
+        // quarantinedSkills may not have loaded yet (e.g. right after mount/
+        // foreground, before loadImportedSkills' async effect resolves) — do
+        // one fresh, awaited read before giving up, so a `shelly skill
+        // approve <name>` issued right after app resume doesn't silently
+        // fail to open the review dialog.
+        const fresh = await listQuarantinedSkills(getHomePath());
+        match = fresh.find((s) => s.name === name);
+      }
+      if (match) {
+        await showImportedSkillDetail(match, 'quarantined');
+      }
+      useSettingsStore.getState().setPendingSkillApprovalName(null);
+    })();
+  }, [pendingSkillApprovalName, quarantinedSkills, showImportedSkillDetail]);
 
   const handleRunScheduledAgent = React.useCallback(async (agentId: string, agentName: string) => {
     setPendingAgentIds((prev) => new Set(prev).add(agentId));
@@ -711,6 +898,58 @@ export function Sidebar() {
             ))
           ) : (
             <Text style={styles.tasksEmpty}>{t('sidebar.skill_empty')}</Text>
+          )}
+        </SidebarSection>
+
+        {/* IMPORTED SKILLS (SKILL-001) — SKILL.md skills imported from local
+            sources, gated by human quarantine review before becoming usable.
+            Sibling to SKILLS (G3 distilled recipes) above — deliberately not
+            merged, different provenance and life-cycle. */}
+        <SidebarSection
+          title={t('sidebar.imported_skills_title')}
+          icon="verified"
+          isOpen={openSections.importedSkills ?? false}
+          onToggle={() => toggleSection('importedSkills')}
+          badge={quarantinedSkills.length + importedSkills.length}
+          iconsOnly={iconsOnly}
+        >
+          {quarantinedSkills.length === 0 && importedSkills.length === 0 ? (
+            <Text style={styles.tasksEmpty}>{t('sidebar.imported_skills_empty')}</Text>
+          ) : (
+            <>
+              {quarantinedSkills.map((skill) => (
+                <View key={`quarantined-skill-${skill.name}`} style={[styles.taskRow, styles.agentRow]}>
+                  <View style={[styles.taskDot, { backgroundColor: C.warning }]} />
+                  <Pressable
+                    style={styles.taskInfo}
+                    onPress={() => void showImportedSkillDetail(skill, 'quarantined')}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sidebar.imported_skill_detail_a11y', { name: skill.name })}
+                  >
+                    <Text style={styles.taskName} numberOfLines={1}>{skill.name.toUpperCase()}</Text>
+                    <Text style={styles.taskMeta} numberOfLines={1}>
+                      {truncateSkillDescription(skill.description)}
+                    </Text>
+                  </Pressable>
+                </View>
+              ))}
+              {importedSkills.map((skill) => (
+                <View key={`imported-skill-${skill.name}`} style={[styles.taskRow, styles.agentRow]}>
+                  <View style={[styles.taskDot, { backgroundColor: C.accentGreen }]} />
+                  <Pressable
+                    style={styles.taskInfo}
+                    onPress={() => void showImportedSkillDetail(skill, 'approved')}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sidebar.imported_skill_detail_a11y', { name: skill.name })}
+                  >
+                    <Text style={styles.taskName} numberOfLines={1}>{skill.name.toUpperCase()}</Text>
+                    <Text style={styles.taskMeta} numberOfLines={1}>
+                      {truncateSkillDescription(skill.description)}
+                    </Text>
+                  </Pressable>
+                </View>
+              ))}
+            </>
           )}
         </SidebarSection>
 
