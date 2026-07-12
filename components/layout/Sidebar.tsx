@@ -598,7 +598,7 @@ export function Sidebar() {
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >
                     <Text style={styles.taskName} numberOfLines={1}>
-                      {agent.name.toUpperCase()}
+                      {(agent.name || '').toUpperCase()}
                     </Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
                       {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'}
@@ -693,7 +693,7 @@ export function Sidebar() {
                   accessibilityRole="button"
                   accessibilityLabel={t('sidebar.skill_detail_a11y', { name: skill.name })}
                 >
-                  <Text style={styles.taskName} numberOfLines={1}>{skill.name.toUpperCase()}</Text>
+                  <Text style={styles.taskName} numberOfLines={1}>{(skill.name || '').toUpperCase()}</Text>
                   <Text style={styles.taskMeta} numberOfLines={1}>
                     {t('sidebar.skill_uses', { count: skill.successCount })} · {skill.toolLabel}
                   </Text>
