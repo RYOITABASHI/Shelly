@@ -33,6 +33,7 @@ import java.util.Calendar
 object AgentAlarmScheduler {
     private const val TAG = "AgentAlarmScheduler"
     private const val PREFS = "shelly_agent_ids"
+    private val requestCodeLock = Any()
 
     // ── L1 BOOT-AUTOSTART (dormant, flag-OFF) ──────────────────────────────────
     // AlarmManager alarms are cleared on reboot, so scheduled agents stop firing
@@ -107,13 +108,13 @@ object AgentAlarmScheduler {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
     /** Stable per-agent request code, shared with the legacy receiver path. */
-    fun getAgentRequestCode(context: Context, agentId: String): Int {
+    fun getAgentRequestCode(context: Context, agentId: String): Int = synchronized(requestCodeLock) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val existing = prefs.getInt(agentId, -1)
-        if (existing >= 0) return existing
+        if (existing >= 0) return@synchronized existing
         val nextId = prefs.getInt("_next_id", 1000)
         prefs.edit().putInt(agentId, nextId).putInt("_next_id", nextId + 1).apply()
-        return nextId
+        nextId
     }
 
     /** The alarm operation: launch the FGS directly (no broadcast hop). */
@@ -130,6 +131,28 @@ object AgentAlarmScheduler {
             if (!cron.isNullOrBlank()) putExtra(TerminalSessionService.EXTRA_CRON, cron)
         }
         val rc = getAgentRequestCode(context, agentId)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(context, rc, intent, piFlags())
+        } else {
+            PendingIntent.getService(context, rc, intent, piFlags())
+        }
+    }
+
+    /**
+     * Widget/manual operation using the exact RUN_AGENT service contract as an
+     * alarm fire, but with a separate request-code allocation and a manual marker.
+     * The separate allocation is security/reliability critical: PendingIntent
+     * identity ignores extras, so reusing the alarm request code with
+     * FLAG_UPDATE_CURRENT would replace the scheduled operation's interval/cron
+     * extras and silently break its re-arm loop.
+     */
+    fun manualRunPendingIntent(context: Context, agentId: String): PendingIntent {
+        val intent = Intent(context, TerminalSessionService::class.java).apply {
+            action = TerminalSessionService.ACTION_RUN_AGENT
+            putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+            putExtra(TerminalSessionService.EXTRA_MANUAL, true)
+        }
+        val rc = getAgentRequestCode(context, "widget-run:$agentId")
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             PendingIntent.getForegroundService(context, rc, intent, piFlags())
         } else {

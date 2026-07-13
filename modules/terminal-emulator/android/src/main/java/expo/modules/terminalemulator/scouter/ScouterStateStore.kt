@@ -17,6 +17,11 @@ data class ScouterWidgetConversation(
     val widgetStatus: String?,
     val widgetStatusAt: Long?,
     val widgetError: String?,
+    val widgetAgentRunId: String?,
+    val widgetAgentRunName: String?,
+    val widgetAgentRunStatus: String?,
+    val widgetAgentRunStatusAt: Long?,
+    val widgetAgentRunError: String?,
     val privacySuppressed: Boolean = false,
     val choiceOptions: List<ChoiceOption> = emptyList()
 )
@@ -225,6 +230,46 @@ class ScouterStateStore(context: Context) {
             .remove(KEY_WIDGET_PRIVACY_SUPPRESSED_CODEX_SESSION_ID)
             .commit()
         writeHelperState()
+    }
+
+    fun recordWidgetAgentRunStarted(agentId: String, agentName: String) {
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            prefs.edit()
+                .putString(KEY_WIDGET_AGENT_RUN_ID, agentId)
+                .putString(KEY_WIDGET_AGENT_RUN_NAME, agentName.take(MAX_WIDGET_TEXT_LENGTH))
+                .putString(KEY_WIDGET_AGENT_RUN_STATUS, WIDGET_AGENT_STATUS_RUNNING)
+                .putLong(KEY_WIDGET_AGENT_RUN_STATUS_AT, now)
+                .remove(KEY_WIDGET_AGENT_RUN_ERROR)
+                .commit()
+            writeHelperStateLocked(readAllMutable())
+        }
+    }
+
+    fun recordWidgetAgentRunFinished(
+        agentId: String,
+        agentName: String,
+        success: Boolean,
+        error: String?
+    ) {
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            val editor = prefs.edit()
+                .putString(KEY_WIDGET_AGENT_RUN_ID, agentId)
+                .putString(KEY_WIDGET_AGENT_RUN_NAME, agentName.take(MAX_WIDGET_TEXT_LENGTH))
+                .putString(
+                    KEY_WIDGET_AGENT_RUN_STATUS,
+                    if (success) WIDGET_AGENT_STATUS_SUCCESS else WIDGET_AGENT_STATUS_ERROR
+                )
+                .putLong(KEY_WIDGET_AGENT_RUN_STATUS_AT, now)
+            if (error.isNullOrBlank()) {
+                editor.remove(KEY_WIDGET_AGENT_RUN_ERROR)
+            } else {
+                editor.putString(KEY_WIDGET_AGENT_RUN_ERROR, error.take(MAX_WIDGET_TEXT_LENGTH))
+            }
+            editor.commit()
+            writeHelperStateLocked(readAllMutable())
+        }
     }
 
     fun recordWidgetChoicePending(message: String, options: List<ChoiceOption> = emptyList()) {
@@ -598,6 +643,11 @@ class ScouterStateStore(context: Context) {
                 widgetStatusAt = widgetStatusAt?.takeIf { widgetStatusVisible && !privacySuppressed },
                 widgetError = prefs.getString(KEY_WIDGET_ERROR, null)?.ifBlank { null }
                     ?.takeIf { widgetStatusVisible && !privacySuppressed },
+                widgetAgentRunId = prefs.getString(KEY_WIDGET_AGENT_RUN_ID, null)?.ifBlank { null },
+                widgetAgentRunName = prefs.getString(KEY_WIDGET_AGENT_RUN_NAME, null)?.ifBlank { null },
+                widgetAgentRunStatus = prefs.getString(KEY_WIDGET_AGENT_RUN_STATUS, null)?.ifBlank { null },
+                widgetAgentRunStatusAt = prefs.getLong(KEY_WIDGET_AGENT_RUN_STATUS_AT, 0L).takeIf { it > 0L },
+                widgetAgentRunError = prefs.getString(KEY_WIDGET_AGENT_RUN_ERROR, null)?.ifBlank { null },
                 privacySuppressed = privacySuppressed,
                 choiceOptions = if (widgetStatus == WIDGET_STATUS_CHOICE_PENDING) {
                     ChoiceOption.listFromJson(prefs.getString(KEY_WIDGET_CHOICE_OPTIONS, null))
@@ -621,6 +671,11 @@ class ScouterStateStore(context: Context) {
             widgetStatus = null,
             widgetStatusAt = null,
             widgetError = null,
+            widgetAgentRunId = null,
+            widgetAgentRunName = null,
+            widgetAgentRunStatus = null,
+            widgetAgentRunStatusAt = null,
+            widgetAgentRunError = null,
             privacySuppressed = false,
             choiceOptions = emptyList()
         )
@@ -1056,6 +1111,11 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_STATUS = "widget_status"
         private const val KEY_WIDGET_STATUS_AT = "widget_status_at"
         private const val KEY_WIDGET_ERROR = "widget_error"
+        private const val KEY_WIDGET_AGENT_RUN_ID = "widget_agent_run_id"
+        private const val KEY_WIDGET_AGENT_RUN_NAME = "widget_agent_run_name"
+        private const val KEY_WIDGET_AGENT_RUN_STATUS = "widget_agent_run_status"
+        private const val KEY_WIDGET_AGENT_RUN_STATUS_AT = "widget_agent_run_status_at"
+        private const val KEY_WIDGET_AGENT_RUN_ERROR = "widget_agent_run_error"
         private const val KEY_WIDGET_CHOICE_OPTIONS = "widget_choice_options"
         private const val KEY_WIDGET_PRIVACY_CLEARED_AT = "widget_privacy_cleared_at"
         private const val KEY_WIDGET_PRIVACY_SUPPRESSED_AT = "widget_privacy_suppressed_at"
@@ -1072,6 +1132,9 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_USAGE_LIMITED_AT = "widget_usage_limited_at"
         private const val KEY_WIDGET_USAGE_LIMITED_RESET_AT = "widget_usage_limited_reset_at"
         private const val WIDGET_STATUS_PENDING_TERMINAL = "pending_terminal"
+        const val WIDGET_AGENT_STATUS_RUNNING = "running"
+        const val WIDGET_AGENT_STATUS_SUCCESS = "success"
+        const val WIDGET_AGENT_STATUS_ERROR = "error"
         private const val WIDGET_STATUS_SENDING = "sending"
         private const val WIDGET_STATUS_CHOICE_PENDING = "choice_pending"
         private const val WIDGET_STATUS_CHOICE_SENT = "choice_sent"
@@ -1134,6 +1197,11 @@ private fun ScouterWidgetConversation.toJson(): JSONObject = JSONObject().apply 
     widgetStatus?.let { put("widgetStatus", it) }
     widgetStatusAt?.let { put("widgetStatusAt", it) }
     widgetError?.let { put("widgetError", it) }
+    widgetAgentRunId?.let { put("widgetAgentRunId", it) }
+    widgetAgentRunName?.let { put("widgetAgentRunName", it) }
+    widgetAgentRunStatus?.let { put("widgetAgentRunStatus", it) }
+    widgetAgentRunStatusAt?.let { put("widgetAgentRunStatusAt", it) }
+    widgetAgentRunError?.let { put("widgetAgentRunError", it) }
     put("privacySuppressed", privacySuppressed)
     if (choiceOptions.isNotEmpty()) put("choiceOptions", ChoiceOption.listToJson(choiceOptions))
 }

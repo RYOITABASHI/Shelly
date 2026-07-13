@@ -329,6 +329,46 @@
       android:shadowRadius="6"
       android:includeFontPadding="false" />
 
+    <!-- One-tap execution for the next registered scheduled agent. The
+         PendingIntent targets TerminalSessionService directly; this row is
+         status/run only and is never reused for schedule approvals. -->
+    <TextView
+      android:id="@+id/scouter_agent_status"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="7dp"
+      android:ellipsize="end"
+      android:singleLine="true"
+      android:text="@string/scouter_widget_agent_none"
+      android:textColor="#66FF88"
+      android:textSize="10sp"
+      android:typeface="monospace"
+      android:includeFontPadding="false" />
+
+    <TextView
+      android:id="@+id/scouter_agent_run"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="5dp"
+      android:gravity="center"
+      android:minHeight="32dp"
+      android:background="@drawable/scouter_ask_pill_bg"
+      android:contentDescription="@string/scouter_widget_agent_run"
+      android:paddingStart="14dp"
+      android:paddingEnd="14dp"
+      android:paddingTop="7dp"
+      android:paddingBottom="7dp"
+      android:text="@string/scouter_widget_agent_run"
+      android:textColor="#00FF41"
+      android:textSize="13sp"
+      android:letterSpacing="0.04"
+      android:typeface="monospace"
+      android:textStyle="bold"
+      android:shadowColor="#B300FF41"
+      android:shadowRadius="6"
+      android:includeFontPadding="false"
+      android:visibility="gone" />
+
     <!-- divider — must be a TextView (plain <View> is not in the App Widget
          RemoteViews class allowlist and throws InflateException in the host) -->
     <TextView

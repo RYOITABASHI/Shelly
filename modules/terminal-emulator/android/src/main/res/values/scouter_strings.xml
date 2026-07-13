@@ -3,6 +3,14 @@
   <string name="scouter_status_dot">Scouter status</string>
   <string name="scouter_ask_agent_chat_short">ASK</string>
   <string name="scouter_ask_agent_chat">Ask Codex from widget</string>
+  <string name="scouter_widget_agent_run">Run scheduled agent</string>
+  <string name="scouter_widget_agent_run_named">RUN %1$s</string>
+  <string name="scouter_widget_agent_none">AGENT  no scheduled agent</string>
+  <string name="scouter_widget_agent_next_last">NEXT %1$s %2$s · LAST %3$s</string>
+  <string name="scouter_widget_agent_last_never">--</string>
+  <string name="scouter_widget_agent_last_running">RUNNING</string>
+  <string name="scouter_widget_agent_last_success">OK</string>
+  <string name="scouter_widget_agent_last_error">ERROR</string>
   <string name="scouter_widget_prompt_title">Ask Codex</string>
   <string name="scouter_widget_prompt_hint">Type a prompt for the bound Codex terminal</string>
   <string name="scouter_widget_prompt_send">Send</string>

@@ -74,6 +74,11 @@ type ScouterWidgetConversation = {
   widgetStatus?: string | null;
   widgetStatusAt?: number | null;
   widgetError?: string | null;
+  widgetAgentRunId?: string | null;
+  widgetAgentRunName?: string | null;
+  widgetAgentRunStatus?: 'running' | 'success' | 'error' | null;
+  widgetAgentRunStatusAt?: number | null;
+  widgetAgentRunError?: string | null;
   privacySuppressed?: boolean | null;
 };
 

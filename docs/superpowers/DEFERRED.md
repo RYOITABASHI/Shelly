@@ -615,21 +615,21 @@ fail-loud する。詳細:
 
 ### Secretary MVP — ウィジェット導線 (Scouter widget 拡張: trigger + status)
 
-**優先度**: P1 (着手条件クリア。実装はモバイル連携セッションで)
-**状態**: 🟢 着手可。**ブロッカー（コアループ未完）は解消** — コアループ (NL→確認カード→ゲート→action→無人 AlarmManager 発火) は **v7.0.0 で on-device 立証・出荷済み** (N=1 デモ)。ユーザー決定 (2026-06-27): **A（入力ショートカット）と B（登録済みエージェントを1タップ RUN＝カード無しの本物）を両方実装**。実装はモバイル連携セッションで後ほど。
-**→ 実装引き継ぎ (cold-start resume)**: `docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md`（HEAD の file:line・A/B 設計・ガード・実機検証手順を内蔵）。**B の肝**: widget ボタン → `PendingIntent.getForegroundService` で `TerminalSessionService.ACTION_RUN_AGENT`（v7.0.0 のアラーム発火と同一 intent）を叩く＝アプリを開かずカード無しで既存エージェントを発火。
+**優先度**: Task B ✅ 実装済み (`154525d3fb`、実機検証待ち) / Task A P2
+**状態**: **Task B（登録済みエージェントを1タップ RUN）は 2026-07-13 に実装済み**。Scouter は disk 上の有効な schedule 済み agent から次回 fire が最も近い1件を毎 render / tap 時に再検証し、`PendingIntent.getForegroundService` → `TerminalSessionService.ACTION_RUN_AGENT` で unattended 実行する。STOP-ALL、per-action approval の fail-closed、scheduled fire の re-arm は維持。Task A（入力ショートカット）は今回の B 優先 dispatch では未実装のため P2 として継続。
+**設計・実機検証手順**: `docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md`（A/B 設計・ガード・実機検証手順を内蔵）。**B の肝**: widget ボタン → `PendingIntent.getForegroundService` で `TerminalSessionService.ACTION_RUN_AGENT`（v7.0.0 のアラーム発火と同一 contract）を叩く＝アプリを開かずカード無しで既存エージェントを発火。
 
 **何を足すか** (既存 `ScouterWidgetProvider.kt` の拡張であって新規 widget ではない — インフラは 2026-06-10 に実機 PASS 済み):
-- **トリガー導線** — ウィジェットから「〇〇やって」を最短距離で開始。`ScouterWidgetPromptActivity` に deep-link action (例 `shelly://agent/new?voice=1`) を1本追加し、tap → チャットを音声待機状態で開く。配線 (`promptPendingIntent` / `ScouterWidgetPromptActivity` / `$HOME/.shelly-deep-link-queue` poll) は全て既存・実証済み。**ほぼタダ。**
-- **ステータス行** — 次回スケジュール実行 (agent name + 次 fire 時刻) と直近結果 (success/error) を `ScouterStateStore` snapshot に2フィールド追加してレンダ。上の「Scouter Widget 残ポリッシュ (gitBranch/lastError を widget へ)」と同じ snapshot 拡張パターン。**安い。**
+- **Task A — 入力ショートカット (P2、未実装)** — ウィジェットから「〇〇やって」を最短距離で開始。`ScouterWidgetPromptActivity` に deep-link action (例 `shelly://agent/new?voice=1`) を1本追加し、tap → チャットを音声待機状態で開く。配線 (`promptPendingIntent` / `ScouterWidgetPromptActivity` / `$HOME/.shelly-deep-link-queue` poll) は全て既存・実証済み。
+- **Task B — 登録済み agent RUN + status (✅ `154525d3fb`)** — 次 scheduled agent の RUN ボタン、次回 fire 時刻、直近の running/success/error を表示。manual marker により schedule を re-arm せず、実行自体は unattended として approval を fail-closed にする。
 
 **やらないこと / ガード**:
 - **スケジュール自律実行の承認をウィジェットに置かない。** 既存の widget 承認ピル (ALLOW/DENY) は*ライブ Codex PTY* に `y\r` を書く方式で、スケジュール実行には PTY が無い。スケジュール承認は MVP §2.6 の「run-id 束縛・単回・期限付き」を満たす net-new ハンドラ (B5) が必要で、これは**通知側に置く**。ウィジェットの既存ライブ PTY 承認は残すが、スケジュール承認導線は足さない (replay/stale を招くため)。
 - 承認をどうしてもウィジェットに出す場合は B5 の stored-action dispatch ハンドラに相乗りし、single-use/expiry を必ず共有すること。別実装で速攻ボタンを作らない。
 
-**Why not now**: MVP の "one outcome" は NL→カード→ゲート→action のコアループ。ウィジェット導線は追加導線であって核ではなく、コアループ未完で先に作っても見せ場が無い。ただしインフラが既存なので、コアループ着地後の着手コストは小さい (trigger=deep-link 1本 / status=snapshot 2フィールド)。
+**Why Task A remains deferred**: 今回の dispatch は security-sensitive な Task B を完全に着地させることを最優先とし、別の deep-link / 音声待機 UI と実機 QA を要する Task A を同じ差分へ混ぜなかった。
 
-→ sync: 着手時に MVP spec の §7 Parked から本項へ移動し、README Secretary 節に widget 導線を追記。
+→ sync: ✅ MVP Phase 0 spec §8 と README Scouter Widget に反映済み（本 PR）。
 
 ### 一過性レイアウト崩れ — Updates モーダル開閉
 
@@ -2177,6 +2177,8 @@ claude() {
 
 - **2026-07-13 (Batch 10)**: BOOT-AUTOSTART の dormant port を `58a378834` / `20ae526c3` / `c85f4ca1e` から再構成。`BOOT_COMPLETED` receiver と Doze exemption permission、native persisted-schedule re-arm、host reference/tests を追加し、receiver-level `android:permission` は送信者を制約して配信を壊すため除去、receiver 登録は prebuild で残る `plugins/with-terminal-service.js` を source of truth（checked-in manifest は readability mirror）とした。native flag `shelly_boot_autostart.enabled` は既定 `false`、production setter なしのため既存 agent は reboot 時も再 arm されない。将来の flag enable に備え、`$HOME/.shelly/agents/.halted` 存在時は persisted schedule を一件も再 arm しない STOP-ALL guard も追加。host gate（`pnpm run check` / `expo lint` / boot-autostart 16 tests / `git diff --check`）PASS。**実機 reboot / Doze / One UI / flag-enabled end-to-end は未検証であり、有効化前の follow-up 必須**。新規 L1 permission（`RECEIVE_BOOT_COMPLETED` / `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）反映には APK rebuild + reinstall が必要。→ sync: なし（既定 OFF の内部基盤）。
 - **2026-07-13（main 追いつかせバッチ、実機検証セッション）**: PR #98〜#112（SKILL-001 / CAP-001·SECRET-001·HTTP-001 broker / agent scheduling hourly·multi-daily / EVENT-001 core / capability-broker redaction fix / agent-store name guard / NOTIFY-001 / PlanSpec executor core+FS-001·EXEC-001 / MODEL-001 / boot-autostart / INTENT-001 / MEMORY-001 / DM-pairing）を全て `main` にマージ。マージ過程で2件の実マージリグレッションを検出・修正——① `AgentRuntime.kt` の `PLAN_EXECUTOR_ACTIONS` allowlist が PR #112（dm-reply）ベースにコンフリクト解消され `intent` が脱落し、attended な PlanSpec 経由 intent action が全拒否される状態になっていた（Codex 発見）。② legacy `.sh` executor の `intent)` ケースが `return 0` を失い次ケースへフォールスルーする潜在バグ（CC 発見、実害なし）。両方とも独立レビュー→修正コミット→再レビューを経てマージ。build 1872（PR #110 マージ後、versionCode 1872）で実機（Galaxy Z Fold6、Android 16、SM-F956Q）検証: Notification Access 許可（`dev.shelly.terminal/expo.modules.terminalemulator.ShellyNotificationListener`）は Samsung の設定画面が adb 合成タップを受け付けないため物理タップが必須（自動化不可、既知の制約として記録）——付与後は `settings get secure enabled_notification_listeners` で確認可能。DM-pairing の自己完結型ラウンドトリップテスト（Settings → DM PAIRING → RUN SELF-CONTAINED REPLY TEST）は **実機で PASS**（"Self-contained notification reply round trip passed."）——ただしこのテストは通知投稿から返信送信までの内部ラウンドトリップを検証するもので、通知の可視時間は1秒未満（RemoteInput 返信で即座に消える設計であり正常）。ログで `onNotificationPosted` の発火自体も確認。副次的な軽微バグを発見：`findAgentsTriggeredBy`（`ShellyNotificationListener.kt:355`）が `.shelly/agents/` 配下の全ファイルを agent JSON として無条件パースしており、`custom-auth-refs.json`（JSON 配列、agent 設定ではない）に対して通知ごとに `JSONException` を投げてログをスパムする（catch 済みで機能的には無害、ノイズのみ）——P2 として別途登録が必要。ワイヤレス adb は最新の Wireless Debugging ペアリング（`adb pair`）が2種類の adb バイナリ（scrcpy 同梱版・公式 platform-tools 版）両方で `protocol fault (couldn't read status message)` を再現性高く起こし、コード更新・ネットワーク疎通確認をしても解消せず未解決のまま——回避策として USB 接続確立後に `adb tcpip 5555` → `adb connect <ip>:5555` で無線に切り替える方式が有効だったと確認（ペアリングフロー自体を迂回）。NOTIFY-001 の実機 end-to-end（外部アプリ通知でのエージェント起動）は本エントリ時点で未実施、次回に持ち越し。→ sync: なし（内部検証ログ）。
+
+- **2026-07-13 (Scouter widget agent RUN / Task B)**: `154525d3fb` で、home widget から既存の schedule 済み agent をアプリ画面なしで1タップ実行する導線を実装。対象は `~/.shelly/agents/*.json` と materialized run artifact を render/tap の両時点で再検証し、削除・disabled・不正 id・schedule 無し・artifact 無しを拒否。direct foreground-service PendingIntent は alarm と別 request code にして extras 上書きを防止し、native chokepoint の `.halted` check を通過した場合だけ `unattended=true` で実行、manual run は schedule を re-arm しない。widget には next fire と直近 running/success/error のみを表示し、schedule approval action は追加していない。Task A（入力 shortcut）は P2 継続。TypeScript check、focused parity tests 5件、focused test source lint、`git diff --check` は PASS。Gradle wrapper / system Gradle が無く Kotlin compile は未実施、実機 tap / STOP-ALL / fail-closed / scheduled re-arm 非干渉は PR review 後の device gate。→ sync: README Scouter Widget / Phase 0 spec。
 
 - **2026-07-13 (P1, Batch 6 DM pairing)**: current main の schema-v1 PlanSpec と既存 generic Review 契約へ、承認コードによる通知会話ペアリング + `dm-reply` を手動再構成。通知 read/trigger と reply-send の独立2フラグはともに既定 OFF、返信は毎回 in-app Review 必須で、自動承認 (`0686f4a7` 以降) は不採用。disk mirror は atomic rename の前後で `sync` し、native send 時に再読込・取消即時反映・live fingerprint 完全一致・10秒 send debounce・本文非ログを適用。自己完結テストは Shelly 自身の通知だけを使う。**実機の Notification Access grant、実アプリの承認コード検出、実会話への reply round-trip、OEM/Android 16 の RemoteInput 挙動は未検証で、有効化前の必須 P1 gate**。→ sync: なし（既定 OFF の内部機能）。
 
