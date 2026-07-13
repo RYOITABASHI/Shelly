@@ -137,6 +137,28 @@ object AgentAlarmScheduler {
         }
     }
 
+    /**
+     * Widget/manual operation using the exact RUN_AGENT service contract as an
+     * alarm fire, but with a separate request-code allocation and a manual marker.
+     * The separate allocation is security/reliability critical: PendingIntent
+     * identity ignores extras, so reusing the alarm request code with
+     * FLAG_UPDATE_CURRENT would replace the scheduled operation's interval/cron
+     * extras and silently break its re-arm loop.
+     */
+    fun manualRunPendingIntent(context: Context, agentId: String): PendingIntent {
+        val intent = Intent(context, TerminalSessionService::class.java).apply {
+            action = TerminalSessionService.ACTION_RUN_AGENT
+            putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+            putExtra(TerminalSessionService.EXTRA_MANUAL, true)
+        }
+        val rc = getAgentRequestCode(context, "widget-run:$agentId")
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(context, rc, intent, piFlags())
+        } else {
+            PendingIntent.getService(context, rc, intent, piFlags())
+        }
+    }
+
     /** Legacy broadcast PI — only built to CANCEL alarms armed before this fix. */
     private fun legacyBroadcastPendingIntent(context: Context, agentId: String): PendingIntent {
         val intent = Intent(context, AgentAlarmReceiver::class.java).apply {

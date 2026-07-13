@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+  <string name="scouter_widget_agent_run">予定済みエージェントを実行</string>
+  <string name="scouter_widget_agent_run_named">実行 %1$s</string>
+  <string name="scouter_widget_agent_none">エージェント  予定なし</string>
+  <string name="scouter_widget_agent_next_last">次回 %1$s %2$s · 前回 %3$s</string>
+  <string name="scouter_widget_agent_last_never">--</string>
+  <string name="scouter_widget_agent_last_running">実行中</string>
+  <string name="scouter_widget_agent_last_success">成功</string>
+  <string name="scouter_widget_agent_last_error">失敗</string>
   <string name="scouter_widget_prompt_title">Codex に依頼</string>
   <string name="scouter_widget_prompt_hint">紐づいた Codex ターミナルへ送るプロンプト</string>
   <string name="scouter_widget_prompt_send">送信</string>

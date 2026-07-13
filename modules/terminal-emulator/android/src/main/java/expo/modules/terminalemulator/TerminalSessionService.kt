@@ -15,6 +15,9 @@ import android.os.PowerManager
 import android.util.Log
 import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
 import expo.modules.terminalemulator.scouter.NotificationDispatcher
+import expo.modules.terminalemulator.scouter.ScouterStateStore
+import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
+import expo.modules.terminalemulator.scouter.WidgetAgentRepository
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -44,6 +47,7 @@ class TerminalSessionService : Service() {
         const val EXTRA_INTERVAL_MS = "interval_ms"
         const val EXTRA_CRON = "cron"
         const val EXTRA_TAINTED = "tainted"
+        const val EXTRA_MANUAL = "manual"
 
         /**
          * Authoritative session registry. Lives here (Service companion) rather
@@ -109,13 +113,42 @@ class TerminalSessionService : Service() {
                 val tainted = intent.getBooleanExtra(EXTRA_TAINTED, false)
                 val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)
                 val cron = intent.getStringExtra(EXTRA_CRON)
-                val unattended = intervalMs > 0 || !cron.isNullOrBlank()
+                val manual = intent.getBooleanExtra(EXTRA_MANUAL, false)
+                val scheduled = intervalMs > 0 || !cron.isNullOrBlank()
+                val widgetAgent = if (manual) WidgetAgentRepository.scheduledById(applicationContext, agentId) else null
+                if (manual && widgetAgent == null) {
+                    // A widget PendingIntent can outlive the rendered RemoteViews.
+                    // Re-read disk at tap time and refuse deleted, disabled,
+                    // malformed, or no-longer-scheduled agents rather than trusting
+                    // stale extras or an RN in-memory reference.
+                    Log.i(TAG, "Manual widget RUN_AGENT for $agentId refused: registered scheduled agent not found")
+                    if (!hasProtectedWork()) {
+                        startForegroundWithNotification(null)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                        return START_NOT_STICKY
+                    }
+                    startForegroundWithNotification(null)
+                    return START_STICKY
+                }
+                // A widget tap runs without an Activity/attending user. Mark it
+                // unattended so per-action approval remains fail-closed exactly as
+                // for an AlarmManager fire, even though it intentionally carries no
+                // interval/cron extras and must not re-arm the schedule.
+                val unattended = scheduled || manual
                 startForegroundWithNotification("Agent running in background")
-                runAgentInBackground(agentId, tainted, unattended)
+                if (manual) {
+                    ScouterStateStore(applicationContext).recordWidgetAgentRunStarted(
+                        agentId,
+                        widgetAgent!!.name
+                    )
+                    ScouterWidgetProvider.updateAll(applicationContext, force = true)
+                }
+                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)
                 // Alarm-fired runs carry interval/cron — re-arm the next fire here now
                 // that the alarm targets this service directly (no receiver in the
                 // loop). A manual run (no interval/cron extras) is a no-op.
-                if (intervalMs > 0 || !cron.isNullOrBlank()) {
+                if (!manual && scheduled) {
                     try {
                         AgentAlarmScheduler.scheduleNext(applicationContext, agentId, intervalMs, cron)
                     } catch (e: Exception) {
@@ -249,7 +282,13 @@ class TerminalSessionService : Service() {
         nm.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun runAgentInBackground(agentId: String, tainted: Boolean, unattended: Boolean) {
+    private fun runAgentInBackground(
+        agentId: String,
+        tainted: Boolean,
+        unattended: Boolean,
+        widgetManual: Boolean = false,
+        widgetAgentName: String? = null
+    ) {
         activeAgentRuns.incrementAndGet()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
@@ -258,10 +297,12 @@ class TerminalSessionService : Service() {
             // backgrounded or the RN JS thread is paused/thermal-killed (the RN
             // 500ms poll in app/_layout.tsx only runs while the Activity is alive).
             val approvalObserver = startAgentActionApprovalObserver()
+            var runResult: AgentRunResult? = null
+            var crashType: String? = null
             try {
                 // AgentRuntime announces the run outcome itself (agent-result /
                 // error notification); we don't need its return value here.
-                AgentRuntime.runAgent(
+                runResult = AgentRuntime.runAgent(
                     applicationContext,
                     agentId,
                     tainted = tainted,
@@ -269,9 +310,26 @@ class TerminalSessionService : Service() {
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)
+                crashType = e.javaClass.simpleName
             } finally {
                 runCatching { approvalObserver?.stopWatching() }
                 releaseAgentWakeLock(wakeLock, agentId)
+            }
+
+            if (widgetManual) {
+                val result = runResult
+                ScouterStateStore(applicationContext).recordWidgetAgentRunFinished(
+                    agentId = agentId,
+                    agentName = widgetAgentName ?: agentId,
+                    success = result?.success == true,
+                    error = when {
+                        crashType != null -> "runtime $crashType"
+                        result == null -> "runtime unavailable"
+                        result.success -> null
+                        else -> "exit ${result.exitCode}"
+                    }
+                )
+                ScouterWidgetProvider.updateAll(applicationContext, force = true)
             }
 
             // The run outcome (success/failure + a readable preview) is announced

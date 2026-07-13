@@ -18,6 +18,7 @@ import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
 import expo.modules.terminalemulator.R
+import expo.modules.terminalemulator.AgentAlarmScheduler
 import expo.modules.terminalemulator.TerminalSessionService
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -130,6 +131,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val conversation = if (enabled) store.widgetConversation(binding?.codexSessionId) else null
             val usageLimited = if (enabled) store.widgetUsageLimited() else null
             val lastCodexUsage = store.lastCodexUsageSnapshot()
+            val widgetAgent = if (enabled) WidgetAgentRepository.nextScheduled(context) else null
             val load = runCatching { ScouterSystemSampler(context).sample() }
                 .getOrElse {
                     Log.w(TAG, "Scouter widget system sample failed; using lightweight load", it)
@@ -140,7 +142,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
                 runCatching {
                     manager.updateAppWidget(
                         id,
-                        render(context, snapshots, binding, conversation, load, usageLimited, lastCodexUsage)
+                        render(context, snapshots, binding, conversation, widgetAgent, load, usageLimited, lastCodexUsage)
                     )
                 }
                     .onFailure { Log.w(TAG, "Scouter widget update failed for id=$id", it) }
@@ -228,6 +230,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             snapshots: List<SessionSnapshot>,
             binding: ScouterWidgetCodexBinding?,
             conversation: ScouterWidgetConversation?,
+            widgetAgent: ScouterWidgetAgentTarget?,
             load: ScouterSystemLoad,
             usageLimited: ScouterWidgetUsageLimited? = null,
             lastCodexUsage: SessionSnapshot? = null
@@ -235,6 +238,7 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
             promptPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_codex_ask, it) }
+            bindWidgetAgentRun(views, context, widgetAgent, conversation)
 
             val privacySuppressed = conversation?.privacySuppressed == true
             val latestCodex = latestFor(snapshots, ScouterSource.CODEX)
@@ -346,6 +350,73 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             )
             return views
         }
+
+        private fun bindWidgetAgentRun(
+            views: RemoteViews,
+            context: Context,
+            target: ScouterWidgetAgentTarget?,
+            conversation: ScouterWidgetConversation?
+        ) {
+            if (target == null) {
+                views.setTextViewText(
+                    R.id.scouter_agent_status,
+                    context.getString(R.string.scouter_widget_agent_none)
+                )
+                views.setViewVisibility(R.id.scouter_agent_run, View.GONE)
+                return
+            }
+
+            val next = formatAgentRunTime(target.nextRunAt)
+            val last = widgetAgentLastRunLabel(context, conversation)
+            views.setTextViewText(
+                R.id.scouter_agent_status,
+                context.getString(
+                    R.string.scouter_widget_agent_next_last,
+                    shorten(target.name.redactForScouter(), 18),
+                    next,
+                    last
+                )
+            )
+            views.setTextViewText(
+                R.id.scouter_agent_run,
+                context.getString(
+                    R.string.scouter_widget_agent_run_named,
+                    shorten(target.name.redactForScouter(), 14)
+                )
+            )
+            views.setViewVisibility(R.id.scouter_agent_run, View.VISIBLE)
+            views.setOnClickPendingIntent(
+                R.id.scouter_agent_run,
+                AgentAlarmScheduler.manualRunPendingIntent(context, target.agentId)
+            )
+        }
+
+        private fun widgetAgentLastRunLabel(
+            context: Context,
+            conversation: ScouterWidgetConversation?
+        ): String {
+            val status = conversation?.widgetAgentRunStatus
+                ?: return context.getString(R.string.scouter_widget_agent_last_never)
+            val statusLabel = when (status) {
+                ScouterStateStore.WIDGET_AGENT_STATUS_RUNNING ->
+                    context.getString(R.string.scouter_widget_agent_last_running)
+                ScouterStateStore.WIDGET_AGENT_STATUS_SUCCESS ->
+                    context.getString(R.string.scouter_widget_agent_last_success)
+                ScouterStateStore.WIDGET_AGENT_STATUS_ERROR ->
+                    context.getString(R.string.scouter_widget_agent_last_error)
+                else -> context.getString(R.string.scouter_widget_agent_last_never)
+            }
+            val at = conversation.widgetAgentRunStatusAt?.let(::formatTime)
+            val name = conversation.widgetAgentRunName?.takeIf { it.isNotBlank() }
+            return listOfNotNull(
+                name?.let { shorten(it.redactForScouter(), 12) },
+                statusLabel,
+                at
+            ).joinToString(" ")
+        }
+
+        private fun formatAgentRunTime(timestamp: Long): String =
+            SimpleDateFormat("EEE HH:mm", Locale.getDefault()).format(Date(timestamp))
 
         private fun bindCodexPet(
             views: RemoteViews,
