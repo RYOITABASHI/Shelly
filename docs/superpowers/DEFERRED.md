@@ -2180,6 +2180,8 @@ claude() {
 
 - **2026-07-13 (signed-approval Phase 1 port)**: `a15b0e9a` / `c47ccf7c` の tamper-evident signed-approval primitive と PlanSpec executor verifier を current `main` へ移植。TS と executor の `SIGNED_APPROVAL_ENABLED` はともに literal `false`、production setter なし、native signer / biometric binding も未配線のため fresh install では完全休眠し、既存の generic Review（unsigned `runId` + request-file SHA）経路を維持する。current main で追加済みの `intent` / `dm-reply` を signed contract から脱落させないよう schema/message を v2 に進め、intent target/share text と DM pairing id/label/reply text を canonical request hash に束縛した。flag-ON は Android Keystore signer、durable nonce ledger、必要な高リスク action の biometric binding を同時に実装・実機検証する将来バッチまで禁止。host gate は `pnpm run check` / `expo lint`（既存 warning 2件のみ）/ focused 90 tests / executor `node --check` / `git diff --check` PASS。→ sync: なし（既定 OFF の内部基盤）。
 
+- **2026-07-13 (signed-approval レビュー是正: fail-closed バイパス修正)**: PR #115 の独立 Codex レビューで実バグを発見（CC 側の並行レビューは見逃した）: `scripts/shelly-plan-executor.js` の承認 reply ポーリングで、flag-ON 検証分岐が `SIGNED_APPROVAL_ENABLED && reply.sigAlg && reply.signature && reply.keySha256 && reply.nonce` という `&&` 条件でガードされており、flag が true でも reply が署名フィールドを1つでも欠くと条件が false になり、署名検証なしの naive `runId`+`requestSha256` 一致チェックへそのまま fall-through していた — enable した瞬間に signed approval の意味が失われる bypass。修正 (`73e2a07e7`): `SIGNED_APPROVAL_ENABLED` が true の分岐を独立させ、署名フィールド欠落 reply は naive チェックに到達する前に `ActionSkipped` で即座に reject するよう再構成（flag OFF 時は naive チェックのみ到達、挙動不変）。実プロセスを spawn し run-log JSON の `status`/`errorMessage` を検証する回帰テスト2件を追加（`ActionSkipped` は accept/decline とも exit code 0 のため、プロセス終了コードでは判定不可と判明・記録）。Codex 再レビュー + CC 側再レビューの両方で bypass 修正済みを確認後 merge。→ sync: なし（既定 OFF の内部基盤、今回も挙動変化なし）。
+
 ---
 
 ## 管理ルール (自分への覚書)
