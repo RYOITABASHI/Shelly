@@ -436,6 +436,15 @@ function detectAction(text: string): AgentAction {
     return { type: 'cli' };
   }
 
+  // An explicit "draft"/"下書き" mention wins over a bare "通知" keyword hit below.
+  // "通知" is ambiguous: it's also this project's own NOTIFY-001 trigger-condition
+  // word ("LINEで通知が来たら…") -- when the SAME utterance also names the
+  // delivery explicitly ("…ドラフトを作成して"), that's the stronger, more
+  // specific signal and must not be shadowed by the trigger-condition mention.
+  if (/ドラフト|下書き|\bdraft\b/i.test(text)) {
+    return { type: 'draft' };
+  }
+
   // notify — explicit delivery-by-notification verbs.
   if (/通知|知らせ|教えて|リマインド|アラート|notify|alert|\bremind\b|tell me|push notification/i.test(lower)) {
     return { type: 'notify' };

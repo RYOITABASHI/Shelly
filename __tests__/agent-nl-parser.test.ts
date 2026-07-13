@@ -394,6 +394,20 @@ describe('parseAgentNL — action layer (capability boundary)', () => {
   it('generic task does NOT escalate to cli', () => {
     expect(parseAgentNL('毎日8時に要約を作って').action.type).toBe('draft');
   });
+
+  it('an explicit "ドラフト" mention wins over "通知" used as a NOTIFY-001 trigger-condition word, not a delivery verb', () => {
+    // Live on-device bug (2026-07-13): "LINEで通知が来たら…ドラフトを作成して" was
+    // misclassified as action=notify because detectAction's notify check matched
+    // the bare "通知" substring, even though it describes the notification-trigger
+    // CONDITION here, not the delivery action -- the user explicitly asked for a
+    // draft. The explicit "ドラフト" signal must take priority.
+    const d = parseAgentNL('LINEで通知が来たら「新着メッセージあり」ってドラフトを作成して');
+    expect(d.action.type).toBe('draft');
+  });
+
+  it('a bare "通知" with no draft/下書き mention still resolves to notify (regression guard for the fix above)', () => {
+    expect(parseAgentNL('LINEで通知が来たら教えて').action.type).toBe('notify');
+  });
 });
 
 describe('parseAgentNL — invariants', () => {
