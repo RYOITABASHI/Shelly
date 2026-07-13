@@ -458,20 +458,28 @@ function main() {
   budgetState.calls += 1;
   saveBudgetState(budgetFile, budgetState);
 
-  sendRequest(
-    {
-      method: method,
-      url: url,
-      bodyBuf: bodyBuf,
-      headers: headers,
-      timeoutSeconds: timeoutSeconds,
-      outFd: outFd,
-      errFd: errFd,
-    },
-    (code, status) => {
-      finish(code, verdict, { status: status, ok: code === EXIT.OK });
-    },
-  );
+  try {
+    sendRequest(
+      {
+        method: method,
+        url: url,
+        bodyBuf: bodyBuf,
+        headers: headers,
+        timeoutSeconds: timeoutSeconds,
+        outFd: outFd,
+        errFd: errFd,
+      },
+      (code, status) => {
+        finish(code, verdict, { status: status, ok: code === EXIT.OK });
+      },
+    );
+  } catch (e) {
+    const reason = e && e.message ? e.message : String(e);
+    try {
+      fs.writeSync(errFd, 'capability broker: ' + redact(reason) + '\n');
+    } catch (_) {}
+    return finish(EXIT.HTTP_TRANSIENT, verdict, { status: 0, ok: false, reason: reason });
+  }
 }
 
 main();
