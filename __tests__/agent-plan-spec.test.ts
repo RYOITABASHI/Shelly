@@ -80,6 +80,20 @@ describe('Agent PlanSpec v1', () => {
     expect(serialized).not.toContain('Bearer ');
   });
 
+  it('serializes dm-reply on schema v1 with only the opaque pairing id and reply template', () => {
+    const spec = buildAgentPlanSpec(agent({
+      action: { type: 'dm-reply', dmPairingId: 'pair-1', dmReplyText: 'Reply: {{result}}' },
+    }));
+    expect(spec.schemaVersion).toBe(1);
+    expect(spec.action).toEqual({
+      type: 'dm-reply',
+      dmPairingId: 'pair-1',
+      dmReplyText: 'Reply: {{result}}',
+    });
+    expect(JSON.stringify(spec.action)).not.toContain('packageName');
+    expect(JSON.stringify(spec.action)).not.toContain('notificationId');
+  });
+
   it('validates schema version and agent id', () => {
     const spec = buildAgentPlanSpec(agent());
     expect(validateAgentPlanSpec(spec).ok).toBe(true);

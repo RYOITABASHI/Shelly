@@ -44,6 +44,7 @@ function paths() {
     locksDir,
     logsDir,
     envFile: `${agentsDir}/.env`,
+    dmPairingsFile: `${agentsDir}/dm-pairings.json`,
   };
 }
 
@@ -138,7 +139,7 @@ export function sanitizeOutputTemplate(template: string | null | undefined): str
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
 export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}): string {
-  const { home, tmpDir, locksDir, logsDir, envFile } = paths();
+  const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
   const lockFile = `${locksDir}/${agentId}.pid`;
@@ -206,6 +207,8 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
+  const actionDmPairingId = actionType === 'dm-reply' ? agent.action?.dmPairingId ?? '' : '';
+  const actionDmReplyText = actionType === 'dm-reply' ? agent.action?.dmReplyText ?? '' : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
   // North Star fix: a web-research / collection agent otherwise receives the bare
@@ -302,6 +305,7 @@ OUTPUT_NAME_TEMPLATE=${shellQuote(outputNameTemplate)}
 TOOL_LABEL=${shellQuote(toolLabel)}
 ROUTE_DECISION_JSON=${shellQuote(routeDecisionJson)}
 ENV_FILE=${shellQuote(envFile)}
+DM_PAIRINGS_FILE=${shellQuote(dmPairingsFile)}
 LOCKS_DIR=${shellQuote(locksDir)}
 TMP_DIR=${shellQuote(tmpDir)}
 MAX_CONCURRENT=${MAX_CONCURRENT}
@@ -309,6 +313,9 @@ AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 ACTION_TYPE=${shellQuote(actionType)}
 ACTION_WEBHOOK_URL=${shellQuote(actionWebhookUrl)}
 ACTION_COMMAND=${shellQuote(actionCommand)}
+ACTION_DM_PAIRING_ID=${shellQuote(actionDmPairingId)}
+ACTION_DM_REPLY_TEXT=${shellQuote(actionDmReplyText)}
+ACTION_DM_PAIRING_LABEL=""
 ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
 ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
@@ -681,6 +688,23 @@ NODEEOF
   sed -nE "s/.*\\\"$field\\\"[[:space:]]*:[[:space:]]*\\\"([^\\\"]*)\\\".*/\\1/p" "$file" 2>/dev/null | head -n 1
 }
 
+dm_pairing_lookup() {
+  file="$1"
+  pairing_id="$2"
+  node_usable || return 2
+  shelly_node - "$file" "$pairing_id" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const [file, id] = process.argv.slice(2);
+let list;
+try { list = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { process.exit(2); }
+if (!Array.isArray(list)) process.exit(2);
+const found = list.find((p) => p && typeof p === 'object' && p.id === id);
+if (!found) process.exit(1);
+if (typeof found.revoked !== 'boolean' || typeof found.label !== 'string') process.exit(2);
+process.stdout.write((found.revoked ? '1' : '0') + '\\t' + found.label);
+NODEEOF
+}
+
 write_action_approval_request() {
   approval_type="$1"
   preview="$2"
@@ -699,11 +723,15 @@ write_action_approval_request() {
   safety_reason_json=$(json_escape_text "$ACTION_COMMAND_SAFETY_REASON")
   payload_path_json=$(json_escape_text "$payload_path")
   result_path_json=$(json_escape_text "$result_file")
+  dm_reply_text_resolved="\${ACTION_DM_REPLY_TEXT//\{\{result\}\}/$preview}"
+  dm_pairing_id_json=$(json_escape_text "$ACTION_DM_PAIRING_ID")
+  dm_pairing_label_json=$(json_escape_text "\${ACTION_DM_PAIRING_LABEL:-}")
+  dm_reply_text_json=$(json_escape_text "$dm_reply_text_resolved")
   ts_seconds=$(date +%s)
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -962,6 +990,44 @@ dispatch_agent_action() {
         return 1
       fi
       ACTION_DISPATCH_MESSAGE="CLI action completed."
+      return 0
+      ;;
+    dm-reply)
+      if [ -z "$ACTION_DM_PAIRING_ID" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="DM-reply action is missing a paired conversation."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      set +e
+      dm_lookup_output="$(dm_pairing_lookup "$DM_PAIRINGS_FILE" "$ACTION_DM_PAIRING_ID")"
+      dm_lookup_rc=$?
+      set -e
+      if [ "$dm_lookup_rc" -eq 1 ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="DM-reply target is no longer paired."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ "$dm_lookup_rc" -ne 0 ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Could not verify the DM-reply pairing."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      ACTION_DM_PAIRING_REVOKED="\${dm_lookup_output%%$'\\t'*}"
+      ACTION_DM_PAIRING_LABEL="\${dm_lookup_output#*$'\\t'}"
+      if [ "$ACTION_DM_PAIRING_REVOKED" = "1" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="DM-reply target is no longer paired."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      write_action_approval_request "dm-reply" "$preview" "$result_file"
+      wait_action_approval "dm-reply" || return 1
+      # RN sends natively before publishing the accept reply. There is no
+      # post-approval broker or shell side effect here.
+      ACTION_DISPATCH_MESSAGE="DM reply sent."
       return 0
       ;;
     *)

@@ -30,6 +30,7 @@ object AgentRuntime {
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
     private const val CURRENT_SCRIPT_VERSION = 10
     private const val CURRENT_PLAN_SPEC_VERSION = 1
+    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "dm-reply", "__suppressed__")
 
     private data class TrustedPlanLaunch(
         val actionType: String,
@@ -194,6 +195,14 @@ object AgentRuntime {
         val planAgentId = readPlanSpecAgentId(plan)
         if (planAgentId != agentId) {
             val message = "PlanSpec agent id mismatch: plan=$planAgentId expected=$agentId"
+            Log.e(TAG, message)
+            writeReceiverLog(homeDir, agentId, "error", message)
+            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            return AgentRunResult(agentId, 127, "", message)
+        }
+        val planActionType = readPlanSpecActionType(plan)
+        if (!PLAN_EXECUTOR_ACTIONS.contains(planActionType)) {
+            val message = "unsupported PlanSpec action: $planActionType"
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
             NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
@@ -392,6 +401,14 @@ object AgentRuntime {
     private fun readPlanSpecAgentId(plan: File): String {
         return try {
             JSONObject(plan.readText()).optJSONObject("agent")?.optString("id").orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun readPlanSpecActionType(plan: File): String {
+        return try {
+            JSONObject(plan.readText()).optJSONObject("action")?.optString("type").orEmpty()
         } catch (_: Exception) {
             ""
         }

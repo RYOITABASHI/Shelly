@@ -38,6 +38,22 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   getNotificationTriggerEnabled(): Promise<boolean>;
   /** NOTIFY-001 Increment 2: writes Shelly's own dormant flag gating the notification-trigger feature. */
   setNotificationTriggerEnabled(enabled: boolean): Promise<void>;
+  /** Independent, default-off native gate for sending notification replies. */
+  getNotificationReplyEnabled(): Promise<boolean>;
+  setNotificationReplyEnabled(enabled: boolean): Promise<void>;
+  sendNotificationReply(packageName: string, replyText: string): Promise<boolean>;
+  findDmPairingCandidates(code: string): Promise<Array<{
+    packageName: string;
+    notificationId: number;
+    notificationTag: string | null;
+    shortcutId: string | null;
+    title: string;
+    textPreview: string;
+  }>>;
+  sendPairedDmReply(dmPairingId: string, replyText: string): Promise<boolean>;
+  postDmReplyTestNotification(): Promise<boolean>;
+  getDmReplyTestResult(): Promise<{ receivedText: string | null; receivedAtMs: number | null }>;
+  clearDmReplyTestResult(): Promise<void>;
   testExecve(): Promise<{ success: boolean; result?: string; error?: string }>;
   scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;
@@ -164,7 +180,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'dm-reply';
     preview?: string | null;
     destinationHost?: string | null;
     command?: string | null;
@@ -175,11 +191,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
     expiresAt?: number | null;
     requestSha256?: string | null;
+    dmPairingId?: string | null;
+    dmPairingLabel?: string | null;
+    dmReplyText?: string | null;
   }>;
   notifyAgentActionApprovalNeeded?(request: {
     runId: string;
     agentId?: string | null;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'dm-reply';
     preview?: string | null;
     destinationHost?: string | null;
     command?: string | null;
@@ -189,6 +208,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     resultPath?: string | null;
     ts?: string | null;
     expiresAt?: number | null;
+    dmPairingId?: string | null;
+    dmPairingLabel?: string | null;
+    dmReplyText?: string | null;
   }): Promise<void>;
   resolveAgentActionApproval?(
     runId: string,
