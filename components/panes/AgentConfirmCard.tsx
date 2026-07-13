@@ -176,6 +176,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [useSkill, setUseSkill] = useState<boolean>(!!draft.matchedSkill);
 
   const isOnce = frequency === 'once';
+  // A notification-triggered agent has no cron schedule (isOnce is true) but must
+  // be registered and wait for a future event, not run immediately and be
+  // discarded like a true one-shot — see the confirm handler's matching guard.
+  const hasNotificationTrigger = parseNotificationTriggerPackages(notificationPackagesRaw).valid.length > 0;
+  const isEphemeralOnce = isOnce && !hasNotificationTrigger;
   // The full daily-multi time list (base `hour` + `extraHours`, deduped+sorted) —
   // used for the cron hourList arg, the summary text, and the add/remove/cap logic.
   const MAX_DAILY_TIMES = 4;
@@ -325,7 +330,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         {t('agentcard.summary', {
           action: t(`agentcard.action_${actionType}`),
           schedule: isOnce
-            ? t('agentcard.sched_once')
+            ? hasNotificationTrigger
+              ? t('agentcard.sched_notification_trigger')
+              : t('agentcard.sched_once')
             : cron
             ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow, dailyMultiHours)
             : t('agentcard.schedule_unset'),
@@ -376,7 +383,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       />
       {isOnce ? (
         <Text style={[styles.warn, { color: colors.muted }]}>
-          {t(autonomous ? 'agentcard.once_autonomous_hint' : 'agentcard.once_hint')}
+          {t(
+            hasNotificationTrigger
+              ? 'agentcard.once_notification_trigger_hint'
+              : autonomous
+              ? 'agentcard.once_autonomous_hint'
+              : 'agentcard.once_hint',
+          )}
         </Text>
       ) : frequency === 'interval' || frequency === 'hourly' ? (
         <View style={styles.row}>
@@ -730,7 +743,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           activeOpacity={0.7}
         >
           <Text style={[styles.btnText, { color: canConfirm ? colors.background : colors.inactive, fontWeight: '700' }]}>
-            {t(isOnce ? 'agentcard.run_now' : 'agentcard.confirm')}
+            {t(isEphemeralOnce ? 'agentcard.run_now' : 'agentcard.confirm')}
           </Text>
         </TouchableOpacity>
       </View>

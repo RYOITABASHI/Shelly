@@ -60,6 +60,7 @@ import type { CerebrasMessage } from '@/lib/cerebras';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { t } from '@/lib/i18n';
+import { isEphemeralOneShot } from '@/lib/notification-trigger';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1053,7 +1054,7 @@ export function useAIPaneDispatch(paneId: string) {
         });
         await installAgent(created, runAgentShellCommand);
 
-        if (confirmed.schedule === null) {
+        if (isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });

@@ -32,3 +32,19 @@ export function parseNotificationTriggerPackages(raw: string): { valid: string[]
   }
   return { valid, skippedCount };
 }
+
+/**
+ * A `schedule === null` agent is ambiguous: it could be a true one-shot (no
+ * schedule, no trigger — run now and discard) or a notification-triggered
+ * agent (no cron schedule because its trigger is an event, not a clock — must
+ * be registered and wait, never run immediately or be discarded). Callers
+ * that treat `schedule === null` alone as "ephemeral, run now and delete"
+ * must gate on this instead, or a notification-triggered agent silently never
+ * gets registered.
+ */
+export function isEphemeralOneShot(
+  schedule: string | null,
+  notificationTrigger: { packageNames: string[] } | null | undefined,
+): boolean {
+  return schedule === null && !notificationTrigger;
+}
