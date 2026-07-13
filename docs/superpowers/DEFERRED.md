@@ -1134,6 +1134,24 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ## P1 — v0.1.1 で対応推奨
 
+### MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない
+
+**発見**: 2026-07-13 Batch 11 の MEMORY-001 移植時に、source design の既知制限を再確認。
+
+**状態 / リスク**: MEMORY-001 の実デバイス backend は Expo FS 上の JSON ファイルで、記憶本文を平文で保存する。書き込み時の secret redaction、一般的な PII（氏名、住所、健康・業務上の機微情報など）の分類、taint metadata 付与もない。recall 時には本文が effective `agent.prompt` に挿入され、既存 `scanForSecrets` が認識する secret pattern は再検査されて local-only routing を強制するが、pattern 外の機微な prose は cloud model への送信を止められない。したがって将来 `MEMORY_ENABLED` と MODEL-001/cloud routing を同時に有効化すると、保存済みの機微情報が cloud に渡る可能性がある。
+
+**戻す条件**:
+1. Android Keystore に束縛した at-rest encryption（鍵生成・rotation・backup/restore・既存 JSON migration を含む）を設計し、平文ファイルが残らないことを実機検証する。
+2. write/recall の両境界に一般 PII/taint classification と policy を置き、分類不能・高感度データは local-only または明示承認へ fail-close する。
+3. `scanForSecrets` の既知 pattern だけでなく、非 secret-pattern の機微 prose を含む negative/positive corpus で cloud 非送信をテストする。
+
+**Why not now**: 今回は upstream の dormant parity port であり、`MEMORY_ENABLED = false` かつ production setter なしのため新 backend は fresh install で到達不能。暗号鍵 lifecycle と PII policy は独立した security design・migration・実機検証を要し、source にない仕組みを本移植へ即興で追加すると parity と reviewability を損なうため、flag-ON の前提条件として P1 追跡する。
+
+**優先度**: P1（現在は休眠だが、MEMORY-001 有効化前の privacy gate）
+**→ sync:** MEMORY-001 を公開・有効化する時点で README privacy / data-storage 説明へ反映。
+
+---
+
 ### CC schema-diff watcher を updater に組み込む
 
 **発見**: 2026-05-20 Claude Code 2.1.143+ Bash tool 追従調査中
@@ -2111,6 +2129,8 @@ claude() {
 ---
 
 ## History
+
+- **2026-07-13 (Batch 11)**: **MEMORY-001** を `ac41812a6` → `7ecc7e058` → `fdd5620ab` から現行 `origin/main` へ 3 feature commit の順序を保って独立移植。per-namespace get/put/query、G2 形式・ranking parity、FS-001 `classifyFsAccess` jail、Expo FS JSON device backend、shadow/activated read-write seam を追加した。実稼働 backend は JSON で、`SqliteFtsMemoryStorage` は未配線 skeleton のため roadmap の SQLite/FTS5 は未完。`MEMORY_ENABLED = false` / `MEMORY_EMBEDDING_ENABLED = false` の source 定数と production setter 不在を確認し、fresh install は G2 経路のまま休眠。MODEL-001 / PlanSpec / EVENT-001 / signed approval への新規 import・依存なし。平文保存・write-time redaction / 一般 PII classification 不在は別 P1「MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない」に追跡し、flag-ON 前の privacy gate とした。旧開発ブランチの companion history commits 5件は移植せず、本記録1件に集約。→ sync: なし（既定OFFの内部 substrate。公開・有効化時の privacy 文書同期は P1 entry 側で追跡）。
 
 - **2026-07-13**: Batch 9 で **MODEL-001（eligibility-first + routing-floor multi-model inference routing）** を `origin/main` へ独立移植。候補を secret/local・web・unattended credential・budget・task-kind の適格性で先に絞り、その後に cost/latency/preference を決定論的に順位付けする pure core、registry、shadow comparator、secret branch の live-flip seam を追加した。`MODEL_ROUTER_ENABLED = false` のソース定数を確認し、既定経路は従来の `onDeviceFallbackTool()` のまま、provider invocation も未配線で fresh install は休眠。MEMORY-001 / FS-001 / PlanSpec への import・依存はなく、MODEL-001 7 suite / 40 tests、`tsc --noEmit`、`expo lint`（既存 warning 2件のみ）、`git diff --check` を PASS。5件の旧開発ブランチ履歴コミットは移植せず、この現行 main 向け記録1件に集約。実機での flag-ON cutover は本バッチのスコープ外。→ sync: なし（既定OFFの内部 substrate のため README 反映不要）。
 
