@@ -2,7 +2,7 @@
  * lib/agent-executor.ts — Runs agent tasks in isolated tmux sessions.
  * Generates per-agent shell scripts and manages execution lifecycle.
  */
-import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { Agent, AgentActionType, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
@@ -20,10 +20,25 @@ const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
 
 type ToolCommandOptions = {
   autonomous: boolean;
+  actionType: AgentActionType;
   /** B2: the AutonomyPolicy JSON passed to the driver via --policy-json (inline
    *  arg, never a file the agent can read — preserves the §6 invariant). */
   policyJson?: string;
 };
+
+const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
+  draft: 'Write the requested document or content directly. Do not add a preamble saying that a draft was created.',
+  notify: 'Write the notification message itself. Unless explicit user instructions request otherwise, keep it to a few words or one sentence.',
+  webhook: 'Produce exactly the payload content requested for the webhook.',
+  cli: 'Produce exactly the content needed by the requested command or command workflow.',
+  intent: 'Produce exactly the text or content needed for the requested app or share action.',
+  'dm-reply': 'Write the reply message itself as a natural, short conversational response unless explicit user instructions request otherwise.',
+};
+const ACTION_OUTPUT_RULES = 'Follow explicit user instructions for content, format, length, and tone. When they are not specified, be direct and concise. Output only the requested deliverable. Never add meta-commentary about your reasoning or interpretation of the request.';
+
+function actionSystemPromptJson(actionType: AgentActionType): string {
+  return JSON.stringify(`${ACTION_OUTPUT_INSTRUCTIONS[actionType]} ${ACTION_OUTPUT_RULES}`);
+}
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -247,6 +262,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const agentPolicyJson = JSON.stringify(buildAgentPolicy(agent, home));
   let toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
+    actionType: agent.action?.type ?? 'draft',
     policyJson: agentPolicyJson,
   });
   if (promptSignals.needsWeb) {
@@ -2443,9 +2459,10 @@ function generateToolCommand(
   tool: ToolChoice,
   escapedPrompt: string,
   rawPrompt: string,
-  options: ToolCommandOptions = { autonomous: false },
+  options: ToolCommandOptions = { autonomous: false, actionType: 'draft' },
 ): string {
   const resultVar = '"$RESULT_FILE"';
+  const systemPromptJson = actionSystemPromptJson(options.actionType);
   switch (tool.type) {
     case 'cli':
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
@@ -2472,7 +2489,7 @@ rm -f "$PROMPT_FILE"`;
       // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
       const sig = detectRouteSignals(rawPrompt);
       const grounded = sig.needsWeb && sig.webDomain === 'general';
-      return geminiApiCommand(escapedPrompt, resultVar, tool.model, grounded);
+      return geminiApiCommand(escapedPrompt, resultVar, systemPromptJson, tool.model, grounded);
     }
     case 'local':
       const localModel = (tool.model || (options.autonomous ? selectAutonomousLocalModel(rawPrompt) : LOCAL_MODEL_LIGHT)).replace(/"/g, '\\"');
@@ -2508,8 +2525,9 @@ rm -f "$PROMPT_FILE"`;
 	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"
 	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
@@ -2537,12 +2555,13 @@ rm -f "$PROMPT_FILE"`;
 		REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 		printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+		SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 		MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
 		if [ -z "\${PERPLEXITY_API_KEY:-}" ]; then
 		  echo 'Perplexity API key is not set. Add PERPLEXITY_API_KEY to ~/.shelly/agents/.env.' > ${resultVar}
 		  touch "$BACKEND_ERROR_FILE"
 		else
-		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 		set +e
 		if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
 			  SHELLY_CAP_AUTH_REF=perplexity HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
@@ -2563,7 +2582,7 @@ rm -f "$PROMPT_FILE"`;
     case 'cerebras':
       // Free-tier cloud tier of the ③ ladder (OpenAI-compatible). Used after
       // local when local can't fit/handle the task, BEFORE Codex (quota-preserving).
-      return openAiCompatApiCommand(escapedPrompt, resultVar, {
+      return openAiCompatApiCommand(escapedPrompt, resultVar, systemPromptJson, {
         keyVar: 'CEREBRAS_API_KEY',
         envModelVar: 'CEREBRAS_MODEL',
         keyHint: 'Add CEREBRAS_API_KEY in Settings → API Keys (free tier at cloud.cerebras.ai).',
@@ -2573,7 +2592,7 @@ rm -f "$PROMPT_FILE"`;
         authRef: 'cerebras',
       });
     case 'groq':
-      return openAiCompatApiCommand(escapedPrompt, resultVar, {
+      return openAiCompatApiCommand(escapedPrompt, resultVar, systemPromptJson, {
         keyVar: 'GROQ_API_KEY',
         envModelVar: 'GROQ_MODEL',
         keyHint: 'Add GROQ_API_KEY in Settings → API Keys (free tier at console.groq.com).',
@@ -2583,10 +2602,10 @@ rm -f "$PROMPT_FILE"`;
         authRef: 'groq',
       });
     case 'ab-article-eval':
-      return articleEvalCommand(rawPrompt, resultVar, tool.localModel, tool.codexCmd);
+      return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd);
     case 'auto':
       return `if [ -n "\${GEMINI_API_KEY:-}" ]; then
-  ${geminiApiCommand(escapedPrompt, resultVar)}
+  ${geminiApiCommand(escapedPrompt, resultVar, systemPromptJson)}
 elif command -v codex >/dev/null 2>&1; then
   ${codexExecCommand(escapedPrompt, resultVar)}
 else
@@ -2619,7 +2638,7 @@ function codexExecCommand(escapedPrompt: string, resultVar: string): string {
   fi`;
 }
 
-function articleEvalCommand(rawPrompt: string, resultVar: string, localModel?: string, codexCmd?: string): string {
+function articleEvalCommand(rawPrompt: string, resultVar: string, systemPromptJson: string, localModel?: string, codexCmd?: string): string {
   const promptMarker = `SHELLY_AB_PROMPT_${Math.random().toString(36).slice(2)}`;
   const localModelValue = (localModel || LOCAL_MODEL_BALANCED).replace(/"/g, '\\"');
   const codexCmdValue = (codexCmd || 'codex').replace(/"/g, '\\"');
@@ -2680,8 +2699,9 @@ PROMPTEOF
 } >> "$RUN_DIR/prompt.md"
 
 PROMPT_JSON=$(json_string_file "$RUN_DIR/prompt.md")
+SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 LOCAL_REQUEST_FILE="$RUN_DIR/local-request.json"
-printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
+printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],\\"temperature\\":0.7,\\"max_tokens\\":4096,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$LOCAL_REQUEST_FILE"
 
 LOCAL_START=$(date +%s)
 if ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
@@ -2780,6 +2800,7 @@ RESULTEOF`;
 function openAiCompatApiCommand(
   escapedPrompt: string,
   resultVar: string,
+  systemPromptJson: string,
   opts: { keyVar: string; envModelVar: string; keyHint: string; url: string; model: string; label: string; authRef: string },
 ): string {
   const model = opts.model.replace(/"/g, '\\"');
@@ -2790,12 +2811,13 @@ function openAiCompatApiCommand(
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	MODEL="\${${opts.envModelVar}:-${model}}"
 	if [ -z "\${${opts.keyVar}:-}" ]; then
 	  echo '${keyHint}' > ${resultVar}
 	  touch "$BACKEND_ERROR_FILE"
 	else
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 	set +e
 	if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
 	SHELLY_CAP_AUTH_REF=${opts.authRef} HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "${url}" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
@@ -2815,7 +2837,7 @@ function openAiCompatApiCommand(
 	rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
 }
 
-function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: string, grounded = false): string {
+function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPromptJson: string, model?: string, grounded = false): string {
   // gemini-2.5-flash: the 2.0-flash free tier is limit:0 (no free quota); 2.5-flash
   // has a working free tier AND supports Google Search grounding (verified 2026-06-24).
   const defaultModel = model || 'gemini-2.5-flash';
@@ -2826,6 +2848,7 @@ function geminiApiCommand(escapedPrompt: string, resultVar: string, model?: stri
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"
 # The 2.0-flash free tier is limit:0 (no free quota) → 429s and (in autonomous
 # runs) needlessly escalates to Codex. Older installs may have GEMINI_MODEL pinned
@@ -2835,7 +2858,7 @@ if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
   touch "$BACKEND_ERROR_FILE"
 else
-  printf '{\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$PROMPT_JSON" > "$REQUEST_FILE"
+  printf '{\\"systemInstruction\\":{\\"parts\\":[{\\"text\\":%s}]},\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
   if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
     SHELLY_CAP_AUTH_REF=gemini HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
