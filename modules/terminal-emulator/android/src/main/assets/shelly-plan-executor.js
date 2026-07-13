@@ -130,6 +130,7 @@ function runtimePaths(home, agentId) {
     logsDir,
     logDir,
     envFile: path.join(agentsDir, '.env'),
+    dmPairingsFile: path.join(agentsDir, 'dm-pairings.json'),
     haltSentinel: path.join(agentsDir, '.halted'),
     resultFile: path.join(tmpDir, `agent-result-${agentId}.md`),
     lockFile: path.join(locksDir, `${agentId}.pid`),
@@ -539,6 +540,9 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     safetyLevel: extra.safetyLevel || '',
     safetyReason: extra.safetyReason || '',
     payloadPath: extra.payloadPath || '',
+    dmPairingId: extra.dmPairingId || '',
+    dmPairingLabel: extra.dmPairingLabel || '',
+    dmReplyText: extra.dmReplyText || '',
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
@@ -913,7 +917,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'dm-reply') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   if (trustedNativeLowRiskAction(args, plan, actionType)) {
@@ -985,6 +989,44 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
+      return { status: 'success', preview };
+    }
+    if (actionType === 'dm-reply') {
+      const dmPairingId = String(plan.action.dmPairingId || '').trim();
+      if (!dmPairingId) {
+        const message = 'DM-reply action is missing a paired conversation.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      let pairings;
+      try { pairings = JSON.parse(readFile(paths.dmPairingsFile)); } catch (_) { pairings = null; }
+      if (!Array.isArray(pairings)) {
+        const message = 'Could not verify the DM-reply pairing.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const pairing = pairings.find((p) => p && typeof p === 'object' && p.id === dmPairingId);
+      if (!pairing) {
+        const message = 'DM-reply target is no longer paired.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (typeof pairing.revoked !== 'boolean' || typeof pairing.label !== 'string') {
+        const message = 'Could not verify the DM-reply pairing.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (pairing.revoked) {
+        const message = 'DM-reply target is no longer paired.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const dmReplyText = String(plan.action.dmReplyText || '').split('{{result}}').join(preview);
+      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        dmPairingId,
+        dmPairingLabel: pairing.label,
+        dmReplyText,
+      });
       return { status: 'success', preview };
     }
     requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);

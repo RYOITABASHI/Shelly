@@ -497,9 +497,9 @@ export type ToolChoice =
  *
  * Approval tiering by blast radius (Phase 0 §2.6) is enforced at the approval layer,
  * keyed off `type`: draft/notify = one-tap; webhook = one-tap with host+payload shown;
- * cli = never one-tap (in-app confirm, routed through command-safety).
+ * cli/dm-reply = never one-tap (in-app Review before Allow).
  */
-export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli';
+export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'dm-reply';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -507,6 +507,10 @@ export interface AgentAction {
   webhookUrl?: string;
   /** cli: command template run with the result. Highest privilege — never one-tap. */
   command?: string;
+  /** dm-reply: opaque reference to a paired live-notification fingerprint. */
+  dmPairingId?: string;
+  /** dm-reply: reply text template. A literal {{result}} is replaced with the run preview. */
+  dmReplyText?: string;
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */

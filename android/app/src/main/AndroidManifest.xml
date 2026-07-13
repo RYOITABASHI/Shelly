@@ -67,6 +67,7 @@
       <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shelly_file_provider_paths"/>
     </provider>
     <receiver android:name="expo.modules.terminalemulator.AgentAlarmReceiver" android:exported="false"/>
+    <receiver android:name="expo.modules.terminalemulator.DmReplyTestReceiver" android:exported="false"/>
     <!-- L1 boot-autostart: re-arms scheduled-agent alarms after a reboot (they are
          cleared by the OS). exported=true is required to receive the system
          BOOT_COMPLETED broadcast. Dormant until the native enable flag is set.

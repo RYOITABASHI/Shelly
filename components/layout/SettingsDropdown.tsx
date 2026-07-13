@@ -37,6 +37,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { DmPairingSection } from '@/components/layout/DmPairingSection';
 
 type Props = {
   visible: boolean;
@@ -108,6 +109,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <LanguageSection />
             <AgentsSection visible={visible} />
             <ApiKeysSection />
+            <DmPairingSection />
             <UpdatesSection onOpenBuilds={() => onOpenBuilds?.()} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CodexLoginSection onClose={onClose} />

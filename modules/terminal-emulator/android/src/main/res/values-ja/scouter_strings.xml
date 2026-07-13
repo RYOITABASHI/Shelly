@@ -34,6 +34,9 @@
   <string name="scouter_notification_agent_action_what_notify">完了を通知します</string>
   <string name="scouter_notification_agent_action_what_webhook">Webhook に送信します</string>
   <string name="scouter_notification_agent_action_what_cli">コマンドを実行します</string>
+  <string name="scouter_notification_agent_action_what_dm_reply">ペアリング済みの会話へ返信します</string>
+  <string name="scouter_notification_agent_action_dm_reply_target">会話: %1$s</string>
+  <string name="scouter_notification_agent_action_dm_reply_review_required">DM 返信は送信ごとにアプリ内確認が必要です。</string>
   <string name="scouter_notification_agent_action_preview">内容: %1$s</string>
   <string name="scouter_notification_agent_result_done">「%1$s」が完了しました</string>
   <string name="scouter_notification_agent_result_skipped">「%1$s」をスキップしました</string>
