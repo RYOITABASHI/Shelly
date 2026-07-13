@@ -131,7 +131,17 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [intentShareText, setIntentShareText] = useState(draft.action.intentShareText ?? '');
   const [dmPairingId, setDmPairingId] = useState(draft.action.dmPairingId ?? '');
   const [dmReplyText, setDmReplyText] = useState(draft.action.dmReplyText ?? '');
-  const dmPairings = useDmPairingStore((state) => state.pairings.filter((pairing) => !pairing.revoked));
+  // Select the raw array (stable reference from the store) and filter in a
+  // separate useMemo, not inside the selector: .filter() always returns a
+  // new array reference, which never satisfies Zustand's Object.is equality
+  // check against the previous render's value and causes an infinite render
+  // loop ("Maximum update depth exceeded") -- the same bug class fixed for
+  // CustomAuthRefsSection's Zustand selector.
+  const allDmPairings = useDmPairingStore((state) => state.pairings);
+  const dmPairings = useMemo(
+    () => allDmPairings.filter((pairing) => !pairing.revoked),
+    [allDmPairings],
+  );
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
   // NOTIFY-001 Increment 2: free-text package allowlist. No NL-parse producer yet
