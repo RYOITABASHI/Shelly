@@ -5,7 +5,7 @@ import { parseAgentNL } from '@/lib/agent-nl-parser';
 // would silently never fire — the spec's hard requirement (§2.1).
 // Single-day OR a multi-day DOW list (e.g. "1,5" = Mon/Fri) — both accepted by
 // lib/agent-scheduler.ts (DOW_LIST_RE) and the native AgentAlarmReceiver.
-const WHITELIST_CRON = /^(\*\/\d+ \* \* \* \*|\d+ \d+ \* \* \*|\d+ \d+ \* \* [0-6](,[0-6])*)$/;
+const WHITELIST_CRON = /^(\*\/\d+ \* \* \* \*|0 \*\/\d+ \* \* \*|\d+ \d+ \* \* \*|\d+ \d+ \* \* [0-6](,[0-6])*)$/;
 
 describe('parseAgentNL — schedule (JP)', () => {
   it('毎日8時 → daily 0 8 * * *, confident', () => {
@@ -51,8 +51,26 @@ describe('parseAgentNL — interval', () => {
     expect(d.scheduleConfident).toBe(false);
   });
 
-  it('2時間ごと (hour interval not in whitelist) → null', () => {
+  it('2時間ごと → 0 */2 * * *, confident', () => {
     const d = parseAgentNL('2時間ごとにバックアップして');
+    expect(d.schedule).toBe('0 */2 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('23時間ごと (upper boundary) → 0 */23 * * *, confident', () => {
+    const d = parseAgentNL('23時間ごとにバックアップして');
+    expect(d.schedule).toBe('0 */23 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('every 3 hours → 0 */3 * * *, confident', () => {
+    const d = parseAgentNL('every 3 hours check the server');
+    expect(d.schedule).toBe('0 */3 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('25時間ごと (out of */N range) → null, not confident', () => {
+    const d = parseAgentNL('25時間ごとにバックアップして');
     expect(d.schedule).toBeNull();
     expect(d.scheduleConfident).toBe(false);
   });
@@ -163,6 +181,49 @@ describe('parseAgentNL — weekly', () => {
 describe('parseAgentNL — daily (EN)', () => {
   it('every day at 8 → 0 8 * * *', () => {
     expect(parseAgentNL('every day at 8 draft a post').schedule).toBe('0 8 * * *');
+  });
+});
+
+describe('parseAgentNL — "daily-multi" (multiple specific times per day)', () => {
+  it('毎日朝8:00と夜21:00に (colon form) → shared-minute multi-hour cron, confident', () => {
+    const d = parseAgentNL('毎日朝8:00と夜21:00にニュースをまとめて');
+    expect(d.schedule).toBe('0 8,21 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('every day at 8am and 9pm (EN) → shared-minute multi-hour cron, confident', () => {
+    const d = parseAgentNL('every day at 8am and 9pm send a summary');
+    expect(d.schedule).toBe('0 8,21 * * *');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('毎日8時 (plain single time) is unaffected by the new multi-time path', () => {
+    expect(parseAgentNL('毎日8時にニュースをまとめて').schedule).toBe('0 8 * * *');
+  });
+
+  it('differing minutes between the two times is out of scope → not confident, no silent drop', () => {
+    const d = parseAgentNL('毎日8時15分と21時45分にニュースをまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+  });
+
+  // Bug-fix regressions (found via pre-push adversarial review, just fixed in
+  // derivePrompt): the pre-existing single-時 schedule strip only consumed the
+  // FIRST "毎日朝8時" occurrence, leaving a dangling "と夜21時に" / "と夜21:00に"
+  // leftover fragment in the prompt sent to the agent. A companion leftover-strip
+  // regex now removes it. These pin the fix.
+  it('kanji-時 form, two times joined by と: prompt drops BOTH time clauses entirely', () => {
+    const d = parseAgentNL('毎日朝8時と夜21時にAをやって');
+    expect(d.prompt).toBe('Aをやって');
+  });
+
+  it('mixed 時-form + colon-form: prompt drops BOTH time clauses (colon-shaped leftover)', () => {
+    const d = parseAgentNL('毎日朝8時と夜21:00にAをやって');
+    expect(d.prompt).toBe('Aをやって');
+  });
+
+  it('the schedule side of the kanji-時 two-time case was already correct before the prompt fix', () => {
+    expect(parseAgentNL('毎日朝8時と夜21時にAをやって').schedule).toBe('0 8,21 * * *');
   });
 });
 

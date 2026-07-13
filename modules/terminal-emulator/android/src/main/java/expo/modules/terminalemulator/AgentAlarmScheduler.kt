@@ -124,9 +124,10 @@ object AgentAlarmScheduler {
     }
 
     /**
-     * Cron -> next fire epoch ms. Supports the 3 whitelisted shapes the JS scheduler
-     * (lib/agent-scheduler.ts) emits: every-N-min (*​/N * * * *), daily (m h * * *),
-     * and weekly single/CSV DOW (m h * * 1,5). Returns null for anything else.
+     * Cron -> next fire epoch ms. Supports the 4 whitelisted shapes the JS scheduler
+     * (lib/agent-scheduler.ts) emits: every-N-min (*​/N * * * *), every-N-hour
+     * (0 *​/N * * *), daily (m h * * *), and weekly single/CSV DOW (m h * * 1,5).
+     * Returns null for anything else.
      * Mirrors the logic previously in AgentAlarmReceiver.nextTriggerAt verbatim.
      */
     fun nextTriggerAt(cron: String?): Long? {
@@ -157,7 +158,65 @@ object AgentAlarmScheduler {
             return target.timeInMillis
         }
 
+        val everyHour = Regex("^\\*/(\\d+)$").matchEntire(hour)?.groupValues?.get(1)?.toIntOrNull()
+        if (everyHour != null && everyHour > 0 && minute == "0" && dayOfMonth == "*" && month == "*" && dayOfWeek == "*") {
+            target.set(Calendar.MINUTE, 0)
+            target.set(Calendar.SECOND, 0)
+            target.set(Calendar.MILLISECOND, 0)
+            val currentHour = now.get(Calendar.HOUR_OF_DAY)
+            // Cron "*/N" for the hour field resets at midnight each day rather
+            // than counting continuously — valid hours are {0, N, 2N, ...}
+            // clamped to 0-23, so for N that doesn't divide 24 evenly (e.g.
+            // 23, 5, 7) simple modulo arithmetic lands on the wrong hour
+            // (e.g. 46 % 24 = 22 instead of the correct 0). Enumerate today's
+            // remaining valid hours and fall through to hour 0 tomorrow.
+            var nextHour = -1
+            var h = 0
+            while (h < 24) {
+                if (h > currentHour) {
+                    nextHour = h
+                    break
+                }
+                h += everyHour
+            }
+            if (nextHour == -1) {
+                target.add(Calendar.DAY_OF_YEAR, 1)
+                target.set(Calendar.HOUR_OF_DAY, 0)
+            } else {
+                target.set(Calendar.HOUR_OF_DAY, nextHour)
+            }
+            return target.timeInMillis
+        }
+
         val parsedMinute = minute.toIntOrNull()
+
+        // Daily-multi (comma-separated hour list, e.g. "8,21"), single shared minute.
+        // Must be checked BEFORE the single-hour toIntOrNull() guard below: hour.toIntOrNull()
+        // returns null for any comma-bearing string, so that guard would swallow this case
+        // and return null before we ever got to look at it.
+        if (parsedMinute != null && dayOfMonth == "*" && month == "*" && dayOfWeek == "*" &&
+            Regex("^\\d+(,\\d+)+$").matches(hour)
+        ) {
+            val parsedHours = hour.split(",").map { it.toIntOrNull() }
+            if (parsedHours.any { it == null || it !in 0..23 }) return null
+            val hours = parsedHours.filterNotNull().distinct().sorted()
+            var best: Long? = null
+            for (h in hours) {
+                val candidate = now.clone() as Calendar
+                candidate.set(Calendar.HOUR_OF_DAY, h)
+                candidate.set(Calendar.MINUTE, parsedMinute)
+                candidate.set(Calendar.SECOND, 0)
+                candidate.set(Calendar.MILLISECOND, 0)
+                if (candidate.timeInMillis <= now.timeInMillis) {
+                    candidate.add(Calendar.DAY_OF_YEAR, 1)
+                }
+                if (best == null || candidate.timeInMillis < best!!) {
+                    best = candidate.timeInMillis
+                }
+            }
+            return best
+        }
+
         val parsedHour = hour.toIntOrNull()
         if (parsedMinute == null || parsedHour == null || dayOfMonth != "*" || month != "*") return null
 

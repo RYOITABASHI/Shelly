@@ -6,9 +6,12 @@
  * Only the whitelisted shapes the scheduler accepts are produced: an interval
  * ("every N minutes"), daily ("M H * * *"), weekly single-day ("M H * * D"), and
  * a custom multi-day list ("M H * * D,D,...") — the simple weekday selector can't
- * hold the list, so it is round-tripped verbatim (e.g. Mon/Fri = "1,5").
+ * hold the list, so it is round-tripped verbatim (e.g. Mon/Fri = "1,5"). Also
+ * supports multiple specific times per day ("M H,H,... * * *", 'daily-multi'),
+ * e.g. "0 8,21 * * *" = 8am and 9pm daily. NOTE: 'daily-multi' combined with a
+ * multi-weekday ('custom') list is NOT supported (out of scope, not a bug).
  */
-export type Frequency = 'once' | 'daily' | 'weekly' | 'interval' | 'custom';
+export type Frequency = 'once' | 'daily' | 'weekly' | 'interval' | 'hourly' | 'custom' | 'daily-multi';
 
 export interface DecodedCron {
   frequency: Frequency;
@@ -18,6 +21,8 @@ export interface DecodedCron {
   interval: number;
   /** Raw DOW field for a multi-day ('custom') schedule, e.g. "1,5" = Mon/Fri. */
   dowList: string;
+  /** Raw HOUR field for a multi-time-per-day ('daily-multi') schedule, e.g. "8,21". */
+  hourList: string;
 }
 
 const FALLBACK: DecodedCron = {
@@ -27,6 +32,7 @@ const FALLBACK: DecodedCron = {
   weekday: 1,
   interval: 15,
   dowList: '',
+  hourList: '',
 };
 
 /** Parse an existing cron (when the draft was confident) back into selector state. */
@@ -38,6 +44,17 @@ export function decodeCron(cron: string | null): DecodedCron {
   const everyMin = min.match(/^\*\/(\d+)$/);
   if (everyMin && hour === '*') {
     return { ...FALLBACK, frequency: 'interval', interval: parseInt(everyMin[1], 10) };
+  }
+  const everyHour = hour.match(/^\*\/(\d+)$/);
+  if (everyHour && min === '0') {
+    return { ...FALLBACK, frequency: 'hourly', interval: parseInt(everyHour[1], 10) };
+  }
+  // Multi-time-per-day (e.g. "8,21" = 8am & 9pm daily), one shared minute for
+  // every listed hour. Checked before the plain single-hour shape below since a
+  // comma-hour already fails that shape's /^\d+$/.test(hour) and would otherwise
+  // fall through to FALLBACK.
+  if (/^\d+$/.test(min) && /^\d+(,\d+)+$/.test(hour) && dow === '*') {
+    return { ...FALLBACK, frequency: 'daily-multi', minute: +min, hour: +hour.split(',')[0], hourList: hour };
   }
   if (/^\d+$/.test(min) && /^\d+$/.test(hour)) {
     if (/^\d+$/.test(dow)) {
@@ -80,11 +97,25 @@ export function buildCron(
   weekday: number,
   interval: number,
   customDow: string,
+  hourList: string = '',
 ): string | null {
   if (f === 'once') return null; // one-shot: no schedule
   if (f === 'interval') {
     if (!Number.isInteger(interval) || interval < 1 || interval > 59) return null;
     return `*/${interval} * * * *`;
+  }
+  if (f === 'hourly') {
+    if (!Number.isInteger(interval) || interval < 1 || interval > 23) return null;
+    return `0 */${interval} * * *`;
+  }
+  if (f === 'daily-multi') {
+    if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+    if (!/^\d+(,\d+)*$/.test(hourList)) return null;
+    const hours = hourList.split(',').map((h) => parseInt(h, 10));
+    if (hours.some((h) => h < 0 || h > 23)) return null;
+    const uniq = Array.from(new Set(hours)).sort((a, b) => a - b);
+    if (uniq.length < 2 || uniq.length > 4) return null; // <2: not multi; >4: cap
+    return `${minute} ${uniq.join(',')} * * *`;
   }
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
