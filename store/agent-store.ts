@@ -70,7 +70,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   getAgentByName: (name) =>
     get().agents.find(
-      (a) => a.name.toLowerCase() === name.toLowerCase()
+      (a) => (a.name || '').toLowerCase() === name.toLowerCase()
     ),
 
   setPendingEnvSync: (cmd) => set({ pendingEnvSync: cmd }),
