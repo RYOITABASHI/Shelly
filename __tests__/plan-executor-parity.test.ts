@@ -60,9 +60,14 @@ describe('shelly-plan-executor.js parity', () => {
   });
 
   it('derives unattended mode from scheduled service extras before launching the agent', () => {
+    // PR #122 (widget one-tap run) split this into a named `scheduled` check
+    // and marks a widget-triggered manual run unattended too (`scheduled ||
+    // manual`), so a widget tap keeps per-action approval fail-closed exactly
+    // like an AlarmManager fire, even though it carries no interval/cron.
     expect(terminalSessionService).toContain('val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)');
-    expect(terminalSessionService).toContain('val unattended = intervalMs > 0 || !cron.isNullOrBlank()');
-    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended)');
+    expect(terminalSessionService).toContain('val scheduled = intervalMs > 0 || !cron.isNullOrBlank()');
+    expect(terminalSessionService).toContain('val unattended = scheduled || manual');
+    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)');
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');
   });
