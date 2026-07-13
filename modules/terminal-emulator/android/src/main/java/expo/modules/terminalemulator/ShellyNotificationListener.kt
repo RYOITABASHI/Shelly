@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
  * opted in via `notificationTrigger.packageNames`, a matching notification
  * fires that agent as an immediate one-shot run with `tainted=true` threaded
  * all the way through TerminalSessionService.ACTION_RUN_AGENT →
- * AgentRuntime.runAgent → the PlanSpec executor → the capability broker's
+ * AgentRuntime.runAgent → the generated agent script → the capability broker's
  * http.request op, per CAP-001 (see lib/capability-envelope.ts's
  * classifyEgress). Untrusted notification-triggered input is exactly the
  * kind of attacker-reachable input that taint-tracking exists to contain (a

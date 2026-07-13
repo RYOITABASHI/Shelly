@@ -21,6 +21,12 @@ describe('NOTIFY-001 Increment 0 Manifest + native parity (dormant, flag-OFF)', 
   const listener = read(
     'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/ShellyNotificationListener.kt',
   );
+  const service = read(
+    'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalSessionService.kt',
+  );
+  const runtime = read(
+    'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt',
+  );
   const module = read(
     'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt',
   );
@@ -46,6 +52,13 @@ describe('NOTIFY-001 Increment 0 Manifest + native parity (dormant, flag-OFF)', 
     expect(listener).toContain('Notification.EXTRA_TEXT');
     expect(listener).toContain('sbn.packageName');
     expect(listener).toContain('sbn.postTime');
+  });
+
+  it('threads notification taint into the legacy generated-agent broker path', () => {
+    expect(listener).toContain('putExtra(TerminalSessionService.EXTRA_TAINTED, true)');
+    expect(service).toContain('getBooleanExtra(EXTRA_TAINTED, false)');
+    expect(service).toContain('AgentRuntime.runAgent(applicationContext, agentId, tainted)');
+    expect(runtime).toContain('export SHELLY_CAP_TAINTED=1');
   });
 
   it('reuses the existing permission-check/deep-link AsyncFunction pattern', () => {
