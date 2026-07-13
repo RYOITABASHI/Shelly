@@ -820,11 +820,18 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
         fs.unlinkSync(requestFile);
       } catch (_) {}
 
-      if (SIGNED_APPROVAL_ENABLED && reply && reply.sigAlg && reply.signature && reply.keySha256 && reply.nonce) {
-        // Migration step 2 (lib/signed-approval/wiring.ts): a signed reply
-        // replaces the naive runId+requestSha256 equality check with the full
-        // verifyApprovalReply policy. Dormant: SIGNED_APPROVAL_ENABLED is false
-        // today, so this branch never executes in production.
+      if (SIGNED_APPROVAL_ENABLED) {
+        // Migration step 2 (lib/signed-approval/wiring.ts): once enabled, EVERY
+        // reply must carry a valid signature -- fail closed on any reply
+        // missing sigAlg/signature/keySha256/nonce rather than falling through
+        // to the naive equality check below. Without this explicit rejection,
+        // an unsigned (or malformed-signature) reply would silently satisfy
+        // the naive runId+requestSha256 check, completely defeating signed
+        // approval the moment it's enabled. Dormant: SIGNED_APPROVAL_ENABLED is
+        // false today, so this branch never executes in production.
+        if (!reply || !reply.sigAlg || !reply.signature || !reply.keySha256 || !reply.nonce) {
+          throw new ActionSkipped(`${actionType} action declined`);
+        }
         ensureSignedApprovalVerifierKey(config, (event, fields) => appendJsonl(paths.planAuditFile, {
           ts: new Date().toISOString(),
           kind: 'plan.executor',
@@ -843,10 +850,9 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
         throw new ActionSkipped(`${actionType} action declined`);
       }
 
-      // Naive equality check — today's (and, while SIGNED_APPROVAL_ENABLED is
-      // false, the ONLY) accept-path. Byte-identical to pre-signed-approval
-      // behavior; do not add any signature-aware branching above this that could
-      // change what this path does when the flag is false.
+      // Naive equality check — reached ONLY when SIGNED_APPROVAL_ENABLED is
+      // false (the signed branch above always returns/throws and never falls
+      // through). Byte-identical to pre-signed-approval behavior.
       if (!reply || reply.runId !== runId || reply.requestSha256 !== requestSha256) {
         continue;
       }

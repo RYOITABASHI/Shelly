@@ -86,6 +86,19 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// The executor exits 0 for BOTH an accepted action and a declined/skipped one
+// (ActionSkipped is a normal outcome, not a process error) -- the actual
+// accept/reject verdict only shows up in the run log written to
+// .shelly/agents/logs/<agentId>/<unix-seconds>.json, so tests asserting
+// accept-vs-reject must read that file rather than the process exit code.
+function readLatestRunLog(home: string, agentId: string): { status: string; errorMessage: string } {
+  const runLogDir = path.join(home, '.shelly/agents/logs', agentId);
+  const runLogs = fs.readdirSync(runLogDir).filter((name) => /^\d+\.json$/.test(name));
+  expect(runLogs.length).toBeGreaterThan(0);
+  const latest = runLogs.sort().pop()!;
+  return JSON.parse(fs.readFileSync(path.join(runLogDir, latest), 'utf8'));
+}
+
 async function readNextActionRequest(home: string): Promise<{ file: string; request: any; sha: string }> {
   const requestDir = path.join(home, '.shelly/agents/action-approvals');
   for (let i = 0; i < 100; i += 1) {
@@ -275,6 +288,148 @@ describe('shelly-plan-executor signed-approval dormancy (SIGNED_APPROVAL_ENABLED
 
     const result = await run;
     expect(result.status).toBe(0);
+  });
+});
+
+// ─── Regression: flag-ON must fail closed on an unsigned/malformed reply ───
+//
+// SIGNED_APPROVAL_ENABLED is a hardcoded `false` constant in the executor
+// source, so exercising the flag-ON branch requires spawning a patched copy
+// with that one line flipped -- everything else byte-identical to the real
+// script. This proves the specific fix for the review finding: once enabled,
+// a reply missing sigAlg/signature/keySha256/nonce must be REJECTED rather
+// than silently falling through to the naive runId+requestSha256 equality
+// check (which would let an attacker bypass signature verification simply by
+// omitting the signature fields).
+describe('shelly-plan-executor signed-approval enabled (fail-closed on unsigned reply)', () => {
+  let server: http.Server;
+  let port = 0;
+  let patchedExecutorPath: string;
+
+  beforeAll(() => {
+    const source = fs.readFileSync(executorPath, 'utf8');
+    const patched = source.replace(
+      'const SIGNED_APPROVAL_ENABLED = false;',
+      'const SIGNED_APPROVAL_ENABLED = true;',
+    );
+    expect(patched).not.toBe(source); // fail loudly if the constant's source text ever changes shape
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-plan-executor-signed-on-'));
+    patchedExecutorPath = path.join(dir, 'shelly-plan-executor.js');
+    fs.writeFileSync(patchedExecutorPath, patched);
+  });
+
+  beforeEach((done) => {
+    server = http.createServer((req, res) => {
+      if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+        res.statusCode = 404;
+        res.end('not found');
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        const parsed = JSON.parse(body);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          choices: [{ message: { content: `fixture result: ${parsed.messages[0].content}` } }],
+        }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      port = typeof address === 'object' && address ? address.port : 0;
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    server.close(done);
+  });
+
+  it('rejects a plain unsigned reply (the naive-check shape) when SIGNED_APPROVAL_ENABLED is true, instead of accepting it', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+
+    const run = runExecutor([
+      patchedExecutorPath,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', brokerPath,
+    ], home);
+
+    const pending = await readNextActionRequest(home);
+    const replyDir = path.join(home, '.shelly/agents/action-approval-replies');
+    fs.mkdirSync(replyDir, { recursive: true });
+    // The exact same unsigned reply shape that IS accepted while the flag is
+    // false (see the sibling test above) -- no sigAlg/signature/keySha256/nonce.
+    fs.writeFileSync(
+      path.join(replyDir, `action-${pending.request.runId}.reply.json`),
+      JSON.stringify({
+        runId: pending.request.runId,
+        decision: 'accept',
+        by: 'test',
+        requestSha256: pending.sha,
+        ts: new Date().toISOString(),
+      }) + '\n',
+    );
+
+    await run;
+    // ActionSkipped (a declined/rejected action) is a NORMAL outcome as far as
+    // the process exit code is concerned -- both "approved" and "declined" exit
+    // 0, the same way a human tapping Reject in the Review UI isn't a process
+    // error. The actual accept/reject outcome is recorded in the run log, so
+    // that's what proves whether this reply was accepted or rejected.
+    // Before the fix, this reply would satisfy the naive equality check
+    // (runId + requestSha256 match) and the run log would show status
+    // "success". After the fix, the flag-ON branch rejects it for missing
+    // signature fields before ever reaching the naive check, so the run log
+    // must show "skipped" with a "declined" reason.
+    const log = readLatestRunLog(home, plan.agent.id);
+    expect(log.status).toBe('skipped');
+    expect(log.errorMessage).toContain('declined');
+  });
+
+  it('rejects a reply with signature-like fields but an invalid signature when SIGNED_APPROVAL_ENABLED is true', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+
+    const run = runExecutor([
+      patchedExecutorPath,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', brokerPath,
+    ], home);
+
+    const pending = await readNextActionRequest(home);
+    const replyDir = path.join(home, '.shelly/agents/action-approval-replies');
+    fs.mkdirSync(replyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(replyDir, `action-${pending.request.runId}.reply.json`),
+      JSON.stringify({
+        runId: pending.request.runId,
+        decision: 'accept',
+        by: 'human',
+        requestSha256: pending.sha,
+        nonce: pending.request.nonce,
+        sigAlg: 'SHA256withRSA',
+        signature: 'not-a-real-signature',
+        keySha256: 'deadbeef',
+        ts: new Date().toISOString(),
+      }) + '\n',
+    );
+
+    await run;
+    // Same reasoning as the sibling test above: the process exits 0 either
+    // way, so the verdict must be read from the run log. This reply carries
+    // signature-like fields but a garbage signature/keySha256 -- the fixed
+    // code must verify (and reject) it via verifySignedApprovalReply rather
+    // than accepting on shape alone.
+    const log = readLatestRunLog(home, plan.agent.id);
+    expect(log.status).toBe('skipped');
+    expect(log.errorMessage).toContain('declined');
   });
 });
 
