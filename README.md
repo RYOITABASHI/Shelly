@@ -225,7 +225,7 @@ No Termux install. No proot. No ttyd. No remote bridge.
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
-| **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, and device load without opening the app. It is interactive: **ASK** can deliver a prompt to a live, resumed, or freshly-started Codex PTY; **Allow / Deny** and up to six widget choice pills answer Codex straight from the launcher. |
+| **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, device load, and the next scheduled agent without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK**, **Allow / Deny**, and choice pills control the foreground Codex PTY. |
 | **Color themes** | Blue / Red / Purple palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
 
@@ -256,7 +256,8 @@ Scouter is Shelly's home-screen status layer. It keeps the current Codex
 session, local LLM endpoint, token / context flow, rate-limit windows, and
 device load visible while the phone stays in the launcher or another app.
 It is not read-only — the widget can drive the foreground Codex terminal,
-resume a stale binding, or cold-start a new Codex PTY for a queued prompt.
+resume a stale binding, cold-start a new Codex PTY for a queued prompt, or run
+the next already-registered scheduled agent without opening Shelly.
 
 <details>
 <summary><strong>What it shows</strong></summary>
@@ -268,6 +269,7 @@ resume a stale binding, or cold-start a new Codex PTY for a queued prompt.
 - **Rate-limit override** — when the session is throttled the line collapses to `RATE LIMITED` with the reset detail
 - **Reset / session timer** — a self-ticking chronometer counts down to the rate-limit reset, or counts up the running session
 - **Privacy-safe prompt preview** — only the current widget ASK / approval / choice / error state can occupy the preview; historical JSONL prompts and replies are not surfaced, and closing all Agent Chat tabs blanks the preview area instead of shrinking the widget
+- **Scheduled-agent status** — shows the next registered agent and fire time plus the latest widget-triggered running / success / error result
 - **Local LLM row** — endpoint, backend, queue depth, and ping for the local server
 - **Footer** — CPU / RAM load and last-updated time
 - **Codex pets** — an optional PET button / pet image renders the bundled demo pet or the user's imported Codex pets without bundling private user pets into the APK
@@ -278,6 +280,7 @@ resume a stale binding, or cold-start a new Codex PTY for a queued prompt.
 <summary><strong>Interactive control</strong></summary>
 
 - **ASK** — tap the ASK pill to type a prompt; Shelly writes it into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
+- **RUN scheduled agent** — starts the next enabled, scheduled agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed
 - **Cold-start ASK** — if no Codex or Agent Chat session is available, Shelly queues the widget prompt, opens a terminal, waits for the PTY to become alive, starts `codex`, waits for the Codex input surface, then delivers the queued prompt
 - **Approval pills** — when Codex is waiting for permission, **Allow** / **Deny** pills write `y` / `n` straight to the Codex PTY
 - **Choice pills** — for a numbered interactive prompt, up to six widget pills write the chosen digit to the PTY, each carrying the option label; Android notifications expose the first three actions
@@ -285,7 +288,7 @@ resume a stale binding, or cold-start a new Codex PTY for a queued prompt.
 - **Pet import** — Settings -> Scouter -> Import pet ZIP installs user pets into app-private storage. Shelly also discovers `Codex/pets` and `shelly-personal-pets.zip` sidecar files on shared storage for users who manage Codex pets outside the APK
 - **Stale-tap guard** — Allow / Deny / choice taps re-parse the live terminal screen and only fire if the same approval anchor or numbered option is still on screen; otherwise they no-op
 - **Resume when unbound** — if the bound terminal has exited, ASK (and a pending approval) queue the prompt/decision and open Agent Chat to resume the session, then drain the queued action
-- **How it reaches the terminal** — the widget's tap handler runs inside the app process and writes straight to the live PTY through the in-process terminal session registry — no `am start`, no IPC; when nothing is bound it opens Agent Chat with a `shelly:///agent-chat` deep-link to resume first
+- **How controls are dispatched** — ASK / approval / choice controls write to the live PTY through the in-process terminal session registry; RUN uses a direct foreground-service PendingIntent matching scheduled fires. Neither path shells out through `am start`
 
 </details>
 
