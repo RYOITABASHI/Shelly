@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AUTH_REFS, EGRESS_ALLOWLIST } from '@/lib/capability-envelope';
+import { AUTH_REFS, DEFAULT_BUDGET, EGRESS_ALLOWLIST } from '@/lib/capability-envelope';
 
 // The capability broker ships as an APK asset and is kept in scripts/ for host
 // tests; they MUST stay byte-identical (a drift would let CI test one version
@@ -22,6 +22,15 @@ describe('shelly-capability-broker.js parity', () => {
     for (const host of EGRESS_ALLOWLIST) {
       expect(brokerSrc).toContain(`'${host}'`);
     }
+  });
+
+  it('the broker default budget matches lib/capability-envelope.ts', () => {
+    const match = brokerSrc.match(/const DEFAULT_BUDGET = (\{[^;]+\});/);
+    expect(match).not.toBeNull();
+
+    const brokerBudget = Function(`return (${match?.[1]})`)() as typeof DEFAULT_BUDGET;
+    expect(brokerBudget.maxCalls).toBe(DEFAULT_BUDGET.maxCalls);
+    expect(brokerBudget.maxWallMs).toBe(DEFAULT_BUDGET.maxWallMs);
   });
 
   it('every auth_ref (name → envVar/header/host) matches the TS registry', () => {
