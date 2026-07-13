@@ -33,6 +33,7 @@ import java.util.Calendar
 object AgentAlarmScheduler {
     private const val TAG = "AgentAlarmScheduler"
     private const val PREFS = "shelly_agent_ids"
+    private val requestCodeLock = Any()
 
     // ── L1 BOOT-AUTOSTART (dormant, flag-OFF) ──────────────────────────────────
     // AlarmManager alarms are cleared on reboot, so scheduled agents stop firing
@@ -107,13 +108,13 @@ object AgentAlarmScheduler {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
     /** Stable per-agent request code, shared with the legacy receiver path. */
-    fun getAgentRequestCode(context: Context, agentId: String): Int {
+    fun getAgentRequestCode(context: Context, agentId: String): Int = synchronized(requestCodeLock) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val existing = prefs.getInt(agentId, -1)
-        if (existing >= 0) return existing
+        if (existing >= 0) return@synchronized existing
         val nextId = prefs.getInt("_next_id", 1000)
         prefs.edit().putInt(agentId, nextId).putInt("_next_id", nextId + 1).apply()
-        return nextId
+        nextId
     }
 
     /** The alarm operation: launch the FGS directly (no broadcast hop). */
