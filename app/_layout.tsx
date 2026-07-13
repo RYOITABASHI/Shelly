@@ -37,6 +37,7 @@ import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/c
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -147,11 +148,7 @@ export default function RootLayout() {
         return;
       }
       try {
-        await TerminalEmulator.fireAgentIntent(
-          (request.intentMode ?? 'launch') as 'launch' | 'share',
-          request.intentTarget ?? '',
-          request.intentShareText ?? null,
-        );
+        await fireReviewedAgentIntent(request, TerminalEmulator.fireAgentIntent);
       } catch (e) {
         logError('AgentActionApproval', 'fireAgentIntent failed', e);
         // Fail closed: tell the waiting executor "declined" (a fast, honest

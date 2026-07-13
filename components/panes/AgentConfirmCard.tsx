@@ -244,10 +244,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // user to touch the time first, so an unreviewed default never registers silently.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
   const commandValid = actionType !== 'cli' || command.trim().length > 0;
-  // launch mode requires a non-empty target (package name or URI); share mode has
-  // no required field — an empty intentShareText legitimately opens the share
-  // sheet with no pre-filled text.
-  const intentValid = actionType !== 'intent' || intentMode === 'share' || intentTarget.trim().length > 0;
+  // Launch needs a package/URI target; share has no target but must have text.
+  const intentValid = actionType !== 'intent'
+    || (intentMode === 'launch' ? intentTarget.trim().length > 0 : intentShareText.trim().length > 0);
   // The placeholder-time gate only applies to clock-time frequencies. If the user
   // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
   // uses an HH:MM), there's nothing to confirm — don't deadlock Confirm.

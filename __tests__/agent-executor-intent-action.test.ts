@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { generateRunScript } from '@/lib/agent-executor';
+import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import { Agent, ToolChoice } from '@/store/types';
 
 /** bash -n the script via a temp FILE (a full script exceeds the Windows argv limit for `-c`). */
@@ -48,11 +49,13 @@ describe('generateRunScript — intent action (launch)', () => {
     expect(s).toContain("ACTION_INTENT_SHARE_TEXT=''");
   });
 
-  it('requests approval unconditionally — no AGENT_AUTONOMOUS bypass (mirrors webhook/cli)', () => {
+  it('rejects autonomous execution before requesting attended Review approval', () => {
     const intentCase = s.slice(s.indexOf('\n    intent)'), s.indexOf('\n    *)', s.indexOf('\n    intent)')));
+    expect(intentCase).toContain('[ "${AGENT_AUTONOMOUS:-0}" = "1" ]');
+    expect(intentCase).toContain('Intent actions require an attended Review.');
     expect(intentCase).toContain('write_action_approval_request "intent" "$preview" "$result_file"');
     expect(intentCase).toContain('wait_action_approval "intent" || return 1');
-    expect(intentCase).not.toContain('AGENT_AUTONOMOUS');
+    expect(intentCase.indexOf('AGENT_AUTONOMOUS')).toBeLessThan(intentCase.indexOf('write_action_approval_request'));
     // No broker/native dispatch call after approval — the side effect already
     // happened natively before the accept reply was written.
     expect(intentCase).not.toContain('cap_workspace_exec');
@@ -81,5 +84,43 @@ describe('generateRunScript — intent action (share, {{result}} substitution)',
   it('share mode does not require intentTarget', () => {
     const s = generateRunScript(agent({ type: 'intent', intentMode: 'share', intentShareText: 'hello' }));
     expect(() => bashParses(s)).not.toThrow();
+  });
+
+  it('fires an authored targetless share during Review acceptance before accepting', async () => {
+    const action: Agent['action'] = {
+      type: 'intent',
+      intentMode: 'share',
+      intentShareText: 'Share this result',
+    };
+    const events: string[] = [];
+    const fireAgentIntent = jest.fn(async (mode: string, target: string, shareText: string | null | undefined) => {
+      events.push(`fire:${mode}:${target}:${shareText}`);
+    });
+    const resolveAgentActionApproval = jest.fn(async (_runId: string, _decision: string) => {
+      events.push('resolve:accept');
+    });
+
+    await fireReviewedAgentIntent(action, fireAgentIntent);
+    await resolveAgentActionApproval('run-share', 'accept');
+
+    expect(fireAgentIntent).toHaveBeenCalledWith('share', '', 'Share this result');
+    expect(events).toEqual(['fire:share::Share this result', 'resolve:accept']);
+  });
+
+  it('keeps native empty-target validation scoped to launch mode', () => {
+    const nativeSource = fs.readFileSync(path.join(
+      __dirname,
+      '../modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt',
+    ), 'utf8');
+    expect(nativeSource).toContain('"launch" -> if (trimmedTarget.isEmpty())');
+    expect(nativeSource).toContain('"share" -> if (trimmedShareText.isEmpty())');
+    expect(nativeSource.indexOf('when (normalizedMode)')).toBeLessThan(
+      nativeSource.indexOf('"launch" -> if (trimmedTarget.isEmpty())'),
+    );
+  });
+
+  it('rejects an authored share with no text before approval', () => {
+    const s = generateRunScript(agent({ type: 'intent', intentMode: 'share' }));
+    expect(s).toContain('Intent action is missing share text.');
   });
 });

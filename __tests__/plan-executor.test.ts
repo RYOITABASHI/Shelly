@@ -683,6 +683,33 @@ describe('shelly-plan-executor host smoke', () => {
     expect(runLog.errorMessage).toContain('unsupported unattended PlanSpec action: cli');
   });
 
+  it('requests and accepts a targetless share intent with resolved share text', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = {
+      type: 'intent',
+      intentMode: 'share',
+      intentShareText: 'Result: {{result}}',
+    };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const run = runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+    const pending = await readNextActionRequest(home);
+    expect(pending.request.intentMode).toBe('share');
+    expect(pending.request.intentTarget).toBe('');
+    expect(pending.request.intentShareText).toContain('Result: fixture result: say hello');
+    writeActionReply(home, pending);
+
+    const result = await run;
+    expect(result.status).toBe(0);
+  });
+
   it('keeps intent actions fail-closed in unattended mode', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);

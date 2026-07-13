@@ -1004,6 +1004,11 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         return { status: 'error', preview: message, errorMessage: message };
       }
       const resolvedShareText = String(plan.action.intentShareText || '').split('{{result}}').join(preview);
+      if (intentMode === 'share' && !resolvedShareText.trim()) {
+        const message = 'Intent action is missing share text.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
       requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         intentMode, intentTarget, intentShareText: resolvedShareText,
       });

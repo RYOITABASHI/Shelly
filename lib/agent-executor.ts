@@ -975,6 +975,12 @@ dispatch_agent_action() {
       return 0
       ;;
     intent)
+      if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ]; then
+        ACTION_DISPATCH_STATUS="skipped"
+        ACTION_DISPATCH_MESSAGE="Intent actions require an attended Review."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       if [ -z "$ACTION_INTENT_MODE" ] || { [ "$ACTION_INTENT_MODE" != "launch" ] && [ "$ACTION_INTENT_MODE" != "share" ]; }; then
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="Intent action has an invalid mode."
@@ -984,6 +990,12 @@ dispatch_agent_action() {
       if [ "$ACTION_INTENT_MODE" = "launch" ] && [ -z "$ACTION_INTENT_TARGET" ]; then
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="Intent action is missing a launch target."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ "$ACTION_INTENT_MODE" = "share" ] && [ -z "$ACTION_INTENT_SHARE_TEXT" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Intent action is missing share text."
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi

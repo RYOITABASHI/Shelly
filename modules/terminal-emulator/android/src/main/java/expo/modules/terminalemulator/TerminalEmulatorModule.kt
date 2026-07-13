@@ -911,25 +911,35 @@ class TerminalEmulatorModule : Module() {
         // approval tier for "intent" is enforced upstream (never one-tap).
         AsyncFunction("fireAgentIntent") { mode: String, target: String, shareText: String? ->
             val context = requireReactContext()
+            val normalizedMode = mode.trim()
             val trimmedTarget = target.trim()
-            if (trimmedTarget.isEmpty()) throw IllegalArgumentException("intent target is empty")
+            val trimmedShareText = shareText?.trim().orEmpty()
+            when (normalizedMode) {
+                "launch" -> if (trimmedTarget.isEmpty()) {
+                    throw IllegalArgumentException("intent target is empty")
+                }
+                "share" -> if (trimmedShareText.isEmpty()) {
+                    throw IllegalArgumentException("intent share text is empty")
+                }
+                else -> throw IllegalArgumentException("unknown intent mode: $normalizedMode")
+            }
             try {
-                val intent = when (mode) {
+                val intent = when (normalizedMode) {
                     "launch" -> buildLaunchIntent(context, trimmedTarget)
                         ?: throw ActivityNotFoundException("no app can handle target")
                     "share" -> Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, shareText ?: "")
+                        putExtra(Intent.EXTRA_TEXT, shareText)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
-                    else -> throw IllegalArgumentException("unknown intent mode: $mode")
+                    else -> error("validated intent mode became unreachable")
                 }
                 context.startActivity(intent)
                 // Never log target/shareText CONTENT (both are agent/user free text,
                 // could contain anything) — mode + lengths only, matching this
                 // codebase's existing "never log payload content" convention (see
                 // sendNotificationReply's textLen-only logging above).
-                Log.i("TerminalEmulator", "fireAgentIntent: mode=$mode targetLen=${trimmedTarget.length} shareTextLen=${shareText?.length ?: 0}")
+                Log.i("TerminalEmulator", "fireAgentIntent: mode=$normalizedMode targetLen=${trimmedTarget.length} shareTextLen=${shareText?.length ?: 0}")
             } catch (e: Exception) {
                 // Log the exception TYPE only, not the exception object itself: a
                 // genuine platform ActivityNotFoundException thrown by startActivity()
@@ -937,7 +947,7 @@ class TerminalEmulatorModule : Module() {
                 // the full Intent.toString() in its message, which includes the dat=
                 // URI field — i.e. intentTarget content — violating the "never log
                 // target/shareText content" invariant above for this one error path.
-                Log.e("TerminalEmulator", "fireAgentIntent failed mode=$mode type=${e.javaClass.simpleName}")
+                Log.e("TerminalEmulator", "fireAgentIntent failed mode=$normalizedMode type=${e.javaClass.simpleName}")
                 throw e
             }
             null
