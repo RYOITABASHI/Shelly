@@ -106,7 +106,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <DisplaySection />
             <WallpaperSection />
             <LanguageSection />
-            <AgentsSection />
+            <AgentsSection visible={visible} />
             <ApiKeysSection />
             <UpdatesSection onOpenBuilds={() => onOpenBuilds?.()} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
@@ -756,7 +756,7 @@ const DEFAULT_AGENT_OPTIONS: { value: 'cerebras' | 'groq' | 'codex'; label: stri
   { value: 'codex',       label: 'Codex' },
 ];
 
-function AgentsSection() {
+function AgentsSection({ visible }: { visible: boolean }) {
   const { t } = useTranslation();
   const defaultAgent = useSettingsStore((s) => s.settings.defaultAgent);
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
@@ -819,6 +819,64 @@ function AgentsSection() {
     updateSettings({ autonomousCloudOnExhaustion: cloudExhaustion === 'stop' ? 'escalate' : 'stop' });
     await flushPendingAgentEnvSync('Autonomous Cloud');
   };
+
+  const [notificationTriggerEnabled, setNotificationTriggerEnabled] = React.useState(false);
+  const [notificationTriggerBusy, setNotificationTriggerBusy] = React.useState(false);
+
+  const loadNotificationTrigger = React.useCallback(async () => {
+    try {
+      const enabled = await TerminalEmulator.getNotificationTriggerEnabled();
+      setNotificationTriggerEnabled(enabled);
+    } catch (e: any) {
+      logError('SettingsDropdown', 'Failed to load notification-trigger flag', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visible) loadNotificationTrigger();
+  }, [visible, loadNotificationTrigger]);
+
+  const toggleNotificationTrigger = React.useCallback(async () => {
+    const next = !notificationTriggerEnabled;
+    setNotificationTriggerBusy(true);
+    try {
+      await TerminalEmulator.setNotificationTriggerEnabled(next);
+      setNotificationTriggerEnabled(next);
+      ToastAndroid.show(
+        next ? t('agents.notification_trigger_enabled') : t('agents.notification_trigger_disabled'),
+        ToastAndroid.SHORT,
+      );
+      logInfo('SettingsDropdown', 'notificationTriggerEnabled=' + next);
+    } catch (e: any) {
+      Alert.alert(t('agents.notification_trigger_failed'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to toggle notification trigger', e);
+    } finally {
+      setNotificationTriggerBusy(false);
+    }
+  }, [notificationTriggerEnabled, t]);
+
+  const checkNotificationOsAccess = React.useCallback(async () => {
+    try {
+      const granted = await TerminalEmulator.hasNotificationListenerAccess();
+      if (granted) {
+        Alert.alert(t('agents.notification_os_access_title'), t('agents.notification_os_access_granted'));
+      } else {
+        Alert.alert(
+          t('agents.notification_os_access_title'),
+          t('agents.notification_os_access_not_granted'),
+          [
+            {
+              text: t('agents.notification_os_access_open_settings'),
+              onPress: () => TerminalEmulator.requestNotificationListenerAccess(),
+            },
+          ],
+        );
+      }
+    } catch (e: any) {
+      Alert.alert(t('agents.notification_os_access_failed'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to check notification OS access', e);
+    }
+  }, [t]);
 
   return (
     <Section title={t('agents.title')}>
@@ -907,6 +965,37 @@ function AgentsSection() {
           </Pressable>
         </Row>
       )}
+      <Row label={t('agents.notification_trigger')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: notificationTriggerEnabled ? withAlpha(C.accent, 0.36) : C.border },
+            notificationTriggerBusy && styles.integrationRowDisabled,
+          ]}
+          onPress={toggleNotificationTrigger}
+          disabled={notificationTriggerBusy}
+          hitSlop={4}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: notificationTriggerEnabled ? C.accent : C.text2 },
+              notificationTriggerEnabled && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle()]}
+        onPress={checkNotificationOsAccess}
+        accessibilityRole="button"
+        accessibilityLabel={t('agents.notification_os_access_a11y')}
+      >
+        <MaterialIcons name="notifications" size={13} color={C.text2} />
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('agents.notification_os_access')}</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
       <Row label={t('agents.output_target')}>
         <Pressable
           style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}

@@ -38,3 +38,11 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // TriggerDebouncerTest.kt — see that file's doc comment: not yet wired into
+  // a CI test task (build-android.yml only runs assembleRelease), but placed
+  // in the idiomatic src/test/java location so `./gradlew :terminal-emulator:testDebugUnitTest`
+  // works correctly once that wiring exists.
+  testImplementation 'junit:junit:4.13.2'
+}

@@ -30,7 +30,7 @@ object AgentRuntime {
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
     private const val CURRENT_SCRIPT_VERSION = 9
 
-    fun runAgent(context: Context, agentId: String): AgentRunResult {
+    fun runAgent(context: Context, agentId: String, tainted: Boolean = false): AgentRunResult {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
@@ -81,6 +81,9 @@ object AgentRuntime {
             append(" && export SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256=")
             append(shellQuote(escalationPublicKeySha256))
             append(" && readonly SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256")
+            if (tainted) {
+                append(" && export SHELLY_CAP_TAINTED=1")
+            }
             append(" && { [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\" || true; }")
             append(" && . ")
             append(shellQuote(scriptPath))

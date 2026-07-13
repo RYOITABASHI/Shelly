@@ -166,6 +166,8 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     items: [
       { key: 'enableCommandSafety',  label: 'Command Safety',    type: 'boolean', source: 'settings' },
       { key: 'highContrastOutput',   label: 'High Contrast',     type: 'boolean', source: 'settings' },
+      { key: 'notificationTriggerEnabled', label: 'Notification Triggers', type: 'boolean', source: 'custom', description: 'Let agents fire when a notification arrives from a chosen app. Requires OS notification access (see below).' },
+      { key: 'notificationOsAccess', label: 'Notification Access (OS)', type: 'action', source: 'custom', actionLabel: 'Check / Grant' },
     ],
   },
   {
@@ -470,6 +472,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   // Custom context (loaded async)
   const [customContextText, setCustomContextText] = useState('');
   const [scouterEnabled, setScouterEnabled] = useState(false);
+  const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState(false);
   useEffect(() => {
     if (visible) {
       logLifecycle('ConfigTUI', 'opened');
@@ -483,6 +486,11 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         })
         .catch((e: unknown) => {
           logError('ConfigTUI', 'Failed to load Scouter debug info', e);
+        });
+      TerminalEmulator.getNotificationTriggerEnabled()
+        .then(setNotificationTriggerEnabled)
+        .catch((e: unknown) => {
+          logError('ConfigTUI', 'Failed to load notification-trigger flag', e);
         });
     }
   }, [visible]);
@@ -499,11 +507,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     customContext: customContextText,
     dotfilesPat: dotfiles.pat,
     scouterEnabled,
+    notificationTriggerEnabled,
   }), [
     customContextText,
     dotfiles.pat,
     i18n.locale,
     scouterEnabled,
+    notificationTriggerEnabled,
     settings.teamMembers?.gemini,
     settings.teamMembers?.cerebras,
     settings.teamMembers?.groq,
@@ -561,6 +571,19 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
               .catch((e: unknown) => {
                 logError('ConfigTUI', 'Failed to toggle Scouter', e);
                 Alert.alert('Scouter failed', String((e as any)?.message || e));
+              });
+            break;
+          }
+          case 'notificationTriggerEnabled': {
+            const enabled = Boolean(rawValue);
+            TerminalEmulator.setNotificationTriggerEnabled(enabled)
+              .then(() => {
+                setNotificationTriggerEnabled(enabled);
+                ToastAndroid.show(enabled ? 'Notification triggers enabled' : 'Notification triggers disabled', ToastAndroid.SHORT);
+              })
+              .catch((e: unknown) => {
+                logError('ConfigTUI', 'Failed to toggle notification triggers', e);
+                Alert.alert('Notification triggers failed', String((e as any)?.message || e));
               });
             break;
           }
@@ -710,6 +733,24 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             Alert.alert('Scouter Hooks', `Codex:\n${codex}\n\nLocal LLM:\n${local}`.slice(0, 3500));
           } catch (e: any) {
             Alert.alert('Scouter Hooks failed', String(e?.message || e));
+          }
+        })();
+        break;
+      case 'notificationOsAccess':
+        (async () => {
+          try {
+            const granted = await TerminalEmulator.hasNotificationListenerAccess();
+            if (granted) {
+              Alert.alert('Notification access', 'Already granted — Shelly can read notifications for the trigger feature.');
+            } else {
+              Alert.alert(
+                'Notification access',
+                'Not granted yet. Opening Android Settings — enable "Shelly" under Notification access, then return here.',
+                [{ text: 'OK', onPress: () => TerminalEmulator.requestNotificationListenerAccess() }],
+              );
+            }
+          } catch (e: any) {
+            Alert.alert('Notification access check failed', String(e?.message || e));
           }
         })();
         break;

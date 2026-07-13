@@ -556,6 +556,10 @@ export interface Agent {
   description: string;
   prompt: string;
   schedule: string | null;     // cron expression, null = manual only
+  /** Packages whose notifications trigger an immediate one-shot run of this agent.
+   *  Coarse allowlist, no per-package sub-config. Dormant until Increment 2 adds a
+   *  UI to configure it. */
+  notificationTrigger?: { packageNames: string[] } | null;
   tool: ToolChoice;
   /** true = runs in autonomous mode (no per-step human approval): OAuth/local only,
    *  gated by the policy engine. Optional; absent/false = today's manual behaviour. */
