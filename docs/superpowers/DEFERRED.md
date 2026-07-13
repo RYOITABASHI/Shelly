@@ -91,6 +91,15 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 - ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
 - ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。**残る解錠は全て実装着地（2026-06-24, branch claude/work-handoff-2qb1xd）**: 自律クラウド opt-in=N1(105fda3) / Vault 内保存の自動承認=N2(b08a608) / 複数曜日スケジュール=N4(c80bb04) / 日付フォルダ出力テンプレ=N4(fa10617) / web-mandatory routing(203428c) / orchestration 昇格=N3(8fb8926)。**残るは実機 end-to-end 検証（web quota 明け待ち）と N1 スケジュール .sh のクラウド完全無人化 follow-up のみ**。
 
+### 🧭 Capability broker Phase 0 — flag-gated foundation
+
+**優先度**: P1 follow-up ／ **状態**: CAP-001/SECRET-001/HTTP-001 の broker 基盤は flag-gated OFF で着地、既存経路は維持。
+
+- `SHELLY_CAP_BROKER=1` のときだけ `http_post_json` を capability broker 経由にし、allowlist、auth-ref の host binding、taint gate、budget、redacted audit を適用する。既定 OFF のため production の既存経路は変えない。
+- SECRET-001 は部分適用: broker は秘密を argv/child environment から外すが、config 読み込みのため `.env` source は残る。完全 de-source は follow-up。
+- 非 allowlist host は承認 UI 未接続のため fail-closed。mid-run approval は nonce/host 束縛を含めて follow-up。
+- policy deny / budget 超過の診断表示改善と、broker opt-in の実機 end-to-end 再検証を follow-up とする。
+
 ### 🔴 Web-mandatory routing — 実機 end-to-end 検証待ち（quota 明けの必須ゲート）
 
 **優先度**: P1（North Star コアの収集経路。実装済みだが実機 end-to-end 未検証）
