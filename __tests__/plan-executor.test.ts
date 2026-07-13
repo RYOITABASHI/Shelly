@@ -740,6 +740,67 @@ describe('shelly-plan-executor host smoke', () => {
     expect(runLog.errorMessage).toContain('unsupported unattended PlanSpec action: intent');
   });
 
+  it('resolves dm-reply from the live mirror and binds target/text into Review approval', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'dm-reply', dmPairingId: 'pair-1', dmReplyText: 'Reply: {{result}}' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.writeFileSync(path.join(home, '.shelly/agents/dm-pairings.json'), JSON.stringify([
+      { id: 'pair-1', label: 'Test conversation', revoked: false },
+    ]));
+
+    const run = runExecutor([
+      executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker,
+    ], home);
+    const pending = await readNextActionRequest(home);
+    expect(pending.request).toMatchObject({
+      actionType: 'dm-reply',
+      dmPairingId: 'pair-1',
+      dmPairingLabel: 'Test conversation',
+    });
+    expect(pending.request.dmReplyText).toContain('Reply: fixture result: say hello');
+    writeActionReply(home, pending);
+    expect((await run).status).toBe(0);
+  });
+
+  it('fails closed on revoked dm pairing without creating an approval request', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'dm-reply', dmPairingId: 'pair-1', dmReplyText: 'hello' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.writeFileSync(path.join(home, '.shelly/agents/dm-pairings.json'), JSON.stringify([
+      { id: 'pair-1', label: 'Revoked', revoked: true },
+    ]));
+
+    const result = await runExecutor([
+      executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker,
+    ], home);
+    expect(result.status).toBe(0);
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    expect(fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : []).toHaveLength(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogName = fs.readdirSync(logDir).find((name) => /^\d+\.json$/.test(name))!;
+    expect(JSON.parse(fs.readFileSync(path.join(logDir, runLogName), 'utf8')).errorMessage)
+      .toContain('no longer paired');
+  });
+
+  it('keeps dm-reply fail-closed in unattended PlanSpec mode', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'dm-reply', dmPairingId: 'pair-1', dmReplyText: 'hello' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    const result = await runExecutor([
+      executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id,
+      '--unattended', '1', '--trusted-autonomous-agent-id', plan.agent.id,
+      '--trusted-autonomous-action', 'dm-reply', '--trusted-tool-type', 'local', '--broker', broker,
+    ], home);
+    expect(result.status).toBe(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogName = fs.readdirSync(logDir).find((name) => /^\d+\.json$/.test(name))!;
+    expect(JSON.parse(fs.readFileSync(path.join(logDir, runLogName), 'utf8')).errorMessage)
+      .toContain('unsupported unattended PlanSpec action: dm-reply');
+  });
+
   it('redacts secret-like model text from previews and native notifications', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);

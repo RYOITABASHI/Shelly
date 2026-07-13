@@ -2155,6 +2155,8 @@ claude() {
 
 - **2026-07-13 (Batch 10)**: BOOT-AUTOSTART の dormant port を `58a378834` / `20ae526c3` / `c85f4ca1e` から再構成。`BOOT_COMPLETED` receiver と Doze exemption permission、native persisted-schedule re-arm、host reference/tests を追加し、receiver-level `android:permission` は送信者を制約して配信を壊すため除去、receiver 登録は prebuild で残る `plugins/with-terminal-service.js` を source of truth（checked-in manifest は readability mirror）とした。native flag `shelly_boot_autostart.enabled` は既定 `false`、production setter なしのため既存 agent は reboot 時も再 arm されない。将来の flag enable に備え、`$HOME/.shelly/agents/.halted` 存在時は persisted schedule を一件も再 arm しない STOP-ALL guard も追加。host gate（`pnpm run check` / `expo lint` / boot-autostart 16 tests / `git diff --check`）PASS。**実機 reboot / Doze / One UI / flag-enabled end-to-end は未検証であり、有効化前の follow-up 必須**。新規 L1 permission（`RECEIVE_BOOT_COMPLETED` / `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）反映には APK rebuild + reinstall が必要。→ sync: なし（既定 OFF の内部基盤）。
 
+- **2026-07-13 (P1, Batch 6 DM pairing)**: current main の schema-v1 PlanSpec と既存 generic Review 契約へ、承認コードによる通知会話ペアリング + `dm-reply` を手動再構成。通知 read/trigger と reply-send の独立2フラグはともに既定 OFF、返信は毎回 in-app Review 必須で、自動承認 (`0686f4a7` 以降) は不採用。disk mirror は atomic rename の前後で `sync` し、native send 時に再読込・取消即時反映・live fingerprint 完全一致・10秒 send debounce・本文非ログを適用。自己完結テストは Shelly 自身の通知だけを使う。**実機の Notification Access grant、実アプリの承認コード検出、実会話への reply round-trip、OEM/Android 16 の RemoteInput 挙動は未検証で、有効化前の必須 P1 gate**。→ sync: なし（既定 OFF の内部機能）。
+
 ---
 
 ## 管理ルール (自分への覚書)

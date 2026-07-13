@@ -869,6 +869,75 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        AsyncFunction("getNotificationReplyEnabled") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            ShellyNotificationListener.notificationReplyEnabled(context)
+        }
+
+        AsyncFunction("setNotificationReplyEnabled") { enabled: Boolean ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            context.getSharedPreferences(ShellyNotificationListener.PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(ShellyNotificationListener.REPLY_ENABLED_KEY, enabled).apply()
+            Log.i("TerminalEmulator", "setNotificationReplyEnabled: enabled=$enabled")
+            null
+        }
+
+        AsyncFunction("sendNotificationReply") { packageName: String, replyText: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            if (replyText.length > 4000 ||
+                !ShellyNotificationListener.notificationListenerEnabled(context) ||
+                !ShellyNotificationListener.notificationReplyEnabled(context)
+            ) return@AsyncFunction false
+            ShellyNotificationListener.attemptSendReply(context, packageName, replyText)
+        }
+
+        AsyncFunction("findDmPairingCandidates") { code: String ->
+            ShellyNotificationListener.findNotificationMatchingCode(code).map { candidate ->
+                mapOf(
+                    "packageName" to candidate.packageName,
+                    "notificationId" to candidate.notificationId,
+                    "notificationTag" to candidate.notificationTag,
+                    "shortcutId" to candidate.shortcutId,
+                    "title" to candidate.title,
+                    "textPreview" to candidate.textPreview,
+                )
+            }
+        }
+
+        AsyncFunction("sendPairedDmReply") { dmPairingId: String, replyText: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            if (replyText.length > 4000) return@AsyncFunction false
+            // The listener re-checks both native flags and re-reads the pairing
+            // mirror here at send time; authoring-time state is never trusted.
+            ShellyNotificationListener.sendPairedDmReply(context, dmPairingId, replyText)
+        }
+
+        AsyncFunction("postDmReplyTestNotification") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            DmReplyTestNotifier.post(context)
+        }
+
+        AsyncFunction("getDmReplyTestResult") {
+            val context = appContext.reactContext
+                ?: return@AsyncFunction mapOf("receivedText" to null, "receivedAtMs" to null)
+            val prefs = context.getSharedPreferences(ShellyNotificationListener.PREFS, Context.MODE_PRIVATE)
+            mapOf(
+                "receivedText" to prefs.getString(DmReplyTestNotifier.KEY_RECEIVED_TEXT, null),
+                "receivedAtMs" to if (prefs.contains(DmReplyTestNotifier.KEY_RECEIVED_AT_MS))
+                    prefs.getLong(DmReplyTestNotifier.KEY_RECEIVED_AT_MS, 0L) else null,
+            )
+        }
+
+        AsyncFunction("clearDmReplyTestResult") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            context.getSharedPreferences(ShellyNotificationListener.PREFS, Context.MODE_PRIVATE).edit()
+                .remove(DmReplyTestNotifier.KEY_RECEIVED_TEXT)
+                .remove(DmReplyTestNotifier.KEY_RECEIVED_AT_MS)
+                .apply()
+            DmReplyTestNotifier.clear(context)
+            null
+        }
+
         AsyncFunction("installApk") { apkPath: String ->
             val context = requireReactContext()
             try {

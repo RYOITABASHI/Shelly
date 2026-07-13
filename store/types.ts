@@ -497,10 +497,10 @@ export type ToolChoice =
  *
  * Approval tiering by blast radius (Phase 0 §2.6) is enforced at the approval layer,
  * keyed off `type`: draft/notify = one-tap; webhook = one-tap with host+payload shown;
- * cli/intent = never one-tap (in-app Review before Allow) — intent additionally shows
+ * cli/intent/dm-reply = never one-tap (in-app Review before Allow) — intent additionally shows
  * the resolved target app/URI/share-text so the user sees exactly what will fire.
  */
-export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent';
+export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -523,6 +523,10 @@ export interface AgentAction {
    *  agent's run preview text at request-build time, BEFORE the approval request
    *  is written — so native/RN code only ever sees the final resolved string. */
   intentShareText?: string;
+  /** dm-reply: opaque reference to a paired live-notification fingerprint. */
+  dmPairingId?: string;
+  /** dm-reply: reply text template. A literal {{result}} is replaced with the run preview. */
+  dmReplyText?: string;
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */

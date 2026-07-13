@@ -17,6 +17,7 @@ import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
 import { useSettingsStore } from '@/store/settings-store';
+import { useDmPairingStore } from '@/store/dm-pairing-store';
 import * as Linking from 'expo-linking';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -104,7 +105,7 @@ type AgentActionApprovalRequest = {
   agentId: string;
   agentName?: string | null;
   toolLabel?: string | null;
-  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent';
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
   preview?: string | null;
   destinationHost?: string | null;
   command?: string | null;
@@ -118,6 +119,9 @@ type AgentActionApprovalRequest = {
   intentMode?: 'launch' | 'share' | null;
   intentTarget?: string | null;
   intentShareText?: string | null;
+  dmPairingId?: string | null;
+  dmPairingLabel?: string | null;
+  dmReplyText?: string | null;
 };
 
 export default function RootLayout() {
@@ -167,6 +171,28 @@ export default function RootLayout() {
         return;
       }
     }
+    if (decision === 'accept' && request.actionType === 'dm-reply') {
+      let sent = false;
+      try {
+        sent = await TerminalEmulator.sendPairedDmReply(
+          request.dmPairingId ?? '',
+          request.dmReplyText ?? '',
+        );
+      } catch (error) {
+        logError('AgentActionApproval', 'sendPairedDmReply failed', error);
+      }
+      if (!sent) {
+        await TerminalEmulator.resolveAgentActionApproval(
+          request.runId,
+          'decline',
+          request.requestSha256 ?? null,
+        ).catch(() => undefined);
+        setPendingAgentActionApproval(null);
+        setAgentActionResolving(false);
+        Alert.alert(t('agent_action_confirm_dmreply_failed'));
+        return;
+      }
+    }
     try {
       await TerminalEmulator.resolveAgentActionApproval(
         request.runId,
@@ -206,6 +232,8 @@ export default function RootLayout() {
     logInfo('RootLayout', 'Loaded: a11y');
     usePluginStore.getState().loadPlugins();
     logInfo('RootLayout', 'Loaded: plugins');
+    useDmPairingStore.getState().loadPairings();
+    logInfo('RootLayout', 'Loaded: dm-pairings');
 
     // Resolve dynamic HOME path from native layer
     import('@/lib/home-path').then(({ initHomePath }) => {
@@ -743,7 +771,8 @@ export default function RootLayout() {
         actionType !== 'notify' &&
         actionType !== 'webhook' &&
         actionType !== 'cli' &&
-        actionType !== 'intent'
+        actionType !== 'intent' &&
+        actionType !== 'dm-reply'
       ) {
         return null;
       }
@@ -772,6 +801,9 @@ export default function RootLayout() {
         intentMode,
         intentTarget: str('intentTarget') || null,
         intentShareText: str('intentShareText') || null,
+        dmPairingId: str('dmPairingId') || null,
+        dmPairingLabel: str('dmPairingLabel') || null,
+        dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
       };
     };
 
@@ -792,6 +824,9 @@ export default function RootLayout() {
       intentMode: request.intentMode,
       intentTarget: request.intentTarget,
       intentShareText: request.intentShareText,
+      dmPairingId: request.dmPairingId,
+      dmPairingLabel: request.dmPairingLabel,
+      dmReplyText: request.dmReplyText,
     });
 
     const getActionApprovalRequestDirUri = async () => {
@@ -826,7 +861,7 @@ export default function RootLayout() {
       if (!runId) return;
       try {
         const request = await readActionApprovalRequest(runId);
-        if (!request || (request.actionType !== 'cli' && request.actionType !== 'intent')) {
+        if (!request || (request.actionType !== 'cli' && request.actionType !== 'intent' && request.actionType !== 'dm-reply')) {
           Alert.alert(t('agent_action_confirm_not_ready'));
           return;
         }
@@ -1478,11 +1513,15 @@ export default function RootLayout() {
               <Text style={actionApprovalStyles.eyebrow}>
                 {pendingAgentActionApproval.actionType === 'intent'
                   ? t('agent_action_confirm_title_intent')
+                  : pendingAgentActionApproval.actionType === 'dm-reply'
+                    ? t('agent_action_confirm_title_dmreply')
                   : t('agent_action_confirm_title')}
               </Text>
               <Text style={actionApprovalStyles.body}>
                 {pendingAgentActionApproval.actionType === 'intent'
                   ? t('agent_action_confirm_body_intent')
+                  : pendingAgentActionApproval.actionType === 'dm-reply'
+                    ? t('agent_action_confirm_body_dmreply')
                   : t('agent_action_confirm_body')}
               </Text>
               {pendingAgentActionApproval.actionType === 'intent' ? (
@@ -1512,17 +1551,26 @@ export default function RootLayout() {
                     </>
                   ) : null}
                 </>
+              ) : pendingAgentActionApproval.actionType === 'dm-reply' ? (
+                <>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_dmreply_target')}</Text>
+                  <Text selectable style={actionApprovalStyles.commandText}>
+                    {pendingAgentActionApproval.dmPairingLabel || ''}
+                  </Text>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_dmreply_text')}</Text>
+                  <ScrollView style={actionApprovalStyles.commandBox}>
+                    <Text selectable style={actionApprovalStyles.commandText}>
+                      {pendingAgentActionApproval.dmReplyText || ''}
+                    </Text>
+                  </ScrollView>
+                </>
               ) : (
                 <>
-                  <Text style={actionApprovalStyles.label}>
-                    {t('agent_action_confirm_safety')}
-                  </Text>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_safety')}</Text>
                   <Text style={actionApprovalStyles.meta}>
                     {(pendingAgentActionApproval.safetyLevel || 'UNKNOWN')}: {pendingAgentActionApproval.safetyReason || ''}
                   </Text>
-                  <Text style={actionApprovalStyles.label}>
-                    {t('agent_action_confirm_command')}
-                  </Text>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_command')}</Text>
                   <ScrollView style={actionApprovalStyles.commandBox}>
                     <Text selectable style={actionApprovalStyles.commandText}>
                       {pendingAgentActionApproval.command || ''}

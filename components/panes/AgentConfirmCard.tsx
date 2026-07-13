@@ -27,6 +27,7 @@ import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
+import { pairingConfidence, useDmPairingStore } from '@/store/dm-pairing-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 export interface ConfirmedAgentDraft {
@@ -54,7 +55,7 @@ export interface ConfirmedAgentDraft {
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
-const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent'];
+const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
 
 function clampInt(raw: string, min: number, max: number): number {
@@ -128,6 +129,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [intentMode, setIntentMode] = useState<'launch' | 'share'>(draft.action.intentMode ?? 'launch');
   const [intentTarget, setIntentTarget] = useState(draft.action.intentTarget ?? '');
   const [intentShareText, setIntentShareText] = useState(draft.action.intentShareText ?? '');
+  const [dmPairingId, setDmPairingId] = useState(draft.action.dmPairingId ?? '');
+  const [dmReplyText, setDmReplyText] = useState(draft.action.dmReplyText ?? '');
+  const dmPairings = useDmPairingStore((state) => state.pairings.filter((pairing) => !pairing.revoked));
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
   // NOTIFY-001 Increment 2: free-text package allowlist. No NL-parse producer yet
@@ -247,6 +251,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // Launch needs a package/URI target; share has no target but must have text.
   const intentValid = actionType !== 'intent'
     || (intentMode === 'launch' ? intentTarget.trim().length > 0 : intentShareText.trim().length > 0);
+  const dmReplyValid = actionType !== 'dm-reply' || dmPairingId.length > 0;
   // The placeholder-time gate only applies to clock-time frequencies. If the user
   // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
   // uses an HH:MM), there's nothing to confirm — don't deadlock Confirm.
@@ -254,7 +259,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     frequency === 'daily' || frequency === 'weekly' || frequency === 'custom' || frequency === 'daily-multi';
   const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
   const canConfirm =
-    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid;
+    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid && dmReplyValid;
 
   const handleConfirm = () => {
     if (!canConfirm) return;
@@ -271,6 +276,10 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       // time. Only persist it when it's actually meaningful.
       if (intentMode === 'launch') action.intentTarget = intentTarget.trim();
       if (intentMode === 'share') action.intentShareText = intentShareText.trim();
+    }
+    if (actionType === 'dm-reply') {
+      action.dmPairingId = dmPairingId;
+      action.dmReplyText = dmReplyText.trim();
     }
     // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
     // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
@@ -540,6 +549,49 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.intent_warning')}</Text>
         </>
       )}
+      {actionType === 'dm-reply' && (
+        <>
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.dmreply_pairing_label')}</Text>
+          {dmPairings.length === 0 ? (
+            <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.dmreply_no_pairings')}</Text>
+          ) : (
+            <View style={styles.dmPairingList}>
+              {dmPairings.map((pairing) => {
+                const selected = pairing.id === dmPairingId;
+                return (
+                  <TouchableOpacity
+                    key={pairing.id}
+                    onPress={() => setDmPairingId(pairing.id)}
+                    style={[styles.dmPairingRow, {
+                      borderColor: selected ? colors.accent : colors.border,
+                      backgroundColor: selected ? `${colors.accent}15` : 'transparent',
+                    }]}
+                  >
+                    <Text style={{ color: selected ? colors.accent : colors.foreground, fontSize: 12, flex: 1 }} numberOfLines={1}>
+                      {pairing.label}
+                    </Text>
+                    {pairingConfidence(pairing) === 'weak' && (
+                      <Text style={[styles.dmWeakBadge, { color: colors.warning, borderColor: colors.warning }]}>
+                        {t('agentcard.dmreply_weak_confidence_hint')}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.dmreply_text_label')}</Text>
+          <TextInput
+            value={dmReplyText}
+            onChangeText={setDmReplyText}
+            multiline
+            placeholder={t('agentcard.dmreply_text_label')}
+            placeholderTextColor={colors.inactive}
+            style={[styles.input, fieldBg]}
+          />
+          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.dmreply_text_hint')}</Text>
+        </>
+      )}
 
       {/* Notification trigger (NOTIFY-001 Increment 2) */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.notification_trigger_label')}</Text>
@@ -764,6 +816,9 @@ const styles = StyleSheet.create({
   timeChipInput: { fontSize: 12, minWidth: 18, padding: 0, textAlign: 'right' },
   segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, overflow: 'hidden', marginTop: 3 },
   segment: { flex: 1, paddingVertical: 6, alignItems: 'center' },
+  dmPairingList: { marginTop: 3, gap: 4 },
+  dmPairingRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 7, gap: 6 },
+  dmWeakBadge: { fontSize: 9, borderWidth: 1, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
   autoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 7 },
   toggle: { minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1 },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 10 },

@@ -1,15 +1,28 @@
 package expo.modules.terminalemulator
 
 import android.app.Notification
+import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+
+data class PairingCandidate(
+    val packageName: String,
+    val notificationId: Int,
+    val notificationTag: String?,
+    val shortcutId: String?,
+    val title: String,
+    val textPreview: String,
+)
 
 /**
  * NOTIFY-001 Increment 0+1 (flag-gated, default OFF): cross-app notification
@@ -65,11 +78,23 @@ class ShellyNotificationListener : NotificationListenerService() {
         private const val TAG = "ShellyNotificationListener"
         const val PREFS = "shelly_notification_listener"
         const val ENABLED_KEY = "enabled"
+        const val REPLY_ENABLED_KEY = "reply_enabled"
+
+        @Volatile
+        private var activeInstance: ShellyNotificationListener? = null
+
+        private const val REPLY_DEBOUNCE_MS = 10_000L
+        private val lastReplyAtMs = ConcurrentHashMap<String, Long>()
 
         /** Native enable flag for the notification listener. Defaults false (dormant). */
         fun notificationListenerEnabled(context: Context): Boolean =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getBoolean(ENABLED_KEY, false)
+
+        /** Independent send-side gate. Defaults false even when notification reads are enabled. */
+        fun notificationReplyEnabled(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(REPLY_ENABLED_KEY, false)
 
         /** Minimum time between two notification-triggered runs of the SAME agent.
          *  Notification-posting apps (mail/chat sync) commonly emit several rapid
@@ -94,6 +119,166 @@ class ShellyNotificationListener : NotificationListenerService() {
          *  suppressed as a burst repeat. */
         private fun shouldFireNow(agentId: String): Boolean =
             triggerDebouncer.shouldFireNow(agentId, SystemClock.elapsedRealtime())
+
+        private fun shouldReplyNow(packageName: String): Boolean {
+            val now = SystemClock.elapsedRealtime()
+            val previous = lastReplyAtMs.put(packageName, now)
+            return previous == null || now - previous >= REPLY_DEBOUNCE_MS
+        }
+
+        private fun findReplyAction(sbn: StatusBarNotification): Notification.Action? =
+            sbn.notification?.actions?.firstOrNull { action ->
+                val inputs = action.remoteInputs
+                !inputs.isNullOrEmpty() &&
+                    ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                        action.semanticAction == Notification.Action.SEMANTIC_ACTION_REPLY) ||
+                        inputs.any { it.allowFreeFormInput })
+            }
+
+        private fun sendReply(
+            context: Context,
+            sbn: StatusBarNotification,
+            action: Notification.Action,
+            replyText: String,
+        ): Boolean = runCatching {
+            val inputs = action.remoteInputs ?: return false
+            val fillIn = Intent()
+            val results = Bundle()
+            inputs.forEach { results.putCharSequence(it.resultKey, replyText) }
+            RemoteInput.addResultsToIntent(inputs, fillIn, results)
+            action.actionIntent.send(context, 0, fillIn)
+            Log.i(TAG, "sendReply: pkg=${sbn.packageName} textLen=${replyText.length} sent=true")
+            true
+        }.onFailure {
+            Log.w(TAG, "sendReply: pkg=${sbn.packageName} textLen=${replyText.length} sent=false", it)
+        }.getOrDefault(false)
+
+        /** Legacy/self-test entry point: most recent replyable notification from an exact package. */
+        fun attemptSendReply(context: Context, packageName: String, replyText: String): Boolean {
+            if (!notificationListenerEnabled(context) || !notificationReplyEnabled(context)) return false
+            if (!shouldReplyNow(packageName)) return false
+            val sbn = runCatching { activeInstance?.activeNotifications }
+                .getOrNull()?.filter { it.packageName == packageName && findReplyAction(it) != null }
+                ?.maxByOrNull { it.postTime } ?: return false
+            return sendReply(context, sbn, findReplyAction(sbn) ?: return false, replyText)
+        }
+
+        fun findNotificationMatchingCode(code: String): List<PairingCandidate> {
+            if (code.isBlank()) return emptyList()
+            val instance = activeInstance ?: return emptyList()
+            if (!notificationListenerEnabled(instance.applicationContext)) return emptyList()
+            val notifications = runCatching { instance.activeNotifications }.getOrNull()
+                ?: return emptyList()
+            val candidates = notifications.mapNotNull { sbn ->
+                runCatching {
+                    if (findReplyAction(sbn) == null) return@runCatching null
+                    val extras = sbn.notification?.extras ?: return@runCatching null
+                    val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+                    val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+                    val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
+                    val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+                    val summary = extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)?.toString().orEmpty()
+                    val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+                        ?.joinToString(" ") { it?.toString().orEmpty() }.orEmpty()
+                    if (listOf(title, text, bigText, subText, summary, lines).none { it.contains(code) }) {
+                        return@runCatching null
+                    }
+                    val preview = if (bigText.contains(code)) bigText else text
+                    PairingCandidate(
+                        packageName = sbn.packageName,
+                        notificationId = sbn.id,
+                        notificationTag = sbn.tag,
+                        shortcutId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) sbn.notification?.shortcutId else null,
+                        title = title.take(120),
+                        textPreview = preview.take(120),
+                    )
+                }.getOrNull()
+            }
+            Log.i(TAG, "findNotificationMatchingCode: found ${candidates.size} candidate(s)")
+            return candidates
+        }
+
+        private data class DmPairingRecord(
+            val packageName: String,
+            val notificationId: Int,
+            val notificationTag: String?,
+            val shortcutId: String?,
+            val revoked: Boolean,
+        )
+
+        private fun readDmPairingRecord(context: Context, id: String): DmPairingRecord? {
+            return try {
+                if (id.isBlank()) return null
+                val file = File(HomeInitializer.getHomeDir(context), ".shelly/agents/dm-pairings.json")
+                if (!file.isFile) return null
+                val array = JSONArray(file.readText())
+                for (index in 0 until array.length()) {
+                    val obj = array.optJSONObject(index) ?: continue
+                    if (obj.optString("id") != id) continue
+                    val packageName = obj.optString("packageName").takeIf { it.isNotBlank() } ?: return null
+                    val notificationIdValue = obj.opt("notificationId") as? Number ?: return null
+                    val notificationIdLong = notificationIdValue.toLong()
+                    if (notificationIdValue.toDouble() != notificationIdLong.toDouble() ||
+                        notificationIdLong !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
+                    ) return null
+                    val revoked = obj.opt("revoked") as? Boolean ?: return null
+                    val tagValue = obj.opt("notificationTag")
+                    val shortcutValue = obj.opt("shortcutId")
+                    if (tagValue != null && tagValue !== JSONObject.NULL && tagValue !is String) return null
+                    if (shortcutValue != null && shortcutValue !== JSONObject.NULL && shortcutValue !is String) return null
+                    return DmPairingRecord(
+                        packageName,
+                        notificationIdLong.toInt(),
+                        (tagValue as? String)?.takeIf { it.isNotBlank() },
+                        (shortcutValue as? String)?.takeIf { it.isNotBlank() },
+                        revoked,
+                    )
+                }
+                null
+            } catch (_: Exception) {
+                // org.json parse exceptions can embed the source text. This file
+                // contains notification-derived titles, so never attach the
+                // exception or record content to logcat.
+                Log.w(TAG, "readDmPairingRecord: malformed or unavailable pairing mirror")
+                null
+            }
+        }
+
+        private fun findReplyableNotificationForFingerprint(record: DmPairingRecord): StatusBarNotification? {
+            val notifications = runCatching { activeInstance?.activeNotifications }.getOrNull() ?: return null
+            return notifications.firstOrNull { sbn ->
+                if (sbn.packageName != record.packageName || findReplyAction(sbn) == null) return@firstOrNull false
+                if (!record.shortcutId.isNullOrBlank()) {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && sbn.notification?.shortcutId == record.shortcutId
+                } else {
+                    sbn.id == record.notificationId && sbn.tag == record.notificationTag
+                }
+            }
+        }
+
+        /** Re-reads pairing and both gates at send time; never accepts caller-supplied fingerprint fields. */
+        fun sendPairedDmReply(context: Context, dmPairingId: String, replyText: String): Boolean {
+            val record = readDmPairingRecord(context, dmPairingId) ?: return false
+            if (record.revoked || !notificationListenerEnabled(context) || !notificationReplyEnabled(context)) return false
+            if (!shouldReplyNow(record.packageName)) return false
+            val sbn = findReplyableNotificationForFingerprint(record) ?: return false
+            val action = findReplyAction(sbn) ?: return false
+            val sent = sendReply(context, sbn, action, replyText)
+            Log.i(TAG, "sendPairedDmReply: pkg=${record.packageName} textLen=${replyText.length} result=$sent")
+            return sent
+        }
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        activeInstance = this
+        Log.i(TAG, "Notification listener connected")
+    }
+
+    override fun onListenerDisconnected() {
+        if (activeInstance === this) activeInstance = null
+        Log.i(TAG, "Notification listener disconnected")
+        super.onListenerDisconnected()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {

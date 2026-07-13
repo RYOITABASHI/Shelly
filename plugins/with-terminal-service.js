@@ -167,6 +167,19 @@ function withTerminalService(config) {
       });
     }
 
+    const dmReplyTestReceiverName =
+      "expo.modules.terminalemulator.DmReplyTestReceiver";
+    if (!application.receiver.find(
+      (receiver) => receiver.$?.["android:name"] === dmReplyTestReceiverName
+    )) {
+      application.receiver.push({
+        $: {
+          "android:name": dmReplyTestReceiverName,
+          "android:exported": "false",
+        },
+      });
+    }
+
     return config;
   });
 }
