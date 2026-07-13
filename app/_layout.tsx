@@ -150,7 +150,14 @@ export default function RootLayout() {
       try {
         await fireReviewedAgentIntent(request, TerminalEmulator.fireAgentIntent);
       } catch (e) {
-        logError('AgentActionApproval', 'fireAgentIntent failed', e);
+        // Platform intent-dispatch exceptions (e.g. ActivityNotFoundException)
+        // embed the raw Intent.toString() -- including the deep-link URI or
+        // share text -- inside error.message. redactSecrets() only recognizes
+        // known secret patterns, not arbitrary URIs, so logging `e` directly
+        // here would leak intent content into logcat. Log only the error
+        // class/type, matching this feature's redacted-native-logging intent.
+        const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
+        logError('AgentActionApproval', `fireAgentIntent failed: ${errorKind}`);
         // Fail closed: tell the waiting executor "declined" (a fast, honest
         // signal) rather than leaving it to time out after a failed fire.
         await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', request.requestSha256 ?? null).catch(() => undefined);

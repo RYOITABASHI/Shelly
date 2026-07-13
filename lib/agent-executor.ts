@@ -975,7 +975,7 @@ dispatch_agent_action() {
       return 0
       ;;
     intent)
-      if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ]; then
+      if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
         ACTION_DISPATCH_STATUS="skipped"
         ACTION_DISPATCH_MESSAGE="Intent actions require an attended Review."
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true

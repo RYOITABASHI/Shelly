@@ -100,6 +100,16 @@ object AgentRuntime {
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
+            if (unattended) {
+                // Per-run signal (this specific invocation was fired by a cron/interval
+                // alarm, not a manual "Once" run or a Review-approved fire) -- distinct
+                // from AGENT_AUTONOMOUS, which is a persisted per-agent authoring setting
+                // baked into the generated script. The legacy .sh path previously had no
+                // way to structurally reject an action type (e.g. intent) for THIS run
+                // being unattended if the agent's persisted autonomous flag happened to
+                // be off, unlike the PlanSpec executor's --unattended flag.
+                append(" && export SHELLY_RUN_UNATTENDED=1")
+            }
             append(" && { [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\" || true; }")
             append(" && . ")
             append(shellQuote(scriptPath))
