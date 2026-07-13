@@ -123,6 +123,7 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-apk-installer",
     "./plugins/with-saved-instance-state",
     "./plugins/with-configuration-change-guard",
+    "./plugins/with-agent-launch-queries",
     [
       "expo-audio",
       {

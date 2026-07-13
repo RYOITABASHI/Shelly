@@ -683,6 +683,63 @@ describe('shelly-plan-executor host smoke', () => {
     expect(runLog.errorMessage).toContain('unsupported unattended PlanSpec action: cli');
   });
 
+  it('requests and accepts a targetless share intent with resolved share text', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = {
+      type: 'intent',
+      intentMode: 'share',
+      intentShareText: 'Result: {{result}}',
+    };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const run = runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+    const pending = await readNextActionRequest(home);
+    expect(pending.request.intentMode).toBe('share');
+    expect(pending.request.intentTarget).toBe('');
+    expect(pending.request.intentShareText).toContain('Result: fixture result: say hello');
+    writeActionReply(home, pending);
+
+    const result = await run;
+    expect(result.status).toBe(0);
+  });
+
+  it('keeps intent actions fail-closed in unattended mode', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'intent', intentMode: 'launch', intentTarget: 'geo:0,0' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--unattended', '1',
+      '--trusted-autonomous-agent-id', plan.agent.id,
+      '--trusted-autonomous-action', 'intent',
+      '--trusted-tool-type', 'local',
+      '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    expect(requestCount).toBe(0);
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
+    expect(approvalRequests).toHaveLength(0);
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
+    expect(runLog.status).toBe('skipped');
+    expect(runLog.errorMessage).toContain('unsupported unattended PlanSpec action: intent');
+  });
+
   it('resolves dm-reply from the live mirror and binds target/text into Review approval', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);

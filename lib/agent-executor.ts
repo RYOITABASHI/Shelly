@@ -207,6 +207,9 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
+  const actionIntentMode = actionType === 'intent' ? (agent.action?.intentMode ?? '') : '';
+  const actionIntentTarget = actionType === 'intent' ? (agent.action?.intentTarget ?? '') : '';
+  const actionIntentShareText = actionType === 'intent' ? (agent.action?.intentShareText ?? '') : '';
   const actionDmPairingId = actionType === 'dm-reply' ? agent.action?.dmPairingId ?? '' : '';
   const actionDmReplyText = actionType === 'dm-reply' ? agent.action?.dmReplyText ?? '' : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
@@ -313,6 +316,9 @@ AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 ACTION_TYPE=${shellQuote(actionType)}
 ACTION_WEBHOOK_URL=${shellQuote(actionWebhookUrl)}
 ACTION_COMMAND=${shellQuote(actionCommand)}
+ACTION_INTENT_MODE=${shellQuote(actionIntentMode)}
+ACTION_INTENT_TARGET=${shellQuote(actionIntentTarget)}
+ACTION_INTENT_SHARE_TEXT=${shellQuote(actionIntentShareText)}
 ACTION_DM_PAIRING_ID=${shellQuote(actionDmPairingId)}
 ACTION_DM_REPLY_TEXT=${shellQuote(actionDmReplyText)}
 ACTION_DM_PAIRING_LABEL=""
@@ -723,6 +729,10 @@ write_action_approval_request() {
   safety_reason_json=$(json_escape_text "$ACTION_COMMAND_SAFETY_REASON")
   payload_path_json=$(json_escape_text "$payload_path")
   result_path_json=$(json_escape_text "$result_file")
+  intent_share_text_resolved="\${ACTION_INTENT_SHARE_TEXT//\\{\\{result\\}\\}/$preview}"
+  intent_mode_json=$(json_escape_text "$ACTION_INTENT_MODE")
+  intent_target_json=$(json_escape_text "$ACTION_INTENT_TARGET")
+  intent_share_text_json=$(json_escape_text "$intent_share_text_resolved")
   dm_reply_text_resolved="\${ACTION_DM_REPLY_TEXT//\{\{result\}\}/$preview}"
   dm_pairing_id_json=$(json_escape_text "$ACTION_DM_PAIRING_ID")
   dm_pairing_label_json=$(json_escape_text "\${ACTION_DM_PAIRING_LABEL:-}")
@@ -731,7 +741,7 @@ write_action_approval_request() {
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -990,6 +1000,39 @@ dispatch_agent_action() {
         return 1
       fi
       ACTION_DISPATCH_MESSAGE="CLI action completed."
+      return 0
+      ;;
+    intent)
+      if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
+        ACTION_DISPATCH_STATUS="skipped"
+        ACTION_DISPATCH_MESSAGE="Intent actions require an attended Review."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ -z "$ACTION_INTENT_MODE" ] || { [ "$ACTION_INTENT_MODE" != "launch" ] && [ "$ACTION_INTENT_MODE" != "share" ]; }; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Intent action has an invalid mode."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ "$ACTION_INTENT_MODE" = "launch" ] && [ -z "$ACTION_INTENT_TARGET" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Intent action is missing a launch target."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ "$ACTION_INTENT_MODE" = "share" ] && [ -z "$ACTION_INTENT_SHARE_TEXT" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Intent action is missing share text."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      write_action_approval_request "intent" "$preview" "$result_file"
+      wait_action_approval "intent" || return 1
+      # No broker/native call here (unlike webhook/cli): RN already fired the
+      # intent NATIVELY (fireAgentIntent) BEFORE writing the accept reply that
+      # wait_action_approval just observed. Nothing left to execute.
+      ACTION_DISPATCH_MESSAGE="Intent fired: $ACTION_INTENT_MODE $ACTION_INTENT_TARGET"
       return 0
       ;;
     dm-reply)

@@ -24,6 +24,9 @@ data class AgentActionApprovalRequest(
     val ts: String?,
     val expiresAt: Long?,
     val requestSha256: String?,
+    val intentMode: String? = null,
+    val intentTarget: String? = null,
+    val intentShareText: String? = null,
     val dmPairingId: String? = null,
     val dmPairingLabel: String? = null,
     val dmReplyText: String? = null
@@ -99,6 +102,9 @@ object AgentActionApprovalBridge {
         "ts" to request.ts,
         "expiresAt" to request.expiresAt,
         "requestSha256" to request.requestSha256,
+        "intentMode" to request.intentMode,
+        "intentTarget" to request.intentTarget,
+        "intentShareText" to request.intentShareText,
         "dmPairingId" to request.dmPairingId,
         "dmPairingLabel" to request.dmPairingLabel,
         "dmReplyText" to request.dmReplyText,
@@ -107,7 +113,7 @@ object AgentActionApprovalBridge {
     private fun fromJson(raw: JSONObject, requestSha256: String?): AgentActionApprovalRequest? {
         val runId = raw.optString("runId").trim().takeIf { it.isNotBlank() } ?: return null
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "dm-reply"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,
@@ -125,6 +131,9 @@ object AgentActionApprovalBridge {
             ts = raw.optString("ts").trim().takeIf { it.isNotBlank() },
             expiresAt = raw.optLong("expiresAt").takeIf { it > 0L },
             requestSha256 = requestSha256,
+            intentMode = raw.optString("intentMode").trim().takeIf { it.isNotBlank() },
+            intentTarget = raw.optString("intentTarget").trim().takeIf { it.isNotBlank() },
+            intentShareText = raw.optString("intentShareText").takeIf { it.isNotBlank() },
             dmPairingId = raw.optString("dmPairingId").trim().takeIf { it.isNotBlank() },
             dmPairingLabel = raw.optString("dmPairingLabel").trim().takeIf { it.isNotBlank() },
             dmReplyText = raw.optString("dmReplyText").takeIf { it.isNotBlank() }

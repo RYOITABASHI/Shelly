@@ -2,6 +2,7 @@ package expo.modules.terminalemulator
 
 import android.app.DownloadManager
 import android.app.NotificationManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
@@ -48,6 +49,11 @@ class TerminalEmulatorModule : Module() {
          * the registry to attach native views.
          */
         val sessionRegistry get() = TerminalSessionService.sessionRegistry
+
+        // intent/launch target disambiguation: a bare package name (no scheme,
+        // dotted segments) is resolved via getLaunchIntentForPackage; anything
+        // else (a URI with a scheme) falls through to ACTION_VIEW.
+        private val PACKAGE_NAME_RE = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
     }
 
     private val sessions get() = TerminalSessionService.sessionRegistry
@@ -83,6 +89,26 @@ class TerminalEmulatorModule : Module() {
 
     private fun requireReactContext(): Context =
         appContext.reactContext ?: throw IllegalStateException("React context unavailable")
+
+    // intent/launch: prefer resolving a bare package name via
+    // getLaunchIntentForPackage (opens the app's own launcher activity); fall
+    // back to ACTION_VIEW for anything with a URI scheme (geo:, https:,
+    // market:, custom schemes). Pre-flight-checked with resolveActivity so a
+    // dead target fails with a clear thrown error instead of a silent no-op or
+    // a raw ActivityNotFoundException from startActivity with no context.
+    private fun buildLaunchIntent(context: Context, target: String): Intent? {
+        val looksLikePackage = !target.contains("://") && PACKAGE_NAME_RE.matches(target)
+        if (looksLikePackage) {
+            context.packageManager.getLaunchIntentForPackage(target)?.let {
+                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                return it
+            }
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return if (context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) != null) intent else null
+    }
 
     private fun startTerminalSessionService(context: Context, info: String? = null) {
         val intent = Intent(context, TerminalSessionService::class.java).apply {
@@ -943,6 +969,54 @@ class TerminalEmulatorModule : Module() {
                 context.startActivity(intent)
             } catch (e: Exception) {
                 Log.e("TerminalEmulator", "installApk failed for $apkPath", e)
+                throw e
+            }
+            null
+        }
+
+        // Agent action executor (Track D dependency): fires an Android Intent on
+        // behalf of an approved agent action (see AgentAction.intentMode in
+        // store/types.ts). Never called with an un-reviewed request — the
+        // approval tier for "intent" is enforced upstream (never one-tap).
+        AsyncFunction("fireAgentIntent") { mode: String, target: String, shareText: String? ->
+            val context = requireReactContext()
+            val normalizedMode = mode.trim()
+            val trimmedTarget = target.trim()
+            val trimmedShareText = shareText?.trim().orEmpty()
+            when (normalizedMode) {
+                "launch" -> if (trimmedTarget.isEmpty()) {
+                    throw IllegalArgumentException("intent target is empty")
+                }
+                "share" -> if (trimmedShareText.isEmpty()) {
+                    throw IllegalArgumentException("intent share text is empty")
+                }
+                else -> throw IllegalArgumentException("unknown intent mode: $normalizedMode")
+            }
+            try {
+                val intent = when (normalizedMode) {
+                    "launch" -> buildLaunchIntent(context, trimmedTarget)
+                        ?: throw ActivityNotFoundException("no app can handle target")
+                    "share" -> Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, shareText)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    else -> error("validated intent mode became unreachable")
+                }
+                context.startActivity(intent)
+                // Never log target/shareText CONTENT (both are agent/user free text,
+                // could contain anything) — mode + lengths only, matching this
+                // codebase's existing "never log payload content" convention (see
+                // sendNotificationReply's textLen-only logging above).
+                Log.i("TerminalEmulator", "fireAgentIntent: mode=$normalizedMode targetLen=${trimmedTarget.length} shareTextLen=${shareText?.length ?: 0}")
+            } catch (e: Exception) {
+                // Log the exception TYPE only, not the exception object itself: a
+                // genuine platform ActivityNotFoundException thrown by startActivity()
+                // (as opposed to the one buildLaunchIntent throws deliberately) embeds
+                // the full Intent.toString() in its message, which includes the dat=
+                // URI field — i.e. intentTarget content — violating the "never log
+                // target/shareText content" invariant above for this one error path.
+                Log.e("TerminalEmulator", "fireAgentIntent failed mode=$normalizedMode type=${e.javaClass.simpleName}")
                 throw e
             }
             null

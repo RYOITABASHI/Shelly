@@ -55,7 +55,7 @@ export interface ConfirmedAgentDraft {
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
-const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'dm-reply'];
+const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
 
 function clampInt(raw: string, min: number, max: number): number {
@@ -126,6 +126,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [actionType, setActionType] = useState<AgentActionType>(draft.action.type);
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
   const [command, setCommand] = useState(draft.action.command ?? '');
+  const [intentMode, setIntentMode] = useState<'launch' | 'share'>(draft.action.intentMode ?? 'launch');
+  const [intentTarget, setIntentTarget] = useState(draft.action.intentTarget ?? '');
+  const [intentShareText, setIntentShareText] = useState(draft.action.intentShareText ?? '');
   const [dmPairingId, setDmPairingId] = useState(draft.action.dmPairingId ?? '');
   const [dmReplyText, setDmReplyText] = useState(draft.action.dmReplyText ?? '');
   const dmPairings = useDmPairingStore((state) => state.pairings.filter((pairing) => !pairing.revoked));
@@ -245,6 +248,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // user to touch the time first, so an unreviewed default never registers silently.
   const webhookValid = actionType !== 'webhook' || /^https:\/\/\S+$/.test(webhookUrl.trim());
   const commandValid = actionType !== 'cli' || command.trim().length > 0;
+  // Launch needs a package/URI target; share has no target but must have text.
+  const intentValid = actionType !== 'intent'
+    || (intentMode === 'launch' ? intentTarget.trim().length > 0 : intentShareText.trim().length > 0);
   const dmReplyValid = actionType !== 'dm-reply' || dmPairingId.length > 0;
   // The placeholder-time gate only applies to clock-time frequencies. If the user
   // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
@@ -253,13 +259,24 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     frequency === 'daily' || frequency === 'weekly' || frequency === 'custom' || frequency === 'daily-multi';
   const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
   const canConfirm =
-    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && dmReplyValid;
+    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid && dmReplyValid;
 
   const handleConfirm = () => {
     if (!canConfirm) return;
     const action: AgentAction = { type: actionType };
     if (actionType === 'webhook') action.webhookUrl = webhookUrl.trim();
     if (actionType === 'cli') action.command = command.trim();
+    if (actionType === 'intent') {
+      action.intentMode = intentMode;
+      // intentTarget is meaningless in share mode (fireAgentIntent's share
+      // branch never reads it, and the field is hidden in this form) — but
+      // the Review UI and notification body display it unconditionally, so
+      // persisting a stale value typed while in launch mode before flipping
+      // to share would show a misleading "Target: ..." line at approval
+      // time. Only persist it when it's actually meaningful.
+      if (intentMode === 'launch') action.intentTarget = intentTarget.trim();
+      if (intentMode === 'share') action.intentShareText = intentShareText.trim();
+    }
     if (actionType === 'dm-reply') {
       action.dmPairingId = dmPairingId;
       action.dmReplyText = dmReplyText.trim();
@@ -496,6 +513,40 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             style={[styles.input, fieldBg, !commandValid && { borderColor: colors.error }]}
           />
           <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.cli_warning')}</Text>
+        </>
+      )}
+      {actionType === 'intent' && (
+        <>
+          <Segmented
+            options={[
+              { key: 'launch', label: t('agentcard.intent_mode_launch') },
+              { key: 'share', label: t('agentcard.intent_mode_share') },
+            ]}
+            value={intentMode}
+            onChange={(k) => setIntentMode(k as 'launch' | 'share')}
+            colors={colors}
+          />
+          {intentMode === 'launch' && (
+            <TextInput
+              value={intentTarget}
+              onChangeText={setIntentTarget}
+              autoCapitalize="none"
+              placeholder={t('agentcard.intent_target_placeholder')}
+              placeholderTextColor={colors.inactive}
+              style={[styles.input, fieldBg, !intentValid && { borderColor: colors.error }]}
+            />
+          )}
+          {intentMode === 'share' && (
+            <TextInput
+              value={intentShareText}
+              onChangeText={setIntentShareText}
+              multiline
+              placeholder={t('agentcard.intent_share_text_placeholder')}
+              placeholderTextColor={colors.inactive}
+              style={[styles.input, fieldBg]}
+            />
+          )}
+          <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.intent_warning')}</Text>
         </>
       )}
       {actionType === 'dm-reply' && (

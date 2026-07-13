@@ -38,6 +38,7 @@ import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/c
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -104,7 +105,7 @@ type AgentActionApprovalRequest = {
   agentId: string;
   agentName?: string | null;
   toolLabel?: string | null;
-  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'dm-reply';
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
   preview?: string | null;
   destinationHost?: string | null;
   command?: string | null;
@@ -115,6 +116,9 @@ type AgentActionApprovalRequest = {
   ts?: string | null;
   expiresAt?: number | null;
   requestSha256?: string | null;
+  intentMode?: 'launch' | 'share' | null;
+  intentTarget?: string | null;
+  intentShareText?: string | null;
   dmPairingId?: string | null;
   dmPairingLabel?: string | null;
   dmReplyText?: string | null;
@@ -141,6 +145,32 @@ export default function RootLayout() {
       return;
     }
     setAgentActionResolving(true);
+    if (decision === 'accept' && request.actionType === 'intent') {
+      if (!TerminalEmulator.fireAgentIntent) {
+        Alert.alert(t('agent_action_confirm_not_ready'));
+        setAgentActionResolving(false);
+        return;
+      }
+      try {
+        await fireReviewedAgentIntent(request, TerminalEmulator.fireAgentIntent);
+      } catch (e) {
+        // Platform intent-dispatch exceptions (e.g. ActivityNotFoundException)
+        // embed the raw Intent.toString() -- including the deep-link URI or
+        // share text -- inside error.message. redactSecrets() only recognizes
+        // known secret patterns, not arbitrary URIs, so logging `e` directly
+        // here would leak intent content into logcat. Log only the error
+        // class/type, matching this feature's redacted-native-logging intent.
+        const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
+        logError('AgentActionApproval', `fireAgentIntent failed: ${errorKind}`);
+        // Fail closed: tell the waiting executor "declined" (a fast, honest
+        // signal) rather than leaving it to time out after a failed fire.
+        await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', request.requestSha256 ?? null).catch(() => undefined);
+        setPendingAgentActionApproval(null);
+        setAgentActionResolving(false);
+        Alert.alert(t('agent_action_confirm_intent_failed'));
+        return;
+      }
+    }
     if (decision === 'accept' && request.actionType === 'dm-reply') {
       let sent = false;
       try {
@@ -736,13 +766,22 @@ export default function RootLayout() {
       const agentId = str('agentId');
       const actionType = str('actionType');
       if (!runId || !agentId) return null;
-      if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'dm-reply') {
+      if (
+        actionType !== 'draft' &&
+        actionType !== 'notify' &&
+        actionType !== 'webhook' &&
+        actionType !== 'cli' &&
+        actionType !== 'intent' &&
+        actionType !== 'dm-reply'
+      ) {
         return null;
       }
       const expiresAtRaw = value.expiresAt;
       const expiresAt = typeof expiresAtRaw === 'number' && Number.isFinite(expiresAtRaw)
         ? expiresAtRaw
         : null;
+      const intentModeRaw = str('intentMode');
+      const intentMode = intentModeRaw === 'launch' || intentModeRaw === 'share' ? intentModeRaw : null;
       return {
         runId,
         agentId,
@@ -759,6 +798,9 @@ export default function RootLayout() {
         ts: str('ts') || null,
         expiresAt,
         requestSha256: str('requestSha256') || null,
+        intentMode,
+        intentTarget: str('intentTarget') || null,
+        intentShareText: str('intentShareText') || null,
         dmPairingId: str('dmPairingId') || null,
         dmPairingLabel: str('dmPairingLabel') || null,
         dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
@@ -779,6 +821,9 @@ export default function RootLayout() {
       ts: request.ts,
       expiresAt: request.expiresAt,
       requestSha256: request.requestSha256,
+      intentMode: request.intentMode,
+      intentTarget: request.intentTarget,
+      intentShareText: request.intentShareText,
       dmPairingId: request.dmPairingId,
       dmPairingLabel: request.dmPairingLabel,
       dmReplyText: request.dmReplyText,
@@ -816,7 +861,7 @@ export default function RootLayout() {
       if (!runId) return;
       try {
         const request = await readActionApprovalRequest(runId);
-        if (!request || (request.actionType !== 'cli' && request.actionType !== 'dm-reply')) {
+        if (!request || (request.actionType !== 'cli' && request.actionType !== 'intent' && request.actionType !== 'dm-reply')) {
           Alert.alert(t('agent_action_confirm_not_ready'));
           return;
         }
@@ -1466,16 +1511,47 @@ export default function RootLayout() {
           <View style={actionApprovalStyles.backdrop}>
             <View style={actionApprovalStyles.panel}>
               <Text style={actionApprovalStyles.eyebrow}>
-                {pendingAgentActionApproval.actionType === 'dm-reply'
-                  ? t('agent_action_confirm_title_dmreply')
+                {pendingAgentActionApproval.actionType === 'intent'
+                  ? t('agent_action_confirm_title_intent')
+                  : pendingAgentActionApproval.actionType === 'dm-reply'
+                    ? t('agent_action_confirm_title_dmreply')
                   : t('agent_action_confirm_title')}
               </Text>
               <Text style={actionApprovalStyles.body}>
-                {pendingAgentActionApproval.actionType === 'dm-reply'
-                  ? t('agent_action_confirm_body_dmreply')
+                {pendingAgentActionApproval.actionType === 'intent'
+                  ? t('agent_action_confirm_body_intent')
+                  : pendingAgentActionApproval.actionType === 'dm-reply'
+                    ? t('agent_action_confirm_body_dmreply')
                   : t('agent_action_confirm_body')}
               </Text>
-              {pendingAgentActionApproval.actionType === 'dm-reply' ? (
+              {pendingAgentActionApproval.actionType === 'intent' ? (
+                <>
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_intent_mode')}
+                  </Text>
+                  <Text style={actionApprovalStyles.meta}>
+                    {pendingAgentActionApproval.intentMode || ''}
+                  </Text>
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_intent_target')}
+                  </Text>
+                  <Text selectable style={actionApprovalStyles.commandText}>
+                    {pendingAgentActionApproval.intentTarget || ''}
+                  </Text>
+                  {pendingAgentActionApproval.intentMode === 'share' ? (
+                    <>
+                      <Text style={actionApprovalStyles.label}>
+                        {t('agent_action_confirm_intent_share_text')}
+                      </Text>
+                      <ScrollView style={actionApprovalStyles.commandBox}>
+                        <Text selectable style={actionApprovalStyles.commandText}>
+                          {pendingAgentActionApproval.intentShareText || ''}
+                        </Text>
+                      </ScrollView>
+                    </>
+                  ) : null}
+                </>
+              ) : pendingAgentActionApproval.actionType === 'dm-reply' ? (
                 <>
                   <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_dmreply_target')}</Text>
                   <Text selectable style={actionApprovalStyles.commandText}>

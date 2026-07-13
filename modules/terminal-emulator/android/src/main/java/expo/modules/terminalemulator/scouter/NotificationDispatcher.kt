@@ -145,6 +145,7 @@ class NotificationDispatcher(private val context: Context) {
                 "notify" -> context.getString(R.string.scouter_notification_agent_action_what_notify)
                 "webhook" -> context.getString(R.string.scouter_notification_agent_action_what_webhook)
                 "cli" -> context.getString(R.string.scouter_notification_agent_action_what_cli)
+                "intent" -> context.getString(R.string.scouter_notification_agent_action_what_intent)
                 "dm-reply" -> context.getString(R.string.scouter_notification_agent_action_what_dm_reply)
                 else -> request.actionType
             }
@@ -170,6 +171,12 @@ class NotificationDispatcher(private val context: Context) {
                     request.safetyReason?.let { context.getString(R.string.scouter_notification_agent_action_reason, it.redactForScouter()) },
                     context.getString(R.string.scouter_notification_agent_action_cli_review_required),
                 ).joinToString("\n")
+                "intent" -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
+                    request.intentMode?.let { context.getString(R.string.scouter_notification_agent_action_intent_target, "$it: ${request.intentTarget.orEmpty()}".redactForScouter()) },
+                    context.getString(R.string.scouter_notification_agent_action_intent_review_required),
+                ).joinToString("\n")
                 "dm-reply" -> listOfNotNull(
                     engineLine,
                     actionPhrase,
@@ -184,7 +191,7 @@ class NotificationDispatcher(private val context: Context) {
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
             }
-            val actions = if (request.actionType == "cli" || request.actionType == "dm-reply") {
+            val actions = if (request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply") {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
                     action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, requestSha256)),

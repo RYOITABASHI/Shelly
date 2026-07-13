@@ -540,6 +540,9 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     safetyLevel: extra.safetyLevel || '',
     safetyReason: extra.safetyReason || '',
     payloadPath: extra.payloadPath || '',
+    intentMode: extra.intentMode || '',
+    intentTarget: extra.intentTarget || '',
+    intentShareText: extra.intentShareText || '',
     dmPairingId: extra.dmPairingId || '',
     dmPairingLabel: extra.dmPairingLabel || '',
     dmReplyText: extra.dmReplyText || '',
@@ -917,7 +920,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'dm-reply') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   if (trustedNativeLowRiskAction(args, plan, actionType)) {
@@ -989,6 +992,32 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
+      return { status: 'success', preview };
+    }
+    if (actionType === 'intent') {
+      const intentMode = String(plan.action.intentMode || '').trim();
+      const intentTarget = String(plan.action.intentTarget || '').trim();
+      if (intentMode !== 'launch' && intentMode !== 'share') {
+        const message = 'Intent action has an invalid mode.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (intentMode === 'launch' && !intentTarget) {
+        const message = 'Intent action is missing a launch target.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const resolvedShareText = String(plan.action.intentShareText || '').split('{{result}}').join(preview);
+      if (intentMode === 'share' && !resolvedShareText.trim()) {
+        const message = 'Intent action is missing share text.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        intentMode, intentTarget, intentShareText: resolvedShareText,
+      });
+      // Side effect already happened in RN before the accept reply appeared —
+      // no broker/native call here, unlike webhook/cli.
       return { status: 'success', preview };
     }
     if (actionType === 'dm-reply') {
