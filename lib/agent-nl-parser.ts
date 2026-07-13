@@ -421,8 +421,6 @@ const URL_RE = /https?:\/\/[^\s、。)）]+/i;
 
 /** Detect the delivery action. Default = draft. Never returns 'publish'. */
 function detectAction(text: string): AgentAction {
-  const lower = text.toLowerCase();
-
   // webhook — an explicit URL is the strongest signal.
   const url = text.match(URL_RE);
   if (url || /webhook|フック/i.test(text)) {
@@ -436,8 +434,35 @@ function detectAction(text: string): AgentAction {
     return { type: 'cli' };
   }
 
+  // A conditional utterance ("Xたら、Y") names its trigger CONDITION before the
+  // "たら" marker and its delivery ACTION after it -- e.g. "通知が来たらドラフトを
+  // 作成して" (条件=通知, 動作=ドラフト) vs "下書きができたら通知して" (条件=下書き,
+  // 動作=通知). "通知" and "下書き/ドラフト" are each both a NOTIFY-001
+  // trigger-condition word AND a delivery-action keyword in this project, so
+  // scanning the WHOLE string for either would misread whichever one happens to
+  // describe the condition as if it were the delivery type. Restrict both
+  // keyword scans below to the clause after the LAST "たら" when one is present
+  // -- that's the only part of the sentence that actually names the delivery.
+  // No "たら" at all (e.g. "毎日20時30分に通知して") scans the whole text, same
+  // as before this fix.
+  //
+  // Known residual limitation (low severity -- always human-gated via the
+  // confirm card's editable action picker before registration): a compound
+  // utterance with a SECOND, trailing "たら" clause after the real delivery
+  // verb truncates that verb out of scope, e.g. "毎朝ニュースが届いたら通知
+  // して、余裕があったら要約も作って" falls to the default draft instead of
+  // notify, because slicing after the LAST "たら" drops "通知して". Rare in
+  // practice (needs two chained conditionals in one utterance); not fixed
+  // here, no known simple fix without deeper clause parsing.
+  const talaIndex = text.lastIndexOf('たら');
+  const actionScope = talaIndex >= 0 ? text.slice(talaIndex + 2) : text;
+
+  if (/ドラフト|下書き|\bdraft\b/i.test(actionScope)) {
+    return { type: 'draft' };
+  }
+
   // notify — explicit delivery-by-notification verbs.
-  if (/通知|知らせ|教えて|リマインド|アラート|notify|alert|\bremind\b|tell me|push notification/i.test(lower)) {
+  if (/通知|知らせ|教えて|リマインド|アラート|notify|alert|\bremind\b|tell me|push notification/i.test(actionScope.toLowerCase())) {
     return { type: 'notify' };
   }
 
