@@ -6,6 +6,12 @@ import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
 import { scoreRoutes } from './agent-router-scoring';
+// Imported from the concrete submodules (NOT the './model-router' barrel) to
+// avoid a circular import: the barrel re-exports shadow.ts (Phase A), which
+// itself imports resolveAgentRoute from THIS file.
+import { MODEL_ROUTER_ENABLED, toRunRequirementsFromAgent, candidateToToolChoice } from './model-router/wiring';
+import { selectModel } from './model-router/select';
+import { MODEL_REGISTRY } from './model-router/registry';
 
 export interface ToolSuggestion {
   tool: ToolChoice;
@@ -128,7 +134,35 @@ function onDeviceFallbackTool(tool: ToolChoice): ToolChoice {
 export function resolveAgentRoute(agent: Agent): AgentRouteResolution {
   const secret = scanForSecrets(textForSecretScan(agent));
   if (secret.hasSecret) {
-    const tool = onDeviceFallbackTool(agent.tool);
+    // MODEL-001 Phase B (dormant, MODEL_ROUTER_ENABLED stays false — see
+    // lib/model-router/wiring.ts): when the flag is OFF this whole block is
+    // skipped and `tool` falls through to the exact pre-Phase-B line below,
+    // byte-identical to before. When ON, attempt the MODEL-001 selector FIRST
+    // and only take its answer if it re-derives the SAME structural invariant
+    // Phase A's shadow.ts already corpus-tested (secret-bearing run ⇒
+    // isLocal && credentialClass==='local'). Any other outcome — chosen null
+    // (no eligible local candidate, e.g. no local model installed), the
+    // invariant not holding, or an internal throw — falls back to today's
+    // onDeviceFallbackTool so the "always succeeds" guarantee this guard has
+    // always provided is never weakened by the dormant selector's absence.
+    let tool: ToolChoice | null = null;
+    if (MODEL_ROUTER_ENABLED) {
+      try {
+        const requirements = toRunRequirementsFromAgent(agent);
+        const selection = selectModel(requirements, MODEL_REGISTRY);
+        const chosen = selection.chosen;
+        if (chosen && chosen.isLocal && chosen.credentialClass === 'local') {
+          tool = candidateToToolChoice(chosen);
+        }
+      } catch {
+        // Fall through to the pre-Phase-B fallback below. A MODEL-001 failure
+        // must never throw into the live run or weaken the secret bar.
+        tool = null;
+      }
+    }
+    if (!tool) {
+      tool = onDeviceFallbackTool(agent.tool);
+    }
     return {
       tool,
       decision: {
