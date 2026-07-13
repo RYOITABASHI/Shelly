@@ -30,7 +30,7 @@ object AgentRuntime {
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
     private const val CURRENT_SCRIPT_VERSION = 10
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "dm-reply", "__suppressed__")
+    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "__suppressed__")
 
     private data class TrustedPlanLaunch(
         val actionType: String,

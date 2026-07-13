@@ -1033,6 +1033,7 @@ dispatch_agent_action() {
       # intent NATIVELY (fireAgentIntent) BEFORE writing the accept reply that
       # wait_action_approval just observed. Nothing left to execute.
       ACTION_DISPATCH_MESSAGE="Intent fired: $ACTION_INTENT_MODE $ACTION_INTENT_TARGET"
+      return 0
       ;;
     dm-reply)
       if [ -z "$ACTION_DM_PAIRING_ID" ]; then
