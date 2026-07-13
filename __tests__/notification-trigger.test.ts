@@ -1,4 +1,4 @@
-import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
+import { parseNotificationTriggerPackages, isEphemeralOneShot } from '@/lib/notification-trigger';
 
 describe('parseNotificationTriggerPackages — free-text package allowlist parser', () => {
   it('parses a single valid package name', () => {
@@ -59,5 +59,21 @@ describe('parseNotificationTriggerPackages — free-text package allowlist parse
       valid: ['com.a', 'com.b'],
       skippedCount: 0,
     });
+  });
+});
+
+describe('isEphemeralOneShot — schedule=null must not discard a notification-triggered agent', () => {
+  it('is true for a genuine one-shot: no schedule, no notification trigger', () => {
+    expect(isEphemeralOneShot(null, null)).toBe(true);
+    expect(isEphemeralOneShot(null, undefined)).toBe(true);
+  });
+
+  it('is false when a notification trigger is set, even with schedule=null (the confirmed bug)', () => {
+    expect(isEphemeralOneShot(null, { packageNames: ['jp.naver.line.android'] })).toBe(false);
+  });
+
+  it('is false whenever a real cron schedule is set, regardless of notification trigger', () => {
+    expect(isEphemeralOneShot('0 9 * * *', null)).toBe(false);
+    expect(isEphemeralOneShot('0 9 * * *', { packageNames: ['jp.naver.line.android'] })).toBe(false);
   });
 });

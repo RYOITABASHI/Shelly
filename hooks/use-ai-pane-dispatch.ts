@@ -60,6 +60,7 @@ import type { CerebrasMessage } from '@/lib/cerebras';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { t } from '@/lib/i18n';
+import { isEphemeralOneShot } from '@/lib/notification-trigger';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1053,7 +1054,7 @@ export function useAIPaneDispatch(paneId: string) {
         });
         await installAgent(created, runAgentShellCommand);
 
-        if (confirmed.schedule === null) {
+        if (isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
@@ -1088,9 +1089,16 @@ export function useAIPaneDispatch(paneId: string) {
             }
           }
         } else {
+          // confirmed.schedule is null for a pure notification-triggered agent
+          // (no cron schedule -- it waits for an event), so fall back to a
+          // trigger-specific description instead of literally interpolating "null".
+          const scheduleDescription = confirmed.schedule
+            ?? (confirmed.notificationTrigger
+              ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
+              : 'no schedule');
           store.updateMessage(paneId, messageId, {
             agentCardState: 'confirmed',
-            content: `✅ Agent "${created.name}" registered — ${confirmed.schedule}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
+            content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
           });
         }
       } catch (err) {
