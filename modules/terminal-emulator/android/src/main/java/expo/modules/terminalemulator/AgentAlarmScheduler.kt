@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import java.io.File
 import java.util.Calendar
 
 /**
@@ -65,6 +66,10 @@ object AgentAlarmScheduler {
      *  boot). Returns the count re-armed. No-op unless the flag is enabled. */
     fun rearmAllFromPersistedSchedules(context: Context): Int {
         if (!bootAutostartEnabled(context)) return 0
+        if (isGloballyHalted(context)) {
+            Log.i(TAG, "Boot re-arm suppressed: globally halted (STOP-ALL)")
+            return 0
+        }
         val prefs = context.getSharedPreferences(BOOT_SCHEDULES, Context.MODE_PRIVATE)
         var count = 0
         for ((agentId, raw) in prefs.all) {
@@ -80,6 +85,22 @@ object AgentAlarmScheduler {
         }
         Log.i(TAG, "Boot re-armed $count scheduled agent(s)")
         return count
+    }
+
+    /**
+     * Mirrors lib/agent-manager.ts's halt sentinel and TerminalSessionService's
+     * execution-time guard. STOP-ALL promises that no agent alarm is armed, so
+     * boot restoration must stop before activating any persisted schedule.
+     * Unexpected I/O failures default to not-halted, matching the existing
+     * native and JS checks rather than treating uncertainty as an implicit halt.
+     */
+    private fun isGloballyHalted(context: Context): Boolean {
+        return try {
+            File(HomeInitializer.getHomeDir(context), ".shelly/agents/.halted").exists()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check global halt sentinel; defaulting to not-halted", e)
+            false
+        }
     }
 
     private fun piFlags(): Int =

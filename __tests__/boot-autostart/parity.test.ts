@@ -77,6 +77,12 @@ describe('BOOT-AUTOSTART Manifest + native parity (dormant, flag-OFF)', () => {
     expect(scheduler).toContain('if (!bootAutostartEnabled(context)) return 0');
   });
 
+  it('does not re-arm persisted schedules while STOP-ALL is active', () => {
+    expect(scheduler).toContain('File(HomeInitializer.getHomeDir(context), ".shelly/agents/.halted").exists()');
+    expect(scheduler).toContain('if (isGloballyHalted(context))');
+    expect(scheduler).toContain('Boot re-arm suppressed: globally halted (STOP-ALL)');
+  });
+
   it('reuses the existing battery-optimization request path (unblocked by the new permission)', () => {
     expect(module).toContain('isIgnoringBatteryOptimizations');
     expect(module).toContain('ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS');
