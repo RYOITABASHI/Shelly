@@ -21,11 +21,11 @@
 // Bump only alongside a canonical-message or record shape change. The canonical
 // message carries its own version tag (see canonical.ts) which must move in
 // lockstep; a native/executor consumer that verifies these records mirrors it.
-export const SIGNED_APPROVAL_SCHEMA_VERSION = 1;
+export const SIGNED_APPROVAL_SCHEMA_VERSION = 2;
 
 // Mirrors store/types.ts AgentActionType (the gated action set; excludes the
 // synthetic __suppressed__/unsupported).
-export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli';
+export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
 
 export type ApprovalDecision = 'accept' | 'decline';
 
@@ -43,6 +43,12 @@ export interface ApprovalRequest {
   safetyLevel: string;
   safetyReason: string;
   payloadPath: string;
+  intentMode: string;
+  intentTarget: string;
+  intentShareText: string;
+  dmPairingId: string;
+  dmPairingLabel: string;
+  dmReplyText: string;
   resultPath: string;
   ts: string; // ISO-8601
   expiresAt: number; // epoch ms

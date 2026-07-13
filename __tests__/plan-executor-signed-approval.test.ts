@@ -305,6 +305,12 @@ describe('shelly-plan-executor signed-approval ported verifier (unit, pure)', ()
       safetyLevel: 'ok',
       safetyReason: '',
       payloadPath: '',
+      intentMode: '',
+      intentTarget: '',
+      intentShareText: '',
+      dmPairingId: '',
+      dmPairingLabel: '',
+      dmReplyText: '',
       resultPath: '/x/result.txt',
       ts: '2026-07-03T00:00:00.000Z',
       expiresAt: Date.now() + 60_000,
@@ -581,8 +587,16 @@ describe('shelly-plan-executor signed-approval ported verifier (unit, pure)', ()
     it('encodes as a JSON array with the documented version tag', () => {
       const request = baseRequest('nonce-b');
       const encoded = JSON.parse(executor.canonicalApprovalRequest(request));
-      expect(encoded[0]).toBe('shelly-agent-action-approval-request-v1');
+      expect(encoded[0]).toBe('shelly-agent-action-approval-request-v2');
       expect(Array.isArray(encoded)).toBe(true);
+    });
+
+    it('binds the current intent and dm-reply review fields', () => {
+      const base = baseRequest('nonce-current-review');
+      expect(executor.canonicalApprovalRequest({ ...base, actionType: 'intent', intentTarget: 'https://example.com' }))
+        .not.toBe(executor.canonicalApprovalRequest(base));
+      expect(executor.canonicalApprovalRequest({ ...base, actionType: 'dm-reply', dmReplyText: 'approved reply' }))
+        .not.toBe(executor.canonicalApprovalRequest(base));
     });
 
     it('reply message uses its own version tag, distinct from the request tag', () => {
@@ -595,7 +609,7 @@ describe('shelly-plan-executor signed-approval ported verifier (unit, pure)', ()
         nonce: 'n',
       });
       const encoded = JSON.parse(message);
-      expect(encoded[0]).toBe('shelly-agent-action-approval-v1');
+      expect(encoded[0]).toBe('shelly-agent-action-approval-v2');
     });
   });
 

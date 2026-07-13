@@ -555,7 +555,7 @@ function signedApprovalEncodeFields(fields) {
 // version tag, same field order (fixed order, not JSON key order) as the source.
 function canonicalApprovalRequest(request) {
   return signedApprovalEncodeFields([
-    'shelly-agent-action-approval-request-v1',
+    'shelly-agent-action-approval-request-v2',
     String(request.runId),
     String(request.agentId),
     String(request.agentName),
@@ -567,6 +567,12 @@ function canonicalApprovalRequest(request) {
     String(request.safetyLevel || ''),
     String(request.safetyReason || ''),
     String(request.payloadPath || ''),
+    String(request.intentMode || ''),
+    String(request.intentTarget || ''),
+    String(request.intentShareText || ''),
+    String(request.dmPairingId || ''),
+    String(request.dmPairingLabel || ''),
+    String(request.dmReplyText || ''),
     String(request.resultPath || ''),
     String(request.ts),
     String(request.expiresAt),
@@ -578,7 +584,7 @@ function canonicalApprovalRequest(request) {
 // Same version tag, same field order as the source.
 function approvalReplySignatureMessage(fields) {
   return signedApprovalEncodeFields([
-    'shelly-agent-action-approval-v1',
+    'shelly-agent-action-approval-v2',
     String(fields.runId),
     String(fields.actionType),
     String(fields.decision),

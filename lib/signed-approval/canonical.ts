@@ -20,7 +20,7 @@ function encodeFields(fields: (string | number)[]): string {
 
 // Version tag for the signed action-approval reply message. Moves in lockstep
 // with SIGNED_APPROVAL_SCHEMA_VERSION.
-export const APPROVAL_REPLY_MESSAGE_TAG = 'shelly-agent-action-approval-v1';
+export const APPROVAL_REPLY_MESSAGE_TAG = 'shelly-agent-action-approval-v2';
 
 // The message the human reply is signed over. Binds runId, action, decision,
 // reply ts, the exact request (via requestSha256), and the single-use nonce, so
@@ -54,7 +54,7 @@ export function messageForReply(reply: SignedApprovalReply): string {
 // field that a verifier must be able to trust is included.
 export function canonicalRequest(request: Omit<ApprovalRequest, 'requestSha256'>): string {
   return encodeFields([
-    'shelly-agent-action-approval-request-v1',
+    'shelly-agent-action-approval-request-v2',
     String(request.runId),
     String(request.agentId),
     String(request.agentName),
@@ -66,6 +66,12 @@ export function canonicalRequest(request: Omit<ApprovalRequest, 'requestSha256'>
     String(request.safetyLevel || ''),
     String(request.safetyReason || ''),
     String(request.payloadPath || ''),
+    String(request.intentMode || ''),
+    String(request.intentTarget || ''),
+    String(request.intentShareText || ''),
+    String(request.dmPairingId || ''),
+    String(request.dmPairingLabel || ''),
+    String(request.dmReplyText || ''),
     String(request.resultPath || ''),
     String(request.ts),
     String(request.expiresAt),

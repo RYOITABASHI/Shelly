@@ -27,6 +27,12 @@ function req(over: Partial<Omit<ApprovalRequest, 'requestSha256'>> = {}): Omit<A
     safetyLevel: 'ok',
     safetyReason: '',
     payloadPath: '',
+    intentMode: '',
+    intentTarget: '',
+    intentShareText: '',
+    dmPairingId: '',
+    dmPairingLabel: '',
+    dmReplyText: '',
     resultPath: '/x/result.txt',
     ts: '2026-07-03T00:00:00Z',
     expiresAt: 1000,
@@ -59,7 +65,7 @@ describe('署名付き承認 canonical messages', () => {
   it('canonicalRequest is deterministic and version-tagged', () => {
     const a = canonicalRequest(req());
     expect(a).toBe(canonicalRequest(req()));
-    expect(JSON.parse(a)[0]).toBe('shelly-agent-action-approval-request-v1');
+    expect(JSON.parse(a)[0]).toBe('shelly-agent-action-approval-request-v2');
     expect(canonicalRequest(req({ command: 'rm -rf /' }))).not.toBe(a);
   });
 
@@ -72,5 +78,13 @@ describe('署名付き承認 canonical messages', () => {
     const a = canonicalRequest(req({ preview: 'P', destinationHost: '\nevil.com' }));
     const b = canonicalRequest(req({ preview: 'P\n', destinationHost: 'evil.com' }));
     expect(a).not.toBe(b);
+  });
+
+  it('binds the current intent and dm-reply review fields', () => {
+    const base = canonicalRequest(req());
+    expect(canonicalRequest(req({ actionType: 'intent', intentTarget: 'https://example.com' }))).not.toBe(base);
+    expect(canonicalRequest(req({ actionType: 'intent', intentShareText: 'secret draft' }))).not.toBe(base);
+    expect(canonicalRequest(req({ actionType: 'dm-reply', dmPairingId: 'pair-2' }))).not.toBe(base);
+    expect(canonicalRequest(req({ actionType: 'dm-reply', dmReplyText: 'approved reply' }))).not.toBe(base);
   });
 });

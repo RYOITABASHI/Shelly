@@ -2178,6 +2178,8 @@ claude() {
 
 - **2026-07-13 (P1, Batch 6 DM pairing)**: current main の schema-v1 PlanSpec と既存 generic Review 契約へ、承認コードによる通知会話ペアリング + `dm-reply` を手動再構成。通知 read/trigger と reply-send の独立2フラグはともに既定 OFF、返信は毎回 in-app Review 必須で、自動承認 (`0686f4a7` 以降) は不採用。disk mirror は atomic rename の前後で `sync` し、native send 時に再読込・取消即時反映・live fingerprint 完全一致・10秒 send debounce・本文非ログを適用。自己完結テストは Shelly 自身の通知だけを使う。**実機の Notification Access grant、実アプリの承認コード検出、実会話への reply round-trip、OEM/Android 16 の RemoteInput 挙動は未検証で、有効化前の必須 P1 gate**。→ sync: なし（既定 OFF の内部機能）。
 
+- **2026-07-13 (signed-approval Phase 1 port)**: `a15b0e9a` / `c47ccf7c` の tamper-evident signed-approval primitive と PlanSpec executor verifier を current `main` へ移植。TS と executor の `SIGNED_APPROVAL_ENABLED` はともに literal `false`、production setter なし、native signer / biometric binding も未配線のため fresh install では完全休眠し、既存の generic Review（unsigned `runId` + request-file SHA）経路を維持する。current main で追加済みの `intent` / `dm-reply` を signed contract から脱落させないよう schema/message を v2 に進め、intent target/share text と DM pairing id/label/reply text を canonical request hash に束縛した。flag-ON は Android Keystore signer、durable nonce ledger、必要な高リスク action の biometric binding を同時に実装・実機検証する将来バッチまで禁止。host gate は `pnpm run check` / `expo lint`（既存 warning 2件のみ）/ focused 90 tests / executor `node --check` / `git diff --check` PASS。→ sync: なし（既定 OFF の内部基盤）。
+
 ---
 
 ## 管理ルール (自分への覚書)
