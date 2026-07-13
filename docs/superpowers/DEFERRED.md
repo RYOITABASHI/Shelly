@@ -2182,6 +2182,8 @@ claude() {
 
 - **2026-07-13 (signed-approval レビュー是正: fail-closed バイパス修正)**: PR #115 の独立 Codex レビューで実バグを発見（CC 側の並行レビューは見逃した）: `scripts/shelly-plan-executor.js` の承認 reply ポーリングで、flag-ON 検証分岐が `SIGNED_APPROVAL_ENABLED && reply.sigAlg && reply.signature && reply.keySha256 && reply.nonce` という `&&` 条件でガードされており、flag が true でも reply が署名フィールドを1つでも欠くと条件が false になり、署名検証なしの naive `runId`+`requestSha256` 一致チェックへそのまま fall-through していた — enable した瞬間に signed approval の意味が失われる bypass。修正 (`73e2a07e7`): `SIGNED_APPROVAL_ENABLED` が true の分岐を独立させ、署名フィールド欠落 reply は naive チェックに到達する前に `ActionSkipped` で即座に reject するよう再構成（flag OFF 時は naive チェックのみ到達、挙動不変）。実プロセスを spawn し run-log JSON の `status`/`errorMessage` を検証する回帰テスト2件を追加（`ActionSkipped` は accept/decline とも exit code 0 のため、プロセス終了コードでは判定不可と判明・記録）。Codex 再レビュー + CC 側再レビューの両方で bypass 修正済みを確認後 merge。→ sync: なし（既定 OFF の内部基盤、今回も挙動変化なし）。
 
+- **2026-07-13 (capability grounding + cosmetics catch-up batch)**: dev branch の `097d1cc25` / `a43869cc2` / `ebafb16b2` を current `main` へ手動再構成。AI Chat は全 provider で names-only feature catalog を常時 ambient 注入し、cloud の capability question のみ full catalog へ upgrade、local は context budget 保護のため常時 compact のままとした。日本語 classifier はひらがな `できる` に加えて漢字 `出来る` を回帰テストで固定。RootLayout の既存 store hydration effect から `loadCosmetics()` を呼び、persist 済み wallpaper / CRT / panel 設定を cold start 時に復元する。→ sync: なし（既存機能の grounding / startup restore 修正で README surface 変更なし）。
+
 ---
 
 ## 管理ルール (自分への覚書)
