@@ -82,12 +82,16 @@ function withTerminalService(config) {
 
     // Register ShellyNotificationListener (NOTIFY-001 Increment 0, dormant
     // plumbing-only — see ShellyNotificationListener.notificationListenerEnabled,
-    // default false). exported=true + the BIND_NOTIFICATION_LISTENER_SERVICE
-    // permission on the <service> element is the standard, required Android
-    // pattern: it restricts BINDING to callers holding that system-signature
-    // permission (only the OS), which is a different mechanism than the
-    // receiver-level android:permission mistake fixed for BootCompletedReceiver
-    // (that required the SENDER to hold the permission and broke delivery).
+    // default false). exported=false, matching Android's own official
+    // NotificationListenerService declaration pattern. The
+    // BIND_NOTIFICATION_LISTENER_SERVICE permission on the <service> element
+    // already restricts BINDING to callers holding that system-signature
+    // permission (only the OS), independent of exported — that permission
+    // check is a different mechanism than the receiver-level
+    // android:permission mistake fixed for BootCompletedReceiver (that
+    // required the SENDER to hold the permission and broke delivery).
+    // exported=false narrows the declared component surface without
+    // affecting the OS's ability to bind for real notification-listener use.
     const notificationListenerName =
       "expo.modules.terminalemulator.ShellyNotificationListener";
     const notificationListenerExists = application.service.find(
@@ -97,7 +101,7 @@ function withTerminalService(config) {
       application.service.push({
         $: {
           "android:name": notificationListenerName,
-          "android:exported": "true",
+          "android:exported": "false",
           "android:permission":
             "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
         },

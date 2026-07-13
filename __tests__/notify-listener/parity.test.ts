@@ -110,7 +110,11 @@ describe('NOTIFY-001 Increment 0 Manifest + native parity (dormant, flag-OFF)', 
       (s: { $: Record<string, string> }) =>
         s.$['android:name'] === 'expo.modules.terminalemulator.ShellyNotificationListener',
     );
-    expect(notificationListener.$['android:exported']).toBe('true');
+    // exported=false (not true): matches Android's own official
+    // NotificationListenerService declaration pattern. Binding is already
+    // restricted to the OS via BIND_NOTIFICATION_LISTENER_SERVICE below,
+    // independent of exported.
+    expect(notificationListener.$['android:exported']).toBe('false');
     expect(notificationListener.$['android:permission']).toBe(
       'android.permission.BIND_NOTIFICATION_LISTENER_SERVICE',
     );

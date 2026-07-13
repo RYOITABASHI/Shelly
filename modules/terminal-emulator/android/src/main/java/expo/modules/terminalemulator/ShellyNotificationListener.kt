@@ -4,12 +4,12 @@ import android.app.Notification
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * NOTIFY-001 Increment 0+1 (flag-gated, default OFF): cross-app notification
@@ -81,20 +81,19 @@ class ShellyNotificationListener : NotificationListenerService() {
          *  cleanly on process restart (a genuinely new notification after
          *  restart is a legitimate re-trigger, not a bug to guard against). */
         private const val TRIGGER_DEBOUNCE_MS = 60_000L
-        private val lastTriggeredAtMs = ConcurrentHashMap<String, Long>()
+
+        // Pure-logic debounce core (see TriggerDebouncer.kt for the testability
+        // rationale). Uses SystemClock.elapsedRealtime() (monotonic, ticks during
+        // sleep, not wall-clock) rather than System.currentTimeMillis(): a backward
+        // wall-clock jump between two rapid onNotificationPosted calls must not
+        // defeat the suppression this exists to provide.
+        private val triggerDebouncer = TriggerDebouncer(TRIGGER_DEBOUNCE_MS)
 
         /** Returns true (and records the fire) if [agentId] may fire now; false if
          *  it fired within the last [TRIGGER_DEBOUNCE_MS] and this call should be
          *  suppressed as a burst repeat. */
-        private fun shouldFireNow(agentId: String): Boolean {
-            val now = System.currentTimeMillis()
-            val last = lastTriggeredAtMs[agentId]
-            if (last != null && now - last < TRIGGER_DEBOUNCE_MS) {
-                return false
-            }
-            lastTriggeredAtMs[agentId] = now
-            return true
-        }
+        private fun shouldFireNow(agentId: String): Boolean =
+            triggerDebouncer.shouldFireNow(agentId, SystemClock.elapsedRealtime())
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {

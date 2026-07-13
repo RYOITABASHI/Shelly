@@ -88,6 +88,24 @@ class TerminalSessionService : Service() {
                     startForegroundWithNotification(null)
                     return START_STICKY
                 }
+                if (isGloballyHalted()) {
+                    // STOP-ALL kill-switch (lib/agent-manager.ts haltAllAgents()).
+                    // Scheduled runs are already blocked by alarm uninstall + the JS
+                    // manual-run gate, but this is the single native chokepoint every
+                    // OTHER dispatch source funnels through — currently the
+                    // notification-listener trigger (NOTIFY-001), and any future
+                    // native trigger — so it must fail closed here too rather than
+                    // rely on each caller remembering to check upstream.
+                    Log.i(TAG, "RUN_AGENT for $agentId suppressed: globally halted (STOP-ALL)")
+                    if (!hasProtectedWork()) {
+                        startForegroundWithNotification(null)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                        return START_NOT_STICKY
+                    }
+                    startForegroundWithNotification(null)
+                    return START_STICKY
+                }
                 val tainted = intent.getBooleanExtra(EXTRA_TAINTED, false)
                 startForegroundWithNotification("Agent running in background")
                 runAgentInBackground(agentId, tainted)
@@ -274,6 +292,25 @@ class TerminalSessionService : Service() {
 
     private fun hasProtectedWork(): Boolean =
         sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0
+
+    /**
+     * Mirrors lib/agent-manager.ts's haltSentinelPath() ($HOME/.shelly/agents/.halted).
+     * Written/removed by haltAllAgents()/resumeAllAgents() on the JS side; this is a
+     * plain file existence check so a JS-thread pause/kill can never mask the halt.
+     * Fails OPEN to false (not halted) only on an unexpected I/O error reading the
+     * home dir itself, matching the JS-side try/catch-defaults-to-not-halted behavior
+     * in agent-manager.ts's own halted-state refresh — losing the ability to read the
+     * sentinel is treated as "we don't know", not as an implicit resume.
+     */
+    private fun isGloballyHalted(): Boolean {
+        return try {
+            val homeDir = HomeInitializer.getHomeDir(applicationContext)
+            File(homeDir, ".shelly/agents/.halted").exists()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check global halt sentinel; defaulting to not-halted", e)
+            false
+        }
+    }
 
     private fun acquireAgentWakeLock(agentId: String): PowerManager.WakeLock? {
         return try {
