@@ -33,4 +33,12 @@ describe('shelly-capability-broker.js parity', () => {
       expect(brokerSrc).toMatch(re);
     }
   });
+
+  it('ships the FS-001 and EXEC-001 broker ops in the asset copy', () => {
+    expect(brokerSrc).toContain("op === 'fs.read'");
+    expect(brokerSrc).toContain("op === 'fs.write'");
+    expect(brokerSrc).toContain("op === 'fs.list'");
+    expect(brokerSrc).toContain("op === 'fs.search'");
+    expect(brokerSrc).toContain("op === 'workspace.exec'");
+  });
 });

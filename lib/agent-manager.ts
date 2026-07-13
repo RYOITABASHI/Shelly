@@ -10,6 +10,7 @@ import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
+import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule } from './agent-scheduler';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import {
@@ -316,15 +317,19 @@ async function materializeAgent(
   }
 
   const scriptPath = getScriptPath(agent.id);
+  const planSpecPath = getPlanSpecPath(agent.id);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
+  const planSpec = buildAgentPlanSpec(agentForRun, effectiveRunOpts);
   const commands = [
     `mkdir -p ${shellQuote(agentsDir())}`,
+    `mkdir -p ${shellQuote(`${agentsDir()}/plans`)}`,
     `rm -f ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)}`,
     `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
     writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
     writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
+    writeFileCommand(planSpecPath, JSON.stringify(planSpec, null, 2)),
     ...generateInstallCommands(agent),
   ];
 
@@ -813,7 +818,7 @@ export async function deleteAgent(agentId: string): Promise<void> {
     `  mkdir -p "$d/audits"\n` +
     `  cp "$d/logs/${agentId}/agent-driver-audit.jsonl" "$d/audits/${agentId}-agent-driver-audit.jsonl"\n` +
     `fi\n` +
-    `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/locks/${agentId}.pid"\n` +
+    `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/plans/plan-agent-${agentId}.json" "$d/locks/${agentId}.pid"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
     // Phase 1 memory lives under memory/<id>; drop it with the agent so a deleted
     // agent leaves no orphaned memory behind (the Vault mirror is left in place
@@ -845,6 +850,7 @@ export async function cleanupOrphanAgentFiles(
   const cmd =
     `cd ${shellQuote(dir)} 2>/dev/null || exit 0\n` +
     `for s in run-agent-*.sh; do [ -e "\$s" ] || continue; id="\${s#run-agent-}"; id="\${id%.sh}"; [ -f "\$id.json" ] || rm -f "\$s"; done\n` +
+    `for p in plans/plan-agent-*.json; do [ -e "\$p" ] || continue; id="\${p#plans/plan-agent-}"; id="\${id%.json}"; [ -f "\$id.json" ] || rm -f "\$p"; done\n` +
     `for d in logs/*/; do [ -e "\$d" ] || continue; id="\$(basename "\$d")"; [ -f "\$id.json" ] || rm -rf "\$d"; done`;
   try {
     await runCommand(cmd);

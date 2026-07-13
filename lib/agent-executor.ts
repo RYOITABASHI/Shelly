@@ -13,7 +13,7 @@ import { buildAgentPolicy } from './agent-policy';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 9;
+const AGENT_SCRIPT_VERSION = 10;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -551,6 +551,83 @@ write_webhook_payload() {
 PAYLOADEOF
 }
 
+cap_roots_file() {
+  roots_file="$TMP_DIR/cap-roots-$AGENT_ID.txt"
+  : > "$roots_file"
+  cap_add_root() {
+    root="$1"
+    [ -n "$root" ] || return 0
+    printf '%s\\n' "$root" >> "$roots_file"
+  }
+  cap_add_root "$HOME/agent-output"
+  cap_add_root "$TMP_DIR"
+  cap_add_root "$HOME/projects/shelly-content-studio"
+  cap_add_root "\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
+  cap_add_root "\${OBSIDIAN_VAULT_PATH:-/sdcard/Documents/ObsidianVault}"
+  cap_add_root "\${SHELLY_AGENT_CUSTOM_PATH:-$HOME/agent-output}"
+  printf '%s\\n' "$roots_file"
+}
+
+cap_fs_write_file() {
+  dest="$1"
+  src="$2"
+  if [ "\${SHELLY_CAP_FS:-0}" = "1" ] && node_usable && [ -f "$HOME/.shelly-capability-broker.js" ]; then
+    roots_file="$(cap_roots_file)"
+    cap_out="$TMP_DIR/cap-fs-$AGENT_ID-$$.out"
+    cap_err="$TMP_DIR/cap-fs-$AGENT_ID-$$.err"
+    set +e
+    shelly_node "$HOME/.shelly-capability-broker.js" \\
+      --op fs.write --path "$dest" --input-file "$src" \\
+      --roots-file "$roots_file" \\
+      --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+      --out "$cap_out" --err "$cap_err"
+    cap_rc=$?
+    set -e
+    if [ "$cap_rc" -ne 0 ]; then
+      ACTION_DISPATCH_STATUS="error"
+      ACTION_DISPATCH_MESSAGE="Scoped filesystem write denied for $(basename "$dest"): $(head -c 240 "$cap_err" 2>/dev/null | tr '\\n' ' ')"
+      return "$cap_rc"
+    fi
+    return 0
+  fi
+  if [ "\${SHELLY_CAP_FS:-0}" = "1" ]; then
+    ACTION_DISPATCH_STATUS="error"
+    ACTION_DISPATCH_MESSAGE="Scoped filesystem broker requested but unavailable; refusing unbrokered write."
+    return 44
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+}
+
+cap_workspace_exec() {
+  command_text="$1"
+  cwd="$2"
+  out_file="$3"
+  err_file="$4"
+  if [ "\${SHELLY_CAP_EXEC:-0}" = "1" ] && node_usable && [ -f "$HOME/.shelly-capability-broker.js" ]; then
+    roots_file="$(cap_roots_file)"
+    command_file="$TMP_DIR/cap-exec-command-$AGENT_ID-$$.sh"
+    printf '%s' "$command_text" > "$command_file"
+    set +e
+    shelly_node "$HOME/.shelly-capability-broker.js" \\
+      --op workspace.exec --command-file "$command_file" --cwd "$cwd" \\
+      --roots-file "$roots_file" \\
+      --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+      --timeout-seconds "$TIMEOUT" \\
+      --out "$out_file" --err "$err_file"
+    cap_rc=$?
+    set -e
+    rm -f "$command_file"
+    return "$cap_rc"
+  fi
+  if [ "\${SHELLY_CAP_EXEC:-0}" = "1" ]; then
+    echo "workspace.exec broker requested but unavailable; refusing unbrokered exec." > "$err_file"
+    return 44
+  fi
+  : > "$err_file"
+  bash -lc "$command_text" > "$out_file" 2>&1
+}
+
 webhook_destination_host() {
   url="$1"
   if node_usable; then
@@ -721,8 +798,7 @@ save_draft_result() {
         ;;
     esac
     SAVED_FILE="$OUT_BASE/$DATE/\${DATE}_$SLUG.md"
-    mkdir -p "$(dirname "$SAVED_FILE")"
-    cp "$result_file" "$SAVED_FILE"
+    cap_fs_write_file "$SAVED_FILE" "$result_file"
     register_source_urls "$result_file"
     return 0
   fi
@@ -738,8 +814,7 @@ save_draft_result() {
     *) REL_NAME="$REL_NAME.md" ;;
   esac
   SAVED_FILE="$OUTPUT_DIR/$REL_NAME"
-  mkdir -p "$(dirname "$SAVED_FILE")"
-  cp "$result_file" "$SAVED_FILE"
+  cap_fs_write_file "$SAVED_FILE" "$result_file"
 
   if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
     OBSIDIAN_TARGET="90_Log/Agent_Output"
@@ -752,8 +827,7 @@ save_draft_result() {
       *evals*) OBSIDIAN_TARGET="90_Log/Agent_Evals" ;;
     esac
     OBSIDIAN_DEST="$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$REL_NAME"
-    mkdir -p "$(dirname "$OBSIDIAN_DEST")"
-    cp "$SAVED_FILE" "$OBSIDIAN_DEST"
+    cap_fs_write_file "$OBSIDIAN_DEST" "$SAVED_FILE"
   fi
 
   register_source_urls "$result_file"
@@ -844,16 +918,37 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
+      if [ "\${SHELLY_CAP_EXEC:-0}" = "1" ] && [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="CLI action was blocked by command safety: $ACTION_COMMAND_SAFETY_REASON"
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       write_action_approval_request "cli" "$preview" "$result_file"
       wait_action_approval "cli" || return 1
       cli_output="$LOG_DIR/cli-action-output-$(date +%s).txt"
+      cli_error="$LOG_DIR/cli-action-error-$(date +%s).txt"
+      CLI_EXEC_CWD="\${SHELLY_AGENT_EXEC_CWD:-$PROJECT_DIR}"
+      if [ ! -d "$CLI_EXEC_CWD" ]; then
+        CLI_EXEC_CWD="$HOME/agent-output"
+        mkdir -p "$CLI_EXEC_CWD"
+      fi
       set +e
-      bash -lc "$ACTION_COMMAND" > "$cli_output" 2>&1
+      cap_workspace_exec "$ACTION_COMMAND" "$CLI_EXEC_CWD" "$cli_output" "$cli_error"
       cli_rc=$?
       set -e
+      if [ -s "$cli_error" ]; then
+        {
+          printf '\\n[stderr]\\n'
+          cat "$cli_error"
+        } >> "$cli_output"
+      fi
       {
         printf '\\n## CLI action\\n\\n'
         printf 'Safety: %s - %s\\n\\n' "$ACTION_COMMAND_SAFETY_LEVEL" "$ACTION_COMMAND_SAFETY_REASON"
+        if [ "\${SHELLY_CAP_EXEC:-0}" = "1" ]; then
+          printf 'Cwd: %s\\n\\n' "$CLI_EXEC_CWD"
+        fi
         printf 'Command:\\n\\n\`\`\`sh\\n%s\\n\`\`\`\\n\\n' "$ACTION_COMMAND"
         printf 'Exit code: %s\\n\\n' "$cli_rc"
         printf 'Output:\\n\\n\`\`\`text\\n'

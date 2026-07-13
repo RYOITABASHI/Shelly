@@ -107,13 +107,14 @@ class TerminalSessionService : Service() {
                     return START_STICKY
                 }
                 val tainted = intent.getBooleanExtra(EXTRA_TAINTED, false)
+                val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)
+                val cron = intent.getStringExtra(EXTRA_CRON)
+                val unattended = intervalMs > 0 || !cron.isNullOrBlank()
                 startForegroundWithNotification("Agent running in background")
-                runAgentInBackground(agentId, tainted)
+                runAgentInBackground(agentId, tainted, unattended)
                 // Alarm-fired runs carry interval/cron — re-arm the next fire here now
                 // that the alarm targets this service directly (no receiver in the
                 // loop). A manual run (no interval/cron extras) is a no-op.
-                val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)
-                val cron = intent.getStringExtra(EXTRA_CRON)
                 if (intervalMs > 0 || !cron.isNullOrBlank()) {
                     try {
                         AgentAlarmScheduler.scheduleNext(applicationContext, agentId, intervalMs, cron)
@@ -248,7 +249,7 @@ class TerminalSessionService : Service() {
         nm.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun runAgentInBackground(agentId: String, tainted: Boolean = false) {
+    private fun runAgentInBackground(agentId: String, tainted: Boolean, unattended: Boolean) {
         activeAgentRuns.incrementAndGet()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
@@ -260,7 +261,12 @@ class TerminalSessionService : Service() {
             try {
                 // AgentRuntime announces the run outcome itself (agent-result /
                 // error notification); we don't need its return value here.
-                AgentRuntime.runAgent(applicationContext, agentId, tainted)
+                AgentRuntime.runAgent(
+                    applicationContext,
+                    agentId,
+                    tainted = tainted,
+                    unattended = unattended
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)
             } finally {

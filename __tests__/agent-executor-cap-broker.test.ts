@@ -63,7 +63,31 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
   });
 
   it('bumps the script version in lockstep with the native gate', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=9');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=10');
+  });
+});
+
+describe('capability broker wiring — scoped.fs and workspace.exec seams (FS/EXEC-001)', () => {
+  it('draft saving routes through scoped.fs when SHELLY_CAP_FS=1 and fails closed if unavailable', () => {
+    const s = generateRunScript(agent({ type: 'local' }, false));
+    expect(s).toContain('cap_fs_write_file "$SAVED_FILE" "$result_file"');
+    expect(s).toContain('cap_fs_write_file "$OBSIDIAN_DEST" "$SAVED_FILE"');
+    expect(s).toContain('if [ "${SHELLY_CAP_FS:-0}" = "1" ] && node_usable && [ -f "$HOME/.shelly-capability-broker.js" ]; then');
+    expect(s).toContain('--op fs.write --path "$dest" --input-file "$src"');
+    expect(s).toContain('Scoped filesystem broker requested but unavailable; refusing unbrokered write.');
+  });
+
+  it('cli actions keep in-app approval but execute through workspace.exec when SHELLY_CAP_EXEC=1', () => {
+    const s = generateRunScript({
+      ...agent({ type: 'local' }, false),
+      action: { type: 'cli', command: 'printf ok' },
+    } as Agent);
+    expect(s).toContain('write_action_approval_request "cli" "$preview" "$result_file"');
+    expect(s).toContain('wait_action_approval "cli" || return 1');
+    expect(s).toContain('if [ "${SHELLY_CAP_EXEC:-0}" = "1" ] && [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then');
+    expect(s).toContain('cap_workspace_exec "$ACTION_COMMAND" "$CLI_EXEC_CWD" "$cli_output" "$cli_error"');
+    expect(s).toContain('--op workspace.exec --command-file "$command_file" --cwd "$cwd"');
+    expect(s).toContain('workspace.exec broker requested but unavailable; refusing unbrokered exec.');
   });
 });
 

@@ -57,7 +57,10 @@ describe('NOTIFY-001 Increment 0 Manifest + native parity (dormant, flag-OFF)', 
   it('threads notification taint into the legacy generated-agent broker path', () => {
     expect(listener).toContain('putExtra(TerminalSessionService.EXTRA_TAINTED, true)');
     expect(service).toContain('getBooleanExtra(EXTRA_TAINTED, false)');
-    expect(service).toContain('AgentRuntime.runAgent(applicationContext, agentId, tainted)');
+    expect(service).toContain('AgentRuntime.runAgent(');
+    expect(service).toContain('applicationContext,');
+    expect(service).toContain('agentId,');
+    expect(service).toContain('tainted = tainted');
     expect(runtime).toContain('export SHELLY_CAP_TAINTED=1');
   });
 
