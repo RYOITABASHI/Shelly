@@ -361,23 +361,37 @@ async function materializeAgent(
  * installAlarm=false a disabled agent's re-bake writes files only (no schedule),
  * and the metadata keeps enabled:false.
  */
-export async function rematerializeAutonomousAgents(
+let autonomousRematerializeQueue: Promise<void> = Promise.resolve();
+
+export function rematerializeAutonomousAgents(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
-  const autonomousAgents = useAgentStore
-    .getState()
-    .agents.filter((agent) => agent.autonomous);
-  for (const agent of autonomousAgents) {
-    // Skip agents deleted while iterating — re-materializing a captured
-    // snapshot would rewrite its <id>.json and resurrect it (same guard as
-    // the startup repair).
-    if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
-    try {
-      await materializeAgent(agent, runCommand, false, false);
-    } catch (error) {
-      logWarn('AgentEnvSync', `failed to re-bake consent into agent ${agent.id}`, error);
+  // Consent is security-sensitive state baked into scripts that can run
+  // unattended. Queue the entire pass so an older pass can never finish a
+  // stale write after a newer pass. Take the agent snapshot inside the queued
+  // turn; materializeAgent likewise reads consent from disk only once that turn
+  // starts, after the preceding pass has fully completed.
+  const turn = autonomousRematerializeQueue.then(async () => {
+    const autonomousAgents = useAgentStore
+      .getState()
+      .agents.filter((agent) => agent.autonomous);
+    for (const agent of autonomousAgents) {
+      // Skip agents deleted while iterating — re-materializing a captured
+      // snapshot would rewrite its <id>.json and resurrect it (same guard as
+      // the startup repair).
+      if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
+      try {
+        await materializeAgent(agent, runCommand, false, false);
+      } catch (error) {
+        logWarn('AgentEnvSync', `failed to re-bake consent into agent ${agent.id}`, error);
+      }
     }
-  }
+  });
+
+  // A rejected turn must not poison the mutex and prevent later revocations
+  // from being applied. Callers still observe their own turn's rejection.
+  autonomousRematerializeQueue = turn.catch(() => undefined);
+  return turn;
 }
 
 /**
