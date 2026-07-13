@@ -21,6 +21,11 @@ import {
   recallMemoryNotes,
   writeMemoryNote,
 } from './agent-memory';
+// MEMORY-001 shadow/activation seam (dormant): flag + entry points imported
+// from their own modules (not the '@/lib/memory' index) so host memory tests
+// that import the index never transitively load expo-file-system via fs-expo.
+import { MEMORY_ENABLED } from './memory/wiring';
+import { shadowMemoryRecall, activateMemoryRecall, activateMemoryWrite } from './memory/shadow';
 import {
   buildSkillInjectionContext,
   bumpSkillUsage,
@@ -363,11 +368,28 @@ async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
   // Phase 1 memory recall.
   try {
     const notes = await readMemoryNotes(agent.id);
-    if (notes.length > 0) {
-      const relevant = recallMemoryNotes(notes, `${agent.name}\n${agent.prompt}`);
-      const recallContext = buildRecallContext(relevant);
-      if (recallContext) prompt = `${recallContext}\n\n---\n\n${prompt}`;
+    // MEMORY-001 Step 3 (strangler, flag-OFF today): while MEMORY_ENABLED is
+    // false this whole branch is dead code and the G2 recall below is the ONLY
+    // thing that ever runs — byte-identical to pre-Step-3 behavior. When the
+    // flag is eventually flipped, activateMemoryRecall's rendered context is
+    // injected INSTEAD OF G2's, but a `null` return (any internal MEMORY-001
+    // failure) falls back to the G2 result computed below rather than to no
+    // recall at all — G2 is the on-device-verified path, so falling back to IT
+    // is safer than silently dropping the agent's memory.
+    let recallContext: string | null = null;
+    if (MEMORY_ENABLED) {
+      await shadowMemoryRecall(agent, notes).catch(() => {});
+      recallContext = await activateMemoryRecall(agent, notes);
     }
+    if (recallContext === null) {
+      if (notes.length > 0) {
+        const relevant = recallMemoryNotes(notes, `${agent.name}\n${agent.prompt}`);
+        recallContext = buildRecallContext(relevant);
+      } else {
+        recallContext = '';
+      }
+    }
+    if (recallContext) prompt = `${recallContext}\n\n---\n\n${prompt}`;
   } catch {
     // best-effort
   }
@@ -381,6 +403,22 @@ async function persistRememberFact(
 ): Promise<void> {
   const fact = agent.memory?.rememberFact?.trim();
   if (!fact) return;
+  // MEMORY-001 Step 4 (strangler, flag-OFF today): while MEMORY_ENABLED is
+  // false this branch never runs and G2's writeMemoryNote below is the ONLY
+  // write path — byte-identical to pre-Step-4 behavior. When the flag is
+  // flipped, activateMemoryWrite (which reuses G2's own makeMemoryNote for
+  // normalization) replaces the G2 write; a `false` return (any internal
+  // MEMORY-001 failure) falls back to G2's write rather than silently losing
+  // the fact.
+  if (MEMORY_ENABLED) {
+    const ok = await activateMemoryWrite({
+      agentId: agent.id,
+      type: 'fact',
+      text: fact,
+      tags: agent.memory?.tags,
+    });
+    if (ok) return;
+  }
   try {
     await writeMemoryNote(
       runCommand,
@@ -736,6 +774,17 @@ async function captureRunMemory(
   if (!latest || latest.status !== 'success') return;
   const digest = extractRunDigest(latest.outputPreview || '');
   if (!digest) return;
+  // MEMORY-001 Step 4 (strangler, flag-OFF today): see persistRememberFact for
+  // the fallback rationale — same G2-fallback-on-failure contract applies here.
+  if (MEMORY_ENABLED) {
+    const ok = await activateMemoryWrite({
+      agentId,
+      type: 'result',
+      text: digest,
+      tags: agent.memory?.tags,
+    });
+    if (ok) return;
+  }
   try {
     await writeMemoryNote(
       runCommand,
