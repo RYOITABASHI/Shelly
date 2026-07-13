@@ -153,6 +153,43 @@ describe('nextTriggerMs — "daily-multi" (multiple shared-minute hours per day)
   });
 });
 
+describe('nextTriggerMs — every-N-hours with N that does not divide 24 evenly', () => {
+  // Regression test: cron "*/N" for the hour field resets at midnight each
+  // day (valid hours are {0, N, 2N, ...} clamped to 0-23), it does NOT count
+  // continuously across the day boundary. The old implementation used
+  // `nextHour % 24` after a naive `Math.ceil(...)` computation, which is
+  // only correct when N divides 24 evenly (1,2,3,4,6,8,12) — for any other
+  // N (5,7,9,...,23) it silently landed on the wrong hour every day once the
+  // schedule crossed midnight.
+  const day = (h: number, m = 0) => new Date(2026, 6, 15, h, m, 0, 0); // Wed 2026-07-15
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('N=23 past the only two daily hours (0, 23) → rolls to tomorrow 00:00, not "hour 22"', () => {
+    jest.setSystemTime(day(23, 30));
+    const expected = new Date(2026, 6, 16, 0, 0, 0, 0).getTime();
+    expect(nextTriggerMs('0 */23 * * *')).toBe(expected);
+  });
+
+  it('N=5 past the last daily hour (20) → rolls to tomorrow 00:00, not "hour 1"', () => {
+    jest.setSystemTime(day(22, 0));
+    const expected = new Date(2026, 6, 16, 0, 0, 0, 0).getTime();
+    expect(nextTriggerMs('0 */5 * * *')).toBe(expected);
+  });
+
+  it('N=7 past the last daily hour (21) → rolls to tomorrow 00:00, not "hour 4"', () => {
+    jest.setSystemTime(day(22, 30));
+    const expected = new Date(2026, 6, 16, 0, 0, 0, 0).getTime();
+    expect(nextTriggerMs('0 */7 * * *')).toBe(expected);
+  });
+
+  it('N=5 mid-day still lands on the next same-day multiple of 5', () => {
+    jest.setSystemTime(day(12, 0));
+    expect(nextTriggerMs('0 */5 * * *')).toBe(day(15, 0).getTime());
+  });
+});
+
 describe('lastTriggerMs — most recent past fire (missed-run detection)', () => {
   it('daily: returns a past time at the right hour:minute, within the last 24h', () => {
     const ms = lastTriggerMs('0 8 * * *')!;

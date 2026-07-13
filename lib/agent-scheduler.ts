@@ -105,13 +105,25 @@ export function nextTriggerMs(cron: string): number {
   if (everyHourMatch && min === '0') {
     const intervalHour = parseInt(everyHourMatch[1], 10);
     if (intervalHour > 0) {
-      const nextHour = Math.ceil((now.getHours() + 1) / intervalHour) * intervalHour;
       target.setMinutes(0);
       target.setSeconds(0);
       target.setMilliseconds(0);
-      if (nextHour >= 24) {
+      // Cron "*/N" for the hour field resets at midnight each day rather than
+      // counting continuously — valid hours are {0, N, 2N, ...} clamped to
+      // 0-23, so for N that doesn't divide 24 evenly (e.g. 23, 5, 7) the
+      // sequence does NOT wrap via simple modulo (that would land on the
+      // wrong hour, e.g. 46 % 24 = 22 instead of the correct 0). Enumerate
+      // today's remaining valid hours and fall through to hour 0 tomorrow.
+      let nextHour = -1;
+      for (let h = 0; h < 24; h += intervalHour) {
+        if (h > now.getHours()) {
+          nextHour = h;
+          break;
+        }
+      }
+      if (nextHour === -1) {
         target.setDate(target.getDate() + 1);
-        target.setHours(nextHour % 24);
+        target.setHours(0);
       } else {
         target.setHours(nextHour);
       }

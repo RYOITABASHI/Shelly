@@ -164,10 +164,24 @@ object AgentAlarmScheduler {
             target.set(Calendar.SECOND, 0)
             target.set(Calendar.MILLISECOND, 0)
             val currentHour = now.get(Calendar.HOUR_OF_DAY)
-            val nextHour = ((currentHour + 1 + everyHour - 1) / everyHour) * everyHour
-            if (nextHour >= 24) {
+            // Cron "*/N" for the hour field resets at midnight each day rather
+            // than counting continuously — valid hours are {0, N, 2N, ...}
+            // clamped to 0-23, so for N that doesn't divide 24 evenly (e.g.
+            // 23, 5, 7) simple modulo arithmetic lands on the wrong hour
+            // (e.g. 46 % 24 = 22 instead of the correct 0). Enumerate today's
+            // remaining valid hours and fall through to hour 0 tomorrow.
+            var nextHour = -1
+            var h = 0
+            while (h < 24) {
+                if (h > currentHour) {
+                    nextHour = h
+                    break
+                }
+                h += everyHour
+            }
+            if (nextHour == -1) {
                 target.add(Calendar.DAY_OF_YEAR, 1)
-                target.set(Calendar.HOUR_OF_DAY, nextHour % 24)
+                target.set(Calendar.HOUR_OF_DAY, 0)
             } else {
                 target.set(Calendar.HOUR_OF_DAY, nextHour)
             }
