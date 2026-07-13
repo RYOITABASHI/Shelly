@@ -1089,9 +1089,16 @@ export function useAIPaneDispatch(paneId: string) {
             }
           }
         } else {
+          // confirmed.schedule is null for a pure notification-triggered agent
+          // (no cron schedule -- it waits for an event), so fall back to a
+          // trigger-specific description instead of literally interpolating "null".
+          const scheduleDescription = confirmed.schedule
+            ?? (confirmed.notificationTrigger
+              ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
+              : 'no schedule');
           store.updateMessage(paneId, messageId, {
             agentCardState: 'confirmed',
-            content: `✅ Agent "${created.name}" registered — ${confirmed.schedule}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
+            content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
           });
         }
       } catch (err) {
