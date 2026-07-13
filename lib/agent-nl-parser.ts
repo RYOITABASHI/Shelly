@@ -445,6 +445,15 @@ function detectAction(text: string): AgentAction {
   // -- that's the only part of the sentence that actually names the delivery.
   // No "たら" at all (e.g. "毎日20時30分に通知して") scans the whole text, same
   // as before this fix.
+  //
+  // Known residual limitation (low severity -- always human-gated via the
+  // confirm card's editable action picker before registration): a compound
+  // utterance with a SECOND, trailing "たら" clause after the real delivery
+  // verb truncates that verb out of scope, e.g. "毎朝ニュースが届いたら通知
+  // して、余裕があったら要約も作って" falls to the default draft instead of
+  // notify, because slicing after the LAST "たら" drops "通知して". Rare in
+  // practice (needs two chained conditionals in one utterance); not fixed
+  // here, no known simple fix without deeper clause parsing.
   const talaIndex = text.lastIndexOf('たら');
   const actionScope = talaIndex >= 0 ? text.slice(talaIndex + 2) : text;
 
