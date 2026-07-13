@@ -125,6 +125,11 @@ describe('shelly-plan-executor orchestration (Option B per-step contract)', () =
   });
 
   it('carries prior-step results into the next step and only the final step notifies', async () => {
+    // Spawns two real child-process executor runs sequentially, each polled via a
+    // 40ms approval interval -- comfortably under Jest's 5000ms default locally, but
+    // observed to intermittently exceed it under GitHub Actions CI's shared CPU
+    // (PR #107 CI run 29224790020, 2026-07-13). Explicit longer timeout, not a
+    // change to executor behavior.
     const home = makeHome();
     autoApprove(home);
     const notifyFile = path.join(home, `.shelly/agents/logs/${AGENT_ID}/native-result-notification.json`);
@@ -159,7 +164,7 @@ describe('shelly-plan-executor orchestration (Option B per-step contract)', () =
     expect(runLogs.length).toBeGreaterThanOrEqual(1);
     const lastLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs.sort()[runLogs.length - 1]), 'utf8'));
     expect(lastLog).toMatchObject({ status: 'success', executor: 'planspec', toolUsed: 'Local LLM' });
-  });
+  }, 20000);
 });
 
 function listMd(dir: string): string[] {
