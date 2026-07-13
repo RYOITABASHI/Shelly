@@ -92,3 +92,29 @@ describe('AI pane terminal context', () => {
     expect(prompt).toContain('untrusted data');
   });
 });
+
+describe('AI pane capability grounding', () => {
+  it('always includes at least the ambient feature catalog', () => {
+    const noPrompt = buildAIPaneSystemPrompt(null, null, null);
+    const ordinary = buildAIPaneSystemPrompt(null, null, null, 'fix foo.ts');
+
+    expect(noPrompt).toContain('<SHELLY_FEATURES>');
+    expect(ordinary).toContain('<SHELLY_FEATURES>');
+  });
+
+  it('upgrades cloud prompts for recognized capability questions', () => {
+    const ambient = buildAIPaneSystemPrompt(null, null, null, 'fix foo.ts');
+    const upgraded = buildAIPaneSystemPrompt(null, null, null, '何が出来る？');
+
+    expect(upgraded.length).toBeGreaterThan(ambient.length);
+    expect(upgraded).toContain("The user's message looks like a question");
+    expect(ambient).not.toContain("The user's message looks like a question");
+  });
+
+  it('keeps local prompts on the compact ambient catalog', () => {
+    const prompt = buildLocalAIPaneSystemPrompt(null);
+
+    expect(prompt).toContain('<SHELLY_FEATURES>');
+    expect(prompt).not.toContain("The user's message looks like a question");
+  });
+});

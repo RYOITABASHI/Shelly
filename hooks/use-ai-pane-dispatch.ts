@@ -542,7 +542,7 @@ export function useAIPaneDispatch(paneId: string) {
         );
         const systemPrompt = (agent === 'local'
           ? buildLocalAIPaneSystemPrompt(promptTerminalCtx)
-          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile))
+          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText))
           + detectPostFormatDirective(promptText);
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder and the current user message;

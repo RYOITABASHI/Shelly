@@ -7,6 +7,11 @@
 
 import { useTerminalStore } from '@/store/terminal-store';
 import { useExecutionLogStore } from '@/store/execution-log-store';
+import {
+  buildAmbientCapabilityBlock,
+  buildCapabilityGroundingBlock,
+  isCapabilityQuestion,
+} from './ask-context';
 
 // Match common terminal escape/control sequences, including CSI cursor
 // controls emitted by TUIs such as Codex. AI context should contain the
@@ -197,12 +202,15 @@ export function getTerminalSnapshotForSession(
  * @param terminalContext Output of getTerminalSnapshot(), or null.
  * @param agentName       Agent bound to the current pane (e.g. "codex"), or null.
  * @param stagedFile      File primed for editing (from auto-stage / stageAiEdit).
+ * @param promptText      Current user message, used only to upgrade the ambient
+ *                        feature catalog to the full descriptive catalog.
  * @returns Full system prompt string.
  */
 export function buildAIPaneSystemPrompt(
   terminalContext: string | null,
   agentName: string | null,
   stagedFile?: { path: string; content: string } | null,
+  promptText?: string,
 ): string {
   const parts: string[] = [
     'You are Shelly AI, a terminal assistant. You can see the user\'s terminal output.',
@@ -246,6 +254,12 @@ export function buildAIPaneSystemPrompt(
     );
   }
 
+  parts.push(
+    '\n' + (isCapabilityQuestion(promptText)
+      ? buildCapabilityGroundingBlock()
+      : buildAmbientCapabilityBlock()),
+  );
+
   return parts.join('\n');
 }
 
@@ -259,6 +273,9 @@ export function buildLocalAIPaneSystemPrompt(terminalContext: string | null): st
   if (terminalContext) {
     parts.push('\n[Terminal Output]\n' + terminalContext + '\n[End Terminal Output]');
   }
+
+  // Local models stay on the compact catalog even when the classifier matches.
+  parts.push('\n' + buildAmbientCapabilityBlock());
 
   return parts.join('\n');
 }

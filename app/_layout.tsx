@@ -16,6 +16,7 @@ import { t, useI18n } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useDmPairingStore } from '@/store/dm-pairing-store';
 import * as Linking from 'expo-linking';
@@ -232,6 +233,8 @@ export default function RootLayout() {
     logInfo('RootLayout', 'Loaded: a11y');
     usePluginStore.getState().loadPlugins();
     logInfo('RootLayout', 'Loaded: plugins');
+    useCosmeticStore.getState().loadCosmetics();
+    logInfo('RootLayout', 'Loaded: cosmetics');
     useDmPairingStore.getState().loadPairings();
     logInfo('RootLayout', 'Loaded: dm-pairings');
 

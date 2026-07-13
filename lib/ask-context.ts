@@ -12,7 +12,7 @@
  * ships in one commit without touching the build pipeline.
  */
 
-import { FEATURE_CATALOG, type Feature } from './feature-catalog';
+import { FEATURE_CATALOG, getCompressedCatalog, type Feature } from './feature-catalog';
 
 const PRIMER = `
 You are the ASK Pane of Shelly — a chat-first terminal IDE for Android
@@ -116,4 +116,48 @@ export function extractStatus(text: string): AskStatus {
  */
 export function stripStatusTag(text: string): string {
   return text.replace(/\s*\[?(AVAILABLE|PLANNED|NOT_AVAILABLE)\]?\s*$/, '').trimEnd();
+}
+
+// ─── Capability-question detection (main AI Chat grounding) ──────────────────
+
+export function isCapabilityQuestion(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+
+  // Include both hiragana できる and the common kanji form 出来る.
+  const jaPatterns =
+    /(何が(でき|出来)|なにが(でき|出来)|使い方|使えます?か|使える(の|機能|？|\?)|って機能|機能あります?か|機能ある|(でき|出来)ます?か|(でき|出来)るの|(でき|出来)る[？?]|どうやって|やり方|の仕方|設定方法|方法(を|は)教えて)/;
+  const enPatterns =
+    /\b(what can (you|shelly) do|how do i\b|how to\b|how can i\b|can shelly\b|does shelly\b|is there a way to\b|what features\b|what does shelly\b|how does shelly\b|are you able to\b)/;
+
+  return jaPatterns.test(trimmed) || enPatterns.test(lower);
+}
+
+const CAPABILITY_GROUNDING_PRIMER =
+  "The user's message looks like a question about what Shelly can do or how " +
+  'to use it. Answer grounded in Shelly\'s real feature catalog below — be ' +
+  'concrete, reference actual feature names, and do not invent capabilities ' +
+  "that aren't listed. If nothing below covers what they're asking, say so " +
+  'plainly instead of guessing.';
+
+const AMBIENT_CAPABILITY_PRIMER =
+  "For reference (not necessarily relevant to this message) — Shelly's real " +
+  'feature names. If the user asks what Shelly can do or how to use ' +
+  "something, answer grounded in this list and don't invent capabilities " +
+  "that aren't in it. Otherwise ignore this block and answer normally.";
+
+function getCompactFeatureNames(): string {
+  return FEATURE_CATALOG.map((feature) => feature.name).join(', ');
+}
+
+export function buildCapabilityGroundingBlock(compact = false): string {
+  const catalog = compact ? getCompactFeatureNames() : getCompressedCatalog();
+  return `${CAPABILITY_GROUNDING_PRIMER}\n\n<SHELLY_FEATURES>\n${catalog}\n</SHELLY_FEATURES>`;
+}
+
+/** Always-present names-only catalog for every main AI Chat provider. */
+export function buildAmbientCapabilityBlock(): string {
+  return `${AMBIENT_CAPABILITY_PRIMER}\n\n<SHELLY_FEATURES>\n${getCompactFeatureNames()}\n</SHELLY_FEATURES>`;
 }
