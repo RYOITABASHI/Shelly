@@ -9,6 +9,7 @@ interface RunResult {
   code: number;
   out: string;
   err: string;
+  processErr: string;
   audit: any[];
 }
 
@@ -32,6 +33,7 @@ function runBroker(
     approved?: boolean;
     env?: Record<string, string>;
     budget?: { calls: number; startedAtMs: number };
+    nodeOptions?: string;
   },
 ): Promise<RunResult> {
   const outFile = path.join(dir, 'out.txt');
@@ -78,13 +80,18 @@ function runBroker(
   }
 
   return new Promise((resolve) => {
-    execFile('node', argv, { encoding: 'utf8' }, (err: any) => {
-      const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
-      const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
-      const auditText = read(auditFile).trim();
-      const audit = auditText ? auditText.split('\n').map((l) => JSON.parse(l)) : [];
-      resolve({ code, out: read(outFile), err: read(errFile), audit });
-    });
+    execFile(
+      'node',
+      argv,
+      { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: opts.nodeOptions || '' } },
+      (err: any, _stdout, stderr) => {
+        const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+        const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
+        const auditText = read(auditFile).trim();
+        const audit = auditText ? auditText.split('\n').map((l) => JSON.parse(l)) : [];
+        resolve({ code, out: read(outFile), err: read(errFile), processErr: stderr, audit });
+      },
+    );
   });
 }
 
@@ -197,5 +204,28 @@ describe('shelly-capability-broker: secret injection + send (loopback server)', 
     expect(budget.calls).toBe(1);
     // no auth header was sent for an un-authed call
     expect(lastAuthHeader).toBeUndefined();
+  });
+
+  it('redacts a synchronous request error and audits the failed attempt', async () => {
+    const secret = 'gsk_SECRETSECRETSECRETSECRET';
+    const preload = path.join(dir, 'throw-request.js');
+    fs.writeFileSync(
+      preload,
+      `require('http').request = () => { throw new Error('request failed with ${secret}'); };\n`,
+    );
+
+    const r = await runBroker(dir, {
+      url: `http://127.0.0.1:${port}/v1/chat/completions`,
+      body: '{}',
+      nodeOptions: `--require=${preload}`,
+    });
+
+    expect(r.code).toBe(23);
+    expect(r.err).toContain('request failed with <redacted>');
+    expect(r.processErr).toBe('');
+    expect(r.err + r.processErr + JSON.stringify(r.audit)).not.toContain(secret);
+    expect(r.audit).toHaveLength(1);
+    expect(r.audit[0]).toMatchObject({ decision: 'allow', status: 0, ok: false });
+    expect(r.audit[0].reason).toBe('request failed with <redacted>');
   });
 });
