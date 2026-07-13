@@ -12,6 +12,11 @@
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <!-- L1 boot-autostart (BOOT-AUTOSTART floor, flag-OFF): re-arm scheduled agents
+       after reboot; request Doze exemption so unattended fires survive. Dormant
+       until the BootCompletedReceiver native enable flag is flipped. -->
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
   <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
@@ -62,6 +67,27 @@
       <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shelly_file_provider_paths"/>
     </provider>
     <receiver android:name="expo.modules.terminalemulator.AgentAlarmReceiver" android:exported="false"/>
+    <!-- L1 boot-autostart: re-arms scheduled-agent alarms after a reboot (they are
+         cleared by the OS). exported=true is required to receive the system
+         BOOT_COMPLETED broadcast. Dormant until the native enable flag is set.
+         No android:permission attribute here: that attribute would require the
+         SENDER (system_server) to hold the named permission, which is not
+         guaranteed and observably breaks delivery for other apps' receivers on
+         this device (dumpsys activity broadcasts history showed "Permission
+         Denial ... requires android.permission.RECEIVE_BOOT_COMPLETED due to
+         sender null (uid 1000)" for several third-party receivers using this
+         same mistaken pattern). The <uses-permission> at the manifest root is
+         what actually grants THIS APP the ability to receive the broadcast;
+         that alone is correct and sufficient. -->
+    <receiver android:name="expo.modules.terminalemulator.BootCompletedReceiver" android:exported="true">
+      <intent-filter>
+        <!-- BOOT_COMPLETED only: it is an AOSP protected broadcast (system-sender
+             only). QUICKBOOT_POWERON is NOT protected (a normal-permission holder
+             could spoof it), and LOCKED_BOOT_COMPLETED requires directBootAware
+             (which would break MODE_PRIVATE prefs pre-unlock) — both omitted. -->
+        <action android:name="android.intent.action.BOOT_COMPLETED"/>
+      </intent-filter>
+    </receiver>
     <!-- NOTIFY-001 Increment 0 (dormant, plumbing-only — see
          ShellyNotificationListener.notificationListenerEnabled, default false).
          This hand-written copy is for readability only; the copy that actually
