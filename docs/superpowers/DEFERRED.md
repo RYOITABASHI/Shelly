@@ -133,7 +133,7 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 
 **Follow-up（non-blocking）**:
 - ~~orchestration ステップ内の昇格未配線~~ → ✅ **解消（commit 8fb8926, N3）**。`runLadderAttempts` を抽出し各ステップをラダーに通すので、収集ステップが Gemini(grounded)→Codex に昇格する。
-- **N1 スケジュール .sh のクラウド解錠が前景のみ**: consent ありの自律 Web は前景(@agent/RUN NOW)では Gemini 優先に乗るが、**スケジュール発火が読む on-disk .sh は materialize 時の consent を焼き込む**ため、(a) 設定トグル後に全自律エージェントの再 materialize が要る、(b) スケジュール .sh 内の Gemini→Codex 連鎖が無い（429 で当該回 error→次スケジュール再試行）。前景は完全動作。スケジュール完全無人化の最後の一手として、トグル時の再 materialize ＋ in-script クラウド fallback を P1 follow-up に。
+- ✅ **N1 スケジュール .sh のクラウド解錠が前景のみ — 解決済み（2026-07-14 確認）**: 当時 (a)(b) を P1 follow-up として記録していたが、現在のコードで両方とも既に実装済みと判明。(a) `lib/agent-env-sync.ts` の `flushAutonomousCloudEnvSync`（`SettingsDropdown.tsx`のconsentトグルから呼ばれる）が`.env`書き込み成功後に`rematerializeAutonomousAgents`を叩き、全自律エージェントの.shを即再生成。(b) `lib/agent-executor.ts` の `generateRunScript` 内 `bakeWebCodexLadder` が、consent済みweb-mandatory自律エージェントの場合デフォルトでON（foregroundのTSラダーが叩く時だけ`suppressWebCodexBake`で明示的に抑制）——つまりスケジュール発火が読む on-disk .sh には常にGemini→Codexのin-shellフォールバックが焼き込まれる。North Starのコード側解錠は全項目完了、残るは実機end-to-end検証のみ。
 - ~~デフォルト Gemini モデルの更新~~ → ✅ **解消（commit 41ebb39）**。実機検証で `gemini-2.0-flash` 無料枠 = `limit:0`、`gemini-2.5-flash` = 無料枠あり + grounding 動作（groundingMetadata + 実在出典URL + webSearchQueries 取得）を確認。デフォルトを 2.5-flash に更新。これで web routing が無料枠ユーザーで end-to-end 成立。
 
 **戻す条件**: 上記 1〜3 を build 203428c 以降で実機 PASS → ✅ + 確認 build 番号を付ける。
