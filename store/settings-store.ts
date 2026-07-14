@@ -320,6 +320,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resetSettings: () => {
     set({ settings: DEFAULT_SETTINGS });
     AsyncStorage.setItem('shelly_settings', JSON.stringify(DEFAULT_SETTINGS)).catch(() => {});
+    const cmd = `mkdir -p ~/.shelly/agents && (grep -Ev '^SHELLY_WEBHOOK_HOST_ALLOWLIST=' ~/.shelly/agents/.env 2>/dev/null || true; printf '%s\\n' ${shQuote(`SHELLY_WEBHOOK_HOST_ALLOWLIST=${dotenvValue('')}`)}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
+    useAgentStore.getState().setPendingEnvSync(cmd);
   },
 
   setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),
