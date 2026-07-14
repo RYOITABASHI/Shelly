@@ -630,6 +630,7 @@ const ja: Record<string, string> = {
   'voice.speaking': '話しています...',
   'voice.auto_on': '連続対話 ON',
   'voice.auto_off': '連続対話 OFF',
+  'voice.agent_ready_to_confirm': 'エージェント「{{name}}」の準備ができました。確定するにはConfirmをタップしてください。',
   // Terminal Appearance
   'settings.terminal_appearance': 'ターミナル外観',
   'settings.terminal_theme': 'テーマ',

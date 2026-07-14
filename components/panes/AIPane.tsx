@@ -515,6 +515,8 @@ export default function AIPane() {
       <VoiceChat
         visible={voiceChatVisible}
         onClose={() => setVoiceChatVisible(false)}
+        dispatch={dispatch}
+        paneId={paneId}
       />
     </View>
   );

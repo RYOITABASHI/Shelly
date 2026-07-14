@@ -617,6 +617,7 @@ const en: Record<string, string> = {
   'voice.speaking': 'Speaking...',
   'voice.auto_on': 'Auto-continue ON',
   'voice.auto_off': 'Auto-continue OFF',
+  'voice.agent_ready_to_confirm': 'Agent "{{name}}" is ready. Tap Confirm to create it.',
   // Terminal Appearance
   'settings.terminal_appearance': 'Terminal Appearance',
   'settings.terminal_theme': 'Theme',

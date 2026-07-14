@@ -9,11 +9,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useAIPaneStore } from '@/store/ai-pane-store';
 import { speakText, stopSpeaking } from '@/lib/tts';
 import { groqTranscribe } from '@/lib/groq';
 import { parseInput } from '@/lib/input-router';
 import { summarizeForSpeech } from '@/lib/voice-chain-helpers';
 import { releaseRecorder } from '@/hooks/use-speech-input';
+import { t } from '@/lib/i18n';
 
 export type VoiceChatStatus =
   | 'idle'
@@ -45,7 +47,17 @@ export function setVoiceChainBridge(runner: (cmd: string) => Promise<{ stdout?: 
   _runRawCommand = runner;
 }
 
-export function useVoiceChat() {
+export type UseVoiceChatOptions = {
+  /** When provided together with `paneId`, voice input is routed through the
+   *  AI Pane's own `dispatch()` (the `@agent <NL>` conversational
+   *  agent-creation flow) instead of the legacy `parseInput()`-based
+   *  command/chat split. Optional — omitting both keeps existing behavior
+   *  (ShellLayout / TerminalPane call sites) unchanged. */
+  dispatch?: (text: string) => Promise<void>;
+  paneId?: string;
+};
+
+export function useVoiceChat(options?: UseVoiceChatOptions) {
   const [state, setState] = useState<VoiceChatState>({
     status: 'idle',
     isActive: false,
@@ -57,6 +69,12 @@ export function useVoiceChat() {
   const recordingRef = useRef<any>(null);
   const conversationRef = useRef<VoiceChatMessage[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  // Safety invariant (shared across the codebase): voice must never
+  // auto-confirm/register an agent. When dispatch() resolves into an
+  // agent-creation confirm card (agentCardState==='pending'), this flag is
+  // set so VoiceChat.tsx's auto-continue effect skips resuming the mic —
+  // the user must manually tap Confirm in the pane. Reset on activate().
+  const awaitingManualConfirmRef = useRef(false);
 
   const startListening = useCallback(async () => {
     try {
@@ -162,7 +180,56 @@ export function useVoiceChat() {
 
       setState((s) => ({ ...s, transcript }));
 
-      // ── Step 2: Route through parseInput() ─────────────────────────────────
+      // ── Step 2a: AI-Pane conversational agent-creation bridge ──────────────
+      // When invoked from an AI Pane (options.dispatch + options.paneId both
+      // present), route the transcript through the SAME dispatch() the typed
+      // input bar uses, so `@agent <NL>` parsing, slot-fill follow-up
+      // questions, and the final confirm card all work identically whether
+      // the user typed or spoke. This branch does not touch parseInput() at
+      // all — errors propagate to the existing outer catch/finally below.
+      if (options?.dispatch && options?.paneId) {
+        const { dispatch, paneId } = options;
+
+        setState((s) => ({ ...s, status: 'thinking' }));
+        await dispatch(transcript);
+
+        const conv = useAIPaneStore.getState().getOrCreate(paneId);
+        const lastMsg = conv.messages[conv.messages.length - 1];
+
+        if (lastMsg) {
+          const isAgentCardPending =
+            lastMsg.agentCardState === 'pending' && !!lastMsg.agentDraft;
+
+          // agentDraft/pending messages are written with content:'' (the
+          // confirm card renders instead of text) — synthesize a spoken
+          // announcement in that case so the hands-free loop isn't silent.
+          let spoken = lastMsg.content;
+          if (isAgentCardPending && !spoken) {
+            spoken = t('voice.agent_ready_to_confirm', { name: lastMsg.agentDraft?.name ?? '' });
+          }
+
+          if (spoken) {
+            setState((s) => ({ ...s, response: spoken, status: 'speaking' }));
+            await speakText(spoken);
+          }
+
+          if (isAgentCardPending) {
+            // Terminal state for this voice turn: do NOT let the
+            // auto-continue effect resume listening, regardless of the
+            // toggle — registering the agent requires a manual tap.
+            awaitingManualConfirmRef.current = true;
+          }
+          // Otherwise (pendingSlotFill follow-up question, or a plain chat
+          // reply) — no special-casing needed. autoContinue's existing
+          // effect resumes listening on its own once status is back to
+          // 'idle' and state.response is set, exactly like the legacy path.
+        }
+
+        setState((s) => ({ ...s, status: 'idle' }));
+        return;
+      }
+
+      // ── Step 2b: Route through parseInput() (legacy / non-pane callers) ────
       const parsed = parseInput(transcript);
 
       if ((parsed.layer === 'command') && _runRawCommand) {
@@ -269,6 +336,7 @@ export function useVoiceChat() {
 
   const activate = useCallback(() => {
     conversationRef.current = [];
+    awaitingManualConfirmRef.current = false;
     setState({
       status: 'idle',
       isActive: true,
@@ -338,5 +406,9 @@ export function useVoiceChat() {
     activate,
     deactivate,
     toggleAutoContinue,
+    // Stable ref (not reactive state) — VoiceChat.tsx's auto-continue effect
+    // reads awaitingManualConfirmRef.current to skip resuming the mic after
+    // an agent-creation confirm card appears. See the branch above.
+    awaitingManualConfirmRef,
   };
 }

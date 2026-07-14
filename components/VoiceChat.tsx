@@ -31,6 +31,12 @@ import { withAlpha } from '@/lib/theme-utils';
 type Props = {
   visible: boolean;
   onClose: () => void;
+  /** When rendered from an AI Pane, pass its dispatch()/paneId so voice
+   *  input drives the same `@agent <NL>` conversational agent-creation flow
+   *  (slot-fill Q&A, confirm card) as typed input. Omit for call sites with
+   *  no pane context (ShellLayout, TerminalPane) — behavior is unchanged. */
+  dispatch?: (text: string) => Promise<void>;
+  paneId?: string;
 };
 
 const STATUS_LABELS: Record<VoiceChatStatus, string> = {
@@ -51,7 +57,7 @@ const STATUS_ICONS: Record<VoiceChatStatus, keyof typeof MaterialIcons.glyphMap>
   speaking: 'volume-up',
 };
 
-export function VoiceChat({ visible, onClose }: Props) {
+export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const {
@@ -61,7 +67,8 @@ export function VoiceChat({ visible, onClose }: Props) {
     activate,
     deactivate,
     toggleAutoContinue,
-  } = useVoiceChat();
+    awaitingManualConfirmRef,
+  } = useVoiceChat({ dispatch, paneId });
 
   // Activate on open, deactivate on close
   useEffect(() => {
@@ -72,16 +79,25 @@ export function VoiceChat({ visible, onClose }: Props) {
     }
   }, [visible, activate, deactivate]);
 
-  // Auto-start listening when idle and active with autoContinue
+  // Auto-start listening when idle and active with autoContinue.
+  // Skipped when awaitingManualConfirmRef is set — an agent-creation confirm
+  // card just appeared in the pane, and voice must never auto-confirm it
+  // (registering the agent requires an explicit manual tap).
   useEffect(() => {
-    if (state.isActive && state.status === 'idle' && state.autoContinue && state.response) {
+    if (
+      state.isActive &&
+      state.status === 'idle' &&
+      state.autoContinue &&
+      state.response &&
+      !awaitingManualConfirmRef.current
+    ) {
       // Small delay after TTS finishes before next listen
       const timer = setTimeout(() => {
         startListening();
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [state.status, state.isActive, state.autoContinue, state.response, startListening]);
+  }, [state.status, state.isActive, state.autoContinue, state.response, startListening, awaitingManualConfirmRef]);
 
   // Pulse animation for recording
   const pulseScale = useSharedValue(1);
