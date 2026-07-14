@@ -4,15 +4,13 @@
 
 ## ⚠️ セッション開始時に必ず読むもの
 
-**[docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md](./docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md)** — 🔴 最新の再開点。ブランチ `claude/work-handoff-2qb1xd`（build 1608、main未マージ）。on-device 自律推論の残ブロッカー＝local-LLM autostart の3真因（A lock-leak / B model-not-installed / C launcher非互換、全て `lib/agent-executor.ts` `ensure_local_llm_server`）と次タスク T1–T3、③ ロードマップ、不変条件を内蔵。**現環境からの再開はまずこれ。**
-
-**[docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md](./docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md)** — 🟢 次の実装タスク（モバイル連携セッションで）。Scouter ウィジェットから A=入力ショートカット + B=登録済みエージェントを1タップ RUN（カード無し＝v7.0.0 の `ACTION_RUN_AGENT` foreground-service 発火を widget タップで再利用）。着手条件（コアループ）は v7.0.0 で達成済み。HEAD の file:line・設計・ガード・実機検証を内蔵。
-
-**[docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md](./docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md)** — 🎯 自律秘書フル実装 2 日スプリント（Codex 用）。`/goal` チャンクを順に貼って「実装→プッシュ前エージェントレビュー必須→ビルド→実機テスト→次の /goal」を回す。Phase 0 残り（G1）→ 記憶層 → スキル → ルーター → inbound → orchestration。踏んだ地雷（agent-store no-persist / `$HOME` vs getHomePath / DownloadManager 公開dir / Knox bridge）と build/install/verify 手順を内蔵。**現環境からの再開はまずこれ。**
-
 **[docs/superpowers/DEFERRED.md](./docs/superpowers/DEFERRED.md)** — 後回しリストの唯一の真実の情報源。
 
-**[docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md](./docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md)** — 自律秘書（Autonomous Gate / B2）の最新引き継ぎ。別環境（PC / スマホ Codex）からの再開はまずこれを読む。on-device で launch/gate/fail-closed 立証済み（build 1539）、次は Phase B RN ブリッジ。
+**2026-07-14: 以下の旧セッション開始時必読ドキュメントは、独立調査（Codex）により全て資料的価値のみと判明したため「必読」から降格した。詳細は各ファイル自体を参照（内容は残置、再開ポインタとしては使わない）:**
+- [2026-06-23-local-llm-autostart-handoff.md](./docs/superpowers/specs/2026-06-23-local-llm-autostart-handoff.md) — T1-T3（local-LLM autostart）は `b1dfb133c` 経由で、③エスカレーションラダーは `lib/agent-escalation-ladder.ts`（`d92018aef`）経由で、両方とも既にmain実装済み。旧ブランチ `claude/work-handoff-2qb1xd` は374箇所コンフリクトの陳腐化、rebase価値なしと判定（破棄推奨）。
+- [2026-06-27-widget-agent-launch-handoff.md](./docs/superpowers/specs/2026-06-27-widget-agent-launch-handoff.md) — Task B（ウィジェットから登録済みエージェント1タップRUN）は `794cbeb7f`→PR #122 経由で main 実装済み。Task A（入力ショートカット）のみ未実装のままP2継続。
+- [2026-06-20-secretary-completion-codex-sprint-handoff.md](./docs/superpowers/specs/2026-06-20-secretary-completion-codex-sprint-handoff.md) — 全チャンク（G1-G6）実装済み・main着地済み（`4ddf45029`/`5d6eb3bb6`/`b8f146b00`/`e5a2856ec`/`db04cc887`/`12873f632`ほか）。Telegram実機検証のみ未了、DEFERRED.mdへ個別追跡。
+- [2026-06-17-B2-on-device-verified-HANDOFF.md](./docs/superpowers/specs/2026-06-17-B2-on-device-verified-HANDOFF.md) — 「次は Phase B RN ブリッジ」は `143a65ce0`/`f7230f6ee` 経由で実装・セキュリティ強化済み。`~`パス展開の1点のみ低優先度の残課題としてDEFERRED.mdへ。
 
 **[docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md](./docs/superpowers/specs/2026-05-14-release-cli-surface-handoff.md)** — 2026-05-14 時点の release surface 引き継ぎ。v5.3.1 は Claude Code CLI / Codex CLI を正式対応、Gemini CLI を Experimental、AI Pane / background を明示的 API provider 経路に整理済み。
 
