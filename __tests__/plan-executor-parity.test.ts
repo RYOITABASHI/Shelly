@@ -137,4 +137,25 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain("tainted: process.env.SHELLY_CAP_TAINTED === '1'");
     expect(executorSrc).toContain("if (opts.tainted) args.push('--tainted', '1');");
   });
+
+  it('wires app-act into the PlanSpec executor path (Phase 4), not just the legacy .sh path', () => {
+    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
+    // Native gate: AgentRuntime.kt must allow 'app-act' through
+    // PLAN_EXECUTOR_ACTIONS or every PlanSpec-routed app-act run is refused
+    // before the executor ever launches.
+    expect(agentRuntime).toContain('PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "__suppressed__")');
+    // Executor: dispatchActionTrusted must accept 'app-act' and resolve+redact
+    // its params (mirrors the legacy .sh's resolve_app_act_params) before they
+    // reach the approval-request preview shown to the human.
+    expect(executorSrc).toContain("actionType !== 'app-act'");
+    expect(executorSrc).toContain('function resolveAppActParams(params, preview)');
+    expect(executorSrc).toContain("v.split('{{result}}').join(preview)");
+    expect(executorSrc).toContain('appActRecipeId: extra.appActRecipeId');
+    expect(executorSrc).toContain('appActParamsResolved: extra.appActParamsResolved');
+    // unattendedPreflightFailure only allowlists draft/notify for unattended
+    // runs, so app-act (not added there) is refused-when-unattended by
+    // construction — assert that allowlist stayed narrow rather than widening
+    // to accidentally include app-act.
+    expect(executorSrc).toMatch(/if \(actionType !== 'draft' && actionType !== 'notify'\) \{/);
+  });
 });

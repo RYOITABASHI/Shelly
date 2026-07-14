@@ -1,10 +1,12 @@
 jest.mock('@/lib/home-path', () => ({ getHomePath: () => '/home/shelly-test' }));
 
-// Phase 2 of the app-act rollout: schema + secret-scan coverage ONLY.
-// No dispatch/execution logic exists for 'app-act' yet — see
-// lib/agent-plan-spec.ts toPlanAction's default branch and
-// scripts/shelly-plan-executor.js's `action.type === 'unsupported'` refusal,
-// both asserted below as the inertness guarantee.
+// Phase 2 of the app-act rollout: schema + secret-scan coverage. Phase 4
+// (see __tests__/agent-executor-app-act-action.test.ts) added the real
+// dispatch path (lib/agent-executor.ts's app-act) case, agent-plan-spec.ts's
+// toPlanAction 'app-act' case, scripts/shelly-plan-executor.js's app-act
+// branch) — the former "PlanSpec builder refuses app-act as unsupported"
+// inertness assertion below was updated accordingly; it now asserts the
+// opposite (a real, non-'unsupported' PlanSpec action).
 
 import { generateRunScript } from '@/lib/agent-executor';
 import { resolveAgentRoute } from '@/lib/agent-tool-router';
@@ -86,15 +88,20 @@ describe('app-act action schema (Phase 2 — schema only, no dispatch)', () => {
     expect(script).toContain('Produce exactly the content needed for the requested app action.');
   });
 
-  it('is inert: PlanSpec builder refuses app-act as unsupported (fail closed, not a silent draft fallback)', () => {
+  // Phase 4: app-act is now a real PlanSpec action (see
+  // __tests__/agent-executor-app-act-action.test.ts for full dispatch
+  // coverage) — this supersedes the old "refuses as unsupported" inertness
+  // guarantee from Phase 2.
+  it('is real: PlanSpec builder threads app-act through to a genuine action, not the unsupported fallback', () => {
     const action: AgentAction = {
       type: 'app-act',
       appActRecipeId: 'x.post',
       appActParams: { text: '{{result}}' },
     };
     const spec = buildAgentPlanSpec(agent(action));
-    expect(spec.action.type).toBe('unsupported');
-    expect((spec.action as { unsupportedReason?: string }).unsupportedReason).toContain('app-act');
+    expect(spec.action.type).toBe('app-act');
+    expect((spec.action as { appActRecipeId?: string }).appActRecipeId).toBe('x.post');
+    expect((spec.action as { appActParams?: Record<string, string> }).appActParams).toEqual({ text: '{{result}}' });
   });
 });
 
