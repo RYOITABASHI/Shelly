@@ -40,6 +40,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
+import { fireReviewedAgentAppAct, parseAppActParamsResolved } from '@/lib/agent-app-act-review';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -106,7 +107,7 @@ type AgentActionApprovalRequest = {
   agentId: string;
   agentName?: string | null;
   toolLabel?: string | null;
-  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
   preview?: string | null;
   destinationHost?: string | null;
   command?: string | null;
@@ -123,8 +124,25 @@ type AgentActionApprovalRequest = {
   dmPairingId?: string | null;
   dmPairingLabel?: string | null;
   dmReplyText?: string | null;
+  appActRecipeId?: string | null;
+  appActParamsResolved?: string | null;
   actionNonce?: string | null;
 };
+
+/** Renders the FULLY resolved (post-{{result}}-substitution, post-redaction)
+ *  app-act params for the Review card -- same bar as intentShareText. Prefers
+ *  a `text` param (the shape every bundled recipe's primary content field
+ *  uses, e.g. x.post) so the common case shows just the post body; falls back
+ *  to a compact "key: value" listing for a multi-param recipe (e.g.
+ *  line.send-message's contact + message) so nothing resolved is hidden from
+ *  the user before they can Accept. */
+function appActParamsPreviewText(paramsResolved: string | null | undefined): string {
+  const params = parseAppActParamsResolved(paramsResolved);
+  const keys = Object.keys(params);
+  if (keys.length === 0) return '';
+  if (typeof params.text === 'string') return params.text;
+  return keys.map((key) => `${key}: ${params[key]}`).join('\n');
+}
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -181,6 +199,29 @@ export default function RootLayout() {
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
         Alert.alert(t('agent_action_confirm_intent_failed'));
+        return;
+      }
+    }
+    if (decision === 'accept' && request.actionType === 'app-act') {
+      if (!TerminalEmulator.fireAgentAppAct) {
+        Alert.alert(t('agent_action_confirm_not_ready'));
+        setAgentActionResolving(false);
+        return;
+      }
+      try {
+        await fireReviewedAgentAppAct(request, TerminalEmulator.fireAgentAppAct);
+      } catch (e) {
+        // Mirrors fireAgentIntent's catch above: a native AppActExecutor
+        // failure message can echo on-screen UI text (diagnoseCurrentScreen)
+        // -- log only the error class/type, never e.message/e itself.
+        const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
+        logError('AgentActionApproval', `fireAgentAppAct failed: ${errorKind}`);
+        // Fail closed: tell the waiting executor "declined" rather than
+        // leaving it to time out after a failed/partial post attempt.
+        await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
+        setPendingAgentActionApproval(null);
+        setAgentActionResolving(false);
+        Alert.alert(t('agent_action_confirm_appact_failed'));
         return;
       }
     }
@@ -789,7 +830,8 @@ export default function RootLayout() {
         actionType !== 'webhook' &&
         actionType !== 'cli' &&
         actionType !== 'intent' &&
-        actionType !== 'dm-reply'
+        actionType !== 'dm-reply' &&
+        actionType !== 'app-act'
       ) {
         return null;
       }
@@ -821,6 +863,8 @@ export default function RootLayout() {
         dmPairingId: str('dmPairingId') || null,
         dmPairingLabel: str('dmPairingLabel') || null,
         dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
+        appActRecipeId: str('appActRecipeId') || null,
+        appActParamsResolved: typeof value.appActParamsResolved === 'string' ? value.appActParamsResolved : null,
         // Only ever populated by the native readAgentActionApprovalRequest
         // round trip (freshly minted per read). The raw-JSON fallback path
         // and the notify-only poll loop below never set it, and must not --
@@ -850,6 +894,8 @@ export default function RootLayout() {
       dmPairingId: request.dmPairingId,
       dmPairingLabel: request.dmPairingLabel,
       dmReplyText: request.dmReplyText,
+      appActRecipeId: request.appActRecipeId,
+      appActParamsResolved: request.appActParamsResolved,
     });
 
     const getActionApprovalRequestDirUri = async () => {
@@ -1538,6 +1584,8 @@ export default function RootLayout() {
                   ? t('agent_action_confirm_title_intent')
                   : pendingAgentActionApproval.actionType === 'dm-reply'
                     ? t('agent_action_confirm_title_dmreply')
+                  : pendingAgentActionApproval.actionType === 'app-act'
+                    ? t('agent_action_confirm_title_appact')
                   : t('agent_action_confirm_title')}
               </Text>
               <Text style={actionApprovalStyles.body}>
@@ -1545,6 +1593,8 @@ export default function RootLayout() {
                   ? t('agent_action_confirm_body_intent')
                   : pendingAgentActionApproval.actionType === 'dm-reply'
                     ? t('agent_action_confirm_body_dmreply')
+                  : pendingAgentActionApproval.actionType === 'app-act'
+                    ? t('agent_action_confirm_body_appact')
                   : t('agent_action_confirm_body')}
               </Text>
               {pendingAgentActionApproval.actionType === 'intent' ? (
@@ -1584,6 +1634,23 @@ export default function RootLayout() {
                   <ScrollView style={actionApprovalStyles.commandBox}>
                     <Text selectable style={actionApprovalStyles.commandText}>
                       {pendingAgentActionApproval.dmReplyText || ''}
+                    </Text>
+                  </ScrollView>
+                </>
+              ) : pendingAgentActionApproval.actionType === 'app-act' ? (
+                <>
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_appact_recipe')}
+                  </Text>
+                  <Text style={actionApprovalStyles.meta}>
+                    {pendingAgentActionApproval.appActRecipeId || ''}
+                  </Text>
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_appact_preview')}
+                  </Text>
+                  <ScrollView style={actionApprovalStyles.commandBox}>
+                    <Text selectable style={actionApprovalStyles.commandText}>
+                      {appActParamsPreviewText(pendingAgentActionApproval.appActParamsResolved)}
                     </Text>
                   </ScrollView>
                 </>

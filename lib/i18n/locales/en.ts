@@ -1711,6 +1711,11 @@ const en: Record<string, string> = {
   'agent_action_confirm_intent_target': 'Target',
   'agent_action_confirm_intent_share_text': 'Share text',
   'agent_action_confirm_intent_failed': 'Failed to fire the app action. The request was declined.',
+  'agent_action_confirm_title_appact': 'Confirm app action',
+  'agent_action_confirm_body_appact': 'This autonomous agent is requesting to run an app action (e.g. post to another app). Review the exact content before allowing it.',
+  'agent_action_confirm_appact_recipe': 'App action',
+  'agent_action_confirm_appact_preview': 'Content preview',
+  'agent_action_confirm_appact_failed': 'Failed to run the app action. The request was declined.',
 };
 
 export default en;

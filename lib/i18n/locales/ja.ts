@@ -1710,6 +1710,11 @@ const ja: Record<string, string> = {
   'agent_action_confirm_intent_target': '対象',
   'agent_action_confirm_intent_share_text': '共有テキスト',
   'agent_action_confirm_intent_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
+  'agent_action_confirm_title_appact': 'アプリ操作の確認',
+  'agent_action_confirm_body_appact': '自律エージェントがアプリ操作（例: 他アプリへの投稿）の実行を要求しています。許可する前に投稿内容プレビューを確認してください。',
+  'agent_action_confirm_appact_recipe': 'アプリ操作',
+  'agent_action_confirm_appact_preview': '投稿内容プレビュー',
+  'agent_action_confirm_appact_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
 };
 
 export default ja;
