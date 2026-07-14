@@ -407,15 +407,16 @@ class ScouterWidgetPromptActivity : Activity() {
             else -> return false
         }
         val runId = intent.getStringExtra(EXTRA_AGENT_ACTION_RUN_ID)?.trim().orEmpty()
+        val actionNonce = intent.getStringExtra(EXTRA_AGENT_ACTION_NONCE)
         val expectedRequestSha256 = intent.getStringExtra(EXTRA_AGENT_ACTION_REQUEST_SHA256)
-        if (runId.isBlank()) {
+        if (runId.isBlank() || actionNonce.isNullOrBlank() || expectedRequestSha256.isNullOrBlank()) {
             Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
             finishQuietly()
             return true
         }
 
         runCatching {
-            AgentActionApprovalBridge.writeHumanReply(this, runId, decision, expectedRequestSha256)
+            AgentActionApprovalBridge.writeHumanReply(this, runId, decision, expectedRequestSha256, actionNonce)
             AgentActionApprovalBridge.clearRequest(this, runId)
         }.fold(onSuccess = {
             getSystemService(NotificationManager::class.java)
@@ -728,6 +729,7 @@ class ScouterWidgetPromptActivity : Activity() {
         const val EXTRA_AGENT_ESCALATION_ACTION_NONCE = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_ACTION_NONCE"
         const val EXTRA_AGENT_ESCALATION_REQUEST_SHA256 = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_REQUEST_SHA256"
         const val EXTRA_AGENT_ACTION_RUN_ID = "expo.modules.terminalemulator.scouter.AGENT_ACTION_RUN_ID"
+        const val EXTRA_AGENT_ACTION_NONCE = "expo.modules.terminalemulator.scouter.AGENT_ACTION_NONCE"
         const val EXTRA_AGENT_ACTION_REQUEST_SHA256 = "expo.modules.terminalemulator.scouter.AGENT_ACTION_REQUEST_SHA256"
         const val EXTRA_CHOICE_INDEX = "expo.modules.terminalemulator.scouter.CHOICE_INDEX"
         const val EXTRA_CHOICE_LABEL = "expo.modules.terminalemulator.scouter.CHOICE_LABEL"

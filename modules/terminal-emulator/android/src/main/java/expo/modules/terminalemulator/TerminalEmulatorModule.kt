@@ -1393,7 +1393,13 @@ class TerminalEmulatorModule : Module() {
                 ?: throw IllegalStateException("React context unavailable")
             val parsed = AgentActionApprovalBridge.fromRequestFile(context, runId)
                 ?: throw IllegalArgumentException("invalid agent action approval request")
-            AgentActionApprovalBridge.toMap(parsed)
+            // Mint a fresh single-use nonce the moment the request is disclosed
+            // for in-app review, mirroring the notification path's registration
+            // in NotificationDispatcher.notifyAgentActionApprovalNeeded. Both
+            // channels feed the same pendingActionNonces ledger, so whichever
+            // decision the human actually makes consumes it exactly once.
+            val actionNonce = AgentActionApprovalBridge.registerActionNonce(runId)
+            AgentActionApprovalBridge.toMap(parsed) + mapOf("actionNonce" to actionNonce)
         }
 
         AsyncFunction("notifyAgentActionApprovalNeeded") { request: Map<String, Any?> ->
@@ -1407,10 +1413,10 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
-        AsyncFunction("resolveAgentActionApproval") { runId: String, decision: String, expectedRequestSha256: String? ->
+        AsyncFunction("resolveAgentActionApproval") { runId: String, decision: String, expectedRequestSha256: String, actionNonce: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
-            AgentActionApprovalBridge.writeHumanReply(context, runId, decision, expectedRequestSha256)
+            AgentActionApprovalBridge.writeHumanReply(context, runId, decision, expectedRequestSha256, actionNonce)
             AgentActionApprovalBridge.clearRequest(context, runId)
             context.getSystemService(NotificationManager::class.java)
                 ?.cancel(AgentActionApprovalBridge.notificationId(runId))

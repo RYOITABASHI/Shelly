@@ -2,11 +2,14 @@ package expo.modules.terminalemulator.scouter
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import expo.modules.terminalemulator.HomeInitializer
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 data class AgentActionApprovalRequest(
     val runId: String,
@@ -43,6 +46,17 @@ data class AgentActionApprovalRequest(
 object AgentActionApprovalBridge {
     private val unsafeFilePart = Regex("[^A-Za-z0-9_.=-]")
 
+    // Single-use, in-memory replay guard (mirrors AgentEscalationBridge's
+    // pendingActionNonces exactly). Minted whenever the request is disclosed
+    // to the human for a decision -- either via the Allow/Deny notification
+    // PendingIntents (NotificationDispatcher.notifyAgentActionApprovalNeeded)
+    // or via the in-app review card (TerminalEmulatorModule.readAgentActionApprovalRequest)
+    // -- and consumed atomically by the first writeHumanReply call that
+    // presents it, so a captured/replayed Intent or reply call can't be
+    // reprocessed a second time.
+    private val pendingActionNonces = ConcurrentHashMap<String, String>()
+    private val secureRandom = SecureRandom()
+
     fun requestDir(context: Context): File =
         File(HomeInitializer.getHomeDir(context), ".shelly/agents/action-approvals").also { it.mkdirs() }
 
@@ -59,6 +73,16 @@ object AgentActionApprovalBridge {
 
     fun notificationId(runId: String): Int =
         NOTIFICATION_ID_PREFIX or (stableHash("agent-action:$runId") and NOTIFICATION_ID_MASK)
+
+    fun registerActionNonce(runId: String): String {
+        val nonce = ByteArray(24)
+        secureRandom.nextBytes(nonce)
+        val encoded = Base64.encodeToString(nonce, Base64.NO_WRAP)
+        pendingActionNonces[runId] = encoded
+        return encoded
+    }
+
+    fun hasActionNonce(runId: String): Boolean = pendingActionNonces.containsKey(runId)
 
     fun anchorFromMap(raw: Map<String, Any?>): String? =
         raw["runId"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
@@ -144,20 +168,28 @@ object AgentActionApprovalBridge {
         context: Context,
         runId: String,
         decision: String,
-        expectedRequestSha256: String?
+        expectedRequestSha256: String,
+        actionNonce: String
     ): File {
         require(decision == "accept" || decision == "decline") { "invalid action decision" }
+        val expectedNonce = pendingActionNonces[runId]
         val request = requireCanonicalChild(requestFile(context, runId), requestDir(context))
         require(request.isFile) { "action approval request is no longer pending" }
         val bytes = request.readBytes()
-        val requestSha256 = sha256Hex(bytes)
-        require(expectedRequestSha256 == null || (expectedRequestSha256.matches(HEX_SHA256_RE) && requestSha256 == expectedRequestSha256)) {
-            "action approval no longer matches the displayed request"
-        }
         val requestJson = JSONObject(bytes.toString(Charsets.UTF_8))
         require(requestJson.optString("runId") == runId) { "action approval anchor mismatch" }
+        val requestSha256 = sha256Hex(bytes)
+        require(expectedRequestSha256.matches(HEX_SHA256_RE) && requestSha256 == expectedRequestSha256) {
+            "action approval no longer matches the displayed request"
+        }
         val expiresAt = requestJson.optLong("expiresAt")
         require(expiresAt <= 0L || System.currentTimeMillis() <= expiresAt) { "action approval expired" }
+        require(!expectedNonce.isNullOrBlank() && expectedNonce == actionNonce) {
+            "action approval action is stale or unauthenticated"
+        }
+        require(pendingActionNonces.remove(runId, expectedNonce)) {
+            "action approval action is stale or unauthenticated"
+        }
 
         val reply = requireCanonicalChild(replyFile(context, runId), replyDir(context))
         reply.parentFile?.mkdirs()
