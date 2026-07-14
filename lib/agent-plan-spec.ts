@@ -23,7 +23,7 @@ export type PlanToolType =
   | 'groq'
   | 'unsupported';
 
-export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | '__suppressed__' | 'unsupported';
+export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | '__suppressed__' | 'unsupported';
 
 export interface AgentPlanSpecV1 {
   kind: typeof PLAN_SPEC_KIND;
@@ -52,6 +52,8 @@ export interface AgentPlanSpecV1 {
     intentShareText?: string;
     dmPairingId?: string;
     dmReplyText?: string;
+    appActRecipeId?: string;
+    appActParams?: Record<string, string>;
     safety?: ReturnType<typeof evaluateAgentActionCommand>;
     unsupportedReason?: string;
   };
@@ -232,6 +234,12 @@ function toPlanAction(
         type: 'dm-reply',
         dmPairingId: action?.dmPairingId,
         dmReplyText: action?.dmReplyText,
+      };
+    case 'app-act':
+      return {
+        type: 'app-act',
+        appActRecipeId: action?.appActRecipeId,
+        appActParams: action?.appActParams,
       };
     default:
       return {

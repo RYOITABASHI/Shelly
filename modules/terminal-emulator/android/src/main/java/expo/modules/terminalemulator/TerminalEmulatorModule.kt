@@ -1074,6 +1074,38 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // Agent action executor (Track D dependency, app-act phase): fires a
+        // registered app-action recipe on behalf of an approved agent action (see
+        // AgentAction.appActRecipeId/appActParams in store/types.ts). Never called
+        // with an un-reviewed request — the approval tier for "app-act" requires
+        // in-app Review before Accept (same shape as fireAgentIntent above),
+        // enforced upstream. Unlike the debugAppAct* wrappers above (fixed
+        // recipe/param names, reachable only from a dev-only debug button), this
+        // takes a recipe id + a generic param map so it can drive ANY registered
+        // recipe — the real dispatch path this phase wires up. Throws on any
+        // failure (service not connected, or the recipe run itself failing) so
+        // RN's accept handler can resolve the pending approval as 'decline'
+        // (fail-closed) instead of silently treating a failed post as accepted.
+        AsyncFunction("fireAgentAppAct") { recipeId: String, params: Map<String, String> ->
+            val trimmedRecipeId = recipeId.trim()
+            if (trimmedRecipeId.isEmpty()) {
+                throw IllegalArgumentException("app-act recipe id is empty")
+            }
+            val service = ShellyAccessibilityService.activeInstance
+                ?: throw IllegalStateException("Accessibility Service is not enabled/connected")
+            val result = AppActExecutor.execute(service, service.applicationContext, trimmedRecipeId, params)
+            // Never log param VALUES (agent/user free text — could be a post body,
+            // a contact name, message content) or the failure message (which may
+            // echo on-screen text via diagnoseCurrentScreen) — recipeId + success +
+            // param count only, matching fireAgentIntent's "mode + lengths only"
+            // convention above.
+            Log.i("TerminalEmulator", "fireAgentAppAct: recipeId=$trimmedRecipeId success=${result.success} paramCount=${params.size}")
+            if (!result.success) {
+                throw IllegalStateException("app-act recipe failed: $trimmedRecipeId")
+            }
+            null
+        }
+
         AsyncFunction("enqueueApkDownload") { url: String, downloadSubdir: String, fileName: String ->
             val context = requireReactContext()
             val target = validateDownloadPath(context, downloadSubdir, fileName)

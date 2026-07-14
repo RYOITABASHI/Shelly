@@ -89,6 +89,23 @@ function redact(text) {
   return out;
 }
 
+// app-act (Phase 4): resolves the literal "{{result}}" placeholder in every
+// value of `params` against `preview` (already redact()-ed by previewText),
+// then redact()s the resolved values a SECOND time as defense-in-depth --
+// mirrors lib/agent-executor.ts's resolve_app_act_params exactly. This is the
+// first agent action type that can publish content externally (a public X
+// post), so it gets an extra redaction pass beyond relying solely on preview
+// already being clean.
+function resolveAppActParams(params, preview) {
+  const out = {};
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    for (const [k, v] of Object.entries(params)) {
+      out[k] = typeof v === 'string' ? redact(v.split('{{result}}').join(preview)) : '';
+    }
+  }
+  return out;
+}
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -771,6 +788,8 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     dmPairingId: extra.dmPairingId || '',
     dmPairingLabel: extra.dmPairingLabel || '',
     dmReplyText: extra.dmReplyText || '',
+    appActRecipeId: extra.appActRecipeId || '',
+    appActParamsResolved: extra.appActParamsResolved || '',
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
@@ -1216,7 +1235,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   if (trustedNativeLowRiskAction(args, plan, actionType)) {
@@ -1352,6 +1371,31 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         dmPairingLabel: pairing.label,
         dmReplyText,
       });
+      return { status: 'success', preview };
+    }
+    if (actionType === 'app-act') {
+      // Phase 4: refused-when-unattended is already enforced upstream by
+      // unattendedPreflightFailure() (dispatchActionTrusted is never reached
+      // for an unattended app-act run) -- see that function and
+      // lib/agent-executor.ts's app-act) case for the matching rationale.
+      const recipeId = String(plan.action.appActRecipeId || '').trim();
+      if (!recipeId) {
+        const message = 'App-action is missing a recipe.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const resolvedParams = resolveAppActParams(plan.action.appActParams, preview);
+      if (Object.keys(resolvedParams).length === 0) {
+        const message = 'App-action is missing its recipe parameters.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        appActRecipeId: recipeId,
+        appActParamsResolved: JSON.stringify(resolvedParams),
+      });
+      // Side effect already happened in RN before the accept reply appeared —
+      // no broker/native call here, unlike webhook/cli (mirrors intent/dm-reply).
       return { status: 'success', preview };
     }
     requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);

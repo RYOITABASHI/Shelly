@@ -1140,6 +1140,44 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ## P1 — v0.1.1 で対応推奨
 
+### app-act (Phase 5) — Tier-B unattended dispatch がまだ実装されていない
+
+**発見**: 2026-07-14 Phase 4 (app-act delivery wiring) 実装中。
+
+**状態**: `store/types.ts` の `AgentActionType`/`AgentAction` doc comment は
+app-act を「Tier-B・unattended/autonomous 実行可能」（recipe+target+params が
+登録時に一度だけ fix され、intent/dm-reply のような実行時ターゲット解決が
+ない）と明記しているが、これは最終形の設計意図であり、Phase 4 時点の実装は
+まだそこに到達していない。`lib/agent-executor.ts` の `app-act)` ケースと
+`scripts/shelly-plan-executor.js`（および APK asset mirror）の app-act
+分岐は、`AGENT_AUTONOMOUS=1` / `SHELLY_RUN_UNATTENDED=1` を intent/dm-reply
+と同じ形で拒否している（`unattendedPreflightFailure` も draft/notify のみを
+許可、app-act は追加していない）。つまり app-act は現状 **attended Review
+必須**で、無人（スケジュール）実行では常に拒否される。
+
+**戻す条件**:
+1. `AGENT_AUTONOMOUS`/`SHELLY_RUN_UNATTENDED` ゲートを外し、Tier-B の
+   unattended 実行パスを設計する（native 側で recipe+params が登録時の
+   ものと変わっていないことを検証する仕組みを含む）。
+2. `write_action_approval_request`/`requestActionApproval` の
+   unattended 経路（`trustedNativeLowRiskAction` 相当）に app-act 用の
+   trust 判定を追加する。
+3. native 側 `fireAgentAppAct` を accept 前に呼ぶ現行の「RN が承認後に
+   native を叩く」不変条件を、unattended 経路でも同等に安全な形（例:
+   native 側で直接 AppActExecutor を呼ぶが、登録時に固定された
+   recipe/params のみを許可する）に置き換える。
+
+**Why not now**: このリリースは「app-act を初めて実際に発火させる」段階の
+配線タスクであり、スコープを配線のみに絞るために意図的に Tier-B unattended
+bypass を除外した。既存 (`store/types.ts`) の doc comment を読んだ将来の
+開発者が「intent/dm-reply と同じ拒否ゲートがあるのは矛盾/バグでは」と
+誤読しないよう、ここに正式に記録する。
+
+**優先度**: P1（Phase 5 で対応予定。attended Review のみでも app-act 自体は
+機能するため release blocker ではない）
+
+---
+
 ### MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない
 
 **発見**: 2026-07-13 Batch 11 の MEMORY-001 移植時に、source design の既知制限を再確認。
@@ -2136,6 +2174,7 @@ claude() {
 
 ## History
 
+- **2026-07-14（app-act Phase 4 配線）**: `lib/agent-executor.ts`/`scripts/shelly-plan-executor.js`（+APK asset mirror）/`lib/agent-plan-spec.ts` に app-act の実 dispatch を実装し、native `fireAgentAppAct`（`TerminalEmulatorModule.kt`、`AppActExecutor.execute` を汎用 recipe id + param map で包む）と `app/_layout.tsx` の Review カード（「投稿内容プレビュー」表示、accept 時 native 呼び出し→native throw で decline に fail-closed）を配線した。Tier-B unattended dispatch は意図的に今回のスコープ外とし、上記 P1 entry「app-act (Phase 5) — Tier-B unattended dispatch がまだ実装されていない」に記録。実装中に `NotificationDispatcher.kt` の system 通知 one-tap Allow ボタンが（cli/intent/dm-reply 同様に除外していなければ）native `fireAgentAppAct` を経由せず `AgentActionApprovalBridge.writeHumanReply` を直接叩いてしまい、投稿内容を人間がレビューする前に承認が成立してしまう既存構造上のリスクを発見・修正（app-act を review-required バケットに追加）。
 - **2026-07-14（PR #125 実機検証）**: approval-bridge nonce 硬化（PR #125）の実機検証中、`cli` action の単発実行で自動的にエスカレーションラダー（`runLadderAttempts`）が2回目の承認リクエストを人間に出す挙動を発見。ソース追跡で今夜のマージが原因ではない既存の意図された仕様と切り分け（`### 自律エージェント制御面レビュー` に追記）。nonce 硬化自体は2回の独立した承認サイクルで Allow が正しく通ったことで検証成立と判断。
 - **2026-07-13 (agent action system prompts)**: 実機の通知トリガー agent（`action: draft`）が、要求された短文そのものではなく解釈のメタ説明を生成した不具合を修正。`draft` / `notify` / `webhook` / `cli` / `intent` / `dm-reply` ごとの出力契約を `lib/agent-executor.ts` に追加し、local・Perplexity・Cerebras・Groq・Gemini（native `systemInstruction`）・A/B article eval の全 JSON request に配線した。明示された長さ・形式・トーンを常に優先し、未指定時だけ直接的・簡潔にする。生成スクリプト assertion、provider shell parse、TypeScript、Expo lint、`git diff --check` を確認。`agent-executor.ts` はスクリプトを inline 生成し、対応する Android asset mirror は存在しないため mirror 更新なし。→ sync: なし（内部生成品質の修正）。
 
