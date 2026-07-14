@@ -288,7 +288,67 @@ export async function installAgent(
   await materializeAgent(agent, runCommand, true);
 }
 
-async function materializeAgent(
+type MaterializeRunOpts = {
+  suppressAction?: boolean;
+  suppressErrorNotification?: boolean;
+  autonomousCloudConsent?: boolean;
+  autonomousCloudStop?: boolean;
+  suppressWebCodexBake?: boolean;
+};
+
+/**
+ * round 2 (consent-revocation race, comprehensive fix): EVERY on-disk write for
+ * an autonomous agent's script is security-sensitive — an unattended AlarmManager
+ * fire reads whatever consent value was last baked in, with no foreground gate.
+ * Round 1 only serialized rematerializeAutonomousAgents against ITSELF via
+ * autonomousRematerializeQueue (below); an independent Codex review and an
+ * independent CC review both found that insufficient, because materializeAgent
+ * (this function) has FIVE other call sites that bypass that queue entirely:
+ * installAgent (agent create/edit — installAgent/Sidebar persistAgentUpdate/
+ * TerminalPane @agent create), runEscalatingAttempts's post-ladder restore,
+ * runLadderAttempts's per-attempt materialize (also the site of a separate
+ * TOCTOU — see the comment at its call below), runAgentOrchestrated's
+ * post-chain restore, and scheduleAgentStartupRepair (fired on every app boot,
+ * fully independent of any rematerialize pass). Any two of these racing for the
+ * SAME autonomous agent could let an older ON-consent write land after a newer
+ * OFF-consent write, silently re-enabling a keyed cloud backend the user just
+ * revoked for an agent that can fire unattended.
+ *
+ * Fix: make materializeAgent ITSELF the single unavoidable choke point. Every
+ * call for an autonomous agent — regardless of caller — is routed through this
+ * module-level FIFO queue before it does anything, so writes from different
+ * callers can never interleave; the queue is a property of the write path, not
+ * of any one caller, so a future caller cannot accidentally bypass it (there is
+ * only one way to reach the write). Each queued turn re-reads consent from disk
+ * only once ITS OWN turn begins (materializeAgentBody's existing "read from
+ * disk when runOpts.autonomousCloudConsent is undefined" fallback), so the read
+ * and the write it feeds happen back-to-back inside the SAME turn — no other
+ * queued turn's write can land in the gap between them. Non-autonomous agents
+ * skip the queue (there is no consent to race).
+ */
+let autonomousMaterializeQueue: Promise<void> = Promise.resolve();
+
+function materializeAgent(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  installAlarm: boolean,
+  persistFacts = true,
+  runOpts: MaterializeRunOpts = {}
+): Promise<void> {
+  if (!agent.autonomous) {
+    return materializeAgentBody(agent, runCommand, installAlarm, persistFacts, runOpts);
+  }
+  const turn = autonomousMaterializeQueue.then(() =>
+    materializeAgentBody(agent, runCommand, installAlarm, persistFacts, runOpts)
+  );
+  // A rejected turn must not poison the queue and block later (possibly
+  // security-critical, e.g. a revoke's) turns from ever running. Callers still
+  // observe their own turn's rejection via the returned/awaited `turn`.
+  autonomousMaterializeQueue = turn.catch(() => undefined);
+  return turn;
+}
+
+async function materializeAgentBody(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
   installAlarm: boolean,
@@ -296,7 +356,7 @@ async function materializeAgent(
   // passes false so we don't re-issue an (idempotent but redundant) fact write
   // for each one. Recall is always re-applied so the baked prompt stays fresh.
   persistFacts = true,
-  runOpts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}
+  runOpts: MaterializeRunOpts = {}
 ): Promise<void> {
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
@@ -360,6 +420,16 @@ async function materializeAgent(
  * unattended fire after re-enable would still use the keyed web backend. With
  * installAlarm=false a disabled agent's re-bake writes files only (no schedule),
  * and the metadata keeps enabled:false.
+ *
+ * round 2: this pass-level queue is now a SECOND, coarser layer on top of
+ * materializeAgent's own per-call queue (see its comment above). This one still
+ * matters on its own: it makes a whole PASS (every autonomous agent's write)
+ * atomic relative to another pass, so two rapid toggles can't interleave their
+ * writes agent-by-agent (e.g. pass1=ON writes agent A, pass2=OFF writes agent
+ * A, pass1=ON writes agent B — the per-call queue alone only orders individual
+ * writes, it doesn't guarantee a whole pass finishes before the next starts).
+ * materializeAgent's queue additionally covers every OTHER caller this pass
+ * doesn't touch (ladder attempts, startup repair, install/edit).
  */
 let autonomousRematerializeQueue: Promise<void> = Promise.resolve();
 
@@ -626,12 +696,26 @@ async function runLadderAttempts(
     await materializeAgent(attemptAgent, runCommand, false, true, {
       suppressErrorNotification: !isLast,
       suppressAction: materializeOpts.suppressAction,
-      // N1: lets generateRunScript keep a keyed web tool (Gemini/Perplexity) for
-      // an autonomous run instead of refusing it — the ladder only put one here
-      // when consent + needsWeb held, and secret-guard still re-forces local.
-      autonomousCloudConsent: env.autonomousCloudConsent,
-      // This loop pins ONE tool per attempt and owns escalation; don't also bake
-      // an in-shell web→Codex fallback (it would run Codex twice).
+      // round 2 TOCTOU fix: deliberately do NOT pass env.autonomousCloudConsent
+      // (read once, before this loop started) as the BAKED script value. A
+      // multi-candidate ladder can span a full agent run — up to
+      // AGENT_RUN_WAIT_TIMEOUT_MS (20 minutes) — between attempts via the
+      // waitForAgentRunCompletion await below; that is a real window in which
+      // the user can revoke consent in Settings. Baking the stale `env` value
+      // here for attempt i>0 would re-write a script claiming consent that is
+      // no longer current — the exact fail-closed violation round 1 missed
+      // (it only serialized rematerializeAutonomousAgents against itself, not
+      // against this loop). Leaving autonomousCloudConsent undefined lets
+      // materializeAgent's own queued turn read consent from disk immediately
+      // before ITS write (see materializeAgent's comment), inside the same
+      // queue turn as the write — no other queued write can land between that
+      // read and this attempt's write. `env.autonomousCloudConsent` above is
+      // still used to build `ladder` (line ~676): which tool to TRY next is an
+      // attended/foreground routing choice, not the unattended-safety property
+      // this fixes. If consent is revoked mid-ladder, this attempt's freshly
+      // re-read false value makes generateRunScript refuse/fall back the
+      // now-unauthorized keyed tool and the ladder escalates — the safe
+      // outcome, not a stale ON write surviving to disk.
       suppressWebCodexBake: true,
     });
     await TerminalEmulator.runAgent(agentId);
