@@ -242,11 +242,14 @@ function extractTimes(text: string): ParsedTime[] {
   return result;
 }
 
-function fmtTime(t: ParsedTime): string {
+// Exported so lib/agent-slot-fill.ts's applySlotAnswer can build a schedule
+// label/cron from a suggestedDowList/suggestedTime pair without duplicating
+// this formatting -- see the "merge partial recurrence across turns" fix.
+export function fmtTime(t: ParsedTime): string {
   return `${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')}`;
 }
 
-const JP_DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
+export const JP_DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
 
 export interface ScheduleResult {
   schedule: string | null;

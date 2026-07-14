@@ -9,7 +9,7 @@
  * precedent of lib/agent-card-cron.ts / lib/notification-trigger.ts).
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';
-import { parseSchedule } from './agent-nl-parser';
+import { parseSchedule, fmtTime, JP_DOW_LABEL } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
 import en from './i18n/locales/en';
 import ja from './i18n/locales/ja';
@@ -127,6 +127,49 @@ export function applySlotAnswer(
         },
         resolved: true,
       };
+    }
+    // Merge across turns: the ORIGINAL utterance may already have identified
+    // the recurrence (e.g. "月曜と金曜に…" -> draft.suggestedDowList='1,5')
+    // without a time, which is exactly why this question was asked. Re-parsing
+    // the follow-up answer ("9時") in isolation loses that already-known
+    // context -- parseSchedule("9時") alone is just an ambiguous bare time
+    // (no frequency word), so it comes back not-confident and the SAME
+    // question was being asked again forever. If the answer supplies a time
+    // and the draft already knows the days (or a daily marker), combine them
+    // into a confident cron instead of discarding what the user already told
+    // us once.
+    if (result.suggestedTime) {
+      const { hour, minute } = result.suggestedTime;
+      if (draft.suggestedDowList) {
+        const dowField = draft.suggestedDowList;
+        const dayLabel = dowField
+          .split(',')
+          .map((d) => JP_DOW_LABEL[Number(d)])
+          .join('・');
+        return {
+          draft: {
+            ...draft,
+            schedule: `${minute} ${hour} * * ${dowField}`,
+            scheduleConfident: true,
+            scheduleLabel: `毎週${dayLabel} ${fmtTime(result.suggestedTime)}`,
+            suggestedTime: result.suggestedTime,
+            suggestedDowList: dowField,
+          },
+          resolved: true,
+        };
+      }
+      if (draft.suggestedFrequency === 'daily') {
+        return {
+          draft: {
+            ...draft,
+            schedule: `${minute} ${hour} * * *`,
+            scheduleConfident: true,
+            scheduleLabel: `毎日 ${fmtTime(result.suggestedTime)}`,
+            suggestedTime: result.suggestedTime,
+          },
+          resolved: true,
+        };
+      }
     }
     if (attemptCount >= 2) {
       // Give up asking — AgentConfirmCard.tsx's own HARD REQUIREMENT (a

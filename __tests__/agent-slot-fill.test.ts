@@ -126,6 +126,55 @@ describe('applySlotAnswer — schedule', () => {
     expect(resolved).toBe(true);
     expect(draft.scheduleConfident).toBe(false);
   });
+
+  it('on-device regression: "月曜と金曜に…" (days, no time) followed by a bare-time answer ("9時") resolves instead of re-asking forever', () => {
+    // Reproduces the exact bug from device testing 2026-07-15: the original
+    // utterance's weekday-only parse leaves suggestedDowList='1,5' on the
+    // draft (schedule stays null/not-confident, since no time was stated).
+    // The follow-up answer "9時" alone is just an ambiguous bare time with no
+    // frequency word -- parseSchedule("9時") in isolation is NOT confident,
+    // so re-parsing the answer alone (the pre-fix behavior) asked the SAME
+    // question again, forever, discarding the days the user already gave.
+    const d = makeDraft({
+      schedule: null,
+      scheduleConfident: false,
+      scheduleLabel: '毎週月・金 時刻未設定（要選択）',
+      suggestedFrequency: 'weekly',
+      suggestedDowList: '1,5',
+    });
+    const { draft, resolved } = applySlotAnswer('schedule', d, '9時', 0);
+    expect(resolved).toBe(true);
+    expect(draft.scheduleConfident).toBe(true);
+    expect(draft.schedule).toBe('0 9 * * 1,5');
+    expect(draft.scheduleLabel).toBe('毎週月・金 09:00');
+  });
+
+  it('on-device regression, daily variant: a known daily marker + a bare-time answer resolves instead of re-asking', () => {
+    const d = makeDraft({
+      schedule: null,
+      scheduleConfident: false,
+      scheduleLabel: '毎日 時刻未設定（要選択）',
+      suggestedFrequency: 'daily',
+    });
+    const { draft, resolved } = applySlotAnswer('schedule', d, '朝9時', 0);
+    expect(resolved).toBe(true);
+    expect(draft.scheduleConfident).toBe(true);
+    expect(draft.schedule).toBe('0 9 * * *');
+    expect(draft.scheduleLabel).toBe('毎日 09:00');
+  });
+
+  it('the merge path does NOT fire when the draft has no prior recurrence hint (falls through to the existing not-resolved/ask-again path)', () => {
+    const d = makeDraft({ scheduleConfident: false, schedule: null, suggestedFrequency: undefined, suggestedDowList: undefined });
+    const { resolved } = applySlotAnswer('schedule', d, '9時', 0);
+    expect(resolved).toBe(false);
+  });
+
+  it('a fully self-contained answer ("月・金の9時に") still resolves via the normal confident path, without needing the merge fallback', () => {
+    const d = makeDraft({ scheduleConfident: false, schedule: null, suggestedFrequency: 'weekly', suggestedDowList: '1,5' });
+    const { draft, resolved } = applySlotAnswer('schedule', d, '月・金の9時に', 0);
+    expect(resolved).toBe(true);
+    expect(draft.schedule).toBe('0 9 * * 1,5');
+  });
 });
 
 describe('applySlotAnswer — notificationTrigger', () => {
