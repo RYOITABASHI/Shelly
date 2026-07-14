@@ -24,8 +24,14 @@
 export const SIGNED_APPROVAL_SCHEMA_VERSION = 2;
 
 // Mirrors store/types.ts AgentActionType (the gated action set; excludes the
-// synthetic __suppressed__/unsupported).
-export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
+// synthetic __suppressed__/unsupported). app-act joined that set on
+// 2026-07-14 (store/types.ts:566) but this dormant parity restatement was
+// last touched before app-act existed and was never widened to match --
+// the same narrow-fix/sibling-call-site-untouched gap fixed in
+// app/_layout.tsx's handleAgentActionConfirm (fececf5a2). Nothing here is
+// wired into a production path yet (see module doc comment above), so this
+// is a type-only correction with no runtime behavior change today.
+export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
 
 export type ApprovalDecision = 'accept' | 'decline';
 
