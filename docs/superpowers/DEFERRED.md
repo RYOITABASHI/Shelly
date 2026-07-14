@@ -291,6 +291,12 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 **provider 表示の整合（likely fixed）**
 - 「autonomous で Local 表示なのに Codex」系の混乱は `resolveAutonomousFinalTool`（commit c738a47/6a533b6）でカード表示＝保存ツール一致に修正済の見込み。実機で再確認。
 
+**エスカレーションラダーが「毎回人間承認」アクションで人間に多重リクエストする（P3・UX）**
+- `runLadderAttempts`（lib/agent-manager.ts）は autonomous かどうかに関係なく、単発実行でも失敗（`attemptFailed`）した run を次の候補ツールへ自動エスカレーションする。`cli`/`intent`/`dm-reply` のように毎回 in-app 承認が必須なアクション種別だと、1回目の失敗が**環境起因の決定論的な失敗**（例: 実機検証で確認した `ls` コマンドが Shelly の実行 PATH に無く exit 127）であっても、ツールを変えて2回目の承認リクエストを人間に再度出してしまう——ツール切り替えでは直らない失敗でも承認だけ2回求められる。
+- 発見経緯: 2026-07-14、PR #125（AgentActionApprovalBridge nonce 硬化）の実機検証で `cli` action agent を手動実行 → 1回目 Local LLM で exit 127 失敗 → ユーザーが何もタップしていないのに自動的に2回目（Codex CLI）の承認リクエストが発生。ソース追跡（`runLadderAttempts` 591行目 `if (!attemptFailed(...)) break; // else: escalate to the next tool`）で意図された既存挙動と確認、今夜のマージが原因ではないことを切り分け済み。nonce 硬化自体は2回とも Allow が正しく通ったことで検証成立。
+- **戻す条件**: `cli`/`intent`/`dm-reply` のような「実行結果が承認対象そのもの」なアクション種別では、ツール（LLM backend）を変えても意味がない失敗クラス（コマンド実行時エラーなど、モデル生成失敗と無関係な dispatch-time failure）を判別し、その場合はエスカレーションせず単一失敗として終了する分岐を `runLadderAttempts`/`attemptFailed` に追加する。
+- **Why not now**: 実害は「同じ承認を2回求められて煩わしい」程度で、fail-closed の安全性自体は壊れていない（各承認サイクルは独立して正しく検証される）。緊急度は低いが、app.act（X投稿）のような外部への実効果を持つアクションが将来この経路に乗ると、意図しない重複実行（例: 重複投稿）のリスクに変わりうるため、app.act の Tier-B 無人実行プラミング設計時に合わせて見直すこと。
+
 ### 曜日スケジュール NL パース — 残課題（agent-reviewed）
 
 **優先度**: P3
@@ -2130,6 +2136,7 @@ claude() {
 
 ## History
 
+- **2026-07-14（PR #125 実機検証）**: approval-bridge nonce 硬化（PR #125）の実機検証中、`cli` action の単発実行で自動的にエスカレーションラダー（`runLadderAttempts`）が2回目の承認リクエストを人間に出す挙動を発見。ソース追跡で今夜のマージが原因ではない既存の意図された仕様と切り分け（`### 自律エージェント制御面レビュー` に追記）。nonce 硬化自体は2回の独立した承認サイクルで Allow が正しく通ったことで検証成立と判断。
 - **2026-07-13 (agent action system prompts)**: 実機の通知トリガー agent（`action: draft`）が、要求された短文そのものではなく解釈のメタ説明を生成した不具合を修正。`draft` / `notify` / `webhook` / `cli` / `intent` / `dm-reply` ごとの出力契約を `lib/agent-executor.ts` に追加し、local・Perplexity・Cerebras・Groq・Gemini（native `systemInstruction`）・A/B article eval の全 JSON request に配線した。明示された長さ・形式・トーンを常に優先し、未指定時だけ直接的・簡潔にする。生成スクリプト assertion、provider shell parse、TypeScript、Expo lint、`git diff --check` を確認。`agent-executor.ts` はスクリプトを inline 生成し、対応する Android asset mirror は存在しないため mirror 更新なし。→ sync: なし（内部生成品質の修正）。
 
 - **2026-07-13 (Batch 11)**: **MEMORY-001** を `ac41812a6` → `7ecc7e058` → `fdd5620ab` から現行 `origin/main` へ 3 feature commit の順序を保って独立移植。per-namespace get/put/query、G2 形式・ranking parity、FS-001 `classifyFsAccess` jail、Expo FS JSON device backend、shadow/activated read-write seam を追加した。実稼働 backend は JSON で、`SqliteFtsMemoryStorage` は未配線 skeleton のため roadmap の SQLite/FTS5 は未完。`MEMORY_ENABLED = false` / `MEMORY_EMBEDDING_ENABLED = false` の source 定数と production setter 不在を確認し、fresh install は G2 経路のまま休眠。MODEL-001 / PlanSpec / EVENT-001 / signed approval への新規 import・依存なし。平文保存・write-time redaction / 一般 PII classification 不在は別 P1「MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない」に追跡し、flag-ON 前の privacy gate とした。旧開発ブランチの companion history commits 5件は移植せず、本記録1件に集約。→ sync: なし（既定OFFの内部 substrate。公開・有効化時の privacy 文書同期は P1 entry 側で追跡）。
