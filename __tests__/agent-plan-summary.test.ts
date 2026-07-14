@@ -15,6 +15,7 @@ jest.mock('@/lib/i18n', () => ({
 import {
   hasFireableSchedule,
   shouldUseChatConfirm,
+  shouldAutoRegisterDraft,
   summarizeAgentDraftAsText,
   draftToConfirmedAgentDraft,
 } from '@/lib/agent-plan-summary';
@@ -61,6 +62,32 @@ describe('hasFireableSchedule', () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+// Project owner directive 2026-07-14 ("デフォは承認なしな。任意で確認" —
+// default is no-approval, confirmation optional): shouldAutoRegisterDraft is
+// the AgentConfirmCard-eligible registration path's default-OFF gate (see
+// hooks/use-ai-pane-dispatch.ts, which calls this ONLY when
+// !shouldUseChatConfirm — the already-merged #135 chat-native flow is a
+// separate surface untouched by this directive).
+describe('shouldAutoRegisterDraft', () => {
+  it('true by default (requireRegistrationConfirm=false) for a draft with a fireable schedule', () => {
+    expect(shouldAutoRegisterDraft(baseDraft(), false)).toBe(true);
+  });
+
+  it('true by default for a genuine one-shot too (no recurrence stated)', () => {
+    expect(shouldAutoRegisterDraft(baseDraft({ schedule: null, scheduleConfident: false }), false)).toBe(true);
+  });
+
+  it('opt-in ON (requireRegistrationConfirm=true) restores the mandatory Confirm tap even with a fireable schedule', () => {
+    expect(shouldAutoRegisterDraft(baseDraft(), true)).toBe(false);
+  });
+
+  it('NEVER auto-registers a draft that still needs its schedule restated, regardless of requireRegistrationConfirm — not an approval-frequency knob', () => {
+    const needsRestatement = baseDraft({ schedule: null, scheduleConfident: false, suggestedFrequency: 'daily' });
+    expect(shouldAutoRegisterDraft(needsRestatement, false)).toBe(false);
+    expect(shouldAutoRegisterDraft(needsRestatement, true)).toBe(false);
   });
 });
 

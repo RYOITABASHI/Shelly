@@ -44,7 +44,7 @@ import type { ToolChoice } from '@/store/types';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
-import { shouldUseChatConfirm, summarizeAgentDraftAsText, hasFireableSchedule, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
+import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
@@ -344,7 +344,7 @@ export function useAIPaneDispatch(paneId: string) {
             // what tapping Confirm on the card would have produced.
             const requireRegistrationConfirm =
               useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
-            if (!useChatConfirm && !requireRegistrationConfirm && hasFireableSchedule(draft)) {
+            if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
               await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
             }
             return;

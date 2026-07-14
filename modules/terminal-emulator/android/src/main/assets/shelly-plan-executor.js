@@ -1690,4 +1690,11 @@ module.exports = {
   verifySignedApprovalReply,
   makeSignedApprovalNonceStore,
   ensureSignedApprovalVerifierKey,
+  // Project owner directive 2026-07-14 (runtime approval default-off) —
+  // exported for host unit tests only (see
+  // __tests__/plan-executor-approval-default.test.ts), same convention as
+  // the signed-approval exports above. Not part of the executor's CLI surface.
+  trustedNativeLowRiskAction,
+  unattendedPreflightFailure,
+  requireActionApprovalTap,
 };
