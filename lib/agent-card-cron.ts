@@ -44,6 +44,13 @@ const FALLBACK: DecodedCron = {
 /** Parse an existing cron (when the draft was confident) back into selector state. */
 export function decodeCron(cron: string | null): DecodedCron {
   if (!cron) return { ...FALLBACK };
+  // Sentinel (not a real cron): a confidently-parsed "run once, right now" request
+  // (e.g. "すぐに" / "今すぐ" / "immediately") has no time/recurrence to decode —
+  // schedule stays this literal string instead of null specifically so a confident
+  // parse can still register as scheduleConfident:true (null pairs with :false
+  // everywhere else in this codebase, which would re-trigger the schedule
+  // slot-fill question forever instead of landing on the Once frequency).
+  if (cron === 'once') return { ...FALLBACK, frequency: 'once' };
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return { ...FALLBACK };
   const [min, hour, , , dow] = parts;

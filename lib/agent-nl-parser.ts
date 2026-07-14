@@ -265,6 +265,17 @@ export interface ScheduleResult {
 export function parseSchedule(text: string): ScheduleResult {
   const lower = text.toLowerCase();
 
+  // ── 0. Run once, right now — no recurrence, no time to parse. The single most
+  // common answer to "when should this run?" was previously unrecognized (fell
+  // through every branch to the generic "未設定" fallback below), so a plain
+  // "すぐに"/"今すぐ" answer looped the slot-fill question forever instead of
+  // resolving to the Once frequency. `schedule: 'once'` is a sentinel (see
+  // decodeCron) — not a real cron string. ──
+  if (/^\s*(?:今\s*すぐ|すぐ(?:に)?|直ちに|即時|即座に)\s*$/.test(text) ||
+      /^\s*(?:right\s+(?:now|away)|immediately|now|asap)\s*[.!]?\s*$/i.test(text)) {
+    return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
+  }
+
   // ── 1. Every-N-minutes interval → `*/N * * * *` (N must be 1..59) ──
   const intervalJp = text.match(/(\d+)\s*分\s*(?:ごと|おき|毎|間隔)|(\d+)\s*分に\s*1\s*回/);
   const intervalEn = lower.match(/every\s+(\d+)\s*(?:min|mins|minute|minutes)\b/);

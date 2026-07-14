@@ -43,6 +43,15 @@ describe('agent confirm-card cron codec', () => {
     expect(decodeCron(null).frequency).toBe('daily'); // fallback
   });
 
+  it('decodes the "once" sentinel (a confidently-parsed run-immediately request) as frequency "once", not the null fallback', () => {
+    // parseSchedule() emits schedule:'once' for "すぐに"/"今すぐ"/etc — a
+    // deliberately non-cron sentinel (see lib/agent-nl-parser.ts) that must
+    // decode differently from a genuinely unparsed null, or scheduleConfident:
+    // true would seed the card with the wrong (daily) frequency.
+    expect(decodeCron('once').frequency).toBe('once');
+    expect(buildCron('once', 8, 0, 1, 15, '')).toBeNull();
+  });
+
   it('decodes the "every N hours" shape ("0 */N * * *") — the inverse of the minute-interval shape', () => {
     const d = decodeCron('0 */3 * * *');
     expect(d.frequency).toBe('hourly');
