@@ -70,6 +70,18 @@ export interface ParsedAgentDraft {
    *  real `app-act` action (Phase 6) — see X_POST_RE / detectAction. The confirm
    *  card should surface this as a visible warning; absent = no caveat. */
   actionCaveat?: string;
+  /** Package name(s) that should trigger this agent when a matching
+   *  notification arrives (NOTIFY-001). Set by the pure parser when
+   *  confidently extractable from the utterance, OR filled in later via
+   *  conversational slot-filling when the utterance implies a
+   *  notification-triggered agent but no package was extractable. Absent =
+   *  not a notification-triggered agent. */
+  notificationTrigger?: { packageNames: string[] };
+  /** Free-text output destination hint, gathered either from the utterance
+   *  or via conversational slot-filling when the agent's action is 'draft'
+   *  and no global vault/output-path preference is configured. Absent =
+   *  the caller falls back to its default output path template. */
+  outputPath?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -88,7 +100,7 @@ const EN_WEEKDAY: Array<[RegExp, number]> = [
   [/\bsat(urday)?\b/i, 6],
 ];
 
-interface ParsedTime {
+export interface ParsedTime {
   hour: number;
   minute: number;
 }
@@ -236,7 +248,7 @@ function fmtTime(t: ParsedTime): string {
 
 const JP_DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
 
-interface ScheduleResult {
+export interface ScheduleResult {
   schedule: string | null;
   confident: boolean;
   label: string;
@@ -250,7 +262,7 @@ interface ScheduleResult {
 }
 
 /** Parse the schedule, constrained to the whitelisted cron shapes. */
-function parseSchedule(text: string): ScheduleResult {
+export function parseSchedule(text: string): ScheduleResult {
   const lower = text.toLowerCase();
 
   // ── 1. Every-N-minutes interval → `*/N * * * *` (N must be 1..59) ──

@@ -145,9 +145,12 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   );
   const [runOn, setRunOn] = useState<RunOn>('auto');
   const [autonomous, setAutonomous] = useState<boolean>(draft.autonomous ?? false);
-  // NOTIFY-001 Increment 2: free-text package allowlist. No NL-parse producer yet
-  // (ParsedAgentDraft carries no notificationTrigger field), so this always starts empty.
-  const [notificationPackagesRaw, setNotificationPackagesRaw] = useState('');
+  // NOTIFY-001 Increment 2: free-text package allowlist. Seeded from a conversationally
+  // gathered draft.notificationTrigger (populated by a separate slot-filling step before
+  // this card mounts), falling back to empty when no NL-parse producer supplied one.
+  const [notificationPackagesRaw, setNotificationPackagesRaw] = useState(
+    draft.notificationTrigger?.packageNames.join('\n') ?? '',
+  );
   // null = not yet loaded from the native bridge — avoid flashing a wrong hint.
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState<boolean | null>(null);
   useEffect(() => {
