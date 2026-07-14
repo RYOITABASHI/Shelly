@@ -285,13 +285,19 @@ fi`;
     // [web, Codex]: on any web failure, escalate to Codex. Codex re-marks on its
     // own failure (a usage-limit refusal → transient). If Codex is absent, keep
     // the web verdict (preserving its transient/hard classification).
+    // This ladder ONLY exists inside the `agent.autonomous` branch above (an
+    // unattended alarm-fired run — see the P1 comment there), so route Codex
+    // through the SAME B2 driver + --policy-json gate the primary autonomous
+    // `cli` path uses (agentPolicyJson, built above for this exact agent) —
+    // never bare `codex exec`, which would run danger-full-access on Android
+    // (agent-boundary-policy.ts).
     toolCommand = `${toolCommand}
 if [ -f "$BACKEND_ERROR_FILE" ]; then
   WEB_WAS_TRANSIENT=0
   [ -f "$TRANSIENT_ERROR_FILE" ] && WEB_WAS_TRANSIENT=1
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
   if command -v codex >/dev/null 2>&1; then
-    ${codexExecCommand(escapedPrompt, '"$RESULT_FILE"')}
+    ${codexDriverFallbackCommand(escapedPrompt, '"$RESULT_FILE"', agentPolicyJson)}
     # North Star guard (baked path): the no-URL check above ran before this Codex
     # escalation, so re-check here — a sourceless Codex essay must also fail-closed
     # rather than ship to the vault on the unattended (alarm-fired) run.
@@ -2471,25 +2477,7 @@ function generateToolCommand(
   const systemPromptJson = actionSystemPromptJson(options.actionType);
   switch (tool.type) {
     case 'cli':
-      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-DRIVER_CWD="$PROJECT_DIR"
-[ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
-if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
-  shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
-    --cwd "$DRIVER_CWD" \\
-    --approval-policy untrusted \\
-    --policy-json ${shellQuote(options.policyJson ?? '')} \\
-    --agent-id "$AGENT_ID" \\
-    --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
-    --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
-    --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1 || true
-  mirror_driver_audit_to_app_private || true
-  mirror_driver_audit_to_sdcard || true
-else
-  echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
-fi
-rm -f "$PROMPT_FILE"`;
+      return codexDriverCommand(escapedPrompt, resultVar, options.policyJson ?? '');
     case 'gemini-api': {
       // Web-mandatory general tasks (collect current news) need Google Search
       // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
@@ -2610,10 +2598,17 @@ rm -f "$PROMPT_FILE"`;
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd);
     case 'auto':
+      // `auto` never actually resolves to this arm in a live run today —
+      // resolveAgentRoute (autonomous) and scoreRoutes (non-autonomous) both
+      // collapse `auto` to a concrete tool BEFORE generateToolCommand is
+      // called (see agent-tool-router.ts / agent-credential-policy.ts). Kept
+      // driver-gated anyway (never bare `codex exec`) as defense-in-depth: if
+      // a future caller ever reaches this arm with an unresolved `auto` tool,
+      // it must not regress to danger-full-access Codex.
       return `if [ -n "\${GEMINI_API_KEY:-}" ]; then
   ${geminiApiCommand(escapedPrompt, resultVar, systemPromptJson)}
 elif command -v codex >/dev/null 2>&1; then
-  ${codexExecCommand(escapedPrompt, resultVar)}
+  ${codexDriverFallbackCommand(escapedPrompt, resultVar, options.policyJson ?? '')}
 else
   echo 'No background agent backend is configured. Add a Gemini API key, install Codex, or choose Local LLM/Perplexity explicitly.' > ${resultVar}
 fi`;
@@ -2621,27 +2616,63 @@ fi`;
 }
 
 /**
- * Codex `exec` into the result file, GUARDED. Codex prints a usage/rate-limit
- * refusal to stdout with a zero exit (so a naive `> result || true` records that
- * refusal as a real success). We capture the exit code AND scan the output for a
- * usage-limit signature: a non-zero exit → hard backend error; a usage-limit
- * refusal → transient (exit-23 class) so the run is 'unavailable' (retried next
- * schedule, no circuit-breaker trip) instead of a false success. Used by the
- * `auto` backend and the baked autonomous web→Codex ladder (P1).
+ * Codex `exec`, ROUTED THROUGH THE B2 DRIVER — the SAME `--policy-json` /
+ * `--approval-policy untrusted` gate the primary `cli` tool case uses (Spec A
+ * / agent-boundary-policy.ts). On Android codex's native --sandbox does not
+ * work, so a bare `codex exec` runs danger-full-access: every shell tool-call
+ * codex makes internally bypasses this app's command-safety/workspace-boundary
+ * classification entirely. Never invoke `codex exec` directly from an
+ * unattended/autonomous run — always through here.
+ *
+ * `|| true` is intentionally NOT used on the invocation itself (that would
+ * make the exit code unrecoverable under `set -e`); `set +e`/`set -e` brackets
+ * it instead so the script never aborts but DRIVER_EXIT is still captured.
  */
-function codexExecCommand(escapedPrompt: string, resultVar: string): string {
+function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-  printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+DRIVER_CWD="$PROJECT_DIR"
+[ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
+if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   set +e
-  timeout "$TIMEOUT" codex exec "$(cat "$PROMPT_FILE")" > ${resultVar} 2>&1
-  CODEX_EXIT=$?
+  shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+    --cwd "$DRIVER_CWD" \\
+    --approval-policy untrusted \\
+    --policy-json ${shellQuote(policyJson)} \\
+    --agent-id "$AGENT_ID" \\
+    --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+    --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+    --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
+  DRIVER_EXIT=$?
   set -e
-  rm -f "$PROMPT_FILE"
-  if [ "$CODEX_EXIT" -ne 0 ]; then
-    mark_http_failure "$CODEX_EXIT"
-  elif grep -qiE 'usage limit|rate.?limit|too many requests|quota (exceeded|reached)|you.?ve hit your|\\b429\\b' ${resultVar} 2>/dev/null; then
-    mark_http_failure 23
-  fi`;
+  mirror_driver_audit_to_app_private || true
+  mirror_driver_audit_to_sdcard || true
+else
+  echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
+  DRIVER_EXIT=1
+fi
+rm -f "$PROMPT_FILE"`;
+}
+
+/**
+ * codexDriverCommand + the P1/`auto`-fallback failure contract: a non-zero
+ * driver exit is a hard backend error; a usage/rate-limit refusal surfaced in
+ * the driver's captured output (it still contains codex's own text, just
+ * interleaved with AUDIT/GATE telemetry lines — the substring scan below is
+ * unaffected by that) is classified transient (exit-23 class) so the run is
+ * 'unavailable' — retried next schedule, no circuit-breaker trip — instead of
+ * a false success. Mirrors the classification the old bare-`codex exec`
+ * helper used, now evaluated against the driver-gated invocation. Used by the
+ * baked autonomous web→Codex ladder (P1) and the (unreachable-today) `auto`
+ * arm above.
+ */
+function codexDriverFallbackCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
+  return `${codexDriverCommand(escapedPrompt, resultVar, policyJson)}
+if [ "$DRIVER_EXIT" -ne 0 ]; then
+  mark_http_failure "$DRIVER_EXIT"
+elif grep -qiE 'usage limit|rate.?limit|too many requests|quota (exceeded|reached)|you.?ve hit your|\\b429\\b' ${resultVar} 2>/dev/null; then
+  mark_http_failure 23
+fi`;
 }
 
 function articleEvalCommand(rawPrompt: string, resultVar: string, systemPromptJson: string, localModel?: string, codexCmd?: string): string {
