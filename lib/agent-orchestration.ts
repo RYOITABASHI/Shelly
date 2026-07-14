@@ -185,10 +185,19 @@ const EN_SEQUENCE_SPLIT = /(?:^|[.\n])\s*(?:first|then|next|after that|finally|l
  */
 export function parseStepsFromText(text: string): string[] {
   for (const re of [NUMBERED_SPLIT, JP_SEQUENCE_SPLIT, EN_SEQUENCE_SPLIT]) {
-    const parts = text
+    let parts = text
       .split(new RegExp(re, re.flags.includes('g') ? re.flags : re.flags + 'g'))
       .map((s) => s.trim())
       .filter((s) => s.length > 1);
+    // Same leading-schedule-clause leak as detectToolPinnedSteps below (see
+    // isScheduleOnlyClause's doc comment): a schedule stated before the first
+    // まず/次に/first/numbered marker becomes its own spurious "step 1" with no
+    // real instruction content, since none of these split patterns anchor on
+    // (or strip) a leading schedule clause -- only on the sequence marker
+    // itself.
+    if (parts.length > 0 && isScheduleOnlyClause(parts[0])) {
+      parts = parts.slice(1);
+    }
     if (parts.length >= 2) {
       return parts.slice(0, HARD_MAX_STEPS).map((s) => s.slice(0, MAX_STEP_INSTRUCTION_CHARS));
     }
@@ -241,6 +250,26 @@ function matchToolMention(clause: string): ToolChoice | undefined {
   return undefined;
 }
 
+// A leading clause that is ENTIRELY a schedule/frequency marker (weekday-run,
+// optionally with a time, or a bare 毎日/毎週 daily/weekly marker) rather than
+// an actual instruction. lib/agent-nl-parser.ts's derivePrompt already strips
+// this for the single-step path, but ONLY when parseSchedule judged the
+// schedule confident -- which requires a TIME alongside the day markers. A
+// slot-fill utterance ("毎週月曜と金曜に、パープレで…") states the days with NO
+// time (that's exactly why slot-fill has to ask for one), so at initial-parse
+// time schedule.confident is false, derivePrompt's strip never runs, and this
+// splitter -- which runs on the unstripped text -- picked up the bare
+// schedule clause as a bogus "step 1" with no tool pin (found via on-device
+// testing 2026-07-15). Fully anchored (^...$) so it only matches a clause
+// that is schedule content and NOTHING else; a real instruction that merely
+// contains a weekday/time token elsewhere is never touched.
+const SCHEDULE_ONLY_CLAUSE_RE =
+  /^(?:毎日|毎朝|毎晩|毎夕|毎週|每週|日次|定期的?に?)?\s*[日月火水木金土]曜日?(?:\s*(?:と|・|、|,|，|および|＆|&)\s*[日月火水木金土]曜?日?)*\s*(?:\d{1,2}\s*(?:時(?:半|\d{1,2}分)?|:\d{2}))?\s*(?:に|の)?$|^(?:毎日|毎朝|毎晩|毎夕|日次)\s*(?:\d{1,2}\s*(?:時(?:半|\d{1,2}分)?|:\d{2}))?\s*(?:に|の)?$/;
+
+function isScheduleOnlyClause(clause: string): boolean {
+  return SCHEDULE_ONLY_CLAUSE_RE.test(clause);
+}
+
 /**
  * Detect a tool-pinned multi-step chain in plain conjunctive text — e.g.
  * "パープレで論文を集めて、ローカルLLMで要約して、Xに投稿して". Returns null when
@@ -251,10 +280,16 @@ function matchToolMention(clause: string): ToolChoice | undefined {
  * exact auto-routing behavior for that step).
  */
 export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
-  const clauses = text
+  let clauses = text
     .split(CLAUSE_BOUNDARY)
     .map((s) => s.trim())
     .filter((s) => s.length > 1);
+  // Drop a leading schedule-only clause (see isScheduleOnlyClause's doc
+  // comment) -- only the FIRST clause, since this phrasing pattern only ever
+  // states the schedule as the lead-in, never mid-chain.
+  if (clauses.length > 0 && isScheduleOnlyClause(clauses[0])) {
+    clauses = clauses.slice(1);
+  }
   if (clauses.length < 2) return null;
 
   const steps: NormalizedStep[] = clauses.slice(0, HARD_MAX_STEPS).map((instruction) => {

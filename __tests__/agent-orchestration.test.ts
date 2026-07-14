@@ -232,6 +232,35 @@ describe('detectToolPinnedSteps — Phase 6 tool-mention chain detection', () =>
   it('returns null for fewer than 2 usable clauses even with a tool mention', () => {
     expect(detectToolPinnedSteps('ローカルLLMで要約')).toBeNull();
   });
+
+  it('on-device regression 2026-07-15: a leading weekday-only schedule clause (no time yet, from a slot-fill-pending utterance) is dropped, not kept as a bogus untooled step 1', () => {
+    // derivePrompt's own schedule-clause strip only runs when
+    // parseSchedule() judged the schedule confident, which requires a TIME
+    // alongside the days -- "毎週月曜と金曜に" alone (before the slot-fill
+    // follow-up supplies "9時") is exactly the case where confidence is
+    // false, so at initial-parse time the clause reaches this splitter
+    // unstripped.
+    const steps = detectToolPinnedSteps(
+      '毎週月曜と金曜に、パープレでSTEAM教育×AIに関する最新の論文やニュースを検索して、ローカルLLMで一次ソースと要約をObsidianの日付フォルダに保存してから、X用に文字数内で再要約してXに投稿して',
+    );
+    expect(steps).not.toBeNull();
+    expect(steps!.length).toBe(3);
+    expect(steps!.some((s) => s.instruction.includes('毎週月曜と金曜に'))).toBe(false);
+    expect(steps![0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    expect(steps![0].instruction).toContain('パープレ');
+    expect(steps![1].tool).toEqual({ type: 'local' });
+    expect(steps![2].instruction).toContain('X');
+  });
+
+  it('does NOT drop a real leading clause that merely mentions a day/time as content, not as the whole clause', () => {
+    // isScheduleOnlyClause is fully anchored (^...$) -- a clause that names a
+    // tool or has other real content alongside a day/time token must survive.
+    const steps = detectToolPinnedSteps(
+      '月曜のニュースをパープレで集めて、ローカルLLMで要約して',
+    );
+    expect(steps).not.toBeNull();
+    expect(steps![0].instruction).toContain('月曜');
+  });
 });
 
 // ── SECURITY: the gate holds on EVERY step (no privilege widening) ────────────
