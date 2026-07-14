@@ -639,7 +639,7 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(webhook).toContain("ACTION_TYPE='webhook'");
     expect(webhook).toContain("ACTION_WEBHOOK_URL='https://example.com/hook'");
     expect(webhook).toContain('Webhook action requires an https URL.');
-    expect(webhook).toContain('request_and_wait_approval "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" || return 1');
+    expect(webhook).toContain('request_and_wait_approval "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" "$webhook_host_allowlisted" || return 1');
     expect(webhook).toContain('http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload"');
     expect(webhook).toContain('write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true');
 
