@@ -81,6 +81,12 @@ export type ChatMessage = {
    *  text; on confirm the agent is created+installed. JSON-serializable. */
   agentDraft?: import('@/lib/agent-nl-parser').ParsedAgentDraft;
   agentCardState?: 'pending' | 'confirmed' | 'cancelled';
+  /** Phase 7: true = render the chat-native AgentChatConfirm affordance (summary
+   *  text already in `content` + inline Confirm/Cancel) instead of AgentConfirmCard
+   *  for this pending draft. Set for app-act / tool-pinned orchestration drafts —
+   *  see lib/agent-plan-summary.ts's shouldUseChatConfirm. Absent/false = the
+   *  existing card path, unchanged. */
+  agentChatConfirm?: boolean;
 };
 
 export type ChatSession = {

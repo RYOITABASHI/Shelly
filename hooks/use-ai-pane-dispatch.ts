@@ -44,6 +44,7 @@ import type { ToolChoice } from '@/store/types';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
+import { shouldUseChatConfirm, summarizeAgentDraftAsText } from '@/lib/agent-plan-summary';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
@@ -307,14 +308,23 @@ export function useAIPaneDispatch(paneId: string) {
             } catch {
               // skill match is best-effort
             }
+            // Phase 7: app-act (e.g. X-posting) and tool-pinned orchestration
+            // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
+            // entirely — the project owner explicitly rejected a card/modal for
+            // NEW confirmation surfaces and wants plain chat-native NL confirm
+            // instead. Every other draft shape (including plain auto-routed
+            // multi-step chains from Phase 4) is UNCHANGED and still uses the
+            // card. See lib/agent-plan-summary.ts's shouldUseChatConfirm.
+            const useChatConfirm = shouldUseChatConfirm(draft);
             store.addMessage(paneId, {
               id: generateId(),
               role: 'assistant',
-              content: '',
+              content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
               timestamp: Date.now(),
               agent: agent as ChatMessage['agent'],
               agentDraft: draft,
               agentCardState: 'pending',
+              agentChatConfirm: useChatConfirm,
             });
             return;
           } else if (agentResult.type === 'run') {

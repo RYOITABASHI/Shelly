@@ -298,6 +298,20 @@ const ja: Record<string, string> = {
   'agentcard.run_now': '実行',
   'agentcard.confirm': '登録',
   'agentcard.cancel': 'キャンセル',
+
+  // ── チャット内エージェント確認 (Phase 7) — app-act / ツール指定オーケストレーション向け。
+  // カードを出さず、この要約テキスト + 確認/キャンセルの2ボタンのみで登録する。
+  'agentplan.summary_name': 'エージェント名: {{name}}',
+  'agentplan.summary_schedule': '実行タイミング: {{schedule}}',
+  'agentplan.summary_action': '実行内容: {{action}}',
+  'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
+  'agentplan.memory_note': '実行後に記憶: {{fact}}',
+  'agentplan.skill_note': '既存スキル「{{name}}」を再利用します（成功実績 {{count}}回）',
+  'agentplan.schedule_restate_hint': '⚠ 実行タイミングを確定できませんでした。時刻を含めて言い直してください（例:「毎日8時に」）。確定するまで登録できません。',
+  'agentplan.appact_x_target': 'X（旧Twitter）への投稿',
+  'agentplan.appact_line': '{{target}}（実行結果をそのまま投稿）',
+  'agentplan.appact_line_with_preview': '{{target}}：「{{preview}}」',
+  'agentplan.confirm_prompt': 'この内容で登録しますか？ 変更したい場合はキャンセルしてから言い直してください。',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'codex_login.title': 'Codexログイン',

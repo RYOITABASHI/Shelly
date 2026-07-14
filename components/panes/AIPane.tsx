@@ -27,6 +27,7 @@ import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
+import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
@@ -113,6 +114,27 @@ const MessageBubble = React.memo(function MessageBubble({
   // replaces the bubble text; once confirmed/cancelled it falls through to the
   // normal assistant text render (which now holds the result line).
   if (message.agentDraft && message.agentCardState === 'pending') {
+    // Phase 7: app-act / tool-pinned-orchestration drafts render chat-native —
+    // the plan is plain assistant text (message.content, set by
+    // summarizeAgentDraftAsText at creation) with a trailing inline
+    // Confirm/Cancel row, NOT a card. Everything else keeps AgentConfirmCard.
+    if (message.agentChatConfirm) {
+      const agentKeyChat = resolveAiPaneAgent(message.agent, 'local');
+      const agentLabelChat = getAiPaneAgentMeta(agentKeyChat).label.toUpperCase();
+      return (
+        <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+          <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>{agentLabelChat}</Text>
+          <View style={bubbleStyles.assistantContent}>
+            <Text style={bubbleStyles.assistantText} selectable>{message.content}</Text>
+          </View>
+          <AgentChatConfirm
+            draft={message.agentDraft}
+            onConfirm={(c) => onConfirmAgentDraft?.(message.id, c)}
+            onCancel={() => onCancelAgentDraft?.(message.id)}
+          />
+        </View>
+      );
+    }
     return (
       <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
         <AgentConfirmCard
