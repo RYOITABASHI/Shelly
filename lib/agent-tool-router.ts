@@ -5,7 +5,18 @@
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
-import { scoreRoutes } from './agent-router-scoring';
+import {
+  scoreRoutes,
+  hasAny,
+  CODE_KW as CODE_KEYWORDS,
+  // NARROW set — matches what the Layer-2 scorer treats as academic-domain, NOT
+  // the broad RESEARCH_KW (which includes generic citation words like 出典/引用/
+  // 調べ). Using RESEARCH_KW here would route a plain "collect news with
+  // sources" prompt to the paid Perplexity tier instead of Gemini — exactly the
+  // bug agent-router-scoring.ts's ACADEMIC_WEB_KW comment documents avoiding.
+  ACADEMIC_WEB_KW as ACADEMIC_KEYWORDS,
+  TRANSFORM_KW as TRANSFORM_KEYWORDS,
+} from './agent-router-scoring';
 // Imported from the concrete submodules (NOT the './model-router' barrel) to
 // avoid a circular import: the barrel re-exports shadow.ts (Phase A), which
 // itself imports resolveAgentRoute from THIS file.
@@ -24,21 +35,6 @@ export interface AgentRouteResolution {
   tool: ToolChoice;
   decision: AgentRouteDecision;
 }
-
-const ACADEMIC_KEYWORDS = [
-  'paper', 'research', 'study', 'evidence', 'journal', 'academic',
-  '論文', '研究', '学術',
-];
-
-const CODE_KEYWORDS = [
-  'pr', 'issue', 'commit', 'repo', 'code review', 'github',
-  'pull request', 'merge',
-];
-
-const TRANSFORM_KEYWORDS = [
-  'summarize', 'format', 'translate', 'rewrite',
-  '要約', '整形', '翻訳', '書き直',
-];
 
 const ARTICLE_EVAL_KEYWORDS = [
   'qwen', 'qwen3', 'codex', 'a/b', 'ab test', 'article eval',
@@ -60,35 +56,35 @@ export function suggestTool(prompt: string): ToolSuggestion {
   }
 
   // Priority 2: Academic
-  if (ACADEMIC_KEYWORDS.some((kw) => lower.includes(kw))) {
-    const keyword = ACADEMIC_KEYWORDS.find((kw) => lower.includes(kw));
+  const academicKeyword = hasAny(lower, ACADEMIC_KEYWORDS);
+  if (academicKeyword) {
     return {
       tool: { type: 'perplexity', model: 'sonar-deep-research' },
       label: 'Perplexity API',
       reason: 'Academic/research content — Perplexity provides search-backed results with citations',
-      keyword,
+      keyword: academicKeyword,
     };
   }
 
   // Priority 3: Code/GitHub
-  if (CODE_KEYWORDS.some((kw) => lower.includes(kw))) {
-    const keyword = CODE_KEYWORDS.find((kw) => lower.includes(kw));
+  const codeKeyword = hasAny(lower, CODE_KEYWORDS);
+  if (codeKeyword) {
     return {
       tool: { type: 'cli', cli: 'codex' },
       label: 'Codex CLI',
       reason: 'Code/GitHub tasks — Codex is the supported background CLI path',
-      keyword,
+      keyword: codeKeyword,
     };
   }
 
   // Priority 4: Text transformation
-  if (TRANSFORM_KEYWORDS.some((kw) => lower.includes(kw))) {
-    const keyword = TRANSFORM_KEYWORDS.find((kw) => lower.includes(kw));
+  const transformKeyword = hasAny(lower, TRANSFORM_KEYWORDS);
+  if (transformKeyword) {
     return {
       tool: { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' },
       label: 'Local LLM',
       reason: 'Text processing — local LLM is free and fast for transformation tasks',
-      keyword,
+      keyword: transformKeyword,
     };
   }
 

@@ -94,6 +94,21 @@ describe('Agent PlanSpec v1', () => {
     expect(JSON.stringify(spec.action)).not.toContain('notificationId');
   });
 
+  it('serializes the orchestration char limit as an optional executor limit', () => {
+    const spec = buildAgentPlanSpec(agent({
+      orchestration: {
+        steps: ['collect sources', 'summarize for X'],
+        charLimit: 5,
+      },
+    }));
+
+    expect(spec.limits.charLimit).toBe(40);
+    expect(validateAgentPlanSpec(spec).ok).toBe(true);
+
+    const withoutLimit = buildAgentPlanSpec(agent());
+    expect(withoutLimit.limits.charLimit).toBeUndefined();
+  });
+
   it('validates schema version and agent id', () => {
     const spec = buildAgentPlanSpec(agent());
     expect(validateAgentPlanSpec(spec).ok).toBe(true);

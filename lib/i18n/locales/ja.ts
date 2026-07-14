@@ -288,6 +288,7 @@ const ja: Record<string, string> = {
   'agentcard.use_skill': 'スキルを使用: {{name}}（{{count}}回）',
   'agentcard.use_skill_hint': '似たタスクで成功したレシピを再利用します。',
   'agentcard.orchestration': 'マルチステップ（{{count}}ステップ・各ゲート通過）:',
+  'agentcard.char_limit': '最終出力のハード上限: {{count}}文字',
   'agentcard.autonomous_route': '自律 Codex',
   'agentcard.autonomous_route_web': '自律 {{engine}}',
   'agentcard.autonomous_route_local': '自律 端末内',

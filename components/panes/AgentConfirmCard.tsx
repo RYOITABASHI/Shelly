@@ -49,6 +49,8 @@ export interface ConfirmedAgentDraft {
    *  Each entry is either a plain string (auto-routed) or a { instruction, tool }
    *  object pinning a concrete tool for that step (Phase 6). */
   orchestrationSteps?: Array<string | AgentOrchestrationStep>;
+  /** G6: hard character budget for the final orchestration output. */
+  charLimit?: number;
   /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
   notificationTrigger?: { packageNames: string[] } | null;
 }
@@ -329,6 +331,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       skillId: useSkill ? draft.matchedSkill?.id : undefined,
       // Phase 4: carry detected multi-step instructions through to createAgent.
       orchestrationSteps: draft.orchestrationSteps,
+      // G6: carry the preset's hard final-output character budget through.
+      charLimit: draft.charLimit,
       // NOTIFY-001 Increment 2: carry the parsed package allowlist through to createAgent.
       notificationTrigger: notificationPackages.length > 0 ? { packageNames: notificationPackages } : null,
     });
@@ -763,6 +767,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
               </Text>
             );
           })}
+          {typeof draft.charLimit === 'number' && (
+            <Text style={[styles.warn, { color: colors.muted }]} numberOfLines={1}>
+              {t('agentcard.char_limit', { count: draft.charLimit })}
+            </Text>
+          )}
         </View>
       )}
 

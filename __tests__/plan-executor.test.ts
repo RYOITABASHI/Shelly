@@ -232,6 +232,26 @@ describe('shelly-plan-executor host smoke', () => {
     expect(planAudit).toContain('"event":"plan_finish"');
   });
 
+  it('hard-clamps draft output to the PlanSpec char limit before saving', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    plan.prompt = 'あ'.repeat(120);
+    (plan.limits as any).charLimit = 40;
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--broker', broker], home);
+
+    expect(result.status).toBe(0);
+    const outputFiles = listMarkdownFiles(path.join(home, 'agent-output'));
+    expect(outputFiles).toHaveLength(1);
+    const saved = fs.readFileSync(outputFiles[0], 'utf8');
+    expect(Array.from(saved).length).toBeLessThanOrEqual(40);
+    expect(saved.endsWith('…')).toBe(true);
+
+    const resultFile = path.join(home, `.shelly/tmp/agent-result-${plan.agent.id}.md`);
+    expect(Array.from(fs.readFileSync(resultFile, 'utf8')).length).toBeLessThanOrEqual(40);
+  });
+
   it('refuses to run when the global kill-switch (.halted) sentinel is present', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);

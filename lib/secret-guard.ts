@@ -9,6 +9,7 @@ export type SecretGuardKind =
   | 'private-key'
   | 'bearer-token'
   | 'api-key-assignment'
+  | 'anthropic-key'
   | 'openai-like-key'
   | 'github-token'
   | 'aws-access-key'
@@ -48,8 +49,21 @@ const SECRET_PATTERNS: SecretPattern[] = [
     pattern: /\bAIza[0-9A-Za-z_-]{35}\b/,
   },
   {
+    // Anthropic keys carry their own prefix — label them precisely instead of
+    // the generic openai-like bucket (G1 follow-up: detection was already
+    // correct, only the reason-log label was misleading).
+    // {12,} not {16,}: the old bare-`sk` branch counted `ant-` toward its 16-char
+    // minimum (sk- + 16 = sk-ant- + 12), so a tighter minimum here would shrink
+    // the detection set — a fail-open regression on this hard-stop guard.
+    kind: 'anthropic-key',
+    pattern: /\bsk-ant-[A-Za-z0-9_-]{12,}\b/,
+  },
+  {
     kind: 'openai-like-key',
-    pattern: /\b(?:sk|sk-proj|sk-ant|gsk|csk|pplx)-[A-Za-z0-9_-]{16,}\b/,
+    // The sk-ant exclusion applies to the bare `sk` branch ONLY (it would
+    // otherwise double-label every Anthropic key). Scoping it to all branches
+    // would drop gsk-ant-*/csk-ant-*/pplx-ant-* keys the old pattern caught.
+    pattern: /\b(?:(?:sk-proj|gsk|csk|pplx)-|sk-(?!ant-))[A-Za-z0-9_-]{16,}\b/,
   },
   {
     kind: 'bearer-token',

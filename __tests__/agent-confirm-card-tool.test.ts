@@ -77,3 +77,70 @@ describe('card/handler ↔ runtime parity (no refusal, right engine)', () => {
     expect(s).not.toContain('[REFUSED]');
   });
 });
+
+// G4 Phase 2b follow-up: suggestTool (legacy/initial-suggestion path) used to keep
+// its own local keyword arrays (CODE_KEYWORDS/ACADEMIC_KEYWORDS/TRANSFORM_KEYWORDS)
+// that had drifted out of sync with the Layer-2 scorer's CODE_KW/ACADEMIC_WEB_KW/
+// TRANSFORM_KW (DEFERRED.md P2 "キーワード集合の重複"). suggestTool now imports the
+// scorer's arrays + word-boundary-safe matching directly, so both paths agree.
+//
+// ACADEMIC_KEYWORDS specifically aliases the scorer's NARROW ACADEMIC_WEB_KW, not
+// the broad RESEARCH_KW — an earlier version of this fix used RESEARCH_KW and
+// reproduced the exact "出典/調べ routes to paid Perplexity" bug ACADEMIC_WEB_KW
+// exists to prevent (review finding), reachable via the ungated cloudFallbackTool
+// path for a runOn:'cloud'-pinned agent. '調べ'/'出典'/'evidence' are therefore
+// intentionally NOT academic triggers for suggestTool either.
+describe('suggestTool keyword-set integration (drift fix)', () => {
+  it('research synonyms only present in the scorer set now route to Perplexity too', () => {
+    // '文献' was in ACADEMIC_WEB_KW but NOT in suggestTool's old local
+    // ACADEMIC_KEYWORDS — before the fix this prompt fell through every category
+    // and defaulted to Gemini API instead of Perplexity.
+    const suggestion = suggestTool('この文献について教えて');
+    expect(suggestion.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    expect(suggestion.keyword).toBe('文献');
+  });
+
+  it('generic citation words (調べ/出典/evidence) do NOT trigger Academic — narrow set only', () => {
+    // These are deliberately excluded from ACADEMIC_WEB_KW (see
+    // agent-router-scoring.ts): a plain "collect news with sources" task must
+    // stay on the general/Gemini route, not the paid Perplexity deep-research
+    // tier. Verifies suggestTool inherited the NARROW set, not the broad
+    // RESEARCH_KW (which does include these words for the scorer's needsSearch
+    // signal — a different, unrelated job).
+    expect(suggestTool('これについて調べて').tool.type).not.toBe('perplexity');
+    expect(suggestTool('出典付きでニュースを集めて').tool.type).not.toBe('perplexity');
+  });
+
+  it('JP code synonyms only present in the scorer set now route to Codex CLI too', () => {
+    // suggestTool's old local CODE_KEYWORDS had no Japanese synonyms at all
+    // ('バグ'/'デプロイ'/'コード'/'リポジトリ'); this prompt used to default to
+    // Gemini API instead of the Codex CLI path.
+    const suggestion = suggestTool('システムバグ修正をお願い');
+    expect(suggestion.tool).toEqual(codex);
+    expect(suggestion.keyword).toBe('バグ');
+  });
+
+  it('short Latin keywords match on a word boundary, not as a bare substring', () => {
+    // Regression guard mirrored from agent-router-scoring.test.ts: suggestTool used
+    // to do a naive `lower.includes(kw)`, so 'pr' inside "previous" and 'repo'
+    // inside "report" both misfired into the Codex/code branch.
+    expect(suggestTool('use results from previous steps').tool.type).not.toBe('cli');
+    expect(suggestTool('write a weather report').tool.type).not.toBe('cli');
+    // A real standalone "pr" still correctly routes to Codex.
+    expect(suggestTool('please review this pr').tool.type).toBe('cli');
+  });
+
+  it('katakana code synonyms (プルリク etc.) now route to Codex CLI too (DEFERRED.md P3)', () => {
+    const suggestion = suggestTool('プルリクを直して');
+    expect(suggestion.tool).toEqual(codex);
+    expect(suggestion.keyword).toBe('プルリク');
+  });
+
+  it('CJK keywords keep matching as a substring (no word-boundary requirement)', () => {
+    // Unlike Latin keywords, CJK keywords are unbounded substring matches both
+    // before and after the fix — this must not regress. 'バグ' matches even
+    // embedded inside a larger compound word with no surrounding whitespace.
+    const suggestion = suggestTool('本番相当の環境でリポジトリのバグを直して');
+    expect(suggestion.tool).toEqual(codex);
+  });
+});

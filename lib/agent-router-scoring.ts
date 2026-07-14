@@ -53,21 +53,27 @@ export interface ScoredRoute {
   candidates: RouteCandidate[];
 }
 
-// Category keyword sets (kept local so the scorer is self-contained; suggestTool
-// keeps its own copy for the legacy keyword path and other callers).
-const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'repository', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ'];
+// Category keyword sets. Exported so agent-tool-router's suggestTool (the
+// legacy/initial-suggestion path) reuses these as the single source of truth
+// instead of keeping a drifting local copy (G4 Phase 2b follow-up).
+export const CODE_KW = ['pr', 'pull request', 'issue', 'commit', 'repo', 'repository', 'code review', 'github', 'merge', 'コード', 'リポジトリ', 'バグ', 'デプロイ', 'プルリク', 'プルリクエスト', 'レビュー', 'コミット', 'マージ', 'イシュー'];
 // Genuine research only — NOT bare "news/latest" (those are a weak freshness
 // signal via needsSearch, handled below). "summarize the news" must stay a
 // transform task → on-device, not get routed to the paid deep-research backend.
-const RESEARCH_KW = ['paper', 'research', 'study', 'evidence', 'journal', 'academic', 'cite', 'citation', '論文', '研究', '学術', '調べ', '出典', '引用', '文献'];
+export const RESEARCH_KW = ['paper', 'research', 'study', 'evidence', 'journal', 'academic', 'cite', 'citation', '論文', '研究', '学術', '調べ', '出典', '引用', '文献'];
 // NARROW scholarly set used ONLY to pick the web DOMAIN (academic→Perplexity vs
 // general→Gemini grounded). It deliberately EXCLUDES the generic citation words
 // in RESEARCH_KW (出典 / 引用 / 調べ / cite / citation / evidence): a news
 // collection that asks for sources ("出典付き") is still a GENERAL web task and
 // must route to Gemini, not the paid Perplexity deep-research tier.
-const ACADEMIC_WEB_KW = ['paper', 'research', 'study', 'journal', 'academic', '論文', '研究', '学術', '文献'];
+// Exported so suggestTool's "Academic" priority (agent-tool-router.ts) uses this
+// SAME narrow set instead of the broad RESEARCH_KW — reusing RESEARCH_KW there
+// reproduced the exact bug this narrowing exists to prevent (G4 Phase 2b
+// follow-up review finding: a cloud-pinned agent's "出典付きで集めて" prompt was
+// routed to the paid Perplexity tier via the ungated cloudFallbackTool path).
+export const ACADEMIC_WEB_KW = ['paper', 'research', 'study', 'journal', 'academic', '論文', '研究', '学術', '文献'];
 const PROSE_KW = ['article', 'essay', 'blog', 'draft', 'write', 'content', 'story', '記事', '下書き', 'ブログ', '執筆', '物語'];
-const TRANSFORM_KW = ['summarize', 'summary', 'format', 'translate', 'rewrite', 'extract', '要約', 'まとめ', '整形', '翻訳', '書き直', '抽出', '箇条書き'];
+export const TRANSFORM_KW = ['summarize', 'summary', 'format', 'translate', 'rewrite', 'extract', '要約', 'まとめ', '整形', '翻訳', '書き直', '抽出', '箇条書き'];
 const REASONING_KW = ['analyze', 'compare', 'evaluate', 'plan', 'design', 'reason', 'deep', 'why', 'strategy', '分析', '比較', '評価', '設計', '計画', '推論', '戦略', '考察', '精査'];
 // "Gather CURRENT info" verbs. Paired with a freshness signal (below) they make a
 // task web-mandatory — only a live web fetch can satisfy it. Kept distinct from
@@ -128,13 +134,15 @@ const TOOL_PROFILES: ToolProfile[] = [
  * (this bit orchestration's "# Results from previous steps" scaffolding). CJK
  * keywords have no word boundaries, so they match as a substring.
  */
-function matchesKeyword(lower: string, kw: string): boolean {
+// Exported so suggestTool (agent-tool-router.ts) gets the same word-boundary-safe
+// matching instead of its former plain `.includes()` (G4 Phase 2b follow-up).
+export function matchesKeyword(lower: string, kw: string): boolean {
   if (/[぀-ヿ一-鿿]/.test(kw)) return lower.includes(kw);
   const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b${escaped}\\b`).test(lower);
 }
 
-function hasAny(lower: string, kws: string[]): string | undefined {
+export function hasAny(lower: string, kws: string[]): string | undefined {
   return kws.find((kw) => matchesKeyword(lower, kw));
 }
 

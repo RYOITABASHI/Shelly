@@ -288,6 +288,7 @@ const en: Record<string, string> = {
   'agentcard.use_skill': 'Use skill: {{name}} ({{count}}×)',
   'agentcard.use_skill_hint': 'Reuse a recipe that worked before for a similar task.',
   'agentcard.orchestration': 'Multi-step ({{count}} steps, each gated):',
+  'agentcard.char_limit': 'Final output hard limit: {{count}} characters',
   'agentcard.autonomous_route': 'Autonomous Codex',
   'agentcard.autonomous_route_web': 'Autonomous {{engine}}',
   'agentcard.autonomous_route_local': 'Autonomous on-device',

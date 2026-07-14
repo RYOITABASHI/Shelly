@@ -50,6 +50,7 @@ import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale }
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
+import { useSkillSaveOffer } from '@/hooks/use-skill-save-offer';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
 import type { ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
@@ -233,6 +234,12 @@ export function useAIPaneDispatch(paneId: string) {
     [rawUpdateMessage],
   );
   useEffect(() => () => throttledUpdate.cleanup(), [throttledUpdate]);
+
+  // G3 Phase 2a follow-up: the one-shot @agent flow discards its ephemeral
+  // agent right after the run, so this is the same gated save prompt the
+  // Sidebar "Run now" flow offers, just fed from local run-result variables
+  // instead of a store lookup (see confirmAgentDraft below).
+  const { offerSkillSave } = useSkillSaveOffer({ runCommand: runAgentShellCommand });
 
   const dispatch = useCallback(
     async (userText: string) => {
@@ -1243,7 +1250,10 @@ export function useAIPaneDispatch(paneId: string) {
           // Phase 4: a multi-step utterance becomes an orchestrated agent.
           orchestration:
             confirmed.orchestrationSteps && confirmed.orchestrationSteps.length >= 2
-              ? { steps: confirmed.orchestrationSteps }
+              ? {
+                  steps: confirmed.orchestrationSteps,
+                  ...(typeof confirmed.charLimit === 'number' ? { charLimit: confirmed.charLimit } : {}),
+                }
               : undefined,
           notificationTrigger: confirmed.notificationTrigger,
           outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
@@ -1268,6 +1278,16 @@ export function useAIPaneDispatch(paneId: string) {
               : `${icon} ${created.name} — done.${auditPath}`;
             store.updateMessage(paneId, messageId, {
               content: finalContent,
+            });
+            // Pull every value from local run-result variables, not the store —
+            // `created` is about to be deleted (ephemeral one-shot agent).
+            offerSkillSave({
+              name: created.name,
+              prompt: created.prompt,
+              routeDecision: log?.routeDecision,
+              timestamp: log?.timestamp,
+              status: log?.status,
+              alreadySkillId: created.skillId,
             });
           } finally {
             // Always discard the ephemeral one-shot agent — including when the run
@@ -1303,7 +1323,7 @@ export function useAIPaneDispatch(paneId: string) {
         });
       }
     },
-    [paneId],
+    [paneId, offerSkillSave],
   );
 
   const cancelAgentDraft = useCallback(

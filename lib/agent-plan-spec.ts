@@ -11,6 +11,7 @@ import {
 } from './agent-executor';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
+import { clampCharLimit } from './agent-pipeline-presets';
 
 export const PLAN_SPEC_SCHEMA_VERSION = 1;
 export const PLAN_SPEC_KIND = 'shelly.agent.plan';
@@ -83,6 +84,7 @@ export interface AgentPlanSpecV1 {
   limits: {
     timeoutSeconds: number;
     maxConcurrent: number;
+    charLimit?: number;
   };
   policy: ReturnType<typeof buildAgentPolicy>;
   routeDecision: AgentRouteDecision;
@@ -165,6 +167,10 @@ export function buildAgentPlanSpec(
   const outputNameTemplate = sanitizeOutputTemplate(agent.outputTemplate);
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
   const useGlobalOutput = !agentUsesStudioContext(agent);
+  const charLimit =
+    typeof agent.orchestration?.charLimit === 'number'
+      ? clampCharLimit(agent.orchestration.charLimit)
+      : undefined;
 
   return {
     kind: PLAN_SPEC_KIND,
@@ -206,6 +212,7 @@ export function buildAgentPlanSpec(
     limits: {
       timeoutSeconds: 600,
       maxConcurrent: 2,
+      ...(charLimit !== undefined ? { charLimit } : {}),
     },
     policy: buildAgentPolicy(agent, agent.workspaceRoot || home),
     routeDecision,
@@ -307,5 +314,12 @@ export function validateAgentPlanSpec(value: unknown): { ok: true; spec: AgentPl
   if (!spec.tool || typeof spec.tool.type !== 'string') return { ok: false, reason: 'plan tool is invalid' };
   if (!spec.action || typeof spec.action.type !== 'string') return { ok: false, reason: 'plan action is invalid' };
   if (!spec.paths || typeof spec.paths.home !== 'string') return { ok: false, reason: 'plan paths are invalid' };
+  if (
+    spec.limits &&
+    spec.limits.charLimit !== undefined &&
+    (typeof spec.limits.charLimit !== 'number' || !Number.isFinite(spec.limits.charLimit))
+  ) {
+    return { ok: false, reason: 'plan char limit is invalid' };
+  }
   return { ok: true, spec: spec as AgentPlanSpecV1 };
 }

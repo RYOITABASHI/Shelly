@@ -209,6 +209,13 @@ function validatePlan(raw) {
   if (typeof raw.prompt !== 'string') throw new PlanFailure('plan prompt is invalid');
   if (!raw.tool || typeof raw.tool.type !== 'string') throw new PlanFailure('plan tool is invalid');
   if (!raw.action || typeof raw.action.type !== 'string') throw new PlanFailure('plan action is invalid');
+  if (
+    raw.limits &&
+    raw.limits.charLimit !== undefined &&
+    (typeof raw.limits.charLimit !== 'number' || !Number.isFinite(raw.limits.charLimit))
+  ) {
+    throw new PlanFailure('plan char limit is invalid');
+  }
   if (raw.tool.type === 'unsupported') throw new PlanFailure(redact(raw.tool.unsupportedReason || 'unsupported tool'), { exitCode: EXIT.TOOL_DENY });
   if (raw.action.type === 'unsupported') throw new PlanFailure(redact(raw.action.unsupportedReason || 'unsupported action'), { exitCode: EXIT.TOOL_DENY });
   return raw;
@@ -232,6 +239,36 @@ function sleepMs(ms) {
 
 function previewText(text) {
   return redact(String(text || '')).replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+function resolveCharLimit(plan) {
+  const raw = plan && plan.limits ? plan.limits.charLimit : undefined;
+  if (raw === undefined || raw === null) return 0;
+  const limit = Number(raw);
+  if (!Number.isFinite(limit)) return 0;
+  return Math.min(Math.max(Math.floor(limit), 40), 4000);
+}
+
+function enforcePlanCharLimit(plan, text) {
+  const limit = resolveCharLimit(plan);
+  if (!limit) return String(text || '');
+  const chars = Array.from(String(text || ''));
+  if (chars.length <= limit) return chars.join('');
+  const ellipsis = '…';
+  const budget = Math.max(limit - 1, 1);
+  const head = chars.slice(0, budget);
+  const terminators = new Set(['。', '．', '.', '!', '?', '！', '？', '\n']);
+  let cut = -1;
+  for (let i = head.length - 1; i >= 0; i -= 1) {
+    if (terminators.has(head[i])) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut >= Math.floor(budget * 0.6)) {
+    return head.slice(0, cut + 1).join('').trimEnd();
+  }
+  return head.join('').trimEnd() + ellipsis;
 }
 
 function sanitizeRelPath(value) {
@@ -1628,8 +1665,13 @@ function run(args) {
   try {
     const request = modelRequest(plan, config);
     const response = brokerHttp(paths, opts, plan, request);
-    const resultText = extractModelContent(plan.tool.type, response);
-    writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') ? '' : '\n'));
+    let resultText = extractModelContent(plan.tool.type, response);
+    // G6: hard-clamp to the PlanSpec's char budget (if any) before it lands in
+    // either the agent-result sidecar or a dispatched draft — the confirm
+    // card's "final output hard limit" promise must hold on-device, not just
+    // as a soft instruction baked into the model prompt.
+    resultText = enforcePlanCharLimit(plan, resultText);
+    writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
     const action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '');

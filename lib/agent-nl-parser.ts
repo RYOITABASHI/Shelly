@@ -62,6 +62,8 @@ export interface ParsedAgentDraft {
    *  same as before) or a { instruction, tool } object pinning a concrete tool for
    *  just that step. Absent/<2 = single-run. */
   orchestrationSteps?: Array<string | AgentOrchestrationStep>;
+  /** G6: hard character budget for the final orchestration output. */
+  charLimit?: number;
   /** Set when the utterance asked for a delivery action that isn't backed by a
    *  real `action.type` yet (currently: LINE-posting — "LINEに投稿して" has a
    *  scaffolded `line.send-message` app-act recipe but no wired detection here
@@ -610,6 +612,11 @@ const NAME_STRIP_RE = new RegExp(
     // stripped. Without it, '今日'→'今', '日本'→'本', '金融'→'融' all lost a char.
     '[日月火水木金土]曜日?',
     'を?(作って|作成して?|書いて|まとめて|要約して|送って|通知して|教えて|して)',
+    // Memory markers (G2): "…と覚えておいて" etc. are the remember-fact trigger,
+    // not the topic — they leaked into the derived display name.
+    '覚えて(?:おいて|て|といて)', '記憶して', 'メモして', '忘れないで',
+    '\\bremember(?:\\s+(?:that|to))?\\b', "\\bdon'?t\\s+forget(?:\\s+(?:that|to))?\\b",
+    '\\bkeep\\s+in\\s+mind(?:\\s+that)?\\b', '\\bnote\\s+that\\b',
     'every\\s*day', 'everyday', 'daily', 'each\\s+day',
     'every\\s+\\d+\\s*(?:min|mins|minute|minutes|hours?)',
     '\\bat\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?',
@@ -773,6 +780,7 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
       // Phase 6 tool-pin detector (detectToolPinnedSteps) only runs in the
       // non-preset branch below, on the user's own utterance text.
       orchestrationSteps: normalizeSteps(preset.orchestration).map((s) => s.instruction),
+      charLimit: preset.orchestration.charLimit,
       schedule,
       scheduleConfident: presetSched.confident || usePresetDefault,
       scheduleLabel: presetSched.confident

@@ -60,6 +60,14 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('資料を集めて整理して').needsWeb).toBe(false);
   });
 
+  it('classifies katakana code synonyms (プルリク/レビュー/コミット/マージ/イシュー) as code', () => {
+    // DEFERRED.md P3: katakana dev vocabulary used to fall through to 'general'
+    // (safe-side Gemini API) instead of the code route.
+    expect(detectRouteSignals('プルリクをレビューして').category).toBe('code');
+    expect(detectRouteSignals('プルリクエストをマージして').category).toBe('code');
+    expect(detectRouteSignals('このコミットのイシューを直して').category).toBe('code');
+  });
+
   it('classifies the web domain — academic (Perplexity) vs general (Gemini)', () => {
     expect(detectRouteSignals('最新の論文を集めて').webDomain).toBe('academic');
     expect(detectRouteSignals('ニュースを集めて').webDomain).toBe('general');

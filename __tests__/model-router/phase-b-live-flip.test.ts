@@ -33,7 +33,11 @@ const mkAgent = (over: Partial<Agent> = {}): Agent => ({
 });
 
 // Never a real secret — same fixture shape as shadow.test.ts / wiring.test.ts.
-const FAKE_OPENAI_KEY = 'sk-ant-api03-AAAABBBBCCCCDDDD';
+// Genuinely OpenAI-shaped (not sk-ant-): this suite's two assertions pin the
+// exact 'openai-like-key' secretKinds label, which the G1 follow-up fix
+// (lib/secret-guard.ts) now correctly reserves for sk-ant- Anthropic keys —
+// see __tests__/secret-guard.test.ts for that label-precision coverage.
+const FAKE_OPENAI_KEY = 'sk-abcdefghijklmnop1234567890';
 
 describe('MODEL-001 Phase B — secret branch live flip (dormant)', () => {
   afterEach(() => {

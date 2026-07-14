@@ -7,7 +7,7 @@ import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
-import { resolveEscalationLadder, attemptFailed, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
+import { resolveEscalationLadder, attemptFailed, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
@@ -929,8 +929,9 @@ async function bumpReusedSkillOnSuccess(
 /**
  * Phase 1 memory-write: after a successful TS-driven run, save the result digest
  * as a memory note when the agent opted in (memory.remember). Best-effort — a
- * memory failure never fails the run. (Scheduled-fire auto-capture is deferred;
- * see DEFERRED.md — the native fire path has no TS post-run hook yet.)
+ * memory failure never fails the run. (Scheduled/alarm-fired runs have no TS
+ * runtime alive to call this directly — see captureRunMemoryFromSyncedLogs,
+ * which captures the same digest at the next app-launch log sync instead.)
  */
 async function captureRunMemory(
   agentId: string,
@@ -960,6 +961,43 @@ async function captureRunMemory(
     );
   } catch (error) {
     console.warn('Failed to capture run memory for agent', agentId, error);
+  }
+}
+
+/**
+ * G2 follow-up: after an app-launch log sync, capture the LATEST success digest
+ * of every remember-enabled agent into memory — this is the only hook scheduled
+ * (alarm-fired) runs get, since they finish with no TS runtime alive. Note ids
+ * are content-derived (memoryNoteId), so repeated syncs are idempotent; an
+ * already-present note is skipped without a shell write. Mirrors
+ * captureRunMemory's semantics (latest success only — no historical backfill).
+ */
+async function captureRunMemoryFromSyncedLogs(
+  agents: Agent[],
+  runHistory: Record<string, AgentRunLog[]>,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  for (const agent of agents) {
+    if (!agent.memory?.remember) continue;
+    // Skip agents deleted since the sync snapshot — writing a note would
+    // resurrect their memory/<id>/ dir until the next orphan sweep.
+    if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
+    const latest = (runHistory[agent.id] ?? []).at(-1);
+    if (!latest || latest.status !== 'success') continue;
+    // Defense in depth: current scripts mark a local-context fallback as an
+    // error, but a log written by an OLDER script version could carry
+    // success + the fallback digest — never let that poison recall.
+    if (isLocalFallbackDigest(latest.outputPreview)) continue;
+    const digest = extractRunDigest(latest.outputPreview || '');
+    if (!digest) continue;
+    try {
+      const note = makeMemoryNote({ agentId: agent.id, type: 'result', text: digest, tags: agent.memory?.tags });
+      const existing = await readMemoryNotes(agent.id);
+      if (existing.some((n) => n.id === note.id)) continue;
+      await writeMemoryNote(runCommand, note);
+    } catch (error) {
+      logWarn('AgentMemory', `failed to capture synced run memory for ${agent.id}`, error);
+    }
   }
 }
 
@@ -1241,6 +1279,11 @@ export async function loadAgentsFromDisk(
     if (syncLogs) {
       // Sweep orphan scripts/logs left by past deletes (best-effort, non-blocking).
       void cleanupOrphanAgentFiles(runCommand);
+      // G2 follow-up: scheduled (alarm-fired) runs have no TS post-run hook, so
+      // their results never entered memory (recall is baked into scripts, but
+      // new result digests were only captured by foreground runs). Capture the
+      // latest success per remember-enabled agent from the just-synced history.
+      void captureRunMemoryFromSyncedLogs(agentsWithStatus, runHistory, runCommand);
     }
     if (repairSchedules) {
       scheduleAgentStartupRepair(agentsWithStatus, runCommand, repairDelayMs, shouldRepair);

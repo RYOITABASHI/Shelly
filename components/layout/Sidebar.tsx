@@ -31,11 +31,10 @@ import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import {
   deleteSkillRecipe,
-  distillSkillFromRun,
   readSkillRecipes,
-  writeSkillRecipe,
   type SkillRecipe,
 } from '@/lib/agent-skills';
+import { useSkillSaveOffer } from '@/hooks/use-skill-save-offer';
 import {
   listQuarantinedSkills,
   listImportedSkills,
@@ -265,37 +264,28 @@ export function Sidebar() {
   }, [loadSkills]);
 
   // Gated skill creation: after a successful run, offer to distill it into a
-  // reusable skill (user-visible — never silent). Skipped for agents that are
-  // already reusing a skill, so we don't re-offer the same recipe.
+  // reusable skill (user-visible — never silent). Shared with the one-shot
+  // @agent chat flow (use-ai-pane-dispatch.ts) via hooks/use-skill-save-offer.
+  const { offerSkillSave: offerSkillSaveForRun } = useSkillSaveOffer({
+    runCommand: runCommandForAgentSync,
+    onSaved: loadSkills,
+  });
+  // Agent-id shaped wrapper for call sites here — resolves the agent + its
+  // latest run log from the store (still-registered scheduled agent), then
+  // defers to the shared gate (skipped for agents already reusing a skill).
   const offerSkillSave = React.useCallback((agentId: string) => {
     const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
-    if (!agent || agent.skillId) return;
+    if (!agent) return;
     const latest = useAgentStore.getState().getRunHistory(agentId).at(-1);
-    if (!latest || latest.status !== 'success') return;
-    Alert.alert(t('sidebar.skill_save_title'), t('sidebar.skill_save_body', { name: agent.name }), [
-      {
-        text: t('sidebar.skill_save_yes'),
-        onPress: () => {
-          void (async () => {
-            try {
-              const recipe = distillSkillFromRun({
-                name: agent.name,
-                taskText: agent.prompt,
-                prompt: agent.prompt,
-                routeDecision: latest.routeDecision,
-                timestamp: latest.timestamp,
-              });
-              await writeSkillRecipe(runCommandForAgentSync, recipe);
-              await loadSkills();
-            } catch (error) {
-              Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
-            }
-          })();
-        },
-      },
-      { text: t('common.cancel'), style: 'cancel' },
-    ]);
-  }, [t, runCommandForAgentSync, loadSkills]);
+    offerSkillSaveForRun({
+      name: agent.name,
+      prompt: agent.prompt,
+      routeDecision: latest?.routeDecision,
+      timestamp: latest?.timestamp,
+      status: latest?.status,
+      alreadySkillId: agent.skillId,
+    });
+  }, [offerSkillSaveForRun]);
 
   const handleDeleteSkill = React.useCallback(async (skillId: string) => {
     try {

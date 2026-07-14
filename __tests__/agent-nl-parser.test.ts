@@ -562,6 +562,7 @@ describe('parseAgentNL — G6 pipeline preset', () => {
   it('a "パイプライン" request builds the multi-step collection preset (Mon/Fri, autonomous)', () => {
     const d = parseAgentNL('STEAMのパイプライン');
     expect(d.orchestrationSteps?.length).toBe(4);
+    expect(d.charLimit).toBe(280);
     expect(d.autonomous).toBe(true);
     expect(d.schedule).toBe('0 8 * * 1,5');
     expect(d.scheduleConfident).toBe(true);
@@ -689,6 +690,17 @@ describe('parseAgentNL — memory (Phase 1)', () => {
   it('still fires on "don\'t forget" (affirmative keep-this)', () => {
     const d = parseAgentNL("don't forget to water the plants");
     expect(d.memory?.remember).toBe(true);
+  });
+
+  it('strips memory markers from the derived display name (G2 P3)', () => {
+    // JP: the trigger phrase is not the topic.
+    const jp = parseAgentNL('私は簡潔な要約が好みだと覚えておいて');
+    expect(jp.name).not.toContain('覚えて');
+    expect(jp.name).toContain('簡潔な要約');
+    // EN: "remember that" is the trigger, the fact is the name.
+    const en = parseAgentNL('remember that I prefer concise summaries');
+    expect(en.name.toLowerCase()).not.toContain('remember');
+    expect(en.name.toLowerCase()).toContain('concise');
   });
 });
 

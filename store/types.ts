@@ -755,8 +755,6 @@ export interface AgentOrchestrationConfig {
   /** Total wall-clock budget in ms (clamped to a hard ceiling). */
   totalTimeoutMs?: number;
   /** G6: target character budget for the FINAL step (e.g. an X/Twitter digest).
-   *  v1 is a SOFT budget — baked into the final step's instruction. The hard
-   *  save-path guarantee (enforceCharLimit) + full plumbing through the create
-   *  flow are not wired yet; see DEFERRED.md. */
+   *  Enforced by the PlanSpec executor before result persistence/draft writes. */
   charLimit?: number;
 }

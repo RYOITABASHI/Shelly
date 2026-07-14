@@ -160,8 +160,8 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 **後回し**:
 1. ~~クラウドキー欠如のフォールバック（P1）~~ ✅ **解決済み** — PR #121（コミット `ae3c88ba2`, 2026-07-14）で `resolveEscalationLadder` にキー未設定 cloud バックエンド（Perplexity/Gemini）の preflight を追加、local への degrade を実装。atomic script write（tmp+rename）と consent re-bake の race 対策も同 PR で解決。
 2. **Qwen-0.8B 分類の任意導入（P2）** — 現状はヒューリスティックのみ（/goal は許容）。決定論ヒューリスティックで足りるか実運用で測ってから。
-3. **キーワード集合の重複（P2）** — scorer（CODE_KW 等）と `suggestTool`（CODE_KEYWORDS 等）が別々。drift しうるので将来統合。
-4. **カタカナ code キーワード（P3）** — プルリク/レビュー 等が未対応で general に落ちる（安全側）。
+3. ✅ **キーワード集合の重複（P2）** — **解消**。scorer の `CODE_KW`/`ACADEMIC_WEB_KW`/`TRANSFORM_KW` と word-boundary-safe な `matchesKeyword`/`hasAny` を export、`suggestTool`（agent-tool-router.ts）がドリフトしていた自前コピーを廃して同じ配列を re-import。Academic は広い `RESEARCH_KW` ではなく狭い `ACADEMIC_WEB_KW` を alias（`出典`/`調べ`等の汎用引用語が有料 Perplexity ティアへ誤ルートするレビュー指摘済みバグの再現を回避）。副次的に旧 `.includes()` の部分一致バグ（"pr" が "previous" に誤爆等）も解消。
+4. ✅ **カタカナ code キーワード（P3）** — **解消**。`CODE_KW` に `プルリク`/`プルリクエスト`/`レビュー`/`コミット`/`マージ`/`イシュー` を追加。PROSE_KW/TRANSFORM_KW/RESEARCH_KW/ACADEMIC_WEB_KW との衝突なしを確認済み。G4 Phase 2b の統合により `suggestTool` も自動的に同じ配列を参照するので二重対応は不要。
 
 **Why not now**: スコアリング・可視化・on-device-first・ハードガード優先という Phase 2b の核心は立証済み。クラウドキー fallback は G5/G6 後に着手（実害は cloud キー未設定ユーザーの genuine-research 時のみ）。
 
@@ -171,7 +171,7 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 **状態**: G3（スキルレジストリ）をコア実機 PASS して main にマージ済み（PR #87, build 1594）。蒸留 save ゲート / SKILLS UI / Vault ミラー / **日本語 reuse マッチ（CJK バイグラム tokenizer）+ レシピ注入** / success-count / no-cloud-leak を立証。
 
 **後回し**:
-1. **one-shot `@agent` の skill 保存** — 現状 save 提案は scheduled の Run now のみ。one-shot（ephemeral 削除）経路では蒸留提案が出ない。最も一般的な会話フローなので、one-shot 成功時に gated 提案を足す価値あり。
+1. ✅ **one-shot `@agent` の skill 保存** — **解消**。Sidebar の gated save プロンプトを `hooks/use-skill-save-offer.ts` に抽出（純粋ゲート `shouldOfferSkillSave` + Alert/distillSkillFromRun/writeSkillRecipe をラップする `useSkillSaveOffer`）。one-shot 経路（`hooks/use-ai-pane-dispatch.ts` の `confirmAgentDraft`）はエージェント削除（`finally`）前のローカル変数（`created`/`log`）から呼び出し、削除後の store 再参照はしない。4条件ゲート（エージェント無し/既にskill有り/実行未了/非success）は変更なし。
 2. **セマンティック / 埋め込みマッチ** — 現状は tag/keyword + CJK バイグラム overlap。ローカル埋め込みでの類似検索は未実装。
 3. **スキルのアプリ内編集** — 現状は閲覧 / 削除のみ。trigger/prompt の編集 UI なし。
 4. **tokenizer のカバレッジ境界** — 半角カナ（U+FF61–FF9F）・CJK 拡張B（補助面）は未対応。通常の JP 入力では問題ないが既知境界。
@@ -184,10 +184,10 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 **状態**: G2（永続記憶）はコアを build 1591 で実機 PASS して main にマージ済み（PR #86）。memory-write（fact + result digest）/ recall 注入（生成スクリプトに焼かれることを実機確認）/ Memory UI / on-device 実行を立証。下記は first slice から意図的に外した。
 
 **後回し**:
-1. **スケジュール fire の自動 result 取り込み** — 現状 `captureRunMemory` は TS 経路（runAgentNow / Run now）のみ。native のスケジュール発火には TS post-run フックが無いため、定期実行は結果を自動記憶しない（recall 側はスクリプトに焼かれるので効く）。native 側 finish フックか、次回 materialize 時の結果ログ取り込みで対応。
+1. ✅ **スケジュール fire の自動 result 取り込み** — **解消**。`loadAgentsFromDisk` の log 同期後に `captureRunMemoryFromSyncedLogs` が remember 有効エージェントの最新 success digest を capture（起動時 1 回・fire-and-forget）。note id は content-derived で冪等、既存 id はスキップ。defense in depth: 旧スクリプト版ログの success+fallback digest は `isLocalFallbackDigest` で除外（recall 汚染防止）、削除済みエージェントへの書き込みガード付き。
 2. **セマンティック / 埋め込み recall** — 現状は tag/keyword overlap + recency のオフライン score のみ。ローカル埋め込みでの類似検索は未実装。
 3. **per-fire recall 鮮度** — recall は materialize 時にスクリプトへ焼かれる。スケジュール agent はインストール/起動修復時点の記憶で固定され、毎発火で再読込しない。頻繁に記憶が変わる用途では stale になりうる。
-4. **name strip の漏れ** — 「覚えておいて」等の memory マーカーが PROJECT NAME に残る（表示のみ、動作影響なし）。`NAME_STRIP_RE` にマーカーを追加して整形。
+4. ✅ **name strip の漏れ** — **解消**。`NAME_STRIP_RE` に JP/EN の memory マーカー（覚えておいて系 / remember that / don't forget / keep in mind / note that）を追加。表示名は fact を残しトリガー句を落とす（テスト付き）。
 
 **Why not now**: 記憶の書き込み・想起・UI・on-device 経路という Phase 1 の核心は立証済み。上記は品質/網羅性の上積みで、G3（スキル）の価値が勝る。
 
@@ -250,19 +250,12 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 
 **Why not now**: 報告された症状（対話ターミナルの HTTPS git）は解決済。ユーザーの無人クラウド保存は DriveSync が担うため git push 自体が必須でない（出力先=Obsidian フォルダ書き込みで充足）。agent からの HTTPS git は将来 Codex-on-Shelly の自動 push 等で必要になった時点で対応。
 
-### G6 パイプライン — charLimit のハード結線（v1 はソフトのみ）
+### G6 パイプライン — charLimit のハード結線
 
 **優先度**: P2
-**状態**: v1 出荷済（`buildSteamPipeline` 4段＋`enforceCharLimit`/`clampCharLimit` 実装・テスト済）。文字数制限は**最終段の指示文（「N文字以内・超過厳禁」）にベイクしたソフト保証のみ**。
+**状態**: ✅ **解消**。`orchestration.charLimit` を `parseAgentNL`（G6プリセット分岐）→ `ConfirmedAgentDraft`（AgentConfirmCard）→ `createAgent` の orchestration config → PlanSpec `limits.charLimit` へ配線し、`shelly-plan-executor.js`（scripts/ + assets/ 両ミラー）がモデル結果を `agent-result` sidecar / draft dispatch へ渡す前に code point 上限内へハードクランプ（`enforcePlanCharLimit`、文末境界優先・フォールバックで省略記号 `…`）。確認カードには「最終出力のハード上限」を表示（`agentcard.char_limit` i18n キー、en/ja）。`validateAgentPlanSpec`/host 側 `validatePlan` 双方に `limits.charLimit` の型ガードを追加。
 
-**ギャップ（agent-reviewed）**:
-- `AgentOrchestrationConfig.charLimit` 型・`clampCharLimit`・`enforceCharLimit` は実装済だが**実経路では未配線**：`detectPipelinePreset` は `orchestration.charLimit` を落とし（`steps` のみ→`orchestrationSteps`）、`ConfirmedAgentDraft`/`createAgent` に charLimit フィールドが無い。よって型・ヘルパーは現状 dead code（ソフト指示だけが効く）。
-
-**戻す条件**:
-1. charLimit を draft→confirm card→createAgent まで通す（`ConfirmedAgentDraft.charLimit`、`createAgent` の orchestration 構築に反映）。
-2. 最終段の保存前に `enforceCharLimit` を適用してハード保証（最終段 materialize に charLimit を渡し、`save_draft_result` 直前で result file を上限内に丸める）。
-
-**Why not now**: 確認カードが登録をゲートし、ソフト指示でモデルは上限を守るので v1 は成立。ハード保証は X 投稿の厳密 280 字運用を始める時に必要。
+**テスト**: `agent-nl-parser.test.ts`（プリセットの `charLimit` 伝播）、`agent-plan-spec.test.ts`（PlanSpec への `clampCharLimit` 反映）、`plan-executor.test.ts`（実際の実行でドラフト/`agent-result` 双方が40字クランプされ `…` で終わることを確認）。
 
 **補足（既存特性・G6 で顕在化）**: orchestration の各ステップは `buildStepPrompt(base, step, priorResults)` の**全文**で `detectRouteSignals` される。base prompt は中立化済（`{topic}の定例レポート`）だが、**前段の収集結果（最新ニュース本文）が priorResults に載ると、要約ステップでも needsWeb が立ち web ルートになり得る**。dead-end ではない（cloud で要約は可能、consent ON）が「要約は端末内」の意図が崩れ cloud quota を食う。根治はステップを instruction でルートする `routeHint`（resolveEscalationLadder に渡す）だが orchestration 共通の変更で面積が大きいため後回し。P2。
 
