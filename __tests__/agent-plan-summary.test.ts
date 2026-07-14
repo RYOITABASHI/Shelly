@@ -213,4 +213,15 @@ describe('draftToConfirmedAgentDraft', () => {
     const confirmed = draftToConfirmedAgentDraft(baseDraft());
     expect(confirmed.autonomous).toBe(false);
   });
+
+  it('carries a conversationally slot-filled notificationTrigger through instead of dropping it', () => {
+    // Regression coverage for the conversational-slot-fill recovery
+    // (lib/agent-slot-fill.ts's needsNotificationTrigger/applySlotAnswer can
+    // populate draft.notificationTrigger via a follow-up chat question) — this
+    // used to be hardcoded to `null` here, silently discarding an answer the
+    // user was just asked for on the auto-register/chat-confirm path.
+    const draft = baseDraft({ notificationTrigger: { packageNames: ['com.whatsapp'] } });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.notificationTrigger).toEqual({ packageNames: ['com.whatsapp'] });
+  });
 });

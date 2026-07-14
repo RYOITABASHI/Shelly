@@ -44,6 +44,7 @@ import type { ToolChoice } from '@/store/types';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
+import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
 import en from '@/lib/i18n/locales/en';
@@ -240,6 +241,60 @@ export function useAIPaneDispatch(paneId: string) {
       const store = useAIPaneStore.getState();
       const { settings } = useSettingsStore.getState();
 
+      // Shared "draft is complete, decide how to present it" step — reused by
+      // BOTH (a) the slot-fill resume branch below, once the last missing
+      // field has just been answered, and (b) the fresh `@agent <NL>` create
+      // branch further down, once nextMissingSlot reports nothing missing.
+      // A draft only ever reaches this function once conversational
+      // slot-filling (schedule/notificationTrigger/outputPath) has nothing
+      // left to ask — shouldUseChatConfirm/shouldAutoRegisterDraft (Phase 7 /
+      // 2026-07-14 default-off registration confirm) only make sense for a
+      // draft that's actually fireable, never a partially-specified one.
+      const presentDraftForConfirmation = async (
+        agentLabel: ChatMessage['agent'] | undefined,
+        draft: ParsedAgentDraft,
+      ): Promise<void> => {
+        // Phase 7: app-act (e.g. X-posting) and tool-pinned orchestration
+        // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
+        // entirely — the project owner explicitly rejected a card/modal for
+        // NEW confirmation surfaces and wants plain chat-native NL confirm
+        // instead. Every other draft shape (including plain auto-routed
+        // multi-step chains from Phase 4) is UNCHANGED and still uses the
+        // card. See lib/agent-plan-summary.ts's shouldUseChatConfirm.
+        const useChatConfirm = shouldUseChatConfirm(draft);
+        const draftMessageId = generateId();
+        store.addMessage(paneId, {
+          id: draftMessageId,
+          role: 'assistant',
+          content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
+          timestamp: Date.now(),
+          agent: agentLabel,
+          agentDraft: draft,
+          agentCardState: 'pending',
+          agentChatConfirm: useChatConfirm,
+        });
+        // Project owner directive 2026-07-14: "デフォは承認なしな。任意で確認"
+        // (default is no-approval, confirmation optional) — the EXISTING
+        // AgentConfirmCard's mandatory Confirm tap becomes skippable by
+        // default. Scope: ONLY the non-chat-confirm (AgentConfirmCard-
+        // eligible) path — app-act/tool-pinned drafts (useChatConfirm) are
+        // a SEPARATE, already-merged (#135) chat-native flow this task
+        // must not touch. The hard "never register an agent that will
+        // never fire" requirement is NOT an approval-frequency knob (see
+        // hasFireableSchedule's own doc comment) — a draft that still
+        // needs a schedule restated always keeps the pending card
+        // regardless of this setting. draftToConfirmedAgentDraft mirrors
+        // AgentConfirmCard's own unedited-default Confirm exactly (same
+        // helper the chat-native flow already reuses for app-act/
+        // tool-pinned), so auto-registering here can never disagree with
+        // what tapping Confirm on the card would have produced.
+        const requireRegistrationConfirm =
+          useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
+        if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
+          await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
+        }
+      };
+
       // ── Conversational slot-filling (Phase 0 §2.1 conversational creation):
       // if the most recent assistant message is waiting on an answer to a
       // specific agent-creation field, route this message there instead of
@@ -267,6 +322,13 @@ export function useAIPaneDispatch(paneId: string) {
         !pendingIsStale
       ) {
         const { field, question, partialDraft, attemptCount } = lastSlotFillMsg.pendingSlotFill;
+        // Carry the originating question's chat-bubble agent label through
+        // the rest of this slot-fill exchange (re-asks, the next question,
+        // and the eventual confirm/chat-confirm message) so the pane's icon/
+        // color stays consistent turn to turn instead of reverting to the
+        // default once the pending-answer branch takes over from the fresh
+        // `@agent <NL>` create branch that asked the first question.
+        const agentLabel = lastSlotFillMsg.agent;
         store.addMessage(paneId, {
           id: generateId(),
           role: 'user',
@@ -285,6 +347,7 @@ export function useAIPaneDispatch(paneId: string) {
             role: 'assistant',
             content: cancelStrings['slot_fill.cancelled'],
             timestamp: Date.now(),
+            agent: agentLabel,
           });
           return;
         }
@@ -297,6 +360,7 @@ export function useAIPaneDispatch(paneId: string) {
             role: 'assistant',
             content: question,
             timestamp: Date.now(),
+            agent: agentLabel,
             pendingSlotFill: { field, question, partialDraft: updatedDraft, attemptCount: attemptCount + 1 },
           });
           return;
@@ -330,17 +394,20 @@ export function useAIPaneDispatch(paneId: string) {
             role: 'assistant',
             content: missing.question,
             timestamp: Date.now(),
+            agent: agentLabel,
             pendingSlotFill: { field: missing.field, question: missing.question, partialDraft: updatedDraft, attemptCount: 0 },
           });
         } else {
-          store.addMessage(paneId, {
-            id: generateId(),
-            role: 'assistant',
-            content: '',
-            timestamp: Date.now(),
-            agentDraft: updatedDraft,
-            agentCardState: 'pending',
-          });
+          // Nothing left to ask — hand off to the SAME chat-confirm/
+          // auto-register/card decision the fresh `@agent <NL>` create
+          // branch uses (see presentDraftForConfirmation above), instead of
+          // always falling back to the classic AgentConfirmCard the way this
+          // resume branch originally did. A draft resolved via slot-fill is
+          // just as eligible for #135's chat-native confirm (e.g. an app-act
+          // draft that also happened to be missing a schedule) and tonight's
+          // default-off auto-registration as one that never needed
+          // slot-filling in the first place.
+          await presentDraftForConfirmation(agentLabel, updatedDraft);
         }
         return;
       }
@@ -441,45 +508,10 @@ export function useAIPaneDispatch(paneId: string) {
               });
               return;
             }
-            // Phase 7: app-act (e.g. X-posting) and tool-pinned orchestration
-            // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
-            // entirely — the project owner explicitly rejected a card/modal for
-            // NEW confirmation surfaces and wants plain chat-native NL confirm
-            // instead. Every other draft shape (including plain auto-routed
-            // multi-step chains from Phase 4) is UNCHANGED and still uses the
-            // card. See lib/agent-plan-summary.ts's shouldUseChatConfirm.
-            const useChatConfirm = shouldUseChatConfirm(draft);
-            const draftMessageId = generateId();
-            store.addMessage(paneId, {
-              id: draftMessageId,
-              role: 'assistant',
-              content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
-              timestamp: Date.now(),
-              agent: agent as ChatMessage['agent'],
-              agentDraft: draft,
-              agentCardState: 'pending',
-              agentChatConfirm: useChatConfirm,
-            });
-            // Project owner directive 2026-07-14: "デフォは承認なしな。任意で確認"
-            // (default is no-approval, confirmation optional) — the EXISTING
-            // AgentConfirmCard's mandatory Confirm tap becomes skippable by
-            // default. Scope: ONLY the non-chat-confirm (AgentConfirmCard-
-            // eligible) path — app-act/tool-pinned drafts (useChatConfirm) are
-            // a SEPARATE, already-merged (#135) chat-native flow this task
-            // must not touch. The hard "never register an agent that will
-            // never fire" requirement is NOT an approval-frequency knob (see
-            // hasFireableSchedule's own doc comment) — a draft that still
-            // needs a schedule restated always keeps the pending card
-            // regardless of this setting. draftToConfirmedAgentDraft mirrors
-            // AgentConfirmCard's own unedited-default Confirm exactly (same
-            // helper the chat-native flow already reuses for app-act/
-            // tool-pinned), so auto-registering here can never disagree with
-            // what tapping Confirm on the card would have produced.
-            const requireRegistrationConfirm =
-              useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
-            if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
-              await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
-            }
+            // Nothing missing — hand off to the shared chat-confirm/
+            // auto-register/card decision (see presentDraftForConfirmation
+            // above the slot-fill resume branch).
+            await presentDraftForConfirmation(agent as ChatMessage['agent'], draft);
             return;
           } else if (agentResult.type === 'run') {
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand);

@@ -207,6 +207,14 @@ export function summarizeAgentDraftAsText(draft: ParsedAgentDraft): string {
  * re-validate the schedule and will happily pass through a null schedule for the
  * ambiguous (needs-restatement) case, registering a one-shot instead of the
  * recurring agent the user actually asked for.
+ *
+ * notificationTrigger passes through draft.notificationTrigger rather than being
+ * hardcoded null: conversational slot-filling (lib/agent-slot-fill.ts) can
+ * populate this field on the draft when the utterance implies a
+ * notification-triggered agent, and a draft only ever reaches this function
+ * (via presentDraftForConfirmation in hooks/use-ai-pane-dispatch.ts) after
+ * slot-filling has finished asking — dropping it here would silently discard
+ * a trigger the user was just asked for and answered.
  */
 export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAgentDraft {
   return {
@@ -220,6 +228,6 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     memory: draft.memory,
     skillId: draft.matchedSkill?.id,
     orchestrationSteps: draft.orchestrationSteps,
-    notificationTrigger: null,
+    notificationTrigger: draft.notificationTrigger ?? null,
   };
 }
