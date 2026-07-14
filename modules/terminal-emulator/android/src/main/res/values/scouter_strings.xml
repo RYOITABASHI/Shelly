@@ -63,6 +63,8 @@
   <string name="scouter_notification_agent_result_unavailable">“%1$s”: backend temporarily busy (will retry next schedule)</string>
   <string name="scouter_notification_agent_result_no_preview">No preview</string>
   <string name="scouter_notification_agent_action_webhook_host">Destination: %1$s</string>
+  <string name="scouter_notification_agent_action_webhook_known_host">Known host — previously vetted in Settings. Approval is still required.</string>
+  <string name="scouter_notification_agent_action_webhook_new_host">New host — not in your trusted-host list. Review carefully before approving.</string>
   <string name="scouter_notification_agent_action_payload">Payload: %1$s</string>
   <string name="scouter_notification_agent_action_safety">Safety: %1$s</string>
   <string name="scouter_notification_agent_action_reason">Reason: %1$s</string>

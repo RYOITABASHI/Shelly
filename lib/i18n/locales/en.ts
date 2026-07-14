@@ -314,6 +314,11 @@ const en: Record<string, string> = {
   'agentplan.confirm_prompt': 'Register this agent as described above? Cancel and re-describe it if you want changes.',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
+  'webhook_allowlist.title': 'Webhook trusted hosts',
+  'webhook_allowlist.description': 'Hosts you have already vetted. Every webhook still requires approval.',
+  'webhook_allowlist.placeholder': 'hooks.example.com',
+  'webhook_allowlist.add': 'ADD',
+  'webhook_allowlist.invalid': 'Enter a hostname only, without a scheme, port, path, or wildcard.',
   'codex_login.title': 'Codex Login',
   'codex_login.confirm_title': 'Sign in with ChatGPT?',
   'codex_login.confirm_body': 'Opens the Browser Pane to auth.openai.com for the device-code flow. After you approve in the browser, Shelly writes ~/.codex/auth.json (mode 0600). Run `shelly doctor` afterwards to confirm.',
@@ -1730,6 +1735,10 @@ const en: Record<string, string> = {
   'agent_action_confirm_appact_recipe': 'App action',
   'agent_action_confirm_appact_preview': 'Content preview',
   'agent_action_confirm_appact_failed': 'Failed to run the app action. The request was declined.',
+  'agent_action_confirm_webhook_host': 'Destination host',
+  'agent_action_confirm_webhook_known_host': 'Known host — previously vetted in Settings. Approval is still required.',
+  'agent_action_confirm_webhook_new_host': 'New host — not in your trusted-host list. Review carefully before approving.',
+  'agent_action_confirm_webhook_preview': 'Payload preview (first 500 characters)',
 };
 
 export default en;

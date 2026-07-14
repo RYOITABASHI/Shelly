@@ -183,6 +183,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
     preview?: string | null;
     destinationHost?: string | null;
+    destinationHostAllowlisted?: boolean;
     command?: string | null;
     safetyLevel?: string | null;
     safetyReason?: string | null;
@@ -207,6 +208,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
     preview?: string | null;
     destinationHost?: string | null;
+    destinationHostAllowlisted?: boolean;
     command?: string | null;
     safetyLevel?: string | null;
     safetyReason?: string | null;

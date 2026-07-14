@@ -314,6 +314,11 @@ const ja: Record<string, string> = {
   'agentplan.confirm_prompt': 'この内容で登録しますか？ 変更したい場合はキャンセルしてから言い直してください。',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
+  'webhook_allowlist.title': 'Webhook 信頼済みホスト',
+  'webhook_allowlist.description': '事前に確認済みのホストです。登録後もWebhookごとの承認は必須です。',
+  'webhook_allowlist.placeholder': 'hooks.example.com',
+  'webhook_allowlist.add': '追加',
+  'webhook_allowlist.invalid': 'スキーム、ポート、パス、ワイルドカードを含まないホスト名を入力してください。',
   'codex_login.title': 'Codexログイン',
   'codex_login.confirm_title': 'ChatGPTでサインインしますか？',
   'codex_login.confirm_body': 'Browser Paneで auth.openai.com を開き、デバイスコード認証を行います。ブラウザで承認すると、Shelly が ~/.codex/auth.json (mode 0600) を書き込みます。完了後は `shelly doctor` で確認できます。',
@@ -1729,6 +1734,10 @@ const ja: Record<string, string> = {
   'agent_action_confirm_appact_recipe': 'アプリ操作',
   'agent_action_confirm_appact_preview': '投稿内容プレビュー',
   'agent_action_confirm_appact_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
+  'agent_action_confirm_webhook_host': '送信先ホスト',
+  'agent_action_confirm_webhook_known_host': '既知のホスト — Settingsで確認済みです。今回の承認も引き続き必要です。',
+  'agent_action_confirm_webhook_new_host': '新しいホスト — 信頼済みリストにありません。承認前に十分確認してください。',
+  'agent_action_confirm_webhook_preview': 'ペイロードのプレビュー（先頭500文字）',
 };
 
 export default ja;

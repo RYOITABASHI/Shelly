@@ -38,6 +38,7 @@ import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/age
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
+import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 
 type Props = {
   visible: boolean;
@@ -109,6 +110,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <LanguageSection />
             <AgentsSection visible={visible} />
             <ApiKeysSection />
+            <WebhookHostAllowlistSection />
             <DmPairingSection />
             <UpdatesSection onOpenBuilds={() => onOpenBuilds?.()} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
@@ -1242,6 +1244,60 @@ function ApiKeysSection() {
   );
 }
 
+function WebhookHostAllowlistSection() {
+  const { t } = useTranslation();
+  const hosts = useSettingsStore((s) => s.settings.webhookHostAllowlist ?? []);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const [draft, setDraft] = useState('');
+
+  const persist = async (next: string[]) => {
+    updateSettings({ webhookHostAllowlist: next });
+    await flushPendingAgentEnvSync(t('webhook_allowlist.title'));
+  };
+
+  const addHost = async () => {
+    const host = normalizeWebhookHost(draft);
+    if (!host) {
+      Alert.alert(t('webhook_allowlist.invalid'));
+      return;
+    }
+    if (!hosts.includes(host)) await persist([...hosts, host]);
+    setDraft('');
+  };
+
+  return (
+    <Section title={t('webhook_allowlist.title')}>
+      <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{t('webhook_allowlist.description')}</Text>
+      {hosts.map((host) => (
+        <View key={host} style={[styles.integrationRow, borderedChromeStyle()]}>
+          <MaterialIcons name="verified-user" size={13} color={C.accent} />
+          <Text selectable style={[styles.integrationLabel, { color: C.text1 }]}>{host}</Text>
+          <View style={{ flex: 1 }} />
+          <Pressable onPress={() => void persist(hosts.filter((item) => item !== host))} hitSlop={8}>
+            <MaterialIcons name="delete-outline" size={15} color={C.errorText} />
+          </Pressable>
+        </View>
+      ))}
+      <View style={styles.apiKeyEditRow}>
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          onSubmitEditing={() => void addHost()}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('webhook_allowlist.placeholder')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+        <Pressable onPress={() => void addHost()} style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }]} hitSlop={6}>
+          <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>{t('webhook_allowlist.add')}</Text>
+        </Pressable>
+      </View>
+    </Section>
+  );
+}
+
 // ─── Codex login (ChatGPT subscription device-auth) ─────────────────────────
 // Minimal trigger for the existing `codex-login --open` flow defined in
 // HomeInitializer.kt:1493 and implemented in assets/shelly-codex-auth.js.
@@ -1729,6 +1785,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     marginTop: 4,
+  },
+  apiKeyEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 5,
   },
   apiKeyHint: {
     color: C.text3,

@@ -776,7 +776,7 @@ cap_workspace_exec() {
 webhook_destination_host() {
   url="$1"
   if node_usable; then
-    if SHELLY_WEBHOOK_URL="$url" shelly_node -e 'try { const u = new URL(process.env.SHELLY_WEBHOOK_URL || ""); if (u.protocol !== "https:" || !u.hostname) process.exit(1); process.stdout.write(u.host || u.hostname); } catch (_) { process.exit(1); }' 2>/dev/null; then
+    if SHELLY_WEBHOOK_URL="$url" shelly_node -e 'try { const u = new URL(process.env.SHELLY_WEBHOOK_URL || ""); if (u.protocol !== "https:" || !u.hostname) process.exit(1); process.stdout.write(u.hostname.toLowerCase()); } catch (_) { process.exit(1); }' 2>/dev/null; then
       return 0
     fi
   fi
@@ -784,9 +784,18 @@ webhook_destination_host() {
     https://*) ;;
     *) return 1 ;;
   esac
-  host=$(printf '%s' "$url" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*$##')
+  host=$(printf '%s' "$url" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*$##; s/:.*$//' | tr '[:upper:]' '[:lower:]')
   [ -n "$host" ] || return 1
   printf '%s' "$host"
+}
+
+webhook_host_is_allowlisted() {
+  candidate=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  configured=$(printf '%s' "\${SHELLY_WEBHOOK_HOST_ALLOWLIST:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case ",$configured," in
+    *",$candidate,"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 sha256_file() {
@@ -849,6 +858,7 @@ write_action_approval_request() {
   result_file="$3"
   destination_host="\${4:-}"
   payload_path="\${5:-}"
+  destination_host_allowlisted="\${6:-false}"
   mkdir -p "$ACTION_APPROVAL_DIR" "$ACTION_APPROVAL_REPLY_DIR" "$LOG_DIR"
   preview_json=$(json_escape_text "$preview")
   agent_json=$(json_escape_text "$AGENT_ID")
@@ -886,7 +896,7 @@ write_action_approval_request() {
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","destinationHostAllowlisted":$destination_host_allowlisted,"command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -1079,7 +1089,9 @@ dispatch_agent_action() {
       webhook_response="$LOG_DIR/webhook-response-$(date +%s).txt"
       webhook_error="$LOG_DIR/webhook-error-$(date +%s).txt"
       write_webhook_payload "$webhook_payload" "success" "$preview" "$result_file"
-      write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload"
+      webhook_host_allowlisted=false
+      if webhook_host_is_allowlisted "$webhook_host"; then webhook_host_allowlisted=true; fi
+      write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" "$webhook_host_allowlisted"
       wait_action_approval "webhook" || return 1
       set +e
       SHELLY_CAP_APPROVED=1 HTTP_TIMEOUT_SECONDS="\${WEBHOOK_TIMEOUT_SECONDS:-30}" http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload" "$webhook_response" "$webhook_error"

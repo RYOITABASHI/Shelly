@@ -9,6 +9,7 @@ import { saveApiKey, loadApiKeys, isApiKeyField, stripApiKeys, deleteLegacySecre
 import { useSoundStore } from '@/lib/sounds';
 import { useAgentStore } from '@/store/agent-store';
 import { logInfo, logError } from '@/lib/debug-logger';
+import { normalizeWebhookHostAllowlist } from '@/lib/webhook-host-allowlist';
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // escalate to Codex by default.
   autonomousCloudConsent: false,
   autonomousCloudOnExhaustion: 'escalate' as const,
+  webhookHostAllowlist: [],
   // Agent output: default to a clean, findable local folder. Switch to 'obsidian'
   // (with a Vault path) or 'custom' to unify saved drafts elsewhere.
   agentOutputTarget: 'local' as const,
@@ -191,6 +193,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ...(settingsRaw ? JSON.parse(settingsRaw) : {}),
         ...secureKeys,
       };
+      settings.webhookHostAllowlist = normalizeWebhookHostAllowlist(
+        Array.isArray(settings.webhookHostAllowlist) ? settings.webhookHostAllowlist : [],
+      );
       let shouldPersist = false;
       if (LEGACY_LOCAL_LLM_MODELS.has(settings.localLlmModel)) {
         settings.localLlmModel = DEFAULT_LOCAL_LLM_MODEL;
@@ -259,6 +264,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       if ('autonomousCloudOnExhaustion' in newSettings) {
         envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD_STOP', newSettings.autonomousCloudOnExhaustion === 'stop' ? '1' : '0']);
       }
+      if ('webhookHostAllowlist' in newSettings && Array.isArray(newSettings.webhookHostAllowlist)) {
+        const normalizedHosts = normalizeWebhookHostAllowlist(newSettings.webhookHostAllowlist);
+        updated.webhookHostAllowlist = normalizedHosts;
+        envUpdates.push(['SHELLY_WEBHOOK_HOST_ALLOWLIST', normalizedHosts.join(',')]);
+      }
       if ('agentOutputTarget' in newSettings && typeof newSettings.agentOutputTarget === 'string') {
         envUpdates.push(['SHELLY_AGENT_OUTPUT_TARGET', newSettings.agentOutputTarget]);
       }
@@ -310,6 +320,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resetSettings: () => {
     set({ settings: DEFAULT_SETTINGS });
     AsyncStorage.setItem('shelly_settings', JSON.stringify(DEFAULT_SETTINGS)).catch(() => {});
+    const cmd = `mkdir -p ~/.shelly/agents && (grep -Ev '^SHELLY_WEBHOOK_HOST_ALLOWLIST=' ~/.shelly/agents/.env 2>/dev/null || true; printf '%s\\n' ${shQuote(`SHELLY_WEBHOOK_HOST_ALLOWLIST=${dotenvValue('')}`)}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
+    useAgentStore.getState().setPendingEnvSync(cmd);
   },
 
   setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),
