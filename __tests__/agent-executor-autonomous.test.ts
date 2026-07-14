@@ -396,11 +396,33 @@ describe('generateRunScript — abort-safe shell (exit 141 root-causes)', () => 
     // sed | head -c 500 SIGPIPEs sed on any result > 500 bytes (every real answer)
     // → exit 141 under set -euo pipefail. Must filter to a file, then head the file.
     expect(s).toContain('sed -E \'/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d\' "$file" 2>/dev/null > "$cleaned"');
-    expect(s).toContain('head -c 500 "$cleaned" 2>/dev/null | tr');
+    // SECRET-001: redact_secrets_text now runs against the $cleaned FILE (still
+    // file-not-pipe, same abort-safety) BEFORE the 500-byte head, and head reads
+    // ITS output file ($redacted) rather than $cleaned directly.
+    expect(s).toContain('redact_secrets_text "$cleaned" > "$redacted" 2>/dev/null');
+    expect(s).toContain('head -c 500 "$redacted" 2>/dev/null | tr');
     // The OLD sed-piped-into-head form (the SIGPIPE source) must be gone. (A fixed
     // short error string at line ~255 still pipes into head -c 500 — that is safe
     // because its producer never exceeds 500 bytes, so it is not matched here.)
     expect(s).not.toContain('2>/dev/null \\\n    | head -c 500 | tr');
+  });
+
+  it('redact_secrets_text mirrors PlanSpec REDACT_PATTERNS and stays file-based (no stdin-pipe SIGPIPE)', () => {
+    const s = generateRunScript(agent({ type: 'local' }));
+    expect(s).toContain("redact_secrets_text() {");
+    // Takes a file path (process.argv[2]), never stdin — a heredoc already owns
+    // fd0 for the node script source itself, so reading real data from stdin
+    // too would silently read empty/garbage.
+    expect(s).toContain("const file = process.argv[2];");
+    expect(s).toContain('try { data = fs.readFileSync(file, \'utf8\'); } catch (_) {}');
+    // Same secret classes as scripts/shelly-plan-executor.js's REDACT_PATTERNS.
+    expect(s).toContain('/\\bsk-ant-[A-Za-z0-9_-]{20,}\\b/g');
+    expect(s).toContain('/\\bAIza[0-9A-Za-z_-]{25,}\\b/g');
+    expect(s).toContain('/\\bBearer\\s+[A-Za-z0-9._~+/=-]{16,}\\b/gi');
+    // Non-node fallback still redacts (best-effort) instead of silently passing
+    // raw secrets through when node is unavailable.
+    expect(s).toContain("sed -E \\");
+    expect(s).toContain("-e 's/sk-ant-[A-Za-z0-9_-]{20,}/<redacted>/g'");
   });
 
   it('the concurrency check uses find|while, not find -exec sh -c with {} (toybox-safe)', () => {
