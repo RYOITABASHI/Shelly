@@ -34,6 +34,17 @@ export interface AutonomyPolicy {
   denyPatterns: string[];
   /** patterns the operator pre-approved: upgrade gray→allow (never overrides a deny) */
   allowPatterns: string[];
+  /**
+   * True when this run has NO approver present (a scheduled/alarm fire or a
+   * native one-tap run of the stored script — anything not driven by the
+   * foreground ladder). The driver turns a gray verdict into an IMMEDIATE
+   * decline instead of waiting on the escalation timeout, so out-of-workspace
+   * writes are fail-closed by one explicit invariant rather than the
+   * coincidence of "nobody answers" + "the wait expires" (DEFERRED #2 境界).
+   * Signed pre-approval grants are still consumed before the decline, so the
+   * attended escalate→approve→grant→scheduled-run loop keeps working.
+   */
+  unattended?: boolean;
 }
 
 export const DEFAULT_POLICY: Omit<AutonomyPolicy, 'workspaceRoot'> = {
@@ -58,6 +69,10 @@ export function parseAutonomyPolicy(raw: unknown, workspaceRoot: string): Autono
     policyPath: typeof r.policyPath === 'string' ? r.policyPath : DEFAULT_POLICY.policyPath,
     denyPatterns: strArr(r.denyPatterns, DEFAULT_POLICY.denyPatterns),
     allowPatterns: strArr(r.allowPatterns, DEFAULT_POLICY.allowPatterns),
+    // Strict `=== true`: a malformed value never opts a run INTO the unattended
+    // fast-decline (absent/invalid ⇒ attended behavior — the escalation wait +
+    // timeout, i.e. today's semantics).
+    unattended: r.unattended === true,
   };
 }
 
@@ -68,8 +83,12 @@ export function parseAutonomyPolicy(raw: unknown, workspaceRoot: string): Autono
  * global defaults. The driver holds this object — it is NEVER written to codex's
  * workspace, so the running agent cannot read or tamper with it (the §6 invariant).
  */
-export function buildAgentPolicy(agent: Agent, canonicalRoot: string): AutonomyPolicy {
-  return parseAutonomyPolicy({ level: agent.autonomyLevel }, canonicalRoot);
+export function buildAgentPolicy(
+  agent: Agent,
+  canonicalRoot: string,
+  opts: { unattended?: boolean } = {},
+): AutonomyPolicy {
+  return parseAutonomyPolicy({ level: agent.autonomyLevel, unattended: opts.unattended === true }, canonicalRoot);
 }
 
 export type AutoAnswer = 'y' | 'n' | 'escalate';

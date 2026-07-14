@@ -30,6 +30,14 @@ describe('parseAutonomyPolicy', () => {
   it('falls back on an invalid level', () => {
     expect(parseAutonomyPolicy({ level: 'ROOT' }, ROOT).level).toBe('L2');
   });
+
+  it('unattended is strict `=== true` — malformed/absent values stay attended (DEFERRED #2)', () => {
+    expect(parseAutonomyPolicy({ unattended: true }, ROOT).unattended).toBe(true);
+    expect(parseAutonomyPolicy({ unattended: false }, ROOT).unattended).toBe(false);
+    expect(parseAutonomyPolicy({}, ROOT).unattended).toBe(false);
+    expect(parseAutonomyPolicy({ unattended: 1 }, ROOT).unattended).toBe(false);
+    expect(parseAutonomyPolicy({ unattended: 'true' }, ROOT).unattended).toBe(false);
+  });
 });
 
 describe('decideAutoAnswer', () => {
@@ -85,5 +93,11 @@ describe('buildAgentPolicy', () => {
 
   it('defaults to L2 when the agent has no level', () => {
     expect(buildAgentPolicy(mkAgent(), ROOT).level).toBe('L2');
+  });
+
+  it('bakes unattended from opts, defaulting to attended (DEFERRED #2)', () => {
+    expect(buildAgentPolicy(mkAgent(), ROOT).unattended).toBe(false);
+    expect(buildAgentPolicy(mkAgent(), ROOT, { unattended: true }).unattended).toBe(true);
+    expect(buildAgentPolicy(mkAgent(), ROOT, { unattended: false }).unattended).toBe(false);
   });
 });

@@ -660,6 +660,15 @@ function isHumanEscalation(result) {
   return result.answer === 'escalate' && !result.error && verdict && verdict.decision === 'gray';
 }
 
+// Strict `=== true`: a malformed/absent flag never opts a run INTO the
+// unattended fast-decline — it falls back to the attended escalation wait
+// (today's semantics). The TS side (buildAgentPolicy/generateRunScript) bakes
+// unattended:true into every STORED script (alarm/native fires) and
+// unattended:false only for foreground-ladder attempts.
+function isUnattendedPolicy(policy) {
+  return !!policy && policy.unattended === true;
+}
+
 function buildEscalationPaths(config, reqId) {
   const base = `req-${safeFilePart(config.runId)}-${safeFilePart(reqId)}`;
   return {
@@ -1636,6 +1645,37 @@ async function runDriver(config) {
             continue;
           }
 
+          // DEFERRED #2 boundary invariant: an UNATTENDED run (scheduled/alarm
+          // fire or native one-tap of the stored script — no approver present)
+          // never waits on a human for a gray verdict. Decline IMMEDIATELY
+          // instead of leaning on the escalation timeout expiring unanswered —
+          // the old safety was the mere confluence of "nobody answers" + "the
+          // wait times out", which a future convenience change (gray default-
+          // approve / longer timeout) could silently break. Signed pre-approval
+          // grants were consumed ABOVE, so the attended escalate→approve→grant→
+          // scheduled-run loop still works. No pending escalation request is
+          // filed: a request whose run has already declined and moved on would
+          // be a stale-approval hazard.
+          if (isUnattendedPolicy(config.policy)) {
+            const declined = {
+              decision: 'decline',
+              reason: 'unattended fail-closed: no approver present (approve once in an attended run to grant)',
+            };
+            audit('escalation_denied_unattended', {
+              reqId,
+              command: auditPayload.command || redactedCommand,
+              commandSha256: commandSha256(result.action.command),
+              workspaceRoot: config.policy.workspaceRoot,
+              cwd: result.action.cwd,
+              signals: auditPayload.signals || [],
+              level: auditPayload.level || config.policy.level,
+              reason: declined.reason,
+            });
+            escalationOutcomes.set(result.action.index, { reqId, ...declined });
+            finalDecision = 'decline';
+            continue;
+          }
+
           const escalation = await waitForEscalation(config, {
             reqId,
             command: auditPayload.command || redactedCommand,
@@ -1939,6 +1979,7 @@ if (require.main === module) {
 
 // Exported for unit tests only (no behavior change to the CLI path).
 module.exports = {
+  isUnattendedPolicy,
   preapprovalGrantSignatureMessage,
   verifyPreapprovalGrantSignature,
   findPreapprovalGrant,

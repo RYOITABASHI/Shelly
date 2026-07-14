@@ -156,7 +156,7 @@ export function sanitizeOutputTemplate(template: string | null | undefined): str
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean } = {}): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean; attended?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -252,6 +252,10 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // realpathWithMissingTail) — those are hard content/action classifiers, not
   // approval-frequency knobs, and nothing here touches them.
   //
+  // DEFERRED #2 note: this "Runtime Review" default-off is a DIFFERENT
+  // approval surface than the codex/B2-driver out-of-workspace-write gray
+  // verdict (agent-policy.ts's decideAutoAnswer + the driver's escalation
+  // wait). It is untouched by the unattended fold below (opts.attended).
   // ONLY the per-agent override (a plain field on the `agent` parameter
   // already in scope — no store read needed) is resolved here at
   // script-generation time. The GLOBAL default is intentionally NOT baked:
@@ -316,7 +320,14 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // policy here (level from agent.autonomyLevel; default L2) and hand it to the
   // driver via --policy-json so a configured L1/L3 agent isn't silently run at L2.
   // canonicalRoot is re-anchored to the driver's --cwd at run time, so home is fine.
-  const agentPolicyJson = JSON.stringify(buildAgentPolicy(agent, home));
+  //
+  // DEFERRED #2 境界: attended is set ONLY by the foreground TS ladder (a human
+  // is in-app to answer escalations). Every other materialization — install,
+  // restore, startup repair, consent re-bake — writes the STORED script that the
+  // AlarmManager fire / native one-tap runs read, so it bakes unattended:true
+  // and the driver declines a gray verdict immediately (after grant consumption)
+  // instead of leaning on the escalation timeout.
+  const agentPolicyJson = JSON.stringify(buildAgentPolicy(agent, home, { unattended: opts.attended !== true }));
   let toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
     actionType: agent.action?.type ?? 'draft',

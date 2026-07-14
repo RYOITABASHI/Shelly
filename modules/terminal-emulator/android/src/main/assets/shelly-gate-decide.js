@@ -353,7 +353,11 @@ function parseAutonomyPolicy(raw2, workspaceRoot) {
     secretPaths: strArr(r.secretPaths, DEFAULT_POLICY.secretPaths),
     policyPath: typeof r.policyPath === "string" ? r.policyPath : DEFAULT_POLICY.policyPath,
     denyPatterns: strArr(r.denyPatterns, DEFAULT_POLICY.denyPatterns),
-    allowPatterns: strArr(r.allowPatterns, DEFAULT_POLICY.allowPatterns)
+    allowPatterns: strArr(r.allowPatterns, DEFAULT_POLICY.allowPatterns),
+    // Strict `=== true`: a malformed value never opts a run INTO the unattended
+    // fast-decline (absent/invalid ⇒ attended behavior — the escalation wait +
+    // timeout, i.e. today's semantics).
+    unattended: r.unattended === true
   };
 }
 function decideAutoAnswer(command, policy) {

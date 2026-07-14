@@ -165,3 +165,22 @@ describe('shelly-agent-driver grant consumption (driver side)', () => {
     expect(replay.ok).toBe(false);
   });
 });
+
+// DEFERRED #2 boundary invariant: only an explicit `unattended: true` opts a run
+// into the immediate gray-decline (no escalation wait); every malformed value
+// falls back to the attended wait — never accidentally-on for a foreground run,
+// and the decline branch sits AFTER grant consumption so a signed Tier-1
+// pre-approval still authorizes a scheduled fire.
+describe('shelly-agent-driver isUnattendedPolicy', () => {
+  it('true only for a strict boolean true', () => {
+    expect(driver.isUnattendedPolicy({ unattended: true })).toBe(true);
+  });
+  it('false for absent/malformed/other values', () => {
+    expect(driver.isUnattendedPolicy({})).toBe(false);
+    expect(driver.isUnattendedPolicy(null)).toBe(false);
+    expect(driver.isUnattendedPolicy(undefined)).toBe(false);
+    expect(driver.isUnattendedPolicy({ unattended: false })).toBe(false);
+    expect(driver.isUnattendedPolicy({ unattended: 1 })).toBe(false);
+    expect(driver.isUnattendedPolicy({ unattended: 'true' })).toBe(false);
+  });
+});

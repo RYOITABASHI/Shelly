@@ -597,6 +597,18 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(generateRunScript(agent({ type: 'cli', cli: 'codex' }, true))).toContain('"level":"L2"');
   });
 
+  it('bakes unattended:true into the STORED script and unattended:false only for attended runs (DEFERRED #2)', () => {
+    // Install / restore / startup repair / consent re-bake write the script the
+    // AlarmManager fire and native one-tap read — no approver present, so the
+    // driver must decline a gray verdict immediately (after grant consumption).
+    const stored = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));
+    expect(stored).toContain('"unattended":true');
+    // The foreground TS ladder (Run now / @agent) is the ONLY caller that may
+    // mark a run attended — a human is in-app to answer the escalation.
+    const attended = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true), { attended: true });
+    expect(attended).toContain('"unattended":false');
+  });
+
   it('gates /sdcard audit mirroring behind an explicit env flag for autonomous cli runs', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
     expect(s).toContain('AUDIT_MIRROR_SDCARD_ELIGIBLE=1');

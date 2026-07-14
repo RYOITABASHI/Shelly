@@ -294,6 +294,13 @@ type MaterializeRunOpts = {
   autonomousCloudConsent?: boolean;
   autonomousCloudStop?: boolean;
   suppressWebCodexBake?: boolean;
+  // DEFERRED #2 境界: only runLadderAttempts's per-attempt materialize (a human
+  // drove this run and is in-app to answer escalations) may set this true. Every
+  // OTHER materializeAgent call — install, restore, startup repair, consent
+  // re-bake, post-chain/post-ladder restore — leaves it unset, so
+  // generateRunScript bakes unattended:true into the STORED script the
+  // AlarmManager fire / native one-tap reads (see generateRunScript's comment).
+  attended?: boolean;
 };
 
 /**
@@ -717,6 +724,13 @@ async function runLadderAttempts(
       // now-unauthorized keyed tool and the ladder escalates — the safe
       // outcome, not a stale ON write surviving to disk.
       suppressWebCodexBake: true,
+      // DEFERRED #2 境界: a human drove this run (Run now / @agent) and is
+      // in-app to answer escalations — bake unattended:false so the driver
+      // keeps the escalation wait for a gray verdict. The post-ladder /
+      // post-chain restore (below and in runAgentOrchestrated) re-writes the
+      // stored script WITHOUT this flag (unattended:true) for the alarm/
+      // native fires.
+      attended: true,
     });
     await TerminalEmulator.runAgent(agentId);
     await waitForAgentRunCompletion(runCommand, agentId, {
