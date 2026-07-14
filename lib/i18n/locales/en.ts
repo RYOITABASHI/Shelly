@@ -298,6 +298,20 @@ const en: Record<string, string> = {
   'agentcard.run_now': 'Run now',
   'agentcard.confirm': 'Confirm',
   'agentcard.cancel': 'Cancel',
+
+  // ── Chat-native agent confirmation (Phase 7) — used for app-act / tool-pinned
+  // orchestration instead of the card: this summary text plus a Confirm/Cancel pair.
+  'agentplan.summary_name': 'Agent: {{name}}',
+  'agentplan.summary_schedule': 'Schedule: {{schedule}}',
+  'agentplan.summary_action': 'Action: {{action}}',
+  'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
+  'agentplan.memory_note': 'Will remember after running: {{fact}}',
+  'agentplan.skill_note': 'Reuses the existing skill "{{name}}" ({{count}} prior successes).',
+  'agentplan.schedule_restate_hint': '⚠ I could not pin down a firm schedule. Please restate it with an explicit time (e.g. "daily at 8am"). This cannot be registered until then.',
+  'agentplan.appact_x_target': 'Posting to X (Twitter)',
+  'agentplan.appact_line': '{{target}} (posts the run result as-is)',
+  'agentplan.appact_line_with_preview': '{{target}}: "{{preview}}"',
+  'agentplan.confirm_prompt': 'Register this agent as described above? Cancel and re-describe it if you want changes.',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'codex_login.title': 'Codex Login',

@@ -25,7 +25,7 @@ import { AgentAction, AgentActionType, AgentMemoryConfig, AgentOrchestrationStep
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
-import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
+import { decodeCron, buildCron, resolveInitialFrequency, scheduleHuman, WEEKDAY_LABELS, type Frequency } from '@/lib/agent-card-cron';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import { pairingConfidence, useDmPairingStore } from '@/store/dm-pairing-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -56,7 +56,6 @@ export interface ConfirmedAgentDraft {
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
-const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
 const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'app-act'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
 
@@ -785,32 +784,6 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       </View>
     </View>
   );
-}
-
-function scheduleHuman(
-  f: Frequency,
-  hour: number,
-  minute: number,
-  weekday: number,
-  interval: number,
-  t: (k: string, p?: Record<string, string | number>) => string,
-  customDow = '',
-  dailyMultiHours: number[] = [],
-): string {
-  const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-  if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
-  if (f === 'hourly') return t('agentcard.sched_hourly', { n: interval });
-  if (f === 'daily-multi') {
-    const hours = dailyMultiHours.length > 0 ? dailyMultiHours : [hour];
-    const times = hours.map((h) => `${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')}`).join('・');
-    return t('agentcard.sched_daily_multi', { times });
-  }
-  if (f === 'custom') {
-    const days = customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・');
-    return t('agentcard.sched_weekly', { day: days, time: hhmm });
-  }
-  if (f === 'weekly') return t('agentcard.sched_weekly', { day: WEEKDAY_LABELS[weekday], time: hhmm });
-  return t('agentcard.sched_daily', { time: hhmm });
 }
 
 // ─── Segmented control ──────────────────────────────────────────────────────
