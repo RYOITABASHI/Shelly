@@ -404,6 +404,7 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
   ];
   if (request.authRef) args.push('--auth-ref', request.authRef);
   if (request.approved) args.push('--approved', '1');
+  if (opts.tainted) args.push('--tainted', '1');
   const rc = runBroker(paths, opts, args);
   const response = readFile(outFile);
   const errorText = readFile(errFile);
@@ -1408,6 +1409,12 @@ function run(args) {
   const opts = {
     libDir: args['lib-dir'] || process.env.SHELLY_LIB_DIR || '',
     broker: args.broker || '',
+    // Mirrors the legacy .sh executor's http_post_json, which always forwards
+    // "${SHELLY_CAP_TAINTED:-0}" to the broker's --tainted flag. Native sets
+    // this env var for notification-triggered (tainted) runs (see
+    // AgentRuntime.kt's runPlanAgent) so classifyEgress's tainted-secret-spend
+    // gate applies on the PlanSpec path too, not just the legacy .sh path.
+    tainted: process.env.SHELLY_CAP_TAINTED === '1',
   };
   ensureDir(paths.tmpDir);
   ensureDir(paths.locksDir);

@@ -111,4 +111,30 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain('paths.haltSentinel');
     expect(executorSrc).toContain("haltSentinel: path.join(agentsDir, '.halted')");
   });
+
+  it('threads notification taint into the PlanSpec executor path, not just the legacy .sh path', () => {
+    // Companion to notify-listener/parity.test.ts's "threads notification taint
+    // into the legacy generated-agent broker path": that test only covers the
+    // .sh branch of AgentRuntime.runAgent. Before this fix, runAgent's
+    // shouldRunPlanExecutor branch called runPlanAgent(...) WITHOUT the
+    // `tainted` value it already has in scope, so a notification-triggered
+    // (tainted=true) run silently lost its taint on the PlanSpec path and
+    // classifyEgress's tainted-secret-spend gate (shelly-capability-broker.js)
+    // never applied once SHELLY_PLAN_EXECUTOR flips on.
+    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
+    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended)');
+    expect(agentRuntime).toMatch(/private fun runPlanAgent\(\s*context: Context,\s*homeDir: File,\s*libDir: File,\s*bashPath: String,\s*agentId: String,\s*tainted: Boolean,\s*unattended: Boolean/);
+    // The env-var builder exports SHELLY_CAP_TAINTED=1 right after the other
+    // CAP-001 flags (SHELLY_CAP_BROKER/FS/EXEC), guarded by the same `tainted`
+    // param the legacy .sh path already gates its own export on.
+    expect(agentRuntime).toMatch(/export SHELLY_CAP_BROKER=1 SHELLY_CAP_FS=1 SHELLY_CAP_EXEC=1"\)\s*\n\s*if \(tainted\) \{\s*\n\s*append\(" && export SHELLY_CAP_TAINTED=1"\)\s*\n\s*\}/);
+    // JS-side contract: the executor must actually read the env var and forward
+    // --tainted to the broker's http.request op (shelly-capability-broker.js
+    // parses `args.tainted === '1'` and feeds it into classifyEgress), mirroring
+    // the legacy .sh's http_post_json which always forwards
+    // "${SHELLY_CAP_TAINTED:-0}" via --tainted. Without this, exporting the env
+    // var alone would be inert dead code.
+    expect(executorSrc).toContain("tainted: process.env.SHELLY_CAP_TAINTED === '1'");
+    expect(executorSrc).toContain("if (opts.tainted) args.push('--tainted', '1');");
+  });
 });

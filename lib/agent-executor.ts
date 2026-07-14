@@ -537,11 +537,61 @@ json_string_file() {
   printf '"'
 }
 
+# Mirrors scripts/shelly-plan-executor.js's REDACT_PATTERNS/redact() so a live
+# agent result gets the same secret-scrubbing guarantee whether it reaches a
+# webhook body, notification, intent-share text, or dm-reply text through this
+# .sh executor or through the PlanSpec executor. Takes a FILE PATH (not stdin)
+# so it composes with clean_result_preview's file-not-pipe SIGPIPE safety below.
+redact_secrets_text() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  if node_usable; then
+    if shelly_node - "$file" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const file = process.argv[2];
+let data = '';
+try { data = fs.readFileSync(file, 'utf8'); } catch (_) {}
+const patterns = [
+  /\\bsk-ant-[A-Za-z0-9_-]{20,}\\b/g,
+  /\\bsk-proj-[A-Za-z0-9_-]{20,}\\b/g,
+  /\\bsk-[A-Za-z0-9_-]{20,}\\b/g,
+  /\\bAIza[0-9A-Za-z_-]{25,}\\b/g,
+  /\\bgsk_[A-Za-z0-9_-]{20,}\\b/g,
+  /\\bcsk-[A-Za-z0-9_-]{20,}\\b/g,
+  /\\bgh[pousr]_[A-Za-z0-9_]{20,}\\b/g,
+  /\\bBearer\\s+[A-Za-z0-9._~+/=-]{16,}\\b/gi,
+];
+let out = data;
+for (const p of patterns) out = out.replace(p, '<redacted>');
+process.stdout.write(out);
+NODEEOF
+    then
+      return 0
+    fi
+  fi
+  sed -E \\
+    -e 's/sk-ant-[A-Za-z0-9_-]{20,}/<redacted>/g' \\
+    -e 's/sk-proj-[A-Za-z0-9_-]{20,}/<redacted>/g' \\
+    -e 's/sk-[A-Za-z0-9_-]{20,}/<redacted>/g' \\
+    -e 's/AIza[0-9A-Za-z_-]{25,}/<redacted>/g' \\
+    -e 's/gsk_[A-Za-z0-9_-]{20,}/<redacted>/g' \\
+    -e 's/csk-[A-Za-z0-9_-]{20,}/<redacted>/g' \\
+    -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/<redacted>/g' \\
+    -e 's/[Bb]earer +[A-Za-z0-9._~+/=-]{16,}/<redacted>/g' \\
+    "$file" 2>/dev/null || cat "$file" 2>/dev/null || true
+}
+
 # Strip the autonomous driver's structured telemetry (AUDIT/GATE/protocol/STDERR/
 # escalation) from a result file so the user-facing preview shows real content,
 # never the internal driver_start JSON. Backends that write a plain answer
 # (local/perplexity/gemini) have no such lines, so this is a harmless no-op for
-# them. Whitespace-collapsed and length-capped for a notification body.
+# them. Whitespace-collapsed and length-capped for a notification body. Also
+# secret-redacted (SECRET-001 parity with PlanSpec's previewText()) BEFORE the
+# 500-byte truncation below, so a secret straddling the cut is never
+# half-redacted — the .sh executor's clean_result_preview() feeds this preview
+# into webhook bodies, notifications, intent-share text, and dm-reply text via
+# {{result}} substitution (see write_action_approval_request), so it must never
+# carry a live secret from the raw agent-tool result.
 clean_result_preview() {
   file="$1"
   [ -f "$file" ] || return 0
@@ -549,11 +599,15 @@ clean_result_preview() {
   # Piping sed directly into "head -c 500" SIGPIPEs sed the moment head closes the
   # pipe early (any cleaned result > 500 bytes — i.e. every real answer); under
   # 'set -euo pipefail' that 141 propagates and aborts the whole run. head reading
-  # a regular file has no upstream producer to signal, so it is abort-safe.
+  # a regular file has no upstream producer to signal, so it is abort-safe. Same
+  # reasoning applies to redact_secrets_text below: it runs against the $cleaned
+  # FILE (not a live pipe), so head reading its output FILE stays abort-safe too.
   cleaned="$file.preview"
+  redacted="$file.preview.redacted"
   sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null > "$cleaned" || true
-  head -c 500 "$cleaned" 2>/dev/null | tr '\\n' ' '
-  rm -f "$cleaned"
+  redact_secrets_text "$cleaned" > "$redacted" 2>/dev/null || true
+  head -c 500 "$redacted" 2>/dev/null | tr '\\n' ' '
+  rm -f "$cleaned" "$redacted"
 }
 
 write_native_notification_request() {

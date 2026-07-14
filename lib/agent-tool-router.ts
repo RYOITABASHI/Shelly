@@ -109,6 +109,10 @@ function textForSecretScan(agent: Agent): string {
     agent.outputTemplate,
     agent.action?.webhookUrl,
     agent.action?.command,
+    agent.action?.intentTarget,
+    agent.action?.intentShareText,
+    agent.action?.dmPairingId,
+    agent.action?.dmReplyText,
   ].filter(Boolean).join('\n');
 }
 

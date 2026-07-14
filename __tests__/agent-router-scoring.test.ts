@@ -145,6 +145,23 @@ describe('hard guards always win over the scorer', () => {
     expect(r.decision.noCloudFallback).toBe(true);
   });
 
+  // Regression coverage for the audit-flagged gap: intentShareText/dmReplyText/
+  // intentTarget/dmPairingId were added to AgentActionType later than
+  // webhookUrl/command but textForSecretScan never grew to include them, so a
+  // secret embedded in an intent-share or dm-reply template silently bypassed
+  // the on-device-only guard and could route to a cloud tool.
+  it.each([
+    ['intentShareText', { type: 'intent' as const, intentMode: 'share' as const, intentShareText: 'ship key sk-ant-api03-AAAABBBBCCCCDDDD to {{result}}' }],
+    ['intentTarget', { type: 'intent' as const, intentMode: 'launch' as const, intentTarget: 'sk-ant-api03-AAAABBBBCCCCDDDD' }],
+    ['dmReplyText', { type: 'dm-reply' as const, dmReplyText: 'here is the key sk-ant-api03-AAAABBBBCCCCDDDD' }],
+    ['dmPairingId', { type: 'dm-reply' as const, dmPairingId: 'sk-ant-api03-AAAABBBBCCCCDDDD' }],
+  ])('secret-guard also scans action.%s', (_label, action) => {
+    const r = resolveAgentRoute(mkAgent({ prompt: 'summarize this', action }));
+    expect(r.decision.guard).toBe('secret');
+    expect(r.decision.route).toBe('on-device');
+    expect(r.decision.noCloudFallback).toBe(true);
+  });
+
   it('manual on-device pin overrides the scorer', () => {
     const r = resolveAgentRoute(mkAgent({ prompt: 'review github PR', runOn: 'on-device' }));
     expect(r.decision.guard).toBe('manual-pin');

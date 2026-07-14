@@ -57,7 +57,7 @@ object AgentRuntime {
         val bashPath = LibExtractor.getBashPath(appContext)
 
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, unattended)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -164,6 +164,7 @@ object AgentRuntime {
         libDir: File,
         bashPath: String,
         agentId: String,
+        tainted: Boolean,
         unattended: Boolean
     ): AgentRunResult {
         val libPath = libDir.absolutePath
@@ -237,6 +238,9 @@ object AgentRuntime {
             append(" && export SHELLY_LIB_DIR=")
             append(shellQuote(libPath))
             append(" && export SHELLY_CAP_BROKER=1 SHELLY_CAP_FS=1 SHELLY_CAP_EXEC=1")
+            if (tainted) {
+                append(" && export SHELLY_CAP_TAINTED=1")
+            }
             append(" && export SSL_CERT_FILE=")
             append(shellQuote("${homeDir.absolutePath}/.shelly-ssl/ca-certificates.crt"))
             append(" && export CURL_CA_BUNDLE=")
