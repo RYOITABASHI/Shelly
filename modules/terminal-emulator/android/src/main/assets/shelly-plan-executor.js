@@ -53,6 +53,7 @@ const CONFIG_ENV_KEYS = new Set([
   'OBSIDIAN_VAULT_PATH',
   'SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS',
   'WEBHOOK_TIMEOUT_SECONDS',
+  'SHELLY_WEBHOOK_HOST_ALLOWLIST',
 ]);
 
 const REDACT_PATTERNS = [
@@ -778,6 +779,7 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     actionType,
     preview,
     destinationHost: extra.destinationHost || '',
+    destinationHostAllowlisted: extra.destinationHostAllowlisted === true,
     command: extra.command || '',
     safetyLevel: extra.safetyLevel || '',
     safetyReason: extra.safetyReason || '',
@@ -1085,10 +1087,19 @@ function webhookDestinationHost(urlText) {
   try {
     const u = new URL(String(urlText || ''));
     if (u.protocol !== 'https:') return '';
-    return u.host;
+    return u.hostname.toLowerCase();
   } catch (_) {
     return '';
   }
+}
+
+function webhookHostIsAllowlisted(host, config) {
+  const candidate = String(host || '').trim().toLowerCase();
+  return String(config.SHELLY_WEBHOOK_HOST_ALLOWLIST || '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(candidate);
 }
 
 function writeWebhookPayload(file, plan, status, preview, resultText) {
@@ -1338,6 +1349,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       writeWebhookPayload(payloadFile, plan, 'success', preview, resultText);
       maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         destinationHost: host,
+        destinationHostAllowlisted: webhookHostIsAllowlisted(host, config),
         payloadPath: path.basename(payloadFile),
       });
       try {

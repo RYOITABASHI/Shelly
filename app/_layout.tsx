@@ -110,6 +110,7 @@ type AgentActionApprovalRequest = {
   actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
   preview?: string | null;
   destinationHost?: string | null;
+  destinationHostAllowlisted?: boolean;
   command?: string | null;
   safetyLevel?: string | null;
   safetyReason?: string | null;
@@ -860,6 +861,7 @@ export default function RootLayout() {
         actionType,
         preview: str('preview') || null,
         destinationHost: str('destinationHost') || null,
+        destinationHostAllowlisted: value.destinationHostAllowlisted === true,
         command: str('command') || null,
         safetyLevel: str('safetyLevel') || null,
         safetyReason: str('safetyReason') || null,
@@ -897,6 +899,7 @@ export default function RootLayout() {
       actionType: request.actionType,
       preview: request.preview,
       destinationHost: request.destinationHost,
+      destinationHostAllowlisted: request.destinationHostAllowlisted,
       command: request.command,
       safetyLevel: request.safetyLevel,
       safetyReason: request.safetyReason,
@@ -1716,6 +1719,24 @@ export default function RootLayout() {
                   <ScrollView style={actionApprovalStyles.commandBox}>
                     <Text selectable style={actionApprovalStyles.commandText}>
                       {pendingAgentActionApproval.dmReplyText || ''}
+                    </Text>
+                  </ScrollView>
+                </>
+              ) : pendingAgentActionApproval.actionType === 'webhook' ? (
+                <>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_webhook_host')}</Text>
+                  <Text selectable style={actionApprovalStyles.commandText}>
+                    {pendingAgentActionApproval.destinationHost || ''}
+                  </Text>
+                  <Text style={actionApprovalStyles.meta}>
+                    {t(pendingAgentActionApproval.destinationHostAllowlisted
+                      ? 'agent_action_confirm_webhook_known_host'
+                      : 'agent_action_confirm_webhook_new_host')}
+                  </Text>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_webhook_preview')}</Text>
+                  <ScrollView style={actionApprovalStyles.commandBox}>
+                    <Text selectable style={actionApprovalStyles.commandText}>
+                      {pendingAgentActionApproval.preview || ''}
                     </Text>
                   </ScrollView>
                 </>

@@ -458,6 +458,7 @@ describe('shelly-plan-executor host smoke', () => {
     const pending = await readNextActionRequest(home);
     expect(pending.request.actionType).toBe('webhook');
     expect(pending.request.destinationHost).toBe('hooks.example.test');
+    expect(pending.request.destinationHostAllowlisted).toBe(false);
     expect(pending.request.payloadPath).toMatch(/^webhook-payload-\d+\.json$/);
     expect(pending.request.payloadPath).not.toContain(home);
     const actualPayloadPath = path.join(home, `.shelly/agents/logs/${plan.agent.id}`, pending.request.payloadPath);
@@ -474,6 +475,30 @@ describe('shelly-plan-executor host smoke', () => {
     const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
     expect(brokerAudit).toContain('"kind":"http.request"');
     expect(brokerAudit).not.toContain('hooks.example.test');
+  });
+
+  it('marks an allowlisted webhook host as known but still waits for human approval', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    (plan as any).action = { type: 'webhook', webhookUrl: 'https://hooks.example.test/incoming' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.appendFileSync(path.join(home, '.shelly/agents/.env'), "SHELLY_WEBHOOK_HOST_ALLOWLIST='hooks.example.test'\n");
+
+    const run = runExecutor([
+      executor,
+      '--plan-file', planFile,
+      '--home', home,
+      '--agent-id', plan.agent.id,
+      '--broker', broker,
+    ], home);
+    const pending = await readNextActionRequest(home);
+    expect(pending.request.destinationHostAllowlisted).toBe(true);
+    expect(requestCount).toBe(1); // model request only; webhook has not been sent
+
+    writeActionReply(home, pending, 'decline');
+    const result = await run;
+    expect(result.status).toBe(0);
+    expect(requestCount).toBe(1);
   });
 
   it('runs approved cli actions through workspace.exec and appends the action report', async () => {
