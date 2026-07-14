@@ -34,6 +34,29 @@ describe('parseAgentNL — schedule (JP)', () => {
   });
 });
 
+describe('parseAgentNL — run immediately (Once)', () => {
+  // 'once' here is a sentinel consumed only by decodeCron/buildCron inside
+  // AgentConfirmCard (buildCron('once', ...) => null at actual registration
+  // time) — never a real cron, so it's deliberately excluded from
+  // WHITELIST_CRON / the "invariants" describe block below. Bug: a bare
+  // "すぐに"/"今すぐ" answer to the schedule slot-fill question previously fell
+  // through every branch to confident:false, looping the follow-up question
+  // forever instead of landing on the Once frequency.
+  it.each([
+    'すぐに', '今すぐ', '直ちに', '即時', '即座に',
+    'right now', 'immediately', 'now', 'asap', 'right away',
+  ])('%s → schedule "once", confident', (phrase) => {
+    const d = parseAgentNL(phrase);
+    expect(d.schedule).toBe('once');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('does not misfire on a sentence that merely contains "now"/"すぐ"', () => {
+    const d = parseAgentNL('毎日8時にすぐ終わるタスクを実行して');
+    expect(d.schedule).not.toBe('once');
+  });
+});
+
 describe('parseAgentNL — interval', () => {
   it('15分ごと → */15 * * * *', () => {
     expect(parseAgentNL('15分ごとにポートをチェックして').schedule).toBe('*/15 * * * *');

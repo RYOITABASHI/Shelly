@@ -70,6 +70,18 @@ export interface ParsedAgentDraft {
    *  real `app-act` action (Phase 6) — see X_POST_RE / detectAction. The confirm
    *  card should surface this as a visible warning; absent = no caveat. */
   actionCaveat?: string;
+  /** Package name(s) that should trigger this agent when a matching
+   *  notification arrives (NOTIFY-001). Set by the pure parser when
+   *  confidently extractable from the utterance, OR filled in later via
+   *  conversational slot-filling when the utterance implies a
+   *  notification-triggered agent but no package was extractable. Absent =
+   *  not a notification-triggered agent. */
+  notificationTrigger?: { packageNames: string[] };
+  /** Free-text output destination hint, gathered either from the utterance
+   *  or via conversational slot-filling when the agent's action is 'draft'
+   *  and no global vault/output-path preference is configured. Absent =
+   *  the caller falls back to its default output path template. */
+  outputPath?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -88,7 +100,7 @@ const EN_WEEKDAY: Array<[RegExp, number]> = [
   [/\bsat(urday)?\b/i, 6],
 ];
 
-interface ParsedTime {
+export interface ParsedTime {
   hour: number;
   minute: number;
 }
@@ -236,7 +248,7 @@ function fmtTime(t: ParsedTime): string {
 
 const JP_DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
 
-interface ScheduleResult {
+export interface ScheduleResult {
   schedule: string | null;
   confident: boolean;
   label: string;
@@ -250,8 +262,19 @@ interface ScheduleResult {
 }
 
 /** Parse the schedule, constrained to the whitelisted cron shapes. */
-function parseSchedule(text: string): ScheduleResult {
+export function parseSchedule(text: string): ScheduleResult {
   const lower = text.toLowerCase();
+
+  // ── 0. Run once, right now — no recurrence, no time to parse. The single most
+  // common answer to "when should this run?" was previously unrecognized (fell
+  // through every branch to the generic "未設定" fallback below), so a plain
+  // "すぐに"/"今すぐ" answer looped the slot-fill question forever instead of
+  // resolving to the Once frequency. `schedule: 'once'` is a sentinel (see
+  // decodeCron) — not a real cron string. ──
+  if (/^\s*(?:今\s*すぐ|すぐ(?:に)?|直ちに|即時|即座に)\s*$/.test(text) ||
+      /^\s*(?:right\s+(?:now|away)|immediately|now|asap)\s*[.!]?\s*$/i.test(text)) {
+    return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
+  }
 
   // ── 1. Every-N-minutes interval → `*/N * * * *` (N must be 1..59) ──
   const intervalJp = text.match(/(\d+)\s*分\s*(?:ごと|おき|毎|間隔)|(\d+)\s*分に\s*1\s*回/);

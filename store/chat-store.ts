@@ -87,6 +87,25 @@ export type ChatMessage = {
    *  see lib/agent-plan-summary.ts's shouldUseChatConfirm. Absent/false = the
    *  existing card path, unchanged. */
   agentChatConfirm?: boolean;
+  /** Conversational slot-filling for NL agent creation: when present on the
+   *  MOST RECENT assistant message in a session, the dispatcher routes the
+   *  next user message as the answer to this field instead of parsing it as
+   *  a fresh command. Cleared implicitly once a subsequent message (a normal
+   *  reply, or the eventual agentDraft/agentCardState:'pending' card
+   *  message) becomes the new most-recent message. */
+  pendingSlotFill?: {
+    field: 'schedule' | 'notificationTrigger' | 'outputPath';
+    question: string;
+    /** The draft accumulated so far; gets updated per-answer and re-checked
+     *  for the next missing slot (or promoted to a full agentDraft once
+     *  nothing is missing). */
+    partialDraft: import('@/lib/agent-nl-parser').ParsedAgentDraft;
+    /** How many times the user has already answered THIS field without it
+     *  resolving. lib/agent-slot-fill.ts's applySlotAnswer uses this to give
+     *  up asking and force a safe fallback after 1-2 failed attempts, so the
+     *  conversation can never get stuck in an infinite loop. */
+    attemptCount: number;
+  };
 };
 
 export type ChatSession = {

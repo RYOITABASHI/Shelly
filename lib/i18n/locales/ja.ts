@@ -319,6 +319,10 @@ const ja: Record<string, string> = {
   'webhook_allowlist.placeholder': 'hooks.example.com',
   'webhook_allowlist.add': '追加',
   'webhook_allowlist.invalid': 'スキーム、ポート、パス、ワイルドカードを含まないホスト名を入力してください。',
+  'slot_fill.question_schedule': 'いつ実行しますか？（例: 「毎日8時」「3時間おきに」「月・金の9時に」）',
+  'slot_fill.question_notification_trigger': 'どのアプリの通知が来たら実行しますか？（例: com.whatsapp や Slack のように、アプリ名かパッケージ名で教えてください）',
+  'slot_fill.question_output_path': '結果はどこに保存しますか？（未設定の場合はShelly内の既定フォルダを使います。特に希望が無ければ「そのままでいい」と答えてください）',
+  'slot_fill.cancelled': '登録をキャンセルしました。',
   'codex_login.title': 'Codexログイン',
   'codex_login.confirm_title': 'ChatGPTでサインインしますか？',
   'codex_login.confirm_body': 'Browser Paneで auth.openai.com を開き、デバイスコード認証を行います。ブラウザで承認すると、Shelly が ~/.codex/auth.json (mode 0600) を書き込みます。完了後は `shelly doctor` で確認できます。',
@@ -626,6 +630,7 @@ const ja: Record<string, string> = {
   'voice.speaking': '話しています...',
   'voice.auto_on': '連続対話 ON',
   'voice.auto_off': '連続対話 OFF',
+  'voice.agent_ready_to_confirm': 'エージェント「{{name}}」の準備ができました。確定するにはConfirmをタップしてください。',
   // Terminal Appearance
   'settings.terminal_appearance': 'ターミナル外観',
   'settings.terminal_theme': 'テーマ',

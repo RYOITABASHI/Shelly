@@ -44,7 +44,11 @@ import type { ToolChoice } from '@/store/types';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
+import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
+import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
+import en from '@/lib/i18n/locales/en';
+import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
@@ -236,6 +240,178 @@ export function useAIPaneDispatch(paneId: string) {
 
       const store = useAIPaneStore.getState();
       const { settings } = useSettingsStore.getState();
+
+      // Shared "draft is complete, decide how to present it" step — reused by
+      // BOTH (a) the slot-fill resume branch below, once the last missing
+      // field has just been answered, and (b) the fresh `@agent <NL>` create
+      // branch further down, once nextMissingSlot reports nothing missing.
+      // A draft only ever reaches this function once conversational
+      // slot-filling (schedule/notificationTrigger/outputPath) has nothing
+      // left to ask — shouldUseChatConfirm/shouldAutoRegisterDraft (Phase 7 /
+      // 2026-07-14 default-off registration confirm) only make sense for a
+      // draft that's actually fireable, never a partially-specified one.
+      const presentDraftForConfirmation = async (
+        agentLabel: ChatMessage['agent'] | undefined,
+        draft: ParsedAgentDraft,
+      ): Promise<void> => {
+        // Phase 7: app-act (e.g. X-posting) and tool-pinned orchestration
+        // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
+        // entirely — the project owner explicitly rejected a card/modal for
+        // NEW confirmation surfaces and wants plain chat-native NL confirm
+        // instead. Every other draft shape (including plain auto-routed
+        // multi-step chains from Phase 4) is UNCHANGED and still uses the
+        // card. See lib/agent-plan-summary.ts's shouldUseChatConfirm.
+        const useChatConfirm = shouldUseChatConfirm(draft);
+        const draftMessageId = generateId();
+        store.addMessage(paneId, {
+          id: draftMessageId,
+          role: 'assistant',
+          content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
+          timestamp: Date.now(),
+          agent: agentLabel,
+          agentDraft: draft,
+          agentCardState: 'pending',
+          agentChatConfirm: useChatConfirm,
+        });
+        // Project owner directive 2026-07-14: "デフォは承認なしな。任意で確認"
+        // (default is no-approval, confirmation optional) — the EXISTING
+        // AgentConfirmCard's mandatory Confirm tap becomes skippable by
+        // default. Scope: ONLY the non-chat-confirm (AgentConfirmCard-
+        // eligible) path — app-act/tool-pinned drafts (useChatConfirm) are
+        // a SEPARATE, already-merged (#135) chat-native flow this task
+        // must not touch. The hard "never register an agent that will
+        // never fire" requirement is NOT an approval-frequency knob (see
+        // hasFireableSchedule's own doc comment) — a draft that still
+        // needs a schedule restated always keeps the pending card
+        // regardless of this setting. draftToConfirmedAgentDraft mirrors
+        // AgentConfirmCard's own unedited-default Confirm exactly (same
+        // helper the chat-native flow already reuses for app-act/
+        // tool-pinned), so auto-registering here can never disagree with
+        // what tapping Confirm on the card would have produced.
+        const requireRegistrationConfirm =
+          useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
+        if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
+          await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
+        }
+      };
+
+      // ── Conversational slot-filling (Phase 0 §2.1 conversational creation):
+      // if the most recent assistant message is waiting on an answer to a
+      // specific agent-creation field, route this message there instead of
+      // treating it as a fresh command / LLM prompt. Must run BEFORE
+      // parseInput so a slot answer never gets misparsed as an @mention.
+      const slotFillConv = store.getOrCreate(paneId);
+      const lastSlotFillMsg = slotFillConv.messages[slotFillConv.messages.length - 1];
+      // Guard against a stale/abandoned pendingSlotFill hijacking an unrelated
+      // fresh command. ai-pane-store's persist() does NOT strip pendingSlotFill,
+      // so an unanswered question can survive an app restart and sit for days.
+      // Without these checks, a later `@team status` (or anything else) would be
+      // silently swallowed as the "answer" — and for the outputPath slot
+      // specifically, applySlotAnswer accepts any non-empty text with zero
+      // validation, so that swallowed text would get written straight into the
+      // GLOBAL agentTopicFolder setting (shared by every draft-action agent).
+      const SLOT_FILL_STALE_MS = 15 * 60 * 1000;
+      const looksLikeFreshCommand = userText.trim().startsWith('@');
+      const pendingIsStale =
+        !!lastSlotFillMsg?.pendingSlotFill &&
+        Date.now() - lastSlotFillMsg.timestamp > SLOT_FILL_STALE_MS;
+      if (
+        lastSlotFillMsg?.role === 'assistant' &&
+        lastSlotFillMsg.pendingSlotFill &&
+        !looksLikeFreshCommand &&
+        !pendingIsStale
+      ) {
+        const { field, question, partialDraft, attemptCount } = lastSlotFillMsg.pendingSlotFill;
+        // Carry the originating question's chat-bubble agent label through
+        // the rest of this slot-fill exchange (re-asks, the next question,
+        // and the eventual confirm/chat-confirm message) so the pane's icon/
+        // color stays consistent turn to turn instead of reverting to the
+        // default once the pending-answer branch takes over from the fresh
+        // `@agent <NL>` create branch that asked the first question.
+        const agentLabel = lastSlotFillMsg.agent;
+        store.addMessage(paneId, {
+          id: generateId(),
+          role: 'user',
+          content: userText,
+          timestamp: Date.now(),
+        });
+        if (isCancelPhrase(userText)) {
+          // Same source as nextMissingSlot's language detection (the
+          // ORIGINAL utterance, not the cancel word itself, which is often
+          // a short token like "cancel" with no language-identifying
+          // characters of its own) — keeps the whole slot-fill exchange in
+          // one consistent language.
+          const cancelStrings = detectMessageLocale(partialDraft.rawText) === 'ja' ? ja : en;
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: cancelStrings['slot_fill.cancelled'],
+            timestamp: Date.now(),
+            agent: agentLabel,
+          });
+          return;
+        }
+        const { draft: updatedDraft, resolved } = applySlotAnswer(field, partialDraft, userText, attemptCount);
+        if (!resolved) {
+          // Same field, still unresolved — re-ask, bump the attempt counter.
+          // applySlotAnswer force-resolves after 1-2 attempts, so this can't loop forever.
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: question,
+            timestamp: Date.now(),
+            agent: agentLabel,
+            pendingSlotFill: { field, question, partialDraft: updatedDraft, attemptCount: attemptCount + 1 },
+          });
+          return;
+        }
+        // outputPath has no per-agent destination field today — the 'draft'
+        // action always writes under the GLOBAL OBSIDIAN_VAULT_PATH/
+        // SHELLY_AGENT_TOPIC_FOLDER env vars (see lib/agent-executor.ts). The
+        // slot is only ever asked when neither is set (see nextMissingSlot),
+        // so a real (non-skip) answer bootstraps agentTopicFolder — the
+        // conversational equivalent of the user configuring it in Settings.
+        if (field === 'outputPath' && updatedDraft.outputPath) {
+          useSettingsStore.getState().updateSettings({ agentTopicFolder: updatedDraft.outputPath });
+        }
+        const settingsCtx = {
+          agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
+          agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
+        };
+        const rawMissing = nextMissingSlot(updatedDraft, settingsCtx);
+        // Never re-ask the field we just resolved: applySlotAnswer's own give-up
+        // fallbacks (schedule after 2 failed attempts, outputPath "skip") can
+        // return resolved:true while the underlying condition is still technically
+        // "missing" — without this guard, nextMissingSlot would immediately
+        // re-flag the SAME field and dispatch would ask the identical question
+        // again with attemptCount reset to 0, looping forever instead of handing
+        // off to the confirm card's own safety nets (e.g. the forced manual
+        // schedule picker when !scheduleConfident).
+        const missing = rawMissing && rawMissing.field !== field ? rawMissing : null;
+        if (missing) {
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: missing.question,
+            timestamp: Date.now(),
+            agent: agentLabel,
+            pendingSlotFill: { field: missing.field, question: missing.question, partialDraft: updatedDraft, attemptCount: 0 },
+          });
+        } else {
+          // Nothing left to ask — hand off to the SAME chat-confirm/
+          // auto-register/card decision the fresh `@agent <NL>` create
+          // branch uses (see presentDraftForConfirmation above), instead of
+          // always falling back to the classic AgentConfirmCard the way this
+          // resume branch originally did. A draft resolved via slot-fill is
+          // just as eligible for #135's chat-native confirm (e.g. an app-act
+          // draft that also happened to be missing a schedule) and tonight's
+          // default-off auto-registration as one that never needed
+          // slot-filling in the first place.
+          await presentDraftForConfirmation(agentLabel, updatedDraft);
+        }
+        return;
+      }
+
       const parsed = parseInput(userText);
       const requestedAgent = parsed.layer === 'mention' && isAiPaneAgent(parsed.target)
         ? parsed.target
@@ -308,45 +484,34 @@ export function useAIPaneDispatch(paneId: string) {
             } catch {
               // skill match is best-effort
             }
-            // Phase 7: app-act (e.g. X-posting) and tool-pinned orchestration
-            // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
-            // entirely — the project owner explicitly rejected a card/modal for
-            // NEW confirmation surfaces and wants plain chat-native NL confirm
-            // instead. Every other draft shape (including plain auto-routed
-            // multi-step chains from Phase 4) is UNCHANGED and still uses the
-            // card. See lib/agent-plan-summary.ts's shouldUseChatConfirm.
-            const useChatConfirm = shouldUseChatConfirm(draft);
-            const draftMessageId = generateId();
-            store.addMessage(paneId, {
-              id: draftMessageId,
-              role: 'assistant',
-              content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
-              timestamp: Date.now(),
-              agent: agent as ChatMessage['agent'],
-              agentDraft: draft,
-              agentCardState: 'pending',
-              agentChatConfirm: useChatConfirm,
-            });
-            // Project owner directive 2026-07-14: "デフォは承認なしな。任意で確認"
-            // (default is no-approval, confirmation optional) — the EXISTING
-            // AgentConfirmCard's mandatory Confirm tap becomes skippable by
-            // default. Scope: ONLY the non-chat-confirm (AgentConfirmCard-
-            // eligible) path — app-act/tool-pinned drafts (useChatConfirm) are
-            // a SEPARATE, already-merged (#135) chat-native flow this task
-            // must not touch. The hard "never register an agent that will
-            // never fire" requirement is NOT an approval-frequency knob (see
-            // hasFireableSchedule's own doc comment) — a draft that still
-            // needs a schedule restated always keeps the pending card
-            // regardless of this setting. draftToConfirmedAgentDraft mirrors
-            // AgentConfirmCard's own unedited-default Confirm exactly (same
-            // helper the chat-native flow already reuses for app-act/
-            // tool-pinned), so auto-registering here can never disagree with
-            // what tapping Confirm on the card would have produced.
-            const requireRegistrationConfirm =
-              useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
-            if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
-              await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
+            // Conversational slot-filling (Phase 0 §2.1): a draft missing a
+            // required field (schedule/notificationTrigger/outputPath) is not
+            // yet ready to be shown for ANY kind of confirmation — chat-native
+            // or card. Ask ONE follow-up question at a time and return; only
+            // once nextMissingSlot reports nothing left missing do we fall
+            // through to the (pre-existing) chat-confirm/auto-register/card
+            // decision below. See the resumed-answer branch near the top of
+            // dispatch() for where these questions get answered.
+            const slotFillCtx = {
+              agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
+              agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
+            };
+            const missingSlot = nextMissingSlot(draft, slotFillCtx);
+            if (missingSlot) {
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: missingSlot.question,
+                timestamp: Date.now(),
+                agent: agent as ChatMessage['agent'],
+                pendingSlotFill: { field: missingSlot.field, question: missingSlot.question, partialDraft: draft, attemptCount: 0 },
+              });
+              return;
             }
+            // Nothing missing — hand off to the shared chat-confirm/
+            // auto-register/card decision (see presentDraftForConfirmation
+            // above the slot-fill resume branch).
+            await presentDraftForConfirmation(agent as ChatMessage['agent'], draft);
             return;
           } else if (agentResult.type === 'run') {
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand);
