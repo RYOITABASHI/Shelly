@@ -107,6 +107,6 @@ Per project rule, changes touching native (notification handler, deep-link bridg
 
 ## 8. Completed fast-follow — Scouter widget registered-agent RUN
 
-- **Task B shipped in `154525d3fb` (2026-07-13; device verification pending).** The widget selects the next enabled scheduled agent from `~/.shelly/agents/*.json`, revalidates metadata and its materialized run artifact at tap time, then dispatches the existing `TerminalSessionService.ACTION_RUN_AGENT` contract with `PendingIntent.getForegroundService`.
+- **Task B shipped in `794cbeb7f` (2026-07-13; device verification pending).** The widget selects the next enabled scheduled agent from `~/.shelly/agents/*.json`, revalidates metadata and its materialized run artifact at tap time, then dispatches the existing `TerminalSessionService.ACTION_RUN_AGENT` contract with `PendingIntent.getForegroundService`.
 - The widget run is explicitly unattended, so runtime action approval remains fail-closed; STOP-ALL is enforced at the service chokepoint; the manual marker prevents schedule re-arm; and the widget exposes only next-run plus latest running/success/error status, never a scheduled-run approval shortcut.
 - **Task A (new-agent input / voice shortcut) remains P2** in `DEFERRED.md`; it is a separate deep-link and mobile-UX surface and was not mixed into this security-sensitive native change.

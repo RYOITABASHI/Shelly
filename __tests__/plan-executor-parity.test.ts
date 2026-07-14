@@ -61,8 +61,9 @@ describe('shelly-plan-executor.js parity', () => {
 
   it('derives unattended mode from scheduled service extras before launching the agent', () => {
     expect(terminalSessionService).toContain('val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)');
-    expect(terminalSessionService).toContain('val unattended = intervalMs > 0 || !cron.isNullOrBlank()');
-    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended)');
+    expect(terminalSessionService).toContain('val scheduled = intervalMs > 0 || !cron.isNullOrBlank()');
+    expect(terminalSessionService).toContain('val unattended = scheduled || manual');
+    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)');
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');
   });
