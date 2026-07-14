@@ -46,6 +46,47 @@ object AgentRuntime {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
+
+        // Per-agent enabled re-check (innermost chokepoint), gated to UNATTENDED
+        // runs only. Every RUN_AGENT dispatch (AlarmManager fire, notification-
+        // trigger, manual widget tap, in-app "Run now") funnels through this
+        // single runAgent() entry point before branching into the legacy .sh
+        // runner or the PlanSpec executor below, so this is the correct backstop
+        // for any caller that reaches here without having already re-checked
+        // `enabled` upstream. ShellyNotificationListener's findAgentsTriggeredBy()
+        // and WidgetAgentRepository.scheduledById() already re-read disk and
+        // refuse a disabled agent at their own call sites (defense in depth,
+        // left as-is; this re-check is a harmless no-op there since `enabled`
+        // is already known true) — but a straggler AgentAlarmReceiver fire (an
+        // alarm armed before the user disabled/paused the agent, not yet
+        // cancelled/re-armed) reaches TerminalSessionService's ACTION_RUN_AGENT
+        // with only the global STOP-ALL check in front of it, which is a
+        // different (agent-independent) gate, and lands here with
+        // unattended=true (TerminalSessionService's `scheduled` extras). Without
+        // a check here, that straggler fire — or any future automated caller
+        // that reaches AgentRuntime directly — would still execute a disabled
+        // agent. Deliberately does NOT gate the attended path
+        // (unattended=false): Sidebar.tsx's agent-detail popup offers "Run now"
+        // as an action independent from Pause/Resume (handleRunScheduledAgent /
+        // handleTogglePause are separate buttons, see agent_run_now +
+        // agent_pause/agent_resume) — TerminalEmulatorModule.runAgent() is
+        // called with no manual/interval/cron extras, so TerminalSessionService
+        // computes unattended=false for it, and lib/agent-manager.ts's
+        // setAgentEnabled() docs this as a pause/resume of the SCHEDULE, not a
+        // block on manual triggering. Gating on `enabled` unconditionally here
+        // would silently break that intentional manual override. Fails closed
+        // on every negative signal (missing file, malformed JSON, id mismatch,
+        // enabled=false/absent, or a read error) exactly like the STOP-ALL
+        // check's own fail-closed pattern. This is specifically about DISABLE,
+        // not delete — delete is already fail-closed via the missing-script /
+        // missing-PlanSpec checks below (exit 127).
+        if (unattended && !isAgentEnabled(homeDir, agentId)) {
+            val message = "agent disabled: $agentId"
+            Log.i(TAG, "Agent $agentId refused: $message")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 129, "", message)
+        }
+
         val libDir = try {
             LibExtractor.extractAll(appContext)
         } catch (e: Exception) {
@@ -432,6 +473,35 @@ object AgentRuntime {
         val flags = readAgentEnvFlags(homeDir)
         if (!isTruthy(flags["SHELLY_PLAN_EXECUTOR"])) return false
         return flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId
+    }
+
+    /**
+     * Re-reads $HOME/.shelly/agents/<id>.json at the innermost run chokepoint
+     * and fails closed unless the file exists, its embedded `id` matches the
+     * filename, and `enabled` is explicitly true. Mirrors the identical
+     * `json.optBoolean("enabled", false)` re-read pattern already used by
+     * WidgetAgentRepository.scheduledById() (manual widget taps) and
+     * ShellyNotificationListener.findAgentsTriggeredBy() (notification
+     * triggers) — this closes the gap for any run path that reaches
+     * AgentRuntime without going through one of those two callers, e.g. a
+     * straggler AgentAlarmReceiver fire armed before the agent was disabled.
+     * Unlike isGloballyHalted() in TerminalSessionService (which fails OPEN to
+     * "not halted" on an I/O error to match the JS-side halt-sentinel default),
+     * this fails CLOSED to "not enabled" on any error: the whole point of this
+     * check is to be a fail-closed backstop against running a disabled agent,
+     * so an unreadable/corrupt agent file must refuse the run, not permit it.
+     */
+    private fun isAgentEnabled(homeDir: File, agentId: String): Boolean {
+        val agentFile = File(homeDir, ".shelly/agents/$agentId.json")
+        return try {
+            if (!agentFile.isFile) return false
+            val json = JSONObject(agentFile.readText())
+            if (json.optString("id") != agentId) return false
+            json.optBoolean("enabled", false)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read enabled state for $agentId; defaulting to disabled (fail closed)", e)
+            false
+        }
     }
 
     private fun trustedPlanLaunch(homeDir: File, agentId: String): TrustedPlanLaunch? {
