@@ -113,6 +113,7 @@ function textForSecretScan(agent: Agent): string {
     agent.action?.intentShareText,
     agent.action?.dmPairingId,
     agent.action?.dmReplyText,
+    agent.action?.appActParams ? Object.values(agent.action.appActParams).join('\n') : undefined,
   ].filter(Boolean).join('\n');
 }
 

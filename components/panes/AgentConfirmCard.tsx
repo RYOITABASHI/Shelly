@@ -55,7 +55,7 @@ export interface ConfirmedAgentDraft {
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
 const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']; // cron dow 0..6
-const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply'];
+const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'app-act'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
 
 function clampInt(raw: string, min: number, max: number): number {

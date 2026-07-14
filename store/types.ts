@@ -499,8 +499,27 @@ export type ToolChoice =
  * keyed off `type`: draft/notify = one-tap; webhook = one-tap with host+payload shown;
  * cli/intent/dm-reply = never one-tap (in-app Review before Allow) — intent additionally shows
  * the resolved target app/URI/share-text so the user sees exactly what will fire.
+ *
+ * `app-act` is a DELIBERATE exception to that pattern: it is Tier-B and
+ * unattended/autonomous-run-capable, unlike its `cli`/`intent`/`dm-reply` siblings
+ * which either hard-refuse unattended execution or are refused when running
+ * unattended. This is intentional, not an oversight a future reader should "fix"
+ * by adding a matching hard-refusal — do not do that. The reason it's safe: unlike
+ * `intent`/`dm-reply`, which can point at an arbitrary target resolved at run time
+ * (a package/URI or a paired notification fingerprint chosen dynamically), an
+ * `app-act` action's recipe + target + content-pipeline (`appActRecipeId` +
+ * `appActParams`) is fixed and explicitly consented to once at registration time,
+ * and remains visible in the Sidebar for the lifetime of the agent — there is no
+ * run-time target resolution step that could diverge from what the user approved.
  */
-export type AgentActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
+export type AgentActionType =
+  | 'draft'
+  | 'notify'
+  | 'webhook'
+  | 'cli'
+  | 'intent'
+  | 'dm-reply'
+  | 'app-act';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -527,6 +546,22 @@ export interface AgentAction {
   dmPairingId?: string;
   /** dm-reply: reply text template. A literal {{result}} is replaced with the run preview. */
   dmReplyText?: string;
+  /** app-act: which registered app-action recipe to invoke (e.g. 'x.post').
+   *  Schema only in this phase — no dispatch logic reads this yet. */
+  appActRecipeId?: string;
+  /** app-act: recipe parameters (e.g. { text: '{{result}}' } for 'x.post').
+   *  Values may contain the literal placeholder "{{result}}", string-replaced
+   *  (no template engine) with the agent's run preview text, following the same
+   *  convention as intentShareText/dmReplyText. Schema only in this phase. */
+  appActParams?: Record<string, string>;
+  /** app-act: delivery mechanism for the recipe. 'accessibility' = drive the
+   *  target app's UI via AccessibilityService (what Phase 3/4 implement first);
+   *  'api' = call the target service's own API (e.g. X API v2 OAuth 1.0a
+   *  user-context) as a forward-compatible alternative, not yet implemented.
+   *  Absent/undefined means 'accessibility' — kept optional so existing
+   *  app-act actions written before this field existed don't need a migration.
+   *  Schema only in this phase; no dispatch logic reads this yet. */
+  appActMethod?: 'accessibility' | 'api';
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */
