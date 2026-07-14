@@ -679,10 +679,28 @@ export interface AgentRunStep {
   routeDecision?: AgentRouteDecision;
 }
 
+/**
+ * Phase 5: a step can optionally pin a concrete tool/provider, skipping the
+ * keyword-based auto-routing for that step only. A plain string step (below)
+ * is the original shape and keeps today's exact auto-routing behavior — no
+ * migration needed for existing on-disk agents.
+ */
+export interface AgentOrchestrationStep {
+  instruction: string;
+  /** Absent/omitted = auto-routed exactly like a plain-string step. A concrete
+   *  (non-'auto') tool here is resolved via the SAME 'configured-tool' path a
+   *  top-level pinned `Agent.tool` already uses — it does not widen privilege:
+   *  autonomous unattended runs still force local/Codex via resolveForAutonomous,
+   *  and a top-level `Agent.runOn` on-device/cloud pin still outranks it. */
+  tool?: ToolChoice;
+}
+
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
 export interface AgentOrchestrationConfig {
-  /** Ordered step instructions; ≥ 2 → runs as a linear chain. */
-  steps: string[];
+  /** Ordered step instructions; ≥ 2 → runs as a linear chain. Each entry is
+   *  EITHER a plain string (legacy shape, always auto-routed) OR an object with
+   *  an optional tool pin (Phase 5). */
+  steps: Array<string | AgentOrchestrationStep>;
   /** Max steps to launch (clamped to a hard cap for the phantom-process ceiling). */
   maxSteps?: number;
   /** Total wall-clock budget in ms (clamped to a hard ceiling). */

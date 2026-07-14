@@ -6,6 +6,15 @@ import {
   X_CHAR_LIMIT,
 } from '@/lib/agent-pipeline-presets';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
+import { normalizeSteps } from '@/lib/agent-orchestration';
+import type { AgentOrchestrationConfig } from '@/store/types';
+
+// buildSteamPipeline only ever produces plain-string steps (no tool pins) —
+// this preset predates and is untouched by the Phase 5 step-tool-pin schema
+// change, so narrow AgentOrchestrationConfig.steps (now string | {instruction,
+// tool?}) back down to plain instruction strings for these existing assertions.
+const stepInstructions = (orchestration: AgentOrchestrationConfig) =>
+  normalizeSteps(orchestration).map((s) => s.instruction);
 
 describe('buildSteamPipeline — North Star collection pipeline', () => {
   it('produces a 4-step autonomous Mon/Fri pipeline with a char limit', () => {
@@ -18,7 +27,7 @@ describe('buildSteamPipeline — North Star collection pipeline', () => {
 
   it('routes each step correctly via the existing scorer (collect=web, summarize=on-device)', () => {
     const p = buildSteamPipeline();
-    const [collect, primary, summarize, resummarize] = p.orchestration.steps;
+    const [collect, primary, summarize, resummarize] = stepInstructions(p.orchestration);
     // The base prompt is prepended to every step at runtime (buildStepPrompt), so
     // it MUST be neutral — no collection verb / freshness — or it would force
     // needsWeb on the transform steps too.
@@ -36,15 +45,15 @@ describe('buildSteamPipeline — North Star collection pipeline', () => {
   it('honours topic / count / charLimit / schedule overrides (clamped)', () => {
     const p = buildSteamPipeline({ topic: '宇宙生物学', count: 99, charLimit: 5, schedule: null });
     expect(p.name).toContain('宇宙生物学');
-    expect(p.orchestration.steps[0]).toContain('宇宙生物学');
-    expect(p.orchestration.steps[0]).toContain('10件'); // count clamped to 10
+    expect(stepInstructions(p.orchestration)[0]).toContain('宇宙生物学');
+    expect(stepInstructions(p.orchestration)[0]).toContain('10件'); // count clamped to 10
     expect(p.orchestration.charLimit).toBe(40); // 5 clamped up to the floor
     expect(p.schedule).toBeNull();
   });
 
   it('bakes the char limit into the final re-summarize instruction', () => {
     const p = buildSteamPipeline({ charLimit: 200 });
-    expect(p.orchestration.steps[3]).toContain('200文字以内');
+    expect(stepInstructions(p.orchestration)[3]).toContain('200文字以内');
   });
 });
 

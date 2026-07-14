@@ -6,6 +6,7 @@ import {
   HARD_TOTAL_TIMEOUT_MS,
   isOrchestrated,
   nextStepGate,
+  normalizeStep,
   normalizeSteps,
   parseStepsFromText,
   reduceStatus,
@@ -35,14 +36,60 @@ describe('resolveBudget — clamps to hard caps', () => {
   });
 });
 
+describe('normalizeStep — single-entry normalization (Phase 5 tool pin)', () => {
+  it('a plain string becomes {instruction} with no tool — byte-identical to legacy behavior', () => {
+    expect(normalizeStep('  do the thing  ')).toEqual({ instruction: 'do the thing' });
+  });
+  it('an object with no tool becomes {instruction} — same as a plain string', () => {
+    expect(normalizeStep({ instruction: '  do the thing  ' })).toEqual({ instruction: 'do the thing' });
+  });
+  it('an object with a tool pin keeps it — this is the auto-routing skip', () => {
+    expect(normalizeStep({ instruction: 'draft a summary', tool: { type: 'perplexity', model: 'sonar-deep-research' } }))
+      .toEqual({ instruction: 'draft a summary', tool: { type: 'perplexity', model: 'sonar-deep-research' } });
+  });
+  it('truncates a long instruction the same way for both shapes', () => {
+    const long = 'x'.repeat(900);
+    expect(normalizeStep(long).instruction.length).toBeLessThanOrEqual(500);
+    expect(normalizeStep({ instruction: long, tool: { type: 'local' } }).instruction.length).toBeLessThanOrEqual(500);
+  });
+});
+
 describe('normalizeSteps / isOrchestrated', () => {
-  it('trims, drops empties, caps at hard max', () => {
-    expect(normalizeSteps(cfg({ steps: ['  x ', '', '  ', 'y'] }))).toEqual(['x', 'y']);
+  it('regression: plain-string-only steps normalize to {instruction} with no tool (unchanged auto-routing shape)', () => {
+    expect(normalizeSteps(cfg({ steps: ['  x ', '', '  ', 'y'] }))).toEqual([
+      { instruction: 'x' },
+      { instruction: 'y' },
+    ]);
     expect(normalizeSteps(cfg({ steps: Array(50).fill('s') })).length).toBe(HARD_MAX_STEPS);
+  });
+  it('a pinned-tool step surfaces its tool; an unpinned step in the SAME array does not', () => {
+    const steps = normalizeSteps(cfg({
+      steps: [
+        'collect the news',
+        { instruction: 'draft the digest', tool: { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' } },
+      ],
+    }));
+    expect(steps).toEqual([
+      { instruction: 'collect the news' },
+      { instruction: 'draft the digest', tool: { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' } },
+    ]);
+  });
+  it('mixed array: plain strings and pinned objects interleave correctly, empties still dropped', () => {
+    const steps = normalizeSteps(cfg({
+      steps: [
+        'step one',
+        { instruction: '' }, // empty instruction — dropped like an empty string
+        { instruction: 'step three', tool: { type: 'cli', cli: 'codex' } },
+        'step four',
+      ],
+    }));
+    expect(steps.map((s) => s.instruction)).toEqual(['step one', 'step three', 'step four']);
+    expect(steps.map((s) => s.tool)).toEqual([undefined, { type: 'cli', cli: 'codex' }, undefined]);
   });
   it('is orchestrated only with >= 2 steps', () => {
     expect(isOrchestrated(cfg({ steps: ['only one'] }))).toBe(false);
     expect(isOrchestrated(cfg({ steps: ['a', 'b'] }))).toBe(true);
+    expect(isOrchestrated(cfg({ steps: ['a', { instruction: 'b', tool: { type: 'groq' } }] }))).toBe(true);
     expect(isOrchestrated(undefined)).toBe(false);
   });
 });

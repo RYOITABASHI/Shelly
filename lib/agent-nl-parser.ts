@@ -18,7 +18,7 @@
  */
 import { AgentAction, AgentMemoryConfig, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
-import { parseStepsFromText } from './agent-orchestration';
+import { parseStepsFromText, normalizeSteps } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 
 export interface ParsedAgentDraft {
@@ -648,7 +648,10 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     return {
       name: deriveName(preset.name),
       prompt: preset.prompt,
-      orchestrationSteps: preset.orchestration.steps,
+      // ParsedAgentDraft.orchestrationSteps is plain strings (Phase 5 tool-pin
+      // detection from NL text is a later phase) — normalize + extract the
+      // instruction so a future object-shaped step entry can't leak through.
+      orchestrationSteps: normalizeSteps(preset.orchestration).map((s) => s.instruction),
       schedule,
       scheduleConfident: presetSched.confident || usePresetDefault,
       scheduleLabel: presetSched.confident
