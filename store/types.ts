@@ -474,7 +474,7 @@ export type AppSettings = {
    *  human tap required. true = restore today's mandatory-approval flow.
    *  Per-agent Agent.requireActionApproval overrides this when set.
    *  Does NOT affect app-act, which has its own narrower Tier-B trust gate
-   *  (autonomous + on-device tool only, see AgentActionType's doc comment) —
+   *  (Agent.autonomous alone, see AgentActionType's doc comment) —
    *  intentionally not unified with this blanket switch because a wrong
    *  external post is not equivalent in risk to a local draft or CLI call.
    *  Does NOT relax command-safety CRITICAL / secret-scan / workspace-root
@@ -540,17 +540,21 @@ export type ToolChoice =
  * run-time target resolution step that could diverge from what the user approved.
  *
  * Implemented gate (2026-07-14, see docs/superpowers/DEFERRED.md's now-resolved
- * "app-act Tier-B" entry): the unattended-allow ONLY fires when the SAME
- * registration-time consent already gates draft/notify's native fast-path —
- * `Agent.autonomous === true` AND `Agent.tool.type === 'local'` (the existing
- * "Phase 0 canary only trusts deterministic local unattended effects" boundary
- * in AgentRuntime.kt's trustedPlanLaunch / lib/agent-executor.ts's
- * ACTION_APP_ACT_AUTO_FIRE_TRUSTED). This is a NARROWER gate than
+ * "app-act Tier-B" entry, widened same day per project owner directive —
+ * "たとえパープレだろうとCodexだろうと", chat-confirmed consent is the
+ * boundary, not the tool backend): the unattended-allow ONLY fires when the
+ * SAME registration-time consent already gates draft/notify's native fast-path
+ * — `Agent.autonomous === true` alone (AgentRuntime.kt's trustedPlanLaunch /
+ * lib/agent-executor.ts's ACTION_APP_ACT_AUTO_FIRE_TRUSTED). A cloud tool
+ * still can't reach a runnable autonomous script at all unless
+ * AppSettings.autonomousCloudConsent was separately granted (Spec A §4, N1
+ * exception) — this gate only governs whether app-act may fire unattended
+ * once a script exists. This is a NARROWER gate than
  * AppSettings.defaultRequireActionApproval/Agent.requireActionApproval
  * (which only ever affect draft/notify/webhook/cli/intent/dm-reply) — flipping
  * the global "no approval tap" default does NOT by itself unlock unattended
- * app-act; only the pre-existing autonomous+local consent does, because a
- * wrong external post is not equivalent in risk to a local draft or CLI call.
+ * app-act; only the pre-existing autonomous consent does, because a wrong
+ * external post is not equivalent in risk to a local draft or CLI call.
  */
 export type AgentActionType =
   | 'draft'

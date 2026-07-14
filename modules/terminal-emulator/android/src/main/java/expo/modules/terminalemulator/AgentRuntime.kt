@@ -422,9 +422,10 @@ object AgentRuntime {
                         if (expiresAt != null && now > expiresAt) return@forEach
                         if (!seen.add(request.key)) return@forEach
                         // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md,
-                        // resolved 2026-07-14): a request the executor itself marked
-                        // autoFireTrusted (agent.autonomous===true && tool.type==='local',
-                        // verified again here against the recipe fingerprint) is fired
+                        // resolved 2026-07-14, widened same day to any tool backend): a
+                        // request the executor itself marked autoFireTrusted
+                        // (agent.autonomous===true, verified again here against the
+                        // recipe fingerprint) is fired
                         // and resolved RIGHT HERE, natively — no human tap, no RN round
                         // trip, so it works whether or not the JS bridge is alive
                         // (unattended scheduled runs). Every other action type/trust
