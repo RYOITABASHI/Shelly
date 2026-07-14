@@ -13,7 +13,7 @@ import { buildAgentPolicy } from './agent-policy';
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 10;
+const AGENT_SCRIPT_VERSION = 11;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -33,8 +33,8 @@ const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
   cli: 'Produce exactly the content needed by the requested command or command workflow.',
   intent: 'Produce exactly the text or content needed for the requested app or share action.',
   'dm-reply': 'Write the reply message itself as a natural, short conversational response unless explicit user instructions request otherwise.',
-  // Schema only (Phase 2 of the app-act rollout) — no dispatch path reads this
-  // yet; see agent-plan-spec.ts toPlanAction's default 'unsupported' branch.
+  // Phase 4: real dispatch path, see dispatch_agent_action's app-act) case
+  // below and agent-plan-spec.ts toPlanAction's 'app-act' case.
   'app-act': 'Produce exactly the content needed for the requested app action.',
 };
 const ACTION_OUTPUT_RULES = 'Follow explicit user instructions for content, format, length, and tone. When they are not specified, be direct and concise. Output only the requested deliverable. Never add meta-commentary about your reasoning or interpretation of the request.';
@@ -230,6 +230,15 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionIntentShareText = actionType === 'intent' ? (agent.action?.intentShareText ?? '') : '';
   const actionDmPairingId = actionType === 'dm-reply' ? agent.action?.dmPairingId ?? '' : '';
   const actionDmReplyText = actionType === 'dm-reply' ? agent.action?.dmReplyText ?? '' : '';
+  const actionAppActRecipeId = actionType === 'app-act' ? (agent.action?.appActRecipeId ?? '') : '';
+  // Baked as a JSON string constant (params may carry the literal "{{result}}"
+  // placeholder in any value, same convention as intentShareText/dmReplyText).
+  // Resolved against the redacted run preview, and redacted a second time as
+  // defense-in-depth, entirely at RUNTIME in the shell (resolve_app_act_params) —
+  // this is the first agent action type that reaches a real external-posting
+  // surface, so it gets an extra redaction pass beyond relying solely on the
+  // preview already being clean.
+  const actionAppActParamsJson = actionType === 'app-act' ? JSON.stringify(agent.action?.appActParams ?? {}) : '{}';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
   // North Star fix: a web-research / collection agent otherwise receives the bare
@@ -347,6 +356,8 @@ ACTION_INTENT_SHARE_TEXT=${shellQuote(actionIntentShareText)}
 ACTION_DM_PAIRING_ID=${shellQuote(actionDmPairingId)}
 ACTION_DM_REPLY_TEXT=${shellQuote(actionDmReplyText)}
 ACTION_DM_PAIRING_LABEL=""
+ACTION_APP_ACT_RECIPE_ID=${shellQuote(actionAppActRecipeId)}
+ACTION_APP_ACT_PARAMS_JSON=${shellQuote(actionAppActParamsJson)}
 ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
 ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
@@ -584,6 +595,48 @@ NODEEOF
     "$file" 2>/dev/null || cat "$file" 2>/dev/null || true
 }
 
+# app-act (Phase 4): resolves the literal "{{result}}" placeholder in every
+# value of $1 (a JSON object string, e.g. '{"text":"Check this: {{result}}"}')
+# against $2 (the already-redacted run preview — see clean_result_preview),
+# then runs redact_secrets_text over the resolved JSON a SECOND time as
+# defense-in-depth. $preview is already redacted by the time it reaches here,
+# so this second pass is a deliberate belt-and-suspenders for the first agent
+# action type that can publish content externally (a leaked secret in a
+# public X post is categorically worse than one in a private draft/notify) —
+# not evidence the first pass is believed to be insufficient. Falls back to
+# an empty object on any parse/exec failure (fail-closed: an app-act with no
+# resolvable params fails its own presence check in dispatch_agent_action
+# rather than firing with stale/unresolved "{{result}}" text).
+resolve_app_act_params() {
+  params_json="$1"
+  preview="$2"
+  tmp_in="$TMP_DIR/app-act-params-$AGENT_ID-$$.json"
+  tmp_resolved="$TMP_DIR/app-act-params-resolved-$AGENT_ID-$$.json"
+  printf '%s' "$params_json" > "$tmp_in"
+  : > "$tmp_resolved"
+  if node_usable; then
+    SHELLY_APP_ACT_PREVIEW="$preview" shelly_node - "$tmp_in" <<'NODEEOF' > "$tmp_resolved" 2>/dev/null
+const fs = require('fs');
+const file = process.argv[2];
+const preview = process.env.SHELLY_APP_ACT_PREVIEW || '';
+let params = {};
+try { params = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { params = {}; }
+const out = {};
+if (params && typeof params === 'object' && !Array.isArray(params)) {
+  for (const [k, v] of Object.entries(params)) {
+    out[k] = typeof v === 'string' ? v.split('{{result}}').join(preview) : '';
+  }
+}
+process.stdout.write(JSON.stringify(out));
+NODEEOF
+  fi
+  if [ ! -s "$tmp_resolved" ]; then
+    printf '{}' > "$tmp_resolved"
+  fi
+  redact_secrets_text "$tmp_resolved"
+  rm -f "$tmp_in" "$tmp_resolved"
+}
+
 # Strip the autonomous driver's structured telemetry (AUDIT/GATE/protocol/STDERR/
 # escalation) from a result file so the user-facing preview shows real content,
 # never the internal driver_start JSON. Backends that write a plain answer
@@ -816,11 +869,24 @@ write_action_approval_request() {
   dm_pairing_id_json=$(json_escape_text "$ACTION_DM_PAIRING_ID")
   dm_pairing_label_json=$(json_escape_text "\${ACTION_DM_PAIRING_LABEL:-}")
   dm_reply_text_json=$(json_escape_text "$dm_reply_text_resolved")
+  # app-act (Phase 4): resolve_app_act_params substitutes {{result}} in every
+  # param value against $preview (already redacted) and redacts the resolved
+  # JSON a second time (defense-in-depth for the first agent action type that
+  # can publish externally). The resolved JSON is embedded as a plain STRING
+  # field (json_escape_text), same shape as intentShareText/dmReplyText, not
+  # a nested object — the approval-request record is a flat string map.
+  app_act_recipe_id_json=$(json_escape_text "$ACTION_APP_ACT_RECIPE_ID")
+  # ACTION_APP_ACT_PARAMS_JSON defaults to '{}' for every non-app-act action
+  # (see actionAppActParamsJson in generateRunScript), so resolving it
+  # unconditionally here is a harmless no-op for those calls -- no need to
+  # branch on $approval_type.
+  app_act_params_resolved=$(resolve_app_act_params "$ACTION_APP_ACT_PARAMS_JSON" "$preview")
+  app_act_params_resolved_json=$(json_escape_text "$app_act_params_resolved")
   ts_seconds=$(date +%s)
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -1156,6 +1222,45 @@ dispatch_agent_action() {
       # RN sends natively before publishing the accept reply. There is no
       # post-approval broker or shell side effect here.
       ACTION_DISPATCH_MESSAGE="DM reply sent."
+      return 0
+      ;;
+    app-act)
+      # Phase 4: app-act is the first agent action that can publish content to
+      # an external, human-facing surface (e.g. a public X post) rather than a
+      # private draft/notification. store/types.ts documents app-act as
+      # ultimately Tier-B/unattended-capable (its recipe+target+params are
+      # fixed and consented to once at registration time, unlike intent/
+      # dm-reply's runtime-resolved targets) -- but THIS phase deliberately
+      # keeps it behind an attended Review, matching intent/dm-reply's refusal
+      # shape exactly, as an interim conservative default. Do not read this as
+      # an oversight to "fix" by widening it; a later phase revisits the
+      # unattended case explicitly (see docs/superpowers/DEFERRED.md).
+      if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
+        ACTION_DISPATCH_STATUS="skipped"
+        ACTION_DISPATCH_MESSAGE="App-action actions require an attended Review."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if [ -z "$ACTION_APP_ACT_RECIPE_ID" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="App-action is missing a recipe."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      app_act_params_check=$(resolve_app_act_params "$ACTION_APP_ACT_PARAMS_JSON" "$preview")
+      if [ -z "$app_act_params_check" ] || [ "$app_act_params_check" = "{}" ]; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="App-action is missing its recipe parameters."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      write_action_approval_request "app-act" "$preview" "$result_file"
+      wait_action_approval "app-act" || return 1
+      # No broker/native call here (mirrors intent/dm-reply): RN already fired
+      # the recipe NATIVELY (fireAgentAppAct, driving ShellyAccessibilityService
+      # via AppActExecutor) BEFORE writing the accept reply that
+      # wait_action_approval just observed. Nothing left to execute.
+      ACTION_DISPATCH_MESSAGE="App action fired: $ACTION_APP_ACT_RECIPE_ID"
       return 0
       ;;
     *)
