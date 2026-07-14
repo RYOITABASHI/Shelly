@@ -154,11 +154,11 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 
 ### G4 Phase 2b — Layer-2 ルーターの後回し項目
 
-**優先度**: P1（クラウドキー欠如のフォールバックは UX 影響大）／ 他は P2
+**優先度**: 元 P1（クラウドキー欠如のフォールバックは UX 影響大）／ 他は P2
 **状態**: G4（Layer-2 スコアリングルーター）をコア実機 PASS して main にマージ済み（PR #88, build 1597 系）。スコアラーが実機で稼働（Scores 行 + Why: Layer-2 scorer + confidence + 4候補）、on-device-first（ニュース要約 → transform → Local）を立証。ハードガード優先・オフライン決定論はレビュー + 単体テストで担保。
 
 **後回し**:
-1. **クラウドキー欠如のフォールバック（P1）** — auto-scorer がキー未設定の cloud バックエンド（Perplexity / Gemini）を選ぶと、実行時にエラーで止まり **local に degrade しない**（autonomous 経路は事前に api-key を拒否するが auto 経路には無い）。`resolveAgentRoute` で cloud 候補のキー可用性を見て、無ければ local に落とす preflight が望ましい。実機で genuine-research → Perplexity がキー無しで失敗するのを確認済み。
+1. ~~クラウドキー欠如のフォールバック（P1）~~ ✅ **解決済み** — PR #121（コミット `ae3c88ba2`, 2026-07-14）で `resolveEscalationLadder` にキー未設定 cloud バックエンド（Perplexity/Gemini）の preflight を追加、local への degrade を実装。atomic script write（tmp+rename）と consent re-bake の race 対策も同 PR で解決。
 2. **Qwen-0.8B 分類の任意導入（P2）** — 現状はヒューリスティックのみ（/goal は許容）。決定論ヒューリスティックで足りるか実運用で測ってから。
 3. **キーワード集合の重複（P2）** — scorer（CODE_KW 等）と `suggestTool`（CODE_KEYWORDS 等）が別々。drift しうるので将来統合。
 4. **カタカナ code キーワード（P3）** — プルリク/レビュー 等が未対応で general に落ちる（安全側）。
