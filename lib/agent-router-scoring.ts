@@ -219,9 +219,11 @@ const LABELS: Record<ToolChoice['type'], string> = {
  * confidence (top-two gap), and the full candidate score list for the audit log.
  * Deterministic + offline.
  */
-// Web-capable primaries (the only backends that can fetch live info).
-const GEMINI_WEB: ToolChoice = { type: 'gemini-api' };
-const PERPLEXITY_WEB: ToolChoice = { type: 'perplexity', model: 'sonar-deep-research' };
+// Web-capable primaries (the only backends that can fetch live info). Exported
+// so other NL-facing detectors (e.g. agent-orchestration's tool-mention step
+// detector) reuse the exact same tool literals instead of re-inventing them.
+export const GEMINI_WEB: ToolChoice = { type: 'gemini-api' };
+export const PERPLEXITY_WEB: ToolChoice = { type: 'perplexity', model: 'sonar-deep-research' };
 
 export function scoreRoutes(prompt: string): ScoredRoute {
   const signals = detectRouteSignals(prompt);

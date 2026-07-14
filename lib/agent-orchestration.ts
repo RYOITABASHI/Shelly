@@ -16,6 +16,7 @@
  * All functions are pure (no IO) for deterministic unit tests.
  */
 import type { AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
+import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
 export const DEFAULT_MAX_STEPS = 6;
@@ -193,4 +194,77 @@ export function parseStepsFromText(text: string): string[] {
     }
   }
   return [];
+}
+
+// ── Tool-pinned step detection (Phase 6) ─────────────────────────────────────
+//
+// A plain て-form conjunctive chain ("集めて、…付けて、…投稿して") carries none of
+// the explicit sequence markers JP_SEQUENCE_SPLIT/EN_SEQUENCE_SPLIT/NUMBERED_SPLIT
+// look for (まず/次に/… , first/then/next/…, numbered lists), so parseStepsFromText
+// never fires for it. We deliberately do NOT widen JP_SEQUENCE_SPLIT itself to
+// catch plain "て、" — that risks false-positiving on ordinary prose that merely
+// happens to contain "て、" with no multi-step intent. Instead this is a NARROWER,
+// SEPARATE detector: it only turns a clause-boundary-delimited chain into pinned
+// orchestration steps when at least one clause explicitly NAMES a tool/provider
+// (パープレ/Perplexity, ローカルLLM/ローカル, Codex, Gemini). The tool mention is the
+// actual "this is deliberately multi-step" signal, not the punctuation — a clause
+// chain with boundaries but NO tool mention returns null and the normal
+// single-run / other-detector path is used instead (regression-tested).
+
+// Clause boundaries: JP 、/。 runs, EN ", " / "; ", and the EN conjunctions
+// "then" / "and then" (which, unlike EN_SEQUENCE_SPLIT above, are recognised
+// mid-sentence, not just at a clause's leading edge — this detector's own tool-
+// mention gate is what keeps it narrow, so it doesn't need EN_SEQUENCE_SPLIT's
+// stricter start-of-clause anchoring).
+const CLAUSE_BOUNDARY = /[、。]+|,\s+|;\s+|\s*\band then\b\s*|\s*\bthen\b\s*/gi;
+
+interface ToolMention {
+  re: RegExp;
+  tool: ToolChoice;
+}
+
+// Ordered; the FIRST pattern that matches a clause wins (a clause naming two
+// tools is not a supported phrasing — pick the earliest/most specific). JP
+// tokens match as a plain substring (no word boundary — CJK has none); Latin
+// tokens use \b so e.g. "codex" doesn't fire inside an unrelated longer word.
+const TOOL_MENTIONS: ToolMention[] = [
+  { re: /パープレ(?:キシティ)?|perplexity/i, tool: PERPLEXITY_WEB },
+  { re: /ローカル\s*llm|local\s*llm|ローカル/i, tool: { type: 'local' } },
+  { re: /\bcodex\b/i, tool: { type: 'cli', cli: 'codex' } },
+  { re: /\bgemini\b/i, tool: GEMINI_WEB },
+];
+
+function matchToolMention(clause: string): ToolChoice | undefined {
+  for (const { re, tool } of TOOL_MENTIONS) {
+    if (re.test(clause)) return tool;
+  }
+  return undefined;
+}
+
+/**
+ * Detect a tool-pinned multi-step chain in plain conjunctive text — e.g.
+ * "パープレで論文を集めて、ローカルLLMで要約して、Xに投稿して". Returns null when
+ * fewer than 2 usable clauses result, OR when none of them names a tool (the
+ * narrow trigger condition — see the file comment above). `tool` is set on a
+ * NormalizedStep ONLY when that specific clause matched a mention; the other
+ * clauses stay auto-routed (Phase 1's additive contract: absent tool = today's
+ * exact auto-routing behavior for that step).
+ */
+export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
+  const clauses = text
+    .split(CLAUSE_BOUNDARY)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 1);
+  if (clauses.length < 2) return null;
+
+  const steps: NormalizedStep[] = clauses.slice(0, HARD_MAX_STEPS).map((instruction) => {
+    const tool = matchToolMention(instruction);
+    const trimmedInstruction = instruction.slice(0, MAX_STEP_INSTRUCTION_CHARS);
+    return tool ? { instruction: trimmedInstruction, tool } : { instruction: trimmedInstruction };
+  });
+
+  const anyToolMatched = steps.some((s) => s.tool !== undefined);
+  if (!anyToolMatched) return null;
+
+  return steps;
 }
