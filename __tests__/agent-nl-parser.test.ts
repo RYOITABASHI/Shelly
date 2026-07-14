@@ -620,6 +620,47 @@ describe('parseAgentNL — name derivation does not eat 日/月/金 from non-wee
   });
 });
 
+describe('parseAgentNL — autonomous intent (explicit unattended-execution phrasing)', () => {
+  // On-device finding 2026-07-15: a hand-authored multi-step app-act draft
+  // (Perplexity->local-LLM->Obsidian->X, correctly tool-pinned and
+  // scheduled) was silently registered non-autonomous because there was
+  // NO way to set draft.autonomous=true outside the G6 "パイプライン"
+  // preset (a fixed-shape exception) -- AgentChatConfirm (used for
+  // app-act/tool-pinned drafts) has no toggle UI, so app-act's Tier-B
+  // trust gate could never unlock for a free-form instruction.
+  it('is false by default for an ordinary instruction with no autonomy phrasing', () => {
+    expect(parseAgentNL('毎日8時にXの下書きを作って').autonomous).toBe(false);
+  });
+
+  it('JP: 自律で → autonomous', () => {
+    expect(parseAgentNL('毎週月曜と金曜の9時に自律でXに投稿して').autonomous).toBe(true);
+  });
+
+  it('JP: 完全無人で → autonomous', () => {
+    expect(parseAgentNL('毎日8時に完全無人でニュースをまとめてXに投稿して').autonomous).toBe(true);
+  });
+
+  it('JP: 確認なしで → autonomous', () => {
+    expect(parseAgentNL('毎日8時に確認なしでXに投稿して').autonomous).toBe(true);
+  });
+
+  it('EN: autonomously → autonomous', () => {
+    expect(parseAgentNL('every day at 8am, autonomously post a summary to X').autonomous).toBe(true);
+  });
+
+  it('EN: without approval → autonomous', () => {
+    expect(parseAgentNL('every day at 8am, post to X without approval').autonomous).toBe(true);
+  });
+
+  it('does not false-positive on an unrelated use of 確認 ("...を確認して" as a normal instruction verb)', () => {
+    expect(parseAgentNL('毎日8時にニュースを確認して通知して').autonomous).toBe(false);
+  });
+
+  it('the G6 "パイプライン" preset stays hardcoded autonomous regardless of phrasing (unchanged behavior)', () => {
+    expect(parseAgentNL('STEAM×AIのパイプラインを作って').autonomous).toBe(true);
+  });
+});
+
 describe('parseAgentNL — memory (Phase 1)', () => {
   it('JP: 覚えておいて → memory.remember with the fact captured', () => {
     const d = parseAgentNL('私は簡潔な要約が好みだと覚えておいて');

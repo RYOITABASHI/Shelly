@@ -716,6 +716,27 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
   return buildSteamPipeline({ topic: topic || undefined });
 }
 
+// Explicit autonomous/unattended-execution intent — the ONLY way to set
+// draft.autonomous=true outside the G6 "パイプライン" preset (which is
+// hardcoded autonomous by design, a fixed-shape exception). Without this,
+// there was no way to request autonomous execution for a hand-written
+// multi-step instruction through the free-form/chat-native confirm path at
+// all: AgentChatConfirm (used for app-act/tool-pinned drafts) has no toggle
+// UI, unlike the older AgentConfirmCard's explicit Autonomous switch, so
+// app-act's Tier-B trust gate (agent.autonomous===true) could never unlock
+// for anything but the rigid G6 preset shape — found via on-device testing
+// 2026-07-15 (a hand-authored Perplexity->local-LLM->Obsidian->X pipeline
+// correctly tool-pinned and scheduled, but silently registered non-
+// autonomous, so app-act still asked for a human tap every run). Curated
+// phrase list (not a loose regex on "自動"/"確認" alone) to avoid false
+// positives on unrelated uses of those characters.
+const AUTONOMOUS_INTENT_RE =
+  /自律(?:的に|で|実行)|完全無人|人の確認(?:は)?なし|確認(?:は)?なしで|承認(?:は)?なしで|勝手に(?:投稿|実行|やって)|autonomous(?:ly)?|unattended|without\s+(?:approval|confirmation|review)|fully\s+automat(?:ed|ically)/i;
+
+function detectAutonomousIntent(text: string): boolean {
+  return AUTONOMOUS_INTENT_RE.test(text);
+}
+
 /**
  * Parse an utterance into a structured agent draft. Pure & deterministic — safe to call
  * offline and in unit tests. Always returns a draft (never throws / never hard-blocks);
@@ -806,6 +827,7 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     action,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
+    autonomous: detectAutonomousIntent(rawText),
     memory,
     actionCaveat,
     rawText,
