@@ -1,0 +1,28 @@
+{
+  "id": "x.post",
+  "pkg": "com.twitter.android",
+  "operation": "post",
+  "displayName": "Post to X",
+  "tier": "B",
+  "params": [
+    { "name": "text", "description": "Post text", "required": true }
+  ],
+  "steps": [
+    {
+      "op": "launch",
+      "target": "com.twitter.android",
+      "intent": "Bring X to the foreground (or launch it) so the rest of the recipe has a window to act on."
+    },
+    {
+      "op": "setText",
+      "matcher": { "resourceId": "com.twitter.android:id/tweet_text" },
+      "param": "text",
+      "intent": "Type the post text into the compose screen's body field."
+    },
+    {
+      "op": "click",
+      "matcher": { "resourceId": "com.twitter.android:id/button_tweet" },
+      "intent": "Tap the post button to publish."
+    }
+  ]
+}

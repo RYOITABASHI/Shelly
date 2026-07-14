@@ -10,6 +10,24 @@
       android:taskAffinity=""
       android:theme="@style/ShellyScouterPromptTheme" />
 
+    <!-- Deliberately NOT singleTop (found by independent review 2026-07-11):
+         ensureUnlocked()'s per-instance latch/result capture in onCreate()
+         means a reused instance (routed via onNewIntent under singleTop)
+         would keep operating on a PRIOR call's already-timed-out latch,
+         making every retry after a timeout silently fail forever. Each call
+         must always get a fresh onCreate(). See ensureUnlocked()'s companion
+         `currentInstance` handling for the matching fix that ensures a
+         timed-out instance actually gets finish()'d, so a stale one is
+         never still around for the OS to route a new intent into anyway. -->
+    <activity
+      android:name=".LockPromptActivity"
+      android:excludeFromRecents="true"
+      android:exported="false"
+      android:finishOnTaskLaunch="true"
+      android:noHistory="true"
+      android:taskAffinity=""
+      android:theme="@style/ShellyLockPromptTheme" />
+
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">

@@ -9,4 +9,18 @@
     <item name="android:windowCloseOnTouchOutside">true</item>
     <item name="android:colorAccent">#30D5FF</item>
   </style>
+
+  <!-- LockPromptActivity's theme (docs/superpowers/specs/2026-07-11-app-act-design.md
+       §0.1's lock-screen bridge). Deliberately NOT ShellyScouterPromptTheme:
+       that one is translucent + undimmed, tuned for a small dialog-style
+       prompt over an already-foregrounded app. A lock-screen prompt needs
+       to be immediately, unmistakably visible over the keyguard, so this
+       stays fully opaque with a dark solid background instead. -->
+  <style name="ShellyLockPromptTheme" parent="@android:style/Theme.Material.NoActionBar">
+    <item name="android:windowNoTitle">true</item>
+    <item name="android:windowActionBar">false</item>
+    <item name="android:windowIsTranslucent">false</item>
+    <item name="android:windowBackground">#000C04</item>
+    <item name="android:colorAccent">#30D5FF</item>
+  </style>
 </resources>

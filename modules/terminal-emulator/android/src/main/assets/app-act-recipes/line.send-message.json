@@ -1,0 +1,46 @@
+{
+  "id": "line.send-message",
+  "pkg": "jp.naver.line.android",
+  "operation": "send-message",
+  "displayName": "Send a LINE message to a contact",
+  "tier": "C",
+  "params": [
+    { "name": "contact", "description": "Exact LINE conversation/contact name to search for", "required": true },
+    { "name": "message", "description": "Message text to send", "required": true }
+  ],
+  "steps": [
+    {
+      "op": "launch",
+      "target": "jp.naver.line.android",
+      "intent": "Bring LINE to the foreground (or launch it) so the rest of the recipe has a window to act on."
+    },
+    {
+      "op": "click",
+      "matcher": { "label": "検索" },
+      "intent": "Open LINE's search screen from whatever screen is currently showing. label (not contentDescription) because ホーム/トーク/ニュース tabs show \"検索\" as visible placeholder text, while VOOM/ミニアプリ expose it only via contentDescription — confirmed on-device 2026-07-12.",
+      "recoverOnZeroMatch": ["back", "back", "scrollToTop"]
+    },
+    {
+      "op": "setText",
+      "matcher": { "resourceId": "jp.naver.line.android:id/input_text" },
+      "param": "contact",
+      "intent": "Type the target contact/conversation name into the search field."
+    },
+    {
+      "op": "click",
+      "matcher": { "resourceId": "jp.naver.line.android:id/name_text_view", "text": "{{contact}}" },
+      "intent": "Tap the single exact-matching search result row to open that conversation."
+    },
+    {
+      "op": "setText",
+      "matcher": { "resourceId": "jp.naver.line.android:id/chat_ui_message_edit" },
+      "param": "message",
+      "intent": "Type the message body into the open conversation's message field."
+    },
+    {
+      "op": "click",
+      "matcher": { "resourceId": "jp.naver.line.android:id/chat_ui_send_button_image" },
+      "intent": "Tap the send button to deliver the message. resourceId only (not also contentDescription) — the button's contentDescription is state-dependent (flips between e.g. \"ボイスメッセージ\"/\"送信\"), so pinning both risks a spurious zero-match if the observed string differs at click time; the old hand-written flow this recipe replaces matched by resourceId alone for the same reason."
+    }
+  ]
+}
