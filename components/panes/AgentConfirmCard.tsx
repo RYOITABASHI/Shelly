@@ -346,6 +346,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         })}
       </Text>
 
+      {/* Requested-but-unsupported delivery action (e.g. X-posting): the parser
+          already fell back to `draft`, but the user should be told why rather
+          than silently getting a file instead of what they asked for. */}
+      {draft.actionCaveat && (
+        <Text style={[styles.warn, { color: colors.warning }]}>{draft.actionCaveat}</Text>
+      )}
+
       {/* Name */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.name')}</Text>
       <TextInput
