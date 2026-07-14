@@ -21,9 +21,9 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-nativ
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
-import { AgentAction, AgentActionType, AgentMemoryConfig, ToolChoice } from '@/store/types';
+import { AgentAction, AgentActionType, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
-import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
+import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, type Frequency } from '@/lib/agent-card-cron';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
@@ -45,8 +45,10 @@ export interface ConfirmedAgentDraft {
   memory?: AgentMemoryConfig;
   /** Phase 2a: id of a reused skill recipe the user kept on in the card. */
   skillId?: string;
-  /** Phase 4: ordered step instructions for a multi-step (orchestrated) agent. */
-  orchestrationSteps?: string[];
+  /** Phase 4/6: ordered step instructions for a multi-step (orchestrated) agent.
+   *  Each entry is either a plain string (auto-routed) or a { instruction, tool }
+   *  object pinning a concrete tool for that step (Phase 6). */
+  orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
   notificationTrigger?: { packageNames: string[] } | null;
 }
@@ -295,6 +297,16 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     if (actionType === 'dm-reply') {
       action.dmPairingId = dmPairingId;
       action.dmReplyText = dmReplyText.trim();
+    }
+    // app-act has no dedicated editor UI yet (Phase 6 is NL-parser-only) — when
+    // the user leaves the card's action picker on 'app-act' unchanged, carry the
+    // recipe/params the parser already resolved through verbatim. Without this,
+    // rebuilding `action` from `{ type: actionType }` alone would silently drop
+    // appActRecipeId/appActParams, registering an app-act action with no recipe.
+    if (actionType === 'app-act' && draft.action.type === 'app-act') {
+      action.appActRecipeId = draft.action.appActRecipeId;
+      action.appActParams = draft.action.appActParams;
+      action.appActMethod = draft.action.appActMethod;
     }
     // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
     // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
@@ -622,6 +634,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.dmreply_text_hint')}</Text>
         </>
       )}
+      {actionType === 'app-act' && (
+        <Text style={[styles.warn, { color: colors.warning }]}>
+          {draft.action.type === 'app-act' && draft.action.appActRecipeId === 'x.post'
+            ? t('agentcard.appact_x_warning')
+            : t('agentcard.appact_generic_warning')}
+        </Text>
+      )}
 
       {/* Notification trigger (NOTIFY-001 Increment 2) */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.notification_trigger_label')}</Text>
@@ -721,17 +740,27 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         </View>
       )}
 
-      {/* Phase 4: when the utterance was multi-step, show the planned chain. */}
+      {/* Phase 4/6: when the utterance was multi-step, show the planned chain —
+          including, for a Phase 6 tool-pinned step, WHICH tool it will use. This
+          is a security-relevant disclosure: a step can pin `cli`/Codex (see
+          AgentOrchestrationStep in store/types.ts), and the user should see that
+          in the same reviewable-before-Confirm surface as every other action. */}
       {draft.orchestrationSteps && draft.orchestrationSteps.length >= 2 && (
         <View style={{ marginTop: 4 }}>
           <Text style={[styles.label, { color: colors.muted, marginTop: 0 }]}>
             {t('agentcard.orchestration', { count: draft.orchestrationSteps.length })}
           </Text>
-          {draft.orchestrationSteps.map((s, i) => (
-            <Text key={`step-${i}`} style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
-              {`${i + 1}. ${s}`}
-            </Text>
-          ))}
+          {draft.orchestrationSteps.map((s, i) => {
+            const instruction = typeof s === 'string' ? s : s.instruction;
+            const pinnedTool = typeof s === 'string' ? undefined : s.tool;
+            return (
+              <Text key={`step-${i}`} style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
+                {pinnedTool
+                  ? `${i + 1}. [${toolChoiceToLabel(pinnedTool)}] ${instruction}`
+                  : `${i + 1}. ${instruction}`}
+              </Text>
+            );
+          })}
         </View>
       )}
 

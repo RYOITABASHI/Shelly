@@ -419,39 +419,44 @@ describe('parseAgentNL — action layer (capability boundary)', () => {
   });
 });
 
-describe('parseAgentNL — action caveat (X-posting not yet supported)', () => {
-  // X-posting delivery doesn't exist on `main` yet (a later phase). Until then,
-  // detectAction() must keep returning 'draft' for this phrasing, but the user
-  // should be told why they got a file instead of a post.
-  it('"Xに投稿して" stays draft and sets a user-facing caveat', () => {
+describe('parseAgentNL — X-posting resolves to a real app-act action (Phase 6)', () => {
+  // X-posting used to fall back to 'draft' + a caveat (Phase 0) because there was
+  // no `app-act` action type to target. Phase 2 added the schema; this parser
+  // now targets it for real. LINE-posting still hits the old fallback — see the
+  // next describe block — so these two phrasings must NOT be confused.
+  it('"Xに投稿して" resolves to app-act x.post with no caveat', () => {
     const d = parseAgentNL('毎日8時にXに投稿して');
-    expect(d.action.type).toBe('draft');
-    expect(typeof d.actionCaveat).toBe('string');
-    expect(d.actionCaveat!.length).toBeGreaterThan(0);
+    expect(d.action.type).toBe('app-act');
+    if (d.action.type === 'app-act') {
+      expect(d.action.appActRecipeId).toBe('x.post');
+      expect(d.action.appActParams).toEqual({ text: '{{result}}' });
+    }
+    expect(d.actionCaveat).toBeUndefined();
   });
 
-  it('"post to X" (EN phrasing) also stays draft with a caveat', () => {
+  it('"post to X" (EN phrasing) also resolves to app-act x.post', () => {
     const d = parseAgentNL('every day at 8 post to X');
-    expect(d.action.type).toBe('draft');
-    expect(d.actionCaveat).toBeTruthy();
+    expect(d.action.type).toBe('app-act');
+    if (d.action.type === 'app-act') expect(d.action.appActRecipeId).toBe('x.post');
+    expect(d.actionCaveat).toBeUndefined();
   });
 
-  it('"tweet this" also stays draft with a caveat', () => {
+  it('"tweet this" also resolves to app-act x.post', () => {
     const d = parseAgentNL('毎朝ニュースをまとめてtweet this');
-    expect(d.action.type).toBe('draft');
-    expect(d.actionCaveat).toBeTruthy();
+    expect(d.action.type).toBe('app-act');
+    if (d.action.type === 'app-act') expect(d.action.appActRecipeId).toBe('x.post');
   });
 
-  it('a たら-conditional scopes the caveat to the delivery clause, not the condition', () => {
+  it('a たら-conditional scopes app-act detection to the delivery clause, not the condition', () => {
     // "記事が完成したらXに投稿して" — condition = "記事が完成", action = "Xに投稿して".
     // Mirrors detectAction's own たら-scoping (see its comment above) so a
-    // trigger-condition clause never falsely fires the caveat.
+    // trigger-condition clause never falsely fires the X-post detector.
     const d = parseAgentNL('記事が完成したらXに投稿して');
-    expect(d.action.type).toBe('draft');
-    expect(d.actionCaveat).toBeTruthy();
+    expect(d.action.type).toBe('app-act');
+    if (d.action.type === 'app-act') expect(d.action.appActRecipeId).toBe('x.post');
   });
 
-  it('no caveat when X-posting phrasing is absent', () => {
+  it('stays draft (not app-act) when X-posting phrasing is absent', () => {
     const d = parseAgentNL('毎日8時にブログ記事を書いて');
     expect(d.action.type).toBe('draft');
     expect(d.actionCaveat).toBeUndefined();
@@ -460,6 +465,33 @@ describe('parseAgentNL — action caveat (X-posting not yet supported)', () => {
   it('no caveat when the action resolves to something other than draft', () => {
     const d = parseAgentNL('毎日9時にコマンド実行して結果を保存');
     expect(d.action.type).toBe('cli');
+    expect(d.actionCaveat).toBeUndefined();
+  });
+});
+
+describe('parseAgentNL — LINE-posting caveat (still not supported, unlike X)', () => {
+  // LINE-posting deliberately keeps the OLD Phase-0-style fallback: `draft` +
+  // a user-facing caveat. Only X graduated to a real app-act action this phase
+  // (see the describe block above) — LINE NL detection/dispatch is out of scope
+  // here even though a `line.send-message` recipe is scaffolded natively.
+  it('"LINEに投稿して" stays draft and sets a user-facing caveat', () => {
+    const d = parseAgentNL('毎日8時にLINEに投稿して');
+    expect(d.action.type).toBe('draft');
+    expect(typeof d.actionCaveat).toBe('string');
+    expect(d.actionCaveat!.length).toBeGreaterThan(0);
+  });
+
+  it('"send this to LINE" (EN phrasing) also stays draft with a caveat', () => {
+    const d = parseAgentNL('every day at 8 send this to LINE');
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeTruthy();
+  });
+
+  it('a bare "LINEで知らせて" (notify, not post) is unaffected — resolves to notify, no caveat', () => {
+    // Regression guard: LINE_POST_RE must not collide with the pre-existing
+    // notify-keyword branch ("知らせ") that already handles this phrasing.
+    const d = parseAgentNL('毎日8時にLINEで知らせて');
+    expect(d.action.type).toBe('notify');
     expect(d.actionCaveat).toBeUndefined();
   });
 });
@@ -593,5 +625,83 @@ describe('parseAgentNL — memory (Phase 1)', () => {
   it('still fires on "don\'t forget" (affirmative keep-this)', () => {
     const d = parseAgentNL("don't forget to water the plants");
     expect(d.memory?.remember).toBe(true);
+  });
+});
+
+describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain → app-act', () => {
+  // The literal Japanese utterance from the Phase 6 brief: a weekly schedule +
+  // a plain て-form conjunctive chain naming Perplexity then the local LLM, that
+  // ends in an X-post. No explicit sequence marker (まず/次に/…) appears anywhere,
+  // so this MUST come from detectToolPinnedSteps, not parseStepsFromText.
+  const JP_UTTERANCE =
+    '毎週月曜9時に、パープレでSTEAM教育×AIの最新論文を集めて、ローカルLLMで日本語要約と自分の見解とリンクを付けて、Xに自動投稿して';
+
+  it('produces a confident weekly Monday 9:00 schedule', () => {
+    const d = parseAgentNL(JP_UTTERANCE);
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.schedule).toBe('0 9 * * 1');
+  });
+
+  it('produces >= 2 orchestration steps with the correct per-step tool pins', () => {
+    const d = parseAgentNL(JP_UTTERANCE);
+    expect(d.orchestrationSteps).toBeDefined();
+    expect(d.orchestrationSteps!.length).toBeGreaterThanOrEqual(2);
+
+    const steps = d.orchestrationSteps!;
+    const first = steps[0];
+    const second = steps[1];
+    expect(typeof first).not.toBe('string');
+    expect(typeof second).not.toBe('string');
+    if (typeof first !== 'string') {
+      expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+      expect(first.instruction).toContain('パープレ');
+    }
+    if (typeof second !== 'string') {
+      expect(second.tool).toEqual({ type: 'local' });
+      expect(second.instruction).toContain('ローカルLLM');
+    }
+  });
+
+  it('resolves action to a real app-act x.post (not draft + caveat)', () => {
+    const d = parseAgentNL(JP_UTTERANCE);
+    expect(d.action.type).toBe('app-act');
+    if (d.action.type === 'app-act') {
+      expect(d.action.appActRecipeId).toBe('x.post');
+      expect(d.action.appActParams).toEqual({ text: '{{result}}' });
+    }
+    expect(d.actionCaveat).toBeUndefined();
+  });
+
+  // English paraphrase of the same scenario (kept schedule-free — derivePrompt's
+  // EN weekday-clause stripping only handles a LEADING "on Monday at 9" shape,
+  // not "Every Monday at 9,"; that pre-existing limitation is orthogonal to what
+  // this phase is testing, so the schedule clause is left out of this variant to
+  // isolate the orchestration + action assertions).
+  const EN_UTTERANCE =
+    'Collect the latest STEAM x AI papers with Perplexity, summarize them in Japanese with the local LLM and add my take with links, then post to X automatically.';
+
+  it('EN paraphrase: produces the same tool-pinned steps and app-act action', () => {
+    const d = parseAgentNL(EN_UTTERANCE);
+    expect(d.orchestrationSteps).toBeDefined();
+    expect(d.orchestrationSteps!.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = d.orchestrationSteps!;
+    if (typeof first !== 'string') expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    if (typeof second !== 'string') expect(second.tool).toEqual({ type: 'local' });
+
+    expect(d.action.type).toBe('app-act');
+    if (d.action.type === 'app-act') expect(d.action.appActRecipeId).toBe('x.post');
+  });
+
+  it('REGRESSION: ordinary て、-containing prose with no tool mention stays single-step', () => {
+    // Same clause-boundary shape (て-form + 、) as the target scenario, but no
+    // tool name anywhere — must NOT spuriously produce pinned steps. This is
+    // the guard for "don't widen the generic splitter" from the Phase 6 brief.
+    const d = parseAgentNL('毎朝8時にニュースを集めて、要約して、保存して');
+    expect(d.orchestrationSteps).toBeUndefined();
+  });
+
+  it('REGRESSION: a plain single-tool mention with no clause chain stays single-step', () => {
+    const d = parseAgentNL('パープレで論文を集めて');
+    expect(d.orchestrationSteps).toBeUndefined();
   });
 });
