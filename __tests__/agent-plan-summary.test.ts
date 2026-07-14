@@ -21,6 +21,7 @@ import {
 } from '@/lib/agent-plan-summary';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { AgentOrchestrationStep } from '@/store/types';
+import { isEphemeralOneShot } from '@/lib/notification-trigger';
 
 function baseDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft {
   return {
@@ -223,5 +224,32 @@ describe('draftToConfirmedAgentDraft', () => {
     const draft = baseDraft({ notificationTrigger: { packageNames: ['com.whatsapp'] } });
     const confirmed = draftToConfirmedAgentDraft(draft);
     expect(confirmed.notificationTrigger).toEqual({ packageNames: ['com.whatsapp'] });
+  });
+
+  it('normalizes the "once" sentinel to null, mirroring AgentConfirmCard.handleConfirm (schedule: isOnce ? null : cron)', () => {
+    // Regression coverage: a slot-fill answer like "すぐに"/"now" makes
+    // parseSchedule return the 'once' sentinel. The card normalizes this to
+    // null before calling onConfirm; this bypass path (used by
+    // shouldAutoRegisterDraft/shouldUseChatConfirm) must do the same, or the
+    // agent is persisted with a literal 'once' schedule string that
+    // isEphemeralOneShot doesn't recognize (only schedule === null) and that
+    // cronToIntervalMs can't parse -- a zombie agent that neither
+    // runs-and-discards nor ever fires.
+    const draft = baseDraft({ schedule: 'once' });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.schedule).toBeNull();
+  });
+
+  it('the normalized "once" -> null schedule is recognized as an ephemeral one-shot by isEphemeralOneShot', () => {
+    const draft = baseDraft({ schedule: 'once' });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)).toBe(true);
+  });
+
+  it('does not treat an unrelated cron schedule as ephemeral (sanity check for the isEphemeralOneShot regression test above)', () => {
+    const draft = baseDraft({ schedule: '0 8 * * *' });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.schedule).toBe('0 8 * * *');
+    expect(isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)).toBe(false);
   });
 });

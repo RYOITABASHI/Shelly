@@ -220,7 +220,14 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
   return {
     name: draft.name,
     prompt: draft.prompt,
-    schedule: draft.schedule,
+    // 'once' is a sentinel meaning "run now and don't schedule" (parseSchedule's
+    // encoding for answers like "すぐに"/"now") -- AgentConfirmCard.handleConfirm
+    // normalizes this to null (schedule: isOnce ? null : cron) before it ever
+    // reaches createAgent; this bypass path must do the same or the agent is
+    // persisted with a literal 'once' schedule that isEphemeralOneShot doesn't
+    // recognize and cronToIntervalMs can't parse -- a zombie agent that neither
+    // runs-and-discards nor ever fires.
+    schedule: draft.schedule === 'once' ? null : draft.schedule,
     tool: draft.tool,
     action: draft.action,
     runOn: 'auto',
