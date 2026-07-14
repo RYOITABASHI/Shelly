@@ -790,6 +790,15 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     dmReplyText: extra.dmReplyText || '',
     appActRecipeId: extra.appActRecipeId || '',
     appActParamsResolved: extra.appActParamsResolved || '',
+    // Project owner directive 2026-07-14 (see requireActionApprovalTap /
+    // trustedNativeLowRiskAction above): real JSON booleans, not the "1"/"0"
+    // strings the rest of this legacy string-map uses, so Kotlin's
+    // JSONObject.optBoolean parses both this and the .sh executor's request
+    // identically. Not covered by canonicalApprovalRequest's fixed field list
+    // (dormant SIGNED_APPROVAL_ENABLED path) — acceptable, these are
+    // executor-computed trust hints, not human-reviewable content.
+    autoAccept: extra.autoAccept === true,
+    autoFireTrusted: extra.autoFireTrusted === true,
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
@@ -885,6 +894,24 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     fs.unlinkSync(requestFile);
   } catch (_) {}
   throw new ActionSkipped(`${actionType} action approval timed out`);
+}
+
+// Project owner directive 2026-07-14: wraps requestActionApproval so
+// draft/notify/webhook/cli can skip the round trip ENTIRELY when the
+// resolved approval-mode is 'auto' (requireActionApprovalTap === false) — no
+// request file is ever written, mirroring lib/agent-executor.ts's
+// request_and_wait_approval (.sh executor) exactly, for the same reason: an
+// unattended scheduled run must not depend on JS/native being alive to reply.
+// intent/dm-reply/app-act are excluded from the skip — they only ever fire
+// via RN/native (see each case's own comment in dispatchActionTrusted) — and
+// always go through the full requestActionApproval; their own
+// autoAccept/autoFireTrusted request fields (set by the caller via `details`)
+// drive RN/native's auto-resolution instead.
+function maybeRequestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
+  if (actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && !requireActionApprovalTap(plan, config)) {
+    return;
+  }
+  requestActionApproval(paths, plan, actionType, preview, resultFile, config, details);
 }
 
 function safeFilePart(value) {
@@ -1206,10 +1233,24 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
   const trustedAction = String(args['trusted-autonomous-action'] || '').trim();
   const trustedTool = String(args['trusted-tool-type'] || '').trim();
   if (trustedAgentId !== plan.agent.id) return false;
-  if (trustedAction !== 'draft' && trustedAction !== 'notify') return false;
+  // app-act (2026-07-14, docs/superpowers/DEFERRED.md's "app-act Tier-B"
+  // entry, resolved): the SAME registration-time consent draft/notify's
+  // native fast-path already required (autonomous + on-device tool only) now
+  // ALSO covers app-act, with one extra check below: the recipe id native
+  // read from the freshly re-read persisted agent.json (--trusted-app-act-
+  // recipe-id) must still match what THIS plan carries — defense-in-depth
+  // against the plan diverging from the registered/consented recipe between
+  // native's read and this executor's own read moments later.
+  if (trustedAction !== 'draft' && trustedAction !== 'notify' && trustedAction !== 'app-act') return false;
   if (trustedAction !== actionType) return false;
+  if (actionType === 'app-act') {
+    const trustedRecipeId = String(args['trusted-app-act-recipe-id'] || '').trim();
+    const planRecipeId = String((plan.action && plan.action.appActRecipeId) || '').trim();
+    if (!trustedRecipeId || trustedRecipeId !== planRecipeId) return false;
+  }
   // Native only emits this for deterministic local autonomous agents. This keeps
-  // a tampered plan from turning a low-risk file/notify action into key spend.
+  // a tampered plan from turning a low-risk file/notify/app-act action into key
+  // spend or an unreviewed external post.
   return trustedTool === 'local' && plan.tool.type === 'local';
 }
 
@@ -1217,13 +1258,27 @@ function unattendedPreflightFailure(args, plan) {
   if (!argTruthy(args.unattended)) return '';
   const actionType = plan.action.type;
   if (actionType === '__suppressed__') return '';
-  if (actionType !== 'draft' && actionType !== 'notify') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'app-act') {
     return `unsupported unattended PlanSpec action: ${actionType}`;
   }
   if (!trustedNativeLowRiskAction(args, plan, actionType)) {
     return `${actionType} action is not trusted for unattended PlanSpec execution`;
   }
   return '';
+}
+
+// Project owner directive 2026-07-14: resolves whether the mandatory
+// "Runtime Review" approval TAP defaults on or off for THIS plan/action —
+// independent of trustedNativeLowRiskAction (which governs whether the
+// action may run unattended at all, and for app-act specifically whether it
+// may auto-fire with no reply-waiter at all). plan.agent.requireActionApproval
+// is the per-agent override baked at plan-build time (lib/agent-plan-spec.ts);
+// config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL is the global default, read
+// live from .env (settings-store.ts syncs it on every change) so toggling it
+// applies to already-generated plans without needing an agent re-save.
+function requireActionApprovalTap(plan, config) {
+  if (typeof plan.agent.requireActionApproval === 'boolean') return plan.agent.requireActionApproval;
+  return argTruthy(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL);
 }
 
 function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args) {
@@ -1238,7 +1293,15 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
-  if (trustedNativeLowRiskAction(args, plan, actionType)) {
+  // app-act is deliberately EXCLUDED from this trust shortcut (unlike
+  // draft/notify): its own case below always runs so it can still validate +
+  // write an approval request carrying the resolved post content — trust
+  // there only ever skips the human/JS WAIT (via autoFireTrusted, resolved by
+  // native), never the request itself, because native still needs the
+  // resolved params to actually fire the recipe. Trusting the shortcut here
+  // the same way draft/notify do would silently report "success" without the
+  // recipe ever having been dispatched.
+  if (actionType !== 'app-act' && trustedNativeLowRiskAction(args, plan, actionType)) {
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -1248,6 +1311,16 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       toolType: plan.tool.type,
     });
   } else {
+    // Project owner directive 2026-07-14: draft/notify/webhook/cli skip the
+    // approval request ENTIRELY when the resolved approval-mode is 'auto' —
+    // no dependency on JS/native being alive to reply (unattended scheduled
+    // runs must not block on that). intent/dm-reply always request (they can
+    // only ever fire via RN) but pass autoAccept so RN resolves them without
+    // a human tap. app-act always requests too, with its own narrower
+    // autoFireTrusted flag (NOT governed by requireActionApprovalTap — see
+    // that function's doc comment). maybeRequestActionApproval below
+    // encapsulates the skip decision so every case's validation code is
+    // unchanged either way.
     if (actionType === 'webhook') {
       const webhookUrl = String(plan.action.webhookUrl || '').trim();
       const host = webhookDestinationHost(webhookUrl);
@@ -1263,7 +1336,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       }
       const payloadFile = path.join(paths.logDir, `webhook-payload-${Date.now()}.json`);
       writeWebhookPayload(payloadFile, plan, 'success', preview, resultText);
-      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         destinationHost: host,
         payloadPath: path.basename(payloadFile),
       });
@@ -1294,7 +1367,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
-      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         command: commandText,
         safetyLevel: safety.level || '',
         safetyReason: safety.reason || '',
@@ -1328,8 +1401,13 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
-      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         intentMode, intentTarget, intentShareText: resolvedShareText,
+        // Attended-only (see unattendedPreflightFailure — intent is never
+        // reached here when unattended). RN is always alive by construction,
+        // so autoAccept just decides whether it shows the UI card or
+        // resolves silently.
+        autoAccept: !requireActionApprovalTap(plan, config),
       });
       // Side effect already happened in RN before the accept reply appeared —
       // no broker/native call here, unlike webhook/cli.
@@ -1366,18 +1444,25 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         return { status: 'error', preview: message, errorMessage: message };
       }
       const dmReplyText = String(plan.action.dmReplyText || '').split('{{result}}').join(preview);
-      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         dmPairingId,
         dmPairingLabel: pairing.label,
         dmReplyText,
+        // Attended-only, same reasoning as intent above.
+        autoAccept: !requireActionApprovalTap(plan, config),
       });
       return { status: 'success', preview };
     }
     if (actionType === 'app-act') {
-      // Phase 4: refused-when-unattended is already enforced upstream by
-      // unattendedPreflightFailure() (dispatchActionTrusted is never reached
-      // for an unattended app-act run) -- see that function and
-      // lib/agent-executor.ts's app-act) case for the matching rationale.
+      // Unattended dispatch is refused upstream by unattendedPreflightFailure()
+      // unless trustedNativeLowRiskAction(args, plan, 'app-act') passes (see
+      // that function) -- this case still ALWAYS runs (app-act is excluded
+      // from the outer trust shortcut above) so it can validate + write the
+      // approval request carrying the resolved post content; autoFireTrusted
+      // below tells native it may fire+reply itself with no human/JS wait.
+      // Deliberately NOT governed by requireActionApprovalTap — see that
+      // function's doc comment for why a blanket "skip the tap" default must
+      // never alone unlock an external post.
       const recipeId = String(plan.action.appActRecipeId || '').trim();
       if (!recipeId) {
         const message = 'App-action is missing a recipe.';
@@ -1390,15 +1475,16 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
-      requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         appActRecipeId: recipeId,
         appActParamsResolved: JSON.stringify(resolvedParams),
+        autoFireTrusted: trustedNativeLowRiskAction(args, plan, 'app-act'),
       });
       // Side effect already happened in RN before the accept reply appeared —
       // no broker/native call here, unlike webhook/cli (mirrors intent/dm-reply).
       return { status: 'success', preview };
     }
-    requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
+    maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   }
   if (actionType === 'draft') {
     // Terminal draft: primary + (content-studio) Obsidian mirror, fatal on failure

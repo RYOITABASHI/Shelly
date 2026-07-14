@@ -50,18 +50,51 @@ describe('generateRunScript — app-act action', () => {
     expect(s).toContain('{{result}}');
   });
 
-  it('rejects autonomous/unattended execution before requesting attended Review approval', () => {
+  it('rejects autonomous/unattended execution before requesting attended Review approval when NOT Tier-B trusted', () => {
+    // This fixture's agent has no `autonomous: true`, so
+    // ACTION_APP_ACT_AUTO_FIRE_TRUSTED is baked '0' and the unattended hard
+    // refusal below still applies exactly as before 2026-07-14's Tier-B
+    // change — see the 'autonomous + on-device tool unlocks the Tier-B
+    // unattended-allow' test below for the trusted case.
+    expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=0');
     const appActCase = s.slice(s.indexOf('\n    app-act)'), s.indexOf('\n    *)', s.indexOf('\n    app-act)')));
     expect(appActCase).toContain('[ "${AGENT_AUTONOMOUS:-0}" = "1" ]');
     expect(appActCase).toContain('[ "${SHELLY_RUN_UNATTENDED:-0}" = "1" ]');
+    expect(appActCase).toContain('$ACTION_APP_ACT_AUTO_FIRE_TRUSTED');
     expect(appActCase).toContain('App-action actions require an attended Review.');
-    expect(appActCase).toContain('write_action_approval_request "app-act" "$preview" "$result_file"');
-    expect(appActCase).toContain('wait_action_approval "app-act" || return 1');
-    expect(appActCase.indexOf('AGENT_AUTONOMOUS')).toBeLessThan(appActCase.indexOf('write_action_approval_request'));
+    expect(appActCase).toContain('request_and_wait_approval "app-act" "$preview" "$result_file" || return 1');
+    expect(appActCase.indexOf('AGENT_AUTONOMOUS')).toBeLessThan(appActCase.indexOf('request_and_wait_approval'));
     // No broker/native dispatch call after approval — the side effect already
-    // happens natively (fireAgentAppAct) before the accept reply is written.
+    // happens natively (fireAgentAppAct, or native's own auto-fire when
+    // Tier-B trusted) before the accept reply is written.
     expect(appActCase).not.toContain('cap_workspace_exec');
     expect(appActCase).not.toContain('http_post_json');
+  });
+
+  it('autonomous + on-device tool unlocks the Tier-B unattended-allow (registration-time consent, not a blanket bypass)', () => {
+    const trusted = generateRunScript({
+      ...agent({ type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } }),
+      autonomous: true,
+    });
+    expect(trusted).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
+    const trustedAppActCase = trusted.slice(trusted.indexOf('\n    app-act)'), trusted.indexOf('\n    *)', trusted.indexOf('\n    app-act)')));
+    // Still requests approval (native auto-fires + replies; the shell doesn't
+    // skip the wait, only WHO resolves it changes) — never a blanket bypass.
+    expect(trustedAppActCase).toContain('request_and_wait_approval "app-act" "$preview" "$result_file" || return 1');
+
+    // A cloud-routed autonomous agent (not on-device) must NOT be trusted —
+    // the Tier-B gate is narrower than "autonomous alone". In fact it never
+    // even reaches the point where ACTION_APP_ACT_AUTO_FIRE_TRUSTED would be
+    // computed: an autonomous agent pinned to a keyed cloud tool with no
+    // consent is refused outright at script-generation time (Spec A §4) —
+    // an even stronger boundary than the Tier-B gate alone would provide.
+    const cloudAutonomous = generateRunScript({
+      ...agent({ type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } }),
+      autonomous: true,
+      tool: { type: 'gemini-api' },
+    });
+    expect(cloudAutonomous).not.toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
+    expect(cloudAutonomous).toContain('autonomous mode does not allow');
   });
 
   it('validates recipe id and params before requesting approval', () => {

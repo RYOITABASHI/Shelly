@@ -9,7 +9,6 @@ import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-poli
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
-import { useSettingsStore } from '@/store/settings-store';
 
 const MAX_CONCURRENT = 2;
 
@@ -248,14 +247,24 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // intent/dm-reply still always write+wait (they can only ever fire via RN,
   // and are already attended-only — see their own unattended hard-refusals
   // below) but are flagged auto-accept so RN resolves them without a human
-  // tap. Per-agent Agent.requireActionApproval overrides the global default.
-  // This does NOT relax command-safety CRITICAL / secret-scan / workspace-root
-  // gates (lib/command-safety.ts, lib/redact-secrets.ts, realpathWithMissingTail)
-  // — those are hard content/action classifiers, not approval-frequency knobs,
-  // and nothing here touches them.
-  const globalRequireActionApproval = useSettingsStore.getState().settings.defaultRequireActionApproval === true;
-  const requireActionApproval = agent.requireActionApproval ?? globalRequireActionApproval;
-  const actionApprovalMode = requireActionApproval ? 'manual' : 'auto';
+  // tap. This does NOT relax command-safety CRITICAL / secret-scan /
+  // workspace-root gates (lib/command-safety.ts, lib/redact-secrets.ts,
+  // realpathWithMissingTail) — those are hard content/action classifiers, not
+  // approval-frequency knobs, and nothing here touches them.
+  //
+  // ONLY the per-agent override (a plain field on the `agent` parameter
+  // already in scope — no store read needed) is resolved here at
+  // script-generation time. The GLOBAL default is intentionally NOT baked:
+  // agent-executor.ts must stay free of any settings-store import (pulling it
+  // in transitively drags in expo-secure-store, an ESM native module that
+  // breaks every non-RN jest suite importing this file for its pure helpers —
+  // found the hard way while implementing this). Instead ACTION_APPROVAL_MODE
+  // is resolved at SCRIPT RUNTIME below, after `source "$ENV_FILE"` — settings-
+  // store already syncs SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL to that file on
+  // every change, so this reads the CURRENT global default on every run, not
+  // a stale value from whenever the script was last (re)generated.
+  const actionApprovalModeOverride: 'manual' | 'auto' | '' =
+    agent.requireActionApproval === undefined ? '' : agent.requireActionApproval ? 'manual' : 'auto';
   // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
   // 2026-07-14): deliberately NOT governed by actionApprovalMode above — a
   // wrong external post is not equivalent in risk to a local draft/CLI call,
@@ -390,7 +399,8 @@ ACTION_APP_ACT_PARAMS_JSON=${shellQuote(actionAppActParamsJson)}
 ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
 ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
-ACTION_APPROVAL_MODE=${shellQuote(actionApprovalMode)}
+ACTION_APPROVAL_MODE_OVERRIDE=${shellQuote(actionApprovalModeOverride)}
+ACTION_APPROVAL_MODE="auto"
 ACTION_APP_ACT_AUTO_FIRE_TRUSTED=${actionAppActAutoFireTrusted ? '1' : '0'}
 ACTION_NOTIFY_FILE="$LOG_DIR/native-result-notification.json"
 ACTION_APPROVAL_DIR="$HOME/.shelly/agents/action-approvals"
@@ -920,15 +930,17 @@ write_action_approval_request() {
   # default is 'auto'. Only meaningful for intent/dm-reply (the only two types
   # that still always reach here regardless of mode — see dispatch_agent_action)
   # — harmless/unused for every other type.
-  auto_accept_flag=$([ "$ACTION_APPROVAL_MODE" != "manual" ] && printf '1' || printf '0')
+  auto_accept_flag=$([ "$ACTION_APPROVAL_MODE" != "manual" ] && printf 'true' || printf 'false')
   # auto_fire_trusted: app-act's OWN narrower Tier-B gate (see
   # ACTION_APP_ACT_AUTO_FIRE_TRUSTED above) — deliberately independent of
   # auto_accept_flag/ACTION_APPROVAL_MODE. Native's action-approval notifier
-  # (AgentRuntime.kt) only acts on this for actionType=="app-act".
-  auto_fire_trusted_flag=$([ "$ACTION_APP_ACT_AUTO_FIRE_TRUSTED" = "1" ] && printf '1' || printf '0')
+  # (AgentRuntime.kt) only acts on this for actionType=="app-act". Emitted as
+  # a real JSON boolean literal (not a quoted string) so Kotlin's
+  # JSONObject.optBoolean parses both executors' requests identically.
+  auto_fire_trusted_flag=$([ "$ACTION_APP_ACT_AUTO_FIRE_TRUSTED" = "1" ] && printf 'true' || printf 'false')
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","autoAccept":"$auto_accept_flag","autoFireTrusted":"$auto_fire_trusted_flag","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","autoAccept":$auto_accept_flag,"autoFireTrusted":$auto_fire_trusted_flag,"ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -2524,6 +2536,19 @@ trap finish EXIT
 
 # Source environment
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
+# Project owner directive 2026-07-14: resolve the global runtime-approval
+# default LIVE from the just-sourced .env (settings-store syncs
+# SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL on every settings change) so toggling
+# it applies to every agent's NEXT run without needing a re-save/re-bake. A
+# per-agent override baked at generation time (ACTION_APPROVAL_MODE_OVERRIDE,
+# from Agent.requireActionApproval) always wins when set.
+if [ -n "$ACTION_APPROVAL_MODE_OVERRIDE" ]; then
+  ACTION_APPROVAL_MODE="$ACTION_APPROVAL_MODE_OVERRIDE"
+elif [ "\${SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL:-0}" = "1" ]; then
+  ACTION_APPROVAL_MODE="manual"
+else
+  ACTION_APPROVAL_MODE="auto"
+fi
 ${apiKeyEnvScrub}
 
 PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
