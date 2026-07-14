@@ -670,10 +670,28 @@ describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
     // The baked ladder escalates on a web backend failure.
     expect(s).toContain('if [ -f "$BACKEND_ERROR_FILE" ]; then');
     expect(s).toContain('command -v codex >/dev/null 2>&1');
-    expect(s).toContain('codex exec');
+    // Security fix (Finding 3): the baked P1 fallback must route Codex through
+    // the SAME B2 driver + --policy-json gate the primary autonomous `cli`
+    // path uses — never bare `codex exec`, which runs danger-full-access on
+    // Android (agent-boundary-policy.ts) and bypasses command-safety/
+    // workspace-boundary classification for codex's own internal shell calls.
+    expect(s).toContain('.shelly-agent-driver.js');
+    expect(s).toContain('--approval-policy untrusted');
+    expect(s).toContain('--policy-json');
+    expect(s).not.toMatch(/timeout "\$TIMEOUT" codex exec/);
     // Codex usage-limit guard: a 429/usage-limit refusal is NOT recorded as success.
     expect(s).toContain('usage limit|rate.?limit|too many requests');
     expect(s).toContain('mark_http_failure 23');
+    // Non-zero driver exit is also a hard backend failure (mirrors the old
+    // bare-exec CODEX_EXIT check, now against the driver's own exit code).
+    expect(s).toContain('if [ "$DRIVER_EXIT" -ne 0 ]; then');
+    expect(s).toContain('mark_http_failure "$DRIVER_EXIT"');
+  });
+
+  it('P1: the baked Codex fallback passes THIS agent\'s configured autonomy level to the driver (not a hardcoded default)', () => {
+    const s = generateRunScript({ ...webAgent(), autonomyLevel: 'L1' }, { autonomousCloudConsent: true });
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).toContain('"level":"L1"');
   });
 
   it('P1: consent + STOP-on-exhaustion does NOT bake the Codex fallback (free-tier auto-stop)', () => {
