@@ -129,8 +129,9 @@ class NotificationDispatcher(private val context: Context) {
 
     fun notifyAgentActionApprovalNeeded(request: AgentActionApprovalRequest) {
         runCatching {
+            val needsFreshAction = !AgentActionApprovalBridge.hasActionNonce(request.runId)
             val shouldNotify = shouldFire(KEY_LAST_AGENT_ACTION, request.key)
-            if (!shouldNotify) return
+            if (!needsFreshAction && !shouldNotify) return
             val requestSha256 = request.requestSha256
                 ?.takeIf { HEX_SHA256_RE.matches(it) }
                 ?: return
@@ -191,15 +192,16 @@ class NotificationDispatcher(private val context: Context) {
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
             }
+            val actionNonce = AgentActionApprovalBridge.registerActionNonce(request.runId)
             val actions = if (request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply") {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
-                    action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, requestSha256)),
+                    action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, actionNonce, requestSha256)),
                 )
             } else {
                 listOf(
-                    action(context.getString(R.string.scouter_notification_action_allow), agentActionApprovalPendingIntent(true, request, requestSha256)),
-                    action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, requestSha256)),
+                    action(context.getString(R.string.scouter_notification_action_allow), agentActionApprovalPendingIntent(true, request, actionNonce, requestSha256)),
+                    action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, actionNonce, requestSha256)),
                 )
             }
             notify(
@@ -590,6 +592,7 @@ class NotificationDispatcher(private val context: Context) {
     private fun agentActionApprovalPendingIntent(
         allow: Boolean,
         request: AgentActionApprovalRequest,
+        actionNonce: String,
         requestSha256: String
     ): PendingIntent {
         val decision = if (allow) "allow" else "deny"
@@ -607,6 +610,7 @@ class NotificationDispatcher(private val context: Context) {
                 )
             )
             .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ACTION_RUN_ID, request.runId)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ACTION_NONCE, actionNonce)
             .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_ACTION_REQUEST_SHA256, requestSha256)
             .addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or

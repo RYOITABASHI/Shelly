@@ -123,6 +123,7 @@ type AgentActionApprovalRequest = {
   dmPairingId?: string | null;
   dmPairingLabel?: string | null;
   dmReplyText?: string | null;
+  actionNonce?: string | null;
 };
 
 export default function RootLayout() {
@@ -142,6 +143,17 @@ export default function RootLayout() {
     const request = pendingAgentActionApproval;
     if (!request) return;
     if (!TerminalEmulator.resolveAgentActionApproval) {
+      Alert.alert(t('agent_action_confirm_not_ready'));
+      return;
+    }
+    // Fail closed: the native writeHumanReply now requires both the content
+    // hash and the single-use action nonce minted when this request was read
+    // for review (readAgentActionApprovalRequest). Bail out here with a clear
+    // message rather than letting a missing value reach the native call and
+    // surface as a generic error.
+    const requestSha256 = request.requestSha256;
+    const actionNonce = request.actionNonce;
+    if (!requestSha256 || !actionNonce) {
       Alert.alert(t('agent_action_confirm_not_ready'));
       return;
     }
@@ -165,7 +177,7 @@ export default function RootLayout() {
         logError('AgentActionApproval', `fireAgentIntent failed: ${errorKind}`);
         // Fail closed: tell the waiting executor "declined" (a fast, honest
         // signal) rather than leaving it to time out after a failed fire.
-        await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', request.requestSha256 ?? null).catch(() => undefined);
+        await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
         Alert.alert(t('agent_action_confirm_intent_failed'));
@@ -186,7 +198,8 @@ export default function RootLayout() {
         await TerminalEmulator.resolveAgentActionApproval(
           request.runId,
           'decline',
-          request.requestSha256 ?? null,
+          requestSha256,
+          actionNonce,
         ).catch(() => undefined);
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
@@ -198,7 +211,8 @@ export default function RootLayout() {
       await TerminalEmulator.resolveAgentActionApproval(
         request.runId,
         decision,
-        request.requestSha256 ?? null,
+        requestSha256,
+        actionNonce,
       );
       setPendingAgentActionApproval(null);
     } catch (e) {
@@ -807,6 +821,12 @@ export default function RootLayout() {
         dmPairingId: str('dmPairingId') || null,
         dmPairingLabel: str('dmPairingLabel') || null,
         dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
+        // Only ever populated by the native readAgentActionApprovalRequest
+        // round trip (freshly minted per read). The raw-JSON fallback path
+        // and the notify-only poll loop below never set it, and must not --
+        // resolvePendingAgentActionApproval treats a missing nonce as "not
+        // ready" rather than silently skipping the replay check.
+        actionNonce: str('actionNonce') || null,
       };
     };
 

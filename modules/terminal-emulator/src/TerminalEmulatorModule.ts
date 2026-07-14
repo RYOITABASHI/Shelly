@@ -197,6 +197,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
+    actionNonce?: string | null;
   }>;
   notifyAgentActionApprovalNeeded?(request: {
     runId: string;
@@ -221,7 +222,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   resolveAgentActionApproval?(
     runId: string,
     decision: 'accept' | 'decline',
-    expectedRequestSha256?: string | null
+    expectedRequestSha256: string,
+    actionNonce: string
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
   fireAgentIntent?(mode: 'launch' | 'share', target: string, shareText?: string | null): Promise<void>;
