@@ -33,6 +33,9 @@ const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
   cli: 'Produce exactly the content needed by the requested command or command workflow.',
   intent: 'Produce exactly the text or content needed for the requested app or share action.',
   'dm-reply': 'Write the reply message itself as a natural, short conversational response unless explicit user instructions request otherwise.',
+  // Schema only (Phase 2 of the app-act rollout) — no dispatch path reads this
+  // yet; see agent-plan-spec.ts toPlanAction's default 'unsupported' branch.
+  'app-act': 'Produce exactly the content needed for the requested app action.',
 };
 const ACTION_OUTPUT_RULES = 'Follow explicit user instructions for content, format, length, and tone. When they are not specified, be direct and concise. Output only the requested deliverable. Never add meta-commentary about your reasoning or interpretation of the request.';
 

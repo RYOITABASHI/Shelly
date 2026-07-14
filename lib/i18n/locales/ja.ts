@@ -213,6 +213,7 @@ const ja: Record<string, string> = {
   'agentcard.action_cli': 'コマンド',
   'agentcard.action_intent': 'アプリ起動・共有',
   'agentcard.action_dm-reply': 'DM返信',
+  'agentcard.action_app-act': 'アプリ操作',
   'agentcard.dmreply_pairing_label': 'ペアリング済みの会話',
   'agentcard.dmreply_no_pairings': '先に設定から会話をペアリングしてください。',
   'agentcard.dmreply_text_label': '返信テキスト',

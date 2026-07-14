@@ -213,6 +213,7 @@ const en: Record<string, string> = {
   'agentcard.action_cli': 'command',
   'agentcard.action_intent': 'App / Share',
   'agentcard.action_dm-reply': 'DM reply',
+  'agentcard.action_app-act': 'App action',
   'agentcard.dmreply_pairing_label': 'Paired conversation',
   'agentcard.dmreply_no_pairings': 'Pair a conversation in Settings first.',
   'agentcard.dmreply_text_label': 'Reply text',
