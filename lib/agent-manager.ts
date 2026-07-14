@@ -626,11 +626,18 @@ async function runAgentOrchestrated(
     if (!gate.proceed) break;
 
     // Each step is a normal single run with a step-specific prompt; orchestration
-    // is cleared so the step itself doesn't recurse.
+    // is cleared so the step itself doesn't recurse. Phase 5: a step may pin a
+    // concrete tool (steps[i].tool) — when present it REPLACES agent.tool for
+    // this attempt, which routes it through resolveAgentRoute's existing
+    // 'configured-tool' path (same one a top-level non-auto Agent.tool already
+    // uses) and skips keyword-based auto-selection for this step only. Absent
+    // tool = agent.tool unchanged = today's exact auto-routing behavior.
+    const step = steps[i];
     const stepAgent: Agent = {
       ...agent,
-      prompt: buildStepPrompt(agent.prompt, steps[i], priorResults),
+      prompt: buildStepPrompt(agent.prompt, step.instruction, priorResults),
       orchestration: undefined,
+      tool: step.tool ?? agent.tool,
     };
     const stepStart = Date.now();
     // Only the FINAL step performs the agent action (draft/notify/webhook/cli) —
@@ -653,7 +660,7 @@ async function runAgentOrchestrated(
     } catch (error) {
       records.push({
         index: i,
-        instruction: steps[i],
+        instruction: step.instruction,
         status: 'error',
         durationMs: Date.now() - stepStart,
         outputPreview: error instanceof Error ? error.message.slice(0, 200) : 'step failed',
@@ -668,7 +675,7 @@ async function runAgentOrchestrated(
     const status: AgentRunStep['status'] = log?.status ?? 'error';
     records.push({
       index: i,
-      instruction: steps[i],
+      instruction: step.instruction,
       status,
       durationMs: Date.now() - stepStart,
       outputPreview: log?.outputPreview ?? '',

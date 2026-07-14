@@ -26,6 +26,7 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
+import { normalizeSteps } from '@/lib/agent-orchestration';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import {
@@ -601,15 +602,20 @@ export function Sidebar() {
       agent.enabled ? null : t('sidebar.agent_paused'),
     ].filter(Boolean).join(' · ');
     // Phase 4: when the agent is multi-step, show the planned chain; and if the
-    // last run was orchestrated, show each step's status.
-    const plannedSteps = agent.orchestration?.steps ?? [];
+    // last run was orchestrated, show each step's status. Phase 5: a step may
+    // pin a concrete tool — normalizeSteps handles both the legacy plain-string
+    // shape and the { instruction, tool? } shape, and surfacing the pinned
+    // tool's label here is the transparency a later "no per-run approval by
+    // default" policy needs (the user can see up front which steps skip
+    // auto-routing and which backend they'll actually use).
+    const plannedSteps = normalizeSteps(agent.orchestration);
     const stepDetail = lastLog?.steps?.length
       ? `${t('sidebar.agent_steps', { count: lastLog.steps.length })}\n${lastLog.steps
           .map((s) => `  ${s.index + 1}. [${s.status}] ${s.instruction.slice(0, 60)}`)
           .join('\n')}`
       : plannedSteps.length >= 2
       ? `${t('sidebar.agent_steps', { count: plannedSteps.length })}\n${plannedSteps
-          .map((s, i) => `  ${i + 1}. ${s.slice(0, 60)}`)
+          .map((s, i) => `  ${i + 1}. ${s.instruction.slice(0, 60)}${s.tool ? ` (${toolChoiceToLabel(s.tool)})` : ''}`)
           .join('\n')}`
       : '';
     // Reliability block (proof-of-execution): next scheduled run, last run (time ·

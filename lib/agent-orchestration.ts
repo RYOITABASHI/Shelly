@@ -15,7 +15,7 @@
  *
  * All functions are pure (no IO) for deterministic unit tests.
  */
-import type { AgentOrchestrationConfig, AgentRunStep } from '@/store/types';
+import type { AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
 export const DEFAULT_MAX_STEPS = 6;
@@ -51,12 +51,32 @@ export function resolveBudget(cfg: AgentOrchestrationConfig | undefined): Resolv
   };
 }
 
-/** Return the ordered, bounded, non-empty step instructions for an agent. */
-export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): string[] {
+export interface NormalizedStep {
+  instruction: string;
+  /** Present only when this step pins a concrete tool (Phase 5). Absent =
+   *  today's exact auto-routing behavior. */
+  tool?: ToolChoice;
+}
+
+/**
+ * Normalize a single step entry — either the legacy plain-string shape or the
+ * Phase 5 { instruction, tool? } object — into one canonical shape. Pure,
+ * trims/truncates the instruction the same way for both input shapes.
+ */
+export function normalizeStep(step: string | AgentOrchestrationStep): NormalizedStep {
+  if (typeof step === 'string') {
+    return { instruction: step.trim().slice(0, MAX_STEP_INSTRUCTION_CHARS) };
+  }
+  const instruction = (step.instruction ?? '').trim().slice(0, MAX_STEP_INSTRUCTION_CHARS);
+  return step.tool ? { instruction, tool: step.tool } : { instruction };
+}
+
+/** Return the ordered, bounded, non-empty steps for an agent (normalized). */
+export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): NormalizedStep[] {
   if (!cfg?.steps) return [];
   return cfg.steps
-    .map((s) => s.trim().slice(0, MAX_STEP_INSTRUCTION_CHARS))
-    .filter((s) => s.length > 0)
+    .map(normalizeStep)
+    .filter((s) => s.instruction.length > 0)
     .slice(0, HARD_MAX_STEPS);
 }
 
