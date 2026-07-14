@@ -626,10 +626,18 @@ object AgentRuntime {
                 ?.optString("type")
                 ?.takeIf { it.isNotBlank() }
                 ?: return null
-            // Phase 0 canary only trusts deterministic local unattended effects.
-            // Cloud/web/auto routes stay manual-gated until PlanSpec integrity is
-            // signed or native can recompute the full TS route decision.
-            if (toolType != "local") return null
+            // Widened 2026-07-14 (round 2) per project owner directive:
+            // chat-confirmed agent.autonomous consent (the Autonomous toggle
+            // above) is the trust boundary, not the tool backend --
+            // "たとえパープレだろうとCodexだろうと" (even Perplexity or
+            // Codex). toolType is still forwarded via --trusted-tool-type so
+            // the executor can cross-check it against what the plan file
+            // itself carries (defense-in-depth against a tampered/diverged
+            // plan) -- see trustedNativeLowRiskAction in
+            // scripts/shelly-plan-executor.js. A cloud tool still can't reach
+            // this point with a runnable script at all unless
+            // autonomousCloudConsent was separately granted at
+            // script-generation time (Spec A §4, lib/agent-executor.ts).
             val appActRecipeId = if (actionType == "app-act") {
                 actionJson?.optString("appActRecipeId")?.takeIf { it.isNotBlank() } ?: return null
             } else null

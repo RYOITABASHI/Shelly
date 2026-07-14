@@ -266,18 +266,25 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionApprovalModeOverride: 'manual' | 'auto' | '' =
     agent.requireActionApproval === undefined ? '' : agent.requireActionApproval ? 'manual' : 'auto';
   // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
-  // 2026-07-14): deliberately NOT governed by actionApprovalMode above — a
-  // wrong external post is not equivalent in risk to a local draft/CLI call,
-  // so it needs the SAME narrow registration-time consent draft/notify's
-  // existing native fast-path already requires (autonomous + on-device tool
-  // only; see AgentRuntime.kt's trustedPlanLaunch and the AgentActionType doc
-  // comment in store/types.ts), not the blanket approval-frequency setting.
-  // Baked as a constant here (not re-derived at run time) because this exact
-  // .sh file is regenerated only through the trusted authoring path (create/
-  // update agent) — a scheduled/unattended fire re-executes this file
-  // unchanged, so whatever was true when it was last written IS "unchanged
-  // since registration".
-  const actionAppActAutoFireTrusted = agent.autonomous === true && tool.type === 'local';
+  // 2026-07-14, widened same day per project owner directive: "最終的に
+  // チャットで条件を示して、ユーザーが良しとしたものは実行で。たとえパープレ
+  // だろうとCodexだろうと" — chat-confirmed registration-time consent is the
+  // trust boundary, not the tool backend). Deliberately NOT governed by
+  // actionApprovalMode above — a wrong external post is not equivalent in
+  // risk to a local draft/CLI call, so it needs the SAME registration-time
+  // consent draft/notify's existing native fast-path already requires (the
+  // Autonomous toggle itself; see AgentRuntime.kt's trustedPlanLaunch and the
+  // AgentActionType doc comment in store/types.ts), not the blanket
+  // approval-frequency setting. A cloud tool still can't reach this point
+  // unless autonomousCloudConsent was separately granted (Spec A §4, N1
+  // exception, above) — that gate governs whether an autonomous script may
+  // use cloud API keys at all; this flag only governs whether app-act may
+  // fire unattended once a script exists. Baked as a constant here (not
+  // re-derived at run time) because this exact .sh file is regenerated only
+  // through the trusted authoring path (create/update agent) — a scheduled/
+  // unattended fire re-executes this file unchanged, so whatever was true
+  // when it was last written IS "unchanged since registration".
+  const actionAppActAutoFireTrusted = agent.autonomous === true;
 
   // North Star fix: a web-research / collection agent otherwise receives the bare
   // task utterance as a single user message with no output contract, so the backend
@@ -1318,9 +1325,11 @@ dispatch_agent_action() {
       # consented to once at registration time, unlike intent/dm-reply's
       # runtime-resolved targets) -- resolved 2026-07-14 per
       # docs/superpowers/DEFERRED.md's design: the unattended-allow is gated
-      # SOLELY on ACTION_APP_ACT_AUTO_FIRE_TRUSTED (agent.autonomous===true
-      # AND tool.type==='local', baked at script-generation time — see
-      # generateRunScript), the SAME registration-time consent draft/notify's
+      # SOLELY on ACTION_APP_ACT_AUTO_FIRE_TRUSTED (agent.autonomous===true,
+      # baked at script-generation time — see generateRunScript; widened
+      # 2026-07-14 to drop the tool.type==='local' restriction per project
+      # owner directive, chat-confirmed consent is the boundary regardless of
+      # tool backend), the SAME registration-time consent draft/notify's
       # existing native fast-path already requires. It is NOT governed by
       # ACTION_APPROVAL_MODE (the blanket approval-tap default) — a wrong
       # external post is not equivalent in risk to a local draft/CLI call, so

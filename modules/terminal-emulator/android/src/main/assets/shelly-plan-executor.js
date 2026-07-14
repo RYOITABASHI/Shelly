@@ -1246,7 +1246,7 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
   if (trustedAgentId !== plan.agent.id) return false;
   // app-act (2026-07-14, docs/superpowers/DEFERRED.md's "app-act Tier-B"
   // entry, resolved): the SAME registration-time consent draft/notify's
-  // native fast-path already required (autonomous + on-device tool only) now
+  // native fast-path already required (the Autonomous toggle itself) now
   // ALSO covers app-act, with one extra check below: the recipe id native
   // read from the freshly re-read persisted agent.json (--trusted-app-act-
   // recipe-id) must still match what THIS plan carries — defense-in-depth
@@ -1259,10 +1259,16 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
     const planRecipeId = String((plan.action && plan.action.appActRecipeId) || '').trim();
     if (!trustedRecipeId || trustedRecipeId !== planRecipeId) return false;
   }
-  // Native only emits this for deterministic local autonomous agents. This keeps
-  // a tampered plan from turning a low-risk file/notify/app-act action into key
-  // spend or an unreviewed external post.
-  return trustedTool === 'local' && plan.tool.type === 'local';
+  // Widened 2026-07-14 (round 2) per project owner directive: chat-confirmed
+  // agent.autonomous consent is the trust boundary, not the tool backend —
+  // "たとえパープレだろうとCodexだろうと" (even Perplexity or Codex). Native
+  // no longer restricts trustedTool to 'local' (see AgentRuntime.kt's
+  // trustedPlanLaunch); a cloud tool still can't reach this point at all
+  // unless autonomousCloudConsent was separately granted at script-generation
+  // time (Spec A §4, lib/agent-executor.ts). We still require trustedTool to
+  // agree with what THIS plan actually carries — defense-in-depth against the
+  // plan's tool diverging from what native read moments earlier.
+  return trustedTool !== '' && trustedTool === plan.tool.type;
 }
 
 function unattendedPreflightFailure(args, plan) {

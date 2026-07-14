@@ -169,15 +169,16 @@ describe('app-act Tier-B unattended-allow — registration-time consent binding,
     expect(appActCase).toContain('App-action actions require an attended Review.');
   });
 
-  it('is refused when unattended for an autonomous agent on a CLOUD tool (autonomous alone is not enough — must be on-device too)', () => {
+  it('is refused when unattended for an autonomous agent on a CLOUD tool WITHOUT autonomousCloudConsent (a stronger, earlier boundary than the Tier-B gate)', () => {
     const s = generateRunScript(appActAgent({ autonomous: true, tool: { type: 'gemini-api' } }));
     // Refused entirely at generation time (Spec A §4, no API keys in the
-    // autonomous path) — an even stronger boundary than the Tier-B gate.
+    // autonomous path without separate cloud consent) — script generation
+    // never even reaches the app-act dispatch case.
     expect(s).toContain('autonomous mode does not allow');
     expect(s).not.toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
   });
 
-  it('unlocks the unattended-allow ONLY for autonomous + on-device (the SAME consent draft/notify already required)', () => {
+  it('unlocks the unattended-allow for autonomous alone, on a LOCAL tool (the SAME consent draft/notify already required)', () => {
     const s = generateRunScript(appActAgent({ autonomous: true }));
     expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
     const appActCase = extractAppActCase(s);
@@ -185,6 +186,18 @@ describe('app-act Tier-B unattended-allow — registration-time consent binding,
     // wait itself; native fires + auto-replies (see AgentRuntime.kt), so the
     // wait_action_approval poll loop is unchanged for BOTH trust states.
     expect(appActCase).toContain('request_and_wait_approval "app-act" "$preview" "$result_file" || return 1');
+  });
+
+  it('unlocks the unattended-allow for autonomous + a CLOUD tool too, once autonomousCloudConsent is separately granted (widened 2026-07-14: chat-confirmed consent is the gate, not tool backend)', () => {
+    // 'ニュースを集めて' triggers detectRouteSignals' needsWeb, which combined
+    // with autonomousCloudConsent satisfies the N1 exception (Spec A §4) and
+    // keeps the keyed web tool instead of refusing generation outright.
+    const s = generateRunScript(
+      appActAgent({ autonomous: true, tool: { type: 'gemini-api' }, prompt: 'ニュースを集めて' }),
+      { autonomousCloudConsent: true },
+    );
+    expect(s).not.toContain('autonomous mode does not allow');
+    expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
   });
 
   it('the Tier-B gate is independent of ACTION_APPROVAL_MODE — flipping the blanket approval default alone never unlocks it', () => {

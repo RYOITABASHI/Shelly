@@ -54,7 +54,7 @@ describe('shelly-plan-executor.js parity', () => {
     expect(agentRuntime).toContain('--trusted-autonomous-action');
     expect(agentRuntime).toContain('--trusted-tool-type');
     expect(executorSrc).toContain('trustedNativeLowRiskAction(args, plan, actionType)');
-    expect(executorSrc).toContain("trustedTool === 'local' && plan.tool.type === 'local'");
+    expect(executorSrc).toContain("trustedTool !== '' && trustedTool === plan.tool.type");
     expect(executorSrc).not.toContain('if (!plan.agent.autonomous) requestActionApproval');
     expect(executorSrc).not.toContain('plan.paths && plan.paths.home');
   });

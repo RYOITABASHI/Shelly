@@ -65,7 +65,12 @@ describe('trustedNativeLowRiskAction / unattendedPreflightFailure — app-act Ti
     expect(executor.trustedNativeLowRiskAction(trustedArgs('line.send-message'), plan, 'app-act')).toBe(false);
   });
 
-  it('a cloud tool refuses trust even with a matching recipe id — autonomous alone is not the gate', () => {
+  it('a cloud tool IS trusted when trustedTool agrees with the plan (widened 2026-07-14: chat-confirmed autonomous consent is the gate, not tool backend)', () => {
+    const plan = basePlan({ tool: { type: 'gemini-api', label: 'Gemini' }, action: { type: 'app-act', appActRecipeId: 'x.post' } });
+    expect(executor.trustedNativeLowRiskAction({ ...trustedArgs(), 'trusted-tool-type': 'gemini-api' }, plan, 'app-act')).toBe(true);
+  });
+
+  it('a trustedTool that diverges from what the plan carries refuses — defense-in-depth against the plan tool diverging from what native read', () => {
     const plan = basePlan({ tool: { type: 'gemini-api', label: 'Gemini' }, action: { type: 'app-act', appActRecipeId: 'x.post' } });
     expect(executor.trustedNativeLowRiskAction(trustedArgs(), plan, 'app-act')).toBe(false);
   });

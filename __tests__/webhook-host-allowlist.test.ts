@@ -27,8 +27,9 @@ describe('webhook host allowlist', () => {
       'utf8',
     );
 
-    expect(legacy).toContain('write_action_approval_request "webhook"');
-    expect(legacy).toContain('wait_action_approval "webhook" || return 1');
+    expect(legacy).toContain('webhook_host_allowlisted=false');
+    expect(legacy).toContain('if webhook_host_is_allowlisted "$webhook_host"; then webhook_host_allowlisted=true; fi');
+    expect(legacy).toContain('request_and_wait_approval "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" "$webhook_host_allowlisted" || return 1');
     expect(plan).toContain('requestActionApproval(paths, plan, actionType');
     expect(plan).toContain('destinationHostAllowlisted: webhookHostIsAllowlisted(host, config)');
     expect(review).toContain("'agent_action_confirm_webhook_known_host'");
