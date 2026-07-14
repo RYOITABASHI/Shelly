@@ -58,6 +58,12 @@ export interface ParsedAgentDraft {
   /** Phase 4: ordered step instructions when the utterance is multi-step
    *  ("まず…次に…最後に" / numbered). Absent/<2 = single-run. */
   orchestrationSteps?: string[];
+  /** Set when the utterance asked for a delivery action that isn't backed by a
+   *  real `action.type` yet (e.g. "Xに投稿して" — X-posting delivery doesn't
+   *  exist on `main`), so `action` stayed `draft` instead of reflecting what
+   *  the user actually asked for. The confirm card should surface this as a
+   *  visible warning; absent = no caveat. */
+  actionCaveat?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -419,6 +425,35 @@ function parseSchedule(text: string): ScheduleResult {
 
 const URL_RE = /https?:\/\/[^\s、。)）]+/i;
 
+/** Slice `text` down to the clause that actually names the delivery action —
+ *  the part after the LAST "たら" marker when a conditional ("Xたら、Y") is
+ *  present, else the whole text. Shared by detectAction's own keyword scans
+ *  and by detectActionCaveat() below, so every action-phrase detector agrees
+ *  on what counts as "the action" vs. "the condition". See the comment on
+ *  detectAction's たら handling for the full rationale / known limitation. */
+function actionDetectionScope(text: string): string {
+  const talaIndex = text.lastIndexOf('たら');
+  return talaIndex >= 0 ? text.slice(talaIndex + 2) : text;
+}
+
+// X-posting phrasing ("Xに投稿して" / "post to X" / "tweet this"). X-posting
+// delivery doesn't exist yet on `main` (a later phase), so detectAction()
+// deliberately keeps returning `{ type: 'draft' }` when this fires — this is
+// only used to surface a user-facing caveat, never to change the action type.
+const X_POST_RE = /Xに(?:自動)?投稿|Xに上げて|Xでポスト|Xにポスト|post(?:ing)?\s+to\s+x\b|tweet\s+this|\bxポスト/i;
+
+/** Detect a delivery request for a not-yet-supported action (currently just
+ *  X-posting). Returns a user-facing warning string, or undefined when none
+ *  applies. Callers should only surface this when `detectAction()` actually
+ *  fell back to `draft` for the same text (see parseAgentNL). */
+function detectActionCaveat(text: string): string | undefined {
+  const actionScope = actionDetectionScope(text);
+  if (X_POST_RE.test(actionScope)) {
+    return 'Xへの投稿にはまだ対応していないため、下書き（ファイル保存）として登録します';
+  }
+  return undefined;
+}
+
 /** Detect the delivery action. Default = draft. Never returns 'publish'. */
 function detectAction(text: string): AgentAction {
   // webhook — an explicit URL is the strongest signal.
@@ -454,8 +489,7 @@ function detectAction(text: string): AgentAction {
   // notify, because slicing after the LAST "たら" drops "通知して". Rare in
   // practice (needs two chained conditionals in one utterance); not fixed
   // here, no known simple fix without deeper clause parsing.
-  const talaIndex = text.lastIndexOf('たら');
-  const actionScope = talaIndex >= 0 ? text.slice(talaIndex + 2) : text;
+  const actionScope = actionDetectionScope(text);
 
   if (/ドラフト|下書き|\bdraft\b/i.test(actionScope)) {
     return { type: 'draft' };
@@ -635,6 +669,8 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   if (preset) {
     const presetSched = parseSchedule(rawText);
     const presetSuggestion = suggestTool(preset.prompt);
+    const presetAction = detectAction(rawText);
+    const presetActionCaveat = presetAction.type === 'draft' ? detectActionCaveat(rawText) : undefined;
     // Use the preset's Mon/Fri default ONLY when the user gave no schedule cue at
     // all. If they stated one that we couldn't confidently parse (e.g. "90分ごと"),
     // fall to manual selection rather than silently rewriting it to Mon/Fri.
@@ -662,17 +698,19 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
       suggestedTime: presetSched.suggestedTime
         ? { hour: presetSched.suggestedTime.hour, minute: presetSched.suggestedTime.minute }
         : undefined,
-      action: detectAction(rawText),
+      action: presetAction,
       tool: presetSuggestion.tool,
       toolLabel: presetSuggestion.label ?? toolChoiceToLabel(presetSuggestion.tool),
       autonomous: true,
       memory: detectMemory(rawText),
+      actionCaveat: presetActionCaveat,
       rawText,
     };
   }
 
   const sched = parseSchedule(rawText);
   const action = detectAction(rawText);
+  const actionCaveat = action.type === 'draft' ? detectActionCaveat(rawText) : undefined;
   const prompt = derivePrompt(rawText, sched);
   const suggestion = suggestTool(prompt || rawText);
   const memory = detectMemory(rawText);
@@ -695,6 +733,7 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
     memory,
+    actionCaveat,
     rawText,
   };
 }

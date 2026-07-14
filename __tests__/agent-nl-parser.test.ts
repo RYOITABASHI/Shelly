@@ -419,6 +419,51 @@ describe('parseAgentNL — action layer (capability boundary)', () => {
   });
 });
 
+describe('parseAgentNL — action caveat (X-posting not yet supported)', () => {
+  // X-posting delivery doesn't exist on `main` yet (a later phase). Until then,
+  // detectAction() must keep returning 'draft' for this phrasing, but the user
+  // should be told why they got a file instead of a post.
+  it('"Xに投稿して" stays draft and sets a user-facing caveat', () => {
+    const d = parseAgentNL('毎日8時にXに投稿して');
+    expect(d.action.type).toBe('draft');
+    expect(typeof d.actionCaveat).toBe('string');
+    expect(d.actionCaveat!.length).toBeGreaterThan(0);
+  });
+
+  it('"post to X" (EN phrasing) also stays draft with a caveat', () => {
+    const d = parseAgentNL('every day at 8 post to X');
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeTruthy();
+  });
+
+  it('"tweet this" also stays draft with a caveat', () => {
+    const d = parseAgentNL('毎朝ニュースをまとめてtweet this');
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeTruthy();
+  });
+
+  it('a たら-conditional scopes the caveat to the delivery clause, not the condition', () => {
+    // "記事が完成したらXに投稿して" — condition = "記事が完成", action = "Xに投稿して".
+    // Mirrors detectAction's own たら-scoping (see its comment above) so a
+    // trigger-condition clause never falsely fires the caveat.
+    const d = parseAgentNL('記事が完成したらXに投稿して');
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeTruthy();
+  });
+
+  it('no caveat when X-posting phrasing is absent', () => {
+    const d = parseAgentNL('毎日8時にブログ記事を書いて');
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeUndefined();
+  });
+
+  it('no caveat when the action resolves to something other than draft', () => {
+    const d = parseAgentNL('毎日9時にコマンド実行して結果を保存');
+    expect(d.action.type).toBe('cli');
+    expect(d.actionCaveat).toBeUndefined();
+  });
+});
+
 describe('parseAgentNL — invariants', () => {
   const samples = [
     '毎日8時にXの下書きを作って',
