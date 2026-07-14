@@ -2,6 +2,7 @@ import {
   buildStepPrompt,
   combineFinalPreview,
   DEFAULT_MAX_STEPS,
+  detectToolPinnedSteps,
   HARD_MAX_STEPS,
   HARD_TOTAL_TIMEOUT_MS,
   isOrchestrated,
@@ -184,6 +185,52 @@ describe('parseStepsFromText — conservative multi-step detection', () => {
   it('caps at the hard step max', () => {
     const many = Array.from({ length: 30 }, (_, i) => `${i + 1}. step`).join('\n');
     expect(parseStepsFromText(many).length).toBeLessThanOrEqual(HARD_MAX_STEPS);
+  });
+});
+
+describe('detectToolPinnedSteps — Phase 6 tool-mention chain detection', () => {
+  it('pins パープレ/ローカルLLM per clause on a plain て-form/、-delimited chain, leaves the last clause unpinned', () => {
+    const steps = detectToolPinnedSteps(
+      'パープレでSTEAM教育×AIの最新論文を集めて、ローカルLLMで日本語要約と自分の見解とリンクを付けて、Xに自動投稿して',
+    );
+    expect(steps).not.toBeNull();
+    expect(steps!.length).toBe(3);
+    expect(steps![0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    expect(steps![0].instruction).toContain('パープレ');
+    expect(steps![1].tool).toEqual({ type: 'local' });
+    expect(steps![2].tool).toBeUndefined();
+    expect(steps![2].instruction).toContain('X');
+  });
+
+  it('pins Codex and Gemini mentions to their ToolChoice shapes', () => {
+    const steps = detectToolPinnedSteps('Codexでコードを直して、Geminiでレビューコメントを書いて');
+    expect(steps).not.toBeNull();
+    expect(steps![0].tool).toEqual({ type: 'cli', cli: 'codex' });
+    expect(steps![1].tool).toEqual({ type: 'gemini-api' });
+  });
+
+  it('recognizes an EN comma-delimited chain with tool mentions', () => {
+    const steps = detectToolPinnedSteps(
+      'Collect the latest STEAM x AI papers with Perplexity, summarize them in Japanese with the local LLM and add my take with links, then post to X automatically.',
+    );
+    expect(steps).not.toBeNull();
+    expect(steps!.length).toBe(3);
+    expect(steps![0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    expect(steps![1].tool).toEqual({ type: 'local' });
+    expect(steps![2].tool).toBeUndefined();
+  });
+
+  it('returns null for a single clause (no boundary at all)', () => {
+    expect(detectToolPinnedSteps('パープレで論文を集めて')).toBeNull();
+  });
+
+  it('REGRESSION: returns null for ordinary て、-containing prose with no tool mention (does not widen the generic splitter)', () => {
+    expect(detectToolPinnedSteps('毎朝ニュースをまとめて、保存して')).toBeNull();
+    expect(detectToolPinnedSteps('資料を確認して、問題なければ承認して、担当者に共有して')).toBeNull();
+  });
+
+  it('returns null for fewer than 2 usable clauses even with a tool mention', () => {
+    expect(detectToolPinnedSteps('ローカルLLMで要約')).toBeNull();
   });
 });
 

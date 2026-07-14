@@ -16,9 +16,9 @@
  *
  * The result is a PREVIEW draft, not a live agent. The caller shows it in the confirm card.
  */
-import { AgentAction, AgentMemoryConfig, ToolChoice } from '@/store/types';
+import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
-import { parseStepsFromText, normalizeSteps } from './agent-orchestration';
+import { parseStepsFromText, normalizeSteps, detectToolPinnedSteps } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 
 export interface ParsedAgentDraft {
@@ -56,13 +56,19 @@ export interface ParsedAgentDraft {
    *  card. Set by the dispatcher (async skill match), not the pure parser. */
   matchedSkill?: { id: string; name: string; successCount: number };
   /** Phase 4: ordered step instructions when the utterance is multi-step
-   *  ("まず…次に…最後に" / numbered). Absent/<2 = single-run. */
-  orchestrationSteps?: string[];
+   *  ("まず…次に…最後に" / numbered), OR (Phase 6) a plain て-form/comma-delimited
+   *  chain naming a tool per clause ("パープレで集めて、ローカルLLMで要約して…") —
+   *  see detectToolPinnedSteps. Each entry is either a plain string (auto-routed,
+   *  same as before) or a { instruction, tool } object pinning a concrete tool for
+   *  just that step. Absent/<2 = single-run. */
+  orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   /** Set when the utterance asked for a delivery action that isn't backed by a
-   *  real `action.type` yet (e.g. "Xに投稿して" — X-posting delivery doesn't
-   *  exist on `main`), so `action` stayed `draft` instead of reflecting what
-   *  the user actually asked for. The confirm card should surface this as a
-   *  visible warning; absent = no caveat. */
+   *  real `action.type` yet (currently: LINE-posting — "LINEに投稿して" has a
+   *  scaffolded `line.send-message` app-act recipe but no wired detection here
+   *  yet), so `action` stayed `draft` instead of reflecting what the user
+   *  actually asked for. X-posting used to hit this same fallback but is now a
+   *  real `app-act` action (Phase 6) — see X_POST_RE / detectAction. The confirm
+   *  card should surface this as a visible warning; absent = no caveat. */
   actionCaveat?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
@@ -436,20 +442,39 @@ function actionDetectionScope(text: string): string {
   return talaIndex >= 0 ? text.slice(talaIndex + 2) : text;
 }
 
-// X-posting phrasing ("Xに投稿して" / "post to X" / "tweet this"). X-posting
-// delivery doesn't exist yet on `main` (a later phase), so detectAction()
-// deliberately keeps returning `{ type: 'draft' }` when this fires — this is
-// only used to surface a user-facing caveat, never to change the action type.
+// X-posting phrasing ("Xに投稿して" / "post to X" / "tweet this"). Phase 0 kept
+// this as a `draft` fallback + caveat because there was no `app-act` action type
+// on `main` yet to target. Phase 2 added the `app-act` schema (appActRecipeId /
+// appActParams on AgentAction — see store/types.ts), so detectAction() below now
+// returns a REAL `{ type: 'app-act', appActRecipeId: 'x.post', … }` action for
+// this phrasing instead of falling through to draft. (Real on-device dispatch of
+// `app-act` is separate, in-progress work — this parser change is what lets NL
+// text reach that action type at all; the recipe/params are fixed and reviewed
+// once at registration time, per the AgentActionType doc comment.) Kept as its
+// own named const (not inlined) since it's still reused verbatim by the tests
+// and by the "no caveat when X-posting is absent" invariant.
 const X_POST_RE = /Xに(?:自動)?投稿|Xに上げて|Xでポスト|Xにポスト|post(?:ing)?\s+to\s+x\b|tweet\s+this|\bxポスト/i;
 
+// LINE-posting phrasing ("LINEに投稿して" / "send this to LINE"). Phase 3
+// scaffolded a `line.send-message` app-act recipe on the native layer, but
+// wiring NL detection + dispatch for it is OUT OF SCOPE for this phase (only
+// X was asked for) — so, unlike X above, this still falls through to `draft`
+// with a caveat, exactly like X used to. Deliberately narrow (a literal
+// 投稿/送信 verb, or "send ... to line") so it never collides with
+// "LINEで知らせて/LINEで教えて", which already resolves to a real `notify`
+// action via the notify-keyword branch in detectAction below.
+const LINE_POST_RE = /LINEに(?:自動)?投稿|LINEに(?:メッセージを)?送(?:って|信)|send\s+(?:this|a\s+message)?\s*to\s+line\b|post(?:ing)?\s+to\s+line\b/i;
+
 /** Detect a delivery request for a not-yet-supported action (currently just
- *  X-posting). Returns a user-facing warning string, or undefined when none
- *  applies. Callers should only surface this when `detectAction()` actually
- *  fell back to `draft` for the same text (see parseAgentNL). */
+ *  LINE-posting — see LINE_POST_RE above; X-posting graduated to a real
+ *  app-act action in Phase 6 and no longer needs this fallback). Returns a
+ *  user-facing warning string, or undefined when none applies. Callers should
+ *  only surface this when `detectAction()` actually fell back to `draft` for
+ *  the same text (see parseAgentNL). */
 function detectActionCaveat(text: string): string | undefined {
   const actionScope = actionDetectionScope(text);
-  if (X_POST_RE.test(actionScope)) {
-    return 'Xへの投稿にはまだ対応していないため、下書き（ファイル保存）として登録します';
+  if (LINE_POST_RE.test(actionScope)) {
+    return 'LINEへの投稿にはまだ対応していないため、下書き（ファイル保存）として登録します';
   }
   return undefined;
 }
@@ -490,6 +515,16 @@ function detectAction(text: string): AgentAction {
   // practice (needs two chained conditionals in one utterance); not fixed
   // here, no known simple fix without deeper clause parsing.
   const actionScope = actionDetectionScope(text);
+
+  // app-act: X-posting (Phase 6). Checked before the draft/notify keyword scans
+  // so "Xに自動投稿して" resolves to the real recipe even if the same clause
+  // happens to also contain a draft/notify word elsewhere. {{result}} is the
+  // agreed placeholder convention (same as intentShareText/dmReplyText) —
+  // string-replaced with the run's output preview at request-build time,
+  // BEFORE the approval request is written.
+  if (X_POST_RE.test(actionScope)) {
+    return { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } };
+  }
 
   if (/ドラフト|下書き|\bdraft\b/i.test(actionScope)) {
     return { type: 'draft' };
@@ -684,9 +719,12 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     return {
       name: deriveName(preset.name),
       prompt: preset.prompt,
-      // ParsedAgentDraft.orchestrationSteps is plain strings (Phase 5 tool-pin
-      // detection from NL text is a later phase) — normalize + extract the
-      // instruction so a future object-shaped step entry can't leak through.
+      // The G6 preset's own steps stay plain strings here (its fixed
+      // search→primary-source→summarize→re-summarize shape has no per-clause
+      // tool mentions to detect) — normalize + extract the instruction so an
+      // object-shaped preset step entry can't leak through un-normalized. The
+      // Phase 6 tool-pin detector (detectToolPinnedSteps) only runs in the
+      // non-preset branch below, on the user's own utterance text.
       orchestrationSteps: normalizeSteps(preset.orchestration).map((s) => s.instruction),
       schedule,
       scheduleConfident: presetSched.confident || usePresetDefault,
@@ -714,13 +752,23 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   const prompt = derivePrompt(rawText, sched);
   const suggestion = suggestTool(prompt || rawText);
   const memory = detectMemory(rawText);
-  // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts).
-  const orchestrationSteps = parseStepsFromText(prompt || rawText);
+  // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts) via
+  // an explicit sequence marker (まず/次に/… , first/then/…, numbered list).
+  const explicitSteps = parseStepsFromText(prompt || rawText);
+  // Phase 6: when there's no EXPLICIT marker, fall back to the narrower
+  // tool-mention detector (plain て-form/comma chain naming a tool per clause,
+  // e.g. "パープレで集めて、ローカルLLMで要約して、Xに投稿して"). Checked only when
+  // explicitSteps didn't already find a confident split, so a marker-based
+  // utterance is never double-processed by both detectors.
+  const orchestrationSteps: Array<string | AgentOrchestrationStep> | undefined =
+    explicitSteps.length >= 2
+      ? explicitSteps
+      : detectToolPinnedSteps(prompt || rawText) ?? undefined;
 
   return {
     name: deriveName(rawText),
     prompt,
-    orchestrationSteps: orchestrationSteps.length >= 2 ? orchestrationSteps : undefined,
+    orchestrationSteps,
     schedule: sched.schedule,
     scheduleConfident: sched.confident,
     scheduleLabel: sched.label,

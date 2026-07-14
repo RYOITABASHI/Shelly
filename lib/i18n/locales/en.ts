@@ -214,6 +214,8 @@ const en: Record<string, string> = {
   'agentcard.action_intent': 'App / Share',
   'agentcard.action_dm-reply': 'DM reply',
   'agentcard.action_app-act': 'App action',
+  'agentcard.appact_x_warning': 'This will auto-post the run result to X (Twitter) every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
+  'agentcard.appact_generic_warning': 'This will drive another app automatically every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
   'agentcard.dmreply_pairing_label': 'Paired conversation',
   'agentcard.dmreply_no_pairings': 'Pair a conversation in Settings first.',
   'agentcard.dmreply_text_label': 'Reply text',
