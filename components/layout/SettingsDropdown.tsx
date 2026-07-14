@@ -34,7 +34,7 @@ import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
-import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
@@ -775,6 +775,8 @@ function AgentsSection({ visible }: { visible: boolean }) {
   const [vaultDraft, setVaultDraft] = React.useState(vaultPath);
   const [topicDraft, setTopicDraft] = React.useState(topicFolder);
   const [customDraft, setCustomDraft] = React.useState(customPath);
+  const [cloudSyncBusy, setCloudSyncBusy] = React.useState(false);
+  const cloudSyncBusyRef = React.useRef(false);
   React.useEffect(() => setVaultDraft(vaultPath), [vaultPath]);
   React.useEffect(() => setTopicDraft(topicFolder), [topicFolder]);
   React.useEffect(() => setCustomDraft(customPath), [customPath]);
@@ -799,27 +801,45 @@ function AgentsSection({ visible }: { visible: boolean }) {
   // N1: enabling autonomous cloud needs informed consent — an unattended agent
   // will spend your cloud quota/cost without asking each time.
   const toggleCloudConsent = async () => {
-    if (!cloudConsent) {
-      const ok = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          t('agents.cloud_consent_title'),
-          t('agents.cloud_consent_body'),
-          [
-            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
-            { text: t('agents.cloud_consent_enable'), style: 'destructive', onPress: () => resolve(true) },
-          ],
-          { cancelable: true, onDismiss: () => resolve(false) },
-        );
-      });
-      if (!ok) return;
+    if (cloudSyncBusyRef.current) return;
+    cloudSyncBusyRef.current = true;
+    setCloudSyncBusy(true);
+    try {
+      if (!cloudConsent) {
+        const ok = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            t('agents.cloud_consent_title'),
+            t('agents.cloud_consent_body'),
+            [
+              { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+              { text: t('agents.cloud_consent_enable'), style: 'destructive', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          );
+        });
+        if (!ok) return;
+      }
+      updateSettings({ autonomousCloudConsent: !cloudConsent });
+      // Consent flush also re-bakes autonomous agents' on-disk scripts so a
+      // scheduled fire picks up the toggle immediately (N1 follow-up).
+      await flushAutonomousCloudEnvSync('Autonomous Cloud');
+    } finally {
+      cloudSyncBusyRef.current = false;
+      setCloudSyncBusy(false);
     }
-    updateSettings({ autonomousCloudConsent: !cloudConsent });
-    await flushPendingAgentEnvSync('Autonomous Cloud');
   };
 
   const toggleExhaustion = async () => {
-    updateSettings({ autonomousCloudOnExhaustion: cloudExhaustion === 'stop' ? 'escalate' : 'stop' });
-    await flushPendingAgentEnvSync('Autonomous Cloud');
+    if (cloudSyncBusyRef.current) return;
+    cloudSyncBusyRef.current = true;
+    setCloudSyncBusy(true);
+    try {
+      updateSettings({ autonomousCloudOnExhaustion: cloudExhaustion === 'stop' ? 'escalate' : 'stop' });
+      await flushAutonomousCloudEnvSync('Autonomous Cloud');
+    } finally {
+      cloudSyncBusyRef.current = false;
+      setCloudSyncBusy(false);
+    }
   };
 
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = React.useState(false);
@@ -941,8 +961,10 @@ function AgentsSection({ visible }: { visible: boolean }) {
           style={[
             styles.switchTrack,
             { backgroundColor: cloudConsent ? withAlpha(C.accent, 0.36) : C.border },
+            cloudSyncBusy && { opacity: 0.5 },
           ]}
           onPress={toggleCloudConsent}
+          disabled={cloudSyncBusy}
           hitSlop={4}
         >
           <View
@@ -957,8 +979,9 @@ function AgentsSection({ visible }: { visible: boolean }) {
       {cloudConsent && (
         <Row label={t('agents.cloud_on_exhaustion')}>
           <Pressable
-            style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
+            style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }, cloudSyncBusy && { opacity: 0.5 }]}
             onPress={toggleExhaustion}
+            disabled={cloudSyncBusy}
             hitSlop={4}
           >
             <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>

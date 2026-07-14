@@ -2234,6 +2234,8 @@ claude() {
 
 - **2026-07-13 (capability grounding + cosmetics catch-up batch)**: dev branch の `097d1cc25` / `a43869cc2` / `ebafb16b2` を current `main` へ手動再構成。AI Chat は全 provider で names-only feature catalog を常時 ambient 注入し、cloud の capability question のみ full catalog へ upgrade、local は context budget 保護のため常時 compact のままとした。日本語 classifier はひらがな `できる` に加えて漢字 `出来る` を回帰テストで固定。RootLayout の既存 store hydration effect から `loadCosmetics()` を呼び、persist 済み wallpaper / CRT / panel 設定を cold start 時に復元する。→ sync: なし（既存機能の grounding / startup restore 修正で README surface 変更なし）。
 
+- **2026-07-13 (cloud-key preflight + atomic live-script port)**: reviewed commits `43d282b1a` → `9af50965d` を current main へ移植。live agent script / metadata / PlanSpec の書き込みを same-directory unique tmp + `mv -f` にして読み取り競合時の truncate を防ぎ、既存の実行 bit も rename 前に継承。auto route はキー欠如が確定した cloud 候補だけを事前除外し、autonomous cloud consent の変更は `.env` flush 成功後に disabled を含む全 autonomous agent へ即時 re-bake（alarm は不変）。consent は引き続き exact `1` のみ有効・欠落/読取失敗は false、preflight は候補を追加せず削除のみのため、unattended capability は fresh な明示 opt-in なしに拡大しない。→ sync: なし（既存 P1 follow-up の移植完了記録）。
+
 ---
 
 ## 管理ルール (自分への覚書)

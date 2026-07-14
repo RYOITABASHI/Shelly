@@ -7,7 +7,7 @@
  * picker sheet for enums.
  */
 
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { colors as C } from '@/theme.config';
 import {
   View,
@@ -37,7 +37,7 @@ import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt
 import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
-import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
+import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 
@@ -301,9 +301,10 @@ interface SettingRowProps {
   onStringEdit: (v: string) => void;
   onEnumOpen: () => void;
   onAction?: () => void;
+  disabled?: boolean;
 }
 
-function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }: SettingRowProps) {
+function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, disabled = false }: SettingRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -339,6 +340,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }
         <Switch
           value={Boolean(value)}
           onValueChange={onToggle}
+          disabled={disabled}
           trackColor={{ false: BORDER, true: C.accent + '66' }}
           thumbColor={value ? C.accent : MUTED}
         />
@@ -348,7 +350,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction }
 
   if (def.type === 'enum') {
     return (
-      <TouchableOpacity style={styles.row} onPress={onEnumOpen} activeOpacity={0.7}>
+      <TouchableOpacity style={[styles.row, disabled && { opacity: 0.5 }]} onPress={onEnumOpen} activeOpacity={0.7} disabled={disabled}>
         <View style={styles.rowLeft}>
           <Text style={styles.rowKey}>{def.label}</Text>
           {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
@@ -473,6 +475,8 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const [customContextText, setCustomContextText] = useState('');
   const [scouterEnabled, setScouterEnabled] = useState(false);
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState(false);
+  const [cloudSyncBusy, setCloudSyncBusy] = useState(false);
+  const cloudSyncBusyRef = useRef(false);
   useEffect(() => {
     if (visible) {
       logLifecycle('ConfigTUI', 'opened');
@@ -529,6 +533,15 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
 
   const applyValue = useCallback(
     async (def: SettingDef, rawValue: unknown) => {
+      const isCloudSyncSetting =
+        def.key === 'autonomousCloudConsent' ||
+        def.key === 'autonomousCloudOnExhaustion';
+      if (isCloudSyncSetting && cloudSyncBusyRef.current) return;
+      if (isCloudSyncSetting) {
+        cloudSyncBusyRef.current = true;
+        setCloudSyncBusy(true);
+      }
+      try {
       const displayValue = def.type === 'secret' ? (rawValue ? 'set' : 'empty') : String(rawValue);
       logInfo('ConfigTUI', 'Setting ' + def.key + ' = ' + displayValue);
       // N1: enabling autonomous cloud needs informed consent — an unattended
@@ -611,11 +624,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         } else {
           updateSettings({ [def.key]: rawValue } as any);
           if (
-            def.type === 'secret' ||
-            def.key === 'geminiModel' ||
             def.key === 'autonomousCloudConsent' ||
             def.key === 'autonomousCloudOnExhaustion'
           ) {
+            // Consent flush also re-bakes autonomous agents' on-disk scripts so
+            // a scheduled fire picks up the toggle immediately (N1 follow-up).
+            await flushAutonomousCloudEnvSync(def.label);
+          } else if (def.type === 'secret' || def.key === 'geminiModel') {
             await flushPendingAgentEnvSync(def.label);
           }
         }
@@ -632,6 +647,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
       }
       } catch (e) {
         logError('ConfigTUI', 'Failed to apply ' + def.key, e);
+      }
+      } finally {
+        if (isCloudSyncSetting) {
+          cloudSyncBusyRef.current = false;
+          setCloudSyncBusy(false);
+        }
       }
     },
     [updateSettings, cosmetics, settings, themeStore, i18n, dotfiles],
@@ -829,6 +850,10 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
                         onStringEdit={(v) => handleStringEdit(def, v)}
                         onEnumOpen={() => handleEnumOpen(def)}
                         onAction={() => handleAction(def)}
+                        disabled={cloudSyncBusy && (
+                          def.key === 'autonomousCloudConsent' ||
+                          def.key === 'autonomousCloudOnExhaustion'
+                        )}
                       />
                     </View>
                   ))}
