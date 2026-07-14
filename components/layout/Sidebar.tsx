@@ -121,6 +121,18 @@ export function Sidebar() {
   // output folders) as a one-tap DEVICE shortcut, so generated results are easy to
   // open. Falls back to the runtime default when no custom vault path is set.
   const agentVaultPath = useSettingsStore((s) => s.settings.agentVaultPath);
+  // Project owner directive 2026-07-14: runtime per-action approval defaults
+  // to OFF (no human tap). Removing that mandatory gate must not remove
+  // visibility into which mode an agent will actually run under — see the
+  // agentApprovalLabel() row/detail-popup usage below.
+  const defaultRequireActionApproval = useSettingsStore((s) => s.settings.defaultRequireActionApproval === true);
+  const agentApprovalLabel = React.useCallback(
+    (agent: Agent) =>
+      t((agent.requireActionApproval ?? defaultRequireActionApproval)
+        ? 'sidebar.agent_approval_manual'
+        : 'sidebar.agent_approval_auto'),
+    [t, defaultRequireActionApproval],
+  );
   const deviceFolders = React.useMemo(() => {
     const obsidian = {
       label: 'OBSIDIAN',
@@ -600,6 +612,7 @@ export function Sidebar() {
       toolChoiceToLabel(agent.tool),
       agent.autonomous ? t('sidebar.agent_autonomous') : null,
       agent.enabled ? null : t('sidebar.agent_paused'),
+      agentApprovalLabel(agent),
     ].filter(Boolean).join(' · ');
     // Phase 4: when the agent is multi-step, show the planned chain; and if the
     // last run was orchestrated, show each step's status. Phase 5: a step may
@@ -664,7 +677,7 @@ export function Sidebar() {
       { text: t('common.close'), style: 'cancel' as const },
     ];
     Alert.alert(agent.name, body, buttons);
-  }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList]);
+  }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList, agentApprovalLabel]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
@@ -841,7 +854,7 @@ export function Sidebar() {
                       {(agent.name || '').toUpperCase()}
                     </Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
-                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'}
+                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
                     </Text>
                   </Pressable>
                   <Pressable

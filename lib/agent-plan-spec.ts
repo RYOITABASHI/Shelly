@@ -34,6 +34,12 @@ export interface AgentPlanSpecV1 {
     name: string;
     autonomous: boolean;
     autonomyLevel: NonNullable<Agent['autonomyLevel']>;
+    /** Per-agent override of AppSettings.defaultRequireActionApproval, baked
+     *  at plan-build time (project owner directive 2026-07-14). Absent =
+     *  scripts/shelly-plan-executor.js's requireActionApprovalTap falls back
+     *  to the live global default (config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL,
+     *  read from .env so toggling it doesn't require regenerating every plan). */
+    requireActionApproval?: boolean;
   };
   prompt: string;
   tool: {
@@ -169,6 +175,7 @@ export function buildAgentPlanSpec(
       name: agent.name,
       autonomous: agent.autonomous === true,
       autonomyLevel: agent.autonomyLevel ?? 'L2',
+      requireActionApproval: agent.requireActionApproval,
     },
     prompt: buildExecutorPrompt(agent.prompt),
     tool: toolSpec,

@@ -27,7 +27,12 @@ function makePlan(home: string, port: number) {
     kind: PLAN_SPEC_KIND,
     schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
     generatedAt: 1,
-    agent: { id: agentId, name: 'Plan Smoke', autonomous: true, autonomyLevel: 'L2' },
+    // requireActionApproval: true keeps this fixture exercising the full
+    // write+wait approval round trip these tests are actually about (project
+    // owner directive 2026-07-14 made draft/notify/webhook/cli skip that
+    // round trip by default — see plan-executor-approval-default.test.ts for
+    // dedicated coverage of the new default-OFF/auto-approve behavior).
+    agent: { id: agentId, name: 'Plan Smoke', autonomous: true, autonomyLevel: 'L2', requireActionApproval: true },
     prompt: 'say hello',
     tool: { type: 'local', label: 'Local LLM', model: 'fixture' },
     action: { type: 'draft' },

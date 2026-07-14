@@ -152,10 +152,15 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain("v.split('{{result}}').join(preview)");
     expect(executorSrc).toContain('appActRecipeId: extra.appActRecipeId');
     expect(executorSrc).toContain('appActParamsResolved: extra.appActParamsResolved');
-    // unattendedPreflightFailure only allowlists draft/notify for unattended
-    // runs, so app-act (not added there) is refused-when-unattended by
-    // construction — assert that allowlist stayed narrow rather than widening
-    // to accidentally include app-act.
-    expect(executorSrc).toMatch(/if \(actionType !== 'draft' && actionType !== 'notify'\) \{/);
+    // 2026-07-14 (docs/superpowers/DEFERRED.md's "app-act Tier-B" entry,
+    // resolved): unattendedPreflightFailure now ALSO allowlists app-act, but
+    // ONLY behind trustedNativeLowRiskAction's narrow registration-time
+    // consent gate (autonomous + on-device tool + matching recipe id) — the
+    // SAME gate draft/notify's native fast-path already required. Assert the
+    // widened allowlist exists, and that it stays gated (not a blanket
+    // unattended-allow).
+    expect(executorSrc).toMatch(/if \(actionType !== 'draft' && actionType !== 'notify' && actionType !== 'app-act'\) \{/);
+    expect(executorSrc).toContain("if (!trustedNativeLowRiskAction(args, plan, actionType)) {");
+    expect(executorSrc).toContain("trusted-app-act-recipe-id");
   });
 });

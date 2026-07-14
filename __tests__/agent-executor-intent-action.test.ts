@@ -53,9 +53,8 @@ describe('generateRunScript — intent action (launch)', () => {
     const intentCase = s.slice(s.indexOf('\n    intent)'), s.indexOf('\n    *)', s.indexOf('\n    intent)')));
     expect(intentCase).toContain('[ "${AGENT_AUTONOMOUS:-0}" = "1" ]');
     expect(intentCase).toContain('Intent actions require an attended Review.');
-    expect(intentCase).toContain('write_action_approval_request "intent" "$preview" "$result_file"');
-    expect(intentCase).toContain('wait_action_approval "intent" || return 1');
-    expect(intentCase.indexOf('AGENT_AUTONOMOUS')).toBeLessThan(intentCase.indexOf('write_action_approval_request'));
+    expect(intentCase).toContain('request_and_wait_approval "intent" "$preview" "$result_file" || return 1');
+    expect(intentCase.indexOf('AGENT_AUTONOMOUS')).toBeLessThan(intentCase.indexOf('request_and_wait_approval'));
     // No broker/native dispatch call after approval — the side effect already
     // happened natively before the accept reply was written.
     expect(intentCase).not.toContain('cap_workspace_exec');

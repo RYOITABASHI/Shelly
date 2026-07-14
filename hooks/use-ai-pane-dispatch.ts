@@ -44,7 +44,7 @@ import type { ToolChoice } from '@/store/types';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
-import { shouldUseChatConfirm, summarizeAgentDraftAsText } from '@/lib/agent-plan-summary';
+import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
@@ -316,8 +316,9 @@ export function useAIPaneDispatch(paneId: string) {
             // multi-step chains from Phase 4) is UNCHANGED and still uses the
             // card. See lib/agent-plan-summary.ts's shouldUseChatConfirm.
             const useChatConfirm = shouldUseChatConfirm(draft);
+            const draftMessageId = generateId();
             store.addMessage(paneId, {
-              id: generateId(),
+              id: draftMessageId,
               role: 'assistant',
               content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
               timestamp: Date.now(),
@@ -326,6 +327,26 @@ export function useAIPaneDispatch(paneId: string) {
               agentCardState: 'pending',
               agentChatConfirm: useChatConfirm,
             });
+            // Project owner directive 2026-07-14: "デフォは承認なしな。任意で確認"
+            // (default is no-approval, confirmation optional) — the EXISTING
+            // AgentConfirmCard's mandatory Confirm tap becomes skippable by
+            // default. Scope: ONLY the non-chat-confirm (AgentConfirmCard-
+            // eligible) path — app-act/tool-pinned drafts (useChatConfirm) are
+            // a SEPARATE, already-merged (#135) chat-native flow this task
+            // must not touch. The hard "never register an agent that will
+            // never fire" requirement is NOT an approval-frequency knob (see
+            // hasFireableSchedule's own doc comment) — a draft that still
+            // needs a schedule restated always keeps the pending card
+            // regardless of this setting. draftToConfirmedAgentDraft mirrors
+            // AgentConfirmCard's own unedited-default Confirm exactly (same
+            // helper the chat-native flow already reuses for app-act/
+            // tool-pinned), so auto-registering here can never disagree with
+            // what tapping Confirm on the card would have produced.
+            const requireRegistrationConfirm =
+              useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
+            if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
+              await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
+            }
             return;
           } else if (agentResult.type === 'run') {
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand);

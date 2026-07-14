@@ -50,6 +50,23 @@ export function hasFireableSchedule(draft: ParsedAgentDraft): boolean {
 }
 
 /**
+ * Project owner directive 2026-07-14 ("デフォは承認なしな。任意で確認" —
+ * default is no-approval, confirmation optional): true when a draft that
+ * still uses AgentConfirmCard (never called for the chat-native app-act/
+ * tool-pinned flow — see shouldUseChatConfirm, an entirely separate,
+ * already-merged (#135) surface this function must not affect) should be
+ * registered IMMEDIATELY with no human Confirm tap, because the global/
+ * per-registration "no approval" default is in effect. Mirrors
+ * hasFireableSchedule's own hard requirement: a draft whose schedule still
+ * needs to be restated is NEVER auto-registered, regardless of
+ * requireRegistrationConfirm — "never register an agent that will never
+ * fire" is a content classifier, not an approval-frequency knob.
+ */
+export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistrationConfirm: boolean): boolean {
+  return !requireRegistrationConfirm && hasFireableSchedule(draft);
+}
+
+/**
  * true when this draft should use the chat-native confirm affordance instead of
  * AgentConfirmCard: an app-act action (the explicit example the project owner
  * named), or a multi-step orchestration where at least one step pins a concrete

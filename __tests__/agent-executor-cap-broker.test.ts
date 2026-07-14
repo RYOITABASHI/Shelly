@@ -82,8 +82,7 @@ describe('capability broker wiring — scoped.fs and workspace.exec seams (FS/EX
       ...agent({ type: 'local' }, false),
       action: { type: 'cli', command: 'printf ok' },
     } as Agent);
-    expect(s).toContain('write_action_approval_request "cli" "$preview" "$result_file"');
-    expect(s).toContain('wait_action_approval "cli" || return 1');
+    expect(s).toContain('request_and_wait_approval "cli" "$preview" "$result_file" || return 1');
     expect(s).toContain('if [ "${SHELLY_CAP_EXEC:-0}" = "1" ] && [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then');
     expect(s).toContain('cap_workspace_exec "$ACTION_COMMAND" "$CLI_EXEC_CWD" "$cli_output" "$cli_error"');
     expect(s).toContain('--op workspace.exec --command-file "$command_file" --cwd "$cwd"');

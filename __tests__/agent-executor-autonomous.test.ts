@@ -211,7 +211,7 @@ describe('N2 — autonomous agents auto-approve the draft→vault save', () => {
     expect(s).toContain('AGENT_AUTONOMOUS=1');
     // The approval request/wait for a draft is now behind the non-autonomous gate.
     expect(s).toContain('if [ "${AGENT_AUTONOMOUS:-0}" != "1" ]; then');
-    expect(s).toContain('wait_action_approval "draft"');
+    expect(s).toContain('request_and_wait_approval "draft" "$preview" "$result_file" || return 1');
   });
 
   it('a manual (non-autonomous) agent still requires the draft confirm card', () => {
@@ -632,16 +632,14 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     const notify = generateRunScript(notifyAgent);
     expect(notify).toContain("ACTION_TYPE='notify'");
     expect(notify).toContain('native-result-notification.json');
-    expect(notify).toContain('write_action_approval_request "notify" "$preview" "$result_file"');
-    expect(notify).toContain('wait_action_approval "notify" || return 1');
+    expect(notify).toContain('request_and_wait_approval "notify" "$preview" "$result_file" || return 1');
     expect(notify).toContain('write_native_notification_request "success" "$preview"');
 
     const webhook = generateRunScript(webhookAgent);
     expect(webhook).toContain("ACTION_TYPE='webhook'");
     expect(webhook).toContain("ACTION_WEBHOOK_URL='https://example.com/hook'");
     expect(webhook).toContain('Webhook action requires an https URL.');
-    expect(webhook).toContain('write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload"');
-    expect(webhook).toContain('wait_action_approval "webhook" || return 1');
+    expect(webhook).toContain('request_and_wait_approval "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" || return 1');
     expect(webhook).toContain('http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload"');
     expect(webhook).toContain('write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true');
 
@@ -649,8 +647,7 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(cli).toContain("ACTION_TYPE='cli'");
     expect(cli).toContain("ACTION_COMMAND='rm -rf ~/tmp/example'");
     expect(cli).toContain("ACTION_COMMAND_SAFETY_LEVEL='HIGH'");
-    expect(cli).toContain('write_action_approval_request "cli" "$preview" "$result_file"');
-    expect(cli).toContain('wait_action_approval "cli" || return 1');
+    expect(cli).toContain('request_and_wait_approval "cli" "$preview" "$result_file" || return 1');
     expect(cli).toContain('cap_workspace_exec "$ACTION_COMMAND" "$CLI_EXEC_CWD" "$cli_output" "$cli_error"');
     expect(cli).toContain('bash -lc "$command_text" > "$out_file" 2>&1');
     expect(cli).not.toContain('eval "$ACTION_COMMAND"');

@@ -457,6 +457,30 @@ export type AppSettings = {
    * PTY-state auto-detection.
    */
   showVimKeyBar?: boolean;
+  // ─── Approval defaults (project owner directive 2026-07-14) ─────────────────
+  /** Registration confirm for NL-self-registered agents that still use
+   *  AgentConfirmCard (non-app-act, non-tool-pinned drafts — see
+   *  lib/agent-plan-summary.ts's shouldUseChatConfirm for the chat-native
+   *  drafts this does NOT apply to). Default false = auto-register the
+   *  parsed draft immediately (no human tap) whenever it already has a
+   *  fireable schedule; a draft that still needs a schedule restated always
+   *  surfaces the card regardless of this setting ("never register an agent
+   *  that will never fire" is not an approval-frequency knob). true = restore
+   *  today's mandatory Confirm tap. */
+  agentRegistrationRequireConfirm?: boolean;
+  /** Runtime per-action "Runtime Review" approval tap (draft/notify/webhook/
+   *  cli/intent/dm-reply — see wait_action_approval in lib/agent-executor.ts
+   *  and scripts/shelly-plan-executor.js). Default false = auto-approve, no
+   *  human tap required. true = restore today's mandatory-approval flow.
+   *  Per-agent Agent.requireActionApproval overrides this when set.
+   *  Does NOT affect app-act, which has its own narrower Tier-B trust gate
+   *  (autonomous + on-device tool only, see AgentActionType's doc comment) —
+   *  intentionally not unified with this blanket switch because a wrong
+   *  external post is not equivalent in risk to a local draft or CLI call.
+   *  Does NOT relax command-safety CRITICAL / secret-scan / workspace-root
+   *  gates, which are hard content/action classifiers independent of any
+   *  approval-frequency setting. */
+  defaultRequireActionApproval?: boolean;
   /** UI visual preset. Legacy ids remain accepted for existing installs. */
   uiFont?:
     | 'blue'
@@ -514,6 +538,19 @@ export type ToolChoice =
  * `appActParams`) is fixed and explicitly consented to once at registration time,
  * and remains visible in the Sidebar for the lifetime of the agent — there is no
  * run-time target resolution step that could diverge from what the user approved.
+ *
+ * Implemented gate (2026-07-14, see docs/superpowers/DEFERRED.md's now-resolved
+ * "app-act Tier-B" entry): the unattended-allow ONLY fires when the SAME
+ * registration-time consent already gates draft/notify's native fast-path —
+ * `Agent.autonomous === true` AND `Agent.tool.type === 'local'` (the existing
+ * "Phase 0 canary only trusts deterministic local unattended effects" boundary
+ * in AgentRuntime.kt's trustedPlanLaunch / lib/agent-executor.ts's
+ * ACTION_APP_ACT_AUTO_FIRE_TRUSTED). This is a NARROWER gate than
+ * AppSettings.defaultRequireActionApproval/Agent.requireActionApproval
+ * (which only ever affect draft/notify/webhook/cli/intent/dm-reply) — flipping
+ * the global "no approval tap" default does NOT by itself unlock unattended
+ * app-act; only the pre-existing autonomous+local consent does, because a
+ * wrong external post is not equivalent in risk to a local draft or CLI call.
  */
 export type AgentActionType =
   | 'draft'
@@ -622,6 +659,11 @@ export interface Agent {
   /** true = runs in autonomous mode (no per-step human approval): OAuth/local only,
    *  gated by the policy engine. Optional; absent/false = today's manual behaviour. */
   autonomous?: boolean;
+  /** Per-agent override of AppSettings.defaultRequireActionApproval. Absent =
+   *  inherit the global default (false = auto-approve). true = this agent's
+   *  runtime actions always require the manual "Runtime Review" tap regardless
+   *  of the global default. Does not affect app-act's separate Tier-B gate. */
+  requireActionApproval?: boolean;
   /** autonomy level for autonomous runs: L1 read-only / L2 workspace / L3 full.
    *  Set by the human (ConfigTUI); absent = L2 default. The B2 driver builds the
    *  AutonomyPolicy from this and holds it driver-side — never passed to codex. */
