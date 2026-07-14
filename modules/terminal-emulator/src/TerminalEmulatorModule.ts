@@ -180,7 +180,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
     preview?: string | null;
     destinationHost?: string | null;
     command?: string | null;
@@ -197,12 +197,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
+    appActRecipeId?: string | null;
+    appActParamsResolved?: string | null;
     actionNonce?: string | null;
   }>;
   notifyAgentActionApprovalNeeded?(request: {
     runId: string;
     agentId?: string | null;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
     preview?: string | null;
     destinationHost?: string | null;
     command?: string | null;
@@ -218,6 +220,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
+    appActRecipeId?: string | null;
+    appActParamsResolved?: string | null;
   }): Promise<void>;
   resolveAgentActionApproval?(
     runId: string,
@@ -227,6 +231,15 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
   fireAgentIntent?(mode: 'launch' | 'share', target: string, shareText?: string | null): Promise<void>;
+  /** Agent action executor (app-act phase): fires a registered app-action
+   *  recipe (e.g. 'x.post', 'line.send-message') with `params` resolved
+   *  against the run result, via ShellyAccessibilityService/AppActExecutor.
+   *  Never called with an un-reviewed request -- the approval tier for
+   *  "app-act" requires in-app Review before Accept, same as
+   *  fireAgentIntent. Throws if the Accessibility Service isn't connected or
+   *  the recipe run fails, so the caller can resolve the pending approval as
+   *  'decline' on any throw (fail-closed). */
+  fireAgentAppAct?(recipeId: string, params: Record<string, string>): Promise<void>;
   /** app.act Milestone 0 (dev-only debug scaffold, docs/superpowers/specs/
    *  2026-07-11-app-act-design.md §6): types `text` into LINE's message
    *  field and taps send, against whatever conversation is currently

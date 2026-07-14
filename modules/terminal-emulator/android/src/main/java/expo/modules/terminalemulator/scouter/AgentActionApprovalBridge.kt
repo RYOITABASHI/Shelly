@@ -32,7 +32,9 @@ data class AgentActionApprovalRequest(
     val intentShareText: String? = null,
     val dmPairingId: String? = null,
     val dmPairingLabel: String? = null,
-    val dmReplyText: String? = null
+    val dmReplyText: String? = null,
+    val appActRecipeId: String? = null,
+    val appActParamsResolved: String? = null
 ) {
     val key: String get() = listOf(
         runId,
@@ -132,12 +134,14 @@ object AgentActionApprovalBridge {
         "dmPairingId" to request.dmPairingId,
         "dmPairingLabel" to request.dmPairingLabel,
         "dmReplyText" to request.dmReplyText,
+        "appActRecipeId" to request.appActRecipeId,
+        "appActParamsResolved" to request.appActParamsResolved,
     )
 
     private fun fromJson(raw: JSONObject, requestSha256: String?): AgentActionApprovalRequest? {
         val runId = raw.optString("runId").trim().takeIf { it.isNotBlank() } ?: return null
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,
@@ -160,7 +164,9 @@ object AgentActionApprovalBridge {
             intentShareText = raw.optString("intentShareText").takeIf { it.isNotBlank() },
             dmPairingId = raw.optString("dmPairingId").trim().takeIf { it.isNotBlank() },
             dmPairingLabel = raw.optString("dmPairingLabel").trim().takeIf { it.isNotBlank() },
-            dmReplyText = raw.optString("dmReplyText").takeIf { it.isNotBlank() }
+            dmReplyText = raw.optString("dmReplyText").takeIf { it.isNotBlank() },
+            appActRecipeId = raw.optString("appActRecipeId").trim().takeIf { it.isNotBlank() },
+            appActParamsResolved = raw.optString("appActParamsResolved").takeIf { it.isNotBlank() }
         )
     }
 
