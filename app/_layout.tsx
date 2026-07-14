@@ -950,7 +950,21 @@ export default function RootLayout() {
       if (!runId) return;
       try {
         const request = await readActionApprovalRequest(runId);
-        if (!request || (request.actionType !== 'cli' && request.actionType !== 'intent' && request.actionType !== 'dm-reply')) {
+        // app-act joined the review-required bucket (never one-tap from the
+        // notification shade) alongside cli/intent/dm-reply back when it was
+        // added to dispatch_agent_action, but this allowlist -- the deep-link
+        // handler for the notification's own Confirm/Deny buttons -- was
+        // never updated to match: every app-act review notification tap hit
+        // "not ready" unconditionally, regardless of timing (found via
+        // on-device testing 2026-07-15, misdiagnosed at first as an approval
+        // timeout since the symptom looked identical).
+        if (
+          !request ||
+          (request.actionType !== 'cli' &&
+            request.actionType !== 'intent' &&
+            request.actionType !== 'dm-reply' &&
+            request.actionType !== 'app-act')
+        ) {
           Alert.alert(t('agent_action_confirm_not_ready'));
           return;
         }
