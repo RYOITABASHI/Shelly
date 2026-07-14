@@ -1720,6 +1720,10 @@ const ja: Record<string, string> = {
   'agent_action_confirm_appact_recipe': 'アプリ操作',
   'agent_action_confirm_appact_preview': '投稿内容プレビュー',
   'agent_action_confirm_appact_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
+  'agent_action_confirm_webhook_host': '送信先ホスト',
+  'agent_action_confirm_webhook_known_host': '既知のホスト — Settingsで確認済みです。今回の承認も引き続き必要です。',
+  'agent_action_confirm_webhook_new_host': '新しいホスト — 信頼済みリストにありません。承認前に十分確認してください。',
+  'agent_action_confirm_webhook_preview': 'ペイロードのプレビュー（先頭500文字）',
 };
 
 export default ja;

@@ -161,7 +161,11 @@ class NotificationDispatcher(private val context: Context) {
                 "webhook" -> listOfNotNull(
                     engineLine,
                     actionPhrase,
-                    context.getString(R.string.scouter_notification_agent_action_webhook_host, request.destinationHost ?: "unknown"),
+                   context.getString(R.string.scouter_notification_agent_action_webhook_host, request.destinationHost ?: "unknown"),
+                   context.getString(
+                       if (request.destinationHostAllowlisted) R.string.scouter_notification_agent_action_webhook_known_host
+                       else R.string.scouter_notification_agent_action_webhook_new_host
+                   ),
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                     request.payloadPath?.let { context.getString(R.string.scouter_notification_agent_action_payload, it.redactForScouter()) },
                 ).joinToString("\n")

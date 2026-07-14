@@ -53,6 +53,8 @@
   <string name="scouter_notification_agent_result_unavailable">「%1$s」: 接続先が一時的に混雑（次回の予定で再試行します）</string>
   <string name="scouter_notification_agent_result_no_preview">プレビューなし</string>
   <string name="scouter_notification_agent_action_webhook_host">送信先: %1$s</string>
+  <string name="scouter_notification_agent_action_webhook_known_host">既知のホスト — Settingsで確認済みです。今回の承認も引き続き必要です。</string>
+  <string name="scouter_notification_agent_action_webhook_new_host">新しいホスト — 信頼済みリストにありません。承認前に十分確認してください。</string>
   <string name="scouter_notification_agent_action_payload">ペイロード: %1$s</string>
   <string name="scouter_notification_agent_action_safety">安全度: %1$s</string>
   <string name="scouter_notification_agent_action_reason">理由: %1$s</string>

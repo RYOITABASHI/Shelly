@@ -1721,6 +1721,10 @@ const en: Record<string, string> = {
   'agent_action_confirm_appact_recipe': 'App action',
   'agent_action_confirm_appact_preview': 'Content preview',
   'agent_action_confirm_appact_failed': 'Failed to run the app action. The request was declined.',
+  'agent_action_confirm_webhook_host': 'Destination host',
+  'agent_action_confirm_webhook_known_host': 'Known host — previously vetted in Settings. Approval is still required.',
+  'agent_action_confirm_webhook_new_host': 'New host — not in your trusted-host list. Review carefully before approving.',
+  'agent_action_confirm_webhook_preview': 'Payload preview (first 500 characters)',
 };
 
 export default en;
