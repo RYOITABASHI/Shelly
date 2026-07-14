@@ -394,6 +394,9 @@ export type AppSettings = {
    *  'escalate' (default) climbs to Codex; 'stop' halts at the free tier and
    *  reports exhaustion instead of consuming Codex / paid quota. */
   autonomousCloudOnExhaustion?: 'escalate' | 'stop';
+  /** Webhook destination hosts the user has previously vetted. Informational
+   *  only: membership never bypasses the per-request human approval gate. */
+  webhookHostAllowlist?: string[];
   // ─── Agent output destination (where saved drafts land) ─────────────────────
   /** Where an agent's saved draft is written. 'local' (default) → a clean,
    *  findable local folder ($HOME/agent-output); 'obsidian' → the configured
