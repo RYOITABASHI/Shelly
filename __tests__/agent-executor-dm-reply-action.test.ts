@@ -25,6 +25,19 @@ describe('legacy executor dm-reply action', () => {
     expect(script).toContain('wait_action_approval "dm-reply"');
   });
 
+  it('rejects autonomous execution before requesting attended Review approval', () => {
+    const dmCase = script.slice(script.indexOf('\n    dm-reply)'), script.indexOf('\n    *)', script.indexOf('\n    dm-reply)')));
+    expect(dmCase).toContain('[ "${AGENT_AUTONOMOUS:-0}" = "1" ]');
+    expect(dmCase).toContain('DM-reply actions require an attended Review.');
+    expect(dmCase).toContain('write_action_approval_request "dm-reply" "$preview" "$result_file"');
+    expect(dmCase).toContain('wait_action_approval "dm-reply" || return 1');
+    expect(dmCase.indexOf('AGENT_AUTONOMOUS')).toBeLessThan(dmCase.indexOf('write_action_approval_request'));
+    // No broker/native dispatch call after approval — RN sends natively before
+    // the accept reply is published.
+    expect(dmCase).not.toContain('cap_workspace_exec');
+    expect(dmCase).not.toContain('http_post_json');
+  });
+
   it('fails closed for absent, revoked, and unverifiable pairings', () => {
     expect(script).toContain('DM-reply target is no longer paired.');
     expect(script).toContain('Could not verify the DM-reply pairing.');
