@@ -11,8 +11,30 @@
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { parseSchedule } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
+import en from './i18n/locales/en';
+import ja from './i18n/locales/ja';
 
 export type SlotField = 'schedule' | 'notificationTrigger' | 'outputPath';
+
+/**
+ * Per-message language detection for slot-fill questions — deliberately NOT
+ * the app-wide Settings > Language toggle (that governs static UI chrome;
+ * see lib/i18n's useI18n store). A user should get slot-fill follow-ups in
+ * whatever language THEY just wrote in, not whatever the global toggle
+ * happens to be set to (2026-07-09 feedback: a user whose Language setting
+ * was EN, but who always writes agent requests in Japanese, correctly
+ * started getting English questions once these were routed through the
+ * global i18n system — this per-message detector replaces that global
+ * lookup for slot-fill specifically). Same coarse heuristic already used
+ * throughout agent-nl-parser.ts's JP-detection regexes (Hiragana/Katakana/
+ * CJK ideograph presence) rather than full language identification — this
+ * only needs to distinguish JA from EN for a bilingual app.
+ */
+export function detectMessageLocale(text: string): 'en' | 'ja' {
+  // Hiragana (U+3040-U+309F), Katakana (U+30A0-U+30FF), CJK Unified
+  // Ideographs (U+4E00-U+9FFF).
+  return /[぀-ヿ一-鿿]/.test(text) ? 'ja' : 'en';
+}
 
 export interface SlotFillContext {
   /** From useSettingsStore().settings — if either is already configured, the
@@ -50,22 +72,28 @@ export function nextMissingSlot(
   draft: ParsedAgentDraft,
   ctx: SlotFillContext,
 ): { field: SlotField; question: string } | null {
+  // Detected once from the ORIGINAL utterance (draft.rawText, which
+  // applySlotAnswer never overwrites), not re-detected per follow-up answer
+  // — keeps a whole slot-fill conversation in one consistent language even
+  // if a later reply happens to be a bare number/package name with no
+  // language-identifying characters of its own.
+  const strings = detectMessageLocale(draft.rawText) === 'ja' ? ja : en;
   if (!draft.scheduleConfident) {
     return {
       field: 'schedule',
-      question: 'いつ実行しますか？（例: 「毎日8時」「3時間おきに」「月・金の9時に」）',
+      question: strings['slot_fill.question_schedule'],
     };
   }
   if (needsNotificationTrigger(draft)) {
     return {
       field: 'notificationTrigger',
-      question: 'どのアプリの通知が来たら実行しますか？（例: com.whatsapp や Slack のように、アプリ名かパッケージ名で教えてください）',
+      question: strings['slot_fill.question_notification_trigger'],
     };
   }
   if (draft.action.type === 'draft' && !ctx.agentVaultPath && !ctx.agentTopicFolder) {
     return {
       field: 'outputPath',
-      question: '結果はどこに保存しますか？（未設定の場合はShelly内の既定フォルダを使います。特に希望が無ければ「そのままでいい」と答えてください）',
+      question: strings['slot_fill.question_output_path'],
     };
   }
   return null;

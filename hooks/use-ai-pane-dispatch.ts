@@ -45,7 +45,9 @@ import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
-import { nextMissingSlot, applySlotAnswer, isCancelPhrase } from '@/lib/agent-slot-fill';
+import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
+import en from '@/lib/i18n/locales/en';
+import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
@@ -272,10 +274,16 @@ export function useAIPaneDispatch(paneId: string) {
           timestamp: Date.now(),
         });
         if (isCancelPhrase(userText)) {
+          // Same source as nextMissingSlot's language detection (the
+          // ORIGINAL utterance, not the cancel word itself, which is often
+          // a short token like "cancel" with no language-identifying
+          // characters of its own) — keeps the whole slot-fill exchange in
+          // one consistent language.
+          const cancelStrings = detectMessageLocale(partialDraft.rawText) === 'ja' ? ja : en;
           store.addMessage(paneId, {
             id: generateId(),
             role: 'assistant',
-            content: '登録をキャンセルしました。',
+            content: cancelStrings['slot_fill.cancelled'],
             timestamp: Date.now(),
           });
           return;

@@ -3,6 +3,7 @@ import {
   nextMissingSlot,
   applySlotAnswer,
   isCancelPhrase,
+  detectMessageLocale,
 } from '@/lib/agent-slot-fill';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 
@@ -185,5 +186,43 @@ describe('isCancelPhrase', () => {
 
   it('does NOT match a longer message that merely contains "cancel" as a substring', () => {
     expect(isCancelPhrase('please cancel my subscription reminder agent')).toBe(false);
+  });
+});
+
+describe('detectMessageLocale', () => {
+  it('detects ja from Hiragana/Katakana/CJK-ideograph presence', () => {
+    expect(detectMessageLocale('毎日8時にニュースをまとめて')).toBe('ja');
+    expect(detectMessageLocale('レポート作成')).toBe('ja');
+  });
+
+  it('detects en for ASCII-only text', () => {
+    expect(detectMessageLocale('summarize the news every day at 8am')).toBe('en');
+    expect(detectMessageLocale('123')).toBe('en');
+  });
+});
+
+describe('nextMissingSlot — question language follows the ORIGINAL utterance, not any global setting', () => {
+  it('asks in Japanese for a Japanese-language draft', () => {
+    const d = makeDraft({ scheduleConfident: false, rawText: 'ニュースをまとめて', prompt: 'ニュースをまとめて' });
+    const missing = nextMissingSlot(d, {});
+    expect(missing?.field).toBe('schedule');
+    expect(missing?.question).toMatch(/[ぁ-んァ-ヶ一-龯]/);
+  });
+
+  it('asks in English for an English-language draft', () => {
+    const d = makeDraft({ scheduleConfident: false, rawText: 'summarize the news', prompt: 'summarize the news' });
+    const missing = nextMissingSlot(d, {});
+    expect(missing?.field).toBe('schedule');
+    expect(missing?.question).not.toMatch(/[ぁ-んァ-ヶ一-龯]/);
+  });
+
+  it('a later English answer to a Japanese-opened conversation does not itself change the question language (attemptCount retry stays on rawText)', () => {
+    // rawText is fixed at the original utterance throughout a slot-fill
+    // conversation — applySlotAnswer never overwrites it — so re-asking
+    // after a failed attempt must stay in the language the conversation
+    // started in, even if the user's retry reply happens to be in English.
+    const d = makeDraft({ scheduleConfident: false, rawText: '毎日レポートを作って', prompt: 'レポートを作って' });
+    const missing = nextMissingSlot(d, {});
+    expect(missing?.question).toMatch(/[ぁ-んァ-ヶ一-龯]/);
   });
 });
