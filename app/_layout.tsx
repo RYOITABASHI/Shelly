@@ -127,6 +127,17 @@ type AgentActionApprovalRequest = {
   appActRecipeId?: string | null;
   appActParamsResolved?: string | null;
   actionNonce?: string | null;
+  /** Project owner directive 2026-07-14: the executor resolved the global/
+   *  per-agent runtime-approval default to 'auto' for this request. Only
+   *  meaningful for intent/dm-reply here (the only two types that still
+   *  always reach this bridge regardless of mode) — see
+   *  autoResolveActionApproval below. */
+  autoAccept?: boolean;
+  /** app-act's own narrower Tier-B trust flag — consumed exclusively by
+   *  native (AgentRuntime.kt); JS never acts on it, to keep exactly one
+   *  actor per action type. Present here only so the type mirrors the wire
+   *  shape; do not add JS-side handling for it. */
+  autoFireTrusted?: boolean;
 };
 
 /** Renders the FULLY resolved (post-{{result}}-substitution, post-redaction)
@@ -871,6 +882,12 @@ export default function RootLayout() {
         // resolvePendingAgentActionApproval treats a missing nonce as "not
         // ready" rather than silently skipping the replay check.
         actionNonce: str('actionNonce') || null,
+        // 2026-07-14: accepts a real JSON boolean (Node executor) or the
+        // string "true"/"false" the .sh executor emits via bash printf —
+        // never "1"/"0" (both executors were updated to avoid that shape
+        // specifically so this parses identically either way).
+        autoAccept: value.autoAccept === true || value.autoAccept === 'true',
+        autoFireTrusted: value.autoFireTrusted === true || value.autoFireTrusted === 'true',
       };
     };
 
@@ -1477,6 +1494,67 @@ export default function RootLayout() {
       }
     };
 
+    // Project owner directive 2026-07-14: intent/dm-reply can ONLY ever fire
+    // via RN (fireAgentIntent/sendPairedDmReply — there is no native-only
+    // path, unlike app-act's Tier-B auto-fire in AgentRuntime.kt), and they
+    // stay attended-only (the .sh/.js executors' hard unattended refusal for
+    // both is UNCHANGED by this directive). So when the executor flags a
+    // request autoAccept (the global/per-agent runtime-approval default
+    // resolved to 'auto'), this resolves it itself — mints the same read-time
+    // nonce the human Review flow uses (readAgentActionApprovalRequest), fires
+    // natively, then accepts — instead of ever posting the Review
+    // notification. Deliberately a STANDALONE function (not a refactor of
+    // resolvePendingAgentActionApproval) to avoid any risk of regressing that
+    // already-hardened (nonce/requestSha256, PR #125) human-tap flow. Returns
+    // true iff it fully handled the request (whether by accepting or, on a
+    // fire failure, declining) — false means the caller should fall back to
+    // the normal Review notification. app-act is deliberately excluded here:
+    // its own narrower Tier-B trust gate (autoFireTrusted) is handled
+    // EXCLUSIVELY by native, so there is exactly one actor per action type,
+    // never a race between JS and native for the same request.
+    const autoResolveActionApproval = async (parsed: AgentActionApprovalRequest): Promise<boolean> => {
+      if (parsed.actionType !== 'intent' && parsed.actionType !== 'dm-reply') return false;
+      if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
+      try {
+        const minted = parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest(parsed.runId));
+        const requestSha256 = minted?.requestSha256;
+        const actionNonce = minted?.actionNonce;
+        if (!minted || !requestSha256 || !actionNonce) return false;
+        if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
+        if (minted.actionType === 'intent') {
+          if (!TerminalEmulator.fireAgentIntent) return false;
+          try {
+            await fireReviewedAgentIntent(minted, TerminalEmulator.fireAgentIntent);
+          } catch (e) {
+            // Mirrors resolvePendingAgentActionApproval's own catch: log only
+            // the error class/type (message may embed intent content), fail
+            // closed (decline) rather than leaving the executor to time out.
+            const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
+            logError('AgentActionApproval', `auto-accept fireAgentIntent failed: ${errorKind}`);
+            await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
+            return true;
+          }
+        } else {
+          let sent = false;
+          try {
+            sent = await TerminalEmulator.sendPairedDmReply(minted.dmPairingId ?? '', minted.dmReplyText ?? '');
+          } catch (e) {
+            logError('AgentActionApproval', 'auto-accept sendPairedDmReply failed', e);
+          }
+          if (!sent) {
+            await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
+            return true;
+          }
+        }
+        await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'accept', requestSha256, actionNonce);
+        logInfo('AgentActionApproval', `auto-accepted run=${minted.runId} action=${minted.actionType}`);
+        return true;
+      } catch (e) {
+        logError('AgentActionApproval', `auto-accept failed run=${parsed.runId}`, e);
+        return false;
+      }
+    };
+
     const drainAgentActionApprovalRequests = async () => {
       if (
         isDrainingActionApprovals ||
@@ -1513,6 +1591,10 @@ export default function RootLayout() {
           activeKeys.add(key);
           activeRunIds.add(parsed.runId);
           if (notifiedActionApprovals.has(key)) continue;
+          if (parsed.autoAccept && (await autoResolveActionApproval(parsed))) {
+            rememberActionApproval(key, parsed);
+            continue;
+          }
           await TerminalEmulator.notifyAgentActionApprovalNeeded(parsed);
           rememberActionApproval(key, parsed);
           logInfo('AgentActionApproval', `approval notification posted run=${parsed.runId} action=${parsed.actionType}`);

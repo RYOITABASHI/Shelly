@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import expo.modules.terminalemulator.scouter.AgentEscalationBridge
 import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
+import expo.modules.terminalemulator.scouter.AgentActionApprovalRequest
 import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import org.json.JSONObject
 import java.io.File
@@ -34,7 +35,15 @@ object AgentRuntime {
 
     private data class TrustedPlanLaunch(
         val actionType: String,
-        val toolType: String
+        val toolType: String,
+        /** app-act only (2026-07-14 Tier-B resolution): the recipe id read
+         *  from the SAME freshly re-read persisted agent.json this trust
+         *  decision is based on, threaded through --trusted-app-act-recipe-id
+         *  so scripts/shelly-plan-executor.js's trustedNativeLowRiskAction can
+         *  verify the plan it's about to run still references the SAME
+         *  recipe — defense-in-depth against the plan diverging from what was
+         *  actually consented to at registration time. */
+        val appActRecipeId: String? = null
     )
 
     fun runAgent(
@@ -325,6 +334,10 @@ object AgentRuntime {
                 append(shellQuote(trustedLaunch.actionType))
                 append(" --trusted-tool-type ")
                 append(shellQuote(trustedLaunch.toolType))
+                if (trustedLaunch.appActRecipeId != null) {
+                    append(" --trusted-app-act-recipe-id ")
+                    append(shellQuote(trustedLaunch.appActRecipeId))
+                }
             }
         }
 
@@ -407,9 +420,21 @@ object AgentRuntime {
                             ?: return@forEach
                         val expiresAt = request.expiresAt
                         if (expiresAt != null && now > expiresAt) return@forEach
-                        if (seen.add(request.key)) {
-                            dispatcher.notifyAgentActionApprovalNeeded(request)
+                        if (!seen.add(request.key)) return@forEach
+                        // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md,
+                        // resolved 2026-07-14): a request the executor itself marked
+                        // autoFireTrusted (agent.autonomous===true && tool.type==='local',
+                        // verified again here against the recipe fingerprint) is fired
+                        // and resolved RIGHT HERE, natively — no human tap, no RN round
+                        // trip, so it works whether or not the JS bridge is alive
+                        // (unattended scheduled runs). Every other action type/trust
+                        // state is unchanged: falls through to the normal
+                        // notifyAgentActionApprovalNeeded review/notification flow.
+                        if (request.actionType == "app-act" && request.autoFireTrusted) {
+                            fireTrustedAppActAndReply(appContext, request)
+                            return@forEach
                         }
+                        dispatcher.notifyAgentActionApprovalNeeded(request)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "agent action approval notifier iteration failed", e)
@@ -424,6 +449,81 @@ object AgentRuntime {
             name = "ShellyAgentActionApprovalNotifier"
             isDaemon = true
             start()
+        }
+    }
+
+    /**
+     * app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
+     * 2026-07-14). Fires [request]'s recipe directly via [AppActExecutor] —
+     * the SAME native call TerminalEmulatorModule's `fireAgentAppAct`
+     * AsyncFunction makes for the attended/human-tap path, just invoked
+     * synchronously from this native thread instead of from RN — then
+     * publishes the accept/decline reply via
+     * [AgentActionApprovalBridge.writeAutoApprovedReply], mirroring RN's own
+     * "fire, THEN reply" invariant (resolvePendingAgentActionApproval in
+     * app/_layout.tsx) so wait_action_approval/requestActionApproval's
+     * existing poll-for-reply contract needs no changes for either executor.
+     * Fails CLOSED (writes a decline reply) on any error — accessibility
+     * service not connected, recipe execution failure, or a malformed
+     * params blob — exactly like RN's catch block does for a failed
+     * fireAgentAppAct call, rather than leaving the run to time out.
+     */
+    private fun fireTrustedAppActAndReply(context: Context, request: AgentActionApprovalRequest) {
+        val requestSha256 = request.requestSha256
+        if (requestSha256.isNullOrBlank()) {
+            Log.w(TAG, "trusted app-act auto-fire: request ${request.runId} has no requestSha256, skipping")
+            return
+        }
+        val recipeId = request.appActRecipeId?.trim().orEmpty()
+        var success = false
+        try {
+            val service = ShellyAccessibilityService.activeInstance
+            if (service == null) {
+                Log.w(TAG, "trusted app-act auto-fire: accessibility service not connected, declining ${request.runId}")
+            } else if (recipeId.isEmpty()) {
+                Log.w(TAG, "trusted app-act auto-fire: request ${request.runId} has no recipe id, declining")
+            } else {
+                val params = parseAppActParamsResolved(request.appActParamsResolved)
+                val result = AppActExecutor.execute(service, context.applicationContext, recipeId, params)
+                success = result.success
+                // Never log param VALUES or the failure message (may echo on-screen
+                // text via diagnoseCurrentScreen) — recipeId + success only, matching
+                // fireAgentAppAct's own logging convention.
+                Log.i(TAG, "trusted app-act auto-fire: recipeId=$recipeId success=$success runId=${request.runId}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "trusted app-act auto-fire threw for ${request.runId}", e)
+        }
+        try {
+            AgentActionApprovalBridge.writeAutoApprovedReply(
+                context,
+                request.runId,
+                if (success) "accept" else "decline",
+                requestSha256
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "trusted app-act auto-fire: failed to publish reply for ${request.runId}", e)
+        }
+    }
+
+    /** Parses the flat string-map JSON `appActParamsResolved` field (see
+     *  write_action_approval_request / requestActionApproval) into the
+     *  Map<String, String> [AppActExecutor.execute] expects. Malformed/empty
+     *  input yields an empty map (AppActExecutor's own required-param check
+     *  then fails the recipe closed, same as a missing param from RN). */
+    private fun parseAppActParamsResolved(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
+            val json = JSONObject(raw)
+            val out = mutableMapOf<String, String>()
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                out[key] = json.optString(key, "")
+            }
+            out
+        } catch (e: Exception) {
+            emptyMap()
         }
     }
 
@@ -511,11 +611,17 @@ object AgentRuntime {
             val json = JSONObject(agentFile.readText())
             if (json.optString("id") != agentId) return null
             if (!json.optBoolean("autonomous", false)) return null
-            val actionType = json.optJSONObject("action")
+            val actionJson = json.optJSONObject("action")
+            val actionType = actionJson
                 ?.optString("type")
                 ?.takeIf { it.isNotBlank() }
                 ?: "draft"
-            if (actionType != "draft" && actionType != "notify") return null
+            // app-act (2026-07-14, docs/superpowers/DEFERRED.md's "app-act
+            // Tier-B" entry, resolved): the SAME registration-time consent
+            // draft/notify's fast-path already required now ALSO covers
+            // app-act — no separate opt-in UI needed, the existing Autonomous
+            // toggle + on-device tool IS the consent.
+            if (actionType != "draft" && actionType != "notify" && actionType != "app-act") return null
             val toolType = json.optJSONObject("tool")
                 ?.optString("type")
                 ?.takeIf { it.isNotBlank() }
@@ -524,7 +630,10 @@ object AgentRuntime {
             // Cloud/web/auto routes stay manual-gated until PlanSpec integrity is
             // signed or native can recompute the full TS route decision.
             if (toolType != "local") return null
-            TrustedPlanLaunch(actionType = actionType, toolType = toolType)
+            val appActRecipeId = if (actionType == "app-act") {
+                actionJson?.optString("appActRecipeId")?.takeIf { it.isNotBlank() } ?: return null
+            } else null
+            TrustedPlanLaunch(actionType = actionType, toolType = toolType, appActRecipeId = appActRecipeId)
         } catch (e: Exception) {
             Log.w(TAG, "Unable to read trusted PlanSpec launch state for $agentId", e)
             null

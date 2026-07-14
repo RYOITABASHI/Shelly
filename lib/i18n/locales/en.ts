@@ -1247,6 +1247,12 @@ const en: Record<string, string> = {
   'sidebar.agent_manual': 'manual',
   'sidebar.agent_autonomous': 'autonomous',
   'sidebar.agent_paused': 'paused',
+  // Project owner directive 2026-07-14: runtime approval defaults to OFF —
+  // this agent's EFFECTIVE approval mode (per-agent override, else the
+  // global default) must stay visible even though the mandatory-tap gate
+  // itself was removed.
+  'sidebar.agent_approval_auto': 'no-approval',
+  'sidebar.agent_approval_manual': 'approval required',
   'sidebar.agent_last': 'Last',
   'sidebar.agent_next_run': 'Next run',
   'sidebar.agent_last_run': 'Last run',

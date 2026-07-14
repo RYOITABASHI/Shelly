@@ -1246,6 +1246,10 @@ const ja: Record<string, string> = {
   'sidebar.agent_manual': '手動',
   'sidebar.agent_autonomous': '自律',
   'sidebar.agent_paused': '一時停止中',
+  // 2026-07-14: 実行時承認はデフォルトOFF — このエージェントの実効モード
+  // （個別指定 or グローバル既定）は可視のまま保つ。
+  'sidebar.agent_approval_auto': '承認なし',
+  'sidebar.agent_approval_manual': '承認必須',
   'sidebar.agent_last': '直近',
   'sidebar.agent_next_run': '次回実行',
   'sidebar.agent_last_run': '前回実行',
