@@ -81,6 +81,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gpuRendering: false,
   uiFont: 'blue',
   showVimKeyBar: false,
+  // Project owner directive 2026-07-14: default is no-approval, confirmation
+  // optional ("デフォは承認なしな。任意で確認"). Both default to false/off.
+  agentRegistrationRequireConfirm: false,
+  defaultRequireActionApproval: false,
 };
 
 const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];
@@ -258,6 +262,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       if ('autonomousCloudOnExhaustion' in newSettings) {
         envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD_STOP', newSettings.autonomousCloudOnExhaustion === 'stop' ? '1' : '0']);
+      }
+      // Global runtime-approval default (project owner directive 2026-07-14).
+      // Synced to .env so the PlanSpec (Node) executor's parseConfigEnv sees it;
+      // the legacy .sh executor instead bakes the per-agent-resolved value
+      // directly into ACTION_APPROVAL_MODE at script-generation time (see
+      // generateRunScript in lib/agent-executor.ts) since that script has
+      // direct access to the live Agent object and settings snapshot already.
+      if ('defaultRequireActionApproval' in newSettings) {
+        envUpdates.push(['SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL', newSettings.defaultRequireActionApproval ? '1' : '0']);
       }
       if ('agentOutputTarget' in newSettings && typeof newSettings.agentOutputTarget === 'string') {
         envUpdates.push(['SHELLY_AGENT_OUTPUT_TARGET', newSettings.agentOutputTarget]);

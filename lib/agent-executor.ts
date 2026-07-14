@@ -9,6 +9,7 @@ import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-poli
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
+import { useSettingsStore } from '@/store/settings-store';
 
 const MAX_CONCURRENT = 2;
 
@@ -241,6 +242,34 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionAppActParamsJson = actionType === 'app-act' ? JSON.stringify(agent.action?.appActParams ?? {}) : '{}';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
+  // Project owner directive 2026-07-14: runtime per-action "Runtime Review"
+  // approval defaults to OFF (no human tap) — draft/notify/webhook/cli skip
+  // the write+wait round trip entirely when 'auto' (see dispatch_agent_action);
+  // intent/dm-reply still always write+wait (they can only ever fire via RN,
+  // and are already attended-only — see their own unattended hard-refusals
+  // below) but are flagged auto-accept so RN resolves them without a human
+  // tap. Per-agent Agent.requireActionApproval overrides the global default.
+  // This does NOT relax command-safety CRITICAL / secret-scan / workspace-root
+  // gates (lib/command-safety.ts, lib/redact-secrets.ts, realpathWithMissingTail)
+  // — those are hard content/action classifiers, not approval-frequency knobs,
+  // and nothing here touches them.
+  const globalRequireActionApproval = useSettingsStore.getState().settings.defaultRequireActionApproval === true;
+  const requireActionApproval = agent.requireActionApproval ?? globalRequireActionApproval;
+  const actionApprovalMode = requireActionApproval ? 'manual' : 'auto';
+  // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
+  // 2026-07-14): deliberately NOT governed by actionApprovalMode above — a
+  // wrong external post is not equivalent in risk to a local draft/CLI call,
+  // so it needs the SAME narrow registration-time consent draft/notify's
+  // existing native fast-path already requires (autonomous + on-device tool
+  // only; see AgentRuntime.kt's trustedPlanLaunch and the AgentActionType doc
+  // comment in store/types.ts), not the blanket approval-frequency setting.
+  // Baked as a constant here (not re-derived at run time) because this exact
+  // .sh file is regenerated only through the trusted authoring path (create/
+  // update agent) — a scheduled/unattended fire re-executes this file
+  // unchanged, so whatever was true when it was last written IS "unchanged
+  // since registration".
+  const actionAppActAutoFireTrusted = agent.autonomous === true && tool.type === 'local';
+
   // North Star fix: a web-research / collection agent otherwise receives the bare
   // task utterance as a single user message with no output contract, so the backend
   // DESCRIBES a workflow instead of EXECUTING the collection — it returns a design
@@ -361,6 +390,8 @@ ACTION_APP_ACT_PARAMS_JSON=${shellQuote(actionAppActParamsJson)}
 ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
 ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
+ACTION_APPROVAL_MODE=${shellQuote(actionApprovalMode)}
+ACTION_APP_ACT_AUTO_FIRE_TRUSTED=${actionAppActAutoFireTrusted ? '1' : '0'}
 ACTION_NOTIFY_FILE="$LOG_DIR/native-result-notification.json"
 ACTION_APPROVAL_DIR="$HOME/.shelly/agents/action-approvals"
 ACTION_APPROVAL_REPLY_DIR="$HOME/.shelly/agents/action-approval-replies"
@@ -884,12 +915,48 @@ write_action_approval_request() {
   app_act_params_resolved_json=$(json_escape_text "$app_act_params_resolved")
   ts_seconds=$(date +%s)
   expires_at=$(( (ts_seconds + ACTION_APPROVAL_TIMEOUT_SECONDS) * 1000 ))
+  # auto_accept (project owner directive 2026-07-14): tells RN it may resolve
+  # this request itself, no human tap, when the global/per-agent approval-mode
+  # default is 'auto'. Only meaningful for intent/dm-reply (the only two types
+  # that still always reach here regardless of mode — see dispatch_agent_action)
+  # — harmless/unused for every other type.
+  auto_accept_flag=$([ "$ACTION_APPROVAL_MODE" != "manual" ] && printf '1' || printf '0')
+  # auto_fire_trusted: app-act's OWN narrower Tier-B gate (see
+  # ACTION_APP_ACT_AUTO_FIRE_TRUSTED above) — deliberately independent of
+  # auto_accept_flag/ACTION_APPROVAL_MODE. Native's action-approval notifier
+  # (AgentRuntime.kt) only acts on this for actionType=="app-act".
+  auto_fire_trusted_flag=$([ "$ACTION_APP_ACT_AUTO_FIRE_TRUSTED" = "1" ] && printf '1' || printf '0')
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","autoAccept":"$auto_accept_flag","autoFireTrusted":"$auto_fire_trusted_flag","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
+}
+
+# Project owner directive 2026-07-14: wraps write_action_approval_request +
+# wait_action_approval so draft/notify/webhook/cli can skip the round trip
+# ENTIRELY when the approval-mode default is 'auto' — no request file is ever
+# written, so there is nothing for a background/asleep JS bridge to wait on
+# (unattended scheduled runs must not depend on JS being alive to proceed).
+# intent/dm-reply/app-act are excluded from the skip (they only ever fire via
+# RN/native — see dispatch_agent_action's own comments on each) and always go
+# through the full write+wait; auto-approval for THOSE happens via the
+# autoAccept/autoFireTrusted flags above instead, consumed by RN/native.
+request_and_wait_approval() {
+  approval_type="$1"
+  preview="$2"
+  result_file="$3"
+  destination_host="\${4:-}"
+  payload_path="\${5:-}"
+  if [ "$ACTION_APPROVAL_MODE" != "manual" ]; then
+    case "$approval_type" in
+      intent|dm-reply|app-act) ;;
+      *) return 0 ;;
+    esac
+  fi
+  write_action_approval_request "$approval_type" "$preview" "$result_file" "$destination_host" "$payload_path"
+  wait_action_approval "$approval_type"
 }
 
 wait_action_approval() {
@@ -1035,8 +1102,7 @@ dispatch_agent_action() {
       # and secret-guard has already forced the run on-device, so nothing leaves
       # the device unapproved. Manual (@agent) runs keep the confirm card.
       if [ "\${AGENT_AUTONOMOUS:-0}" != "1" ]; then
-        write_action_approval_request "draft" "$preview" "$result_file"
-        wait_action_approval "draft" || return 1
+        request_and_wait_approval "draft" "$preview" "$result_file" || return 1
       fi
       save_draft_result "$result_file"
       # Post ONE readable completion card after the draft is saved, so the run
@@ -1048,8 +1114,7 @@ dispatch_agent_action() {
       return 0
       ;;
     notify)
-      write_action_approval_request "notify" "$preview" "$result_file"
-      wait_action_approval "notify" || return 1
+      request_and_wait_approval "notify" "$preview" "$result_file" || return 1
       write_native_notification_request "success" "$preview"
       return 0
       ;;
@@ -1079,8 +1144,7 @@ dispatch_agent_action() {
       webhook_response="$LOG_DIR/webhook-response-$(date +%s).txt"
       webhook_error="$LOG_DIR/webhook-error-$(date +%s).txt"
       write_webhook_payload "$webhook_payload" "success" "$preview" "$result_file"
-      write_action_approval_request "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload"
-      wait_action_approval "webhook" || return 1
+      request_and_wait_approval "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" || return 1
       set +e
       SHELLY_CAP_APPROVED=1 HTTP_TIMEOUT_SECONDS="\${WEBHOOK_TIMEOUT_SECONDS:-30}" http_post_json "$ACTION_WEBHOOK_URL" "$webhook_payload" "$webhook_response" "$webhook_error"
       webhook_rc=$?
@@ -1107,8 +1171,7 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
-      write_action_approval_request "cli" "$preview" "$result_file"
-      wait_action_approval "cli" || return 1
+      request_and_wait_approval "cli" "$preview" "$result_file" || return 1
       cli_output="$LOG_DIR/cli-action-output-$(date +%s).txt"
       cli_error="$LOG_DIR/cli-action-error-$(date +%s).txt"
       CLI_EXEC_CWD="\${SHELLY_AGENT_EXEC_CWD:-$PROJECT_DIR}"
@@ -1172,8 +1235,7 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
-      write_action_approval_request "intent" "$preview" "$result_file"
-      wait_action_approval "intent" || return 1
+      request_and_wait_approval "intent" "$preview" "$result_file" || return 1
       # No broker/native call here (unlike webhook/cli): RN already fired the
       # intent NATIVELY (fireAgentIntent) BEFORE writing the accept reply that
       # wait_action_approval just observed. Nothing left to execute.
@@ -1217,25 +1279,32 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
-      write_action_approval_request "dm-reply" "$preview" "$result_file"
-      wait_action_approval "dm-reply" || return 1
+      request_and_wait_approval "dm-reply" "$preview" "$result_file" || return 1
       # RN sends natively before publishing the accept reply. There is no
       # post-approval broker or shell side effect here.
       ACTION_DISPATCH_MESSAGE="DM reply sent."
       return 0
       ;;
     app-act)
-      # Phase 4: app-act is the first agent action that can publish content to
-      # an external, human-facing surface (e.g. a public X post) rather than a
+      # app-act is the first agent action that can publish content to an
+      # external, human-facing surface (e.g. a public X post) rather than a
       # private draft/notification. store/types.ts documents app-act as
-      # ultimately Tier-B/unattended-capable (its recipe+target+params are
-      # fixed and consented to once at registration time, unlike intent/
-      # dm-reply's runtime-resolved targets) -- but THIS phase deliberately
-      # keeps it behind an attended Review, matching intent/dm-reply's refusal
-      # shape exactly, as an interim conservative default. Do not read this as
-      # an oversight to "fix" by widening it; a later phase revisits the
-      # unattended case explicitly (see docs/superpowers/DEFERRED.md).
-      if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
+      # Tier-B/unattended-capable (its recipe+target+params are fixed and
+      # consented to once at registration time, unlike intent/dm-reply's
+      # runtime-resolved targets) -- resolved 2026-07-14 per
+      # docs/superpowers/DEFERRED.md's design: the unattended-allow is gated
+      # SOLELY on ACTION_APP_ACT_AUTO_FIRE_TRUSTED (agent.autonomous===true
+      # AND tool.type==='local', baked at script-generation time — see
+      # generateRunScript), the SAME registration-time consent draft/notify's
+      # existing native fast-path already requires. It is NOT governed by
+      # ACTION_APPROVAL_MODE (the blanket approval-tap default) — a wrong
+      # external post is not equivalent in risk to a local draft/CLI call, so
+      # flipping the global "skip the tap" setting alone must never unlock
+      # this. When trusted, native (AgentRuntime.kt's action-approval
+      # notifier) fires AppActExecutor directly and writes an auto reply, so
+      # this still goes through the ordinary write+wait below — only WHO
+      # resolves the approval changes, not whether one is required.
+      if { [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; } && [ "$ACTION_APP_ACT_AUTO_FIRE_TRUSTED" != "1" ]; then
         ACTION_DISPATCH_STATUS="skipped"
         ACTION_DISPATCH_MESSAGE="App-action actions require an attended Review."
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
@@ -1254,12 +1323,13 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
-      write_action_approval_request "app-act" "$preview" "$result_file"
-      wait_action_approval "app-act" || return 1
-      # No broker/native call here (mirrors intent/dm-reply): RN already fired
-      # the recipe NATIVELY (fireAgentAppAct, driving ShellyAccessibilityService
-      # via AppActExecutor) BEFORE writing the accept reply that
-      # wait_action_approval just observed. Nothing left to execute.
+      request_and_wait_approval "app-act" "$preview" "$result_file" || return 1
+      # No broker/native call here (mirrors intent/dm-reply): RN or, for a
+      # trusted unattended fire, native itself already fired the recipe
+      # (fireAgentAppAct / AgentActionApprovalBridge's auto-fire, driving
+      # ShellyAccessibilityService via AppActExecutor) BEFORE writing the
+      # accept reply that wait_action_approval just observed. Nothing left
+      # to execute.
       ACTION_DISPATCH_MESSAGE="App action fired: $ACTION_APP_ACT_RECIPE_ID"
       return 0
       ;;
