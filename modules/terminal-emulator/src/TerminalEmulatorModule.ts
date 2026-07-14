@@ -227,6 +227,35 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
   fireAgentIntent?(mode: 'launch' | 'share', target: string, shareText?: string | null): Promise<void>;
+  /** app.act Milestone 0 (dev-only debug scaffold, docs/superpowers/specs/
+   *  2026-07-11-app-act-design.md §6): types `text` into LINE's message
+   *  field and taps send, against whatever conversation is currently
+   *  foregrounded via ShellyAccessibilityService. `message` is always a
+   *  specific reason (success or the exact precondition that failed). */
+  debugAppActSendLineMessage?(text: string): Promise<{ success: boolean; message: string }>;
+  /** app.act Milestone 0, X (Twitter) variant — same shape as
+   *  debugAppActSendLineMessage, targets X's compose screen instead. */
+  debugAppActPostToX?(text: string): Promise<{ success: boolean; message: string }>;
+  /** app.act Track 1 (navigation, dev-only debug scaffold, docs/superpowers/
+   *  specs/2026-07-11-app-act-design.md §2.1/§6): navigates to `targetName`'s
+   *  LINE conversation via LINE's search screen (requiring an EXACT,
+   *  non-fuzzy single text match — fails closed on zero or multiple
+   *  matches), then types `text` into the message field and taps send.
+   *  Unlike debugAppActSendLineMessage, does NOT require the conversation
+   *  to already be open. */
+  debugAppActSendLineMessageToContact?(
+    targetName: string,
+    text: string
+  ): Promise<{ success: boolean; message: string }>;
+  /** Native primitive for LockPromptActivity's lock-screen bridge
+   *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
+   *  device is already unlocked, resolves true immediately with no UI. If
+   *  locked, wakes the screen and shows a prompt over the keyguard asking
+   *  the user to unlock via the OS's own PIN/pattern/biometric challenge
+   *  (Shelly never sees the credential), then resolves true iff they
+   *  succeed before the internal timeout. Not wired into any RN UI in this
+   *  pass — for on-device testing of the primitive itself. */
+  debugTestLockPrompt?(): Promise<boolean>;
   returnToHome?(): Promise<void>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
