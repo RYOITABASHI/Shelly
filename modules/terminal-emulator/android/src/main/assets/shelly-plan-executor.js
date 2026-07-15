@@ -241,6 +241,35 @@ function previewText(text) {
   return redact(String(text || '')).replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
+// Detect a response that echoes the step-prompt scaffold back verbatim (see
+// buildStepPrompt, lib/agent-orchestration.ts) or is refusal boilerplate,
+// rather than real content — the on-device failure mode found 2026-07-15 (a
+// small local model echoing its own prompt + refusing on an x.post step,
+// which then reached the user's confirm card as if it were real post
+// content). Mirrors isLowQualityCompletion in lib/agent-escalation-ladder.ts
+// (the canonical, unit-tested JS implementation) and is_low_quality_completion
+// in the legacy .sh executor (lib/agent-executor.ts's generated script) — all
+// three copies must stay in sync. Checked BEFORE any action that publishes
+// outside the run's own log (webhook/dm-reply/app-act) in dispatchActionTrusted
+// below, so a bad completion never reaches the human-facing approval card in
+// the first place. Runs against the whitespace-collapsed `preview` (see
+// previewText above), matching what the .sh path checks (clean_result_preview
+// already tr's newlines to spaces there too).
+const PROMPT_ECHO_MARKERS = [/#\s*Results from previous steps/, /#\s*This step\b/];
+const REFUSAL_PATTERNS = [
+  /\bas an ai\b/i,
+  /\bi cannot generate\b/i,
+  /\bi'm (?:not able|unable) to\b/i,
+  /私は\s*ai\s*(なので|として)/i,
+  /(生成|投稿)できません/,
+];
+
+function isLowQualityCompletion(text) {
+  if (typeof text !== 'string' || !text) return false;
+  if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
+  return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 function resolveCharLimit(plan) {
   const raw = plan && plan.limits ? plan.limits.charLimit : undefined;
   if (raw === undefined || raw === null) return 0;
@@ -1388,6 +1417,11 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
+      if (isLowQualityCompletion(preview)) {
+        const message = 'Webhook payload looks like a prompt echo or AI refusal, not real content — escalating.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
       const payloadFile = path.join(paths.logDir, `webhook-payload-${Date.now()}.json`);
       writeWebhookPayload(payloadFile, plan, 'success', preview, resultText);
       maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
@@ -1498,6 +1532,11 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
+      if (isLowQualityCompletion(preview)) {
+        const message = 'DM-reply content looks like a prompt echo or AI refusal, not real content — escalating.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
       const dmReplyText = String(plan.action.dmReplyText || '').split('{{result}}').join(preview);
       maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         dmPairingId,
@@ -1527,6 +1566,11 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       const resolvedParams = resolveAppActParams(plan.action.appActParams, preview);
       if (Object.keys(resolvedParams).length === 0) {
         const message = 'App-action is missing its recipe parameters.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (isLowQualityCompletion(preview)) {
+        const message = 'App-action content looks like a prompt echo or AI refusal, not real content — escalating.';
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
@@ -1757,4 +1801,9 @@ module.exports = {
   trustedNativeLowRiskAction,
   unattendedPreflightFailure,
   requireActionApprovalTap,
+  // 2026-07-15 quality gate (prompt-echo/refusal detection before
+  // webhook/dm-reply/app-act dispatch) — exported for host unit tests only,
+  // same convention as the exports above. See isLowQualityCompletion's doc
+  // comment near previewText for the three-copy sync requirement.
+  isLowQualityCompletion,
 };

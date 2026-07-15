@@ -696,6 +696,44 @@ NODEEOF
   rm -f "$tmp_in" "$tmp_resolved"
 }
 
+# Detect a response that echoes the step-prompt scaffold back verbatim (see
+# buildStepPrompt, lib/agent-orchestration.ts) or is refusal boilerplate,
+# rather than real content — the exact on-device failure mode found
+# 2026-07-15 (a small local model echoing its own prompt + refusing on an
+# x.post step, which then reached the user's confirm card as if it were real
+# post content). Checked BEFORE any action that publishes outside the run's
+# own log (app-act/webhook/dm-reply) so a bad completion never reaches a
+# human-facing surface in the first place — this is a stronger, EARLIER gate
+# than isLowQualityCompletion in lib/agent-escalation-ladder.ts (the JS copy
+# is the unit-tested source of truth; this shell copy exists only because
+# the pre-dispatch check has to happen here, before request_and_wait_approval,
+# not after the run log is read back on the JS side).
+is_low_quality_completion() {
+  text="$1"
+  if node_usable; then
+    if SHELLY_QUALITY_CHECK_TEXT="$text" shelly_node -e '
+const text = process.env.SHELLY_QUALITY_CHECK_TEXT || "";
+const echoPatterns = [/#\\s*Results from previous steps/, /#\\s*This step\\b/];
+const refusalPatterns = [
+  /\\bas an ai\\b/i,
+  /\\bi cannot generate\\b/i,
+  /\\bi\\x27m (?:not able|unable) to\\b/i,
+  /私は\\s*ai\\s*(なので|として)/i,
+  /(生成|投稿)できません/,
+];
+const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text));
+process.exit(bad ? 0 : 1);
+' 2>/dev/null; then
+      return 0
+    fi
+    return 1
+  fi
+  # No node: coarse ASCII-only fallback — still catches the exact prompt-echo
+  # markers (the failure mode actually observed on-device), misses the JA
+  # refusal phrasing.
+  printf '%s' "$text" | grep -Eqi '# ?Results from previous steps|# ?This step|as an ai|i cannot generate'
+}
+
 # Strip the autonomous driver's structured telemetry (AUDIT/GATE/protocol/STDERR/
 # escalation) from a result file so the user-facing preview shows real content,
 # never the internal driver_start JSON. Backends that write a plain answer
@@ -1181,6 +1219,12 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
+      if is_low_quality_completion "$preview"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Webhook payload looks like a prompt echo or AI refusal, not real content — escalating."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       webhook_payload="$LOG_DIR/webhook-payload-$(date +%s).json"
       webhook_response="$LOG_DIR/webhook-response-$(date +%s).txt"
       webhook_error="$LOG_DIR/webhook-error-$(date +%s).txt"
@@ -1322,6 +1366,12 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
+      if is_low_quality_completion "$preview"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="DM-reply content looks like a prompt echo or AI refusal, not real content — escalating."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       request_and_wait_approval "dm-reply" "$preview" "$result_file" || return 1
       # RN sends natively before publishing the accept reply. There is no
       # post-approval broker or shell side effect here.
@@ -1365,6 +1415,12 @@ dispatch_agent_action() {
       if [ -z "$app_act_params_check" ] || [ "$app_act_params_check" = "{}" ]; then
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="App-action is missing its recipe parameters."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if is_low_quality_completion "$preview"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="App-action content looks like a prompt echo or AI refusal, not real content — escalating."
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi

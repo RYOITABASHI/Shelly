@@ -2,6 +2,7 @@ import {
   resolveEscalationLadder,
   attemptFailed,
   isLocalFallbackDigest,
+  isLowQualityCompletion,
   LadderEnv,
 } from '@/lib/agent-escalation-ladder';
 import { Agent, ToolChoice } from '@/store/types';
@@ -241,5 +242,46 @@ describe('failure detection', () => {
     // 'unavailable' still escalates the ladder (try the next tool) even though it
     // is excluded from the circuit breaker.
     expect(attemptFailed('unavailable', 'a real answer')).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches a real on-device prompt-echo failure (regression)', () => {
+    // Verbatim (trimmed) shape of what a weak on-device model produced for an
+    // orchestrated x.post step on 2026-07-15: it echoed the buildStepPrompt
+    // scaffold back instead of answering it, then refused.
+    const echoed =
+      '# Results from previous steps\n## Step 1\nパープレで STEAM 教育×AI に関する最新の論文やニュースを検索して\n\n' +
+      '## Step 2\nローカル LLM で一次ソースと要約を Obsidian の「日付フォルダ」に保存する。\n\n---\n\n' +
+      '# This step\nX 用に文字数内で再要約して X に投稿して\n\n---\n\n**Note:** This action requires generating ' +
+      'text within a word limit (typically ~1000 characters) for X\'s submission. As an AI, I cannot generate a ' +
+      'literal "X" post with a';
+    expect(isLowQualityCompletion(echoed)).toBe(true);
+    expect(attemptFailed('success', echoed)).toBe(true);
+  });
+
+  it('isLowQualityCompletion still catches the echo after whitespace-collapse (regression)', () => {
+    // clean_result_preview() in the shell (lib/agent-executor.ts) runs
+    // `tr '\n' ' '` on the run preview before anything sees it — a literal
+    // '\n' in a marker can never match the real preview shape. This is
+    // what an actual whitespace-collapsed on-device preview looks like.
+    const collapsed =
+      '# Results from previous steps ## Step 1 パープレで検索して ## Step 2 保存する。 --- ' +
+      '# This step X用に再要約して投稿して --- Note: As an AI, I cannot generate a literal X post with a';
+    expect(isLowQualityCompletion(collapsed)).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches a bare refusal with no prompt echo', () => {
+    expect(isLowQualityCompletion('As an AI, I cannot generate a literal social media post.')).toBe(true);
+    expect(isLowQualityCompletion('私はAIなので、実際の投稿はできません。')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does not flag real content', () => {
+    expect(isLowQualityCompletion('STEAM教育×AI の最新動向まとめ: 論文3件、ニュース2件を要約しました。')).toBe(false);
+    expect(isLowQualityCompletion('This step forward for AI in education looks promising.')).toBe(false);
+    expect(isLowQualityCompletion(null)).toBe(false);
+    expect(isLowQualityCompletion('')).toBe(false);
+  });
+
+  it('attemptFailed does not flag a normal successful completion', () => {
+    expect(attemptFailed('success', 'STEAM教育×AI の最新動向まとめ、Obsidianに保存しました。')).toBe(false);
   });
 });

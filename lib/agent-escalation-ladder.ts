@@ -217,16 +217,66 @@ export function isLocalFallbackDigest(text: string | null | undefined): boolean 
   return typeof text === 'string' && text.includes(LOCAL_FALLBACK_DIGEST_MARKER);
 }
 
+// The step-prompt scaffold (buildStepPrompt, agent-orchestration.ts) always
+// opens a chained step's instruction with these headers. A weak local model
+// sometimes echoes the whole prompt back instead of answering it — observed
+// on-device: Qwen 0.8B/2B regurgitating "# Results from previous steps ...
+// # This step ..." verbatim, then tacking on a refusal. That is never usable
+// content, least of all for a public-posting action type like app-act.
+// Regex (not plain substring) because the shell's clean_result_preview()
+// whitespace-collapses the run preview (tr '\n' ' ') before this ever sees
+// it, so a literal '\n' in a marker would never match a real preview.
+const PROMPT_ECHO_MARKERS = [/#\s*Results from previous steps/, /#\s*This step\b/];
+
+/**
+ * Small-model meta-commentary/refusal phrases: the response talks ABOUT the
+ * task instead of doing it (e.g. "As an AI, I cannot generate a literal
+ * post..."). Matched loosely (EN + JA) since exact phrasing varies by model.
+ */
+const REFUSAL_PATTERNS = [
+  /\bas an ai\b/i,
+  /\bi cannot generate\b/i,
+  /\bi'm (?:not able|unable) to\b/i,
+  /私は\s*ai\s*(なので|として)/i,
+  /(生成|投稿)できません/,
+];
+
+/**
+ * True when a completion is prompt-echo or refusal boilerplate rather than a
+ * real answer — see PROMPT_ECHO_MARKERS / REFUSAL_PATTERNS above. NOTE: this
+ * JS copy is the unit-tested source of truth, but it is a SECONDARY signal —
+ * it only runs after a step's run log is read back, which for a step that
+ * DISPATCHES an action (app-act/webhook/dm-reply) is already after the user
+ * may have seen the confirm card. The primary, EARLIER gate is a hand-synced
+ * shell copy (is_low_quality_completion in lib/agent-executor.ts's generated
+ * script) that runs BEFORE request_and_wait_approval, so a bad completion for
+ * a dispatching action never reaches a human-facing surface at all. This JS
+ * copy still matters for non-dispatching / non-final steps in a chain, where
+ * escalating to the next ladder tool for the NEXT step is the only signal.
+ */
+export function isLowQualityCompletion(text: string | null | undefined): boolean {
+  if (typeof text !== 'string' || !text) return false;
+  if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
+  return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 /**
  * An attempt failed (and should escalate) on a hard 'error', a transient
- * 'unavailable' (HTTP 429/5xx/network after retry), OR a local fallback digest.
- * 'unavailable' still climbs the ladder — a busy web backend should hand off to
- * the next tool — but it is excluded from the circuit breaker (see
- * shouldTripCircuitBreaker): an overloaded upstream is not the agent misbehaving.
+ * 'unavailable' (HTTP 429/5xx/network after retry), a local fallback digest,
+ * OR a low-quality completion (prompt echo / refusal boilerplate — see
+ * isLowQualityCompletion). 'unavailable' still climbs the ladder — a busy web
+ * backend should hand off to the next tool — but it is excluded from the
+ * circuit breaker (see shouldTripCircuitBreaker): an overloaded upstream is
+ * not the agent misbehaving.
  */
 export function attemptFailed(
   status: string | null | undefined,
   preview: string | null | undefined,
 ): boolean {
-  return status === 'error' || status === 'unavailable' || isLocalFallbackDigest(preview);
+  return (
+    status === 'error' ||
+    status === 'unavailable' ||
+    isLocalFallbackDigest(preview) ||
+    isLowQualityCompletion(preview)
+  );
 }
