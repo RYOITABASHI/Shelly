@@ -902,6 +902,8 @@ gemini              # → "Signed in with Google" で対話プロンプト直行
 
 **解決**: `ContextBar.tsx:57` / `Sidebar.tsx:733-763` でpolling頻度・トリガー条件を修正済み。以下は発見時の記録。
 
+**2026-07-15 追記（移植漏れによる同症状の再発、`aae096d60`で解決）**: 上記とは別トリガーの同一症状（Enterの反応が悪い）が再発。原因は `ContextBar.tsx` の git-branch 自動更新が cwd とホームディレクトリを単純な文字列比較しており、Android のパス別名表記（`/data/data/<pkg>` vs `/data/user/0/<pkg>`）の違いで一致判定に失敗、**コマンド送信のたびに不要な `git branch` execCommand が発火**していた。この修正（`5833e225f`、2026-07-08）も `claude/work-handoff-2qb1xd` ブランチに取り残されたまま未移植だった（同夜の壁紙トグル・exec-wrapper errno と同じ移植漏れパターン）。`canonicalizeAndroidDataPath()` で両エイリアスを正規化してから比較するよう修正。
+
 **発見**: 2026-04-20 実機 logcat 解析 (Ctrl+C / Enter の反応が数秒遅延)
 **症状**: Shelly アクティブ中、約 **3 秒ごと** に以下のシーケンスが連発される:
 ```
