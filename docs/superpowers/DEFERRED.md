@@ -1707,6 +1707,19 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
 
+### 📐 ロードマップ方針: API優先・app.actはAndroid固有の正式機能として維持 (2026-07-15)
+
+**背景**: 2026-07-15 の実機テストでapp.act（X投稿UI自動化）が実際に壊れていた（コンポーズ画面遷移ステップ欠落、`x.post.json`修正済み・コミット `14d412c88`）こと、およびロック中は原理的に実行不可能（OSのkeyguard境界、`LockPromptActivity.kt`のコメント参照）と判明したことを受け、Hermes Agent（Nous Research、Android版として比較対象にしているOSSエージェント）との比較調査＋戦略検討を実施。
+
+**結論（プロジェクトオーナー承認済み）**:
+1. **API優先**: 投稿系の実装はAPIが利用可能なプラットフォーム（Discord/Telegram/Slack/Mastodon/Bluesky/WordPress/Misskey は無料・低摩擦、Instagram/Threads/YouTubeはBusiness変換や審査があるが個人利用なら回避可能、X は2026-02からpay-per-use化済み $0.015/投稿）を優先する。note.com・Instagram Stories・Facebook個人タイムライン・LINE個人プロフィール投稿はAPIが存在しない（LINE Notifyは2025-03-31に終了済み）。
+2. **app.actは「弱いフォールバック」ではなく、Android固有の正式機能として維持する**: Hermes Agent自身が`computer-use`スキル（`cua-driver`、accessibility-tree駆動、macOS/Windows/Linux対応）を「Media & Web」カテゴリの正式維持機能として持っており、「APIが無いアプリを動かす」ことを明示目的としている。ただしHermesはデスクトップ専用でモバイル対応が一切無いため、Shellyのapp.act（Android UI自動化）はHermesに対する差別化ポイントになり得る。app.actのメンテナンスを疎かにする（放置されたレシピ、resourceId drift未修正のまま等）のは避けること。
+3. ロック中の実行は原理的に不可能（OS/keyguard境界）なので、UI上で「ロック中は不可・要解除」であることを明示表示する方向で今後UI改善を検討。X用のUIレシピ自体は、API価格が個人利用で現実的（$0.015/投稿）になった今、API経由への切替も将来検討対象。
+
+**根拠となる調査**: 本セッション内でgeneral-purposeエージェント2件（API調査＋戦略提言、Hermes Agent computer-use機能監査）を実施、artifact公開済み（https://claude.ai/code/artifact/e0c31243-1237-4943-ae21-871a21b654ce）。
+
+---
+
 ### GitHub Issues 登録済み
 
 | # | タイトル | Issue | Status |
