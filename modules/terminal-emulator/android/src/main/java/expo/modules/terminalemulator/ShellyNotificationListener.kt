@@ -352,7 +352,14 @@ class ShellyNotificationListener : NotificationListenerService() {
         for (file in files) {
             try {
                 val expectedId = file.name.removeSuffix(".json")
-                val json = JSONObject(file.readText())
+                val text = file.readText()
+                // Non-agent JSON files can legitimately live at this top level (e.g.
+                // dm-pairings.json, a JSON ARRAY mirror written by dm-pairing-store.ts).
+                // Agent cards are always a JSON object, so skip array-shaped files
+                // before attempting JSONObject() — avoids throwing on every single
+                // notification the phone receives while this listener is running.
+                if (text.trimStart().startsWith("[")) continue
+                val json = JSONObject(text)
                 if (json.optString("id") != expectedId) continue
                 if (!json.optBoolean("enabled", false)) continue
                 val packageNames = json.optJSONObject("notificationTrigger")
