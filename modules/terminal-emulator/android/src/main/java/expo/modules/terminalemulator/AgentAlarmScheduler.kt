@@ -35,21 +35,30 @@ object AgentAlarmScheduler {
     private const val PREFS = "shelly_agent_ids"
     private val requestCodeLock = Any()
 
-    // ── L1 BOOT-AUTOSTART (dormant, flag-OFF) ──────────────────────────────────
+    // ── L1 BOOT-AUTOSTART (production-default ON, see P0-2 note below) ─────────
     // AlarmManager alarms are cleared on reboot, so scheduled agents stop firing
     // after a restart. When the boot-autostart flag is enabled, schedule()
     // persists {agentId -> intervalMs|cron} here and BootCompletedReceiver re-arms
-    // them on BOOT_COMPLETED. Default OFF => nothing is persisted and the boot
-    // receiver no-ops, so the live scheduling behavior is byte-preserved.
+    // them on BOOT_COMPLETED.
     private const val BOOT_PREFS = "shelly_boot_autostart"
     private const val BOOT_SCHEDULES = "shelly_boot_schedules"
     private const val BOOT_ENABLED_KEY = "enabled"
+    // P0-2 (2026-07-15): flag default flipped false -> true. 2026-07-13 Batch 10
+    // landed this dormant pending on-device reboot/Doze/One UI verification (see
+    // DEFERRED.md) — the code path was reviewed and believed correct; what was
+    // missing was device confirmation, not a known defect. schedule()/cancel()
+    // already gate their persist/forget calls on bootAutostartEnabled(), so
+    // registering a schedule now always persists it for boot recovery with no
+    // separate step. There is still no production UI setter for this flag by
+    // design (internal rollout gate, not a user-facing toggle); on-device
+    // reboot/Doze/One UI confirmation remains the required follow-up.
     private const val BOOT_FIELD_SEP = "\u0001" // control char, never in a cron string
 
-    /** Native enable flag for boot autostart. Defaults false (dormant). */
+    /** Native enable flag for boot autostart. Defaults true (P0-2: reboot
+     *  persistence is production-default ON; see comment above). */
     fun bootAutostartEnabled(context: Context): Boolean =
         context.getSharedPreferences(BOOT_PREFS, Context.MODE_PRIVATE)
-            .getBoolean(BOOT_ENABLED_KEY, false)
+            .getBoolean(BOOT_ENABLED_KEY, true)
 
     private fun persistScheduleForBoot(context: Context, agentId: String, intervalMs: Long, cron: String?) {
         context.getSharedPreferences(BOOT_SCHEDULES, Context.MODE_PRIVATE)

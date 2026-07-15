@@ -189,6 +189,12 @@ const ja: Record<string, string> = {
   'agents.notification_os_access_not_granted': 'まだ許可されていません。Android の設定を開きます。「通知へのアクセス」で Shelly を有効にしてから戻ってください。',
   'agents.notification_os_access_open_settings': 'OK',
   'agents.notification_os_access_failed': '通知アクセスの確認に失敗しました',
+  // P0-1: 予定されたスケジュール実行が記録されないまま起動時repairが検知した場合に
+  // 表示（Doze / 電池最適化 / OEM 制限 / FGS 起動失敗の可能性）。同じrepairパスの
+  // 再設定試行が実際に成功したかどうかで文言を切り替える（起きていない再設定を主張しない）。
+  'agents.missed_schedule_title': 'スケジュールが実行されませんでした',
+  'agents.missed_schedule_body': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。次回の予定は再設定済みです。',
+  'agents.missed_schedule_body_repair_failed': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。自動での再設定にも失敗しました。エージェントを開いてスケジュールを確認してください。',
 
   // ── エージェント確認/プレビューカード (Phase 0 §2.1) ────────────
   'agentcard.title': 'このエージェントを登録しますか？',
@@ -299,6 +305,25 @@ const ja: Record<string, string> = {
   'agentcard.run_now': '実行',
   'agentcard.confirm': '登録',
   'agentcard.cancel': 'キャンセル',
+
+  // ── スケジュール信頼性チェックリスト (P1 スケジューリング信頼性監査、2026-07-15)
+  // — デバイスで最初にスケジュール実行エージェントを登録したときに一度だけ表示される、
+  // 破棄可能なカード。登録のブロッカーには絶対にしない — このカードが出る時点で
+  // エージェント自体はすでに登録済み。
+  'schedulereadiness.title': 'このスケジュールを確実に動かすには',
+  'schedulereadiness.intro': '一度だけの確認です — このエージェントはすでに登録済みです。以下はAndroidのバッテリー制限からスケジュールを守るための設定です。',
+  'schedulereadiness.exact_alarm_title': '正確なアラームのスケジューリング',
+  'schedulereadiness.exact_alarm_ok': '許可済み — このスケジュールは指定時刻に正確に実行されます。',
+  'schedulereadiness.exact_alarm_missing': '未許可です。バッテリー制限により、このスケジュールが数分〜数時間遅れる可能性があります。',
+  'schedulereadiness.exact_alarm_action': '許可する',
+  'schedulereadiness.battery_title': 'バッテリー最適化の除外',
+  'schedulereadiness.battery_ok': '除外済み — Shelly は必要なときバックグラウンドで動作できます。',
+  'schedulereadiness.battery_missing': '除外されていません。予定された実行が完了する前に、Android が Shelly をバックグラウンドで終了させる可能性があります。',
+  'schedulereadiness.battery_action': '除外する',
+  'schedulereadiness.samsung_title': 'Samsung の「スリープ状態のアプリ」（One UI）',
+  'schedulereadiness.samsung_body': 'Samsung 端末には Android 標準とは別のバッテリー制御があります: 設定 › バッテリーとデバイスケア › バックグラウンド使用の制限。Shelly が「スリープ状態のアプリ」「もっと深いスリープ状態のアプリ」に入っていないか確認してください。「スリープ状態にしないアプリ」のリストがあれば、そこに追加してください。',
+  'schedulereadiness.samsung_action': 'バッテリー設定を開く',
+  'schedulereadiness.dismiss': 'わかりました',
 
   // ── チャット内エージェント確認 (Phase 7) — app-act / ツール指定オーケストレーション向け。
   // カードを出さず、この要約テキスト + 確認/キャンセルの2ボタンのみで登録する。
@@ -1267,6 +1292,10 @@ const ja: Record<string, string> = {
   'sidebar.agent_last_error': '失敗理由',
   'sidebar.agent_never_run': '未実行',
   'sidebar.agent_missed_run': '{{when}} の予定実行が記録されていません — Doze / 電池最適化 / OEM 制限で止められた可能性。電池最適化の除外を確認してください。',
+  // P1-B (2026-07-15 スケジューリング信頼性監査): 正確なアラームの特別アクセス
+  // (SCHEDULE_EXACT_ALARM、Android 12+) は登録後いつでも取り消される可能性がある —
+  // これは登録時の一度きりの readiness ナッジとは別に、その後の取り消しを表示する。
+  'sidebar.agent_exact_alarm_missing': '正確なアラームのスケジューリングが許可されていません — バッテリー制限によりこのスケジュールが遅れる可能性があります。設定で許可してください。',
   'sidebar.agent_route': '実行経路',
   'sidebar.agent_route_guard': '判定ガード',
   'sidebar.agent_route_keyword': 'キーワード',

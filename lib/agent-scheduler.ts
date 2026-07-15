@@ -269,6 +269,43 @@ export function lastTriggerMs(cron: string): number | null {
   return target.getTime();
 }
 
+/** Grace window before a due-but-unrecorded fire counts as "missed" — generous
+ *  enough to absorb a long-running previous run plus normal scheduling jitter,
+ *  not just clock skew. Shared by the Sidebar agent-detail popup (passive
+ *  display, existing) and the app-launch startup repair (active detection +
+ *  notification, P0-1) so the two surfaces can never disagree about what counts
+ *  as "missed". */
+export const MISSED_RUN_GRACE_MS = 5 * 60 * 1000;
+
+export interface MissedScheduleCheck {
+  missed: boolean;
+  /** The most recent past fire time the cron implies, or null if unparseable. */
+  expectedAt: number | null;
+}
+
+/**
+ * Detect a scheduled fire that was due but never recorded a run — the signal
+ * that an AlarmManager alarm was silently dropped (Doze / OEM battery
+ * management / a foreground-service start failure) with no independent repair.
+ * Pass the agent's most recently known COMPLETED-run timestamp as `lastRunAt`
+ * (Agent.lastRun), falling back to `createdAt` for an agent that has never run.
+ * Pure function of its inputs — always recomputes from the cron string rather
+ * than trusting any persisted "next expected" field, so a stale/missing
+ * bookkeeping field can never mask (or fabricate) a missed-run signal.
+ */
+export function isScheduleMissed(
+  schedule: string,
+  lastRunAt: number | null,
+  createdAt: number,
+  now: number = Date.now(),
+  graceMs: number = MISSED_RUN_GRACE_MS
+): MissedScheduleCheck {
+  const expectedAt = lastTriggerMs(schedule);
+  const lastActual = lastRunAt ?? createdAt;
+  const missed = expectedAt != null && expectedAt < now - graceMs && expectedAt > lastActual + graceMs;
+  return { missed, expectedAt };
+}
+
 export async function installSchedule(agent: Agent): Promise<void> {
   if (!agent.schedule) return;
 

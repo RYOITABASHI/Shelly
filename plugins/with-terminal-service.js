@@ -30,8 +30,8 @@
  *   permission may bind", and BIND_NOTIFICATION_LISTENER_SERVICE is a
  *   system-signature permission only the OS holds — this is the standard,
  *   required declaration for a NotificationListenerService.
- * - Registers BootCompletedReceiver (L1 boot-autostart floor, dormant until
- *   the native enable flag is flipped — see AgentAlarmScheduler.kt)
+ * - Registers BootCompletedReceiver (L1 boot-autostart floor; the native
+ *   enable flag now defaults ON in production — see AgentAlarmScheduler.kt)
  */
 const { withAndroidManifest } = require("expo/config-plugins");
 
@@ -93,8 +93,8 @@ function withTerminalService(config) {
       });
     }
 
-    // Register BootCompletedReceiver (L1 boot-autostart floor, dormant/flag-OFF
-    // — see AgentAlarmScheduler.bootAutostartEnabled). exported=true is required
+    // Register BootCompletedReceiver (L1 boot-autostart floor; native flag now
+    // defaults ON — see AgentAlarmScheduler.bootAutostartEnabled). exported=true is required
     // to receive the system BOOT_COMPLETED broadcast. No android:permission
     // attribute: that would require the SENDER (system_server) to hold the
     // named permission, which observably breaks delivery (dumpsys showed

@@ -13,12 +13,13 @@ const withTerminalService = require('../../plugins/with-terminal-service.js');
 
 // Offline gate for a native/Manifest change (mirrors plan-executor-parity): the
 // jest layer can't run the receiver, so it asserts the L1 permission surface is
-// declared and the boot path ships dormant. Real behavior (agent fires after a
-// reboot / survives Doze) is device-verify-only — offline 緑 ≠ 実機緑.
+// declared and the boot path ships production-default ON (P0-2, 2026-07-15).
+// Real behavior (agent fires after a reboot / survives Doze) is
+// device-verify-only — offline 緑 ≠ 実機緑.
 const root = path.resolve(__dirname, '..', '..');
 const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8');
 
-describe('BOOT-AUTOSTART Manifest + native parity (dormant, flag-OFF)', () => {
+describe('BOOT-AUTOSTART Manifest + native parity (production-default ON)', () => {
   const appConfig = read('app.config.ts');
   const manifest = read('android/app/src/main/AndroidManifest.xml');
   const receiver = read(
@@ -31,8 +32,8 @@ describe('BOOT-AUTOSTART Manifest + native parity (dormant, flag-OFF)', () => {
     'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt',
   );
 
-  it('ships dormant on the TS side', () => {
-    expect(BOOT_AUTOSTART_ENABLED).toBe(false);
+  it('ships enabled on the TS side', () => {
+    expect(BOOT_AUTOSTART_ENABLED).toBe(true);
   });
 
   it('declares the two L1 permissions in app.config.ts', () => {
@@ -64,15 +65,15 @@ describe('BOOT-AUTOSTART Manifest + native parity (dormant, flag-OFF)', () => {
     expect(receiverBlock).not.toContain('android:permission');
   });
 
-  it('the boot receiver is flag-gated (no-op when autostart is disabled)', () => {
+  it('the boot receiver is still flag-gated (no-op if a build explicitly disables autostart)', () => {
     expect(receiver).toContain('AgentAlarmScheduler.bootAutostartEnabled(app)');
     expect(receiver).toContain('rearmAllFromPersistedSchedules');
-    // dormant guard: returns before re-arming when disabled
+    // safety-net guard: returns before re-arming if the flag is overridden off
     expect(receiver).toContain('nothing to re-arm');
   });
 
-  it('the scheduler defaults boot autostart OFF and only persists when enabled (byte-preserve)', () => {
-    expect(scheduler).toContain('getBoolean(BOOT_ENABLED_KEY, false)');
+  it('the scheduler defaults boot autostart ON (P0-2) and only persists when enabled', () => {
+    expect(scheduler).toContain('getBoolean(BOOT_ENABLED_KEY, true)');
     expect(scheduler).toContain('if (bootAutostartEnabled(context)) persistScheduleForBoot');
     expect(scheduler).toContain('if (!bootAutostartEnabled(context)) return 0');
   });

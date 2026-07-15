@@ -12,9 +12,10 @@
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-  <!-- L1 boot-autostart (BOOT-AUTOSTART floor, flag-OFF): re-arm scheduled agents
-       after reboot; request Doze exemption so unattended fires survive. Dormant
-       until the BootCompletedReceiver native enable flag is flipped. -->
+  <!-- L1 boot-autostart (BOOT-AUTOSTART floor): re-arm scheduled agents after
+       reboot; request Doze exemption so unattended fires survive. The native
+       enable flag (AgentAlarmScheduler.bootAutostartEnabled) now defaults ON
+       in production; see its Kotlin source for the P0-2 rollout note. -->
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
   <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
   <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>

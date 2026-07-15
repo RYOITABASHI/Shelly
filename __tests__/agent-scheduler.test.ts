@@ -3,7 +3,15 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   default: { scheduleAgent: jest.fn(), cancelAgent: jest.fn() },
 }));
 
-import { parseDowList, parseHourList, cronToIntervalMs, nextTriggerMs, lastTriggerMs } from '@/lib/agent-scheduler';
+import {
+  parseDowList,
+  parseHourList,
+  cronToIntervalMs,
+  nextTriggerMs,
+  lastTriggerMs,
+  isScheduleMissed,
+  MISSED_RUN_GRACE_MS,
+} from '@/lib/agent-scheduler';
 
 describe('parseDowList — cron day-of-week field', () => {
   it('parses a single day, a list, and normalizes Sunday (0 or 7)', () => {
@@ -262,5 +270,61 @@ describe('lastTriggerMs — "daily-multi" (multiple shared-minute hours per day)
   it('after both times → most recent past fire is today 21:00', () => {
     jest.setSystemTime(day(22, 0));
     expect(lastTriggerMs(CRON)).toBe(day(21, 0).getTime());
+  });
+});
+
+describe('isScheduleMissed — P0-1 missed-run detection (shared by Sidebar + startup repair)', () => {
+  const CRON = '0 8 * * *'; // daily 08:00
+  const day = (h: number, m = 0) => new Date(2026, 6, 15, h, m, 0, 0); // Wed 2026-07-15
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('flags a due fire with no run recorded since (well outside the grace window)', () => {
+    jest.setSystemTime(day(9, 0)); // 1h past the 08:00 fire
+    const createdAt = day(8, 0).getTime() - 7 * 24 * 60 * 60 * 1000; // created a week ago
+    const { missed, expectedAt } = isScheduleMissed(CRON, null, createdAt);
+    expect(missed).toBe(true);
+    expect(expectedAt).toBe(day(8, 0).getTime());
+  });
+
+  it('does not flag a run that landed at/after the expected fire', () => {
+    jest.setSystemTime(day(9, 0));
+    const lastRunAt = day(8, 0).getTime(); // ran right on time
+    const { missed } = isScheduleMissed(CRON, lastRunAt, day(7, 0).getTime());
+    expect(missed).toBe(false);
+  });
+
+  it('does not flag while still inside the grace window right after the fire', () => {
+    jest.setSystemTime(day(8, 2)); // 2 minutes past the fire, grace is 5 minutes
+    const { missed } = isScheduleMissed(CRON, null, day(7, 0).getTime());
+    expect(missed).toBe(false);
+  });
+
+  it('flags once the grace window has fully elapsed', () => {
+    jest.setSystemTime(new Date(day(8, 0).getTime() + MISSED_RUN_GRACE_MS + 1_000));
+    const { missed } = isScheduleMissed(CRON, null, day(7, 0).getTime());
+    expect(missed).toBe(true);
+  });
+
+  it('falls back to createdAt when lastRunAt is null (never-run agent)', () => {
+    jest.setSystemTime(day(9, 0));
+    // createdAt itself is recent (inside the grace window relative to the fire) → not missed.
+    const { missed } = isScheduleMissed(CRON, null, day(7, 59).getTime());
+    expect(missed).toBe(false);
+  });
+
+  it('returns expectedAt=null and missed=false for an unparseable cron', () => {
+    const { missed, expectedAt } = isScheduleMissed('not a cron', null, Date.now());
+    expect(missed).toBe(false);
+    expect(expectedAt).toBeNull();
+  });
+
+  it('a custom graceMs narrows or widens the window', () => {
+    jest.setSystemTime(day(8, 10)); // 10 minutes past the fire
+    // Default 5-minute grace: missed.
+    expect(isScheduleMissed(CRON, null, day(7, 0).getTime()).missed).toBe(true);
+    // A 15-minute grace absorbs the same 10-minute gap.
+    expect(isScheduleMissed(CRON, null, day(7, 0).getTime(), Date.now(), 15 * 60 * 1000).missed).toBe(false);
   });
 });

@@ -21,7 +21,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
-import { nextTriggerMs, lastTriggerMs } from '@/lib/agent-scheduler';
+import { nextTriggerMs, isScheduleMissed } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
@@ -641,11 +641,26 @@ export function Sidebar() {
       relLines.push(t('sidebar.agent_never_run'));
     }
     if (agent.schedule && agent.enabled) {
-      const lastExpected = lastTriggerMs(agent.schedule);
       const lastActual = agent.lastRun ?? lastLog?.timestamp ?? agent.createdAt;
-      const GRACE = 5 * 60 * 1000;
-      if (lastExpected != null && lastExpected < Date.now() - GRACE && lastExpected > lastActual + GRACE) {
-        relLines.push(`⚠ ${t('sidebar.agent_missed_run', { when: formatWhen(lastExpected) })}`);
+      const { missed, expectedAt } = isScheduleMissed(agent.schedule, lastActual, agent.createdAt);
+      if (missed && expectedAt != null) {
+        relLines.push(`⚠ ${t('sidebar.agent_missed_run', { when: formatWhen(expectedAt) })}`);
+      }
+    }
+    // P1-B (2026-07-15 scheduling-reliability audit): exact-alarm special
+    // access can be revoked at any time AFTER registration (the user backs
+    // out of the grant in Settings, or an OEM resets it) — surface a LATER
+    // revocation here too, not just the one-time registration-time nudge, so
+    // a silent downgrade to a drifting inexact alarm is never invisible.
+    // Best-effort: a native round-trip failure must not block the popup.
+    if (agent.schedule && agent.enabled) {
+      try {
+        const exactAlarmGranted = await TerminalEmulator.canScheduleExactAlarms();
+        if (!exactAlarmGranted) {
+          relLines.push(`⚠ ${t('sidebar.agent_exact_alarm_missing')}`);
+        }
+      } catch {
+        // ignore — health indicator only, never blocks the detail popup
       }
     }
     const reliability = relLines.join('\n');

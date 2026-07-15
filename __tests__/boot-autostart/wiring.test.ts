@@ -5,8 +5,8 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 
 import { BOOT_AUTOSTART_ENABLED } from '@/lib/boot-autostart';
 
-describe('BOOT-AUTOSTART dormancy', () => {
-  it('ships disabled on the TS side (the native flag is independently default-false)', () => {
-    expect(BOOT_AUTOSTART_ENABLED).toBe(false);
+describe('BOOT-AUTOSTART production default (P0-2)', () => {
+  it('ships enabled on the TS side (the native flag is independently default-true)', () => {
+    expect(BOOT_AUTOSTART_ENABLED).toBe(true);
   });
 });

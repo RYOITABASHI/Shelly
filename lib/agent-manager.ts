@@ -11,7 +11,8 @@ import { resolveEscalationLadder, attemptFailed, isLocalFallbackDigest, LadderEn
 import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
-import { installSchedule, uninstallSchedule } from './agent-scheduler';
+import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed } from './agent-scheduler';
+import { t } from '@/lib/i18n';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import {
   buildRecallContext,
@@ -392,6 +393,16 @@ async function materializeAgentBody(
   const planSpecPath = getPlanSpecPath(agent.id);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
   const planSpec = buildAgentPlanSpec(agentForRun, effectiveRunOpts);
+  // P0-1 reliability: only touch nextExpectedAt when we are ACTUALLY (re-)arming
+  // the alarm below — recomputing it unconditionally (e.g. on a ladder-attempt
+  // materialize with installAlarm=false) would drift it away from what's really
+  // armed. This is an observability/reconciliation field only; the missed-run
+  // DETECTION itself (isScheduleMissed) always recomputes fresh from the cron
+  // string, so a stale value here can never mask or fabricate a notification.
+  const metadataAgent: Agent =
+    installAlarm && agent.schedule
+      ? { ...agent, nextExpectedAt: nextTriggerMs(agent.schedule) }
+      : agent;
   const commands = [
     `mkdir -p ${shellQuote(agentsDir())}`,
     `mkdir -p ${shellQuote(`${agentsDir()}/plans`)}`,
@@ -399,7 +410,7 @@ async function materializeAgentBody(
     `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
-    writeFileCommand(metadataPath, JSON.stringify(agent, null, 2)),
+    writeFileCommand(metadataPath, JSON.stringify(metadataAgent, null, 2)),
     writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
     writeFileCommand(planSpecPath, JSON.stringify(planSpec, null, 2)),
     ...generateInstallCommands(agent),
@@ -408,6 +419,11 @@ async function materializeAgentBody(
   await runCommand(`set -e\n${commands.join('\n')}`);
   if (installAlarm) {
     await installSchedule(agent);
+  }
+  if (metadataAgent !== agent) {
+    // Best-effort mirror into the in-memory store so UI reflecting nextExpectedAt
+    // doesn't need a full disk reload to see the freshly-armed value.
+    useAgentStore.getState().updateAgent(agent.id, { nextExpectedAt: metadataAgent.nextExpectedAt });
   }
 }
 
@@ -1214,6 +1230,45 @@ export async function notifyAgentResult(
   });
 }
 
+/** `expectedAtMs` → "M/D HH:MM" in the device's local time zone, for the
+ *  missed-schedule notification body. Deliberately minimal (no relative-time
+ *  suffix, unlike Sidebar's formatWhen) since this is a one-shot notification,
+ *  not a live-updating detail popup. */
+function formatMissedWhen(expectedAtMs: number): string {
+  const d = new Date(expectedAtMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * P0-1 reliability: notify the user that a scheduled fire was due but never
+ * recorded a run — the alarm was silently lost (Doze / OEM battery management
+ * / a foreground-service start failure) with no other user-visible signal
+ * unless they happen to open the agent's detail popup. Called from
+ * scheduleAgentStartupRepair AFTER the re-arm attempt (materializeAgent) for
+ * this same pass has already resolved — `repaired` reflects whether that
+ * attempt actually succeeded, so the notification never claims a re-arm that
+ * didn't happen. Best-effort: a failure to post must not block the repair
+ * pass itself.
+ */
+async function notifyMissedSchedule(agent: Agent, expectedAtMs: number, repaired: boolean): Promise<void> {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `⚠ ${t('agents.missed_schedule_title')}`,
+        body: t(repaired ? 'agents.missed_schedule_body' : 'agents.missed_schedule_body_repair_failed', {
+          name: agent.name,
+          when: formatMissedWhen(expectedAtMs),
+        }),
+        data: { agentId: agent.id, missedAt: expectedAtMs, repaired },
+      },
+      trigger: null,
+    });
+  } catch (error) {
+    logWarn('AgentStartupRepair', `failed to post missed-schedule notification for ${agent.id}`, error);
+  }
+}
+
 /**
  * Load agents from filesystem on app startup.
  * Called from app initialization.
@@ -1312,12 +1367,57 @@ function scheduleAgentStartupRepair(
         if (useAgentStore.getState().halted) return;
         // Skip agents deleted during the repair-delay window — re-materializing a
         // captured snapshot would rewrite its <id>.json + alarm and resurrect it.
-        if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
+        const storeAgent = useAgentStore.getState().agents.find((a) => a.id === agent.id);
+        if (!storeAgent) continue;
+        // P0-1: a single lost alarm (Doze / OEM battery kill / FGS start
+        // failure) otherwise leaves this schedule permanently and silently
+        // dead — the only existing signal was the Sidebar detail popup, which
+        // is passive (only checked if/when the user taps the agent). Detect it
+        // HERE, independent of any UI interaction, and surface it via a local
+        // notification. Dedup against the store's lastMissedNotifiedAt so
+        // re-opening the app before the next successful fire doesn't re-notify
+        // the same missed window on every launch.
+        //
+        // Read lastRun from storeAgent (the CURRENT store state), not the
+        // captured `agent` snapshot — logs sync in the background during the
+        // startup-repair delay, so `agent.lastRun` can be stale by the time
+        // this runs and would otherwise report an already-completed run as
+        // missed.
+        let pendingMissedNotify: number | null = null;
+        if (agent.schedule) {
+          const { missed, expectedAt } = isScheduleMissed(agent.schedule, storeAgent.lastRun, agent.createdAt);
+          if (missed && expectedAt != null && storeAgent.lastMissedNotifiedAt !== expectedAt) {
+            useAgentStore.getState().updateAgent(agent.id, { lastMissedNotifiedAt: expectedAt });
+            // Mutate the local snapshot too, BEFORE the materialize call below,
+            // so this SAME pass's metadata write persists the dedup marker to
+            // disk immediately. Without this, loadAgentsFromDisk's own
+            // useAgentStore.getState().setAgents(agentsWithStatus) on the NEXT
+            // call (every app launch) would overwrite the whole store — wiping
+            // the in-memory-only update above — before this loop ever runs
+            // again, and the notification would repeat every launch.
+            agent.lastMissedNotifiedAt = expectedAt;
+            pendingMissedNotify = expectedAt;
+          }
+        }
+        let repaired = false;
         try {
+          // Re-arm regardless of whether a miss was just detected — this IS the
+          // repair: every enabled scheduled agent gets a fresh native alarm for
+          // its next legitimate occurrence on every app launch, independent of
+          // whatever state AlarmManager silently ended up in.
           await materializeAgent(agent, runCommand, true, false);
+          repaired = true;
           await new Promise((resolve) => setTimeout(resolve, 250));
         } catch (error) {
           console.warn('Failed to repair scheduled agent on startup', agent.id, error);
+        }
+        // Notify AFTER the re-arm attempt has resolved, wording it according to
+        // whether repair actually succeeded — never claim a re-arm that didn't
+        // happen. The dedup marker above is set unconditionally (before this
+        // point) so a repair failure still gets one notification, not a retry
+        // storm on every subsequent launch.
+        if (pendingMissedNotify != null) {
+          await notifyMissedSchedule(agent, pendingMissedNotify, repaired);
         }
       }
     })();

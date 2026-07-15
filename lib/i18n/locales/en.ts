@@ -189,6 +189,13 @@ const en: Record<string, string> = {
   'agents.notification_os_access_not_granted': 'Not granted yet. Opening Android Settings — enable "Shelly" under Notification access, then return here.',
   'agents.notification_os_access_open_settings': 'OK',
   'agents.notification_os_access_failed': 'Notification access check failed',
+  // P0-1: posted by the app-launch startup repair when a scheduled agent's
+  // alarm was due but never recorded a run (Doze / OEM kill / FGS start
+  // failure). The body variant used depends on whether the same repair pass's
+  // re-arm attempt actually succeeded (never claim a re-arm that didn't happen).
+  'agents.missed_schedule_title': 'Missed schedule',
+  'agents.missed_schedule_body': '"{{name}}" did not run at its scheduled time ({{when}}) — it may have been blocked (Doze / battery / OEM). Re-armed for the next occurrence.',
+  'agents.missed_schedule_body_repair_failed': '"{{name}}" did not run at its scheduled time ({{when}}) — it may have been blocked (Doze / battery / OEM). The automatic re-arm attempt also failed; open the agent to check its schedule.',
 
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',
@@ -299,6 +306,25 @@ const en: Record<string, string> = {
   'agentcard.run_now': 'Run now',
   'agentcard.confirm': 'Confirm',
   'agentcard.cancel': 'Cancel',
+
+  // ── Schedule readiness checklist (P1 scheduling-reliability audit,
+  // 2026-07-15) — a one-time, dismissible card shown after a device's first
+  // scheduled agent registration. Never a registration gate: the agent this
+  // follows already exists by the time this card appears.
+  'schedulereadiness.title': 'Keep this schedule reliable',
+  'schedulereadiness.intro': 'One-time check — this agent is already registered. These settings help it survive Android battery restrictions.',
+  'schedulereadiness.exact_alarm_title': 'Exact alarm scheduling',
+  'schedulereadiness.exact_alarm_ok': 'Granted — this schedule fires at its exact time.',
+  'schedulereadiness.exact_alarm_missing': 'Not granted. Android may delay this schedule by minutes to hours under battery restrictions.',
+  'schedulereadiness.exact_alarm_action': 'Grant',
+  'schedulereadiness.battery_title': 'Battery optimization exemption',
+  'schedulereadiness.battery_ok': 'Exempted — Shelly can run in the background when it needs to.',
+  'schedulereadiness.battery_missing': 'Not exempted. Android may kill Shelly in the background before a scheduled run completes.',
+  'schedulereadiness.battery_action': 'Exempt',
+  'schedulereadiness.samsung_title': 'Samsung "Sleeping apps" (One UI)',
+  'schedulereadiness.samsung_body': 'Samsung has its own battery control on top of Android’s: Settings › Battery and device care › Background usage limits. Make sure Shelly is not listed under "Sleeping apps" or "Deep sleeping apps" — add it to "Never sleeping apps" if that list exists on your device.',
+  'schedulereadiness.samsung_action': 'Open battery settings',
+  'schedulereadiness.dismiss': 'Got it',
 
   // ── Chat-native agent confirmation (Phase 7) — used for app-act / tool-pinned
   // orchestration instead of the card: this summary text plus a Confirm/Cancel pair.
@@ -1270,6 +1296,11 @@ const en: Record<string, string> = {
   'sidebar.agent_last_error': 'Error',
   'sidebar.agent_never_run': 'Not run yet',
   'sidebar.agent_missed_run': 'Scheduled run at {{when}} was not recorded — it may have been blocked (Doze / battery / OEM). Check the battery-optimization exemption.',
+  // P1-B (2026-07-15 scheduling-reliability audit): exact-alarm special
+  // access (SCHEDULE_EXACT_ALARM, Android 12+) can be revoked at any time
+  // after registration — this surfaces that LATER revocation, not just the
+  // one-time schedule-readiness nudge shown at registration.
+  'sidebar.agent_exact_alarm_missing': 'Exact-alarm scheduling is not granted — this schedule may drift under battery restrictions. Grant it in Settings.',
   'sidebar.agent_route': 'Route',
   'sidebar.agent_route_guard': 'Guard',
   'sidebar.agent_route_keyword': 'Keyword',

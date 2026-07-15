@@ -481,6 +481,15 @@ export type AppSettings = {
    *  gates, which are hard content/action classifiers independent of any
    *  approval-frequency setting. */
   defaultRequireActionApproval?: boolean;
+  /** P1 scheduling-reliability audit (2026-07-15): true once the user has
+   *  dismissed the one-time AgentScheduleReadinessCard (exact-alarm grant /
+   *  battery-optimization exemption / Samsung sleeping-apps guidance) shown
+   *  after their FIRST scheduled (non-one-shot) agent registration. Device-
+   *  scoped, not per-agent, so it never nags again once seen — see
+   *  hooks/use-ai-pane-dispatch.ts's confirmAgentDraft. Default false/absent
+   *  = not yet shown. This is a dismissible nudge, never a registration gate:
+   *  the agent is always created first, the card is a best-effort follow-up. */
+  scheduleReadinessNudgeShown?: boolean;
   /** UI visual preset. Legacy ids remain accepted for existing installs. */
   uiFont?:
     | 'blue'
@@ -698,6 +707,21 @@ export interface Agent {
   lastResult: 'success' | 'error' | null;
   createdAt: number;
   version: number;             // schema version (1 for v1)
+  /** P0-1 reliability: the next time this schedule is expected to fire,
+   *  recomputed and persisted whenever the alarm is (re)armed (installSchedule
+   *  via materializeAgent). Observability/reconciliation aid — startup repair's
+   *  actual missed-fire DETECTION uses a fresh lastTriggerMs(schedule) recompute
+   *  (see lib/agent-scheduler.ts's isScheduleMissed), not this field, so a stale
+   *  value here can never mask or fabricate a missed-run notification. Absent on
+   *  agents created before this field existed. */
+  nextExpectedAt?: number | null;
+  /** P0-1 reliability: the expected-fire timestamp (isScheduleMissed's
+   *  `expectedAt`) that the startup-repair pass already notified the user about,
+   *  so re-opening the app before the next successful fire doesn't re-post the
+   *  same "schedule missed" notification every launch. Cleared implicitly once
+   *  a new run's lastRun timestamp moves past this window. Absent = never
+   *  notified. */
+  lastMissedNotifiedAt?: number | null;
 }
 
 export interface AgentRunLog {
