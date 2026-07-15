@@ -1831,6 +1831,8 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 2. `enable_thinking:false`（Shelly既存の `shouldDisableThinking()` 機構、`lib/local-llm.ts`）で空回答バグを回避できる可能性はあるが、(a) llama.cpp本家にQwen3.5/3.6系でこのフラグが無視される既知バグが複数あり（ggml-org/llama.cpp #20409, #20182, #13160）、Shellyのビルドで効くか不明、(b) PrismML公式の品質維持数値（94.6%/89.5%）はthinkingモードでの計測なのでoffにすると品質未検証、(c) **速度問題自体は解決しない**、(d) non-thinking版チェックポイントは存在しない。
 3. 原因はARM上の未最適化カーネル（NEON/dot-product調整の形跡なし）と推測され、PrismML側の最適化課題。Shelly側の設定・アップストリームIssue化でどうにかなる話ではない。
 
+**独立した裏付け**: PrismMLのBonsaiスレッドへの返信（[@Xero_vrc](https://x.com/Xero_vrc/status/2077150422700077436)、2026-07-14）で、別ユーザーがSamsung S25 UltraでQwen 3.6 35B（別モデル・別量子化、~11GB）を実行し「速度を2倍以上に上げて"爆速"0.9 tok/sを達成」と皮肉交じりに報告。**異なるモデル・異なる端末で同じ約1 tok/sという結果**であり、「Bonsai固有の問題」ではなく「2026年半ば時点の現行Androidハードウェアでは極端量子化された27B超のモデルは会話速度で動かない」という一般的な限界であることを裏付ける。
+
 **Why not now / 今後**: 発表から日が浅く報道も多いため再提案される可能性がある。その際は本エントリの実機ベンチマーク数値を参照し、ゼロから再検証しないこと。PrismMLが将来ARM/Snapdragon向けカーネルの最適化とAndroid実機での再現可能なベンチマークを公開した場合のみ再評価対象。
 
 ---
