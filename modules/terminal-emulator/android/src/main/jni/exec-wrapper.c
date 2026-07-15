@@ -34,7 +34,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v217:bti-open-interposer";
+    "shelly-exec-wrapper:v218:errno-publishing-interposer";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -147,13 +147,48 @@ static long raw_syscall4(long nr, long a0, long a1, long a2, long a3) {
     return x0;
 }
 
+/* errno publication for the raw-syscall interposers.
+ *
+ * The interposers below reach the kernel via raw `svc #0` syscalls (no libc
+ * PLT on the hot path -- the CI jump-slot audit forbids __errno/open/etc.
+ * relocations), so a failing syscall returns -errno to us but bionic's
+ * TLS errno slot is never updated. Callers that inspect errno then read a
+ * stale value. Concretely: Rust std maps every failed libc call through
+ * io::Error::last_os_error(), so under this wrapper a plain ENOENT from
+ * open("/etc/codex/requirements.toml") surfaced as "Success (os error 0)",
+ * which codex's config loader treats as a fatal non-NotFound error --
+ * bare `codex` aborted at startup (2026-07-09, codex-cli 0.142.0).
+ *
+ * Fix: resolve bionic's __errno() once in the load-time constructor via
+ * dlsym (the same eager pattern used for posix_spawn below; dlsym is the
+ * one allowlisted PLT slot) and store the failure code into the calling
+ * thread's errno slot. If resolution failed we degrade to the previous
+ * stale-errno behavior rather than crash.
+ */
+typedef int *(*errno_slot_fn_t)(void);
+static errno_slot_fn_t g_errno_slot_fn;
+
+static void publish_syscall_errno(long ret) {
+    errno_slot_fn_t fn = g_errno_slot_fn;
+    int *slot;
+    if (ret >= 0 || !fn) return;
+    slot = fn();
+    if (slot) *slot = (int)-ret;
+}
+
 static int finish_syscall(long ret) {
-    if (ret < 0) return -1;
+    if (ret < 0) {
+        publish_syscall_errno(ret);
+        return -1;
+    }
     return (int)ret;
 }
 
 static ssize_t finish_syscall_ssize(long ret) {
-    if (ret < 0) return -1;
+    if (ret < 0) {
+        publish_syscall_errno(ret);
+        return -1;
+    }
     return (ssize_t)ret;
 }
 
@@ -1032,6 +1067,9 @@ __attribute__((constructor))
 static void shelly_resolve_real_impls(void) {
     g_posix_spawn_fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawn");
     g_posix_spawnp_fn = (posix_spawn_impl_t)dlsym(RTLD_NEXT, "posix_spawnp");
+    /* bionic's errno TLS accessor; used by publish_syscall_errno so the
+     * raw-syscall interposers report failures through errno like libc. */
+    g_errno_slot_fn = (errno_slot_fn_t)dlsym(RTLD_NEXT, "__errno");
 }
 
 static posix_spawn_impl_t real_posix_spawn_impl(void) {
