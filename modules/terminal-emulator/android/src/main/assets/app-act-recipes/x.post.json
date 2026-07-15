@@ -16,7 +16,12 @@
     {
       "op": "click",
       "matcher": { "resourceId": "com.twitter.android:id/composer_write" },
-      "intent": "Tap the compose FAB to open the new-post screen; launch alone lands on the home timeline, which has no tweet_text field."
+      "intent": "First tap on the compose FAB only expands a speed-dial menu (go-live / spaces / photo / post), it does not navigate anywhere by itself."
+    },
+    {
+      "op": "click",
+      "matcher": { "resourceId": "com.twitter.android:id/composer_write" },
+      "intent": "The FAB occupies the same screen position as the expanded menu's own 'ポストする'/Post row (that row's own tweet_label text node is not clickable), so tapping composer_write a second time selects Post and opens the actual compose screen with tweet_text."
     },
     {
       "op": "setText",
