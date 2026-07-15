@@ -1487,25 +1487,23 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   const actionType = plan.action.type;
   const preview = previewText(resultText);
   if (actionType === '__suppressed__') {
-    // Orchestration non-final step: request no approval and fire no
-    // notification. Does NOT call writeDraftOutputs — resolveDraftDestination
-    // is keyed purely on plan.output (date+slug), with no per-step
-    // differentiation, so every step in a 'draft'-action chain would write to
-    // the exact SAME destination the terminal step uses. A real bug this
-    // caused (found by CI, 2026-07-15, __tests__/plan-executor-orchestration-
-    // chain.test.ts case (d)): when the FINAL step's content failed the
-    // quality gate below and dispatchActionTrusted correctly refused to
-    // write, an EARLIER suppressed step's own writeDraftOutputs call had
-    // already landed real content at that same path — so a rejected chain
-    // still left a stale draft file sitting at the terminal output location,
-    // looking like a completed draft despite the run's status being 'error'.
-    // Unlike the .sh executor (one process PER STEP, needing a disk handoff
-    // between steps), this JS executor runs the whole chain in one process
-    // call: `priorResults` (an in-memory array, see runOrchestrationChain)
-    // already carries each successful step's content forward into the next
-    // step's prompt — no step ever needs to re-read a suppressed step's
-    // output back off disk, so this write served no purpose within this
-    // executor's architecture and only risked stale-content survival.
+    // Single-process-PER-STEP callers (the older, attended per-step
+    // invocation model — see e.g. __tests__/plan-executor.test.ts's "saves
+    // the draft ... for a __suppressed__ orchestration step" and
+    // __tests__/plan-executor-orchestration.test.ts) rely on this write:
+    // each step there is a genuinely separate `run()` process invocation
+    // with no shared memory, so the NEXT step's process needs this step's
+    // output back off disk. Still save the draft (so the next step can
+    // read it) but request no approval and fire no notification.
+    // Best-effort, like the .sh.
+    //
+    // runOrchestrationChain (Increment 2, in-process chain mode) does NOT
+    // route its own non-final steps through this branch — see its own
+    // comment for why (resolveDraftDestination has no per-step
+    // differentiation, so writing here from a chain's intermediate step
+    // would land at the exact same destination the chain's FINAL step
+    // uses, which caused a real stale-content bug, 2026-07-15).
+    writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act') {
@@ -1796,9 +1794,10 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // v1 scope (see the file comment above): every step uses plan.tool
     // unchanged — step.tool (Phase 5 per-step pin) is intentionally ignored
     // here, not a bug. Only the FINAL step carries the plan's real action;
-    // every earlier step is `__suppressed__` (save-only, no approval/
-    // notification), exactly mirroring toPlanAction's `__suppressed__` shape
-    // (lib/agent-plan-spec.ts) and dispatchActionTrusted's own handling of it.
+    // every earlier step's stepPlan.action is `__suppressed__` (mirroring
+    // toPlanAction's shape, lib/agent-plan-spec.ts) purely for the model
+    // request/prompt shape — it is NOT dispatched through
+    // dispatchActionTrusted below (see that call site's own comment for why).
     const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, priorResults);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction });
@@ -1846,7 +1845,24 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       continue;
     }
 
-    const action = dispatchActionTrusted(paths, opts, stepPlan, config, roots, resultText, args);
+    // Non-final steps skip dispatchActionTrusted's shared `__suppressed__`
+    // branch entirely (rather than routing through it, as `stepAction`'s
+    // shape might suggest) — that branch's writeDraftOutputs call is real
+    // infrastructure other callers depend on (the older, attended per-step
+    // invocation model — see dispatchActionTrusted's own comment), but
+    // resolveDraftDestination has no per-step differentiation, so writing
+    // from HERE would land at the exact same destination this chain's own
+    // FINAL step uses. `priorResults` (below) is this executor's actual
+    // continuity mechanism — everything runs in one process, so no step
+    // ever needs to re-read another step's output back off disk. A real
+    // stale-content bug this exact collision caused, found by CI 2026-07-15
+    // (case (d) in __tests__/plan-executor-orchestration-chain.test.ts): a
+    // rejected chain still left an earlier step's draft sitting at the
+    // terminal output location, looking like a completed draft despite the
+    // run's status being 'error'.
+    const action = isFinal
+      ? dispatchActionTrusted(paths, opts, stepPlan, config, roots, resultText, args)
+      : { status: 'success', preview };
     if (isFinal) dispatchedFinal = true;
     records.push({ index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview });
     if (action.status === 'success') priorResults.push(action.preview);
