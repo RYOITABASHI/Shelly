@@ -660,6 +660,20 @@ describe('parseAgentNL — autonomous intent (explicit unattended-execution phra
   it('the G6 "パイプライン" preset stays hardcoded autonomous regardless of phrasing (unchanged behavior)', () => {
     expect(parseAgentNL('STEAM×AIのパイプラインを作って').autonomous).toBe(true);
   });
+
+  // Negation blind spot (same bug class independently found and fixed in
+  // the older detectAutonomousExecutionIntent by f13f56160, 2026-07-11 —
+  // that fix never got ported to this newer detector added 2026-07-15,
+  // found again during a dead-branch porting-gap audit the same night).
+  // A sentence wrapping an AUTONOMOUS_INTENT_RE-matching substring in an
+  // outer negation must never resolve to true — the unsafe direction.
+  it('EN: "don\'t send it without my approval" is NOT misread as autonomous=true', () => {
+    expect(parseAgentNL("every day at 8am post to X, don't send it without my approval").autonomous).toBe(false);
+  });
+
+  it('JP: "承認なしでは送信しないでください" is NOT misread as autonomous=true', () => {
+    expect(parseAgentNL('毎日8時にコマンド実行して、承認なしでは送信しないでください').autonomous).toBe(false);
+  });
 });
 
 describe('parseAgentNL — memory (Phase 1)', () => {

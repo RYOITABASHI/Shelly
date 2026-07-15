@@ -740,7 +740,21 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
 const AUTONOMOUS_INTENT_RE =
   /自律(?:的に|で|実行)|完全無人|人の確認(?:は)?なし|確認(?:は)?なしで|承認(?:は)?なしで|勝手に(?:投稿|実行|やって)|autonomous(?:ly)?|unattended|without\s+(?:approval|confirmation|review)|fully\s+automat(?:ed|ically)/i;
 
+// Negation guard (same bug class independently found and fixed in the OLDER
+// detectAutonomousExecutionIntent by f13f56160, 2026-07-11 — that fix never
+// got ported to this newer, differently-shaped detector added 2026-07-15).
+// A sentence like "don't send it without my approval" or JP
+// "承認なしでは送信しないでください" legitimately contains an
+// AUTONOMOUS_INTENT_RE-matching substring ("without my approval" /
+// "承認なしで") but the wrapping negation reverses the meaning to "requires
+// approval". Never resolve these to true — the unsafe direction.
+const NEGATED_AUTONOMOUS_INTENT_EN_RE =
+  /\b(?:don'?t|do not|never|shouldn'?t|please don'?t)\b[^.!?]{0,40}\b(?:send|post|automatic(?:ally)?)\b/i;
+const NEGATED_AUTONOMOUS_INTENT_JP_RE =
+  /(?:送信|実行|投稿|自動)[^。！？]{0,15}(?:しないで|しては(?:い)?けない)/;
+
 function detectAutonomousIntent(text: string): boolean {
+  if (NEGATED_AUTONOMOUS_INTENT_EN_RE.test(text) || NEGATED_AUTONOMOUS_INTENT_JP_RE.test(text)) return false;
   return AUTONOMOUS_INTENT_RE.test(text);
 }
 
