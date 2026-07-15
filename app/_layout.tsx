@@ -156,6 +156,25 @@ function appActParamsPreviewText(paramsResolved: string | null | undefined): str
   return keys.map((key) => `${key}: ${params[key]}`).join('\n');
 }
 
+// bug #137 (DEFERRED.md): only call addPane('browser') if no Browser Pane
+// is already mounted. addPane unconditionally allocates a new slot, so
+// calling it when a Browser Pane already exists creates a SECOND one — and
+// even worse, the new pane misses the openSignal because its
+// lastOpenSeqRef captures the current (post-openUrl) seq on mount and the
+// useEffect skips the navigation. Extracted from three near-identical
+// call sites (handleDeepLink's browser branch, dispatchExternalBrowser's
+// in-app last resort, dispatchInApp) that had drifted into copy-paste
+// duplication.
+function ensureBrowserPane(): void {
+  try {
+    const slots = useMultiPaneStore.getState().slots;
+    const hasBrowser = slots.some((s) => s?.tab === 'browser');
+    if (!hasBrowser) {
+      useMultiPaneStore.getState().addPane('browser');
+    }
+  } catch {}
+}
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
@@ -1000,13 +1019,7 @@ export default function RootLayout() {
             // freshly-created pane still picks up the URL on first
             // render. (Was: "addPane is idempotent" — that was wrong;
             // verified by use-multi-pane.ts:471.)
-            try {
-              const slots = useMultiPaneStore.getState().slots;
-              const hasBrowser = slots.some((s) => s?.tab === 'browser');
-              if (!hasBrowser) {
-                useMultiPaneStore.getState().addPane('browser');
-              }
-            } catch {}
+            ensureBrowserPane();
             useBrowserStore.getState().openUrl(browserUrl);
             logInfo('DeepLink', `openUrl dispatched: ${browserUrl}`);
           }
@@ -1213,13 +1226,7 @@ export default function RootLayout() {
       }
       // Last resort: open in-app. A visible failure is better than a
       // silent hang.
-      try {
-        const slots = useMultiPaneStore.getState().slots;
-        const hasBrowser = slots.some((s) => s?.tab === 'browser');
-        if (!hasBrowser) {
-          useMultiPaneStore.getState().addPane('browser');
-        }
-      } catch {}
+      ensureBrowserPane();
       useBrowserStore.getState().openUrl(url);
     };
 
@@ -1236,13 +1243,7 @@ export default function RootLayout() {
       // openSignal.url so a fresh pane picks up the URL on first
       // render; this guard just keeps us from spamming new panes
       // on every queued URL.
-      try {
-        const slots = useMultiPaneStore.getState().slots;
-        const hasBrowser = slots.some((s) => s?.tab === 'browser');
-        if (!hasBrowser) {
-          useMultiPaneStore.getState().addPane('browser');
-        }
-      } catch {}
+      ensureBrowserPane();
       useBrowserStore.getState().openUrl(url);
     };
 
