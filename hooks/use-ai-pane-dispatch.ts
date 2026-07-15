@@ -67,6 +67,7 @@ import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { t } from '@/lib/i18n';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
+import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1316,6 +1317,42 @@ export function useAIPaneDispatch(paneId: string) {
             agentCardState: 'confirmed',
             content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
           });
+          // P1 scheduling-reliability audit (2026-07-15): a device's FIRST
+          // real cron schedule (not a pure notification-trigger-only agent,
+          // which never touches AlarmManager) gets a one-time, dismissible
+          // readiness checklist (exact-alarm grant / battery-optimization
+          // exemption / Samsung sleeping-apps guidance) appended AFTER the
+          // agent already exists — never a registration gate. The flag is
+          // set here, at append time, not on dismiss, so an undismissed
+          // card can't cause a second nudge on the next scheduled agent.
+          // Own try/catch (not the outer one): registration itself already
+          // succeeded and its success message is already written above — a
+          // throw from this best-effort UX nudge must never let the outer
+          // catch overwrite that success message with a false "failed" one.
+          try {
+            if (shouldShowScheduleReadinessNudge(
+              confirmed.schedule,
+              useSettingsStore.getState().settings.scheduleReadinessNudgeShown ?? false,
+            )) {
+              // Append THEN flip the dedup flag (not the other way around): if
+              // the flag were set first and addMessage then threw, the device
+              // would be permanently marked as "already shown" for a nudge
+              // that was never actually appended — a one-shot flag with no
+              // retry path, so the loss would be silent and permanent. This
+              // order's worst case (flag flip itself throwing) is a harmless
+              // duplicate nudge next time instead.
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: '',
+                timestamp: Date.now(),
+                scheduleReadinessCard: true,
+              });
+              useSettingsStore.getState().updateSettings({ scheduleReadinessNudgeShown: true });
+            }
+          } catch (nudgeError) {
+            logError('AgentScheduleReadiness', `failed to append readiness nudge: ${nudgeError instanceof Error ? nudgeError.message : String(nudgeError)}`);
+          }
         }
       } catch (err) {
         store.updateMessage(paneId, messageId, {

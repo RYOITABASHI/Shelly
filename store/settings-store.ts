@@ -87,6 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // optional ("デフォは承認なしな。任意で確認"). Both default to false/off.
   agentRegistrationRequireConfirm: false,
   defaultRequireActionApproval: false,
+  scheduleReadinessNudgeShown: false,
 };
 
 const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];

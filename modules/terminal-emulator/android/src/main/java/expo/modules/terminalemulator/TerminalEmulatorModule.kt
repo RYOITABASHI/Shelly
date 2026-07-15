@@ -1,5 +1,6 @@
 package expo.modules.terminalemulator
 
+import android.app.AlarmManager
 import android.app.DownloadManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
@@ -760,6 +761,46 @@ class TerminalEmulatorModule : Module() {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(intent)
+            }
+            null
+        }
+
+        // P1-B (2026-07-15 scheduling-reliability audit): Android 12+ (API 31)
+        // gates setExactAndAllowWhileIdle behind the revocable SCHEDULE_EXACT_ALARM
+        // special app access. AgentAlarmScheduler already falls back to inexact
+        // setAndAllowWhileIdle when this is missing, SILENTLY (no user-visible
+        // signal) -- these two mirror the isIgnoringBatteryOptimizations /
+        // requestBatteryOptimizationExemption pair above so the RN layer can
+        // surface the grant state proactively (schedule-registration readiness
+        // checklist, agent detail popup) instead of only discovering the
+        // degrade after a schedule silently drifts late.
+        AsyncFunction("canScheduleExactAlarms") {
+            val context = appContext.reactContext ?: return@AsyncFunction true
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                // Below API 31 SCHEDULE_EXACT_ALARM special access doesn't exist —
+                // setExactAndAllowWhileIdle is always available.
+                return@AsyncFunction true
+            }
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.canScheduleExactAlarms()
+        }
+
+        AsyncFunction("requestScheduleExactAlarm") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                return@AsyncFunction null
+            }
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            if (!am.canScheduleExactAlarms()) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.w("TerminalEmulator", "Cannot open schedule-exact-alarm settings", e)
+                }
             }
             null
         }

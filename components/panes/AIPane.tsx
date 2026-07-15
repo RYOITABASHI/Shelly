@@ -27,6 +27,7 @@ import type { ChatMessage } from '@/store/chat-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
+import AgentScheduleReadinessCard from '@/components/panes/AgentScheduleReadinessCard';
 import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -45,6 +46,7 @@ import {
   resolveAiPaneAgent,
 } from '@/lib/ai-pane-agents';
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
+import { t as i18nT } from '@/lib/i18n';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -96,6 +98,7 @@ type BubbleProps = {
   maxWidth?: number;
   onConfirmAgentDraft?: (messageId: string, confirmed: ConfirmedAgentDraft) => void;
   onCancelAgentDraft?: (messageId: string) => void;
+  onDismissScheduleReadiness?: (messageId: string) => void;
 };
 
 const MessageBubble = React.memo(function MessageBubble({
@@ -104,11 +107,24 @@ const MessageBubble = React.memo(function MessageBubble({
   maxWidth,
   onConfirmAgentDraft,
   onCancelAgentDraft,
+  onDismissScheduleReadiness,
 }: BubbleProps) {
   const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
   const displayText = message.streamingText ?? message.content;
+
+  // P1 scheduling-reliability audit (2026-07-15): one-time, dismissible
+  // checklist appended after a device's first scheduled agent registration —
+  // see hooks/use-ai-pane-dispatch.ts's confirmAgentDraft. Never a
+  // registration gate: the agent it follows already exists.
+  if (message.scheduleReadinessCard) {
+    return (
+      <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+        <AgentScheduleReadinessCard onDismiss={() => onDismissScheduleReadiness?.(message.id)} />
+      </View>
+    );
+  }
 
   // NL-self-registration confirm card (Phase 0 §2.1). While pending, the card
   // replaces the bubble text; once confirmed/cancelled it falls through to the
@@ -432,6 +448,18 @@ export default function AIPane() {
     if (messages.length > 0) scrollToLatest();
   }, [tailSignal, scrollToLatest]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // P1 scheduling-reliability audit (2026-07-15): dismissing the checklist
+  // just collapses this one message back to a short acknowledgement line —
+  // the settings flag that prevents it from ever reappearing is already set
+  // at append time (confirmAgentDraft), not here, so leaving the card
+  // undismissed can't cause it to resurface on a later scheduled agent.
+  const dismissScheduleReadiness = useCallback((messageId: string) => {
+    useAIPaneStore.getState().updateMessage(paneId, messageId, {
+      scheduleReadinessCard: false,
+      content: `✓ ${i18nT('schedulereadiness.title')}`,
+    });
+  }, [paneId]);
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
       <MessageBubble
@@ -440,9 +468,10 @@ export default function AIPane() {
         maxWidth={bubbleMaxWidth}
         onConfirmAgentDraft={confirmAgentDraft}
         onCancelAgentDraft={cancelAgentDraft}
+        onDismissScheduleReadiness={dismissScheduleReadiness}
       />
     ),
-    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft],
+    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft, dismissScheduleReadiness],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);

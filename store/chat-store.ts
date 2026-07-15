@@ -106,6 +106,14 @@ export type ChatMessage = {
      *  conversation can never get stuck in an infinite loop. */
     attemptCount: number;
   };
+  /** P1 scheduling-reliability audit (2026-07-15): renders an
+   *  AgentScheduleReadinessCard instead of plain text — a one-time,
+   *  dismissible checklist (exact-alarm grant / battery-optimization
+   *  exemption / Samsung sleeping-apps guidance) appended after the FIRST
+   *  scheduled agent a device registers. Never blocks registration — the
+   *  agent this follows is already created by the time this message is
+   *  appended. See hooks/use-ai-pane-dispatch.ts's confirmAgentDraft. */
+  scheduleReadinessCard?: boolean;
 };
 
 export type ChatSession = {

@@ -26,6 +26,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   runAgent(agentId: string): Promise<void>;
   isIgnoringBatteryOptimizations(): Promise<boolean>;
   requestBatteryOptimizationExemption(): Promise<void>;
+  /** P1-B: Android 12+ SCHEDULE_EXACT_ALARM special-app-access check
+   *  (AlarmManager.canScheduleExactAlarms()). Always true below API 31, where
+   *  the permission doesn't gate setExactAndAllowWhileIdle. */
+  canScheduleExactAlarms(): Promise<boolean>;
+  /** P1-B: opens Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM so the user can
+   *  grant exact-alarm scheduling. No-op when already granted or API < 31. */
+  requestScheduleExactAlarm(): Promise<void>;
   /** bug #92: Android 11+ MANAGE_EXTERNAL_STORAGE gate — true on < API 30 since legacy perms cover /sdcard. */
   hasAllFilesAccess(): Promise<boolean>;
   /** bug #92: Fires the per-package all-files-access settings intent. No-op when already granted or API < 30. */
