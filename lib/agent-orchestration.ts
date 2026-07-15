@@ -25,7 +25,18 @@ export const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000; // 30 min
 export const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
 const MAX_STEP_INSTRUCTION_CHARS = 500;
 const MAX_PROMPT_CHARS = 6000;
-const MAX_RESULT_CARRY_CHARS = 1500;
+// Exported (not just module-local) so lib/agent-executor.ts's generated shell
+// script can truncate clean_result_preview()/clean_answer_preview() to the SAME
+// budget instead of a separately-hardcoded number. Found 2026-07-15 P1 audit:
+// the .sh executor's clean_result_preview() truncated to 500 BYTES before a
+// step's outputPreview ever reached buildStepPrompt below, so this 1500-char
+// carry-forward budget was unreachable in practice — every chain step only ever
+// saw <=500 chars of prior context. Importing the same constant can't fully
+// close the byte-vs-JS-string-length gap (`head -c` truncates UTF-8 BYTES;
+// multi-byte text such as Japanese therefore still gets fewer effective
+// characters than this number implies) but it does guarantee the budgets can
+// never silently drift back out of sync the way 500-vs-1500 did.
+export const MAX_RESULT_CARRY_CHARS = 1500;
 const MAX_PREVIEW_CHARS = 500;
 
 function clamp(n: number, lo: number, hi: number): number {

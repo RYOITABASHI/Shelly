@@ -810,17 +810,29 @@ async function runAgentOrchestrated(
     // uses) and skips keyword-based auto-selection for this step only. Absent
     // tool = agent.tool unchanged = today's exact auto-routing behavior.
     const step = steps[i];
-    const stepAgent: Agent = {
-      ...agent,
-      prompt: buildStepPrompt(agent.prompt, step.instruction, priorResults),
-      orchestration: undefined,
-      tool: step.tool ?? agent.tool,
-    };
-    const stepStart = Date.now();
     // Only the FINAL step performs the agent action (draft/notify/webhook/cli) —
     // non-final steps suppress it so the chain fires ONE approval/notification,
     // not one per step.
     const isFinalStep = i === steps.length - 1;
+    const stepAgent: Agent = {
+      ...agent,
+      prompt: buildStepPrompt(agent.prompt, step.instruction, priorResults),
+      // Orchestration is otherwise cleared so a step's own script generation
+      // doesn't recurse into runAgentOrchestrated again — isOrchestrated()
+      // only keys off .steps.length >= 2 (via normalizeSteps), so an object
+      // carrying an EMPTY steps array plus charLimit is safe: it does not
+      // re-trigger multi-step routing, it only survives long enough for
+      // generateRunScript to read .charLimit. The G6 charLimit guarantee
+      // applies to the FINAL step's dispatched content only (an intermediate
+      // "collect"/"summarize" step must keep its full text for the next
+      // step's context, not get truncated to an X-post budget) — see
+      // generateRunScript's RESULT_CHAR_LIMIT wiring in lib/agent-executor.ts
+      // (2026-07-15 P1 audit fix: this field previously had no path from
+      // agent.orchestration.charLimit into the actual dispatch at all).
+      orchestration: isFinalStep && agent.orchestration?.charLimit ? { steps: [], charLimit: agent.orchestration.charLimit } : undefined,
+      tool: step.tool ?? agent.tool,
+    };
+    const stepStart = Date.now();
     let log: AgentRunLog | undefined;
     try {
       // Each step escalates through the ladder by its OWN instruction — so a

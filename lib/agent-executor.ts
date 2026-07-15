@@ -9,11 +9,17 @@ import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-poli
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
+import { MAX_RESULT_CARRY_CHARS } from './agent-orchestration';
+import { clampCharLimit } from './agent-pipeline-presets';
 
 const MAX_CONCURRENT = 2;
 
 const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
-const AGENT_SCRIPT_VERSION = 11;
+// Bump in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION (native gate
+// that refuses to run a stale on-disk script) whenever the generated script's
+// runtime BEHAVIOR changes — see __tests__/agent-executor-cap-broker.test.ts's
+// "bumps the script version in lockstep with the native gate".
+const AGENT_SCRIPT_VERSION = 12;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -241,6 +247,22 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionAppActParamsJson = actionType === 'app-act' ? JSON.stringify(agent.action?.appActParams ?? {}) : '{}';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
+  // G6 char-limit guarantee (agent.orchestration.charLimit — see
+  // lib/agent-pipeline-presets.ts's clampCharLimit/enforceCharLimit): found in
+  // the 2026-07-15 P1 audit to have NO caller anywhere in the foreground JS
+  // orchestration path — only scripts/shelly-plan-executor.js's
+  // enforcePlanCharLimit/resolveCharLimit enforced it. Mirrors resolveCharLimit
+  // exactly: undefined/null/non-finite means "no limit configured" (0, a no-op
+  // at runtime below), anything else is clamped the same way (40-4000). For a
+  // multi-step chain, agent-manager.ts's runAgentOrchestrated only carries this
+  // onto the FINAL step's stepAgent (steps 1..n-1 must NOT be truncated — they
+  // feed the next step's context) — see the orchestration field it builds.
+  const rawCharLimit = agent.orchestration?.charLimit;
+  const resultCharLimit =
+    rawCharLimit === undefined || rawCharLimit === null || !Number.isFinite(rawCharLimit)
+      ? 0
+      : clampCharLimit(rawCharLimit);
+
   // Project owner directive 2026-07-14: runtime per-action "Runtime Review"
   // approval defaults to OFF (no human tap) — draft/notify/webhook/cli skip
   // the write+wait round trip entirely when 'auto' (see dispatch_agent_action);
@@ -404,6 +426,7 @@ TMP_DIR=${shellQuote(tmpDir)}
 MAX_CONCURRENT=${MAX_CONCURRENT}
 AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 ACTION_TYPE=${shellQuote(actionType)}
+RESULT_CHAR_LIMIT=${resultCharLimit}
 ACTION_WEBHOOK_URL=${shellQuote(actionWebhookUrl)}
 ACTION_COMMAND=${shellQuote(actionCommand)}
 ACTION_INTENT_MODE=${shellQuote(actionIntentMode)}
@@ -750,23 +773,77 @@ process.exit(bad ? 0 : 1);
   printf '%s' "$text" | grep -Eqi '# ?Results from previous steps|# ?This step|as an ai|i cannot generate'
 }
 
+# File-based twin of is_low_quality_completion() above — same detection logic
+# (kept byte-for-byte identical on purpose, so the two can never drift apart),
+# but reads the text from a FILE instead of a shell argument/env var. Added for
+# the 2026-07-15 P1 audit's webhook-payload gap: is_low_quality_completion's
+# $preview argument is clean_result_preview's truncated preview, so a bad
+# completion appearing only AFTER that truncation point would never reach
+# either check. The webhook case below runs this against the full
+# clean_result_full() output (redacted + telemetry-stripped, NOT truncated)
+# so the quality gate actually covers everything that ends up in the webhook
+# body's "result" field, not just its "preview" field.
+is_low_quality_completion_file() {
+  file="$1"
+  if [ ! -s "$file" ]; then
+    return 0
+  fi
+  if node_usable; then
+    if shelly_node - "$file" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const file = process.argv[2];
+let text = '';
+try { text = fs.readFileSync(file, 'utf8'); } catch (_) {}
+const echoPatterns = [/#\\s*Results from previous steps/, /#\\s*This step\\b/];
+const refusalPatterns = [
+  /\\bas an ai\\b/i,
+  /\\bi cannot generate\\b/i,
+  /\\bi\\x27m (?:not able|unable) to\\b/i,
+  /私は\\s*ai\\s*(なので|として)/i,
+  /(生成|投稿)できません/,
+];
+const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text));
+process.exit(bad ? 0 : 1);
+NODEEOF
+    then
+      return 0
+    fi
+    return 1
+  fi
+  grep -Eqi '# ?Results from previous steps|# ?This step|as an ai|i cannot generate' "$file"
+}
+
 # Strip the autonomous driver's structured telemetry (AUDIT/GATE/protocol/STDERR/
 # escalation) from a result file so the user-facing preview shows real content,
 # never the internal driver_start JSON. Backends that write a plain answer
 # (local/perplexity/gemini) have no such lines, so this is a harmless no-op for
 # them. Whitespace-collapsed and length-capped for a notification body. Also
 # secret-redacted (SECRET-001 parity with PlanSpec's previewText()) BEFORE the
-# 500-byte truncation below, so a secret straddling the cut is never
-# half-redacted — the .sh executor's clean_result_preview() feeds this preview
-# into webhook bodies, notifications, intent-share text, and dm-reply text via
-# {{result}} substitution (see write_action_approval_request), so it must never
-# carry a live secret from the raw agent-tool result.
+# truncation below, so a secret straddling the cut is never half-redacted —
+# the .sh executor's clean_result_preview() feeds this preview into webhook
+# bodies, notifications, intent-share text, and dm-reply text via {{result}}
+# substitution (see write_action_approval_request), so it must never carry a
+# live secret from the raw agent-tool result.
+#
+# The truncation budget below is imported from lib/agent-orchestration.ts's
+# MAX_RESULT_CARRY_CHARS (2026-07-15 P1 audit fix) rather than a separately
+# hardcoded number: this preview is also what agent-manager.ts's
+# runAgentOrchestrated() carries into the NEXT chain step's prompt
+# (log.outputPreview -> priorResults -> buildStepPrompt), and that function
+# already bounds each carried result to MAX_RESULT_CARRY_CHARS — so a smaller
+# number hardcoded here silently made that budget unreachable (every step only
+# ever saw the smaller of the two, regardless of what buildStepPrompt allowed).
+# Still a BYTE count (head -c), not a character count like the JS budget it
+# mirrors, so multi-byte text (Japanese) still yields fewer effective
+# characters than a pure JS-string .slice(0, N) would — a real but
+# pre-existing shell/JS boundary limitation, not something this fix claims to
+# fully resolve.
 clean_result_preview() {
   file="$1"
   [ -f "$file" ] || return 0
   # Filter the driver telemetry into a temp file FIRST, then head THAT file.
-  # Piping sed directly into "head -c 500" SIGPIPEs sed the moment head closes the
-  # pipe early (any cleaned result > 500 bytes — i.e. every real answer); under
+  # Piping sed directly into "head -c N" SIGPIPEs sed the moment head closes the
+  # pipe early (any cleaned result > N bytes — i.e. every real answer); under
   # 'set -euo pipefail' that 141 propagates and aborts the whole run. head reading
   # a regular file has no upstream producer to signal, so it is abort-safe. Same
   # reasoning applies to redact_secrets_text below: it runs against the $cleaned
@@ -775,8 +852,87 @@ clean_result_preview() {
   redacted="$file.preview.redacted"
   sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null > "$cleaned" || true
   redact_secrets_text "$cleaned" > "$redacted" 2>/dev/null || true
-  head -c 500 "$redacted" 2>/dev/null | tr '\\n' ' '
+  head -c ${MAX_RESULT_CARRY_CHARS} "$redacted" 2>/dev/null | tr '\\n' ' '
   rm -f "$cleaned" "$redacted"
+}
+
+# Same telemetry-strip + secret-redaction pipeline as clean_result_preview
+# above, but returns the FULL cleaned text with no length truncation — for
+# contexts that need the complete validated content rather than a
+# notification-length preview. Added for the 2026-07-15 P1 audit: previously
+# only write_webhook_payload's "result" field read $result_file directly
+# (raw, unredacted, telemetry-included), bypassing every guarantee
+# clean_result_preview provides for its "preview" field sitting right next to
+# it in the same JSON payload.
+clean_result_full() {
+  file="$1"
+  out="$2"
+  if [ ! -f "$file" ]; then
+    : > "$out"
+    return 0
+  fi
+  cleaned="$file.full"
+  redacted="$file.full.redacted"
+  sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d' "$file" 2>/dev/null > "$cleaned" || true
+  redact_secrets_text "$cleaned" > "$redacted" 2>/dev/null || true
+  mv "$redacted" "$out" 2>/dev/null || cp "$redacted" "$out" 2>/dev/null || : > "$out"
+  rm -f "$cleaned" "$redacted"
+}
+
+# G6 char-limit guarantee, shell-side. Mirrors lib/agent-pipeline-presets.ts's
+# enforceCharLimit() / scripts/shelly-plan-executor.js's enforcePlanCharLimit()
+# byte-for-byte in algorithm (sentence-boundary-aware cut, ellipsis fallback) —
+# found in the 2026-07-15 P1 audit to have NO caller anywhere in the
+# foreground JS orchestration path; only the PlanSpec executor enforced it.
+# $2 (limit) is RESULT_CHAR_LIMIT, already clamped (40-4000) at
+# script-generation time in generateRunScript from agent.orchestration.charLimit
+# — 0/empty means "no limit configured", a no-op. Prints the (possibly
+# unchanged) text to stdout; the caller decides whether/how to persist it.
+enforce_char_limit_text() {
+  file="$1"
+  limit="$2"
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+  case "$limit" in
+    ''|0) cat "$file" 2>/dev/null; return 0 ;;
+  esac
+  if node_usable; then
+    if SHELLY_CHAR_LIMIT="$limit" shelly_node - "$file" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const file = process.argv[2];
+const limit = Math.floor(Number(process.env.SHELLY_CHAR_LIMIT) || 0);
+let text = '';
+try { text = fs.readFileSync(file, 'utf8'); } catch (_) {}
+const chars = Array.from(text);
+if (!limit || chars.length <= limit) {
+  process.stdout.write(text);
+} else {
+  const ellipsis = '…';
+  const budget = Math.max(limit - 1, 1);
+  const head = chars.slice(0, budget);
+  const terminators = new Set(['。', '．', '.', '!', '?', '！', '？', '\\n']);
+  let cut = -1;
+  for (let i = head.length - 1; i >= 0; i--) {
+    if (terminators.has(head[i])) { cut = i; break; }
+  }
+  let out;
+  if (cut >= Math.floor(budget * 0.6)) {
+    out = head.slice(0, cut + 1).join('').replace(/\\s+$/, '');
+  } else {
+    out = head.join('').replace(/\\s+$/, '') + ellipsis;
+  }
+  process.stdout.write(out);
+}
+NODEEOF
+    then
+      return 0
+    fi
+  fi
+  # No node: coarse BYTE-based fallback (may cut a multi-byte UTF-8 sequence
+  # mid-character in this rare no-node case — same trade-off json_string_file's
+  # own ASCII fallback already accepts elsewhere in this file).
+  head -c "$limit" "$file" 2>/dev/null || cat "$file" 2>/dev/null
 }
 
 # Codex app-server answer text is written by shelly-agent-driver.js to a
@@ -788,7 +944,7 @@ clean_answer_preview() {
   [ -f "$file" ] || return 0
   redacted="$file.preview.redacted"
   redact_secrets_text "$file" > "$redacted" 2>/dev/null || true
-  head -c 500 "$redacted" 2>/dev/null | tr '\n' ' '
+  head -c ${MAX_RESULT_CARRY_CHARS} "$redacted" 2>/dev/null | tr '\n' ' '
   rm -f "$redacted"
 }
 
@@ -819,6 +975,16 @@ NOTIFYEOF
   mv "$tmp" "$ACTION_NOTIFY_FILE"
 }
 
+# IMPORTANT: $4 (result_file) MUST already be the OUTPUT of clean_result_full
+# (telemetry-stripped + secret-redacted), never the raw agent-result file —
+# this function does not clean it itself. 2026-07-15 P1 audit finding: this
+# used to read $result_file (the raw file) directly via json_string_file,
+# shipping un-redacted secrets and internal driver telemetry lines straight
+# into an external Discord/Slack/Telegram webhook body, entirely bypassing
+# both the redaction that $preview (the "preview" field right next to it)
+# always gets AND the is_low_quality_completion gate for any content beyond
+# $preview's truncation point. The one call site (dispatch_agent_action's
+# webhook case) now passes a clean_result_full()-produced temp file instead.
 write_webhook_payload() {
   out_file="$1"
   status="$2"
@@ -1278,10 +1444,28 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
+      # 2026-07-15 P1 audit fix: the ABOVE check only covers $preview (the
+      # first MAX_RESULT_CARRY_CHARS bytes, see clean_result_preview) — the
+      # webhook body's "result" field ships the FULL cleaned content, so a bad
+      # completion appearing only past that truncation point must be caught
+      # too, or the quality gate could pass on a short clean-looking preview
+      # while the actual dispatched body differs. Compute the full
+      # telemetry-stripped + secret-redacted text ONCE here, gate on it, and
+      # reuse the same file for write_webhook_payload below (no second pass).
+      webhook_clean_result="$LOG_DIR/webhook-result-clean-$(date +%s)-$$.txt"
+      clean_result_full "$result_file" "$webhook_clean_result"
+      if is_low_quality_completion_file "$webhook_clean_result"; then
+        rm -f "$webhook_clean_result"
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Webhook payload looks like a prompt echo or AI refusal, not real content — escalating."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       webhook_payload="$LOG_DIR/webhook-payload-$(date +%s).json"
       webhook_response="$LOG_DIR/webhook-response-$(date +%s).txt"
       webhook_error="$LOG_DIR/webhook-error-$(date +%s).txt"
-      write_webhook_payload "$webhook_payload" "success" "$preview" "$result_file"
+      write_webhook_payload "$webhook_payload" "success" "$preview" "$webhook_clean_result"
+      rm -f "$webhook_clean_result"
       webhook_host_allowlisted=false
       if webhook_host_is_allowlisted "$webhook_host"; then webhook_host_allowlisted=true; fi
       request_and_wait_approval "webhook" "$preview" "$result_file" "$webhook_host" "$webhook_payload" "$webhook_host_allowlisted" || return 1
@@ -2784,6 +2968,24 @@ END_TIME=$(date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
 if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
+  # G6 char-limit guarantee (2026-07-15 P1 audit fix): clamp the raw result to
+  # RESULT_CHAR_LIMIT (0 = no limit configured) BEFORE anything derives from
+  # it — preview, webhook body, app-act/{{result}} substitution, draft save —
+  # so a multi-step chain's final "re-summarize within N chars for X" step
+  # actually enforces that budget here, not just as a soft prompt instruction.
+  # Mirrors scripts/shelly-plan-executor.js's own ordering (enforcePlanCharLimit
+  # runs before dispatchActionTrusted). Operates on RESULT_CONTENT_FILE (not
+  # the raw RESULT_FILE) so a Codex-driver step's real answer text
+  # ($RESULT_FILE.answer) is what gets clamped for a codex-routed step — the
+  # raw RESULT_FILE stays the untouched telemetry stream either way.
+  if [ -n "$RESULT_CHAR_LIMIT" ] && [ "$RESULT_CHAR_LIMIT" -gt 0 ] 2>/dev/null; then
+    charlimit_tmp="$RESULT_CONTENT_FILE.charlimit"
+    if enforce_char_limit_text "$RESULT_CONTENT_FILE" "$RESULT_CHAR_LIMIT" > "$charlimit_tmp" 2>/dev/null; then
+      mv "$charlimit_tmp" "$RESULT_CONTENT_FILE"
+    else
+      rm -f "$charlimit_tmp"
+    fi
+  fi
   PREVIEW=$(result_preview "$RESULT_FILE")
   STATUS="success"
   ERROR_MESSAGE=""

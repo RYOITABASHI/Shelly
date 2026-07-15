@@ -4,6 +4,7 @@ jest.mock('@/lib/home-path', () => ({
 
 import { execFileSync } from 'node:child_process';
 import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, computeAgentSlug, sanitizeOutputTemplate } from '@/lib/agent-executor';
+import { MAX_RESULT_CARRY_CHARS } from '@/lib/agent-orchestration';
 import { Agent, ToolChoice } from '@/store/types';
 
 const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
@@ -400,14 +401,18 @@ describe('generateRunScript — local inference quality', () => {
 describe('generateRunScript — abort-safe shell (exit 141 root-causes)', () => {
   it('clean_result_preview heads a regular file (no sed|head SIGPIPE abort)', () => {
     const s = generateRunScript(agent({ type: 'local' }));
-    // sed | head -c 500 SIGPIPEs sed on any result > 500 bytes (every real answer)
+    // sed | head -c N SIGPIPEs sed on any result > N bytes (every real answer)
     // → exit 141 under set -euo pipefail. Must filter to a file, then head the file.
     expect(s).toContain('sed -E \'/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d\' "$file" 2>/dev/null > "$cleaned"');
     // SECRET-001: redact_secrets_text now runs against the $cleaned FILE (still
-    // file-not-pipe, same abort-safety) BEFORE the 500-byte head, and head reads
-    // ITS output file ($redacted) rather than $cleaned directly.
+    // file-not-pipe, same abort-safety) BEFORE the head, and head reads ITS
+    // output file ($redacted) rather than $cleaned directly.
     expect(s).toContain('redact_secrets_text "$cleaned" > "$redacted" 2>/dev/null');
-    expect(s).toContain('head -c 500 "$redacted" 2>/dev/null | tr');
+    // 2026-07-15 P1 audit fix: the truncation budget is imported from
+    // lib/agent-orchestration.ts's MAX_RESULT_CARRY_CHARS (1500), not a
+    // separately-hardcoded 500 — see __tests__/agent-result-preview-carry.test.ts
+    // for the dedicated regression coverage of this budget.
+    expect(s).toContain(`head -c ${MAX_RESULT_CARRY_CHARS} "$redacted" 2>/dev/null | tr`);
     // The OLD sed-piped-into-head form (the SIGPIPE source) must be gone. (A fixed
     // short error string at line ~255 still pipes into head -c 500 — that is safe
     // because its producer never exceeds 500 bytes, so it is not matched here.)
@@ -472,7 +477,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=11');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=12');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');

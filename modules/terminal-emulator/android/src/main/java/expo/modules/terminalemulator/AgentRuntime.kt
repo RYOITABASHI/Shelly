@@ -29,7 +29,7 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
-    private const val CURRENT_SCRIPT_VERSION = 11
+    private const val CURRENT_SCRIPT_VERSION = 12
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "__suppressed__")
 
