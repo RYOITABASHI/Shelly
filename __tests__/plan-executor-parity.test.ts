@@ -4,7 +4,8 @@ jest.mock('@/lib/home-path', () => ({
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
+import { buildAgentPlanSpec, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
+import type { Agent } from '@/store/types';
 
 describe('shelly-plan-executor.js parity', () => {
   const root = path.resolve(__dirname, '..');
@@ -162,5 +163,60 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toMatch(/if \(actionType !== 'draft' && actionType !== 'notify' && actionType !== 'app-act'\) \{/);
     expect(executorSrc).toContain("if (!trustedNativeLowRiskAction(args, plan, actionType)) {");
     expect(executorSrc).toContain("trusted-app-act-recipe-id");
+  });
+
+  describe('orchestration `steps` field (increment 1) does not trip the version-mismatch gate', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { validatePlan } = require(scriptCopy);
+
+    function baseAgent(overrides: Partial<Agent> = {}): Agent {
+      return {
+        id: 'agent-plan-parity',
+        name: 'Plan Parity',
+        description: 'plan',
+        prompt: 'say hello',
+        schedule: null,
+        tool: { type: 'local' },
+        autonomous: true,
+        autonomyLevel: 'L1',
+        workspaceRoot: '/tmp/work',
+        outputPath: '~/agent-output',
+        outputTemplate: null,
+        action: { type: 'draft' },
+        enabled: true,
+        lastRun: null,
+        lastResult: null,
+        createdAt: 1,
+        version: 1,
+        ...overrides,
+      };
+    }
+
+    // (c) the native-equivalent gate (this file's own validatePlan, which is
+    // byte-identical to the APK asset mirror and mirrors AgentRuntime.kt's
+    // strict `planVersion != CURRENT_PLAN_SPEC_VERSION` check) must still
+    // ACCEPT both shapes this increment can now produce: the pre-existing
+    // "old" shape (no `steps` key) and the "new" shape (orchestrated, with a
+    // `steps` key) — both still declare schemaVersion 1, so the executor's
+    // strict equality check passes for both, and the extra unknown `steps`
+    // key on the new shape is not rejected by validatePlan's field checks.
+    it('accepts a pre-existing (non-orchestrated) PlanSpec unchanged', () => {
+      const plan = JSON.parse(JSON.stringify(buildAgentPlanSpec(baseAgent())));
+      expect(plan.schemaVersion).toBe(PLAN_SPEC_SCHEMA_VERSION);
+      expect(plan.steps).toBeUndefined();
+      expect(() => validatePlan(plan)).not.toThrow();
+    });
+
+    it('accepts a new orchestrated PlanSpec carrying the additive `steps` key', () => {
+      const plan = JSON.parse(
+        JSON.stringify(
+          buildAgentPlanSpec(baseAgent({ orchestration: { steps: ['collect', 'summarize', 'post'] } })),
+        ),
+      );
+      expect(plan.schemaVersion).toBe(PLAN_SPEC_SCHEMA_VERSION);
+      expect(plan.steps).toBeDefined();
+      expect(plan.steps.list).toHaveLength(3);
+      expect(() => validatePlan(plan)).not.toThrow();
+    });
   });
 });

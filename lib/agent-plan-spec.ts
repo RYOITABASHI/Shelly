@@ -12,7 +12,25 @@ import {
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
+import { isOrchestrated, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
 
+// NOT bumped for the `steps` field added below (orchestration schema-plumbing
+// increment 1, 2026-07-15). A bump here is load-bearing across THREE
+// independently-hardcoded mirrors that must move in lockstep or every agent
+// run (not just orchestrated ones) fail-closes:
+//   1. scripts/shelly-plan-executor.js's own `const PLAN_SPEC_SCHEMA_VERSION`
+//      (plain CommonJS, cannot import this .ts file) — strict `!==` check.
+//   2. its byte-identical APK asset mirror under
+//      modules/terminal-emulator/android/.../assets/shelly-plan-executor.js.
+//   3. AgentRuntime.kt's `CURRENT_PLAN_SPEC_VERSION` — strict `!=` check that
+//      writes a "stale PlanSpec" error + notification and refuses to launch.
+// __tests__/plan-executor-parity.test.ts asserts all three stay equal to this
+// constant. `steps` below is purely additive (existing validators here and in
+// the JS/Kotlin mirrors only check specific known fields, never reject unknown
+// extra keys), so it needs no version bump. The bump — plus updating all three
+// mirrors together — is deferred to the increment that teaches those
+// executors to actually walk the chain; see the North-Star orchestration
+// investigation (2026-07-15) for the multi-increment plan this is step 1 of.
 export const PLAN_SPEC_SCHEMA_VERSION = 1;
 export const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
@@ -88,6 +106,23 @@ export interface AgentPlanSpecV1 {
   };
   policy: ReturnType<typeof buildAgentPolicy>;
   routeDecision: AgentRouteDecision;
+  /** Increment 1 orchestration schema plumbing (2026-07-15). Present ONLY when
+   *  isOrchestrated(agent.orchestration) is true (≥2 real steps); absent for
+   *  every single-step agent, so this is a no-op for today's exact behavior.
+   *  `list`/`budget` are exactly what normalizeSteps()/resolveBudget() (the
+   *  existing pure helpers agent-orchestration.ts already exports and
+   *  runAgentOrchestrated() already uses for the manual "Run now" path)
+   *  independently compute for the same agent — no logic is re-derived here.
+   *  Zero runtime consumer yet: scripts/shelly-plan-executor.js, its APK asset
+   *  mirror, and AgentRuntime.kt all still only ever dispatch `prompt` as a
+   *  single call and simply ignore this key. A later increment teaches the
+   *  executor to walk `list` under `budget` and bumps PLAN_SPEC_SCHEMA_VERSION
+   *  (see the comment above PLAN_SPEC_SCHEMA_VERSION for why that bump is
+   *  deliberately NOT done here). */
+  steps?: {
+    list: NormalizedStep[];
+    budget: ResolvedBudget;
+  };
 }
 
 export type BuildAgentPlanSpecOptions = {
@@ -171,6 +206,9 @@ export function buildAgentPlanSpec(
     typeof agent.orchestration?.charLimit === 'number'
       ? clampCharLimit(agent.orchestration.charLimit)
       : undefined;
+  const orchestrationSteps = isOrchestrated(agent.orchestration)
+    ? { list: normalizeSteps(agent.orchestration), budget: resolveBudget(agent.orchestration) }
+    : undefined;
 
   return {
     kind: PLAN_SPEC_KIND,
@@ -216,6 +254,7 @@ export function buildAgentPlanSpec(
     },
     policy: buildAgentPolicy(agent, agent.workspaceRoot || home),
     routeDecision,
+    ...(orchestrationSteps ? { steps: orchestrationSteps } : {}),
   };
 }
 

@@ -3,6 +3,7 @@ jest.mock('@/lib/home-path', () => ({
 }));
 
 import { buildAgentPlanSpec, PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION, validateAgentPlanSpec } from '@/lib/agent-plan-spec';
+import { isOrchestrated, normalizeSteps, resolveBudget } from '@/lib/agent-orchestration';
 import type { Agent } from '@/store/types';
 
 function agent(overrides: Partial<Agent> = {}): Agent {
@@ -114,5 +115,77 @@ describe('Agent PlanSpec v1', () => {
     expect(validateAgentPlanSpec(spec).ok).toBe(true);
     expect(validateAgentPlanSpec({ ...spec, schemaVersion: 99 }).ok).toBe(false);
     expect(validateAgentPlanSpec({ ...spec, agent: { ...spec.agent, id: '../../bad' } }).ok).toBe(false);
+  });
+
+  describe('orchestration `steps` field (increment 1 — schema plumbing only)', () => {
+    // (a) Critical no-regression check: a non-orchestrated agent's PlanSpec is
+    // unchanged — no `steps` key at all (not even `undefined` sitting in the
+    // object; JSON.stringify must drop it exactly like it always has for every
+    // other optional field in this schema).
+    it('a non-orchestrated agent has no `steps` field at all', () => {
+      const spec = buildAgentPlanSpec(agent());
+      expect(spec.steps).toBeUndefined();
+      expect(Object.prototype.hasOwnProperty.call(spec, 'steps')).toBe(false);
+      expect(JSON.parse(JSON.stringify(spec))).not.toHaveProperty('steps');
+    });
+
+    it('a single-step orchestration config (isOrchestrated === false) also has no `steps` field', () => {
+      const spec = buildAgentPlanSpec(agent({ orchestration: { steps: ['only one step'] } }));
+      expect(isOrchestrated({ steps: ['only one step'] })).toBe(false);
+      expect(spec.steps).toBeUndefined();
+    });
+
+    it('does not change schemaVersion, kind, or any other field for a non-orchestrated agent (byte-for-byte parity with pre-increment shape)', () => {
+      const baseAgent = agent();
+      const spec = buildAgentPlanSpec(baseAgent);
+      expect(spec.schemaVersion).toBe(PLAN_SPEC_SCHEMA_VERSION);
+      expect(spec.schemaVersion).toBe(1);
+      expect(spec.kind).toBe(PLAN_SPEC_KIND);
+      // Full-shape parity: every key present is exactly the set that existed
+      // before this increment, plus nothing new.
+      expect(Object.keys(spec).sort()).toEqual(
+        ['action', 'agent', 'generatedAt', 'kind', 'limits', 'output', 'paths', 'policy', 'prompt', 'routeDecision', 'schemaVersion', 'tool'].sort(),
+      );
+    });
+
+    // (b) Parity check: an orchestrated agent's PlanSpec carries a `steps`
+    // field whose content matches what normalizeSteps()/resolveBudget()
+    // independently compute for the same orchestration config — the PlanSpec
+    // builder must not re-derive or diverge from those pure helpers.
+    it('an orchestrated agent carries `steps.list`/`steps.budget` matching normalizeSteps()/resolveBudget() directly', () => {
+      const orchestration = {
+        steps: [
+          'collect sources on the topic',
+          { instruction: 'summarize into a digest', tool: { type: 'local' as const, model: 'Qwen3.5-0.8B-Q4_K_M' } },
+          'post the digest to X',
+        ],
+        maxSteps: 5,
+      };
+      const testAgent = agent({ orchestration });
+      const spec = buildAgentPlanSpec(testAgent);
+
+      expect(isOrchestrated(orchestration)).toBe(true);
+      expect(spec.steps).toBeDefined();
+      expect(spec.steps!.list).toEqual(normalizeSteps(orchestration));
+      expect(spec.steps!.budget).toEqual(resolveBudget(orchestration));
+      // Sanity on content, not just structural parity with the helpers:
+      expect(spec.steps!.list).toHaveLength(3);
+      expect(spec.steps!.list[1]).toEqual({
+        instruction: 'summarize into a digest',
+        tool: { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' },
+      });
+      expect(spec.steps!.budget.maxSteps).toBe(5);
+    });
+
+    it('schemaVersion stays 1 for an orchestrated PlanSpec too — no version bump this increment', () => {
+      const spec = buildAgentPlanSpec(agent({ orchestration: { steps: ['a', 'b'] } }));
+      expect(spec.schemaVersion).toBe(1);
+      expect(spec.schemaVersion).toBe(PLAN_SPEC_SCHEMA_VERSION);
+    });
+
+    it('validateAgentPlanSpec still accepts an orchestrated PlanSpec (the extra `steps` key is not rejected)', () => {
+      const spec = buildAgentPlanSpec(agent({ orchestration: { steps: ['a', 'b', 'c'] } }));
+      expect(validateAgentPlanSpec(spec).ok).toBe(true);
+    });
   });
 });
