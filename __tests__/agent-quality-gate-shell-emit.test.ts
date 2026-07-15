@@ -57,6 +57,21 @@ function extractEmbeddedJs(script: string): string {
   return script.slice(bodyStart, end);
 }
 
+function extractCaseBlock(script: string, caseLabel: string): string {
+  // Anchor on dispatch_agent_action() first — "notify)" (and similar labels)
+  // can otherwise match unrelated text elsewhere in this giant generated script.
+  const fnMarker = 'dispatch_agent_action() {';
+  const fnStart = script.indexOf(fnMarker);
+  if (fnStart === -1) throw new Error('dispatch_agent_action function not found in generated script');
+  const marker = `\n    ${caseLabel})`;
+  const start = script.indexOf(marker, fnStart);
+  if (start === -1) throw new Error(`case block "${caseLabel})" not found in dispatch_agent_action`);
+  const bodyStart = start + marker.length;
+  const end = script.indexOf('\n      ;;', bodyStart);
+  if (end === -1) throw new Error(`closing ";;" for case block "${caseLabel})" not found`);
+  return script.slice(bodyStart, end);
+}
+
 function runEmbeddedCheck(js: string, text: string): number {
   const tmpFile = path.join(os.tmpdir(), `shelly-quality-gate-check-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
   fs.writeFileSync(tmpFile, js, 'utf8');
@@ -117,5 +132,51 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
     // ('\bi.m ...' instead of '\bi\x27m ...') would wrongly match "IBM" here —
     // a real false positive an earlier draft of this fix actually shipped.
     expect(runEmbeddedCheck(embeddedJs, 'IBM unable to deliver chips after the outage.')).toBe(1);
+  });
+});
+
+describe('dispatch_agent_action — quality gate wired into draft/notify (real emitted case blocks)', () => {
+  const script = generateRunScript(agent({ type: 'local' }));
+
+  it('gates the draft case ("|draft) before save_draft_result, regardless of the approval branch', () => {
+    const draftCase = extractCaseBlock(script, '""|draft');
+    const gateIdx = draftCase.indexOf('is_low_quality_completion "$preview"');
+    const approvalIdx = draftCase.indexOf('request_and_wait_approval "draft"');
+    const saveIdx = draftCase.indexOf('save_draft_result "$result_file"');
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(approvalIdx).toBeGreaterThan(-1);
+    expect(saveIdx).toBeGreaterThan(-1);
+    // The gate must run before BOTH the optional approval tap and the actual
+    // file write, so an autonomous run (which skips the approval branch
+    // entirely) still can't reach save_draft_result with bad content.
+    expect(gateIdx).toBeLessThan(approvalIdx);
+    expect(gateIdx).toBeLessThan(saveIdx);
+    expect(draftCase).toContain('ACTION_DISPATCH_STATUS="error"');
+    expect(draftCase).toContain('Draft content looks like a prompt echo or AI refusal');
+  });
+
+  it('gates the notify case before request_and_wait_approval / write_native_notification_request "success"', () => {
+    const notifyCase = extractCaseBlock(script, 'notify');
+    const gateIdx = notifyCase.indexOf('is_low_quality_completion "$preview"');
+    const approvalIdx = notifyCase.indexOf('request_and_wait_approval "notify"');
+    const successNotifyIdx = notifyCase.indexOf('write_native_notification_request "success" "$preview"');
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(approvalIdx).toBeGreaterThan(-1);
+    expect(successNotifyIdx).toBeGreaterThan(-1);
+    expect(gateIdx).toBeLessThan(approvalIdx);
+    expect(gateIdx).toBeLessThan(successNotifyIdx);
+    expect(notifyCase).toContain('ACTION_DISPATCH_STATUS="error"');
+    expect(notifyCase).toContain('Notify content looks like a prompt echo or AI refusal');
+  });
+
+  it('the draft/notify gate calls the SAME is_low_quality_completion function already exercised above', () => {
+    // Not a hand-copied duplicate check: the function under is_low_quality_completion()
+    // is the single source of truth exercised by the earlier describe block's real
+    // node child-process runs; this only asserts the draft/notify cases call it.
+    const draftCase = extractCaseBlock(script, '""|draft');
+    const notifyCase = extractCaseBlock(script, 'notify');
+    expect(script).toContain('is_low_quality_completion() {');
+    expect(draftCase).toMatch(/if is_low_quality_completion "\$preview"; then/);
+    expect(notifyCase).toMatch(/if is_low_quality_completion "\$preview"; then/);
   });
 });

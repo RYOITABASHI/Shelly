@@ -702,8 +702,8 @@ NODEEOF
 # 2026-07-15 (a small local model echoing its own prompt + refusing on an
 # x.post step, which then reached the user's confirm card as if it were real
 # post content). Checked BEFORE any action that publishes outside the run's
-# own log (app-act/webhook/dm-reply) so a bad completion never reaches a
-# human-facing surface in the first place — this is a stronger, EARLIER gate
+# own log (app-act/webhook/dm-reply/draft/notify) so a bad completion never
+# reaches a human-facing surface in the first place — this is a stronger, EARLIER gate
 # than isLowQualityCompletion in lib/agent-escalation-ladder.ts (the JS copy
 # is the unit-tested source of truth; this shell copy exists only because
 # the pre-dispatch check has to happen here, before request_and_wait_approval,
@@ -1176,6 +1176,12 @@ dispatch_agent_action() {
       return 0
       ;;
     ""|draft)
+      if is_low_quality_completion "$preview"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Draft content looks like a prompt echo or AI refusal, not real content — escalating."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       # N2: autonomous agents auto-approve a draft→vault save. It is a local file
       # write only (low-risk) — cli/webhook/notify still require an approval tap,
       # and secret-guard has already forced the run on-device, so nothing leaves
@@ -1193,6 +1199,12 @@ dispatch_agent_action() {
       return 0
       ;;
     notify)
+      if is_low_quality_completion "$preview"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="Notify content looks like a prompt echo or AI refusal, not real content — escalating."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       request_and_wait_approval "notify" "$preview" "$result_file" || return 1
       write_native_notification_request "success" "$preview"
       return 0

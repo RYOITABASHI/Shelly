@@ -1376,6 +1376,19 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
+  // draft/notify have no per-type validation branch below (unlike
+  // webhook/dm-reply/app-act), so the quality gate has to sit here instead —
+  // before the trust shortcut AND before the approval-request fallback below,
+  // so a bad completion is blocked no matter which path a run takes. Mirrors
+  // the .sh executor's is_low_quality_completion call placed at the top of
+  // each case, before request_and_wait_approval / save_draft_result.
+  if ((actionType === 'draft' || actionType === 'notify') && isLowQualityCompletion(preview)) {
+    const message = actionType === 'draft'
+      ? 'Draft content looks like a prompt echo or AI refusal, not real content — escalating.'
+      : 'Notify content looks like a prompt echo or AI refusal, not real content — escalating.';
+    writeNotification(paths, plan, 'error', message);
+    return { status: 'error', preview: message, errorMessage: message };
+  }
   // app-act is deliberately EXCLUDED from this trust shortcut (unlike
   // draft/notify): its own case below always runs so it can still validate +
   // write an approval request carrying the resolved post content — trust

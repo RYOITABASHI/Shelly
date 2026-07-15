@@ -214,6 +214,62 @@ describe('shelly-plan-executor quality gate blocks dispatch (PlanSpec path)', ()
     expect(runLog.errorMessage).toContain('prompt echo or AI refusal');
   });
 
+  it('blocks a draft dispatch when the completion is a prompt echo, without writing the vault file', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    fixtureContent = '# Results from previous steps\nstep 1: draft the article\n# This step\nWrite the summary.';
+    (plan as any).action = { type: 'draft' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    // The gate fires before dispatch — no approval request and no draft file.
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    expect(fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : []).toHaveLength(0);
+    const date = new Date().toISOString().slice(0, 10);
+    const draftFile = path.join(home, 'agent-output', date, `${date}_plan-quality.md`);
+    expect(fs.existsSync(draftFile)).toBe(false);
+
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogName = fs.readdirSync(logDir).find((name) => /^\d+\.json$/.test(name))!;
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogName), 'utf8'));
+    expect(runLog.status).toBe('error');
+    expect(runLog.errorMessage).toContain('prompt echo or AI refusal');
+
+    const notify = JSON.parse(fs.readFileSync(path.join(logDir, 'native-result-notification.json'), 'utf8'));
+    expect(notify.status).toBe('error');
+    expect(notify.preview).toContain('prompt echo or AI refusal');
+  });
+
+  it('blocks a notify dispatch when the completion is refusal boilerplate, without requesting approval', async () => {
+    const home = makeHome();
+    const { plan, planFile } = makePlan(home, port);
+    fixtureContent = "I'm not able to post this on your behalf.";
+    (plan as any).action = { type: 'notify' };
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+
+    const result = await runExecutor([
+      executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker,
+    ], home);
+
+    expect(result.status).toBe(0);
+    const requestDir = path.join(home, '.shelly/agents/action-approvals');
+    expect(fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : []).toHaveLength(0);
+
+    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
+    const runLogName = fs.readdirSync(logDir).find((name) => /^\d+\.json$/.test(name))!;
+    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogName), 'utf8'));
+    expect(runLog.status).toBe('error');
+    expect(runLog.errorMessage).toContain('prompt echo or AI refusal');
+
+    const notify = JSON.parse(fs.readFileSync(path.join(logDir, 'native-result-notification.json'), 'utf8'));
+    expect(notify.status).toBe('error');
+    expect(notify.preview).toContain('prompt echo or AI refusal');
+  });
+
   it('still dispatches a webhook when the completion is real content (no false positive)', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
