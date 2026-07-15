@@ -1147,22 +1147,23 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### exec-wrapper.c — フォーク子プロセス SIGSEGV（MAX_ARGC/MAX_ENVP スタックフレーム肥大化）— 修正差分あり・実機NDKビルド未検証
+### exec-wrapper.c — フォーク子プロセス SIGSEGV（MAX_ARGC/MAX_ENVP スタックフレーム肥大化）— コミット済み・実機ランタイム検証待ち
 
 **発見**: 2026-07-15 の未マージブランチ棚卸しで `origin/fix/bash-launcher-ci-marker` から Codex サブエージェント経由で発見・移植。
 
 **症状/原因**: `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c` の `MAX_ARGC`/`MAX_ENVP` が共に 4096 で、`execve()` 呼び出し前に argv/envp ポインタ配列をスタック確保するため、fork した子プロセス（スタックが限られる）が実際の `execve` システムコールに到達する前にスタックオーバーフローし、通常の tombstone を伴わず SIGSEGV する。`-fno-stack-protector` でビルドされているため ASAN/stack-protector 由来の誤検知ではなく、正真正銘の自動変数オーバーフロー。
 
-**修正**: `MAX_ARGC` 4096→1024、`MAX_ENVP` 4096→512 に縮小（スタックフレーム ~82KB→~29KB）。加えて `scrub_system_envp`/`scrub_codex_child_envp`/`add_app_loader_envp`/`add_codex_helper_envp` の各コピーループに、配列が `MAX_ENVP` で打ち切られた場合の overflow ガード（`if (i >= MAX_ENVP) return -1;`）を追加し、サイレントな環境変数切り捨てを防止。
+**修正**: `MAX_ARGC` 4096→1024、`MAX_ENVP` 4096→512 に縮小（スタックフレーム ~82KB→~29KB）。加えて `scrub_system_envp`/`scrub_codex_child_envp`/`add_app_loader_envp`/`add_codex_helper_envp` の各コピーループに、配列が `MAX_ENVP` で打ち切られた場合の overflow ガード（`if (i == MAX_ENVP && source[i] != NULL) return -1;`）を追加し、サイレントな環境変数切り捨てを防止。
 
-**状態**: 差分は `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c` の working tree に適用済み（**未コミット**）。ロジックはCC本人が精読し健全と判断したが、**このセッションには Android NDK/Clang ツールチェーンが無いためコンパイル検証未実施、実機ビルド検証も未実施**。ネイティブクラッシュ修正コードのため、コンパイル・実機確認なしにコミット・pushしない。
+**2回のCodexサブエージェントレビュー（同期実行）**: 1回目で実際のバグを発見——初版のガード `if (i >= MAX_ENVP) return -1;` は「配列がちょうどMAX_ENVP件で切り詰めなし」と「MAX_ENVPを超えて実際に切り詰められた」の両ケースでループ終了時 `i == MAX_ENVP` になり区別できないoff-by-one。`source[i]`（ループが処理しなかった1件先）を覗いて判定する形に修正。2回目のレビューで、この`source[MAX_ENVP]`読み取りが常に安全（execve/posix_spawnのNULL終端契約、またはローカル生成配列のMAX_ENVP+1容量確保のいずれかにより境界外読み取りにならない）であることを確認し、SAFE TO PUSH判定。コミット `0eb30a995`。
+
+**状態**: コミット・push済み。CIの `:terminal-emulator:externalNativeBuildRelease`（NDK/CMake経由の実コンパイル）でコンパイル検証される想定だが、このセッションでは結果未確認。**実機でのランタイム検証（実際に子プロセスのSIGSEGVが止まるか、大きなargv/envpでの通常スクリプト実行が退行しないか）は未実施**。
 
 **戻す条件**:
-1. `pnpm android`（またはCI経由）で NDK ビルドが通ることを確認。
+1. CIビルドがコンパイルエラーなしで通ることを確認。
 2. 実機で `libexec_wrapper.so` 経由の子プロセス起動（bash 実行、CLI ラッパー等）が SIGSEGV せず動作することを確認。
-3. 確認後にコミット・push。
 
-**優先度**: P1（実際に発生していたクラッシュの根治だが、実機未確認のうちは適用しない）
+**優先度**: P1（実際に発生していたクラッシュの根治だが、実機ランタイム検証が済むまでは「解決済み」と見なさない）
 
 ---
 
