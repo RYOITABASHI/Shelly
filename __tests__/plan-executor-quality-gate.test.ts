@@ -89,9 +89,13 @@ describe('isLowQualityCompletion (pure)', () => {
 
   it('does not flag real content', () => {
     expect(isLowQualityCompletion('Here is a great update about our new feature launch today.')).toBe(false);
-    expect(isLowQualityCompletion('')).toBe(false);
     expect(isLowQualityCompletion(null)).toBe(false);
     expect(isLowQualityCompletion(undefined)).toBe(false);
+  });
+
+  it('flags empty/whitespace-only completions (regression: codex-driver telemetry strip yields empty preview)', () => {
+    expect(isLowQualityCompletion('')).toBe(true);
+    expect(isLowQualityCompletion('   \n\t  ')).toBe(true);
   });
 });
 

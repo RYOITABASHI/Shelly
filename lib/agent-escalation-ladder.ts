@@ -253,9 +253,20 @@ const REFUSAL_PATTERNS = [
  * a dispatching action never reaches a human-facing surface at all. This JS
  * copy still matters for non-dispatching / non-final steps in a chain, where
  * escalating to the next ladder tool for the NEXT step is the only signal.
+ *
+ * Empty/whitespace-only text is ALSO treated as low-quality (2026-07-15,
+ * found on-device): a completed run whose real answer got fully stripped by
+ * the codex-driver telemetry filter (clean_result_preview in
+ * lib/agent-executor.ts) still reports status "success" with an empty
+ * preview — an empty string previously matched neither marker set, so it
+ * silently reached the confirm card blank instead of being treated as a
+ * failed attempt. Since Codex is always the terminal ladder rung, this can't
+ * cause an escalation loop; it converts a silent blank card into a clear
+ * step-failure error.
  */
 export function isLowQualityCompletion(text: string | null | undefined): boolean {
-  if (typeof text !== 'string' || !text) return false;
+  if (typeof text !== 'string') return false;
+  if (text.trim().length === 0) return true;
   if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
   return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
 }

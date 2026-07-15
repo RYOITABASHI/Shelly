@@ -265,7 +265,13 @@ const REFUSAL_PATTERNS = [
 ];
 
 function isLowQualityCompletion(text) {
-  if (typeof text !== 'string' || !text) return false;
+  if (typeof text !== 'string') return false;
+  // Empty/whitespace-only is ALSO low-quality (2026-07-15): a codex-driver
+  // step can complete successfully with status "success" yet yield a fully
+  // empty preview once its telemetry is stripped (see the .sh executor's
+  // clean_result_preview) — previously this matched neither pattern set and
+  // silently reached the confirm card blank instead of failing loud.
+  if (text.trim().length === 0) return true;
   if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
   return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
 }

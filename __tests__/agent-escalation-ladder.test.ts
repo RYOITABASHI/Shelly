@@ -278,7 +278,17 @@ describe('failure detection', () => {
     expect(isLowQualityCompletion('STEAM教育×AI の最新動向まとめ: 論文3件、ニュース2件を要約しました。')).toBe(false);
     expect(isLowQualityCompletion('This step forward for AI in education looks promising.')).toBe(false);
     expect(isLowQualityCompletion(null)).toBe(false);
-    expect(isLowQualityCompletion('')).toBe(false);
+    expect(isLowQualityCompletion(undefined)).toBe(false);
+  });
+
+  it('isLowQualityCompletion flags empty/whitespace-only text (regression: codex-driver telemetry strip yields empty preview)', () => {
+    // 2026-07-15: clean_result_preview() strips every line the codex driver
+    // ever prints, so a Codex-routed step that completes successfully can
+    // still yield a fully empty preview — previously this matched neither
+    // the echo nor the refusal patterns and silently reached the confirm
+    // card blank instead of failing loud.
+    expect(isLowQualityCompletion('')).toBe(true);
+    expect(isLowQualityCompletion('   \n\t  ')).toBe(true);
   });
 
   it('attemptFailed does not flag a normal successful completion', () => {

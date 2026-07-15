@@ -697,19 +697,32 @@ NODEEOF
 }
 
 # Detect a response that echoes the step-prompt scaffold back verbatim (see
-# buildStepPrompt, lib/agent-orchestration.ts) or is refusal boilerplate,
-# rather than real content — the exact on-device failure mode found
-# 2026-07-15 (a small local model echoing its own prompt + refusing on an
-# x.post step, which then reached the user's confirm card as if it were real
-# post content). Checked BEFORE any action that publishes outside the run's
-# own log (app-act/webhook/dm-reply/draft/notify) so a bad completion never
-# reaches a human-facing surface in the first place — this is a stronger, EARLIER gate
+# buildStepPrompt, lib/agent-orchestration.ts), is refusal boilerplate, or is
+# empty/whitespace-only — rather than real content. The echo/refusal case is
+# the on-device failure mode found 2026-07-15 (a small local model echoing
+# its own prompt + refusing on an x.post step, reaching the user's confirm
+# card as if it were real post content). The empty case is a SEPARATE bug
+# found the same day: the codex-driver path's telemetry filter
+# (clean_result_preview, this file) strips every line the driver ever prints
+# (all 8 of its output prefixes), so a Codex-routed step that completes
+# successfully still yields an empty $preview — which, before this check,
+# reached the confirm card as a blank content box instead of failing loud.
+# Checked BEFORE any action that publishes outside the run's own log
+# (app-act/webhook/dm-reply/draft/notify) so a bad completion never reaches a
+# human-facing surface in the first place — this is a stronger, EARLIER gate
 # than isLowQualityCompletion in lib/agent-escalation-ladder.ts (the JS copy
 # is the unit-tested source of truth; this shell copy exists only because
 # the pre-dispatch check has to happen here, before request_and_wait_approval,
 # not after the run log is read back on the JS side).
 is_low_quality_completion() {
   text="$1"
+  # Empty/whitespace-only check first, cheaply, in plain shell (works even
+  # without node) — trims via shell parameter expansion, no external process.
+  trimmed="\${text#"\${text%%[![:space:]]*}"}"
+  trimmed="\${trimmed%"\${trimmed##*[![:space:]]}"}"
+  if [ -z "$trimmed" ]; then
+    return 0
+  fi
   if node_usable; then
     if SHELLY_QUALITY_CHECK_TEXT="$text" shelly_node -e '
 const text = process.env.SHELLY_QUALITY_CHECK_TEXT || "";

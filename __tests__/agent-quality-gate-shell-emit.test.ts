@@ -72,6 +72,45 @@ function extractCaseBlock(script: string, caseLabel: string): string {
   return script.slice(bodyStart, end);
 }
 
+function extractFullFunction(script: string): string {
+  const fnMarker = 'is_low_quality_completion() {';
+  const fnStart = script.indexOf(fnMarker);
+  if (fnStart === -1) throw new Error('is_low_quality_completion function not found in generated script');
+  const fnEnd = script.indexOf('\n}', fnStart);
+  if (fnEnd === -1) throw new Error('closing brace for is_low_quality_completion not found');
+  return script.slice(fnStart, fnEnd + 2);
+}
+
+/**
+ * Runs the REAL, FULL bash function (not just its embedded JS) via a real
+ * bash process — this is what exercises the shell-level empty/whitespace
+ * trim check, which runs BEFORE node is ever invoked. node_usable/shelly_node
+ * are stubbed to proxy to the real local `node` binary (the production
+ * versions resolve an Android-bundled binary via shelly_run_app_binary,
+ * unavailable on this dev machine) so the echo/refusal branch still executes
+ * for real too, not just the early-return empty-check branch.
+ */
+function runFullFunctionCheck(fnText: string, text: string): number {
+  const wrapperPath = path.join(os.tmpdir(), `shelly-quality-gate-wrapper-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`);
+  const nodeBin = process.execPath.replace(/\\/g, '/');
+  const script = `node_usable() { return 0; }
+shelly_node() { "${nodeBin}" "$@"; }
+${fnText}
+is_low_quality_completion "$1"
+`;
+  fs.writeFileSync(wrapperPath, script, 'utf8');
+  try {
+    execFileSync('bash', [wrapperPath, text], { stdio: 'pipe' });
+    return 0;
+  } catch (err: unknown) {
+    const status = (err as { status?: number }).status;
+    if (typeof status === 'number') return status;
+    throw err;
+  } finally {
+    fs.unlinkSync(wrapperPath);
+  }
+}
+
 function runEmbeddedCheck(js: string, text: string): number {
   const tmpFile = path.join(os.tmpdir(), `shelly-quality-gate-check-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
   fs.writeFileSync(tmpFile, js, 'utf8');
@@ -132,6 +171,35 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
     // ('\bi.m ...' instead of '\bi\x27m ...') would wrongly match "IBM" here —
     // a real false positive an earlier draft of this fix actually shipped.
     expect(runEmbeddedCheck(embeddedJs, 'IBM unable to deliver chips after the outage.')).toBe(1);
+  });
+});
+
+describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {
+  // 2026-07-15: the codex-driver path's clean_result_preview() strips every
+  // line the driver ever prints (all 8 of its telemetry prefixes), so a
+  // Codex-routed step that completes successfully can still yield a fully
+  // empty $preview — which, before this fix, silently reached the confirm
+  // card as a blank content box instead of failing loud (empty text matched
+  // neither the echo nor the refusal patterns). This exercises the REAL
+  // shell trim logic via a real bash process, not the embedded JS alone —
+  // the empty check runs in plain shell, before node is ever invoked.
+  const script = generateRunScript(agent({ type: 'local' }));
+  const fnText = extractFullFunction(script);
+
+  it('flags a fully empty completion', () => {
+    expect(runFullFunctionCheck(fnText, '')).toBe(0);
+  });
+
+  it('flags a whitespace-only completion (spaces, tabs, newlines)', () => {
+    expect(runFullFunctionCheck(fnText, '   \n\t  \n')).toBe(0);
+  });
+
+  it('still flags echo/refusal content through the full function (not just the embedded JS)', () => {
+    expect(runFullFunctionCheck(fnText, 'As an AI, I cannot generate a literal social media post.')).toBe(0);
+  });
+
+  it('does not flag real content with surrounding whitespace', () => {
+    expect(runFullFunctionCheck(fnText, '  STEAM教育×AIの最新動向まとめ。  ')).toBe(1);
   });
 });
 
