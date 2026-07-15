@@ -1199,7 +1199,6 @@ export function Sidebar() {
           ))}
         </SidebarSection>
 
-        {/* PORTS — live /proc/net/tcp{,6} scan every 15s (see useEffect above) */}
         {/* PROFILES */}
         <SidebarSection
           title={t('sidebar.profiles')}
@@ -1577,42 +1576,7 @@ const styles = StyleSheet.create({
     color: C.text2,
     letterSpacing: 0.3,
   },
-  // Ports
   // (cloudSpacer was reused here historically; inline flex:1 View now.)
-  // Ports
-  portRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: P.sidebarItem.px,
-    height: S.sidebarItemHeight,
-  },
-  portDot: {
-    width: S.agentDotSize,
-    height: S.agentDotSize,
-    borderRadius: S.agentDotSize / 2,
-    backgroundColor: C.text2,
-  },
-  portLabel: {
-    fontSize: F.sidebarItem.size,
-    fontFamily: F.family,
-    fontWeight: '700',
-    color: C.text1,
-  },
-  portName: {
-    fontSize: F.sidebarItem.size,
-    fontFamily: F.family,
-    fontWeight: F.sidebarItem.weight,
-    color: C.text2,
-  },
-  portEmpty: {
-    fontSize: F.sidebarItem.size,
-    fontFamily: F.family,
-    color: C.text3,
-    paddingHorizontal: P.sidebarItem.px,
-    paddingVertical: 6,
-    letterSpacing: 0.3,
-  },
   // Toggle
   toggleBtn: {
     flexDirection: 'row',

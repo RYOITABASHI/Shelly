@@ -65,9 +65,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;
   execCommand(command: string, timeoutMs?: number): Promise<{ exitCode: number; stdout: string; stderr: string }>;
-  readProcNetFile(path: string): Promise<string>;
   readDir(path: string): Promise<string>;
-  queryListenSockets(family: number): Promise<string>;
   getHomeDir(): Promise<string>;
   getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
   installApk(apkPath: string): Promise<void>;

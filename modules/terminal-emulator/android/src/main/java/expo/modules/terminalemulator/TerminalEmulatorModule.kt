@@ -1819,27 +1819,12 @@ class TerminalEmulatorModule : Module() {
             )
         }
 
-        // Bug #36: read /proc/net/tcp{,6} (or any small procfs file) directly
-        // via in-process fopen. Bypasses bash/LD_PRELOAD which exits=1 on some
-        // devices due to PATH/SELinux/LD_LIBRARY_PATH interactions.
-        AsyncFunction("readProcNetFile") { path: String ->
-            ShellyJNI.readProcNetFile(path)
-        }
-
         // Bug #70: list a directory directly via opendir/readdir/lstat,
         // bypassing bash/LD_PRELOAD which returns exit=0 stdout=0chars
         // on some devices (same root cause as bug #36). Used by FileTree /
         // Sidebar / FilesTab to populate the FILE TREE reliably.
         AsyncFunction("readDir") { path: String ->
             ShellyJNI.readDir(path)
-        }
-
-        // Bug #99: NETLINK_SOCK_DIAG enumeration of the app's own TCP
-        // listen sockets. Primary replacement for readProcNetFile on
-        // Android 10+ where SELinux denies /proc/net/tcp{,6} reads from
-        // untrusted_app. Family arg is 4 or 6.
-        AsyncFunction("queryListenSockets") { family: Int ->
-            ShellyJNI.queryListenSockets(family)
         }
 
         // bug #73: expose the real Plan B HOME so JS-side path normalization

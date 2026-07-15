@@ -267,7 +267,6 @@ first-time contributor が最も迷うのは「状態がどこにあるか」。
 | `profile-store` | SSHプロファイル | ✅ |
 | `workspace-store` | リポジトリごとのワークスペース分離 | ✅ |
 | `snippet-store` | 保存済みスニペット（Command Palette 経由で実行） | ✅ |
-| `ports-store` | ローカルリスナー一覧（/proc/net/tcp 15秒ポーリング） | — |
 | `theme-version-store` | テーマプリセット切替時のkey-remount用カウンタ | — |
 | `savepoint-store` | auto-savepoint のコミット履歴 | ✅ |
 | `preview-store` | Preview ペインの表示ファイルパス | — |
