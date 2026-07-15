@@ -203,18 +203,71 @@ const APK_DOWNLOAD_PAUSED_TIMEOUT_MS = 60_000;
 const APK_DOWNLOAD_STALL_TIMEOUT_MS = 45_000;
 
 // fetch() in React Native has no default timeout: a stalled TLS/connection
-// (or a throttled GitHub response held open) never settles, which hangs the
-// whole Updates refresh on "Checking…" forever. Abort the request after a
-// bounded time so the promise always rejects instead of hanging.
+// (or a throttled GitHub response held open) never settles. Bound both the
+// header phase and later body reads (`json()`/`text()`), otherwise a response
+// that arrives but hangs mid-body can still pin Updates on "Checking…".
+function withAbortTimeout<T>(
+  read: () => Promise<T>,
+  controller: AbortController,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
+      reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+    read().then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function wrapResponseBodyTimeout(
+  response: Response,
+  controller: AbortController,
+  timeoutMs: number,
+  label: string,
+): Response {
+  const text = response.text.bind(response);
+  const json = response.json.bind(response);
+  const arrayBuffer = response.arrayBuffer.bind(response);
+  response.text = () => withAbortTimeout<string>(text, controller, timeoutMs, `${label} text body`);
+  response.json = () => withAbortTimeout<any>(json, controller, timeoutMs, `${label} JSON body`);
+  response.arrayBuffer = () => withAbortTimeout<ArrayBuffer>(arrayBuffer, controller, timeoutMs, `${label} binary body`);
+  if (typeof response.blob === 'function') {
+    const blob = response.blob.bind(response);
+    response.blob = () => withAbortTimeout<Blob>(blob, controller, timeoutMs, `${label} blob body`);
+  }
+  return response;
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit = {},
   timeoutMs = NETWORK_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return wrapResponseBodyTimeout(response, controller, timeoutMs, url);
   } finally {
     clearTimeout(timer);
   }
@@ -867,13 +920,8 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     setLoading(true);
     setError(null);
     try {
-      // fetchWithTimeout only bounds the request up to the response headers — it
-      // clears its AbortController timer the moment fetch() resolves, so the
-      // subsequent `await response.json()/.text()` body read is UNBOUNDED. A
-      // GitHub response held open mid-body then hangs the body read forever, and
-      // Promise.allSettled never settles → "Checking…" sticks (bug: updater hang).
-      // Wrap EVERY entry (fetches included) in withTimeout so the whole operation
-      // — headers + body read — is bounded and refresh() always completes.
+      // Keep a whole-operation backstop around every entry. fetchWithTimeout now
+      // also aborts stalled body reads, but native probes still need this guard.
       const [runsResult, updateResult, devUpdateResult, codexRuntimeResult, versionResult, codexResult] = await Promise.allSettled([
         withTimeout(fetchBuildRuns(), 25_000, 'Build runs'),
         withTimeout(fetchLatestAndroidUpdate(), 25_000, 'Android update'),
