@@ -402,7 +402,7 @@ const ja: Record<string, string> = {
   'wallpaper.image_opacity': '画像の不透明度',
   'wallpaper.panel_opacity': 'パネルの不透明度',
   'wallpaper.terminal_transparency': 'ターミナルにも壁紙を表示（実験的）',
-  'wallpaper.terminal_transparency_hint': '以前このパネルには壁紙透過に紐づくグレー化バグがありましたが、その真因は修正済みのため、既定で他のペインと同様に透過します。表示に問題があればオフにしてください。',
+  'wallpaper.terminal_transparency_hint': '既定はオフです。壁紙をターミナルに透過させると、画像によっては等幅テキストの上に白いモヤがかかったように見えることがあります。試したい場合のみオンにしてください。',
   'wallpaper.permission_title': '権限が必要です',
   'wallpaper.permission_body': '壁紙を選択するには、写真ライブラリへのアクセス権限が必要です。',
   'wallpaper.pick_failed': '選択に失敗しました',
