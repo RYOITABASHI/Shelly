@@ -1817,15 +1817,15 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ## P3 — 長期ロードマップ / 検討中
 
-### 未マージブランチ棚卸し — 確信度低のまま保留した3件 (2026-07-15)
+### ✅ 未マージブランチ棚卸し — 3件とも死亡確定 (2026-07-15)
 
-**状態**: 2026-07-15 の全ブランチ棚卸し（`git cherry` によるcontent-based判定、93件のうちユニークコミットを持つブランチを抽出）で候補に上がったが、詳細調査を委任したCodexバックグラウンドタスクがセッション境界の制約（[[reference_codex_job_tracking_session_scoped]]）で追跡不能になり、確定判定を得られなかった3件。
+**状態**: 解決済み。当初、詳細調査を委任したCodexバックグラウンドタスクがセッション境界の制約（[[reference_codex_job_tracking_session_scoped]]）で追跡不能になり低確信度の推測に留まっていたが、`codex:codex-rescue` サブエージェントを `--fresh --wait`（同期実行）で再投入し、`git cherry origin/main <branch>` によるcontent-based判定＋新しい方のコミット差分の精読で確定判定を得た。
 
-1. `origin/codex/app-act-scroll-recover-work`（302コミット遅れ）— app.act（ネイティブUI自動化）の初期プロトタイプ。トップコミット「Handle app.act zero-match scroll recovery」。**手動での状況証拠**: main には既にapp.actのPhase 2/3/4が別実装で着地済み（PR #128/#129/#133/#134）。低確信度で「supersededの可能性大」。
-2. `origin/codex/phase0-2-status-audit`（207コミット遅れ）— トップコミット「docs(notify): refresh increment status comments」。コミット履歴を見る限りドキュメント/ステータス記録のみで実装コードを含まない可能性が高い。低確信度で「低価値」。
-3. `origin/cc/phase0-fs-exec`（211コミット遅れ）— トップコミット「feat(dm-pairing): reply-sending plumbing (Increment 0, dormant)」。**手動での状況証拠**: このブランチの履歴は `origin/claude/work-handoff-2qb1xd`（CLAUDE.mdで「374箇所コンフリクトの陳腐化、rebase価値なしと判定（破棄推奨）」と既に死亡確定済み）と深い血統を共有している（`git log`で両ブランチのマージコミットが相互参照）。低確信度で「同様に死亡している可能性大」。
+1. `origin/codex/app-act-scroll-recover-work` — **DEAD**。触っている3ファイル（`AppActExecutor.kt`/`AppActRecipeStore.kt`/`line.send-message.json`）は main とバイト単位で同一。zero-match時のリカバリ発想（`recoverOnZeroMatch: ["back","back","scrollToTop"]`）は main のapp.act本実装フェーズ（PR #128/#129/#133/#134）にsupersededされている。このブランチは今夜の `14d412c88`（x.postレシピのcompose画面遷移ステップ追加）より前のもので、`x.post.json` にそのステップが欠けたまま——これをベースラインにすると退行する。
+2. `origin/codex/phase0-2-status-audit` — **DEAD**。新しい方のコミットはコメントのみの編集とステータス記録markdownのみ、実行コードの変更なし。含まれる実コード（keyless backend skip等）は既に `ae3c88ba2`（PR #121）等でmainに着地済み。
+3. `origin/cc/phase0-fs-exec` — **DEAD**。`git merge-base` で確認済み、既に死亡確定済みの `origin/claude/work-handoff-2qb1xd` 系統に完全に含まれる（独立実装ではない）。DM-pairingのcrudeな初期プロトタイプで、main の `1af6bce5`（PR #112、完全なペアリングUI・失効・レビューゲート付きdm-reply）に完全にsupersededされている。
 
-**戻す条件**: 次回セッションで `git fetch` して `git cherry origin/main <branch>` の再確認＋各ブランチのトップ数コミットの内容精査を行い、確定的な死亡宣言（ブランチ削除）または移植のどちらかに決着させる。
+**削除**: 3件とも `origin` からの削除を試みたが、auto modeクラシファイアがワイルドカード権限追加（`git push origin --delete *`）を「自己への権限拡張」として拒否したため、削除コマンドはユーザーに委ねた（下記参照）。判定自体は確定済み。
 
 ---
 
