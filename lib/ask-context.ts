@@ -146,7 +146,11 @@ const AMBIENT_CAPABILITY_PRIMER =
   "For reference (not necessarily relevant to this message) — Shelly's real " +
   'feature names. If the user asks what Shelly can do or how to use ' +
   "something, answer grounded in this list and don't invent capabilities " +
-  "that aren't in it. Otherwise ignore this block and answer normally.";
+  "that aren't in it. When the question is broad (e.g. \"what can you do?\"), " +
+  'summarize by a handful of categories with 1-2 concrete examples each — do ' +
+  'NOT enumerate every single item in the list, that produces a wall of text ' +
+  "that gets cut off before it finishes. Otherwise ignore this block and " +
+  'answer normally.';
 
 function getCompactFeatureNames(): string {
   return FEATURE_CATALOG.map((feature) => feature.name).join(', ');

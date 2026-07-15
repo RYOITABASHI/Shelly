@@ -40,8 +40,15 @@ export interface OllamaChatRequest {
   };
 }
 
-const DEFAULT_LOCAL_MAX_TOKENS = 384;
-const DEFAULT_LOCAL_CONTEXT_TOKENS = 1024;
+// The always-on ambient feature-name catalog (lib/ask-context.ts) alone runs
+// ~700-750 tokens; with the rest of the system prompt + terminal context +
+// the user's message, a 1024 context window left almost no room for
+// generation, truncating answers mid-sentence (observed on-device asking
+// "何が出来る？" — cut off mid-list even with a "summarize, don't enumerate"
+// prompt instruction). Both bumped together: more context headroom AND more
+// generation budget.
+const DEFAULT_LOCAL_MAX_TOKENS = 640;
+const DEFAULT_LOCAL_CONTEXT_TOKENS = 2048;
 const XHR_PROGRESS_FLUSH_MS = 50;
 const LOCAL_LLM_ACTIVITY_TOUCH_INTERVAL_MS = 10_000;
 

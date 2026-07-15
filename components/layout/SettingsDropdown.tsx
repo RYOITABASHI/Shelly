@@ -115,6 +115,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <UpdatesSection onOpenBuilds={() => onOpenBuilds?.()} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CodexLoginSection onClose={onClose} />
+            <ResetSettingsSection />
             <IntegrationsSection
               onOpenMcp={() => setMcpOpen(true)}
               onOpenLlama={() => setLlamaOpen(true)}
@@ -1382,6 +1383,50 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
         <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('codex_login.sign_in_chatgpt')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+}
+
+// ─── Reset settings ──────────────────────────────────────────────────────────
+// resetSettings() (store/settings-store.ts) has existed since the store's
+// original design but had no UI trigger anywhere — every other per-field
+// toggle in this screen was reachable, this whole-settings reset never was.
+// Wipes fontSize/theme/API keys stored in settings/local LLM config/autonomous
+// consent/etc. back to DEFAULT_SETTINGS, so this needs the same destructive
+// confirm pattern as DM-pairing's revoke/delete, not a bare button.
+
+function ResetSettingsSection() {
+  const { t } = useTranslation();
+
+  const confirmReset = React.useCallback(() => {
+    Alert.alert(
+      t('settings.reset_confirm_title'),
+      t('settings.reset_confirm_body'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('settings.reset_action'),
+          style: 'destructive',
+          onPress: () => {
+            useSettingsStore.getState().resetSettings();
+            ToastAndroid.show(t('settings.reset_done_toast'), ToastAndroid.SHORT);
+          },
+        },
+      ],
+    );
+  }, [t]);
+
+  return (
+    <Section title={t('settings.reset_title')}>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle(), { borderColor: C.errorText }]}
+        onPress={confirmReset}
+        accessibilityRole="button"
+        accessibilityLabel={t('settings.reset_action')}
+      >
+        <MaterialIcons name="restore" size={13} color={C.errorText} />
+        <Text style={[styles.integrationLabel, { color: C.errorText }]}>{t('settings.reset_action')}</Text>
       </Pressable>
     </Section>
   );

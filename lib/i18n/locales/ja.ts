@@ -261,7 +261,7 @@ const ja: Record<string, string> = {
   'agent_action_confirm_body_dmreply': 'ペアリング済みの会話へメッセージを送ります。送信先と本文を確認してください。',
   'agent_action_confirm_dmreply_target': 'ペアリング済みの会話',
   'agent_action_confirm_dmreply_text': '返信テキスト',
-  'agent_action_confirm_dmreply_failed': '返信がブロックされたか送信できませんでした。エージェント操作は拒否されました。',
+  'agent_action_confirm_dmreply_failed': 'DM返信を送信できませんでした。よくある原因: (1) 返信元の通知がすでに既読/削除されて通知欄から消えている、(2) このペアリングが無効化されている、(3) 直近で同じ相手に送信したばかり（連続送信の間隔制限）。対象アプリで新しく通知を受け取ってから、もう一度お試しください。',
   'agentcard.command_placeholder': '結果を渡して実行するコマンド',
   'agentcard.cli_warning': 'コマンドは自動実行されません — 実行ごとにアプリ内で確認が必要です。',
   'agentcard.intent_mode_launch': 'アプリを起動',
@@ -1012,6 +1012,11 @@ const ja: Record<string, string> = {
 
   // ── Settings Screen (extra keys) ────────────────────────────────
   'settings.display': '表示',
+  'settings.reset_title': 'リセット',
+  'settings.reset_action': '全設定をデフォルトに戻す',
+  'settings.reset_confirm_title': '全設定をリセットしますか？',
+  'settings.reset_confirm_body': 'フォント・テーマ・ここに保存されたAPIキー・ローカルLLM設定など、全ての設定がデフォルトに戻ります。ペア設定済みの会話・保存済みエージェント・スキルは影響を受けません。',
+  'settings.reset_done_toast': '設定をデフォルトに戻しました。',
   'settings.font_size_current': '現在: {{size}}px',
   'settings.line_height_current': '現在: {{height}}x',
   'settings.glass_bg': 'ガラス背景',

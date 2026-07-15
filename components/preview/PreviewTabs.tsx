@@ -25,6 +25,16 @@ export const PreviewTabs = memo(function PreviewTabs({ onClose, onEditSubmit }: 
   const activeTab = usePreviewStore((s) => s.activeTab);
   const setActiveTab = usePreviewStore((s) => s.setActiveTab);
   const previewUrl = usePreviewStore((s) => s.previewUrl);
+  const hasNewContent = usePreviewStore((s) => s.hasNewContent);
+  const clearNewContent = usePreviewStore((s) => s.clearNewContent);
+
+  const selectTab = (tab: PreviewTabId) => {
+    setActiveTab(tab);
+    // hasNewContent is only ever set by notifyFileChange (a 'code' tab event),
+    // so acknowledging it on any tab switch that lands on 'code' is enough —
+    // no need to track which specific file changed.
+    if (tab === 'code') clearNewContent();
+  };
   const containerBg = usePaneContentBackground(colors.background);
   const tabBarBg = usePanelBackground(colors.surfaceHigh);
 
@@ -36,10 +46,15 @@ export const PreviewTabs = memo(function PreviewTabs({ onClose, onEditSubmit }: 
           <TouchableOpacity
             key={tab.id}
             style={[styles.tab, activeTab === tab.id && { borderBottomColor: colors.accent, borderBottomWidth: 2 }]}
-            onPress={() => setActiveTab(tab.id)}
+            onPress={() => selectTab(tab.id)}
             activeOpacity={0.7}
           >
-            <MaterialIcons name={tab.icon as any} size={14} color={activeTab === tab.id ? colors.accent : colors.muted} />
+            <View>
+              <MaterialIcons name={tab.icon as any} size={14} color={activeTab === tab.id ? colors.accent : colors.muted} />
+              {tab.id === 'code' && hasNewContent && (
+                <View style={[styles.newContentDot, { backgroundColor: colors.accent, borderColor: tabBarBg }]} />
+              )}
+            </View>
             <Text style={[styles.tabLabel, { color: activeTab === tab.id ? colors.accent : colors.muted }]}>
               {tab.label}
             </Text>
@@ -67,4 +82,13 @@ const styles = StyleSheet.create({
   tab: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 8 },
   tabLabel: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, fontWeight: '600' },
   closeBtn: { padding: 8 },
+  newContentDot: {
+    position: 'absolute',
+    top: -2,
+    right: -3,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 1,
+  },
 });

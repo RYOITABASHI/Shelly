@@ -262,7 +262,7 @@ const en: Record<string, string> = {
   'agent_action_confirm_body_dmreply': 'This sends a message to the paired live conversation. Review the exact target and text.',
   'agent_action_confirm_dmreply_target': 'PAIRED CONVERSATION',
   'agent_action_confirm_dmreply_text': 'REPLY TEXT',
-  'agent_action_confirm_dmreply_failed': 'The reply was blocked or could not be sent. The agent action was declined.',
+  'agent_action_confirm_dmreply_failed': "Couldn't send the DM reply. Common causes: (1) the original notification was already read/dismissed and is gone from the shade, (2) this pairing was revoked, (3) you just replied to this same conversation moments ago (rate limit). Trigger a fresh notification in the paired app, then try again.",
   'agentcard.command_placeholder': 'command to run with the result',
   'agentcard.cli_warning': 'Commands never auto-run — each run needs in-app confirmation.',
   'agentcard.intent_mode_launch': 'Launch app',
@@ -1014,6 +1014,11 @@ const en: Record<string, string> = {
 
   // ── Settings Screen (extra keys) ────────────────────────────────
   'settings.display': 'Display',
+  'settings.reset_title': 'Reset',
+  'settings.reset_action': 'Reset all settings to defaults',
+  'settings.reset_confirm_title': 'Reset all settings?',
+  'settings.reset_confirm_body': 'This resets font, theme, API keys stored here, local LLM config, and every other setting back to defaults. Paired conversations, saved agents, and skills are not affected.',
+  'settings.reset_done_toast': 'Settings reset to defaults.',
   'settings.font_size_current': 'Current: {{size}}px',
   'settings.line_height_current': 'Current: {{height}}x',
   'settings.glass_bg': 'Glass background',
