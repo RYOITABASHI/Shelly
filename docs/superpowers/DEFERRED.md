@@ -1147,6 +1147,25 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### exec-wrapper.c — フォーク子プロセス SIGSEGV（MAX_ARGC/MAX_ENVP スタックフレーム肥大化）— 修正差分あり・実機NDKビルド未検証
+
+**発見**: 2026-07-15 の未マージブランチ棚卸しで `origin/fix/bash-launcher-ci-marker` から Codex サブエージェント経由で発見・移植。
+
+**症状/原因**: `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c` の `MAX_ARGC`/`MAX_ENVP` が共に 4096 で、`execve()` 呼び出し前に argv/envp ポインタ配列をスタック確保するため、fork した子プロセス（スタックが限られる）が実際の `execve` システムコールに到達する前にスタックオーバーフローし、通常の tombstone を伴わず SIGSEGV する。`-fno-stack-protector` でビルドされているため ASAN/stack-protector 由来の誤検知ではなく、正真正銘の自動変数オーバーフロー。
+
+**修正**: `MAX_ARGC` 4096→1024、`MAX_ENVP` 4096→512 に縮小（スタックフレーム ~82KB→~29KB）。加えて `scrub_system_envp`/`scrub_codex_child_envp`/`add_app_loader_envp`/`add_codex_helper_envp` の各コピーループに、配列が `MAX_ENVP` で打ち切られた場合の overflow ガード（`if (i >= MAX_ENVP) return -1;`）を追加し、サイレントな環境変数切り捨てを防止。
+
+**状態**: 差分は `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c` の working tree に適用済み（**未コミット**）。ロジックはCC本人が精読し健全と判断したが、**このセッションには Android NDK/Clang ツールチェーンが無いためコンパイル検証未実施、実機ビルド検証も未実施**。ネイティブクラッシュ修正コードのため、コンパイル・実機確認なしにコミット・pushしない。
+
+**戻す条件**:
+1. `pnpm android`（またはCI経由）で NDK ビルドが通ることを確認。
+2. 実機で `libexec_wrapper.so` 経由の子プロセス起動（bash 実行、CLI ラッパー等）が SIGSEGV せず動作することを確認。
+3. 確認後にコミット・push。
+
+**優先度**: P1（実際に発生していたクラッシュの根治だが、実機未確認のうちは適用しない）
+
+---
+
 ### MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない
 
 **発見**: 2026-07-13 Batch 11 の MEMORY-001 移植時に、source design の既知制限を再確認。
@@ -1797,6 +1816,18 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 ---
 
 ## P3 — 長期ロードマップ / 検討中
+
+### 未マージブランチ棚卸し — 確信度低のまま保留した3件 (2026-07-15)
+
+**状態**: 2026-07-15 の全ブランチ棚卸し（`git cherry` によるcontent-based判定、93件のうちユニークコミットを持つブランチを抽出）で候補に上がったが、詳細調査を委任したCodexバックグラウンドタスクがセッション境界の制約（[[reference_codex_job_tracking_session_scoped]]）で追跡不能になり、確定判定を得られなかった3件。
+
+1. `origin/codex/app-act-scroll-recover-work`（302コミット遅れ）— app.act（ネイティブUI自動化）の初期プロトタイプ。トップコミット「Handle app.act zero-match scroll recovery」。**手動での状況証拠**: main には既にapp.actのPhase 2/3/4が別実装で着地済み（PR #128/#129/#133/#134）。低確信度で「supersededの可能性大」。
+2. `origin/codex/phase0-2-status-audit`（207コミット遅れ）— トップコミット「docs(notify): refresh increment status comments」。コミット履歴を見る限りドキュメント/ステータス記録のみで実装コードを含まない可能性が高い。低確信度で「低価値」。
+3. `origin/cc/phase0-fs-exec`（211コミット遅れ）— トップコミット「feat(dm-pairing): reply-sending plumbing (Increment 0, dormant)」。**手動での状況証拠**: このブランチの履歴は `origin/claude/work-handoff-2qb1xd`（CLAUDE.mdで「374箇所コンフリクトの陳腐化、rebase価値なしと判定（破棄推奨）」と既に死亡確定済み）と深い血統を共有している（`git log`で両ブランチのマージコミットが相互参照）。低確信度で「同様に死亡している可能性大」。
+
+**戻す条件**: 次回セッションで `git fetch` して `git cherry origin/main <branch>` の再確認＋各ブランチのトップ数コミットの内容精査を行い、確定的な死亡宣言（ブランチ削除）または移植のどちらかに決着させる。
+
+---
 
 ### 📦 OSS integration roadmap — Shelly に載せる候補 10 本 (2026-04-20 調査)
 
