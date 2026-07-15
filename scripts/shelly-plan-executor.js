@@ -276,6 +276,112 @@ function isLowQualityCompletion(text) {
   return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+// ─── Orchestration chain mode (Increment 2, 2026-07-15) ────────────────────
+//
+// Pure, directly-testable ports of lib/agent-orchestration.ts's step-sequencing
+// helpers (buildStepPrompt / nextStepGate / reduceStatus / combineFinalPreview),
+// used ONLY when the loaded PlanSpec carries the additive `steps` field Increment
+// 1 (lib/agent-plan-spec.ts's AgentPlanSpecV1.steps) populates for orchestrated
+// agents. A plan with no `steps` field never reaches any of this — run()'s
+// single-shot branch below is byte-identical to before this increment.
+//
+// Deliberately v1-scoped (see docs/superpowers/DEFERRED.md's 2026-07-15 "P0(c)
+// 設計調査完了" entry, step ⑤): no per-step ladder/escalation and no per-step
+// tool override (NormalizedStep.tool, Phase 5) — every step in a chain uses the
+// SAME plan.tool the whole plan was built with. Chaining adds no privilege
+// beyond a single run (same invariant lib/agent-orchestration.ts's file header
+// states for the attended path): each step is still one broker-mediated model
+// call, gated by the same budget/time caps, with the real action dispatched
+// only once, on the final step.
+//
+// The bound constants below MUST stay numerically in sync with
+// lib/agent-orchestration.ts's same-named exports — asserted directly (not by
+// string-matching source text) in __tests__/plan-executor-parity.test.ts, since
+// both sides are reachable from a Jest test via `require`/`import`.
+const DEFAULT_MAX_STEPS = 6;
+const HARD_MAX_STEPS = 10;
+const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000; // 30 min
+const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
+const STEP_PROMPT_MAX_CHARS = 6000;
+const STEP_PROMPT_MAX_RESULT_CARRY_CHARS = 1500;
+const STEP_PREVIEW_MAX_CHARS = 500;
+
+function clampToRange(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+// Defense-in-depth re-clamp of the ALREADY-resolved budget carried in the
+// on-disk PlanSpec (plan.steps.budget, computed once at plan-build time by
+// lib/agent-orchestration.ts's resolveBudget()). The executor does not trust
+// the plan file to have honored these bounds — a stale plan written by an
+// older/newer app version, or a corrupted field, must still fail toward the
+// SAME hard ceilings resolveBudget() itself enforces, not toward "unbounded".
+function resolveStepBudget(rawBudget) {
+  const rawMaxSteps = rawBudget && Number.isFinite(rawBudget.maxSteps) ? Math.floor(rawBudget.maxSteps) : DEFAULT_MAX_STEPS;
+  const rawTimeout = rawBudget && Number.isFinite(rawBudget.totalTimeoutMs) ? Math.floor(rawBudget.totalTimeoutMs) : DEFAULT_TOTAL_TIMEOUT_MS;
+  return {
+    maxSteps: clampToRange(rawMaxSteps || 1, 1, HARD_MAX_STEPS),
+    totalTimeoutMs: clampToRange(rawTimeout || DEFAULT_TOTAL_TIMEOUT_MS, 1_000, HARD_TOTAL_TIMEOUT_MS),
+  };
+}
+
+// Verbatim port of lib/agent-orchestration.ts's nextStepGate: decide whether to
+// launch the next step. REFUSES (never hangs) when the prior step failed, the
+// step budget is reached, or the time budget is exceeded.
+function nextStepGate(opts) {
+  if (opts.priorFailed) return { proceed: false, reason: 'previous step failed — chain stopped' };
+  if (opts.stepIndex >= opts.budget.maxSteps) {
+    return { proceed: false, reason: `step budget reached (${opts.budget.maxSteps})` };
+  }
+  if (opts.now - opts.startedAtMs > opts.budget.totalTimeoutMs) {
+    return { proceed: false, reason: 'total time budget exceeded' };
+  }
+  return { proceed: true };
+}
+
+// Verbatim port of lib/agent-orchestration.ts's buildStepPrompt: the base
+// prompt + the carried (bounded) prior results + this step's instruction.
+function buildStepPrompt(basePrompt, instruction, priorResults) {
+  const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
+  const carried = priorResults.length
+    ? `# Results from previous steps\n${priorResults
+        .map((r, i) => `## Step ${i + 1}\n${String(r).replace(/\s+/g, ' ').trim().slice(0, STEP_PROMPT_MAX_RESULT_CARRY_CHARS)}`)
+        .join('\n\n')}\n\n---\n\n`
+    : '';
+  return `${head}${carried}# This step\n${instruction.trim()}`.slice(0, STEP_PROMPT_MAX_CHARS);
+}
+
+// Verbatim port of lib/agent-orchestration.ts's reduceStatus. Precedence:
+// any hard 'error' -> error; else any transient 'unavailable' -> unavailable
+// (excluded from the circuit breaker); all 'skipped' -> skipped; else success.
+function reduceStatus(records) {
+  if (records.length === 0) return 'skipped';
+  if (records.some((s) => s.status === 'error')) return 'error';
+  if (records.some((s) => s.status === 'unavailable')) return 'unavailable';
+  if (records.every((s) => s.status === 'skipped')) return 'skipped';
+  return 'success';
+}
+
+// Verbatim port of lib/agent-orchestration.ts's combineFinalPreview: the single
+// run-log preview for an orchestrated run (bounded to STEP_PREVIEW_MAX_CHARS).
+function combineFinalPreview(records) {
+  if (records.length === 0) return '';
+  const failed = records.find((s) => s.status === 'error');
+  if (failed) {
+    return `Step ${failed.index + 1}/${records.length} failed: ${failed.outputPreview}`.slice(0, STEP_PREVIEW_MAX_CHARS);
+  }
+  const transient = records.find((s) => s.status === 'unavailable');
+  if (transient) {
+    return `Step ${transient.index + 1}/${records.length} temporarily unavailable (web backend busy): ${transient.outputPreview}`.slice(
+      0,
+      STEP_PREVIEW_MAX_CHARS,
+    );
+  }
+  const last = [...records].reverse().find((s) => s.status === 'success');
+  const head = `Completed ${records.length} step(s). `;
+  return `${head}${last ? last.outputPreview : ''}`.slice(0, STEP_PREVIEW_MAX_CHARS);
+}
+
 function resolveCharLimit(plan) {
   const raw = plan && plan.limits ? plan.limits.charLimit : undefined;
   if (raw === undefined || raw === null) return 0;
@@ -608,7 +714,13 @@ function writeNotification(paths, plan, status, preview) {
   }) + '\n');
 }
 
-function writeRunLog(paths, plan, status, preview, durationMs, errorMessage) {
+// `steps` (optional): per-step detail for a chain-mode (orchestrated) run —
+// mirrors AgentRunLog.steps / AgentRunStep (store/types.ts) field-for-field so
+// a future increment can render this the same way the attended path's
+// aggregate run log already does. Omitted (undefined) for every non-chain
+// call site, so JSON.stringify drops the key entirely and single-shot run-log
+// output stays byte-identical to before this increment.
+function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, steps) {
   const ts = Date.now();
   const log = {
     agentId: plan.agent.id,
@@ -620,6 +732,7 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage) {
     errorMessage: errorMessage ? previewText(errorMessage) : '',
     routeDecision: plan.routeDecision,
     executor: 'planspec',
+    ...(steps ? { steps } : {}),
   };
   writeAtomic(path.join(paths.logDir, `${Math.floor(ts / 1000)}.json`), JSON.stringify(log) + '\n');
 }
@@ -1626,6 +1739,117 @@ function mirrorBrokerAudit(paths, plan) {
   }
 }
 
+// Chain-mode execution (Increment 2, 2026-07-15): walk plan.steps.list as an
+// ORDERED LINEAR sequence within this single process/execSubprocess call — the
+// unattended (scheduled/native-fired) counterpart to the attended path's
+// runAgentOrchestrated() (lib/agent-manager.ts), which does the same sequencing
+// but as N separate JS-driven re-invocations of a single-step run. Each step
+// here is still exactly one broker-mediated model call + (for the final step
+// only) one real action dispatch through the SAME dispatchActionTrusted() the
+// single-shot path already uses — chaining adds no privilege.
+//
+// Returns an `action`-shaped object ({status, preview, errorMessage, steps})
+// so run()'s shared epilogue (writeRunLog + plan_finish audit line) can treat
+// a chain run exactly like a single-shot run's dispatchActionTrusted() result.
+// Only ONE aggregate run log / (at most one) notification is written for the
+// whole chain — see the `dispatchedFinal` tracking below — matching the
+// attended path's own "collapse all per-step logs into one aggregate" contract
+// (lib/agent-manager.ts's runAgentOrchestrated doc comment).
+function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
+  const budget = resolveStepBudget(plan.steps.budget);
+  const priorResults = [];
+  const records = [];
+  let priorFailed = false;
+  // True once dispatchActionTrusted has actually been invoked for the FINAL
+  // step — at that point notification-on-success-or-error is entirely
+  // dispatchActionTrusted's own responsibility (exactly as it already is for
+  // a single-shot run of that same action type), so the fallback aggregate
+  // notification below must NOT also fire (one notification per chain, not
+  // two). Stays false when the chain stops before reaching the final step
+  // (budget/time cutoff, a network failure, or a non-final step's quality
+  // gate rejection) — in that case nothing else in this run has notified yet,
+  // so the fallback fires exactly once with the aggregate outcome.
+  let dispatchedFinal = false;
+
+  for (let i = 0; i < plan.steps.list.length; i += 1) {
+    const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
+    if (!gate.proceed) break;
+
+    const step = plan.steps.list[i];
+    const isFinal = i === plan.steps.list.length - 1;
+    // v1 scope (see the file comment above): every step uses plan.tool
+    // unchanged — step.tool (Phase 5 per-step pin) is intentionally ignored
+    // here, not a bug. Only the FINAL step carries the plan's real action;
+    // every earlier step is `__suppressed__` (save-only, no approval/
+    // notification), exactly mirroring toPlanAction's `__suppressed__` shape
+    // (lib/agent-plan-spec.ts) and dispatchActionTrusted's own handling of it.
+    const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, priorResults);
+    const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
+    const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction });
+    const stepStart = Date.now();
+
+    let resultText;
+    try {
+      const request = modelRequest(stepPlan, config);
+      const response = brokerHttp(paths, opts, stepPlan, request);
+      resultText = extractModelContent(stepPlan.tool.type, response);
+      resultText = enforcePlanCharLimit(stepPlan, resultText);
+    } catch (error) {
+      // Model/broker-level failure for this step. Mirrors the single-shot
+      // path's own outer catch (below): a PlanFailure with status
+      // 'unavailable' is a transient web outage (still stops the chain, but
+      // reduceStatus folds it away from the circuit breaker); anything else
+      // is a hard 'error'. Never let a non-PlanFailure exception (a real bug)
+      // be silently absorbed here — rethrow it to run()'s own outer catch.
+      if (!(error instanceof PlanFailure)) throw error;
+      const status = error.status === 'unavailable' ? 'unavailable' : 'error';
+      const message = redact(error.message);
+      records.push({ index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message) });
+      priorFailed = true;
+      continue;
+    }
+
+    writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(stepPlan) ? '' : '\n'));
+    const preview = previewText(resultText);
+
+    if (!isFinal && isLowQualityCompletion(preview)) {
+      // Non-final steps are `__suppressed__`, and dispatchActionTrusted's own
+      // `__suppressed__` branch has NO quality gate (by design — it is a
+      // silent, best-effort intermediate save with no human-facing surface to
+      // gate). The attended path gates every step's completion uniformly via
+      // lib/agent-escalation-ladder.ts's attemptFailed(), driven by a live JS
+      // process between steps; there is no such process here, so this
+      // executor must do the equivalent check itself before a bad completion
+      // can become "prior results" poisoning every later step's prompt (the
+      // exact on-device failure mode this whole quality-gate effort started
+      // from, 2026-07-15). The FINAL step does not need this: its real action
+      // type (draft/notify/webhook/dm-reply/app-act) is already gated inside
+      // dispatchActionTrusted below.
+      records.push({ index: i, instruction: step.instruction, status: 'error', durationMs: Date.now() - stepStart, outputPreview: preview });
+      priorFailed = true;
+      continue;
+    }
+
+    const action = dispatchActionTrusted(paths, opts, stepPlan, config, roots, resultText, args);
+    if (isFinal) dispatchedFinal = true;
+    records.push({ index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview });
+    if (action.status === 'success') priorResults.push(action.preview);
+    else priorFailed = true;
+  }
+
+  const status = reduceStatus(records);
+  const preview = combineFinalPreview(records);
+  if (!dispatchedFinal) {
+    // The chain never reached (or never actually dispatched) its final step —
+    // fire the ONE notification for the whole chain here. When the final step
+    // WAS reached, dispatchActionTrusted already notified (or deliberately
+    // didn't, for action types that only notify on error) exactly as a
+    // single-shot run of that action type would — do not double-notify.
+    writeNotification(paths, plan, status, preview);
+  }
+  return { status, preview, errorMessage: status === 'success' ? '' : preview, steps: records };
+}
+
 // Shared epilogue for the pre-run refuse paths (kill-switch, unattended-not-trusted):
 // notify + run log + a `plan_finish status:skipped` audit line, then exit cleanly.
 function finishSkipped(paths, plan, startedAt, message) {
@@ -1725,19 +1949,31 @@ function run(args) {
     fs.rmSync(path.join(paths.tmpDir, `cap-budget-${plan.agent.id}.json`), { force: true });
   } catch (_) {}
 
+  // Chain mode (Increment 2): present ONLY when Increment 1's additive
+  // `steps` field is on the loaded plan (isOrchestrated agents). Absent
+  // `steps` (every plan today, and every non-orchestrated plan going
+  // forward) takes the untouched single-shot branch below — byte-identical
+  // to this executor's behavior before this increment.
+  const hasChain = !!(plan.steps && Array.isArray(plan.steps.list) && plan.steps.list.length > 0);
+
   try {
-    const request = modelRequest(plan, config);
-    const response = brokerHttp(paths, opts, plan, request);
-    let resultText = extractModelContent(plan.tool.type, response);
-    // G6: hard-clamp to the PlanSpec's char budget (if any) before it lands in
-    // either the agent-result sidecar or a dispatched draft — the confirm
-    // card's "final output hard limit" promise must hold on-device, not just
-    // as a soft instruction baked into the model prompt.
-    resultText = enforcePlanCharLimit(plan, resultText);
-    writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
-    const action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
+    let action;
+    if (hasChain) {
+      action = runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt);
+    } else {
+      const request = modelRequest(plan, config);
+      const response = brokerHttp(paths, opts, plan, request);
+      let resultText = extractModelContent(plan.tool.type, response);
+      // G6: hard-clamp to the PlanSpec's char budget (if any) before it lands in
+      // either the agent-result sidecar or a dispatched draft — the confirm
+      // card's "final output hard limit" promise must hold on-device, not just
+      // as a soft instruction baked into the model prompt.
+      resultText = enforcePlanCharLimit(plan, resultText);
+      writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
+      action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
+    }
     const durationMs = Date.now() - startedAt;
-    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '');
+    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps);
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -1825,4 +2061,20 @@ module.exports = {
   // same convention as the exports above. See isLowQualityCompletion's doc
   // comment near previewText for the three-copy sync requirement.
   isLowQualityCompletion,
+  // Orchestration chain mode (Increment 2, 2026-07-15) — exported for host unit
+  // tests only (see __tests__/plan-executor-orchestration-chain.test.ts). The
+  // four bound constants are asserted equal to lib/agent-orchestration.ts's
+  // same-named exports (parity, not just structural-shape parity); the
+  // functions are asserted to behave identically to their TS originals for
+  // the same inputs. Not part of the executor's CLI surface.
+  DEFAULT_MAX_STEPS,
+  HARD_MAX_STEPS,
+  DEFAULT_TOTAL_TIMEOUT_MS,
+  HARD_TOTAL_TIMEOUT_MS,
+  resolveStepBudget,
+  nextStepGate,
+  buildStepPrompt,
+  reduceStatus,
+  combineFinalPreview,
+  runOrchestrationChain,
 };

@@ -5,6 +5,12 @@ jest.mock('@/lib/home-path', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { buildAgentPlanSpec, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
+import {
+  DEFAULT_MAX_STEPS as TS_DEFAULT_MAX_STEPS,
+  HARD_MAX_STEPS as TS_HARD_MAX_STEPS,
+  DEFAULT_TOTAL_TIMEOUT_MS as TS_DEFAULT_TOTAL_TIMEOUT_MS,
+  HARD_TOTAL_TIMEOUT_MS as TS_HARD_TOTAL_TIMEOUT_MS,
+} from '@/lib/agent-orchestration';
 import type { Agent } from '@/store/types';
 
 describe('shelly-plan-executor.js parity', () => {
@@ -37,6 +43,23 @@ describe('shelly-plan-executor.js parity', () => {
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
     expect(executorSrc).toContain(`const PLAN_SPEC_SCHEMA_VERSION = ${PLAN_SPEC_SCHEMA_VERSION}`);
     expect(agentRuntime).toContain(`private const val CURRENT_PLAN_SPEC_VERSION = ${PLAN_SPEC_SCHEMA_VERSION}`);
+  });
+
+  it('keeps orchestration budget constants lockstep between lib/agent-orchestration.ts and the JS chain-mode port (Increment 2)', () => {
+    // Unlike the schema-version check above (TS vs. Kotlin source text, since
+    // Kotlin isn't require()-able from Jest), both sides here are plain JS/TS
+    // reachable from a single Jest test — so this asserts numeric equality
+    // directly against the executor's chain-mode port
+    // (scripts/shelly-plan-executor.js's DEFAULT_MAX_STEPS/HARD_MAX_STEPS/
+    // DEFAULT_TOTAL_TIMEOUT_MS/HARD_TOTAL_TIMEOUT_MS) rather than pattern-
+    // matching source text. A future edit to either copy's bounds that isn't
+    // mirrored in the other fails this test immediately.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const executor = require(scriptCopy);
+    expect(executor.DEFAULT_MAX_STEPS).toBe(TS_DEFAULT_MAX_STEPS);
+    expect(executor.HARD_MAX_STEPS).toBe(TS_HARD_MAX_STEPS);
+    expect(executor.DEFAULT_TOTAL_TIMEOUT_MS).toBe(TS_DEFAULT_TOTAL_TIMEOUT_MS);
+    expect(executor.HARD_TOTAL_TIMEOUT_MS).toBe(TS_HARD_TOTAL_TIMEOUT_MS);
   });
 
   it('gates the canary by both flag and target agent id', () => {
