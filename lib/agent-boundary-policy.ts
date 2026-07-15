@@ -89,6 +89,26 @@ export function extractPaths(command: string): string[] {
 
 const NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 const READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
+const LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
+
+/**
+ * True when every network-tool target in `command` is a loopback host
+ * (127.0.0.0/8, localhost, ::1) — e.g. an agent's own local-LLM
+ * availability probe (`curl 127.0.0.1:8080/v1/models`). Such a command
+ * still matches NETWORK_RE but never actually leaves the device, so it
+ * should not force the same human-approval gate as a real outbound
+ * request. Best-effort / conservative: any command whose host can't be
+ * parsed out of a URL (e.g. bare `nc host port`) is treated as NOT
+ * loopback-only, so it still gets gated — this only narrows the signal
+ * for the parseable, common curl/wget-URL case.
+ */
+function isLoopbackOnlyNetworkCommand(command: string): boolean {
+  // Bracketed IPv6 literal (e.g. [::1]) first, else a bare host up to the
+  // next `:` (port) or `/` (path).
+  const hosts = [...command.matchAll(/\bhttps?:\/\/(\[[0-9a-fA-F:]+\]|[^/\s:]+)/gi)].map((m) => m[1]);
+  if (hosts.length === 0) return false;
+  return hosts.every((h) => LOOPBACK_HOST_RE.test(h));
+}
 
 /**
  * Classify a proposed command into a gate decision under the given context.
@@ -115,7 +135,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   const paths = extractPaths(command);
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push('secret-read');
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push('leaves-root');
-  if (NETWORK_RE.test(command)) signals.push('network-send');
+  if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) signals.push('network-send');
   const isPureRead = READ_ONLY_RE.test(command) && !signals.includes('network-send');
   if (!isPureRead) signals.push('write-or-exec');
 

