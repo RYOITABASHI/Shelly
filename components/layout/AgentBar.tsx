@@ -171,10 +171,31 @@ export function AgentBar() {
   // events go nowhere until the user taps the terminal. Route close through
   // a helper that bumps the focus store so TerminalPane calls
   // TerminalView.focus() immediately on dismiss.
-  const closeWithRefocus = (setter: (v: boolean) => void) => () => {
-    setter(false);
+  //
+  // Each callback is its own useCallback (not a curried closeWithRefocus(setter)
+  // factory) so the reference stays stable across AgentBar re-renders — a
+  // fresh closure per render was silently defeating React.memo on
+  // SettingsDropdown's child sections (found by review 2026-07-11).
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
     useFocusStore.getState().requestTerminalRefocus();
-  };
+  }, []);
+  const closeBuilds = useCallback(() => {
+    setBuildsOpen(false);
+    useFocusStore.getState().requestTerminalRefocus();
+  }, []);
+  const closeLogs = useCallback(() => {
+    setLogsOpen(false);
+    useFocusStore.getState().requestTerminalRefocus();
+  }, []);
+  const closeSheet = useCallback(() => {
+    setSheetVisible(false);
+    useFocusStore.getState().requestTerminalRefocus();
+  }, []);
+  const openBuildsFromSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setBuildsOpen(true);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -270,19 +291,16 @@ export function AgentBar() {
 
       <SettingsDropdown
         visible={settingsOpen}
-        onClose={closeWithRefocus(setSettingsOpen)}
-        onOpenBuilds={() => {
-          setSettingsOpen(false);
-          setBuildsOpen(true);
-        }}
+        onClose={closeSettings}
+        onOpenBuilds={openBuildsFromSettings}
       />
       <BuildsModal
         visible={buildsOpen}
-        onClose={closeWithRefocus(setBuildsOpen)}
+        onClose={closeBuilds}
         onStatusChange={(status) => setBuildStatus(status)}
       />
-      <RecentLogsModal visible={logsOpen} onClose={closeWithRefocus(setLogsOpen)} />
-      <LayoutAddSheet visible={sheetVisible} onClose={closeWithRefocus(setSheetVisible)} />
+      <RecentLogsModal visible={logsOpen} onClose={closeLogs} />
+      <LayoutAddSheet visible={sheetVisible} onClose={closeSheet} />
     </View>
   );
 }

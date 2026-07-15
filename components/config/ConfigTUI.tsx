@@ -297,14 +297,20 @@ function EnumPickerSheet({ visible, label, options, current, onSelect, onClose }
 interface SettingRowProps {
   def: SettingDef;
   value: unknown;
-  onToggle: () => void;
-  onStringEdit: (v: string) => void;
-  onEnumOpen: () => void;
-  onAction?: () => void;
+  onToggle: (def: SettingDef) => void;
+  onStringEdit: (def: SettingDef, v: string) => void;
+  onEnumOpen: (def: SettingDef) => void;
+  onAction?: (def: SettingDef) => void;
   disabled?: boolean;
 }
 
-function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, disabled = false }: SettingRowProps) {
+// Perf: memoized so a row only re-renders when ITS OWN value/disabled prop
+// actually changes. This only pays off because the parent now hands every
+// row the same stable top-level handler references (see ConfigTUI) instead
+// of a fresh inline arrow per row per render — otherwise the memo would be
+// defeated by the onToggle/onStringEdit/onEnumOpen/onAction props changing
+// identity on every keystroke/store update elsewhere in the app.
+const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, disabled = false }: SettingRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -321,10 +327,10 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, 
         const clamped = def.min !== undefined && def.max !== undefined
           ? Math.max(def.min, Math.min(def.max, n))
           : n;
-        onStringEdit(String(clamped));
+        onStringEdit(def, String(clamped));
       }
     } else {
-      onStringEdit(draft);
+      onStringEdit(def, draft);
     }
   }, [def, draft, onStringEdit]);
 
@@ -339,7 +345,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, 
         </View>
         <Switch
           value={Boolean(value)}
-          onValueChange={onToggle}
+          onValueChange={() => onToggle(def)}
           disabled={disabled}
           trackColor={{ false: BORDER, true: C.accent + '66' }}
           thumbColor={value ? C.accent : MUTED}
@@ -350,7 +356,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, 
 
   if (def.type === 'enum') {
     return (
-      <TouchableOpacity style={[styles.row, disabled && { opacity: 0.5 }]} onPress={onEnumOpen} activeOpacity={0.7} disabled={disabled}>
+      <TouchableOpacity style={[styles.row, disabled && { opacity: 0.5 }]} onPress={() => onEnumOpen(def)} activeOpacity={0.7} disabled={disabled}>
         <View style={styles.rowLeft}>
           <Text style={styles.rowKey}>{def.label}</Text>
           {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
@@ -366,7 +372,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, 
   // action
   if (def.type === 'action') {
     return (
-      <TouchableOpacity style={styles.row} onPress={onAction} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.row} onPress={() => onAction?.(def)} activeOpacity={0.7}>
         <View style={styles.rowLeft}>
           <Text style={[styles.rowKey, def.dangerAction && { color: '#F87171' }]}>{def.label}</Text>
           {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
@@ -450,7 +456,7 @@ function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, 
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 // ─── Main ConfigTUI ───────────────────────────────────────────────────────────
 
@@ -465,6 +471,27 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const dotfiles = useDotfilesStore();
   const themeStore = useThemeStore();
   const i18n = useI18n();
+
+  // Perf: these stores are read whole-store (SECTIONS references ~40
+  // dynamic setting keys by string, so a tight per-field selector isn't
+  // practical here). That means THIS component still re-renders on every
+  // settings/cosmetic/theme/dotfiles/i18n mutation anywhere in the app —
+  // but the ~40 SettingRow children below don't have to, as long as the
+  // callbacks handed to them never change identity. Refs let getVal/
+  // applyValue/handleAction stay referentially stable across renders while
+  // still reading the latest state (refs are updated on every render, and
+  // by the time a callback actually fires — from a user tap — the ref is
+  // already current).
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const cosmeticsRef = useRef(cosmetics);
+  cosmeticsRef.current = cosmetics;
+  const dotfilesRef = useRef(dotfiles);
+  dotfilesRef.current = dotfiles;
+  const themeStoreRef = useRef(themeStore);
+  themeStoreRef.current = themeStore;
+  const i18nRef = useRef(i18n);
+  i18nRef.current = i18n;
 
   const [picker, setPicker] = useState<{
     def: SettingDef;
@@ -525,14 +552,24 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     settings.teamMembers?.perplexity,
     themeStore.currentThemeId,
   ]);
+  const customValuesRef = useRef(customValues);
+  customValuesRef.current = customValues;
 
+  // Perf: fully stable identity (empty dep array) — reads via refs above so
+  // it never goes stale. This is what lets React.memo(SettingRow) actually
+  // skip re-rendering rows whose value hasn't changed.
   const getVal = useCallback(
-    (def: SettingDef) => getValue(def.key, def.source, settings, cosmetics, customValues),
-    [settings, cosmetics, customValues],
+    (def: SettingDef) => getValue(def.key, def.source, settingsRef.current, cosmeticsRef.current, customValuesRef.current),
+    [],
   );
 
   const applyValue = useCallback(
     async (def: SettingDef, rawValue: unknown) => {
+      const settings = settingsRef.current;
+      const cosmetics = cosmeticsRef.current;
+      const themeStore = themeStoreRef.current;
+      const i18n = i18nRef.current;
+      const dotfiles = dotfilesRef.current;
       const isCloudSyncSetting =
         def.key === 'autonomousCloudConsent' ||
         def.key === 'autonomousCloudOnExhaustion';
@@ -655,11 +692,14 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         }
       }
     },
-    [updateSettings, cosmetics, settings, themeStore, i18n, dotfiles],
+    // updateSettings is a stable zustand action reference; everything else
+    // is read from refs above, so this callback never needs to be recreated.
+    [updateSettings],
   );
 
   // Action handlers
   const handleAction = useCallback((def: SettingDef) => {
+    const dotfiles = dotfilesRef.current;
     logInfo('ConfigTUI', 'Action: ' + def.key);
     switch (def.key) {
       case 'rerunSetup': {
@@ -776,7 +816,9 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         })();
         break;
     }
-  }, [dotfiles, onClose]);
+    // dotfiles is read from a ref above; onClose is the ShellLayout-provided
+    // closeConfig callback (useCallback([]) there), so this stays stable too.
+  }, [onClose]);
 
   const handleToggle = useCallback(
     (def: SettingDef) => applyValue(def, !getVal(def)),
@@ -846,10 +888,10 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
                       <SettingRow
                         def={def}
                         value={getVal(def)}
-                        onToggle={() => handleToggle(def)}
-                        onStringEdit={(v) => handleStringEdit(def, v)}
-                        onEnumOpen={() => handleEnumOpen(def)}
-                        onAction={() => handleAction(def)}
+                        onToggle={handleToggle}
+                        onStringEdit={handleStringEdit}
+                        onEnumOpen={handleEnumOpen}
+                        onAction={handleAction}
                         disabled={cloudSyncBusy && (
                           def.key === 'autonomousCloudConsent' ||
                           def.key === 'autonomousCloudOnExhaustion'

@@ -35,7 +35,12 @@ function pairingCode(): string {
   return `SHELLY-${suffix}`;
 }
 
-export function DmPairingSection() {
+// Perf: memoized so this section (which owns its own local flow-state and,
+// during an active pairing attempt, a self-rescheduling setTimeout poll — see
+// `poll` below) doesn't re-render as a side effect of SettingsDropdown's
+// other sibling sections re-rendering. Mirrors the same React.memo wrapping
+// applied to every other top-level section in SettingsDropdown.tsx.
+export const DmPairingSection = React.memo(function DmPairingSection() {
   const { t } = useTranslation();
   const pairings = useDmPairingStore((state) => state.pairings);
   const [flow, setFlow] = useState<Flow>({ kind: 'idle' });
@@ -211,7 +216,7 @@ export function DmPairingSection() {
       </View>
     </View>
   );
-}
+});
 
 function ConfirmCandidate({ candidate, onDone, onCancel, onMirrorFailure }: { candidate: Candidate; onDone: () => void; onCancel: () => void; onMirrorFailure: () => Promise<void> }) {
   const { t } = useTranslation();

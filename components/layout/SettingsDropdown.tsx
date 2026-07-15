@@ -79,6 +79,16 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   // scope is Sidebar/AgentBar/ContextBar/PaneSlot header, not this dense
   // text-heavy settings sheet — wallpaper bleeding through hurt readability.
 
+  // Stable identities so React.memo on UpdatesSection/IntegrationsSection
+  // actually skips re-render when this component re-renders for an unrelated
+  // reason (e.g. mcpOpen/llamaOpen toggling) — an inline arrow literal here
+  // would defeat memo on every render since its identity changes each time.
+  const handleOpenBuilds = React.useCallback(() => {
+    onOpenBuilds?.();
+  }, [onOpenBuilds]);
+  const handleOpenMcp = React.useCallback(() => setMcpOpen(true), []);
+  const handleOpenLlama = React.useCallback(() => setLlamaOpen(true), []);
+
   return (
     <Modal
       visible={visible}
@@ -104,7 +114,16 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             </Pressable>
           </View>
 
-          <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            style={styles.scroll}
+            showsVerticalScrollIndicator={false}
+            // Perf: this ScrollView renders ~13 always-mounted, non-virtualized
+            // section components with no windowing. removeClippedSubviews lets
+            // Android detach off-screen native views from the hierarchy instead
+            // of keeping them all mounted+drawn, which is the standard fix for
+            // long non-virtualized ScrollView content on Android (no-op on iOS).
+            removeClippedSubviews
+          >
             <DisplaySection />
             <WallpaperSection />
             <LanguageSection />
@@ -112,13 +131,13 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <ApiKeysSection />
             <WebhookHostAllowlistSection />
             <DmPairingSection />
-            <UpdatesSection onOpenBuilds={() => onOpenBuilds?.()} />
+            <UpdatesSection onOpenBuilds={handleOpenBuilds} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CodexLoginSection onClose={onClose} />
             <ResetSettingsSection />
             <IntegrationsSection
-              onOpenMcp={() => setMcpOpen(true)}
-              onOpenLlama={() => setLlamaOpen(true)}
+              onOpenMcp={handleOpenMcp}
+              onOpenLlama={handleOpenLlama}
             />
             <RecoverySection />
           </ScrollView>
@@ -144,7 +163,14 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   );
 }
 
-function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
+// Perf: this file mounts ~13 always-expanded section components in a single
+// non-virtualized ScrollView (see SettingsDropdown's ScrollView above). None
+// of them were memoized, so any re-render of the shared parent re-rendered
+// every section's whole subtree. React.memo is cheap/safe defense-in-depth
+// here even though a sibling's local state change shouldn't normally cascade
+// up in React — it guards the one case that does cascade: the parent
+// SettingsDropdown itself re-rendering (e.g. mcpOpen/llamaOpen toggling).
+const UpdatesSection = React.memo(function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
   const { t } = useTranslation();
   return (
     <Section title={t('updates.title')}>
@@ -161,9 +187,9 @@ function UpdatesSection({ onOpenBuilds }: { onOpenBuilds: () => void }) {
       </Pressable>
     </Section>
   );
-}
+});
 
-function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onCloseSettings: () => void }) {
+const ScouterSection = React.memo(function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onCloseSettings: () => void }) {
   const { t } = useTranslation();
   const [enabled, setEnabled] = useState(false);
   const [port, setPort] = useState(-1);
@@ -339,9 +365,9 @@ function ScouterSection({ visible, onCloseSettings }: { visible: boolean; onClos
       </Pressable>
     </Section>
   );
-}
+});
 
-function IntegrationsSection({
+const IntegrationsSection = React.memo(function IntegrationsSection({
   onOpenMcp,
   onOpenLlama,
 }: {
@@ -375,14 +401,14 @@ function IntegrationsSection({
       </Pressable>
     </Section>
   );
-}
+});
 
 // bug #131 + #136 (2026-04-27): user-facing escape hatch surfaced in
 // the gear-button SettingsDropdown so it's reachable without opening
 // the comprehensive ConfigTUI (which is gated behind the Command
 // Palette and harder to find). Original Recovery entry stays in
 // ConfigTUI; this is the discoverable mirror.
-function RecoverySection() {
+const RecoverySection = React.memo(function RecoverySection() {
   const { t } = useTranslation();
   const handleRecover = React.useCallback(() => {
     Alert.alert(
@@ -436,7 +462,7 @@ function RecoverySection() {
       </Pressable>
     </Section>
   );
-}
+});
 
 // ─── Wallpaper (Phase B) ─────────────────────────────────────────────────────
 //
@@ -449,7 +475,7 @@ function RecoverySection() {
 // eviction and OS cleanup; the source URI under /data/user/0/.../cache would
 // eventually be purged and leave the wallpaper blank.
 //
-function WallpaperSection() {
+const WallpaperSection = React.memo(function WallpaperSection() {
   const { t } = useTranslation();
   const wallpaperUri = useCosmeticStore((s) => s.wallpaperUri);
   const wallpaperOpacity = useCosmeticStore((s) => s.wallpaperOpacity);
@@ -513,7 +539,15 @@ function WallpaperSection() {
       <Row label={t('wallpaper.image')}>
         <View style={styles.wallpaperRow}>
           {wallpaperUri ? (
-            <Image source={{ uri: wallpaperUri }} style={[styles.wallpaperPreview, { borderColor: C.border }]} />
+            <Image
+              source={{ uri: wallpaperUri }}
+              style={[styles.wallpaperPreview, { borderColor: C.border }]}
+              // Perf: without an explicit resizeMode, Android decodes the
+              // full-resolution user-picked photo before scaling it down to
+              // this 28x28 thumbnail, which can hitch a frame when this row
+              // scrolls into view. "cover" crops to fit the fixed box.
+              resizeMode="cover"
+            />
           ) : (
             <View style={[styles.wallpaperPreview, styles.wallpaperPreviewEmpty, { borderColor: C.border, backgroundColor: C.bgDeep }]}>
               <MaterialIcons name="image" size={14} color={C.text3} />
@@ -576,7 +610,7 @@ function WallpaperSection() {
       )}
     </Section>
   );
-}
+});
 
 /**
  * Small reusable 0-100 slider row. Extracted so WallpaperSection can
@@ -634,7 +668,7 @@ function SliderRow({
 
 // ─── Display ─────────────────────────────────────────────────────────────────
 
-function DisplaySection() {
+const DisplaySection = React.memo(function DisplaySection() {
   const { t } = useTranslation();
   const fontSize = useSettingsStore((s) => s.settings.fontSize);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
@@ -669,7 +703,7 @@ function DisplaySection() {
       <ThemeRow />
     </Section>
   );
-}
+});
 
 type UiFontId =
   | 'blue'
@@ -747,7 +781,7 @@ function ThemeRow() {
 
 // ─── Language ────────────────────────────────────────────────────────────────
 
-function LanguageSection() {
+const LanguageSection = React.memo(function LanguageSection() {
   const { t } = useTranslation();
   const locale = useI18n((s) => s.locale);
   const setLocale = useI18n((s) => s.setLocale);
@@ -786,7 +820,7 @@ function LanguageSection() {
       </View>
     </Section>
   );
-}
+});
 
 // ─── AI Agents ───────────────────────────────────────────────────────────────
 
@@ -796,7 +830,7 @@ const DEFAULT_AGENT_OPTIONS: { value: 'cerebras' | 'groq' | 'codex'; label: stri
   { value: 'codex',       label: 'Codex' },
 ];
 
-function AgentsSection({ visible }: { visible: boolean }) {
+const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: boolean }) {
   const { t } = useTranslation();
   const defaultAgent = useSettingsStore((s) => s.settings.defaultAgent);
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
@@ -1118,7 +1152,7 @@ function AgentsSection({ visible }: { visible: boolean }) {
       )}
     </Section>
   );
-}
+});
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
@@ -1269,7 +1303,7 @@ function ApiKeyRow({ field }: { field: ApiKeyField }) {
   );
 }
 
-function ApiKeysSection() {
+const ApiKeysSection = React.memo(function ApiKeysSection() {
   const { t } = useTranslation();
   return (
     <Section title={t('api_keys.title')}>
@@ -1278,9 +1312,9 @@ function ApiKeysSection() {
       ))}
     </Section>
   );
-}
+});
 
-function WebhookHostAllowlistSection() {
+const WebhookHostAllowlistSection = React.memo(function WebhookHostAllowlistSection() {
   const { t } = useTranslation();
   const hosts = useSettingsStore((s) => s.settings.webhookHostAllowlist ?? []);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
@@ -1332,7 +1366,7 @@ function WebhookHostAllowlistSection() {
       </View>
     </Section>
   );
-}
+});
 
 // ─── Codex login (ChatGPT subscription device-auth) ─────────────────────────
 // Minimal trigger for the existing `codex-login --open` flow defined in
@@ -1343,7 +1377,7 @@ function WebhookHostAllowlistSection() {
 // (mode 0600) is written on success. Verification is delegated to
 // shelly-doctor (which already reports `codex auth: <exists|missing>`).
 
-function CodexLoginSection({ onClose }: { onClose: () => void }) {
+const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const addPane = useAddPane();
 
@@ -1386,7 +1420,7 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
       </Pressable>
     </Section>
   );
-}
+});
 
 // ─── Reset settings ──────────────────────────────────────────────────────────
 // resetSettings() (store/settings-store.ts) has existed since the store's
@@ -1396,7 +1430,7 @@ function CodexLoginSection({ onClose }: { onClose: () => void }) {
 // consent/etc. back to DEFAULT_SETTINGS, so this needs the same destructive
 // confirm pattern as DM-pairing's revoke/delete, not a bare button.
 
-function ResetSettingsSection() {
+const ResetSettingsSection = React.memo(function ResetSettingsSection() {
   const { t } = useTranslation();
 
   const confirmReset = React.useCallback(() => {
@@ -1430,7 +1464,7 @@ function ResetSettingsSection() {
       </Pressable>
     </Section>
   );
-}
+});
 
 // ─── Shared atoms ────────────────────────────────────────────────────────────
 
