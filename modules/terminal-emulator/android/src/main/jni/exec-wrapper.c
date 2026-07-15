@@ -16,8 +16,10 @@
 
 #define LINKER64 "/system/bin/linker64"
 #define CODEX_FS_HELPER_ARG1 "--codex-run-as-fs-helper"
-#define MAX_ARGC 4096
-#define MAX_ENVP 4096
+/* Kept modest: these size on-stack arrays in exec/spawn paths; 4096 each
+ * ballooned forked-child stack frames enough to make subprocesses SIGSEGV. */
+#define MAX_ARGC 1024
+#define MAX_ENVP 512
 #define PATH_BUF_SIZE 4096
 #define SHELLY_ENOENT 2
 #define SHELLY_EINTR 4
@@ -630,7 +632,8 @@ static int scrub_system_envp(char *const envp[], char **out) {
         out[n] = NULL;
         return 0;
     }
-    for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+    int i = 0;
+    for (; i < MAX_ENVP && source[i]; i++) {
         if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
             starts_with(source[i], "LD_PRELOAD=")) {
             continue;
@@ -640,6 +643,11 @@ static int scrub_system_envp(char *const envp[], char **out) {
         }
         out[n++] = source[i];
     }
+    // i == MAX_ENVP after the loop happens both when source had exactly
+    // MAX_ENVP entries (not truncated) and when it had more (truncated) --
+    // the loop condition can't tell them apart. Peek at source[i] itself:
+    // NULL means the array legitimately ended right at the cap.
+    if (i == MAX_ENVP && source[i] != NULL) return -1;
     out[n] = NULL;
     return 0;
 }
@@ -740,7 +748,8 @@ static int scrub_codex_child_envp(char *const envp[], char **out, int keep_wrapp
         out[0] = NULL;
         return 0;
     }
-    for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+    int i = 0;
+    for (; i < MAX_ENVP && source[i]; i++) {
         if (starts_with(source[i], "LD_PRELOAD=")) {
             if (!keep_wrapper) continue;
             if (n >= MAX_ENVP - 1) {
@@ -763,6 +772,11 @@ static int scrub_codex_child_envp(char *const envp[], char **out, int keep_wrapp
         }
         out[n++] = source[i];
     }
+    // i == MAX_ENVP after the loop happens both when source had exactly
+    // MAX_ENVP entries (not truncated) and when it had more (truncated) --
+    // the loop condition can't tell them apart. Peek at source[i] itself:
+    // NULL means the array legitimately ended right at the cap.
+    if (i == MAX_ENVP && source[i] != NULL) return -1;
     if (keep_wrapper && !has_ld_library_path) {
         if (n >= MAX_ENVP - 1) {
             return -1;
@@ -805,10 +819,16 @@ static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, siz
     if (append_str(ld_buf, ld_buf_size, &nbuf, lib_dir) != 0) return -1;
 
     if (source) {
-        for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+        int i = 0;
+        for (; i < MAX_ENVP && source[i]; i++) {
             if (n >= MAX_ENVP - 2) return -1;
             out[n++] = source[i];
         }
+        // i == MAX_ENVP after the loop happens both when source had exactly
+    // MAX_ENVP entries (not truncated) and when it had more (truncated) --
+    // the loop condition can't tell them apart. Peek at source[i] itself:
+    // NULL means the array legitimately ended right at the cap.
+    if (i == MAX_ENVP && source[i] != NULL) return -1;
     }
     out[n++] = ld_buf;
     if (include_wrapper) {
@@ -889,7 +909,8 @@ static int add_codex_helper_envp(char *const envp[], char **out, char *ld_buf, s
     if (append_str(codex_buf, codex_buf_size, &cbuf, codex_self) != 0) return -1;
 
     if (source) {
-        for (int i = 0; i < MAX_ENVP && source[i]; i++) {
+        int i = 0;
+        for (; i < MAX_ENVP && source[i]; i++) {
             if (starts_with(source[i], "LD_LIBRARY_PATH=") ||
                 starts_with(source[i], "LD_PRELOAD=") ||
                 starts_with(source[i], "SHELLY_CODEX_EXEC_PATH=") ||
@@ -900,6 +921,11 @@ static int add_codex_helper_envp(char *const envp[], char **out, char *ld_buf, s
             if (n >= MAX_ENVP - 3) return -1;
             out[n++] = source[i];
         }
+        // i == MAX_ENVP after the loop happens both when source had exactly
+    // MAX_ENVP entries (not truncated) and when it had more (truncated) --
+    // the loop condition can't tell them apart. Peek at source[i] itself:
+    // NULL means the array legitimately ended right at the cap.
+    if (i == MAX_ENVP && source[i] != NULL) return -1;
     }
     if (n >= MAX_ENVP - 2) return -1;
     out[n++] = ld_buf;
