@@ -35,6 +35,11 @@ type Props = {
   onVoice?: (text: string) => void;
   /** Long-press on the mic opens the continuous voice dialogue mode */
   onVoiceLong?: () => void;
+  /** Overrides the default opaque-black bar background — pass the same
+   * value TerminalPane derives (terminalPaneBg) so the key bar follows
+   * the settings.terminalWallpaperTransparency opt-in instead of always
+   * staying solid black underneath a transparent terminal surface. */
+  backgroundColor?: string;
 };
 
 type KeyConfig = {
@@ -120,7 +125,7 @@ const KEY_SETS: Record<KeySetId, { label: string; icon: string; keys: KeyConfig[
 const SET_ORDER_FULL: KeySetId[] = ['default', 'vim', 'git', 'repl', 'navigate'];
 const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 
-export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong }: Props) {
+export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong, backgroundColor }: Props) {
   const { colors: c } = useTheme();
   const { settings } = useTerminalStore();
   const visualPreset =
@@ -133,7 +138,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   const foreground = presetColors?.text1 ?? c.foreground;
   const muted = presetColors?.text2 ?? c.muted;
   const border = presetColors?.border ?? c.border;
-  const barBg = TERMINAL_KEY_BAR_BACKGROUND;
+  const barBg = backgroundColor ?? TERMINAL_KEY_BAR_BACKGROUND;
   const keyChrome = useMemo(() => {
     if (visualPreset === 'blue') {
       return {

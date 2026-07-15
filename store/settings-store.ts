@@ -81,6 +81,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   externalKeyboardShortcuts: false,
   terminalTheme: 'blue',
   gpuRendering: false,
+  terminalWallpaperTransparency: false,
   uiFont: 'blue',
   showVimKeyBar: false,
   // Project owner directive 2026-07-14: default is no-approval, confirmation

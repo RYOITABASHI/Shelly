@@ -402,6 +402,8 @@ const en: Record<string, string> = {
   'wallpaper.change': 'Change',
   'wallpaper.image_opacity': 'Image Opacity',
   'wallpaper.panel_opacity': 'Panel Opacity',
+  'wallpaper.terminal_transparency': 'Show wallpaper in Terminal (experimental)',
+  'wallpaper.terminal_transparency_hint': 'Off by default. The Terminal pane previously had a gray-flash bug tied to this; that root cause was fixed, but turn this on only if you want to help re-test it.',
   'wallpaper.permission_title': 'Permission needed',
   'wallpaper.permission_body': 'Shelly needs access to your photo library to pick a wallpaper.',
   'wallpaper.pick_failed': 'Pick failed',

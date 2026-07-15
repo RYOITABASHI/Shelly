@@ -450,6 +450,17 @@ export type AppSettings = {
   /** Enable OpenGL ES 3.0 GPU hardware acceleration for terminal rendering */
   gpuRendering?: boolean;
   /**
+   * Experimental opt-in (default false): let the Terminal pane show the
+   * wallpaper through like other panes, instead of the always-opaque-black
+   * default. Off by default because Terminal pane transparency previously
+   * caused a gray-flash regression (build 1560-1565) — that specific root
+   * cause (Android's default focus highlight, unrelated to transparency
+   * itself) was found and fixed 2026-07-09, so this exists to let a user
+   * re-test wallpaper-through terminals in a reversible, non-default way
+   * rather than assuming the old regression is fully gone.
+   */
+  terminalWallpaperTransparency?: boolean;
+  /**
    * bug #48: Show the Vim-specific key set in the terminal CommandKeyBar.
    * When false (default), the Vim page is hidden so `Esc / :w / :q / :wq / dd`
    * don't clutter the key bar for users who never open vim. Users who live

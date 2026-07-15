@@ -454,6 +454,8 @@ function WallpaperSection() {
   const wallpaperOpacity = useCosmeticStore((s) => s.wallpaperOpacity);
   const panelOpacity = useCosmeticStore((s) => s.panelOpacity);
   const setWallpaper = useCosmeticStore((s) => s.setWallpaper);
+  const terminalWallpaperTransparency = useSettingsStore((s) => s.settings.terminalWallpaperTransparency ?? false);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const setWallpaperOpacity = useCosmeticStore((s) => s.setWallpaperOpacity);
   const setPanelOpacity = useCosmeticStore((s) => s.setPanelOpacity);
   // Note: blurEnabled / blurIntensity still live in cosmetic-store but no
@@ -545,6 +547,30 @@ function WallpaperSection() {
             value={panelOpacity}
             onChange={setPanelOpacity}
           />
+          {/* Experimental, default-off — see the field's doc comment in
+              store/types.ts for why this is opt-in rather than just
+              re-enabling terminal transparency outright. */}
+          <Row label={t('wallpaper.terminal_transparency')}>
+            <Pressable
+              style={[
+                styles.switchTrack,
+                { backgroundColor: terminalWallpaperTransparency ? withAlpha(C.accent, 0.36) : C.border },
+              ]}
+              onPress={() => updateSettings({ terminalWallpaperTransparency: !terminalWallpaperTransparency })}
+              hitSlop={4}
+            >
+              <View
+                style={[
+                  styles.switchThumb,
+                  { backgroundColor: terminalWallpaperTransparency ? C.accent : C.text2 },
+                  terminalWallpaperTransparency && { alignSelf: 'flex-end' },
+                ]}
+              />
+            </Pressable>
+          </Row>
+          <Text style={[styles.credentialHint, { color: C.text3 }]}>
+            {t('wallpaper.terminal_transparency_hint')}
+          </Text>
         </>
       )}
     </Section>
@@ -566,17 +592,26 @@ function SliderRow({
   onChange: (n: number) => void;
 }) {
   const trackWidth = 140;
+  // Fine-tuning was hard: with a 140px track mapped 1:1 to 0-100%, every
+  // pixel of finger jitter was ~0.7%, so small adjustments jumped several
+  // percent. Track relative drag distance (gestureState.dx) from the value
+  // at gesture-start instead of absolute finger position, and divide by a
+  // SENSITIVITY wider than the visible track — same physical drag distance
+  // now covers less of the range, without needing a wider (layout-breaking)
+  // slider. valueAtGrant is a ref, not state, so onPanResponderMove reads
+  // the value as of touch-down rather than a stale closure from render time.
+  const SENSITIVITY = trackWidth * 2.5;
+  const valueAtGrant = useRef(value);
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const x = e.nativeEvent.locationX;
-        onChange(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
+      onPanResponderGrant: () => {
+        valueAtGrant.current = value;
       },
-      onPanResponderMove: (e) => {
-        const x = e.nativeEvent.locationX;
-        onChange(Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100))));
+      onPanResponderMove: (_e, gestureState) => {
+        const delta = (gestureState.dx / SENSITIVITY) * 100;
+        onChange(Math.round(Math.max(0, Math.min(100, valueAtGrant.current + delta))));
       },
     })
   ).current;

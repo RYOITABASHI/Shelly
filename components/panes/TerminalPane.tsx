@@ -27,6 +27,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
+import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useFocusStore } from '@/store/focus-store';
@@ -65,6 +66,7 @@ import {
 } from '@/lib/terminal-native-session-reservations';
 import { colors as C } from '@/theme.config';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
+import { usePaneContentBackground } from '@/hooks/use-panel-background';
 
 logInfo('Terminal', 'module loaded');
 
@@ -1118,14 +1120,21 @@ export default function TerminalScreen() {
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme]);
-  // Terminal pane is EXCLUDED from wallpaper transparency (never re-enable
-  // without satisfying the DEFERRED.md P3 gate: on-device screenshot proof
-  // across first-frame/theme-apply/new-tab/split/IME-resize/settings-modal
-  // on both Canvas and GL views, behind a default-OFF flag). a96cdd8a4
-  // (2026-06-20) violated this the day after the gate was written, exposing
-  // build 1560-1565's gray-flash bug again once cosmetic-store hydration
-  // (013b2658f) started actually loading a persisted wallpaper on launch.
-  const terminalPaneBg = C.bgDeep;
+  // Terminal pane defaults to opaque (CLAUDE.md architecture decision,
+  // build 1560-1565 regression): during session attach, tab creation, IME
+  // resize, and settings-panel display a transparent terminal exposes the
+  // wallpaper/panel layer behind half-painted cells as a gray flash. The
+  // old regression's exact trigger was never conclusively pinned down, so
+  // wallpaper-through is offered as an explicit, default-OFF opt-in
+  // (settings.terminalWallpaperTransparency) rather than restored
+  // unconditionally. Both hooks below are called unconditionally every
+  // render (Rules of Hooks) — the opt-in/wallpaper-presence check only
+  // decides which of their results to USE, never whether they run.
+  const terminalWallpaperOptIn = settings.terminalWallpaperTransparency ?? false;
+  const wallpaperUriForTerminal = useCosmeticStore((s) => s.wallpaperUri);
+  const paneContentBg = usePaneContentBackground(C.bgDeep);
+  const terminalWallpaperActive = terminalWallpaperOptIn && !!wallpaperUriForTerminal;
+  const terminalPaneBg = terminalWallpaperActive ? paneContentBg : C.bgDeep;
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -1310,12 +1319,16 @@ export default function TerminalScreen() {
             cursorBlink={true}
             colorScheme={terminalColorScheme}
             gpuRendering={settings.gpuRendering ?? false}
-            transparentBackground={false}
+            // Opaque by default; transparent only when the user explicitly
+            // opted in (settings.terminalWallpaperTransparency) AND a
+            // wallpaper is actually set — see terminalPaneBg's comment above
+            // for why this is a reversible opt-in rather than unconditional.
+            transparentBackground={terminalWallpaperActive}
             style={[
               styles.terminalView,
               {
                 flex: showSplitPreview ? splitRatio : 1,
-                backgroundColor: terminalColorScheme.background,
+                backgroundColor: terminalWallpaperActive ? 'transparent' : terminalColorScheme.background,
               },
             ]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
@@ -1540,6 +1553,7 @@ export default function TerminalScreen() {
             sendText={sendToTerminal}
             sendPaste={pasteToTerminal}
             pasteFromClipboard={pasteClipboardToTerminal}
+            backgroundColor={terminalPaneBg}
             isCompact={layout.isCompact || (multiPaneCtx?.paneWidth ?? layout.width) < 420}
             onAttach={() => {
               import('expo-document-picker').then((mod) => {
