@@ -14,6 +14,11 @@
       "intent": "Bring X to the foreground (or launch it) so the rest of the recipe has a window to act on."
     },
     {
+      "op": "click",
+      "matcher": { "resourceId": "com.twitter.android:id/composer_write" },
+      "intent": "Tap the compose FAB to open the new-post screen; launch alone lands on the home timeline, which has no tweet_text field."
+    },
+    {
       "op": "setText",
       "matcher": { "resourceId": "com.twitter.android:id/tweet_text" },
       "param": "text",
