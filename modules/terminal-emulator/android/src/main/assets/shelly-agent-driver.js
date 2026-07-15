@@ -68,6 +68,7 @@ Options:
   --node-bin <path>          Node executable for the gate helper. Defaults to current node.
   --approval-policy <mode>   Defaults to "untrusted" (B2 Phase A safe config; only untrusted is allowed).
   --audit-log <path>         Append AUDIT/GATE JSON lines to this file.
+  --answer-file <path>       Write completed Codex agentMessage text to this file.
   --timeout-ms <ms>          Whole turn timeout. Defaults to 300000.
   --gate-timeout-ms <ms>     Gate helper timeout. Defaults to 5000.
   --escalation-dir <path>    Directory for gray escalation request files.
@@ -163,6 +164,8 @@ function parseArgs(argv) {
       args.approvalPolicy = next();
     } else if (arg === '--audit-log') {
       args.auditLog = next();
+    } else if (arg === '--answer-file') {
+      args.answerFile = next();
     } else if (arg === '--timeout-ms') {
       args.timeoutMs = Number(next());
     } else if (arg === '--gate-timeout-ms') {
@@ -254,6 +257,7 @@ function ensureConfig(args) {
     // agent that overwrites the key file cannot substitute its own key. Normalized to lowercase hex.
     escalationPublicKeySha256: normalizeSha256Hex(args.escalationPublicKeySha256),
     preapprovalGrantsFile: path.resolve(args.preapprovalGrantsFile),
+    answerFile: args.answerFile ? path.resolve(args.answerFile) : null,
   };
 }
 
@@ -696,6 +700,30 @@ function writeJsonAtomic(filePath, payload) {
   fs.writeFileSync(tmpPath, content, { mode: 0o600 });
   fs.renameSync(tmpPath, filePath);
   return content;
+}
+
+function completedAgentMessageText(params) {
+  const item = params && params.item;
+  if (!item || item.type !== 'agentMessage' || typeof item.text !== 'string') return null;
+  return item.text;
+}
+
+function appendCompletedAgentMessage(answerText, params) {
+  const text = completedAgentMessageText(params);
+  if (text === null || text.length === 0) return answerText;
+  return answerText ? `${answerText}\n${text}` : text;
+}
+
+function writeAnswerFile(answerFile, answerText) {
+  if (!answerFile || typeof answerText !== 'string' || !answerText.trim()) return false;
+  fs.mkdirSync(path.dirname(answerFile), { recursive: true, mode: 0o700 });
+  const tmpPath = path.join(
+    path.dirname(answerFile),
+    `.${path.basename(answerFile)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`,
+  );
+  fs.writeFileSync(tmpPath, answerText, { mode: 0o600 });
+  fs.renameSync(tmpPath, answerFile);
+  return true;
 }
 
 function unlinkIfExists(filePath) {
@@ -1418,6 +1446,7 @@ async function runDriver(config) {
   // never overwrite the DER before it is cached in memory. After this the cached key object is used
   // for all verifies regardless of later on-disk tampering.
   ensureEscalationVerifierKey(config, audit);
+  if (config.answerFile) unlinkIfExists(config.answerFile);
   const codexSpawn = codexAppServerSpawnSpec(config);
   const gateSpawn = gateSpawnSpec(config);
   const child = spawn(codexSpawn.command, codexSpawn.args, {
@@ -1436,6 +1465,7 @@ async function runDriver(config) {
   let turnStarted = false;
   let completed = false;
   let sawFailure = false;
+  let answerText = '';
   let timeout = null;
 
   const send = (message) => {
@@ -1565,6 +1595,19 @@ async function runDriver(config) {
         : [];
     }
     audit('item_started', entry);
+  };
+
+  const captureItemCompleted = (params) => {
+    const text = completedAgentMessageText(params);
+    if (text === null) return;
+    answerText = appendCompletedAgentMessage(answerText, params);
+    audit('agent_message_completed', {
+      threadId: params && params.threadId,
+      turnId: params && params.turnId,
+      itemId: params && params.item && params.item.id,
+      textLength: text.length,
+      accumulatedTextLength: answerText.length,
+    });
   };
 
   const handleApproval = async (message, approvalKind) => {
@@ -1858,7 +1901,26 @@ async function runDriver(config) {
       return;
     }
 
+    if (message.method === 'item/completed') {
+      captureItemCompleted(message.params);
+      return;
+    }
+
     if (message.method === 'turn/completed') {
+      try {
+        const wroteAnswer = writeAnswerFile(config.answerFile, answerText);
+        audit('answer_file_written', {
+          answerFile: config.answerFile,
+          wroteAnswer,
+          textLength: answerText.length,
+        });
+      } catch (error) {
+        sawFailure = true;
+        audit('answer_file_write_error', {
+          answerFile: config.answerFile,
+          error: error.message,
+        });
+      }
       audit('turn_completed', {
         threadId: message.params && message.params.threadId,
         turn: message.params && message.params.turn,
@@ -1989,4 +2051,7 @@ module.exports = {
   verifyGrantUseReceipt,
   grantUseReceiptSignatureMessage,
   commandSha256,
+  completedAgentMessageText,
+  appendCompletedAgentMessage,
+  writeAnswerFile,
 };

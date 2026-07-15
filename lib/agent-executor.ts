@@ -342,7 +342,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // the backend didn't already error (no double-mark). 'https?://' is precise: a
     // contract-compliant result carries real links, an essay does not.
     toolCommand = `${toolCommand}
-if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_FILE" 2>/dev/null; then
+if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_CONTENT_FILE" 2>/dev/null; then
   printf '\\n%s\\n' 'Collection produced no primary-source links (the backend described a workflow instead of collecting). Marked as a soft failure so the run escalates rather than drafting an essay.' >> "$RESULT_FILE"
   touch "$BACKEND_ERROR_FILE"
 fi`;
@@ -369,7 +369,7 @@ if [ -f "$BACKEND_ERROR_FILE" ]; then
     # North Star guard (baked path): the no-URL check above ran before this Codex
     # escalation, so re-check here — a sourceless Codex essay must also fail-closed
     # rather than ship to the vault on the unattended (alarm-fired) run.
-    if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_FILE" 2>/dev/null; then
+    if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_CONTENT_FILE" 2>/dev/null; then
       touch "$BACKEND_ERROR_FILE"
     fi
   else
@@ -434,6 +434,9 @@ REGISTRY_LOCK=""
 REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
 TRANSIENT_ERROR_FILE="$RESULT_FILE.transient-error"
+RESULT_CONTENT_FILE="$RESULT_FILE"
+RESULT_CONTENT_IS_DRIVER_ANSWER=0
+CODEX_RESULT_ACTIVE=0
 LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
@@ -702,11 +705,11 @@ NODEEOF
 # the on-device failure mode found 2026-07-15 (a small local model echoing
 # its own prompt + refusing on an x.post step, reaching the user's confirm
 # card as if it were real post content). The empty case is a SEPARATE bug
-# found the same day: the codex-driver path's telemetry filter
-# (clean_result_preview, this file) strips every line the driver ever prints
-# (all 8 of its output prefixes), so a Codex-routed step that completes
-# successfully still yields an empty $preview — which, before this check,
-# reached the confirm card as a blank content box instead of failing loud.
+# found the same day: the old codex-driver path fed its all-telemetry stdout to
+# clean_result_preview, so a successful Codex turn still yielded an empty
+# $preview. The driver now writes item/completed agentMessage text to a separate
+# .answer file; this empty check remains defense-in-depth for protocol/runtime
+# failures that produce no usable answer file.
 # Checked BEFORE any action that publishes outside the run's own log
 # (app-act/webhook/dm-reply/draft/notify) so a bad completion never reaches a
 # human-facing surface in the first place — this is a stronger, EARLIER gate
@@ -774,6 +777,31 @@ clean_result_preview() {
   redact_secrets_text "$cleaned" > "$redacted" 2>/dev/null || true
   head -c 500 "$redacted" 2>/dev/null | tr '\\n' ' '
   rm -f "$cleaned" "$redacted"
+}
+
+# Codex app-server answer text is written by shelly-agent-driver.js to a
+# dedicated file, separate from the raw protocol/audit stream in RESULT_FILE.
+# Redact and truncate that answer directly: never pass it through the telemetry
+# prefix filter above, because it is content rather than driver diagnostics.
+clean_answer_preview() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  redacted="$file.preview.redacted"
+  redact_secrets_text "$file" > "$redacted" 2>/dev/null || true
+  head -c 500 "$redacted" 2>/dev/null | tr '\n' ' '
+  rm -f "$redacted"
+}
+
+result_preview() {
+  if [ "$RESULT_CONTENT_IS_DRIVER_ANSWER" = "1" ] && [ -s "$RESULT_CONTENT_FILE" ]; then
+    clean_answer_preview "$RESULT_CONTENT_FILE"
+    return 0
+  fi
+  if [ "$CODEX_RESULT_ACTIVE" = "1" ]; then
+    printf '%s' 'Codex produced no answer text for this step.'
+    return 0
+  fi
+  clean_result_preview "$1"
 }
 
 write_native_notification_request() {
@@ -2755,19 +2783,21 @@ ${toolCommand}
 END_TIME=$(date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 
-if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
-  PREVIEW=$(clean_result_preview "$RESULT_FILE")
+if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
+  PREVIEW=$(result_preview "$RESULT_FILE")
   STATUS="success"
   ERROR_MESSAGE=""
 
-  if ! dispatch_agent_action "$RESULT_FILE" "$PREVIEW"; then
+  if ! dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW"; then
     STATUS="\${ACTION_DISPATCH_STATUS:-error}"
     ERROR_MESSAGE="\${ACTION_DISPATCH_MESSAGE:-agent action dispatch failed}"
     PREVIEW="$ERROR_MESSAGE"
   fi
 else
-  if [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
-    PREVIEW=$(clean_result_preview "$RESULT_FILE")
+  if [ "$CODEX_RESULT_ACTIVE" = "1" ]; then
+    PREVIEW=$(result_preview "$RESULT_FILE")
+  elif [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
+    PREVIEW=$(result_preview "$RESULT_FILE")
   else
     PREVIEW="Agent produced no output. Check backend configuration and required commands. Tool=$TOOL_LABEL PATH=$PATH"
   fi
@@ -2802,7 +2832,7 @@ LOGEOF
 ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 
 # Cleanup temp
-rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"
+rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE"
 finish 0
 `;
 }
@@ -3005,6 +3035,7 @@ printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 DRIVER_CWD="$PROJECT_DIR"
 [ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
 if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+  rm -f "$RESULT_FILE.answer"
   set +e
   shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
     --cwd "$DRIVER_CWD" \\
@@ -3013,11 +3044,21 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     --agent-id "$AGENT_ID" \\
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+    --answer-file "$RESULT_FILE.answer" \\
     --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
   DRIVER_EXIT=$?
   set -e
   mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
+  CODEX_RESULT_ACTIVE=1
+  if [ -s "$RESULT_FILE.answer" ]; then
+    RESULT_CONTENT_FILE="$RESULT_FILE.answer"
+    RESULT_CONTENT_IS_DRIVER_ANSWER=1
+  else
+    RESULT_CONTENT_FILE="$RESULT_FILE"
+    RESULT_CONTENT_IS_DRIVER_ANSWER=0
+    touch "$BACKEND_ERROR_FILE"
+  fi
 else
   echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
   DRIVER_EXIT=1

@@ -335,11 +335,11 @@ describe('generateRunScript — collection contract + no-source guard (North Sta
     const web = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: '最新ニュースを集めて' });
     // The guard fires only for web tasks, keys off a missing URL, and sets the
     // backend-error flag the escalation ladder reads.
-    expect(web).toContain("! grep -qE 'https?://' \"$RESULT_FILE\"");
+    expect(web).toContain("! grep -qE 'https?://' \"$RESULT_CONTENT_FILE\"");
     expect(web).toContain('touch "$BACKEND_ERROR_FILE"');
 
     const plain = generateRunScript({ ...agent({ type: 'local' }), prompt: 'say hello' });
-    expect(plain).not.toContain("! grep -qE 'https?://' \"$RESULT_FILE\"");
+    expect(plain).not.toContain("! grep -qE 'https?://' \"$RESULT_CONTENT_FILE\"");
   });
 });
 
@@ -349,7 +349,14 @@ describe('generateRunScript — readable notification preview (telemetry-strippe
     // The notification/draft preview must NOT be the raw head of the result file
     // (which, for the codex driver, begins with `AUDIT {...driver_start...}`).
     expect(s).toContain('clean_result_preview()');
-    expect(s).toContain('PREVIEW=$(clean_result_preview "$RESULT_FILE")');
+    // Codex-driver steps route the preview through result_preview(), which
+    // reads the driver's dedicated $RESULT_FILE.answer (bypassing the
+    // telemetry-prefix filter entirely for real answer text) and only falls
+    // back to clean_result_preview()'s telemetry-stripping for protocol/
+    // runtime failures with no usable answer file — see result_preview()'s
+    // own definition, still built on clean_result_preview() below.
+    expect(s).toContain('PREVIEW=$(result_preview "$RESULT_FILE")');
+    expect(s).toContain('clean_answer_preview() {');
     expect(s).toContain("sed -E '/^(AUDIT|AUDIT_FALLBACK|GATE|C->S|S->C|STDERR|ESCALATE|ESCALATE_RESOLVED) /d'");
   });
 
@@ -474,6 +481,13 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).toContain('shelly_node()');
     expect(s).toContain('shelly_curl()');
     expect(s).toContain('shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js"');
+    expect(s).toContain('--answer-file "$RESULT_FILE.answer"');
+    expect(s).toContain('RESULT_CONTENT_FILE="$RESULT_FILE.answer"');
+    expect(s).toContain('RESULT_CONTENT_IS_DRIVER_ANSWER=1');
+    expect(s).toContain('clean_answer_preview "$RESULT_CONTENT_FILE"');
+    expect(s).toContain('dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW"');
+    expect(s).toContain('Codex produced no answer text for this step.');
+    expect(s).toContain('touch "$BACKEND_ERROR_FILE"');
     expect(s).toContain('/system/bin/linker64 "$binary" "$@"');
     expect(s).not.toContain('timeout "$TIMEOUT" node');
     expect(s).not.toContain('command -v node >/dev/null');
@@ -626,8 +640,17 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).toContain('code="${1:-$?}"');
     expect(s).toContain('trap - EXIT');
     expect(s).toContain('--audit-log "$LOG_DIR/agent-driver-audit.jsonl"');
-    expect(s).toContain('mirror_driver_audit_to_app_private || true\n  mirror_driver_audit_to_sdcard || true\nelse');
-    expect(s).toContain('rm -f "$RESULT_FILE" "$BACKEND_ERROR_FILE"\nfinish 0');
+    // Driver audit is mirrored immediately after the driver process exits —
+    // before the codex-driver-answer routing (CODEX_RESULT_ACTIVE / the
+    // $RESULT_FILE.answer check) and before the outer if/else's `else`
+    // branch (the "driver unavailable" fallback) — so a mid-run kill can
+    // never lose the audit trail regardless of which branch runs next.
+    expect(s).toContain('mirror_driver_audit_to_app_private || true\n  mirror_driver_audit_to_sdcard || true\n  CODEX_RESULT_ACTIVE=1');
+    const driverExitIdx = s.indexOf('mirror_driver_audit_to_app_private || true\n  mirror_driver_audit_to_sdcard || true');
+    const elseIdx = s.indexOf('\nelse\n', driverExitIdx);
+    expect(driverExitIdx).toBeGreaterThan(-1);
+    expect(elseIdx).toBeGreaterThan(driverExitIdx);
+    expect(s).toContain('rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE"\nfinish 0');
   });
 
   it('dispatches saved results by action without auto-running cli actions', () => {
