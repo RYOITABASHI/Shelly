@@ -34,7 +34,7 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v218:errno-publishing-interposer";
+    "shelly-exec-wrapper:v219:fd-pinned-linker-exec";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -571,14 +571,65 @@ static int should_keep_wrapper_for_shell_path(const char *path) {
             streq(base, "sh"));
 }
 
-static int is_elf(const char *path) {
+/* bug #119 (TOCTOU): the old is_elf() checked the ELF magic by path and the
+ * exec then re-resolved the same path, so the target could be swapped between
+ * check and use. Instead, keep the fd the magic was verified on and exec
+ * `linker64 /proc/self/fd/N ...` -- the fd pins the verified inode, so no
+ * path mutation after the check can change what runs.
+ *
+ * Deliberate flag choices:
+ * - no O_NOFOLLOW: $HOME/bin shims are symlinks into $libDir by design;
+ *   execve would follow them too, and the held fd pins the final inode, so
+ *   following symlinks at open time is safe here.
+ * - no O_CLOEXEC: the fd must survive execve so linker64 in the new image
+ *   can open /proc/self/fd/N. The exec'd program inherits one read-only fd
+ *   to its own binary (same information the kernel already exposes). */
+#ifndef __NR_fcntl
+#define __NR_fcntl 25
+#endif
+#ifndef F_DUPFD
+#define F_DUPFD 0
+#endif
+#define PROC_FD_PATH_SIZE 32
+#define ELF_FD_MIN 100
+
+static int raw_fcntl_dupfd(int fd, int min_fd) {
+    return finish_syscall(raw_syscall3(__NR_fcntl, fd, F_DUPFD, min_fd));
+}
+
+static void close_elf_fd(int fd) {
+    if (fd >= 0) raw_close_call(fd);
+}
+
+static int open_verified_elf_fd(const char *path) {
     unsigned char magic[4];
+    long n;
     int fd = raw_open_readonly(path);
-    if (fd < 0) return 0;
-    long n = raw_read_call(fd, magic, sizeof(magic));
-    raw_close_call(fd);
-    return n == 4 && magic[0] == 0x7f && magic[1] == 'E' &&
-           magic[2] == 'L' && magic[3] == 'F';
+    if (fd < 0) return -1;
+    do {
+        n = raw_read_call(fd, magic, sizeof(magic));
+    } while (n == -SHELLY_EINTR);
+    if (n != 4 || magic[0] != 0x7f || magic[1] != 'E' ||
+        magic[2] != 'L' || magic[3] != 'F') {
+        raw_close_call(fd);
+        return -1;
+    }
+    /* Move above the caller's likely dup2 targets so posix_spawn file_actions
+     * running in the child cannot clobber the verified fd before exec. If the
+     * dup fails, keep the original fd rather than dropping linker routing. */
+    int high_fd = raw_fcntl_dupfd(fd, ELF_FD_MIN);
+    if (high_fd >= 0) {
+        raw_close_call(fd);
+        return high_fd;
+    }
+    return fd;
+}
+
+static int format_proc_fd_path(char *out, size_t out_size, int fd) {
+    size_t n = 0;
+    if (fd < 0) return -1;
+    if (append_str(out, out_size, &n, "/proc/self/fd/") != 0) return -1;
+    return append_uint(out, out_size, &n, (unsigned int)fd);
 }
 
 static const char *rewrite_path(const char *pathname, char *const envp[], char *rewrite_buf, size_t rewrite_buf_size) {
@@ -637,13 +688,18 @@ static int resolve_path_search(const char *file, char *const envp[], char *out, 
     return -1;
 }
 
-static int should_linker_exec(const char *pathname) {
-    return pathname &&
-           !streq(pathname, LINKER64) &&
-           !starts_with(pathname, "/system/") &&
-           !starts_with(pathname, "/vendor/") &&
-           !starts_with(pathname, "/apex/") &&
-           is_elf(pathname);
+/* Returns a verified ELF fd (>= 0) when pathname should be exec'd through
+ * linker64, or -1 for direct exec. The caller owns the fd and must close it
+ * on every path that does not exec through it (see close_elf_fd). */
+static int linker_exec_elf_fd(const char *pathname) {
+    if (!pathname ||
+        streq(pathname, LINKER64) ||
+        starts_with(pathname, "/system/") ||
+        starts_with(pathname, "/vendor/") ||
+        starts_with(pathname, "/apex/")) {
+        return -1;
+    }
+    return open_verified_elf_fd(pathname);
 }
 
 static int should_scrub_system_env(const char *pathname) {
@@ -979,13 +1035,16 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     char codex_self_buf[PATH_BUF_SIZE];
     const char *codex_self = codex_exec_path_value(envp, codex_self_buf, sizeof(codex_self_buf));
     char *codex_child_env[MAX_ENVP];
+    char elf_fd_path[PROC_FD_PATH_SIZE];
+    int elf_fd;
     int linker_exec;
     int keep_wrapper_for_shell;
     if (!rewritten) {
         if (envp) trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
         return -1;
     }
-    linker_exec = should_linker_exec(rewritten);
+    elf_fd = linker_exec_elf_fd(rewritten);
+    linker_exec = elf_fd >= 0;
     keep_wrapper_for_shell = should_keep_wrapper_for_shell_path(rewritten);
     if (envp) trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
     if (is_codex_fs_helper_linker_exec(rewritten, argv, codex_self)) {
@@ -1009,6 +1068,9 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
             char ld_buf[PATH_BUF_SIZE + 32];
             char codex_path_buf[PATH_BUF_SIZE + 32];
             trace_exec_event("codex-fs-helper-self", pathname, rewritten, codex_argv, envp, 1);
+            /* This branch execs by path (unchanged codex-helper argv contract);
+             * drop the verified fd so it does not leak into the child. */
+            close_elf_fd(elf_fd);
             if (add_codex_helper_envp(envp, codex_env, ld_buf, sizeof(ld_buf),
                                       codex_path_buf, sizeof(codex_path_buf), codex_self) == 0) {
                 return raw_execve_call(LINKER64, codex_argv, codex_env);
@@ -1036,8 +1098,10 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     }
 
     char *new_argv[MAX_ARGC + 2];
-    if (build_linker_argv(rewritten, argv, new_argv) != 0) {
+    if (format_proc_fd_path(elf_fd_path, sizeof(elf_fd_path), elf_fd) != 0 ||
+        build_linker_argv(elf_fd_path, argv, new_argv) != 0) {
         if (envp) trace_exec_event("linker-argv-failed", pathname, rewritten, argv, envp, 0);
+        close_elf_fd(elf_fd);
         return raw_execve_call(rewritten, argv, envp);
     }
     if (!env_value(envp, "LD_LIBRARY_PATH=")) {
@@ -1045,10 +1109,14 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
         char ld_buf[PATH_BUF_SIZE + 32];
         if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
                                 !envp && keep_wrapper_for_shell) == 0) {
-            return raw_execve_call(LINKER64, new_argv, app_env);
+            int exec_ret = raw_execve_call(LINKER64, new_argv, app_env);
+            close_elf_fd(elf_fd);
+            return exec_ret;
         }
     }
-    return raw_execve_call(LINKER64, new_argv, envp);
+    int exec_ret = raw_execve_call(LINKER64, new_argv, envp);
+    close_elf_fd(elf_fd);
+    return exec_ret;
 }
 
 int execve(const char *pathname, char *const argv[], char *const envp[]) {
@@ -1099,6 +1167,8 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     const char *rewritten;
     char codex_self_buf[PATH_BUF_SIZE];
     const char *codex_self;
+    char elf_fd_path[PROC_FD_PATH_SIZE];
+    int elf_fd;
     int linker_exec;
     int keep_wrapper_for_shell;
 
@@ -1121,7 +1191,8 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
                          spawn_path, NULL, argv, envp, 0);
         return SHELLY_ENOENT;
     }
-    linker_exec = should_linker_exec(rewritten);
+    elf_fd = linker_exec_elf_fd(rewritten);
+    linker_exec = elf_fd >= 0;
     keep_wrapper_for_shell = should_keep_wrapper_for_shell_path(rewritten);
     trace_exec_event(search_path ? "posix_spawnp" : "posix_spawn",
                      spawn_path, rewritten, argv, envp, linker_exec);
@@ -1146,6 +1217,9 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
             char *codex_env[MAX_ENVP];
             char ld_buf[PATH_BUF_SIZE + 32];
             char codex_path_buf[PATH_BUF_SIZE + 32];
+            /* This branch spawns by path (unchanged codex-helper argv contract);
+             * close the verified fd pre-fork so the child never inherits it. */
+            close_elf_fd(elf_fd);
             if (add_codex_helper_envp(envp, codex_env, ld_buf, sizeof(ld_buf),
                                       codex_path_buf, sizeof(codex_path_buf), codex_self) == 0) {
                 return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, codex_argv, codex_env);
@@ -1177,18 +1251,29 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     }
 
     char *new_argv[MAX_ARGC + 2];
-    if (build_linker_argv(rewritten, argv, new_argv) != 0) {
+    if (format_proc_fd_path(elf_fd_path, sizeof(elf_fd_path), elf_fd) != 0 ||
+        build_linker_argv(elf_fd_path, argv, new_argv) != 0) {
+        close_elf_fd(elf_fd);
         return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, envp);
     }
+    /* The verified fd is intentionally left open across the spawn: the child
+     * inherits it so linker64 can load /proc/self/fd/N. The parent's copy is
+     * closed once the spawn call returns (bionic posix_spawn has vfork-style
+     * semantics, so the child has already exec'd or died by then; with plain
+     * fork semantics the child holds its own fd-table copy either way). */
     if (!env_value(envp, "LD_LIBRARY_PATH=")) {
         char *app_env[MAX_ENVP];
         char ld_buf[PATH_BUF_SIZE + 32];
         if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
                                 !envp && keep_wrapper_for_shell) == 0) {
-            return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, app_env);
+            int spawn_ret = call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, app_env);
+            close_elf_fd(elf_fd);
+            return spawn_ret;
         }
     }
-    return call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, envp);
+    int spawn_ret = call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, envp);
+    close_elf_fd(elf_fd);
+    return spawn_ret;
 }
 
 int posix_spawn(pid_t *pid, const char *path,

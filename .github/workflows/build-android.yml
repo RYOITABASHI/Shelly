@@ -808,7 +808,7 @@ jobs:
           test "${environ_reloc_count}" = "0" || { echo "FATAL: libexec_wrapper.so must not depend on libc environ, got ${environ_reloc_count} relocation(s)"; exit 1; }
           readelf -d /tmp/libexec_wrapper.so | grep -q INIT_ARRAY || { echo "FATAL: libexec_wrapper.so constructor INIT_ARRAY missing"; exit 1; }
           grep -qaF 'SHELLY_CODEX_PROC_EXE_OPEN_SHIM' /tmp/libexec_wrapper.so || { echo "FATAL: Codex proc-exe open shim gate missing from libexec_wrapper.so"; exit 1; }
-          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v218:errno-publishing-interposer'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v219:fd-pinned-linker-exec'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
