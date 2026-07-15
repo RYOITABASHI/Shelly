@@ -22,6 +22,21 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Android bind-mounts app-private storage under two path aliases for the
+ * same directory: /data/data/<pkg> and /data/user/0/<pkg>. Different native
+ * code paths in this app report cwd/home using different aliases (PTY-reported
+ * cwd uses /data/data, TerminalEmulator.getHomeDir() uses /data/user/0), so a
+ * plain string comparison between them can spuriously mismatch even when both
+ * actually refer to the same directory. Normalize both known prefixes to a
+ * common form before comparing.
+ */
+function canonicalizeAndroidDataPath(path: string): string {
+  return path
+    .replace(/^\/data\/user\/0\/dev\.shelly\.terminal\//, '/__shelly_data__/')
+    .replace(/^\/data\/data\/dev\.shelly\.terminal\//, '/__shelly_data__/');
+}
+
 export function ContextBar() {
   const connectionMode = useTerminalStore((s) => s.connectionMode);
   const home = getHomePath();
@@ -42,7 +57,7 @@ export function ContextBar() {
     const refreshBranch = async () => {
       try {
         const dir = currentDir || home;
-        if (dir === home) {
+        if (canonicalizeAndroidDataPath(dir) === canonicalizeAndroidDataPath(home)) {
           if (active) setGitBranch(null);
           return;
         }
