@@ -43,7 +43,7 @@
 - **Storage**: `MANAGE_EXTERNAL_STORAGE` を取得して `/sdcard` 直接読み書き（bug #92）。初回起動時に `lib/first-launch-setup.ts` が Intent 経由で権限を要求
 - **Paste 経路**: すべてのペースト（IME commitText / middle-click / CommandKeyBar Paste）は `TerminalView.pasteViaEmulator()` に集約、`TerminalEmulator.paste()` が DECSET 2004 状態で分岐: (a) bracketed-paste mode 有効 (readline guest) → `\C-x\C-b` (0x18 0x02) + payload + `\e[201~`。`\C-x\C-b` は .bashrc で emacs / vi-insert / vi-command 全 keymap に `bracketed-paste-begin` を bind、END 側の ESC は関数内の直接 read で preserve される。(b) bracketed-paste mode 無効 (vim/less/nano 等 TUI) → `\r?\n → \r` fallback で各行を個別 Enter として送信（bug #91 / #94 / #97）
 - **AI CLIs**: v5.3.1 の正式 CLI surface は Claude Code と Codex。Shelly 管理 updater が staging に取得し、`--version` probe を通したものだけを live/current に昇格する。Claude/Codex runtime は `~/.shelly-runtime/*/current` と `$HOME/bin` wrapper で管理する。Gemini CLI は bundle/patched investigation 用の Experimental 扱いで、Worktrees / Quick Launch には出さない。Gemini は AI Pane/background の API provider として使う。
-- **Local LLM**: 端末単体の常用推奨は Qwen3.5-2B Q4_K_M。重い場合は Qwen3 1.7B Q4_K_M、分類/ルーティング用途は Qwen3.5 0.8B Q4_K_M。4B/9B は短時間の品質確認に限定する。
+- **Local LLM**: 端末単体の常用推奨は Qwen3.5-2B Q4_K_M。重い場合は Qwen3 1.7B Q4_K_M、分類/ルーティング用途は Qwen3.5 0.8B Q4_K_M。4B/9B は短時間の品質確認に限定する。**Bonsai 27B（PrismML、Qwen3.6 27Bベース、1-bit/ternary量子化）は 2026-07-15 に実機評価・却下済み — 詳細は DEFERRED.md 参照。**
 - **bash wrapper**: `$HOME/bin/bash` に linker64 経由の shim を配置して `bash script.sh` や `#!/usr/bin/env bash` shebang を動作させる（bug #93）
 - **Terminal pane background**: Terminal pane は wallpaper 透過対象外。native Canvas / GL terminal surface と Termux default background は opaque black 固定にしている。build 1560–1565 で wallpaper/panel tint がグレー化として露出したため、再有効化は `docs/superpowers/DEFERRED.md` の P3 条件を満たすまで行わない。
 

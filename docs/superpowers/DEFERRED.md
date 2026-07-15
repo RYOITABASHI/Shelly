@@ -1818,6 +1818,23 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 - **Why not now**: shim 方式は簡単だが Android 10+ の shebang 実行制限 (SELinux) にかかる可能性あり、LD_PRELOAD exec wrapper 経由の挙動検証が必要。v0.1.1 以降
 - **Issue 登録条件**: 実ユーザーから複数報告が来たら GitHub Issue 化
 
+#### 📉 評価済み・却下: Bonsai 27B（PrismML）をローカルLLMに採用しない (2026-07-15)
+
+**候補**: [@PrismML](https://x.com/PrismML/status/2077084891284721827) が2026-07-14発表。Qwen3.6 27Bベース、Apache 2.0。Ternary版5.9GB（1.71 effective bits/weight）とQ1_0（1-bit）版3.9GB（1.125 effective bits/weight）の2種。「スマホで動く初の27B級モデル」を謳う。9to5Mac/MarkTechPostが報道、Hacker News (https://news.ycombinator.com/item?id=48910545) に発表24〜48時間以内の実害報告多数。
+
+**実機検証**（Samsung Galaxy Z Fold6、Snapdragon、RAM 12GB、Shellyバンドルの llama-server build b9371/f12cc6d0f、Clang 21、Android aarch64）:
+- HuggingFace `prism-ml/Bonsai-27B-gguf` の `Bonsai-27B-Q1_0.gguf`（3.8GB）をロード → 成功（クラッシュなし、HN報告にあった「!!!!!!!!!!!!!」ガベージ出力は本ビルドでは再現せず）
+- 単純な1文プロンプト（"Explain in one sentence what a for loop is.", max_tokens=100）を `/v1/chat/completions` に送信 → **プロンプト処理 1.39 tok/s、生成 1.00 tok/s、合計約115秒**。しかも `content` フィールドは**完全に空**、`reasoning_content`（思考過程）だけでトークン予算を使い切り `finish_reason:"Length"` で打ち切り。実際の回答に一度も到達せず。
+
+**却下理由**:
+1. 速度自体が実用外（1 tok/s前後）。Shellyのローカルモデル用途（分類/ルーティング/要約の低遅延バックグラウンドタスク）に根本的に不向き。空回答バグはこの上に乗ったさらに独立した問題。
+2. `enable_thinking:false`（Shelly既存の `shouldDisableThinking()` 機構、`lib/local-llm.ts`）で空回答バグを回避できる可能性はあるが、(a) llama.cpp本家にQwen3.5/3.6系でこのフラグが無視される既知バグが複数あり（ggml-org/llama.cpp #20409, #20182, #13160）、Shellyのビルドで効くか不明、(b) PrismML公式の品質維持数値（94.6%/89.5%）はthinkingモードでの計測なのでoffにすると品質未検証、(c) **速度問題自体は解決しない**、(d) non-thinking版チェックポイントは存在しない。
+3. 原因はARM上の未最適化カーネル（NEON/dot-product調整の形跡なし）と推測され、PrismML側の最適化課題。Shelly側の設定・アップストリームIssue化でどうにかなる話ではない。
+
+**Why not now / 今後**: 発表から日が浅く報道も多いため再提案される可能性がある。その際は本エントリの実機ベンチマーク数値を参照し、ゼロから再検証しないこと。PrismMLが将来ARM/Snapdragon向けカーネルの最適化とAndroid実機での再現可能なベンチマークを公開した場合のみ再評価対象。
+
+---
+
 #### bug #35 — `busybox` コマンド未同梱
 - **症状**: `busybox httpd ...` / `busybox nc ...` 等が `libbash.so: busybox: command not found`
 - **現状**: `LibExtractor.LIBS` に busybox エントリなし、`jniLibs/arm64-v8a/` にも `libbusybox.so` 無し → 完全未同梱が確定
