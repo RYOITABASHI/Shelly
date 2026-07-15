@@ -469,6 +469,23 @@ class ShellyTerminalView(
         setBackgroundColor(Color.TRANSPARENT)
         terminalView.setBackgroundColor(Color.TRANSPARENT)
         terminalView.setTransparentBackground(true)
+        // Keep the shared palette slots deterministic in transparent mode
+        // too, mirroring applyOpaqueTerminalSurface(). These writes are
+        // inert for cell painting while transparent (TerminalRenderer skips
+        // default-background AND indexed-black runs, and forces the opaque
+        // constant for default-bg runs when opaque), but without them the
+        // process-global COLOR_SCHEME.mDefaultColors / this emulator's
+        // mCurrentColors[0]/[COLOR_INDEX_BACKGROUND] carry whatever the last
+        // theme apply or mode toggle left behind — any future palette read
+        // (OSC 10/11 reports, GL snapshot copies, new render paths) would
+        // observe toggle-history-dependent values instead of the documented
+        // opaque-black policy.
+        TerminalColors.COLOR_SCHEME.mDefaultColors[0] = OPAQUE_TERMINAL_BACKGROUND
+        TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+        terminalView.mEmulator?.mColors?.mCurrentColors?.let { colors ->
+            colors[0] = OPAQUE_TERMINAL_BACKGROUND
+            colors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
+        }
         val colorsForGl = (terminalView.mEmulator?.mColors?.mCurrentColors ?: TerminalColors.COLOR_SCHEME.mDefaultColors).copyOf()
         glTerminalView?.let { glView ->
             // GLSurfaceView transparency does not reliably reveal RN wallpaper
@@ -535,6 +552,15 @@ class ShellyTerminalView(
                 }
             }
             TerminalColors.COLOR_SCHEME.updateWith(props)
+            // Force the background slots back to the opaque-black policy
+            // regardless of what the theme map carried. This runs on every
+            // theme (re)apply — including while transparent mode is active —
+            // which is safe because cell painting never consults these slots
+            // for background in either mode: TerminalRenderer skips
+            // default-bg/indexed-black runs when transparent and paints the
+            // literal opaque constant when opaque. applyTerminalSurface()
+            // below then re-asserts the mode-appropriate view/palette state
+            // after the reset() wipes mCurrentColors back to these defaults.
             TerminalColors.COLOR_SCHEME.mDefaultColors[0] = OPAQUE_TERMINAL_BACKGROUND
             TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
             // Reset current session colors to apply the new scheme

@@ -220,7 +220,21 @@ public final class TerminalRenderer {
         int foreColor = TextStyle.decodeForeColor(textStyle);
         final int effect = TextStyle.decodeEffect(textStyle);
         int backColor = TextStyle.decodeBackColor(textStyle);
-        final boolean usesDefaultBackground = backColor == TextStyle.COLOR_INDEX_BACKGROUND;
+        // Wallpaper transparency: treat ANSI palette index 0 ("black") the
+        // same as the default background when transparent mode is active.
+        // Erase/clear/scroll fills executed while SGR 40 / 48;5;0 is the
+        // current background stamp cells with back index 0 instead of
+        // COLOR_INDEX_BACKGROUND (TerminalEmulator.getStyle() encodes
+        // mBackColor verbatim), and Shelly forces palette[0] to opaque
+        // black everywhere (applyThemeColors / applyOpaqueTerminalSurface).
+        // Without this, those cells paint opaque black rectangles punched
+        // into the wallpaper — the terminal never reaches the clean, fully
+        // transparent look the AI/Browser panes have. Only the *indexed*
+        // black is widened; explicit truecolor black (48;2;0;0;0) decodes
+        // to 0xFF000000 and still paints, as does any non-black explicit
+        // background. Opaque mode is unaffected (the flag is false).
+        final boolean usesDefaultBackground = backColor == TextStyle.COLOR_INDEX_BACKGROUND
+            || (transparentBackground && backColor == 0);
         final boolean bold = (effect & (TextStyle.CHARACTER_ATTRIBUTE_BOLD | TextStyle.CHARACTER_ATTRIBUTE_BLINK)) != 0;
         final boolean underline = (effect & TextStyle.CHARACTER_ATTRIBUTE_UNDERLINE) != 0;
         final boolean italic = (effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0;

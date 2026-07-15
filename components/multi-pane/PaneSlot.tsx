@@ -159,7 +159,15 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
           shadowColor: isFocusedPane ? C.accent : 'transparent',
           shadowOpacity: isFocusedPane ? 0.42 : 0,
           shadowRadius: isFocusedPane ? 10 : 0,
-          elevation: isFocusedPane ? 6 : 0,
+          // No `elevation` here (Android-only shadow prop, separate from
+          // the iOS shadowColor/shadowOpacity/shadowRadius above): RN's
+          // Android elevation shadow does not reliably honor shadowColor
+          // across OS/device versions and instead renders a neutral
+          // grayish/whitish native drop shadow. Against an opaque pane
+          // background that blended in unnoticed; against a transparent
+          // wallpaper-through pane (Terminal) it reads as a hazy white
+          // wash over the focused pane specifically — the border-color
+          // change above already carries the focus cue on Android.
         },
       ]}
       onTouchStart={handleFocusPane}
