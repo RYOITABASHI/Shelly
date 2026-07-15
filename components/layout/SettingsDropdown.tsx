@@ -32,6 +32,7 @@ import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
 import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
+import { execCommand } from '@/hooks/use-native-exec';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
@@ -134,6 +135,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <UpdatesSection onOpenBuilds={handleOpenBuilds} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CodexLoginSection onClose={onClose} />
+            <DoctorSection />
             <ResetSettingsSection />
             <IntegrationsSection
               onOpenMcp={handleOpenMcp}
@@ -1418,6 +1420,233 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
+    </Section>
+  );
+});
+
+// ─── Doctor ──────────────────────────────────────────────────────────────────
+// bug #122 minimal slice (DEFERRED.md, 2026-07-16): `shelly-doctor --json`
+// already exists (bashrc v48, modules/terminal-emulator/.../shelly-doctor.js)
+// and checks native binaries, codex tui/js/auth, local LLM endpoints, and
+// security posture (leftover Download credentials, private-file mode, env
+// key leaks) — but had zero UI surface, only reachable by typing
+// `shelly-doctor` in a terminal pane. This wires a single Settings row that
+// runs it via execCommand() and renders the parsed JSON as an OK/WARN list
+// modal. Deliberately NOT the full DoctorPane / ContextBar health icon / 24h
+// background tick from the original bug #122 scope (see DEFERRED.md for the
+// descoped items and rationale).
+//
+// Invocation note: execCommand()'s non-interactive shell does not source
+// ~/.bashrc (see TerminalEmulatorModule.execCommand's comment), so the
+// `shelly-doctor()` bash alias (`SHELLY_LIB_DIR="$libDir" _run $libDir/node
+// "$HOME/.shelly-doctor.js" "$@"`) isn't reachable here. DOCTOR_CMD below
+// inlines the same resolve-then-linker64-exec pattern used everywhere else
+// node is invoked in this codebase (see shelly_run_app_binary /
+// shelly_node in lib/agent-executor.ts's generated bash script): resolve the
+// node binary via PATH (execCommand already exports PATH to include the
+// extracted lib dir), then exec it through /system/bin/linker64 with
+// LD_LIBRARY_PATH pointed at its directory, rather than relying on a bare
+// `node ...` PATH-exec working directly.
+//
+// `dirname` is NOT a real PATH binary here: HomeInitializer.kt only defines
+// it (and every other coreutils applet) as a .bashrc FUNCTION
+// (`dirname() { _run $libDir/coreutils --coreutils-prog=dirname "$@"; }`,
+// see COREUTILS_APPLETS), which this non-interactive shell never sources —
+// the exact same class of gap already called out above for the
+// `shelly-doctor()` alias itself. Use bash's own `${VAR%/*}` suffix-strip
+// parameter expansion instead, which needs no external command. Built as a
+// plain string (not a template literal) so there is no JS `${...}`
+// interpolation hazard to escape around.
+type DoctorFinding = { label: string; ok: boolean; detail?: string };
+
+const DOCTOR_CMD = [
+  'set -e',
+  'NODE_BIN="$(command -v node 2>/dev/null || true)"',
+  'if [ -z "$NODE_BIN" ]; then',
+  '  echo \'{"__error":"node binary not found on PATH"}\'',
+  '  exit 0',
+  'fi',
+  'NODE_DIR="${NODE_BIN%/*}"',
+  'if [ -x /system/bin/linker64 ]; then',
+  '  SHELLY_LIB_DIR="$NODE_DIR" LD_LIBRARY_PATH="$NODE_DIR" /system/bin/linker64 "$NODE_BIN" "$HOME/.shelly-doctor.js" --json',
+  'else',
+  '  SHELLY_LIB_DIR="$NODE_DIR" "$NODE_BIN" "$HOME/.shelly-doctor.js" --json',
+  'fi',
+].join('\n');
+
+// Mirrors shelly-doctor.js's own printHuman() OK/WARN judgment (native
+// binaries + codex tui/js exist checks, download-credential leftovers,
+// private-file mode, env key leaks) but reshaped into a flat findings list
+// so the modal can just group by `ok` instead of duplicating per-field
+// formatting logic.
+function buildDoctorFindings(data: any, t: (key: string, opts?: Record<string, any>) => string): DoctorFinding[] {
+  const findings: DoctorFinding[] = [];
+  const native = data?.native ?? {};
+  findings.push({ label: t('doctor.check_node'), ok: Boolean(native.node?.exists) });
+  findings.push({ label: t('doctor.check_bash'), ok: Boolean(native.bash?.exists) });
+  findings.push({ label: t('doctor.check_exec_wrapper'), ok: Boolean(native.execWrapper?.exists) });
+  findings.push({ label: t('doctor.check_xdg_open'), ok: Boolean(native.xdgOpen?.exists) });
+
+  const codex = data?.codex ?? {};
+  findings.push({
+    label: t('doctor.check_codex_tui'),
+    ok: Boolean(codex.tui?.version?.ok),
+    detail: codex.tui?.version?.output ? String(codex.tui.version.output).slice(0, 120) : undefined,
+  });
+  findings.push({ label: t('doctor.check_codex_js'), ok: Boolean(codex.jsDispatcher?.exists) });
+  findings.push({ label: t('doctor.check_codex_auth'), ok: Boolean(codex.auth?.exists) });
+
+  const security = data?.security ?? {};
+  const leftover: any[] = Array.isArray(security.downloadCredentials)
+    ? security.downloadCredentials.filter((f: any) => f?.exists)
+    : [];
+  findings.push({
+    label: t('doctor.check_download_credentials'),
+    ok: leftover.length === 0,
+    detail: leftover.length > 0
+      ? leftover.map((f: any) => String(f.file ?? '').split('/').pop()).join(', ')
+      : undefined,
+  });
+
+  const privateFiles: any[] = Array.isArray(security.privateFiles) ? security.privateFiles : [];
+  for (const file of privateFiles) {
+    if (!file?.exists) continue;
+    const name = String(file.file ?? '').split('/').pop() || String(file.file ?? '');
+    findings.push({
+      label: t('doctor.check_private_file', { name }),
+      ok: Boolean(file.privateMode),
+      detail: file.privateMode ? undefined : t('doctor.check_private_file_hint', { mode: file.mode }),
+    });
+  }
+
+  const envKeys: string[] = Array.isArray(security.envKeysPresent) ? security.envKeysPresent : [];
+  findings.push({
+    label: t('doctor.check_env_keys'),
+    ok: envKeys.length === 0,
+    detail: envKeys.length > 0 ? envKeys.join(', ') : undefined,
+  });
+
+  return findings;
+}
+
+const DoctorSection = React.memo(function DoctorSection() {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [resultVisible, setResultVisible] = useState(false);
+  const [findings, setFindings] = useState<DoctorFinding[] | null>(null);
+
+  const run = React.useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await execCommand(DOCTOR_CMD, 30_000);
+      const stdout = result.stdout.trim();
+      // --json prints a single JSON.stringify(data, null, 2) blob; take the
+      // whole trimmed stdout (multi-line pretty-printed JSON), not just the
+      // last line.
+      const data = JSON.parse(stdout);
+      if (data?.__error) throw new Error(data.__error);
+      setFindings(buildDoctorFindings(data, t));
+      setResultVisible(true);
+      logInfo('SettingsDropdown', 'shelly-doctor ran ok, exit=' + result.exitCode);
+    } catch (e: any) {
+      logError('SettingsDropdown', 'shelly-doctor failed', e);
+      Alert.alert(t('doctor.failed_title'), String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, t]);
+
+  const okItems = React.useMemo(() => findings?.filter((f) => f.ok) ?? [], [findings]);
+  const warnItems = React.useMemo(() => findings?.filter((f) => !f.ok) ?? [], [findings]);
+
+  return (
+    <Section title={t('doctor.title')}>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle(), busy && styles.integrationRowDisabled]}
+        onPress={run}
+        disabled={busy}
+        accessibilityRole="button"
+        accessibilityLabel={t('doctor.run_a11y')}
+      >
+        <MaterialIcons name="favorite" size={13} color={C.text2} />
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>
+          {busy ? t('doctor.running') : t('doctor.run')}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+
+      <Modal
+        visible={resultVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setResultVisible(false)}
+        statusBarTranslucent
+      >
+        <Pressable style={styles.backdrop} onPress={() => setResultVisible(false)}>
+          <Pressable
+            style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
+              <MaterialIcons name="favorite" size={13} color={C.accent} />
+              <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('doctor.title')}</Text>
+              <View style={{ flex: 1 }} />
+              <Pressable
+                onPress={() => setResultVisible(false)}
+                hitSlop={8}
+                style={styles.closeBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('settings.close_a11y')}
+              >
+                <MaterialIcons name="close" size={13} color={C.accent} />
+              </Pressable>
+            </View>
+            <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
+              {warnItems.length > 0 && (
+                <View style={styles.section}>
+                  <Text style={[styles.sectionTitle, { color: C.errorText }]}>
+                    {t('doctor.warn_group', { count: warnItems.length })}
+                  </Text>
+                  <View style={styles.sectionBody}>
+                    {warnItems.map((f, i) => (
+                      <React.Fragment key={`warn-${i}`}>
+                        {i > 0 && <View style={styles.credentialGap} />}
+                        <View style={[styles.integrationRow, borderedChromeStyle(), { borderColor: C.errorText }]}>
+                          <MaterialIcons name="warning" size={13} color={C.errorText} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.integrationLabel, { color: C.text1 }]}>{f.label}</Text>
+                            {f.detail ? (
+                              <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{f.detail}</Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      </React.Fragment>
+                    ))}
+                  </View>
+                </View>
+              )}
+              <View style={styles.section}>
+                <Text style={[styles.sectionTitle, { color: C.text2 }]}>
+                  {t('doctor.ok_group', { count: okItems.length })}
+                </Text>
+                <View style={styles.sectionBody}>
+                  {okItems.map((f, i) => (
+                    <React.Fragment key={`ok-${i}`}>
+                      {i > 0 && <View style={styles.credentialGap} />}
+                      <View style={[styles.integrationRow, borderedChromeStyle()]}>
+                        <MaterialIcons name="check-circle" size={13} color={C.accent} />
+                        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{f.label}</Text>
+                      </View>
+                    </React.Fragment>
+                  ))}
+                </View>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Section>
   );
 });
