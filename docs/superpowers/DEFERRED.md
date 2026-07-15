@@ -638,7 +638,9 @@ fail-loud する。詳細:
 
 **症状**: Updates モーダルを開閉した後、Agent Chat ペイン等のレイアウトが一時的に崩れる。**キーボード表示/非表示で回復**。再現が安定しない (RN の初期レイアウト測定 race 疑い、ハングしたモーダル dismiss との関連も)。updater ハング修正 (`89a9eb09`) でモーダルが「決着状態」で閉じるようになり改善する可能性。再現条件が固まったら `ShellLayout`/`MultiPaneContainer`/`PaneSlot`/AgentChatPane の `flex`/`onLayout`/insets を調査。
 
-### updater `fetchWithTimeout` end-to-end ハードニング
+### ✅ updater `fetchWithTimeout` end-to-end ハードニング — 解決済み (`747e570b5`、2026-07-16)
+
+**解決**: `withAbortTimeout()`/`wrapResponseBodyTimeout()` を追加、`fetchWithTimeout()` が返す `Response` の `.text()`/`.json()`/`.arrayBuffer()`/`.blob()` を全てヘッダ段階と同じ abort timeout でラップするよう修正。実際には `c52d224b3`（2026-07-09、`claude/work-handoff-2qb1xd` ブランチ）で既にこの通り修正されていたが、ブランチ全体が「rebase価値なし」と判定され移植漏れになっていたもの — 同夜の移植漏れ監査で発見・移植。以下は元の記録。
 
 **優先度**: P2
 
