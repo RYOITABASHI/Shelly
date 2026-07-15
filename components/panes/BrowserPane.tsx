@@ -15,6 +15,7 @@ import { useBrowserStore, PRESET_BOOKMARKS } from '@/store/browser-store';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { usePaneStore } from '@/store/pane-store';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
@@ -224,6 +225,32 @@ export interface BrowserPaneProps {
 // to navigate the already-mounted Browser Pane.
 let lastConsumedOpenSignalSeq = 0;
 
+// bug #136 (DEFERRED.md): `openSignal` is a single global signal, so in a
+// split layout with two Browser Panes every mounted instance's navigation
+// useEffect used to consume the same seq bump and BOTH panes navigated to
+// the URL. Resolve exactly one target pane instead, deterministically and
+// identically in every instance (pure function of store state):
+//   1. If the focused pane is a Browser Pane, it is the target.
+//   2. Otherwise, the first Browser Pane in slot order is the target.
+// Non-target panes still advance their per-instance `lastOpenSeqRef` so a
+// later focus change never replays a stale signal.
+function isOpenSignalTargetPane(paneId: string): boolean {
+  const slots = useMultiPaneStore.getState().slots;
+  const browserSlotIds: string[] = [];
+  for (const s of slots) {
+    if (s && s.tab === 'browser') browserSlotIds.push(s.id);
+  }
+  // Zero or one Browser Pane mounted (or this instance renders outside the
+  // multi-pane grid, where PaneIdContext is ''): keep legacy behavior and
+  // let this instance navigate.
+  if (browserSlotIds.length <= 1) return true;
+  const focusedId = usePaneStore.getState().focusedPaneId;
+  if (focusedId && browserSlotIds.includes(focusedId)) {
+    return paneId === focusedId;
+  }
+  return paneId === browserSlotIds[0];
+}
+
 // User-Agent strings. The Android system WebView default UA includes a
 // `wv` token (Build/...; wv) AppleWebKit) which providers like Google,
 // Anthropic, and many other OAuth flows treat as an "embedded WebView"
@@ -432,15 +459,19 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   }, [navSignal.seq, navSignal.action]);
 
   // Listen for external openUrl requests (Sidebar cloud buttons, etc.)
+  // bug #136: every instance marks the seq consumed, but only the resolved
+  // target pane (focused Browser Pane, else first Browser Pane in slot
+  // order) actually navigates — otherwise a split layout with two Browser
+  // Panes had both panes load the same URL on every openUrl.
   const lastOpenSeqRef = useRef(openSignal.seq);
   useEffect(() => {
     if (openSignal.seq === lastOpenSeqRef.current) return;
     lastOpenSeqRef.current = openSignal.seq;
-    if (openSignal.url) {
-      setInputUrl(openSignal.url);
-      setCurrentUrl(openSignal.url);
-    }
-  }, [openSignal.seq, openSignal.url]);
+    if (!openSignal.url) return;
+    if (!isOpenSignalTargetPane(paneId)) return;
+    setInputUrl(openSignal.url);
+    setCurrentUrl(openSignal.url);
+  }, [openSignal.seq, openSignal.url, paneId]);
 
   const handleSubmit = useCallback(() => {
     const url = normalizeUrl(inputUrl);
