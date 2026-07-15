@@ -499,6 +499,13 @@ class TerminalEmulatorModule : Module() {
             val libDir = LibExtractor.extractAll(context)
             val homeDir = HomeInitializer.initialize(context)
 
+            // bug #121: inject the real app home into TerminalEmulator so
+            // its force-TUI paste marker lookup doesn't have to fall back
+            // to a hardcoded /data/user/0/... path (wrong under work
+            // profile / multi-user / a renamed fork). This is the same
+            // homeDir handed to the PTY child below as its $HOME.
+            com.termux.terminal.TerminalEmulator.setShellyHome(homeDir)
+
             // Create PTY via JNI forkpty + linker64
             val resultArray = IntArray(2)
             ShellyJNI.createSubprocess(

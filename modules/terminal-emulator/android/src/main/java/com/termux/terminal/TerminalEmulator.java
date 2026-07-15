@@ -2678,7 +2678,13 @@ public final class TerminalEmulator {
         try {
             boolean bm = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
             boolean tui = isAlternateBufferActive() || isMouseTrackingActive();
-            boolean forceTui = isShellyPasteForceTui();
+            // bug #121: log which HOME candidate produced the force-TUI
+            // marker hit ("dynamic" / "injected" / "hardcoded"), or "none"
+            // when the marker isn't active, so a forceTui regression can be
+            // triaged (e.g. work-profile users only ever hitting
+            // "hardcoded"=miss) without needing an interactive repro.
+            String forceTuiSource = shellyPasteForceTuiSource();
+            boolean forceTui = forceTuiSource != null;
             int nlCount = 0;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
@@ -2691,6 +2697,7 @@ public final class TerminalEmulator {
                 + ", nl=" + nlCount + ", bracketed=" + bm
                 + ", tui=" + tui
                 + ", forceTui=" + forceTui
+                + ", forceTuiSource=" + (forceTuiSource != null ? forceTuiSource : "none")
                 + ", " + shellyPasteProcProbe()
                 + ", preview=\"" + preview + "\")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
@@ -2797,21 +2804,63 @@ public final class TerminalEmulator {
         mSession.write(text.replace('\r', '\n').replace('\n', '\r'));
     }
 
+    /**
+     * App home directory injected from the Kotlin side
+     * (TerminalEmulatorModule) at session creation. bug #121: the
+     * force-TUI marker fallback used to rely exclusively on the
+     * hardcoded {@code /data/user/0/dev.shelly.terminal/files/home}
+     * path, which is wrong under work profiles / multi-user / a
+     * renamed fork. Static because there is exactly one app home per
+     * process; volatile because injection happens on the module's
+     * async-function thread while paste runs on the UI thread.
+     */
+    private static volatile File sShellyInjectedHome;
+
+    /** Called from Kotlin (TerminalEmulatorModule.createSession) with the
+     *  same home dir handed to the PTY child as {@code $HOME}. */
+    public static void setShellyHome(File home) {
+        sShellyInjectedHome = home;
+    }
+
     private boolean isShellyPasteForceTui() {
+        return shellyPasteForceTuiSource() != null;
+    }
+
+    /**
+     * Force-TUI marker lookup. Returns which HOME candidate produced the
+     * hit — {@code "dynamic"} (shell's /proc/&lt;pid&gt;/environ HOME),
+     * {@code "injected"} (app home set via {@link #setShellyHome}), or
+     * {@code "hardcoded"} (legacy user-0 fallback) — or {@code null} when
+     * no marker is active. The source string feeds the ShellyPaste log
+     * line so marker regressions can be triaged without a repro (bug #121).
+     */
+    private String shellyPasteForceTuiSource() {
         int shellPid = shellyShellPid();
         // Primary: read HOME from the bash process's /proc/<pid>/environ.
         String home = shellyShellHome();
         if (home != null && !home.isEmpty()) {
             File marker = new File(home, ".shelly_paste_force_tui");
-            if (isShellyPasteForceMarkerActive(marker, shellPid)) return true;
+            if (isShellyPasteForceMarkerActive(marker, shellPid)) return "dynamic";
         }
-        // Fallback for sessions where shellPid is 0 (stream-based) or
-        // /proc reads fail: check the conventional Shelly home path
-        // hardcoded for this app. Tradeoff: if the user runs Shelly
-        // under a different uid (e.g. work profile), this will miss —
+        // Injected app home from Kotlin — correct under work profile /
+        // multi-user, where the hardcoded /data/user/0 path is not.
+        // Covers sessions where shellPid is 0 (stream-based) or /proc
+        // reads fail.
+        File injectedHome = sShellyInjectedHome;
+        if (injectedHome != null) {
+            File marker = new File(injectedHome, ".shelly_paste_force_tui");
+            if (isShellyPasteForceMarkerActive(marker, shellPid)) return "injected";
+        }
+        // Last-resort fallback, only when no home was injected (emulator
+        // used outside TerminalEmulatorModule): the conventional Shelly
+        // home path for user 0. Tradeoff: if the user runs Shelly under
+        // a different uid (e.g. work profile), this will miss —
         // acceptable because forceTui is a hint, not a security gate.
-        File hardcodedMarker = new File("/data/user/0/dev.shelly.terminal/files/home/.shelly_paste_force_tui");
-        return isShellyPasteForceMarkerActive(hardcodedMarker, shellPid);
+        if (injectedHome == null) {
+            File hardcodedMarker = new File("/data/user/0/dev.shelly.terminal/files/home/.shelly_paste_force_tui");
+            if (isShellyPasteForceMarkerActive(hardcodedMarker, shellPid)) return "hardcoded";
+        }
+        return null;
     }
 
     private boolean isShellyPasteForceMarkerActive(File marker, int shellPid) {
