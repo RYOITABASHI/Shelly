@@ -1,4 +1,4 @@
-// BOOT-AUTOSTART (L1) — dormant wiring seam.
+// BOOT-AUTOSTART (L1) — wiring seam.
 //
 // ⚠️ 新 Manifest 権限追加 = 要 rebuild・L1 grant. This floor adds two Android
 // permissions (RECEIVE_BOOT_COMPLETED / REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -8,19 +8,19 @@
 // approve on-device. Its real behavior (agent still fires after a reboot / after
 // Doze) is verifiable ONLY on device — offline 緑 ≠ 実機緑.
 //
-// Dormant: the native BootCompletedReceiver checks a persisted enable flag
-// (default OFF) and no-ops when disabled, and AgentAlarmScheduler only persists
-// schedules for boot re-arm when the flag is on — so with the flag OFF the live
-// scheduling/boot behavior is byte-preserved (the receiver is registered but does
-// nothing). "実装されるが有効化はされない."
+// P0-2 (2026-07-15): production-default ON. The native BootCompletedReceiver
+// checks AgentAlarmScheduler.bootAutostartEnabled(), which now defaults true
+// (SharedPreferences override still possible, e.g. a test/debug build), and
+// schedule()/cancel() persist/forget boot-rearm records on that same flag — so
+// registering a schedule always persists it for boot recovery, no separate step.
+// 2026-06-23 landed this dormant (flag OFF) pending on-device reboot/Doze/One UI
+// verification; that verification remains the required device-side follow-up
+// (tracked in DEFERRED.md), but the code path itself was independently reviewed
+// and is not gated behind any known defect.
 //
-// MIGRATION (deferred, flag-ON step): flip the native enable flag → schedule()
-// persists {agentId, cron, intervalMs}; on BOOT_COMPLETED the receiver reads them
-// and calls AgentAlarmScheduler.scheduleNext (planned by planBootRearm) to re-arm
-// every scheduled agent. Battery-optimization exemption is requested via the
-// already-present isIgnoringBatteryOptimizations / ACTION_REQUEST_IGNORE_BATTERY_
-// OPTIMIZATIONS path (TerminalEmulatorModule), which the new permission unblocks.
-
-// Master dormancy switch (TS side). The native side has its own SharedPreferences
-// flag (default false); both must be flipped to enable boot autostart.
-export const BOOT_AUTOSTART_ENABLED = false;
+// This TS-side constant has no functional consumer (the real gate is the native
+// SharedPreferences flag read by BootCompletedReceiver/AgentAlarmScheduler,
+// which Kotlin code cannot import from here) — it exists purely as a readable,
+// host-testable mirror of the native default so the two can't silently drift
+// without a reviewer noticing (see __tests__/boot-autostart/parity.test.ts).
+export const BOOT_AUTOSTART_ENABLED = true;
