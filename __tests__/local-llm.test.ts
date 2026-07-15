@@ -70,7 +70,7 @@ describe('local LLM request compatibility', () => {
     expect(requestBody(fetchMock)).toMatchObject({
       chat_template_kwargs: { enable_thinking: false },
       temperature: 0.4,
-      max_tokens: 384,
+      max_tokens: 640,
     });
   });
 
@@ -90,8 +90,8 @@ describe('local LLM request compatibility', () => {
       think: false,
       options: {
         temperature: 0.4,
-        num_ctx: 1024,
-        num_predict: 384,
+        num_ctx: 2048,
+        num_predict: 640,
       },
     });
   });

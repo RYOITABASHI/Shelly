@@ -1487,9 +1487,25 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   const actionType = plan.action.type;
   const preview = previewText(resultText);
   if (actionType === '__suppressed__') {
-    // Orchestration non-final step: still save the draft (so the next step can read
-    // it) but request no approval and fire no notification. Best-effort, like the .sh.
-    writeDraftOutputs(paths, opts, plan, config, roots, true);
+    // Orchestration non-final step: request no approval and fire no
+    // notification. Does NOT call writeDraftOutputs — resolveDraftDestination
+    // is keyed purely on plan.output (date+slug), with no per-step
+    // differentiation, so every step in a 'draft'-action chain would write to
+    // the exact SAME destination the terminal step uses. A real bug this
+    // caused (found by CI, 2026-07-15, __tests__/plan-executor-orchestration-
+    // chain.test.ts case (d)): when the FINAL step's content failed the
+    // quality gate below and dispatchActionTrusted correctly refused to
+    // write, an EARLIER suppressed step's own writeDraftOutputs call had
+    // already landed real content at that same path — so a rejected chain
+    // still left a stale draft file sitting at the terminal output location,
+    // looking like a completed draft despite the run's status being 'error'.
+    // Unlike the .sh executor (one process PER STEP, needing a disk handoff
+    // between steps), this JS executor runs the whole chain in one process
+    // call: `priorResults` (an in-memory array, see runOrchestrationChain)
+    // already carries each successful step's content forward into the next
+    // step's prompt — no step ever needs to re-read a suppressed step's
+    // output back off disk, so this write served no purpose within this
+    // executor's architecture and only risked stale-content survival.
     return { status: 'success', preview };
   }
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act') {
