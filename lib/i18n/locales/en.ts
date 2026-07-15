@@ -403,7 +403,7 @@ const en: Record<string, string> = {
   'wallpaper.image_opacity': 'Image Opacity',
   'wallpaper.panel_opacity': 'Panel Opacity',
   'wallpaper.terminal_transparency': 'Show wallpaper in Terminal (experimental)',
-  'wallpaper.terminal_transparency_hint': 'Off by default — showing the wallpaper through the terminal can look hazy against monospace text depending on the image. Turn this on if you want to try it anyway.',
+  'wallpaper.terminal_transparency_hint': 'On by default, matching the other panes. Turn this off if you prefer an opaque terminal background.',
   'wallpaper.permission_title': 'Permission needed',
   'wallpaper.permission_body': 'Shelly needs access to your photo library to pick a wallpaper.',
   'wallpaper.pick_failed': 'Pick failed',
