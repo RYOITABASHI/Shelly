@@ -31,7 +31,6 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
-import { useCosmeticStore } from '@/store/cosmetic-store';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CommandKeyBar } from '@/components/terminal/CommandKeyBar';
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -66,7 +65,6 @@ import {
 } from '@/lib/terminal-native-session-reservations';
 import { colors as C } from '@/theme.config';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
-import { usePaneContentBackground } from '@/hooks/use-panel-background';
 
 logInfo('Terminal', 'module loaded');
 
@@ -307,7 +305,6 @@ export default function TerminalScreen() {
   // add/remove/edit, not on every byte append.
   const sessions = useTerminalStore((s) => s.sessions);
   const settings = useTerminalStore((s) => s.settings);
-  const wallpaperActive = !!useCosmeticStore((s) => s.wallpaperUri);
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;
@@ -1121,7 +1118,14 @@ export default function TerminalScreen() {
       cursor: theme.cursor,
     };
   }, [settings.terminalTheme]);
-  const terminalPaneBg = usePaneContentBackground(C.bgDeep);
+  // Terminal pane is EXCLUDED from wallpaper transparency (never re-enable
+  // without satisfying the DEFERRED.md P3 gate: on-device screenshot proof
+  // across first-frame/theme-apply/new-tab/split/IME-resize/settings-modal
+  // on both Canvas and GL views, behind a default-OFF flag). a96cdd8a4
+  // (2026-06-20) violated this the day after the gate was written, exposing
+  // build 1560-1565's gray-flash bug again once cosmetic-store hydration
+  // (013b2658f) started actually loading a persisted wallpaper on launch.
+  const terminalPaneBg = C.bgDeep;
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -1306,12 +1310,12 @@ export default function TerminalScreen() {
             cursorBlink={true}
             colorScheme={terminalColorScheme}
             gpuRendering={settings.gpuRendering ?? false}
-            transparentBackground={wallpaperActive}
+            transparentBackground={false}
             style={[
               styles.terminalView,
               {
                 flex: showSplitPreview ? splitRatio : 1,
-                backgroundColor: wallpaperActive ? 'transparent' : terminalColorScheme.background,
+                backgroundColor: terminalColorScheme.background,
               },
             ]}
             onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}

@@ -36,7 +36,6 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { usePanelBackground } from '@/hooks/use-panel-background';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 
@@ -76,8 +75,9 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   const { t } = useTranslation();
   const [mcpOpen, setMcpOpen] = useState(false);
   const [llamaOpen, setLlamaOpen] = useState(false);
-  const panelBg = usePanelBackground(C.bgSurface);
-  const headerBg = usePanelBackground(C.bgSidebar);
+  // Deliberately opaque, not wallpaper-transparent: usePanelBackground's own
+  // scope is Sidebar/AgentBar/ContextBar/PaneSlot header, not this dense
+  // text-heavy settings sheet — wallpaper bleeding through hurt readability.
 
   return (
     <Modal
@@ -88,8 +88,8 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
       statusBarTranslucent
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={[styles.panel, panelChromeStyle(), { backgroundColor: panelBg }]} onPress={(e) => e.stopPropagation()}>
-          <View style={[styles.header, { backgroundColor: headerBg, borderBottomColor: C.border }]}>
+        <Pressable style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]} onPress={(e) => e.stopPropagation()}>
+          <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
             <MaterialIcons name="settings" size={13} color={C.accent} />
             <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('settings.title')}</Text>
             <View style={{ flex: 1 }} />
