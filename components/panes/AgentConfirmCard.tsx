@@ -21,7 +21,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-nativ
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
-import { AgentAction, AgentActionType, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
@@ -29,6 +29,10 @@ import { decodeCron, buildCron, resolveInitialFrequency, scheduleHuman, WEEKDAY_
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import { pairingConfidence, useDmPairingStore } from '@/store/dm-pairing-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { AUTH_REFS, EGRESS_ALLOWLIST } from '@/lib/capability-envelope';
+
+type ApiCallAuthRef = NonNullable<AgentApiCallConfig['authRef']>;
+const API_CALL_AUTH_REFS: ApiCallAuthRef[] = ['perplexity', 'gemini', 'cerebras', 'groq'];
 
 export interface ConfirmedAgentDraft {
   name: string;
@@ -66,6 +70,21 @@ function clampInt(raw: string, min: number, max: number): number {
   if (Number.isNaN(n)) return min;
   return Math.max(min, Math.min(max, n));
 }
+
+// ─── api-call (v1) step-shape helpers ───────────────────────────────────────
+// Gated to orchestrated (>=2 step) agents only — see the >= 2 check at every
+// call site below. Dead capability on a single-step agent, so never offered
+// there.
+function stepInstructionOf(s: string | AgentOrchestrationStep): string {
+  return typeof s === 'string' ? s : s.instruction;
+}
+function stepApiCallOf(s: string | AgentOrchestrationStep): AgentApiCallConfig | undefined {
+  return typeof s === 'string' ? undefined : s.apiCall;
+}
+function stepToolOf(s: string | AgentOrchestrationStep): ToolChoice | undefined {
+  return typeof s === 'string' ? undefined : s.tool;
+}
+const DEFAULT_STEP_API_CALL: AgentApiCallConfig = { host: EGRESS_ALLOWLIST[0], method: 'GET', path: '' };
 
 interface Props {
   draft: ParsedAgentDraft;
@@ -133,6 +152,60 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [intentTarget, setIntentTarget] = useState(draft.action.intentTarget ?? '');
   const [intentShareText, setIntentShareText] = useState(draft.action.intentShareText ?? '');
   const [dmPairingId, setDmPairingId] = useState(draft.action.dmPairingId ?? '');
+  // api-call (v1) terminal-action fields. Only offered when the utterance was
+  // multi-step (>=2 orchestration steps) — dead capability otherwise.
+  const existingApiCall = draft.action.type === 'api-call' ? draft.action.apiCall : undefined;
+  const [apiCallHost, setApiCallHost] = useState(existingApiCall?.host ?? EGRESS_ALLOWLIST[0]);
+  const [apiCallMethod, setApiCallMethod] = useState<'GET' | 'POST'>(existingApiCall?.method ?? 'GET');
+  const [apiCallPath, setApiCallPath] = useState(existingApiCall?.path ?? '');
+  const [apiCallAuthRef, setApiCallAuthRef] = useState<ApiCallAuthRef | ''>(existingApiCall?.authRef ?? '');
+  const [apiCallBodyTemplate, setApiCallBodyTemplate] = useState(existingApiCall?.bodyTemplate ?? '');
+  // authRef selection auto-locks/derives the host to that ref's bound host
+  // (AUTH_REFS[authRef].host) — never a free host once a secret is attached.
+  const handleApiCallAuthRefChange = (ref: ApiCallAuthRef | '') => {
+    setApiCallAuthRef(ref);
+    if (ref && AUTH_REFS[ref]) setApiCallHost(AUTH_REFS[ref].host);
+  };
+  // Phase 4/6 orchestration steps, now locally editable (Track D, api-call
+  // v1): seeded from the parsed draft, mutated in place by the per-step
+  // api-call toggle/editor below, and what handleConfirm actually submits —
+  // NOT draft.orchestrationSteps directly, so an api-call edit here survives
+  // to createAgent.
+  const [orchestrationSteps, setOrchestrationSteps] = useState<Array<string | AgentOrchestrationStep> | undefined>(
+    draft.orchestrationSteps,
+  );
+  const canUseApiCall = !!(orchestrationSteps && orchestrationSteps.length >= 2);
+  // When a row is toggled TO api-call, any existing `tool` pin on that step is
+  // cleared (mutually exclusive per AgentOrchestrationStep's doc comment);
+  // toggled back away, `apiCall` is cleared. Never offered on the LAST row
+  // (mirrors the executor's non-final-only no-op-on-final-step contract).
+  const toggleStepApiCall = (index: number) => {
+    setOrchestrationSteps((prev) => {
+      if (!prev) return prev;
+      return prev.map((s, i) => {
+        if (i !== index) return s;
+        const instruction = stepInstructionOf(s);
+        if (stepApiCallOf(s)) return { instruction }; // turn off
+        return { instruction, apiCall: { ...DEFAULT_STEP_API_CALL } }; // turn on, tool pin dropped
+      });
+    });
+  };
+  const updateStepApiCall = (index: number, patch: Partial<AgentApiCallConfig>) => {
+    setOrchestrationSteps((prev) => {
+      if (!prev) return prev;
+      return prev.map((s, i) => {
+        if (i !== index) return s;
+        const instruction = stepInstructionOf(s);
+        const current = stepApiCallOf(s) ?? DEFAULT_STEP_API_CALL;
+        return { instruction, apiCall: { ...current, ...patch } };
+      });
+    });
+  };
+  const updateStepApiCallAuthRef = (index: number, ref: ApiCallAuthRef | '') => {
+    const patch: Partial<AgentApiCallConfig> = { authRef: ref || undefined };
+    if (ref && AUTH_REFS[ref]) patch.host = AUTH_REFS[ref].host;
+    updateStepApiCall(index, patch);
+  };
   const [dmReplyText, setDmReplyText] = useState(draft.action.dmReplyText ?? '');
   // Select the raw array (stable reference from the store) and filter in a
   // separate useMemo, not inside the selector: .filter() always returns a
@@ -273,6 +346,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const intentValid = actionType !== 'intent'
     || (intentMode === 'launch' ? intentTarget.trim().length > 0 : intentShareText.trim().length > 0);
   const dmReplyValid = actionType !== 'dm-reply' || dmPairingId.length > 0;
+  const apiCallValid =
+    actionType !== 'api-call' ||
+    (canUseApiCall && EGRESS_ALLOWLIST.includes(apiCallHost) && apiCallPath.trim().startsWith('/'));
   // The placeholder-time gate only applies to clock-time frequencies. If the user
   // switches a time-less daily/weekly candidate to 'once' or 'interval' (neither
   // uses an HH:MM), there's nothing to confirm — don't deadlock Confirm.
@@ -280,7 +356,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     frequency === 'daily' || frequency === 'weekly' || frequency === 'custom' || frequency === 'daily-multi';
   const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
   const canConfirm =
-    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid && dmReplyValid;
+    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid && dmReplyValid && apiCallValid;
 
   const handleConfirm = () => {
     if (!canConfirm) return;
@@ -312,6 +388,15 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       action.appActParams = draft.action.appActParams;
       action.appActMethod = draft.action.appActMethod;
     }
+    if (actionType === 'api-call') {
+      action.apiCall = {
+        host: apiCallHost,
+        method: apiCallMethod,
+        path: apiCallPath.trim(),
+        ...(apiCallAuthRef ? { authRef: apiCallAuthRef } : {}),
+        ...(apiCallMethod === 'POST' && apiCallBodyTemplate.trim() ? { bodyTemplate: apiCallBodyTemplate.trim() } : {}),
+      };
+    }
     // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
     // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
     const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb);
@@ -329,8 +414,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       memory: draft.memory,
       // Phase 2a: attach the reused skill only when the user kept it on.
       skillId: useSkill ? draft.matchedSkill?.id : undefined,
-      // Phase 4: carry detected multi-step instructions through to createAgent.
-      orchestrationSteps: draft.orchestrationSteps,
+      // Phase 4: carry the (possibly locally-edited, Track D api-call v1)
+      // multi-step instructions through to createAgent.
+      orchestrationSteps,
       // G6: carry the preset's hard final-output character budget through.
       charLimit: draft.charLimit,
       // NOTIFY-001 Increment 2: carry the parsed package allowlist through to createAgent.
@@ -535,7 +621,10 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       {/* Action */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.action')}</Text>
       <Segmented
-        options={ACTION_TYPES.map((a) => ({ key: a, label: t(`agentcard.action_${a}`) }))}
+        options={(canUseApiCall ? [...ACTION_TYPES, 'api-call' as AgentActionType] : ACTION_TYPES).map((a) => ({
+          key: a,
+          label: t(`agentcard.action_${a}`),
+        }))}
         value={actionType}
         onChange={(k) => setActionType(k as AgentActionType)}
         colors={colors}
@@ -647,6 +736,23 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             : t('agentcard.appact_generic_warning')}
         </Text>
       )}
+      {actionType === 'api-call' && (
+        <ApiCallEditor
+          host={apiCallHost}
+          method={apiCallMethod}
+          path={apiCallPath}
+          authRef={apiCallAuthRef}
+          bodyTemplate={apiCallBodyTemplate}
+          onHostChange={setApiCallHost}
+          onMethodChange={setApiCallMethod}
+          onPathChange={setApiCallPath}
+          onAuthRefChange={handleApiCallAuthRefChange}
+          onBodyTemplateChange={setApiCallBodyTemplate}
+          colors={colors}
+          t={t}
+          fieldBg={fieldBg}
+        />
+      )}
 
       {/* Notification trigger (NOTIFY-001 Increment 2) */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.notification_trigger_label')}</Text>
@@ -751,20 +857,57 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           is a security-relevant disclosure: a step can pin `cli`/Codex (see
           AgentOrchestrationStep in store/types.ts), and the user should see that
           in the same reviewable-before-Confirm surface as every other action. */}
-      {draft.orchestrationSteps && draft.orchestrationSteps.length >= 2 && (
+      {orchestrationSteps && orchestrationSteps.length >= 2 && (
         <View style={{ marginTop: 4 }}>
           <Text style={[styles.label, { color: colors.muted, marginTop: 0 }]}>
-            {t('agentcard.orchestration', { count: draft.orchestrationSteps.length })}
+            {t('agentcard.orchestration', { count: orchestrationSteps.length })}
           </Text>
-          {draft.orchestrationSteps.map((s, i) => {
-            const instruction = typeof s === 'string' ? s : s.instruction;
-            const pinnedTool = typeof s === 'string' ? undefined : s.tool;
+          {orchestrationSteps.map((s, i) => {
+            const instruction = stepInstructionOf(s);
+            const pinnedTool = stepToolOf(s);
+            const apiCall = stepApiCallOf(s);
+            const isFinalRow = i === orchestrationSteps.length - 1;
             return (
-              <Text key={`step-${i}`} style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
-                {pinnedTool
-                  ? `${i + 1}. [${toolChoiceToLabel(pinnedTool)}] ${instruction}`
-                  : `${i + 1}. ${instruction}`}
-              </Text>
+              <View key={`step-${i}`} style={{ marginTop: 2 }}>
+                {apiCall ? (
+                  <Text style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
+                    {`${i + 1}. [${t('agentcard.apicall_step_badge')}] ${instruction}`}
+                  </Text>
+                ) : (
+                  <Text style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
+                    {pinnedTool
+                      ? `${i + 1}. [${toolChoiceToLabel(pinnedTool)}] ${instruction}`
+                      : `${i + 1}. ${instruction}`}
+                  </Text>
+                )}
+                {/* api-call (v1) per-step editor toggle — non-final rows only,
+                    mirrors the executor's non-final-only no-op-on-final-step
+                    contract (AgentOrchestrationStep.apiCall's doc comment). */}
+                {!isFinalRow && (
+                  <TouchableOpacity onPress={() => toggleStepApiCall(i)} hitSlop={{ top: 4, bottom: 4, left: 4, right: 12 }}>
+                    <Text style={{ color: colors.accent, fontSize: 10, marginTop: 1 }}>
+                      {apiCall ? t('agentcard.step_api_call_remove') : t('agentcard.step_api_call_add')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                {!isFinalRow && apiCall && (
+                  <ApiCallEditor
+                    host={apiCall.host}
+                    method={apiCall.method}
+                    path={apiCall.path}
+                    authRef={apiCall.authRef ?? ''}
+                    bodyTemplate={apiCall.bodyTemplate ?? ''}
+                    onHostChange={(host) => updateStepApiCall(i, { host })}
+                    onMethodChange={(method) => updateStepApiCall(i, { method })}
+                    onPathChange={(path) => updateStepApiCall(i, { path })}
+                    onAuthRefChange={(ref) => updateStepApiCallAuthRef(i, ref)}
+                    onBodyTemplateChange={(bodyTemplate) => updateStepApiCall(i, { bodyTemplate })}
+                    colors={colors}
+                    t={t}
+                    fieldBg={fieldBg}
+                  />
+                )}
+              </View>
             );
           })}
           {typeof draft.charLimit === 'number' && (
@@ -794,6 +937,99 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           </Text>
         </TouchableOpacity>
       </View>
+    </View>
+  );
+}
+
+// ─── api-call (v1) field editor ─────────────────────────────────────────────
+// Shared between the terminal-action editor and the per-step editor (both
+// author the same AgentApiCallConfig shape). Host picker is limited to
+// EGRESS_ALLOWLIST (lib/capability-envelope.ts, single source of truth — no
+// duplicate host list here). Selecting an authRef auto-locks/derives the host
+// to that ref's bound host (AUTH_REFS[authRef].host) and hides the host
+// picker in favor of a read-only label, since a secret-bound call can never
+// target a different host.
+function ApiCallEditor({
+  host,
+  method,
+  path,
+  authRef,
+  bodyTemplate,
+  onHostChange,
+  onMethodChange,
+  onPathChange,
+  onAuthRefChange,
+  onBodyTemplateChange,
+  colors,
+  t,
+  fieldBg,
+}: {
+  host: string;
+  method: 'GET' | 'POST';
+  path: string;
+  authRef: ApiCallAuthRef | '';
+  bodyTemplate: string;
+  onHostChange: (host: string) => void;
+  onMethodChange: (method: 'GET' | 'POST') => void;
+  onPathChange: (path: string) => void;
+  onAuthRefChange: (ref: ApiCallAuthRef | '') => void;
+  onBodyTemplateChange: (text: string) => void;
+  colors: any;
+  t: (key: string, params?: Record<string, string | number>) => string;
+  fieldBg: any;
+}) {
+  const hostLocked = authRef !== '';
+  return (
+    <View style={{ marginTop: 3 }}>
+      <Text style={[styles.label, { color: colors.muted, fontSize: 9 }]}>{t('agentcard.apicall_authref')}</Text>
+      <Segmented
+        options={[
+          { key: '', label: t('agentcard.apicall_authref_none') },
+          ...API_CALL_AUTH_REFS.map((ref) => ({ key: ref, label: ref })),
+        ]}
+        value={authRef}
+        onChange={(k) => onAuthRefChange(k as ApiCallAuthRef | '')}
+        colors={colors}
+      />
+      <Text style={[styles.label, { color: colors.muted, fontSize: 9 }]}>{t('agentcard.apicall_host')}</Text>
+      {hostLocked ? (
+        <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.apicall_host_locked', { host })}</Text>
+      ) : (
+        <Segmented options={EGRESS_ALLOWLIST.map((h) => ({ key: h, label: h }))} value={host} onChange={onHostChange} colors={colors} />
+      )}
+      <Text style={[styles.label, { color: colors.muted, fontSize: 9 }]}>{t('agentcard.apicall_method')}</Text>
+      <Segmented
+        options={[
+          { key: 'GET', label: 'GET' },
+          { key: 'POST', label: 'POST' },
+        ]}
+        value={method}
+        onChange={(k) => onMethodChange(k as 'GET' | 'POST')}
+        colors={colors}
+      />
+      <TextInput
+        value={path}
+        onChangeText={onPathChange}
+        autoCapitalize="none"
+        placeholder={t('agentcard.apicall_path_placeholder')}
+        placeholderTextColor={colors.inactive}
+        style={[styles.input, fieldBg]}
+      />
+      {method === 'POST' && (
+        <>
+          <TextInput
+            value={bodyTemplate}
+            onChangeText={onBodyTemplateChange}
+            autoCapitalize="none"
+            multiline
+            placeholder={t('agentcard.apicall_body_placeholder')}
+            placeholderTextColor={colors.inactive}
+            style={[styles.input, fieldBg]}
+          />
+          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.apicall_body_hint')}</Text>
+        </>
+      )}
+      <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.apicall_warning')}</Text>
     </View>
   );
 }

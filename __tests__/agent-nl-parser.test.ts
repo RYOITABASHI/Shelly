@@ -795,3 +795,44 @@ describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain �
     expect(d.orchestrationSteps).toBeUndefined();
   });
 });
+
+// api-call (v1, 2026-07-16): explicitly UI-only authoring — lib/agent-nl-parser.ts
+// must NEVER produce a step carrying `apiCall` (AgentOrchestrationStep.apiCall,
+// store/types.ts). Neither parseStepsFromText nor detectToolPinnedSteps
+// (lib/agent-orchestration.ts) has any concept of api-call, so this should hold
+// trivially today — this regression test exists to protect that UI-only-
+// authoring boundary from silently eroding in a future NL-parser change, per
+// the implementation plan's explicit "Do NOT touch lib/agent-nl-parser.ts" scope.
+describe('parseAgentNL — api-call (v1) UI-only-authoring boundary', () => {
+  const UTTERANCES = [
+    // The Phase 6 tool-pinned chain scenario (already produces orchestration
+    // steps with `tool` pins) — must still never carry `apiCall`.
+    '毎週月曜9時に、パープレでSTEAM教育×AIの最新論文を集めて、ローカルLLMで日本語要約と自分の見解とリンクを付けて、Xに自動投稿して',
+    'Collect the latest STEAM x AI papers with Perplexity, summarize them in Japanese with the local LLM and add my take with links, then post to X automatically.',
+    // Explicit sequence-marker multi-step (parseStepsFromText path).
+    '毎朝8時に、まずニュースを集めて、次に要約して、最後に保存して',
+    'Every day at 8, first gather the news, then summarize it, finally save it.',
+    // Utterances that literally mention API/URL/host-shaped words — a plain
+    // keyword match anywhere in a future regression must not be conflated
+    // with authoring a real AgentApiCallConfig.
+    '毎朝8時にAPIを叩いて結果を要約して保存して',
+    'every day at 8, call the API at https://api.example.com and summarize the result',
+  ];
+
+  it('never produces a step with an `apiCall` field, across every step-producing utterance shape', () => {
+    for (const utterance of UTTERANCES) {
+      const d = parseAgentNL(utterance);
+      for (const step of d.orchestrationSteps ?? []) {
+        if (typeof step === 'string') continue;
+        expect(step.apiCall).toBeUndefined();
+      }
+    }
+  });
+
+  it('never produces a terminal action of type "api-call"', () => {
+    for (const utterance of UTTERANCES) {
+      const d = parseAgentNL(utterance);
+      expect(d.action.type).not.toBe('api-call');
+    }
+  });
+});

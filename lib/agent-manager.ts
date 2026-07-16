@@ -589,6 +589,24 @@ export async function runAgentNow(
   // Phase 4: a multi-step agent runs as a linear chain (each step through the
   // SAME gated single-run path below). Single-step agents fall through unchanged.
   const orchestrationAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  // api-call (v1) attended-run guard: runAgentOrchestrated's per-step `.sh`
+  // generator (generateRunScript) has no concept of an apiCall step — without
+  // this check it would silently send the step's synthetic display label
+  // (e.g. "GET api.perplexity.ai/...") to a model as a literal prompt, and
+  // carry the resulting garbage forward as a fake-successful prior result.
+  // api-call is PlanSpec-executor-only in v1 (see scripts/shelly-plan-executor.js's
+  // runOrchestrationChain and dispatchActionTrusted) — attended "Run now" is
+  // refused here with a clear error instead. Checked for BOTH an orchestration
+  // step carrying apiCall AND a terminal action of type 'api-call' (the latter
+  // can't currently be authored on a non-orchestrated agent via the UI gate in
+  // AgentConfirmCard, but this is a hard safety boundary, not a UI convenience
+  // — it must hold regardless of how the agent was constructed).
+  if (orchestrationAgent) {
+    const hasApiCallStep = normalizeSteps(orchestrationAgent.orchestration).some((s) => !!s.apiCall);
+    if (hasApiCallStep || orchestrationAgent.action?.type === 'api-call') {
+      throw new Error(t('agents.api_call_attended_unsupported'));
+    }
+  }
   if (orchestrationAgent && isOrchestrated(orchestrationAgent.orchestration)) {
     await runAgentOrchestrated(orchestrationAgent, runCommand, options);
     return;

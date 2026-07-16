@@ -196,6 +196,9 @@ const en: Record<string, string> = {
   'agents.missed_schedule_title': 'Missed schedule',
   'agents.missed_schedule_body': '"{{name}}" did not run at its scheduled time ({{when}}) — it may have been blocked (Doze / battery / OEM). Re-armed for the next occurrence.',
   'agents.missed_schedule_body_repair_failed': '"{{name}}" did not run at its scheduled time ({{when}}) — it may have been blocked (Doze / battery / OEM). The automatic re-arm attempt also failed; open the agent to check its schedule.',
+  // api-call (v1): attended "Run now" guard — this action type is
+  // PlanSpec-executor-only (scheduled/unattended runs only).
+  'agents.api_call_attended_unsupported': 'This agent includes an API-call step, which currently only supports scheduled execution — it can\'t be run now.',
 
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',
@@ -223,6 +226,20 @@ const en: Record<string, string> = {
   'agentcard.action_app-act': 'App action',
   'agentcard.appact_x_warning': 'This will auto-post the run result to X (Twitter) every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
   'agentcard.appact_generic_warning': 'This will drive another app automatically every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
+  // api-call (v1) — only offered for multi-step (>=2 step) agents.
+  'agentcard.action_api-call': 'API call',
+  'agentcard.apicall_authref': 'Credential (optional)',
+  'agentcard.apicall_authref_none': 'None',
+  'agentcard.apicall_host': 'Host',
+  'agentcard.apicall_host_locked': 'Locked to {{host}} by the selected credential',
+  'agentcard.apicall_method': 'Method',
+  'agentcard.apicall_path_placeholder': 'Path (e.g. /v1/search?q={{result}})',
+  'agentcard.apicall_body_placeholder': 'Request body (JSON, may contain {{result}})',
+  'agentcard.apicall_body_hint': 'The literal text "{{result}}" is replaced with the prior step\'s result.',
+  'agentcard.apicall_warning': 'This calls an allowlisted API host every time this agent runs — review the host, path, and credential carefully before confirming.',
+  'agentcard.apicall_step_badge': 'API call',
+  'agentcard.step_api_call_add': '→ API call',
+  'agentcard.step_api_call_remove': '✕ remove API call',
   'agentcard.dmreply_pairing_label': 'Paired conversation',
   'agentcard.dmreply_no_pairings': 'Pair a conversation in Settings first.',
   'agentcard.dmreply_text_label': 'Reply text',

@@ -195,6 +195,8 @@ const ja: Record<string, string> = {
   'agents.missed_schedule_title': 'スケジュールが実行されませんでした',
   'agents.missed_schedule_body': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。次回の予定は再設定済みです。',
   'agents.missed_schedule_body_repair_failed': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。自動での再設定にも失敗しました。エージェントを開いてスケジュールを確認してください。',
+  // api-call (v1): 手動「今すぐ実行」のガード — この action type はスケジュール実行専用
+  'agents.api_call_attended_unsupported': 'このエージェントはAPI呼び出しステップを含むため、現在はスケジュール実行のみサポートされています。今すぐ実行はできません。',
 
   // ── エージェント確認/プレビューカード (Phase 0 §2.1) ────────────
   'agentcard.title': 'このエージェントを登録しますか？',
@@ -222,6 +224,20 @@ const ja: Record<string, string> = {
   'agentcard.action_app-act': 'アプリ操作',
   'agentcard.appact_x_warning': 'このエージェントは実行のたびに結果をXへ自動投稿します。実行時に個別の確認は挟まれないため、登録前によく確認してください。',
   'agentcard.appact_generic_warning': 'このエージェントは実行のたびに他のアプリを自動操作します。実行時に個別の確認は挟まれないため、登録前によく確認してください。',
+  // api-call (v1) — 2ステップ以上のエージェントにのみ提供
+  'agentcard.action_api-call': 'API呼び出し',
+  'agentcard.apicall_authref': '認証情報（任意）',
+  'agentcard.apicall_authref_none': 'なし',
+  'agentcard.apicall_host': 'ホスト',
+  'agentcard.apicall_host_locked': '選択した認証情報により {{host}} に固定されています',
+  'agentcard.apicall_method': 'メソッド',
+  'agentcard.apicall_path_placeholder': 'パス（例: /v1/search?q={{result}}）',
+  'agentcard.apicall_body_placeholder': 'リクエストボディ（JSON、{{result}} を含められます）',
+  'agentcard.apicall_body_hint': '文字列 "{{result}}" はひとつ前のステップの結果に置き換えられます。',
+  'agentcard.apicall_warning': 'このエージェントは実行のたびに許可済みのAPIホストへ通信します。ホスト・パス・認証情報を登録前によく確認してください。',
+  'agentcard.apicall_step_badge': 'API呼び出し',
+  'agentcard.step_api_call_add': '→ API呼び出しに変更',
+  'agentcard.step_api_call_remove': '✕ API呼び出しを解除',
   'agentcard.dmreply_pairing_label': 'ペアリング済みの会話',
   'agentcard.dmreply_no_pairings': '先に設定から会話をペアリングしてください。',
   'agentcard.dmreply_text_label': '返信テキスト',
