@@ -9,7 +9,7 @@ import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-poli
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
-import { MAX_RESULT_CARRY_CHARS } from './agent-orchestration';
+import { MAX_RESULT_CARRY_CHARS, isOrchestrated, normalizeSteps } from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
 
 const MAX_CONCURRENT = 2;
@@ -19,7 +19,11 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // that refuses to run a stale on-disk script) whenever the generated script's
 // runtime BEHAVIOR changes — see __tests__/agent-executor-cap-broker.test.ts's
 // "bumps the script version in lockstep with the native gate".
-const AGENT_SCRIPT_VERSION = 12;
+// v13 (bug #155(b)): a real multi-step orchestrated agent whose tool is
+// unsupported by the PlanSpec chain executor (e.g. autonomous `auto` ->
+// codex CLI) falls back to THIS legacy single-shot script on every scheduled/
+// native fire — see ORCHESTRATION_COLLAPSED_NOTE below.
+const AGENT_SCRIPT_VERSION = 13;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -231,6 +235,45 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     ? ''
     : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY\n';
 
+  // bug #155(b) (docs/superpowers/DEFERRED.md): this function has no concept of
+  // agent.orchestration.steps — a genuinely orchestrated (>=2 step) agent whose
+  // resolved tool is unsupported by the PlanSpec chain executor
+  // (scripts/shelly-plan-executor.js — an HTTP-request dispatcher with no
+  // subprocess-exec capability, so it architecturally cannot run e.g. a
+  // `cli:codex` step) falls back to THIS legacy script on every scheduled/
+  // native fire (AgentRuntime.kt's shouldRunPlanExecutor correctly excludes
+  // it), and this function silently ran only agent.prompt — the FULL chain's
+  // steps 2..N never ran, with no signal anywhere that they were skipped.
+  //
+  // Considered building a real bash-side sequential chain executor here
+  // (mirroring lib/agent-manager.ts's runAgentOrchestrated) but rejected it for
+  // THIS pass: (1) P0(c) (183104efb, same night) hit this exact
+  // orchestrated+unsupported-tool combination and deliberately chose to keep
+  // this single-step fallback UNCHANGED rather than build chain support here —
+  // "so it is not completely unrunnable" was the bar, not full parity; (2) a
+  // bash-side chain (per-step tool re-resolution, prompt carry-forward,
+  // step/time budget, apiCall-step exclusion, error-chain-stop) is a large,
+  // novel addition to the most safety-sensitive file in the codebase with NO
+  // on-device verification available in this pass (no NDK/Gradle here, and this
+  // is exactly the kind of runtime-route change docs/superpowers/DEFERRED.md
+  // flags as needing a bare on-device fire before landing); (3) bug #155's own
+  // investigation independently classified this as a functional gap, not a
+  // security bypass ("if anything the impact SHRINKS, not grows").
+  //
+  // So: keep today's single-step EXECUTION unchanged (no capability
+  // regression), but stop the SILENT part — surface a clear note wherever a
+  // human can see this run's outcome. Deliberately kept OUT of the actual
+  // dispatched/posted content (RESULT_CONTENT_FILE / the `preview` argument
+  // dispatch_agent_action passes to resolve_app_act_params's {{result}}
+  // substitution) so it can never leak into a live external post (webhook/cli/
+  // dm-reply/app-act) — see where PREVIEW is amended, near the run-log write,
+  // for why that ordering matters. Full bash-side chain execution remains a
+  // documented follow-up (DEFERRED.md bug #155).
+  const orchestrationStepCount = normalizeSteps(agent.orchestration).length;
+  const orchestrationCollapsedNote = isOrchestrated(agent.orchestration)
+    ? `[Shelly] Note: this agent is configured as a ${orchestrationStepCount}-step chain, but this run executed only the base task as a single step — tool "${toolLabel}" cannot run the full chain unattended. Run this agent manually from the app for the complete chain, or switch its tool to Local LLM / Gemini / Perplexity / Cerebras / Groq to enable scheduled multi-step chains.`
+    : '';
+
   const slug = computeAgentSlug(agent.name, agentId);
   const outputNameTemplate = sanitizeOutputTemplate(agent.outputTemplate);
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
@@ -435,6 +478,7 @@ MAX_CONCURRENT=${MAX_CONCURRENT}
 AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 ACTION_TYPE=${shellQuote(actionType)}
 RESULT_CHAR_LIMIT=${resultCharLimit}
+ORCHESTRATION_COLLAPSED_NOTE=${shellQuote(orchestrationCollapsedNote)}
 ACTION_WEBHOOK_URL=${shellQuote(actionWebhookUrl)}
 ACTION_COMMAND=${shellQuote(actionCommand)}
 ACTION_INTENT_MODE=${shellQuote(actionIntentMode)}
@@ -3026,6 +3070,27 @@ else
   # tool's failure. The TS run loop sets this for every attempt but the last.
   if [ "\${SUPPRESS_ERROR_NOTIFICATION:-0}" != "1" ]; then
     write_native_notification_request "$STATUS" "$PREVIEW" || true
+  fi
+fi
+
+# bug #155(b): both branches above (success/failure) have already used
+# $PREVIEW for everything that can reach a live external surface — the
+# approval-card preview, dispatch_agent_action's quality gate, the webhook
+# payload's "preview" field, and (success/notify only) the actual push
+# notification body via write_native_notification_request. Amending it here,
+# AFTER all of that has already run, means this note can NEVER reach
+# resolve_app_act_params's {{result}} substitution (app-act is the one action
+# type that splices $preview into a live external post) or any
+# already-dispatched notification/webhook content — it only reaches the
+# run-log record below (Sidebar's agent detail popup renders outputPreview/
+# errorMessage from this same log; also readable directly from
+# ~/.shelly/agents/logs/$AGENT_ID/*.json). Prepended (not appended) so it
+# survives the UI's 120/160-char inline truncation regardless of how long the
+# real result is.
+if [ -n "$ORCHESTRATION_COLLAPSED_NOTE" ]; then
+  PREVIEW="$ORCHESTRATION_COLLAPSED_NOTE $PREVIEW"
+  if [ "$STATUS" != "success" ]; then
+    ERROR_MESSAGE="$ORCHESTRATION_COLLAPSED_NOTE $ERROR_MESSAGE"
   fi
 fi
 

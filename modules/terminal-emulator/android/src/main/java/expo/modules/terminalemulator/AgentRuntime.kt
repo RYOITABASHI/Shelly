@@ -29,7 +29,13 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
-    private const val CURRENT_SCRIPT_VERSION = 12
+    // v13 (bug #155(b), docs/superpowers/DEFERRED.md): lib/agent-executor.ts's
+    // generateRunScript now surfaces a clear run-log note when a real
+    // multi-step orchestrated agent falls back to this legacy single-shot
+    // script (unsupported tool for the PlanSpec chain executor). No routing
+    // change here — bumped only so a stale pre-v13 on-disk script (silent
+    // collapse, no note) is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 13
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 
