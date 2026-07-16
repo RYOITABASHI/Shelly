@@ -98,7 +98,7 @@
 
 **別原因として切り分けが必要な関連課題(このterminfo修正では直らない)**:
 - **A. vim E1187**: `libvim.so`は`/data/data/com.termux/files/usr/share/vim`をランタイムパスとしてハードコードしており、vimランタイムファイル自体が非同梱。安価な対処は「`.vimrc`が存在しなければdefaults.vimを読みに行く」vimの仕様を逆手に取り、`HomeInitializer`が最小`~/.vimrc`を生成してE1187自体を黙らせる(構文ハイライト等は無いがワーニングは消える、APKコスト0)。フル対応は`share/vim`一式(数MB)を追加バンドル。
-- **B. tmuxソケットディレクトリ**: `libtmux.so`のフォールバック`$TMUX_TMPDIR:.../usr/var/run`も同じくTermuxパス依存で存在しない。terminfoが直ってもソケット生成で失敗する可能性が高く、`export TMUX_TMPDIR="$HOME/.tmp"`等を同じbashrc bumpで追加する必要がある。
+- **B. tmuxソケットディレクトリ — ✅ 解決済み (`3759a9e3c`, 2026-07-16)**: `libtmux.so`のフォールバック`$TMUX_TMPDIR:.../usr/var/run`も同じくTermuxパス依存で存在しない。terminfoが直ってもソケット生成で失敗する可能性が高いという懸念に対し、`HomeInitializer.kt`の`.bashrc`生成に`export TMUX_TMPDIR="$TMPDIR"`を追加(新規ディレクトリを作らず、既存の`$TMPDIR`=`$HOME/tmp`をそのまま再利用。`__shelly_mkdir -p "$TMPDIR"`で作成済み)。`BASHRC_VERSION`は232→233にbump。Codexレビューで(a)tmuxの`make_label()`は自分が`mkdir(0700)`する`tmux-$UID`サブディレクトリの所有権/パーミッションのみをチェックし、親ディレクトリの兄弟ファイルは見ないため`$TMPDIR`共有で安全、(b)Android上ではアプリUID以外書き込み不可なので共有`/tmp`より保護されている、との確認を得た。terminfo修正(本エントリの主課題)自体は依然未実装のまま。
 
 **着手前の未検証事項**: (1) terminfoツリーがTermuxの`ncurses` .deb本体に入っているか`ncurses-utils`分割か要確認、(2) 同じTermux ncurses .debから抽出することでtic形式の非互換リスクを排除(Debian/Alpine/NDK sysroot由来は使わない — NDK sysrootはそもそもterminfo非搭載)。
 
