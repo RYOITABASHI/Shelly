@@ -14,6 +14,36 @@
 
 ---
 
+### ✅ api-call capability broker authoring surface v1 — 実装済み（コミット後に SHA を追記）
+
+**優先度**: 完了（P1 follow-up は下記）／ **状態**: Track A–E 実装・型チェック clean・jest 全緑（既知の pre-existing Windows fs-write path-doubling バグ由来の 25 件を除く）・adversarial security review 実施 → 1 件の high-confidence finding を検出・即修正・再検証済み。
+
+**背景**: エージェントのオーケストレーション（多段実行）に、既存の capability broker（`scripts/shelly-capability-broker.js`、host allowlist + secret-by-reference + taint gate、変更なし）をそのまま再利用した、構造化 HTTP コールという新しい action type `api-call` を追加。UI（`AgentConfirmCard.tsx`）でのみ authoring 可能（NL parser では絶対に生成しない — 回帰テストで固定済み）、実行は PlanSpec executor（`scripts/shelly-plan-executor.js`）専用。
+
+**v1 で出荷したもの**:
+- `store/types.ts`: `AgentApiCallConfig`（host/method/path/authRef?/bodyTemplate?）、`AgentActionType`/`AgentAction`/`AgentOrchestrationStep` への `api-call`/`apiCall` 追加。
+- `lib/agent-orchestration.ts`: `apiCallLabel()`（表示専用ラベル、モデルへは絶対送信しない）、`resolveApiCallTemplate()`（`{{result}}` の単純文字列置換）、`normalizeStep` のパススルー+ラベル合成。
+- `lib/agent-plan-spec.ts`: `toPlanAction`の`'api-call'`ケース（schemaVersion 据え置き、既存の additive 方針を継承）。
+- `scripts/shelly-plan-executor.js`（+ APK asset mirror、byte-identical 維持）: 非最終ステップでの `apiCall` ディスパッチ（`runOrchestrationChain`）、終端アクションとしての `api-call`（`dispatchActionTrusted`）、`unattendedPreflightFailure` への追加（draft/notify/webhook/cli と同じ承認ティア）。
+- `lib/agent-manager.ts`: attended "今すぐ実行" のハードガード — `apiCall` を含むエージェントは `runAgentNow` が明示エラーで拒否（レガシー `.sh` per-step generator が apiCall ステップを知らず、synthetic label をそのままモデルへ送ってしまう実害を防ぐ）。
+- `components/panes/AgentConfirmCard.tsx`: 終端アクション editor + per-step toggle editor（≥2ステップの orchestrated agent のみ、host picker は `EGRESS_ALLOWLIST` 由来、authRef 選択で host 自動ロック）。i18n キー en/ja 両方追加。
+- **本線スコープ外だが機能上必須と判断し追加した native 側の配線**: `AgentRuntime.kt` の `PLAN_EXECUTOR_ACTIONS` に `"api-call"` を追加（元のプラン Track B は executor JS のみを指定していたが、このガードが無いと scheduled/unattended 発火で `runPlanAgent` が "unsupported PlanSpec action: api-call" で即エラーになり、Track C が attended 経路を塞いだ結果 api-call が事実上どの経路からも実行不能になることが判明したため）。対応するパリティテスト文字列も更新。
+
+**adversarial review で検出・修正した finding（P0、修正済み・push 前に反映）**: `classifyEgress`（`lib/capability-envelope.ts`、本feature では変更していない既存の共有プリミティブ）は tainted run の承認要求を「host が非allowlist」または「authRef（秘密）を使用中」のどちらかでしか発火しない。既存の broker 呼び出し元（`modelRequest()`）はリモート host に対して必ず authRef を設定していたため、「tainted かつ authRef 無しでリモートの allowlist host に到達する」という組み合わせは本feature 以前は構造的に到達不能だった。`api-call` は authRef を意図的に optional にした最初の呼び出し元であり、この組み合わせを初めて到達可能にしてしまい、`classifyEgress` はこのケースを `'allow'`（無承認で通す）と判定してしまう——通知トリガー等で tainted になったスケジュール実行が、無承認・無資格情報のまま任意の allowlist リモートホストへ実行結果を送信し得る、という抜け穴だった。**修正**: 共有プリミティブの `classifyEgress` 自体は変更せず（他の全 action type が依存するため blast radius を最小化）、`scripts/shelly-plan-executor.js` の `dispatchApiCallRequest` 内で broker 呼び出し**前**に `opts.tainted && !apiCall.authRef && !isLoopbackUrl(url)` を弾く executor 側ガードを追加。tainted+authRef ありのケース（既存の trifecta ルール）や non-tainted のケースには影響なし（regression テストで確認）。独立した検証パスで「fix が gap を完全に閉じ、新たな gap も regression も無い」ことを再確認済み。テストは `__tests__/plan-executor-api-call.test.ts`（broker mocked、両ガードが broker 呼び出し前に発火することを spawnSync 呼び出し回数 0 で証明）と `__tests__/plan-executor-orchestration-chain.test.ts`（実 broker サブプロセス、offline-safe — 分類段階で拒否されるため実ネットワークは発生しない）に追加。
+
+**明示的に v1 で descope したもの（プランの §5 に基づく）**:
+- **NL parsing 非対応**（`lib/agent-nl-parser.ts` は意図的に一切触れていない）: 自然言語から `api-call` ステップを生成する機能は将来の別パスに委ねる。回帰テストでこの境界を固定済み（`__tests__/agent-nl-parser.test.ts` の "api-call (v1) UI-only-authoring boundary"）。
+- **非 orchestrated（単一ステップ）エージェントでの api-call**: UI editor は `orchestrationSteps.length >= 2` でのみ terminal action として `api-call` を提供（"dead capability" にしないため）。
+- **attended 実行との統合**: 上記の通り、apiCall を含むエージェントは "今すぐ実行" が常に拒否される。PlanSpec executor と legacy `.sh` executor の統合、または attended 経路での api-call 対応は future work。
+- **Track F（native notification polish）**: 今回のパスでは明示的にスコープ外（オプショナルな UI 磨き込みのみ、機能的には無関係）。
+- **非 allowlist host / custom auth ref**: `EGRESS_ALLOWLIST`（9 host 固定）と `AUTH_REFS`（4 secret 固定）を単一ソースとして再利用するのみで、拡張・カスタムホスト・カスタム認証情報の追加は out of scope。
+
+**未実施の実機検証**: 本 feature は offline のみで検証済み（`npx tsc --noEmit` clean、jest 全緑、adversarial review クリーン後）。オンデバイスでの実際の agent 登録→スケジュール発火→api-call ディスパッチの end-to-end 実機確認は未実施（次のオンデバイステストで確認すること）。
+
+→ sync: なし。README Status 表への反映は次リリースの棚卸し時に実施。
+
+---
+
 ### ✅ bug #154 — ローカルLLMサーバーのライフサイクル調査: スケジュールagentの preflight は健全、"Cannot connect to localhost:8080/..." は別原因（一部修正 `a1fcad95b`）
 
 **優先度**: P2（実害は限定的 — 誤解を招くUI表示のみで、スケジュールagentの信頼性そのものへの影響は確認されなかった）
