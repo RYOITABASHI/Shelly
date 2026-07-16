@@ -30,6 +30,7 @@ jest.mock('child_process', () => ({ spawnSync: jest.fn() }));
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { spawnSync } from 'child_process';
 
 const root = path.resolve(__dirname, '..');
@@ -513,5 +514,113 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     expect(result.errorMessage).toMatch(/no credential is refused on a tainted/);
     expect(calls).toHaveLength(0);
     expect(fs.existsSync(path.join(home, 'agent-output'))).toBe(false);
+  });
+});
+
+describe('dispatchActionTrusted — api-call approval-request payload (Track F, docs/superpowers/DEFERRED.md)', () => {
+  function apiCallPlan(home: string, agentId: string, apiCall: Record<string, unknown>) {
+    return { ...makeBasePlan(home, agentId, 'api-call'), action: { type: 'api-call', apiCall } };
+  }
+
+  // jest doesn't auto-restore spies across `it` blocks in this file (no
+  // restoreMocks configured), so each test restores its own spy explicitly.
+  const afterAllSpies: jest.SpyInstance[] = [];
+  afterEach(() => {
+    while (afterAllSpies.length) afterAllSpies.pop()!.mockRestore();
+  });
+
+  /** Intercepts the ONE fs.writeFileSync call requestActionApproval makes
+   *  into paths.actionApprovalDir (via writeAtomic's tmp-then-rename), lets
+   *  it through to disk for real, captures the parsed request, and
+   *  synchronously plants a matching "accept" reply — unblocking
+   *  requestActionApproval's poll loop on its very first iteration so the
+   *  synchronous dispatchActionTrusted call under test returns immediately
+   *  instead of blocking for the real approval timeout. Mirrors the
+   *  requestSha256 the naive accept-path actually checks: sha256 of the
+   *  EXACT bytes written to the request file (writeAtomic renames the tmp
+   *  file with no content change, so hashing the written string here equals
+   *  the executor's own sha256File(requestFile)). */
+  function captureApprovalRequest(rtPaths: any): { get: () => any } {
+    // `import * as fs from 'fs'` resolves to a genuine ES module namespace
+    // object under this project's ts-jest config — its properties are
+    // non-configurable accessor getters (no setter), so `jest.spyOn(fs, ...)`
+    // throws "Cannot redefine property" here even though it's the FIRST spy
+    // in the file (verified: TypeError comes from Object.defineProperty
+    // itself, not a double-spy/missing-restore issue). `require('fs')`
+    // returns the real, mutable CommonJS module.exports object instead — the
+    // SAME singleton the executor code under test also gets via its own
+    // `require('fs')`, so spying on it here still intercepts those calls.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fsNode = require('fs');
+    const realWriteFileSync = fsNode.writeFileSync.bind(fsNode);
+    let captured: any = null;
+    const spy = jest.spyOn(fsNode, 'writeFileSync').mockImplementation((file: any, data: any, opts?: any) => {
+      const result = realWriteFileSync(file, data, opts);
+      if (typeof file === 'string' && path.dirname(file) === rtPaths.actionApprovalDir) {
+        captured = JSON.parse(String(data));
+        const sha = crypto.createHash('sha256').update(String(data)).digest('hex');
+        const replyFile = path.join(rtPaths.actionApprovalReplyDir, `action-${captured.runId}.reply.json`);
+        realWriteFileSync(replyFile, `${JSON.stringify({
+          runId: captured.runId,
+          decision: 'accept',
+          by: 'test',
+          requestSha256: sha,
+          ts: new Date().toISOString(),
+        })}\n`);
+      }
+      return result;
+    });
+    afterAllSpies.push(spy);
+    return { get: () => captured };
+  }
+
+  it('includes destinationHost, destinationHostAllowlisted=true, and a "METHOD /resolved/path" command — the fields NotificationDispatcher.kt\'s "api-call" branch reads', () => {
+    const home = makeHome();
+    const agentId = 'agent-approval-payload';
+    const rtPaths = preparePaths(home, agentId);
+    const capture = captureApprovalRequest(rtPaths);
+    setupBrokerMock([{ rc: 0, body: '{"ok":true}' }]);
+    const plan = apiCallPlan(home, agentId, {
+      host: 'api.example.com',
+      method: 'GET',
+      path: '/v1/search?q={{result}}',
+    });
+    // Force the approval-tap path (mirrors requireActionApprovalTap's
+    // per-agent override) so requestActionApproval actually writes a
+    // request file instead of maybeRequestActionApproval's unattended skip.
+    (plan.agent as any).requireActionApproval = true;
+
+    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
+
+    expect(result.status).toBe('success');
+    const request = capture.get();
+    expect(request).not.toBeNull();
+    expect(request.actionType).toBe('api-call');
+    expect(request.destinationHost).toBe('api.example.com');
+    expect(request.destinationHostAllowlisted).toBe(true);
+    // The path is the RESOLVED one ({{result}} substituted, URL-encoded),
+    // not the raw authored template — the approver sees the real request.
+    expect(request.command).toBe('GET /v1/search?q=q1');
+  });
+
+  it('a POST api-call also carries method+path in `command` (bodyTemplate itself is not echoed into it)', () => {
+    const home = makeHome();
+    const agentId = 'agent-approval-payload-post';
+    const rtPaths = preparePaths(home, agentId);
+    const capture = captureApprovalRequest(rtPaths);
+    setupBrokerMock([{ rc: 0, body: '{"ok":true}' }]);
+    const plan = apiCallPlan(home, agentId, {
+      host: 'api.example.com',
+      method: 'POST',
+      path: '/v1/index',
+      bodyTemplate: '{"q":"{{result}}"}',
+    });
+    (plan.agent as any).requireActionApproval = true;
+
+    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
+
+    expect(result.status).toBe('success');
+    const request = capture.get();
+    expect(request.command).toBe('POST /v1/index');
   });
 });

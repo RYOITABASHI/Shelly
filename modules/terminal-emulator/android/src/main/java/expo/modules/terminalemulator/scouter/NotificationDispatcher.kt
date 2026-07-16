@@ -149,6 +149,7 @@ class NotificationDispatcher(private val context: Context) {
                 "intent" -> context.getString(R.string.scouter_notification_agent_action_what_intent)
                 "dm-reply" -> context.getString(R.string.scouter_notification_agent_action_what_dm_reply)
                 "app-act" -> context.getString(R.string.scouter_notification_agent_action_what_appact)
+                "api-call" -> context.getString(R.string.scouter_notification_agent_action_what_api_call)
                 else -> request.actionType
             }
             val previewText = request.preview.takeIf { it.isNotBlank() }?.redactForScouter()
@@ -198,6 +199,27 @@ class NotificationDispatcher(private val context: Context) {
                         context.getString(R.string.scouter_notification_agent_action_appact_recipe, it)
                     },
                     context.getString(R.string.scouter_notification_agent_action_appact_review_required),
+                ).joinToString("\n")
+                // Track F (docs/superpowers/DEFERRED.md, api-call authoring surface
+                // v1 follow-up): mirrors webhook's host line above (same string,
+                // same field), but does NOT reuse webhook's known/new-host copy —
+                // that phrasing ("previously vetted in Settings") describes an
+                // OPTIONAL user-curated allowlist, whereas api-call's host is
+                // ALWAYS a fixed EGRESS_ALLOWLIST entry the UI itself constrains
+                // authoring to (see dispatchActionTrusted's api-call case in
+                // shelly-plan-executor.js); reusing the webhook copy here would
+                // misstate provenance to the approver. request.command carries
+                // "METHOD /resolved/path" (also set by the executor, reusing the
+                // same field "cli" uses for its command line) so the approver sees
+                // exactly what will be called, not just the host.
+                "api-call" -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
+                    context.getString(R.string.scouter_notification_agent_action_webhook_host, request.destinationHost ?: "unknown"),
+                    request.command?.takeIf { it.isNotBlank() }?.let {
+                        context.getString(R.string.scouter_notification_agent_action_api_call_request, it.redactForScouter())
+                    },
+                    previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
                 else -> listOfNotNull(
                     engineLine,

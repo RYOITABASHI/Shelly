@@ -1897,6 +1897,15 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         // constrains authoring to EGRESS_ALLOWLIST) — unlike webhook, where
         // this reflects an OPTIONAL user-vetted allowlist entry.
         destinationHostAllowlisted: true,
+        // Track F (docs/superpowers/DEFERRED.md, api-call authoring surface
+        // v1): reuses the generic `command` field (also used by the "cli"
+        // action type) to carry "METHOD /resolved/path" so the native
+        // approval-tap notification (NotificationDispatcher.kt's "api-call"
+        // branch) can show method+path to the approver, not just the host.
+        // Uses resolvedApiCall.path (the {{result}}-templated path actually
+        // sent), not the raw apiCall.path template, so the approver sees the
+        // real outbound request.
+        command: `${method} ${resolvedApiCall.path}`,
       });
       let response;
       try {

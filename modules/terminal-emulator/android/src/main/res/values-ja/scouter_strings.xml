@@ -64,6 +64,8 @@
   <string name="scouter_notification_agent_action_what_appact">アプリ操作を実行します（例: 他アプリへの投稿）</string>
   <string name="scouter_notification_agent_action_appact_recipe">操作: %1$s</string>
   <string name="scouter_notification_agent_action_appact_review_required">アプリ操作は実行前にアプリ内で内容の確認が必要です。</string>
+  <string name="scouter_notification_agent_action_what_api_call">外部APIを呼び出します</string>
+  <string name="scouter_notification_agent_action_api_call_request">リクエスト: %1$s</string>
   <string name="scouter_notification_agent_escalation_title">エージェント %1$s: 境界操作を許可しますか？</string>
   <string name="scouter_notification_agent_escalation_truncated">長いコマンドです: %1$d 文字。許可前に Shelly で全文を確認してください。</string>
   <string name="scouter_notification_agent_escalation_reason">理由: %1$s</string>
