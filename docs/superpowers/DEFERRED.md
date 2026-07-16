@@ -107,10 +107,10 @@
 
 ---
 
-### bug #151(新規) — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない
+### ✅ bug #151 — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない — 実装済み・**実機未検証** (`21217c6af`、2026-07-16)
 
 **優先度**: P1（`less`/`nano`は完全に機能不全、`vim`もdefaults.vim読み込み失敗＝一部デフォルト設定が無効。今夜の`1bec5af86`bashrcラッパー修正の実機検証中に発見）
-**状態**: Fable5による根本原因調査 + 修正設計 完了(2026-07-16)。**未実装**。次セッションで着手可能な粒度まで設計済み。
+**状態**: Fable5による根本原因調査 + 修正設計 完了(2026-07-16) → 同日中に実装完了(`21217c6af`)。**⚠️ 実機未検証**: この作業はNDK/Gradleの無い環境（Windows、実機adb接続なし）で行われたため、native diffのコンパイル確認・実機での`less`/`nano`/`vim`/`tmux`起動スモークテストのいずれも未実施。次のビルド後に必ず実機検証すること。
 
 **発見**: 2026-07-16、bug #119 exec-wrapper修正の実機検証セッション中。`~/Shelly$ less README.md` → `terminals database is inaccessible`。`vim README.md` → `E1187: Failed to source defaults.vim`(Enterで継続すれば編集自体は可能)。`nano CLAUDE.md` → `ncurses: cannot initialize terminal type ($TERM="xterm-256color"); exiting`(起動不可)。
 
@@ -121,18 +121,24 @@
 - less/nanoは即エラー終了。vimはビルトインtermcapエントリ(xterm系)を内蔵しているため致命的にはならず劣化動作するが、`E1187`は**別原因**(後述A)。
 - 旧記載の「妥協策2(静的ビルトインterminfoへの依存)」は**この調査で否定された**(`--with-fallbacks`エントリは存在しない)。
 
-**修正設計(実装未着手)**:
-1. Termuxの`ncurses` .debから`terminfo/`ツリーを抽出し、最小セット(`xterm-256color`/`xterm`/`screen`/`screen-256color`/`tmux`/`tmux-256color`/`dumb`/`linux`/`vt100`/`vt220`/`ansi`、圧縮後15-25KB程度)を`modules/terminal-emulator/android/src/main/assets/terminfo.tar.gz`としてコミット(既存の`libvim.so`等と同じ「一度生成してコミット」方式を推奨)。
-2. `LibExtractor.kt`の`extractAll()`に`extractTarGzAsset(context, "terminfo.tar.gz", libDir, "terminfo", forceRefresh)`を1行追加(既存の`extractTarGzAsset`ヘルパーをそのまま流用、新規メカニズム不要)。`appVersionMarker()`のフィンガープリント対象に`assets/terminfo.tar`も追加。
-3. `HomeInitializer.kt`: `export TERM=xterm-256color`の隣に`export TERMINFO="$libDir/terminfo"`を追加。`__shelly_run_node_clean`内の`env -i`允許リスト(現状`TERM`のみ通す)に`TERMINFO`も追加しないと、Codex/エージェント子プロセスで同じ問題が再発する。`BASHRC_VERSION`(現232)をbump。
+**修正設計 → 実装内容(`21217c6af`)**:
+1. Termuxの`ncurses` .deb(`ncurses_6.6.20260307+really6.5.20250830_aarch64.deb`、`packages.termux.dev`から取得。既存`build-android.yml`の「Bundle Termux extras」ステップと同じmirror/取得パターン)から`terminfo/`ツリーを抽出し、実バイト列をそのまま(ローカル`tic`再コンパイルなし)`modules/terminal-emulator/android/src/main/assets/terminfo.tar.gz`としてコミット(5526バイト、10エントリ: `ansi`/`dumb`/`linux`/`screen`/`screen-256color`/`tmux`/`tmux-256color`/`vt100`/`xterm`/`xterm-256color`)。`vt220`は当初の希望セットに含めていたが、Termuxの`ncurses`パッケージ自体に存在しない(縮小版terminfoセットのため)ことを確認し、捏造せず除外。同梱済み`libncursesw6.so`が文字列上`"ncurses 6.5.20250830"`を自己申告しており、抽出元.debのバージョン表記(`+really6.5.20250830`)と一致することを確認、同一アップストリームビルド由来でtic形式非互換リスクを排除。
+2. `LibExtractor.kt`の`extractAll()`に`extractTarGzAsset(context, "terminfo.tar.gz", libDir, "terminfo", forceRefresh)`を追加。`appVersionMarker()`のフィンガープリント対象にも`assets/terminfo.tar`/`.tar.gz`を追加。
+3. `HomeInitializer.kt`: `export TERM=xterm-256color`の隣に`export TERMINFO="$libDir/terminfo"`を追加。`__shelly_run_node_clean`内の`env -i`允許リストに`TERMINFO`も追加。`BASHRC_VERSION`を232→233にbump。
+4. **Codexレビューで追加発見**(`codex-companion`経由、2パス): (a) `shelly-exec.c`の`execCommand()`用envp配列(非interactive経路、PTY/.bashrcとは別系統)にも`TERMINFO`が欠落していたため追加。(b) `exec-wrapper.c`の`execvp()`は意図的にNULL envpを渡しており、これが`add_app_loader_envp()`のNULL-source分岐(linker64/ELF-rewrite経路、まさに同梱済み`less`/`nano`/`vim`/`tmux`の起動方式)や`raw_execve_call()`のNULL→`minimal_envp`代替に落ちる。この`minimal_envp`/`minimal_wrapper_envp`ハードコード配列に`TERM`/`TERMINFO`のデフォルトエントリを追加。
 
 **別原因として切り分けが必要な関連課題(このterminfo修正では直らない)**:
 - **A. vim E1187**: `libvim.so`は`/data/data/com.termux/files/usr/share/vim`をランタイムパスとしてハードコードしており、vimランタイムファイル自体が非同梱。安価な対処は「`.vimrc`が存在しなければdefaults.vimを読みに行く」vimの仕様を逆手に取り、`HomeInitializer`が最小`~/.vimrc`を生成してE1187自体を黙らせる(構文ハイライト等は無いがワーニングは消える、APKコスト0)。フル対応は`share/vim`一式(数MB)を追加バンドル。
 - **B. tmuxソケットディレクトリ — ✅ 解決済み (`3759a9e3c`, 2026-07-16)**: `libtmux.so`のフォールバック`$TMUX_TMPDIR:.../usr/var/run`も同じくTermuxパス依存で存在しない。terminfoが直ってもソケット生成で失敗する可能性が高いという懸念に対し、`HomeInitializer.kt`の`.bashrc`生成に`export TMUX_TMPDIR="$TMPDIR"`を追加(新規ディレクトリを作らず、既存の`$TMPDIR`=`$HOME/tmp`をそのまま再利用。`__shelly_mkdir -p "$TMPDIR"`で作成済み)。`BASHRC_VERSION`は232→233にbump。Codexレビューで(a)tmuxの`make_label()`は自分が`mkdir(0700)`する`tmux-$UID`サブディレクトリの所有権/パーミッションのみをチェックし、親ディレクトリの兄弟ファイルは見ないため`$TMPDIR`共有で安全、(b)Android上ではアプリUID以外書き込み不可なので共有`/tmp`より保護されている、との確認を得た。terminfo修正(本エントリの主課題)自体は依然未実装のまま。
 
-**着手前の未検証事項**: (1) terminfoツリーがTermuxの`ncurses` .deb本体に入っているか`ncurses-utils`分割か要確認、(2) 同じTermux ncurses .debから抽出することでtic形式の非互換リスクを排除(Debian/Alpine/NDK sysroot由来は使わない — NDK sysrootはそもそもterminfo非搭載)。
+**実装時に確定した事項**: terminfoツリーは`ncurses`本体パッケージに含まれていた(`ncurses-utils`分割ではない、`data/data/com.termux/files/usr/share/terminfo/`配下に直接存在)。同じTermux ncurses .debから抽出することでtic形式の非互換リスクを排除できた(ローカルWindows/MSYS ncursesの`infocmp`で検証しようとしたところ、ディレクトリのハッシュ方式自体が異なる(`x`ではなく16進`78`)ことが判明し、ローカル再コンパイルを避けて正解だったことを裏付けた)。
 
-→ sync: なし(実装後、実機検証PASSしたらDEFERRED.mdへ✅記録)。詳細な調査ログ・ファイル行番号はFable5レポート(2026-07-16実施、本エントリの元)を参照。
+**残課題(このentryでは未実施)**:
+- ⚠️ **実機検証未実施**。次のAPKビルド後、`less README.md`/`nano CLAUDE.md`/`vim README.md`/`tmux`が正常に起動するか実機で確認すること。
+- A. vim `E1187`(defaults.vim読み込み失敗)は本修正のスコープ外、別途`~/.vimrc`最小生成などで対応予定。
+- B. tmuxソケットディレクトリ(`TMUX_TMPDIR`)問題も本修正のスコープ外、別途`export TMUX_TMPDIR="$HOME/.tmp"`等の追加bashrc bumpが必要。
+
+→ sync: なし。詳細な調査ログ・ファイル行番号はFable5レポート(2026-07-16実施、本エントリの元)を参照。実装コミット: `21217c6af`。
 
 ---
 
