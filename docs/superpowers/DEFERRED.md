@@ -1420,9 +1420,14 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 **優先度**: P1（現在は休眠だが、MEMORY-001 有効化前の privacy gate）
 **→ sync:** MEMORY-001 を公開・有効化する時点で README privacy / data-storage 説明へ反映。
 
----
-
-### CC schema-diff watcher を updater に組み込む
+**2026-07-16 実装設計（Plan、未着手）**: 既存コード（`lib/memory/storage-json.ts`/`fs-expo.ts`/`shadow.ts`/`wiring.ts`、`lib/secure-store.ts`、`lib/secret-guard.ts`、`lib/capability-envelope.ts`）を実読して設計を確定。
+- **暗号化方式**: per-record（whole-corpus一括ではない。`storage-json.ts`が既に1レコード1ファイルなので、既存のcrash-safety特性を維持できる）。envelope encryption — DEK（256-bit）を`expo-secure-store`経由でKeystore束縛保存（新規`lib/memory/encryption-key.ts`）、本文はAES-256-GCM（新規依存: `@noble/ciphers` + `expo-crypto`のCSPRNG、IV再利用厳禁）。`expo-secure-store`自体は小さいcredential向けなので大量本文には使わない。ネイティブKeystore Cipher直叩き（JS heapに鍵material露出ゼロ）はTrack D（任意、signed-approval Phase 1が同種の理由で先送りした前例に倣う）としてスコープ外。
+- **鍵ライフサイクル**: 初回書き込み時に遅延生成。rotationはPhase 1では無し（envelopeに`keyId`/`v`だけ将来のために埋めておく）。アンインストールでKeystore鍵が消え旧データが復号不能になるのは意図した挙動（`lib/secure-store.ts`のAPIキーと同じ扱い）。
+- **migration**: `MEMORY_ENABLED=false`かつproduction setterなし（`wiring.ts:25`確認済み）＝実ユーザーデータは存在しないため、フォーマット移行は不要。開発機に残る旧平文JSONは、起動時に検知したら削除するだけの軽量ヘルパーで足りる。
+- **PII/taint分類**: 新規`lib/memory/pii-guard.ts`（`secret-guard.ts`と同じ形のpure rule-basedスキャナ、ML不使用）。write境界（`activateMemoryWrite`）とrecall境界（`recordsToRecallContext`→`agent.prompt`挿入点、既存`scanForSecrets`の再スキャンと同じchokepoint）の両方に接続、`model-router/wiring.ts`の`RunRequirements`に`touchesPii`相当のシグナルを追加。
+- **フェーズ分割**: Track A(暗号化コア、host-testable)→Track B(dev data掃除+バージョンタグ、Aと同時可)→Track C(PII分類器、A/Bと並行可)→flag-ON判定はA+B+C全部+実機検証後の1本化PR。Track D(ネイティブKeystore Cipher)は任意・別レビュー。
+- **rollout gate**: 平文ファイルが実機で一切残らないことの確認／アンインストール後の復号不能を確認・文書化／PII分類器がwrite+recall両方に接続済み／non-secret-pattern機微proseのcorpusテストがcloud送信を止めることを証明／MODEL-001側が新シグナルを消費してから両flag同時ONにする／`pnpm run check`/`test`/`lint`green／READMEのprivacy節を同時更新。
+- 詳細な理由・代替案の比較（whole-corpus暗号化を却下した理由、ネイティブKeystore直叩きを今回見送った理由等）は本entry作成時のPlanログを参照。まだ実装は着手していない。
 
 **発見**: 2026-05-20 Claude Code 2.1.143+ Bash tool 追従調査中
 
