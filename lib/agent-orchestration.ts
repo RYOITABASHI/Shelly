@@ -17,6 +17,7 @@
  */
 import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
+import { AUTH_REFS } from './capability-envelope';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
 export const DEFAULT_MAX_STEPS = 6;
@@ -256,6 +257,107 @@ export function parseStepsFromText(text: string): string[] {
     }
   }
   return [];
+}
+
+// ── Explicit api-call step detection (v1.1) ─────────────────────────────────
+//
+// api-call is materially different from a provider-pinned model step: the
+// executor skips model routing and sends a live structured HTTP request. Keep
+// this detector deliberately narrower than TOOL_MENTIONS below. A provider or
+// hostname alone is NOT enough; the same clause must also explicitly say to
+// call/use that provider's API. Conversely, a generic "call the API" without a
+// supported provider is not enough either.
+//
+// Only the four AUTH_REFS-backed model APIs have a safe, already-shipped
+// method/path/body contract we can reuse. The other allowlisted hosts (GitHub
+// release infrastructure and loopback) do not have one universally correct
+// resource/path, so NL authoring for them stays unsupported instead of guessing.
+interface ApiCallPreset {
+  provider: RegExp;
+  buildConfig: (instruction: string) => AgentApiCallConfig;
+}
+
+const EXPLICIT_API_CALL_RE =
+  /API\s*(?:を)?\s*(?:呼(?:んで|び出(?:して|す)|ぶ)|叩(?:いて|く)|コール(?:して|する)|使(?:って|う))|API\s*(?:の)?\s*(?:レスポンス|応答|response)\s*(?:を)?\s*使|\bapi\s+call\b|\b(?:call|invoke|query|request|use)\s+(?:the\s+)?(?:[a-z0-9.-]+\s+)?api\b|\buse\s+(?:the\s+)?api\s+(?:response|result)\b/i;
+
+function apiPrompt(instruction: string): string {
+  return `${instruction.trim()}\n\nPrevious step result:\n{{result}}`;
+}
+
+const API_CALL_PRESETS: ApiCallPreset[] = [
+  {
+    provider: /api\.perplexity\.ai|パープレ(?:キシティ)?|\bperplexity\b/i,
+    buildConfig: (instruction) => ({
+      host: AUTH_REFS.perplexity.host,
+      method: 'POST',
+      path: '/chat/completions',
+      authRef: 'perplexity',
+      bodyTemplate: JSON.stringify({
+        model: 'sonar',
+        messages: [{ role: 'user', content: apiPrompt(instruction) }],
+      }),
+    }),
+  },
+  {
+    provider: /generativelanguage\.googleapis\.com|\bgemini\b|ジェミニ/i,
+    buildConfig: (instruction) => ({
+      host: AUTH_REFS.gemini.host,
+      method: 'POST',
+      path: '/v1beta/models/gemini-2.5-flash:generateContent',
+      authRef: 'gemini',
+      bodyTemplate: JSON.stringify({ contents: [{ parts: [{ text: apiPrompt(instruction) }] }] }),
+    }),
+  },
+  {
+    provider: /api\.cerebras\.ai|\bcerebras\b|セレブラス/i,
+    buildConfig: (instruction) => ({
+      host: AUTH_REFS.cerebras.host,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      authRef: 'cerebras',
+      bodyTemplate: JSON.stringify({
+        model: 'qwen-3-235b-a22b-instruct-2507',
+        messages: [{ role: 'user', content: apiPrompt(instruction) }],
+      }),
+    }),
+  },
+  {
+    provider: /api\.groq\.com|\bgroq\b/i,
+    buildConfig: (instruction) => ({
+      host: AUTH_REFS.groq.host,
+      method: 'POST',
+      path: '/openai/v1/chat/completions',
+      authRef: 'groq',
+      bodyTemplate: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: apiPrompt(instruction) }],
+      }),
+    }),
+  },
+];
+
+/**
+ * Convert one explicit provider-API clause to the structured api-call shape.
+ * Returns null for every ambiguous/unsupported phrasing so normal model routing
+ * remains the default. The caller owns the non-final-step constraint.
+ */
+export function detectApiCallStep(instruction: string): AgentOrchestrationStep | null {
+  const text = instruction.trim().slice(0, MAX_STEP_INSTRUCTION_CHARS);
+  if (!EXPLICIT_API_CALL_RE.test(text)) return null;
+  const preset = API_CALL_PRESETS.find(({ provider }) => provider.test(text));
+  if (!preset) return null;
+  return { instruction: text, apiCall: preset.buildConfig(text) };
+}
+
+/** Apply the api-call detector to non-final steps only. */
+export function detectApiCallSteps(
+  steps: Array<string | AgentOrchestrationStep>,
+): Array<string | AgentOrchestrationStep> {
+  return steps.map((step, index) => {
+    if (index === steps.length - 1) return step;
+    const instruction = typeof step === 'string' ? step : step.instruction;
+    return detectApiCallStep(instruction) ?? step;
+  });
 }
 
 // ── Tool-pinned step detection (Phase 6) ─────────────────────────────────────

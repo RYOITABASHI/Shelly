@@ -587,12 +587,14 @@ export type AgentActionType =
   | 'api-call';
 
 /**
- * api-call (v1, UI-only authoring — see AgentOrchestrationStep's doc comment
- * and lib/agent-nl-parser.ts, which deliberately never produces this shape):
- * a structured, pre-allowlisted HTTP call authored in AgentConfirmCard, routed
- * through the SAME capability broker (host allowlist + secret-by-reference +
- * taint gate, lib/capability-envelope.ts) every other egress already uses —
- * this is a new AUTHORING surface, not a new enforcement path.
+ * api-call (v1 UI authoring; v1.1 also permits narrowly-detected explicit NL
+ * orchestration steps — see AgentOrchestrationStep's doc comment and
+ * lib/agent-orchestration.ts's detectApiCallStep):
+ * a structured, pre-allowlisted HTTP call authored in AgentConfirmCard or by
+ * the narrow explicit NL detector, routed through the SAME capability broker
+ * (host allowlist + secret-by-reference + taint gate,
+ * lib/capability-envelope.ts) every other egress already uses — this is an
+ * AUTHORING surface, not a new enforcement path.
  */
 export interface AgentApiCallConfig {
   /** One of EGRESS_ALLOWLIST (lib/capability-envelope.ts) — the UI constrains

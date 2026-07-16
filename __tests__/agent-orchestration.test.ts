@@ -3,6 +3,8 @@ import {
   buildStepPrompt,
   combineFinalPreview,
   DEFAULT_MAX_STEPS,
+  detectApiCallStep,
+  detectApiCallSteps,
   detectToolPinnedSteps,
   HARD_MAX_STEPS,
   HARD_TOTAL_TIMEOUT_MS,
@@ -278,6 +280,58 @@ describe('parseStepsFromText — conservative multi-step detection', () => {
   it('a plain numbered list with NO leading preamble is unaffected (no regression)', () => {
     const steps = parseStepsFromText('1. collect data\n2. analyze it\n3. report');
     expect(steps).toEqual(['collect data', 'analyze it', 'report']);
+  });
+});
+
+describe('detectApiCallStep — explicit, curated NL api-call detection', () => {
+  it('maps an explicit Japanese Perplexity API request to the shipped endpoint/auth/body shape', () => {
+    const step = detectApiCallStep('パープレのAPIを呼んでSTEAM教育ニュースを検索して');
+    expect(step).not.toBeNull();
+    expect(step!.apiCall).toMatchObject({
+      host: 'api.perplexity.ai',
+      method: 'POST',
+      path: '/chat/completions',
+      authRef: 'perplexity',
+    });
+    const body = JSON.parse(step!.apiCall!.bodyTemplate!);
+    expect(body.model).toBe('sonar');
+    expect(body.messages[0].content).toContain('STEAM教育ニュース');
+    expect(body.messages[0].content).toContain('{{result}}');
+  });
+
+  it.each([
+    ['call the Gemini API for a concise review', 'generativelanguage.googleapis.com', '/v1beta/models/gemini-2.5-flash:generateContent', 'gemini'],
+    ['invoke the Cerebras API for a code review', 'api.cerebras.ai', '/v1/chat/completions', 'cerebras'],
+    ['make a Groq API call for a short summary', 'api.groq.com', '/openai/v1/chat/completions', 'groq'],
+  ])('maps %s to its existing curated endpoint', (instruction, host, path, authRef) => {
+    expect(detectApiCallStep(instruction)?.apiCall).toMatchObject({ host, method: 'POST', path, authRef });
+  });
+
+  it('recognizes the real allowlisted hostname as the provider signal', () => {
+    expect(detectApiCallStep('api.perplexity.ai APIを叩いて結果を取得して')?.apiCall?.host).toBe('api.perplexity.ai');
+  });
+
+  it.each([
+    'パープレでSTEAM教育ニュースを検索して', // provider only: normal model routing
+    'search and summarize via Perplexity',
+    'APIを呼んでSTEAM教育ニュースを検索して', // API marker only: no destination
+    'call the API and summarize the result',
+    'api.github.com APIを呼んでreleaseを調べて', // allowlisted, but no safe universal preset
+    'localhost APIを呼んでモデル一覧を取得して',
+  ])('does not match the near-miss %s', (instruction) => {
+    expect(detectApiCallStep(instruction)).toBeNull();
+  });
+
+  it('upgrades matching non-final steps, preserves near-misses, and never marks the final step', () => {
+    const steps = detectApiCallSteps([
+      'パープレのAPIを呼んでニュースを検索して',
+      { instruction: 'Geminiで普通に要約して', tool: { type: 'gemini-api' } },
+      'call the Groq API for the final wording',
+    ]);
+    expect(typeof steps[0]).not.toBe('string');
+    if (typeof steps[0] !== 'string') expect(steps[0].apiCall?.authRef).toBe('perplexity');
+    expect(steps[1]).toEqual({ instruction: 'Geminiで普通に要約して', tool: { type: 'gemini-api' } });
+    expect(steps[2]).toBe('call the Groq API for the final wording');
   });
 });
 

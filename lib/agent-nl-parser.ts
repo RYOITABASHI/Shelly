@@ -18,7 +18,7 @@
  */
 import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
-import { parseStepsFromText, normalizeSteps, detectToolPinnedSteps } from './agent-orchestration';
+import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 
 export interface ParsedAgentDraft {
@@ -59,8 +59,9 @@ export interface ParsedAgentDraft {
    *  ("まず…次に…最後に" / numbered), OR (Phase 6) a plain て-form/comma-delimited
    *  chain naming a tool per clause ("パープレで集めて、ローカルLLMで要約して…") —
    *  see detectToolPinnedSteps. Each entry is either a plain string (auto-routed,
-   *  same as before) or a { instruction, tool } object pinning a concrete tool for
-   *  just that step. Absent/<2 = single-run. */
+   *  same as before), a { instruction, tool } object pinning a concrete tool for
+   *  just that step, or a narrowly-detected explicit { instruction, apiCall }
+   *  request (v1.1). Absent/<2 = single-run. */
   orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   /** G6: hard character budget for the final orchestration output. */
   charLimit?: number;
@@ -829,10 +830,17 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   // e.g. "パープレで集めて、ローカルLLMで要約して、Xに投稿して"). Checked only when
   // explicitSteps didn't already find a confident split, so a marker-based
   // utterance is never double-processed by both detectors.
-  const orchestrationSteps: Array<string | AgentOrchestrationStep> | undefined =
+  const detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
     explicitSteps.length >= 2
       ? explicitSteps
       : detectToolPinnedSteps(prompt || rawText) ?? undefined;
+  // v1.1 api-call authoring: upgrade only explicit provider+API-call clauses,
+  // after the established splitters have decided that this is genuinely a
+  // multi-step utterance. This preserves bug #152's preamble-dropping behavior
+  // and keeps an ordinary provider mention on the existing model-routing path.
+  // detectApiCallSteps also leaves the final step untouched because the PlanSpec
+  // executor intentionally consults step.apiCall on non-final steps only.
+  const orchestrationSteps = detectedSteps ? detectApiCallSteps(detectedSteps) : undefined;
 
   return {
     name: deriveName(rawText),
