@@ -34,16 +34,16 @@
 
 ---
 
-### bug #152(新規) — スケジュール句がparseStepsFromTextの先頭に紛れ込み、スプリアスなstep 1になる
+### ✅ bug #152 — スケジュール句がparseStepsFromTextの先頭に紛れ込み、スプリアスなstep 1になる — 解決済み (`3b54a6649`、2026-07-16)
 
 **優先度**: P2（安全性への影響なし。無意味な最初のstepが1個増えるだけで、多段実行自体は正しく動く）
 **発見**: 2026-07-16、North Star P0(c)実機検証のエージェント登録テスト中。
 
 **再現**: `@agent 5分ごとに、まず『自律エージェントの安全性』について観点を3つ箇条書きで挙げて、次にそれぞれを1行で言い換えて、最後にMarkdownドラフトとして保存して` を登録すると、`plan-agent-<id>.json`の`steps.list`が意図した3件ではなく**4件**になり、1件目のinstructionが`"5分ごとに"`というスケジュール句そのものになる。
 
-**原因(推定、未確認)**: `lib/agent-nl-parser.ts`のスケジュール抽出と`lib/agent-orchestration.ts`の`parseStepsFromText`(`JP_SEQUENCE_SPLIT = /(?:^|[、。\n])\s*(?:まず|最初に|次に|その後|それから|続いて|最後に|そして)\s*/`)は同じ生テキストに対して独立に走る。`JP_SEQUENCE_SPLIT`は最初の`まず`の**手前**にあるテキスト(「5分ごとに」)を空でない先頭フラグメントとして残してしまい、スケジュール句が本来除去されるべきなのにstep 1として生き残る。
+**確定した原因**: `lib/agent-orchestration.ts`の`parseStepsFromText`は既に「先頭フラグメントが`isScheduleOnlyClause()`にマッチしたら捨てる」というガードを持っていたが、`SCHEDULE_ONLY_CLAUSE_RE`は**曜日**(月曜日等)と`毎日/毎朝/毎晩/毎夕/日次`のみを認識し、`5分ごとに`/`3時間ごとに`のような**間隔ベース**のスケジュール句（`lib/agent-nl-parser.ts`の`parseSchedule`は`confident: true`で正しくcron化する対象）を一切カバーしていなかった。そのため「まず」の手前の`"5分ごとに"`はガードにマッチせず、非空の先頭フラグメントとしてstep 1に紛れ込んでいた。
 
-**次にやること**: `parseStepsFromText`を呼ぶ前に、確定したスケジュール句(cron文字列に変換済みの元テキスト範囲)をraw textから除去するか、あるいは`parseStepsFromText`側で最初の分割マーカー(まず等)より前の先頭フラグメントを常に捨てる(現状のコード内コメント「まず/次に/first/numbered marker becomes its own spurious "step 1" with no marker-word」はこのケースを指しているように見えるが、実際には拾われてしまっている＝既存のガードが機能していない可能性)。
+**修正内容**: `parseStepsFromText`の先頭フラグメント処理を、内容ベースの`isScheduleOnlyClause()`判定から「マーカーが1つでもマッチしたら`raw.split()`の先頭要素を無条件に捨てる」方式に変更。`JP_SEQUENCE_SPLIT`/`EN_SEQUENCE_SPLIT`/`NUMBERED_SPLIT`はいずれもマーカー語(まず/次に/…、first/then/…、"1."/…)自体にアンカーされているため、最初のマーカーより手前のテキストは定義上決してstep 1になり得ない（実質的なstepではなく常にpreamble）。これにより将来どんなスケジュール句表現が増えても同種のリークが再発しない。JP repro・EN相当(`every 5 minutes` → ピリオド区切りでないと`first`がアンカーしない点に注意)・no-preambleの既存パス2件（まず/次に/最後に、numbered list）の回帰防止テストを追加。`isScheduleOnlyClause`自体は`detectToolPinnedSteps`（クローズ境界がマーカーではなく句読点なので先頭要素が本物のstep内容である可能性が高く、内容ベース判定が引き続き必要）でそのまま使用継続。
 
 → sync: なし。
 
