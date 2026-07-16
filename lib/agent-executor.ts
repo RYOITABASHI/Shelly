@@ -23,7 +23,12 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // unsupported by the PlanSpec chain executor (e.g. autonomous `auto` ->
 // codex CLI) falls back to THIS legacy single-shot script on every scheduled/
 // native fire — see ORCHESTRATION_COLLAPSED_NOTE below.
-const AGENT_SCRIPT_VERSION = 13;
+// v14: agent.workspaceRoot now reaches codexDriverCommand()'s DRIVER_CWD
+// (previously hardcoded to $PROJECT_DIR), and a new shelly_git() helper
+// preloads libexec_wrapper.so scoped to git only so HTTPS git operations
+// work from the autonomous runtime the same way the interactive PTY's
+// git() already does (DEFERRED.md #2 残り / git-over-HTTPS latent gap).
+const AGENT_SCRIPT_VERSION = 14;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -461,6 +466,11 @@ set -euo pipefail
 
 AGENT_ID=${shellQuote(agentId)}
 AGENT_NAME=${shellQuote(agent.name)}
+# DEFERRED.md #2 残り (workspaceRoot → driver --cwd): empty when unset, so the
+# driver's DRIVER_CWD "\${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}" fallback below
+# is unchanged from today's default ($PROJECT_DIR) — bash's :- treats an empty
+# string the same as unset, so this never regresses the no-workspace-root case.
+AGENT_WORKSPACE_ROOT=${shellQuote(agent.workspaceRoot ?? '')}
 RESULT_FILE=${shellQuote(resultFile)}
 LOCK_FILE=${shellQuote(lockFile)}
 LOG_DIR=${shellQuote(logDir)}
@@ -587,6 +597,28 @@ shelly_node() {
 }
 shelly_curl() {
   shelly_run_app_binary curl "$@"
+}
+shelly_git() {
+  # DEFERRED.md (自律エージェント制御面レビュー — LD_PRELOAD gap): mirrors
+  # HomeInitializer.kt's interactive git() fix (commit 0981cd6d5, BASHRC_VERSION
+  # 230). git spawns its HTTPS transport helper (git-remote-https) as a CHILD
+  # execve that does not go through shelly_run_app_binary's own linker64
+  # launch, so under Knox it can hit the app_data_file exec denial ("cannot
+  # exec 'remote-https': Permission denied") on git fetch/push/clone over
+  # HTTPS. Preloading libexec_wrapper.so makes the wrapper rewrite that child
+  # execve through linker64 too. Scoped to THIS git invocation only — never
+  # exported globally, since an inherited LD_PRELOAD corrupts node's own
+  # fd/.so resolution (see the driver launch above) and breaks llama-server's
+  # (see local_llm_start_server) — same "scoped, never global" invariant the
+  # interactive git() uses.
+  binary=$(shelly_app_binary_path git) || return 127
+  binary_dir="\${binary%/*}"
+  git_lib_dir="\${SHELLY_LIB_DIR:-$binary_dir}"
+  if [ -x /system/bin/linker64 ]; then
+    LD_LIBRARY_PATH="\${SHELLY_LD_LIBRARY_PATH:-$git_lib_dir}" LD_PRELOAD="$git_lib_dir/libexec_wrapper.so" SHELLY_LIB_DIR="$git_lib_dir" /system/bin/linker64 "$binary" "$@"
+    return $?
+  fi
+  LD_PRELOAD="$git_lib_dir/libexec_wrapper.so" SHELLY_LIB_DIR="$git_lib_dir" "$binary" "$@"
 }
 node_usable() {
   shelly_node -e 'process.exit(0)' >/dev/null 2>&1 || return 1
@@ -2966,10 +2998,10 @@ if [ "\${STUDIO_CONTEXT:-0}" = "1" ]; then
       [ -d "$repo/.git" ] || continue
       echo
       echo "### Recent git log: $repo"
-      git -C "$repo" log --oneline -8 2>/dev/null || true
+      shelly_git -C "$repo" log --oneline -8 2>/dev/null || true
       echo
       echo "### Current git status: $repo"
-      git -C "$repo" status --short 2>/dev/null || true
+      shelly_git -C "$repo" status --short 2>/dev/null || true
     done
   } > "$LOCAL_CONTEXT_FILE"
   if [ -s "$LOCAL_CONTEXT_FILE" ]; then
@@ -3307,7 +3339,14 @@ fi`;
 function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-DRIVER_CWD="$PROJECT_DIR"
+# workspaceRoot (DEFERRED.md #2 残り): when the agent has a configured
+# workspace, run the driver there instead of the content-studio default —
+# the B2 driver re-anchors AutonomyPolicy.workspaceRoot to whatever --cwd it
+# receives (scripts/shelly-agent-driver.js), so this --cwd IS the workspace
+# boundary the gate enforces. AGENT_WORKSPACE_ROOT is empty when unset, and
+# bash's \${VAR:-default} falls through on empty exactly like unset, so this
+# is a no-op (today's $PROJECT_DIR default) when workspaceRoot isn't set.
+DRIVER_CWD="\${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"
 [ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
 if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   rm -f "$RESULT_FILE.answer"

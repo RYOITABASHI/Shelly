@@ -477,7 +477,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=13');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=14');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -614,6 +614,92 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(l3).toContain('"level":"L3"');
     // Default (no level set) still resolves to L2 via buildAgentPolicy.
     expect(generateRunScript(agent({ type: 'cli', cli: 'codex' }, true))).toContain('"level":"L2"');
+  });
+
+  it('wires agent.workspaceRoot through to the B2 driver --cwd (DEFERRED.md #2 残り)', () => {
+    // Regression: DRIVER_CWD was hardcoded to $PROJECT_DIR (content-studio default)
+    // and never read agent.workspaceRoot, so an agent configured with a separate
+    // workspace still ran the driver — and therefore the AutonomyPolicy boundary
+    // gate, which re-anchors workspaceRoot to whatever --cwd it receives
+    // (scripts/shelly-agent-driver.js: `policy.workspaceRoot = cwd`) — against
+    // content-studio instead of its own workspace.
+    const withRoot = generateRunScript({
+      ...agent({ type: 'cli', cli: 'codex' }, true),
+      workspaceRoot: '/home/shelly-test/projects/my-workspace',
+    });
+    expect(withRoot).toContain("AGENT_WORKSPACE_ROOT='/home/shelly-test/projects/my-workspace'");
+    expect(withRoot).toContain('DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"');
+    expect(withRoot).toContain('--cwd "$DRIVER_CWD"');
+  });
+
+  it('leaves DRIVER_CWD unchanged (falls through to $PROJECT_DIR) when workspaceRoot is unset (no regression)', () => {
+    const withoutRoot = generateRunScript(agent({ type: 'cli', cli: 'codex' }, true));
+    expect(withoutRoot).toContain("AGENT_WORKSPACE_ROOT=''");
+    expect(withoutRoot).toContain('DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"');
+    // Prove the actual bash semantics: an empty AGENT_WORKSPACE_ROOT falls
+    // through to $PROJECT_DIR exactly like an unset one (bash `:-` triggers on
+    // empty-or-unset), so today's no-workspace-root behavior is unchanged.
+    const resolved = execFileSync('bash', ['-c', [
+      'PROJECT_DIR="/content/studio"',
+      'AGENT_WORKSPACE_ROOT=""',
+      'DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"',
+      'printf %s "$DRIVER_CWD"',
+    ].join('\n')]).toString();
+    expect(resolved).toBe('/content/studio');
+    // And when set, the workspace root wins.
+    const resolvedWithRoot = execFileSync('bash', ['-c', [
+      'PROJECT_DIR="/content/studio"',
+      'AGENT_WORKSPACE_ROOT="/my/workspace"',
+      'DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"',
+      'printf %s "$DRIVER_CWD"',
+    ].join('\n')]).toString();
+    expect(resolvedWithRoot).toBe('/my/workspace');
+  });
+
+  it('applies the workspaceRoot → --cwd wiring on every codexDriverCommand call site (primary cli, auto fallback, baked web→Codex ladder)', () => {
+    // The `auto` arm (resolves to the driver-fallback path) and the baked
+    // web→Codex ladder both route through the SAME codexDriverCommand, so the
+    // AGENT_WORKSPACE_ROOT variable (baked once, script-scope) covers them too.
+    const auto = generateRunScript({ ...agent({ type: 'auto' }, true), workspaceRoot: '/ws' });
+    expect(auto).toContain("AGENT_WORKSPACE_ROOT='/ws'");
+    expect(auto).toContain('DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"');
+  });
+
+  it('scopes libexec_wrapper.so LD_PRELOAD to git only, mirroring the interactive git() fix (DEFERRED.md HTTPS git gap)', () => {
+    // The interactive PTY's git() (HomeInitializer.kt, commit 0981cd6d5,
+    // BASHRC_VERSION 230) preloads libexec_wrapper.so so git's child
+    // git-remote-https execve is routed through linker64 instead of hitting the
+    // app_data_file exec denial. The autonomous agent runtime had no equivalent —
+    // this proves the generated script now defines one and never sets LD_PRELOAD
+    // globally (only inside the scoped shelly_git wrapper).
+    const s = generateRunScript(agent({ type: 'local' }, true));
+    expect(s).toContain('shelly_git() {');
+    expect(s).toContain('LD_PRELOAD="$git_lib_dir/libexec_wrapper.so"');
+    expect(s).toContain('shelly_git -C "$repo" log --oneline -8 2>/dev/null || true');
+    expect(s).toContain('shelly_git -C "$repo" status --short 2>/dev/null || true');
+    // Never a bare, unscoped `git` call left for the content-studio context
+    // collector (the only baked git invocation site today) — must not match
+    // "shelly_git", hence the negative lookbehind rather than a plain
+    // .not.toContain (which would false-negative: "shelly_git -C ..." itself
+    // contains the substring "git -C ...").
+    expect(s).not.toMatch(/(?<!shelly_)git -C "\$repo" log --oneline -8/);
+    expect(s).not.toMatch(/(?<!shelly_)git -C "\$repo" status --short/);
+    // LD_PRELOAD is only ever set inside shelly_git/the llama-server launchers
+    // (which explicitly unset it) — never exported as a bare global assignment
+    // that every subsequent command in the script would inherit.
+    expect(s).not.toMatch(/^export LD_PRELOAD=/m);
+  });
+
+  it('emits syntactically valid shell for the shelly_git wrapper', () => {
+    // Full-script `bash -n` on the whole generated script hits a Windows-only
+    // execFileSync ENAMETOOLONG limit on this suite already (the pre-existing
+    // "emits parseable shell ..." tests) — syntax-check the new function in
+    // isolation instead, extracted verbatim from the real generated output so
+    // this still catches a real quoting/escaping mistake in shelly_git itself.
+    const s = generateRunScript({ ...agent({ type: 'local' }, true), workspaceRoot: '/ws' });
+    const match = s.match(/shelly_git\(\) \{[\s\S]*?\n\}\n/);
+    expect(match).not.toBeNull();
+    expect(() => execFileSync('bash', ['-n', '-c', match![0]])).not.toThrow();
   });
 
   it('bakes unattended:true into the STORED script and unattended:false only for attended runs (DEFERRED #2)', () => {

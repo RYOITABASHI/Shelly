@@ -35,7 +35,12 @@ object AgentRuntime {
     // script (unsupported tool for the PlanSpec chain executor). No routing
     // change here — bumped only so a stale pre-v13 on-disk script (silent
     // collapse, no note) is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 13
+    // v14 (docs/superpowers/DEFERRED.md): agent.workspaceRoot now reaches the
+    // Codex driver's --cwd, and a new shelly_git() helper adds the same
+    // scoped LD_PRELOAD the interactive PTY's git() already has, so HTTPS git
+    // works from the autonomous runtime too. Bumped so a stale pre-v14
+    // on-disk script is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 14
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 

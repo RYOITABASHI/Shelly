@@ -435,21 +435,14 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 
 **Why not now**: v5.3.1 の価値は Claude Code + Codex の real Android CLI 体験、API-backed AI Pane、更新済み Local LLM catalog にある。Gemini CLI を launch blocker にすると、既に動く主要体験のリリースを遅らせる割に品質保証ができない。
 
-### git over HTTPS — autonomous agent runtime の latent gap（BASHRC_VERSION 230 で対話側は解決済）
+### ✅ git over HTTPS — autonomous agent runtime の latent gap — 実装済み（実機`git fetch`検証は未、2026-07-16）
 
 **優先度**: P2
-**状態**: 対話 PTY の `git()` は libexec_wrapper.so を preload して解決済（commit `fix(git): preload libexec_wrapper.so …`, BASHRC_VERSION 230）。**autonomous agent runtime 側は未対応**。
+**状態**: 対話 PTY の `git()` は既に解決済（BASHRC_VERSION 230）。**agent runtime 側も今回解消**: `lib/agent-executor.ts`に`shelly_git()`シェル関数を新設し、対話版`git()`と同じ`LD_PRELOAD=$libDir/libexec_wrapper.so`をgit呼び出し1回限りにスコープして付与（`VAR=val cmd`のprefix-assignmentイディオムで、呼び出し元シェルの永続環境には一切漏れないことをテストで確認済み）。生成スクリプト内の既存git呼び出し2箇所（STUDIO_CONTEXT builderの`git log`/`git status`）を`shelly_git`経由に変更。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を13→14にlockstep bump（既に materialize済みの on-device スクリプトを次回発火時に再生成させるため）。
 
-**症状/リスク**:
-- 自律エージェント（または content-studio の command action）が `git fetch/push/clone` を **HTTPS** で実行すると、`git-remote-https` の child execve が app_data_file exec 拒否に当たり `cannot exec 'remote-https': Permission denied` で失敗しうる。
-- agent runtime の `shelly_run_app_binary`（`lib/agent-executor.ts`）は raw linker64 経由で app-data binary を起動するが、`git()` shell helper を定義せず、libexec_wrapper の LD_PRELOAD を git に必ず付ける保証がない（`shelly-exec.c` の global LD_PRELOAD が scope に入るかは経路依存）。
-- 現状 agent runtime が呼ぶ git は `git log` / `git status`（local-only、transport helper を exec しない）のみなので **実害は出ていない**＝latent。
+**未実施**: 自律エージェントから実際の`git fetch --dry-run`（HTTPS）がtransport helper起動まで通ることの実機確認（次のオンデバイステストで確認すること）。
 
-**戻す条件**:
-1. agent runtime（`shelly_run_app_binary` / `generateRunScript`）で git を呼ぶ経路にも、対話 `git()` と同じ `LD_PRELOAD=$libDir/libexec_wrapper.so` を git 限定で確実に付与する（global 付与は llama-server を壊すので不可）。
-2. 自律エージェントから `git fetch --dry-run`（HTTPS）が transport helper 起動まで通ることを実機確認。
-
-**Why not now**: 報告された症状（対話ターミナルの HTTPS git）は解決済。ユーザーの無人クラウド保存は DriveSync が担うため git push 自体が必須でない（出力先=Obsidian フォルダ書き込みで充足）。agent からの HTTPS git は将来 Codex-on-Shelly の自動 push 等で必要になった時点で対応。
+独立レビュー（general-purpose subagent）でshellQuote注入耐性・LD_PRELOADスコープ漏れなし・非linker64フォールバックの健全性を直接検証済み、SHIP判定。
 
 ### G6 パイプライン — charLimit のハード結線
 
@@ -472,8 +465,10 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 **#3 ab-article-eval が B2 driver を迂回（P2・consistency）**
 - `ab-article-eval` は autonomous 許可（agent-credential-policy）だが `articleEvalCommand` が `codex exec` を直叩きし driver audit/pin/gate を通らない。ただし記事評価専用の制約ツールで**任意シェルを実行しない**ため gate の必要性は低い。整合性のため将来 driver 経由化 or 明示的に「driver 不要ツール」と仕様化。
 
-**#2 の残り：workspaceRoot → driver --cwd（P2）**
-- autonomyLevel は `--policy-json` で配線済。`agent.workspaceRoot` → `DRIVER_CWD` の配線は未（現状 `PROJECT_DIR`＝content-studio 既定）。workspace 分離を使う場合に必要。
+✅ **#2 の残り：workspaceRoot → driver --cwd（P2）— 解消済み（2026-07-16）**
+- `lib/agent-executor.ts`に`AGENT_WORKSPACE_ROOT=${shellQuote(agent.workspaceRoot ?? '')}`を追加し、`codexDriverCommand()`の`DRIVER_CWD="$PROJECT_DIR"`固定を`DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"`へ変更。`workspaceRoot`未設定時はbashの`:-`がempty文字列をunset同様に扱うため、既定の`$PROJECT_DIR`動作は無変化（`bash -c`実行で直接確認済み）。`scripts/shelly-agent-driver.js:236-242`が`--cwd`から`AutonomyPolicy.workspaceRoot`を無条件に再導出することを実コード読解で確認済み——この`--cwd`が実際の境界ゲートそのものであるというコメントの主張は正確。
+- **残課題（低リスク、独立レビューで指摘）**: `[ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"`（既存行）は、`workspaceRoot`が設定されているが存在しないパスを指す場合に、境界を`$HOME`全体まで無警告で広げてしまう（「未設定」と「設定されているが無効」を区別するログが無い）。現状`workspaceRoot`を書き込むUI/storeパスが存在しない（`grep -r workspaceRoot components/`ゼロ件）ため未エクスプロイト可能だが、将来UIを作る前にfail-closed化（`$PROJECT_DIR`へフォールバック、または明示エラー）を検討すること。
+- 独立レビュー（general-purpose subagent、`shellQuote`への実際のインジェクションペイロード投入で直接検証）でSHIP判定。
 
 ✅ **#2 境界の本丸：out-of-workspace write の無人 hard-deny（P1）** — **解消済み**。
 - 実装: `AutonomyPolicy.unattended`（strict `=== true`、malformed は attended 側 = 従来の escalation 待ちに倒す）を新設。`generateRunScript` が `--policy-json` に焼き込み — **保存版スクリプト（alarm 発火 / native one-tap が読む：install / restore / startup repair / consent re-bake / post-ladder・post-chain restore の全6呼び出し口で確認済み）は全て `unattended:true`**、`runLadderAttempts`（前景 TS ladder の per-attempt materialize、Run now / `@agent`）のみ `attended:true`。driver（`scripts/shelly-agent-driver.js` + asset mirror）は escalate 分岐で **grant 消費の後・escalation 待ちの前**に unattended なら即 decline（audit `escalation_denied_unattended`、request ファイルは書かない=stale 承認ハザード回避）。`shelly-gate-decide.js`（asset のみ、gate-decide-entry.ts の生成物）の `parseAutonomyPolicy` にも同フィールドを反映。
