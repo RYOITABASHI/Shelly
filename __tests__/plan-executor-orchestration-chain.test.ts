@@ -150,7 +150,10 @@ function makeHome(): string {
 
 const AGENT_ID = 'agent-chain-smoke';
 
-type StepsField = { list: Array<{ instruction: string }>; budget: { maxSteps: number; totalTimeoutMs: number } } | undefined;
+type StepsField = {
+  list: Array<{ instruction: string; apiCall?: { host: string; method: 'GET' | 'POST'; path: string; authRef?: string; bodyTemplate?: string } }>;
+  budget: { maxSteps: number; totalTimeoutMs: number };
+} | undefined;
 
 function writePlan(home: string, port: number, opts: { actionType?: string; steps?: StepsField } = {}) {
   const plan = {
@@ -191,10 +194,10 @@ function writePlan(home: string, port: number, opts: { actionType?: string; step
   return planFile;
 }
 
-function runExecutor(planFile: string, home: string): Promise<number | null> {
+function runExecutor(planFile: string, home: string, envOverride: Record<string, string> = {}): Promise<number | null> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker], {
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, ...envOverride },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.on('close', (status) => resolve(status));
@@ -381,4 +384,94 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     expect(log.steps).toHaveLength(2);
     expect(log.status).toBe('success');
   }, 20000);
+
+  // SECURITY-CRITICAL (api-call v1, 2026-07-16): locks in the deliberate
+  // omission of `approved: true` in dispatchApiCallRequest
+  // (scripts/shelly-plan-executor.js) — see that function's own doc comment.
+  // A tainted run (opts.tainted = true, i.e. SHELLY_CAP_TAINTED=1) with an
+  // authRef-bound apiCall step against an ALLOWLISTED host must still be
+  // REFUSED by the real capability broker's classifyEgress
+  // (tainted-secret-spend rule, lib/capability-envelope.ts / mirrored in
+  // scripts/shelly-capability-broker.js) — broker rc 41 (APPROVAL_REQUIRED) —
+  // NOT silently sent. This exercises the REAL broker (not a mock), so it
+  // proves the fail-closed behavior end-to-end, not just in a unit test of
+  // the classifier alone. No real network call ever happens: classifyEgress
+  // rejects the request before any HTTP is attempted, so this test is fully
+  // offline-safe.
+  it('(f) SECURITY: a tainted run with an authRef-bound apiCall step against an allowlisted host is REFUSED (broker rc 41), not silently sent', async () => {
+    const home = makeHome();
+    const steps: StepsField = {
+      list: [
+        {
+          instruction: 'search for sources',
+          apiCall: { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search', authRef: 'perplexity' },
+        },
+        { instruction: 'never reached' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { actionType: 'draft', steps }), home, { SHELLY_CAP_TAINTED: '1' });
+    expect(rc).toBe(0);
+
+    // Neither step ever reached the local model endpoint: step 0 is an
+    // apiCall step (skips modelRequest entirely) and step 1 never launches
+    // because step 0 failed (chain stops on first failure).
+    expect(requestPrompts).toHaveLength(0);
+
+    const log = readRunLog(home);
+    expect(log.status).toBe('error');
+    expect(log.steps).toHaveLength(1);
+    expect(log.steps[0].status).toBe('error');
+    // The broker's own rc=41 (APPROVAL_REQUIRED) rejection message, redacted
+    // and surfaced as this step's failure — not a silent success carrying a
+    // real (or fabricated) response forward as if the call had been sent.
+    expect(log.steps[0].outputPreview).toMatch(/HTTP broker failed rc=41/);
+    expect(readNotification(home).status).toBe('error');
+  }, 20000);
+
+  // SECURITY-CRITICAL sibling of (f): 2026-07-16 adversarial review finding.
+  // classifyEgress's taint gate only fires when EITHER the host is
+  // non-allowlisted OR a secret (authRef) is being spent — it does NOT gate
+  // `tainted && !authRef` against an allowlisted host, which falls through to
+  // 'allow' (lib/capability-envelope.ts). Every pre-existing broker caller
+  // reaching a remote host always sets an authRef, so this combination was
+  // unreachable before api-call (the first caller that can legitimately omit
+  // authRef while targeting a remote allowlisted host). dispatchApiCallRequest
+  // now refuses this case itself (in the executor, before ever calling the
+  // broker) rather than widening the shared classifyEgress primitive. This
+  // test locks that fix in: a tainted run with NO authRef against a remote
+  // allowlisted host must be refused, not silently sent as 'allow' would
+  // otherwise permit.
+  it('(g) SECURITY: a tainted run with a NO-authRef apiCall step against a remote allowlisted host is REFUSED, not silently allowed', async () => {
+    const home = makeHome();
+    const steps: StepsField = {
+      list: [
+        {
+          instruction: 'post to public endpoint',
+          apiCall: { host: 'api.github.com', method: 'GET', path: '/rate_limit' }, // no authRef
+        },
+        { instruction: 'never reached' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { actionType: 'draft', steps }), home, { SHELLY_CAP_TAINTED: '1' });
+    expect(rc).toBe(0);
+    expect(requestPrompts).toHaveLength(0);
+
+    const log = readRunLog(home);
+    expect(log.status).toBe('error');
+    expect(log.steps).toHaveLength(1);
+    expect(log.steps[0].status).toBe('error');
+    // Refused by the EXECUTOR's own guard, before the broker (and therefore
+    // before any real network I/O) is ever invoked — distinct from (f)'s
+    // broker-level rc=41 rejection message.
+    expect(log.steps[0].outputPreview).toMatch(/no credential is refused on a tainted/);
+    expect(readNotification(home).status).toBe('error');
+  }, 20000);
+
+  // The "does not over-refuse when non-tainted" regression check for this
+  // same guard lives in __tests__/plan-executor-api-call.test.ts (mocked
+  // broker) — not here, since a NO-authRef apiCall step that actually
+  // proceeds would need a real network response from a real external host to
+  // exercise end-to-end, which is not offline-safe.
 });

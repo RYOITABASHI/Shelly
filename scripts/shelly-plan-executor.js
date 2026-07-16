@@ -328,6 +328,10 @@ const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
 const STEP_PROMPT_MAX_CHARS = 6000;
 const STEP_PROMPT_MAX_RESULT_CARRY_CHARS = 1500;
 const STEP_PREVIEW_MAX_CHARS = 500;
+// Mirrors lib/agent-orchestration.ts's MAX_STEP_INSTRUCTION_CHARS (module-local
+// there too — not exported, so this is its own numerically-in-sync copy, same
+// convention as the STEP_* constants above).
+const STEP_INSTRUCTION_MAX_CHARS = 500;
 
 function clampToRange(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
@@ -403,6 +407,21 @@ function combineFinalPreview(records) {
   const last = [...records].reverse().find((s) => s.status === 'success');
   const head = `Completed ${records.length} step(s). `;
   return `${head}${last ? last.outputPreview : ''}`.slice(0, STEP_PREVIEW_MAX_CHARS);
+}
+
+// Verbatim port of lib/agent-orchestration.ts's apiCallLabel: a human-readable,
+// display-only label for an api-call step. NEVER sent to a model.
+function apiCallLabel(cfg) {
+  return `${cfg.method} ${cfg.host}${cfg.path}`.slice(0, STEP_INSTRUCTION_MAX_CHARS);
+}
+
+// Verbatim port of lib/agent-orchestration.ts's resolveApiCallTemplate: plain
+// string-replace of the literal "{{result}}" placeholder, no template engine.
+// Callers URL-encode lastResult themselves before calling this for `path`
+// (this function does no encoding of its own — bodyTemplate must NOT be
+// URL-encoded).
+function resolveApiCallTemplate(template, lastResult) {
+  return String(template == null ? '' : template).split('{{result}}').join(lastResult);
 }
 
 function resolveCharLimit(plan) {
@@ -611,9 +630,13 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
   const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}.err`);
   const args = [
     '--op', 'http.request',
-    '--method', 'POST',
+    // Generalized (api-call v1) to carry an optional request.method — default
+    // 'POST' so every pre-existing call site (which never passes method)
+    // behaves identically to before. The broker already tolerates GET with no
+    // body (shelly-capability-broker.js only reads --body-file when method
+    // !== 'GET'), so only push --body-file when one is actually supplied.
+    '--method', request.method || 'POST',
     '--url', request.url,
-    '--body-file', request.bodyFile,
     '--secret-env-file', paths.envFile,
     '--audit-log', paths.brokerAuditFile,
     '--budget-file', path.join(paths.tmpDir, `cap-budget-${plan.agent.id}.json`),
@@ -621,6 +644,7 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
     '--out', outFile,
     '--err', errFile,
   ];
+  if (request.bodyFile) args.push('--body-file', request.bodyFile);
   if (request.authRef) args.push('--auth-ref', request.authRef);
   if (request.approved) args.push('--approved', '1');
   if (opts.tainted) args.push('--tainted', '1');
@@ -636,6 +660,65 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
     });
   }
   return response;
+}
+
+// api-call (v1): dispatch a structured HTTP call to an allowlisted host via
+// the SAME capability broker every other egress already goes through — this
+// is a new AUTHORING surface (lib/capability-envelope.ts's host allowlist +
+// AUTH_REFS still fully own enforcement), not a new enforcement path.
+function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
+  const url = `https://${apiCall.host}${apiCall.path}`;
+  // Tainted-run defense-in-depth (2026-07-16 adversarial security review
+  // finding): classifyEgress's taint gate (lib/capability-envelope.ts) only
+  // requires human approval for a tainted run when EITHER the host is
+  // non-allowlisted OR a secret (authRef) is being spent (the documented
+  // "trifecta" — see the comment on the broker call below). It does NOT gate
+  // `tainted === true, authRef absent, host allowlisted` — that combination
+  // falls through to classifyEgress's own 'allow' return. Every PRE-EXISTING
+  // caller of the broker's http.request op that reaches a REMOTE allowlisted
+  // host always sets a non-empty authRef (modelRequest() hardcodes one for
+  // every non-local tool: gemini/perplexity/cerebras/groq), so this exact
+  // combination was structurally unreachable before this feature — api-call
+  // is the first caller that can legitimately omit authRef while still
+  // targeting a remote host (a public/no-auth API is a valid, intended use).
+  // That reopens exactly the "poisoned notification directs the agent to
+  // leak/post its own output to a real destination" case the taint gate
+  // exists to close (see classifyEgress's own doc comment), just without a
+  // credential attached. Refuse here, in the executor, rather than widening
+  // classifyEgress itself — that is a SHARED primitive every other action
+  // type also depends on, deliberately left untouched by this feature (the
+  // implementation plan scoped api-call to REUSE existing broker enforcement,
+  // not modify it). Loopback is exempt: no network boundary is crossed.
+  if (opts.tainted && !apiCall.authRef && !isLoopbackUrl(url)) {
+    throw new PlanFailure(
+      'api-call to a remote host with no credential is refused on a tainted (notification-triggered) run — requires an authRef or a non-tainted run',
+      { handled: true },
+    );
+  }
+  let bodyFile = null;
+  if (apiCall.method === 'POST' && resolvedBodyText) {
+    bodyFile = path.join(paths.tmpDir, `plan-apicall-${plan.agent.id}-${process.pid}.json`);
+    writeAtomic(bodyFile, resolvedBodyText);
+  }
+  try {
+    return brokerHttpBodyFile(paths, opts, plan, {
+      url,
+      authRef: apiCall.authRef,
+      bodyFile,
+      method: apiCall.method,
+      // Deliberately NOT approved:true. Unlike webhook (whose destination is
+      // user-supplied and usually non-allowlisted, so approved:true
+      // compensates for that), api-call's host is ALWAYS pre-allowlisted (UI
+      // constrains it), so classifyEgress only ever returns 'approve' here in
+      // the tainted+secret "trifecta" case (guarded above for the
+      // tainted+NO-secret case too) — exactly the case that must stay
+      // fail-closed. Do not add approved:true here; that would silently
+      // defeat the taint gate. See __tests__/plan-executor-orchestration-chain.test.ts's
+      // tainted+authRef regression test and its tainted+no-authRef sibling.
+    });
+  } finally {
+    if (bodyFile) { try { fs.unlinkSync(bodyFile); } catch (_) {} }
+  }
 }
 
 function extractModelContent(toolType, raw) {
@@ -1508,7 +1591,7 @@ function unattendedPreflightFailure(args, plan, config = {}) {
       ? ''
       : `${actionType} action is not trusted for unattended PlanSpec execution`;
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'api-call') {
     return `unsupported unattended PlanSpec action: ${actionType}`;
   }
   if (requireActionApprovalTap(plan, config)) {
@@ -1554,7 +1637,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   // draft/notify have no per-type validation branch below (unlike
@@ -1783,6 +1866,59 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       // no broker/native call here, unlike webhook/cli (mirrors intent/dm-reply).
       return { status: 'success', preview };
     }
+    if (actionType === 'api-call') {
+      const apiCall = plan.action.apiCall;
+      const host = apiCall && String(apiCall.host || '').trim();
+      const method = apiCall && String(apiCall.method || '').trim();
+      const apiPath = apiCall && String(apiCall.path || '').trim();
+      if (!apiCall || !host || (method !== 'GET' && method !== 'POST') || !apiPath) {
+        const message = 'API-call action is missing a host, method, or path.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      // The FULL redacted result (not just the 500-char preview) feeds
+      // {{result}} in both path (URL-encoded) and, for POST only,
+      // bodyTemplate (raw) — mirrors webhook's fullResultText usage above, so
+      // a long draft isn't silently truncated before it reaches the
+      // templated request.
+      const apiResultFull = fullResultText(resultText);
+      if (isLowQualityCompletion(preview) || isLowQualityCompletion(apiResultFull)) {
+        const message = 'API-call payload looks like a prompt echo or AI refusal, not real content — escalating.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const resolvedApiCall = Object.assign({}, apiCall, {
+        path: resolveApiCallTemplate(apiCall.path, encodeURIComponent(apiResultFull)),
+      });
+      const resolvedBody = method === 'POST' ? resolveApiCallTemplate(apiCall.bodyTemplate, apiResultFull) : '';
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        destinationHost: host,
+        // api-call's host is ALWAYS pre-allowlisted by construction (the UI
+        // constrains authoring to EGRESS_ALLOWLIST) — unlike webhook, where
+        // this reflects an OPTIONAL user-vetted allowlist entry.
+        destinationHostAllowlisted: true,
+      });
+      let response;
+      try {
+        response = dispatchApiCallRequest(paths, opts, plan, resolvedApiCall, resolvedBody);
+      } catch (e) {
+        const message = e instanceof PlanFailure ? redact(e.message) : redact(String(e));
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const responsePreview = redact(response).slice(0, 20000);
+      if (!responsePreview.trim()) {
+        const message = 'API-call response was empty.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      writeAtomic(paths.resultFile, responsePreview + (responsePreview.endsWith('\n') ? '' : '\n'));
+      // Reuses the SAME persistence path 'draft' uses — no new persistence
+      // mechanism invented for api-call's response content.
+      writeDraftOutputs(paths, opts, plan, config, roots, false);
+      writeNotification(paths, plan, 'success', responsePreview);
+      return { status: 'success', preview: responsePreview };
+    }
     maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   }
   if (actionType === 'draft') {
@@ -1856,6 +1992,43 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction });
     const stepStart = Date.now();
+
+    // api-call step (v1, non-final only — see AgentOrchestrationStep.apiCall's
+    // doc comment in store/types.ts; the FINAL step's real action is always
+    // plan.action, so an apiCall set on the last step index is a no-op by
+    // construction here). Skips the model-call branch below entirely: no
+    // prompt is built and no model is called — this step's carried "result"
+    // is the HTTP response body itself, dispatched through the SAME
+    // capability broker every model call already uses.
+    if (!isFinal && step.apiCall) {
+      const lastResult = priorResults.length ? priorResults[priorResults.length - 1] : '';
+      const resolvedApiCall = Object.assign({}, step.apiCall, {
+        path: resolveApiCallTemplate(step.apiCall.path, encodeURIComponent(lastResult)),
+      });
+      const resolvedBody = step.apiCall.method === 'POST'
+        ? resolveApiCallTemplate(step.apiCall.bodyTemplate, lastResult)
+        : '';
+      try {
+        const response = dispatchApiCallRequest(paths, opts, stepPlan, resolvedApiCall, resolvedBody);
+        const preview = redact(response).slice(0, 20000);
+        // Deliberately do NOT run isLowQualityCompletion here (unlike the
+        // model-call branch's quality gate below): that heuristic targets
+        // LLM refusal/echo patterns and would false-positive on ordinary
+        // JSON/API response bodies. Empty is still a hard failure.
+        if (!preview.trim()) {
+          throw new PlanFailure('api-call response was empty', { handled: true });
+        }
+        records.push({ index: i, instruction: step.instruction, status: 'success', durationMs: Date.now() - stepStart, outputPreview: preview });
+        priorResults.push(preview);
+      } catch (error) {
+        if (!(error instanceof PlanFailure)) throw error;
+        const status = error.status === 'unavailable' ? 'unavailable' : 'error';
+        const message = redact(error.message);
+        records.push({ index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message) });
+        priorFailed = true;
+      }
+      continue;
+    }
 
     let resultText;
     try {
@@ -2166,4 +2339,10 @@ module.exports = {
   reduceStatus,
   combineFinalPreview,
   runOrchestrationChain,
+  // api-call (v1, 2026-07-16) — exported for host unit tests only, same
+  // convention as the exports above. Not part of the executor's CLI surface.
+  apiCallLabel,
+  resolveApiCallTemplate,
+  dispatchApiCallRequest,
+  dispatchActionTrusted,
 };
