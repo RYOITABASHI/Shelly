@@ -296,6 +296,7 @@ function extractPaths(command) {
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 var READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
 var LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
+var OPAQUE_SCRIPT_RE = /\b(?:python3?(?:\.\d+)*|node(?:js)?|ruby|perl|php|deno|bun)\b\s+\S/;
 function isLoopbackOnlyNetworkCommand(command) {
   const hosts = [...command.matchAll(/\bhttps?:\/\/(\[[0-9a-fA-F:]+\]|[^/\s:]+)/gi)].map((m) => m[1]);
   if (hosts.length === 0) return false;
@@ -316,6 +317,7 @@ function classifyProposedCommand(command, ctx) {
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push("secret-read");
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push("leaves-root");
   if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) signals.push("network-send");
+  if (OPAQUE_SCRIPT_RE.test(command)) signals.push("opaque-script-exec");
   const isPureRead = READ_ONLY_RE.test(command) && !signals.includes("network-send");
   if (!isPureRead) signals.push("write-or-exec");
   const boundarySignals = signals.filter((s) => s !== "write-or-exec");

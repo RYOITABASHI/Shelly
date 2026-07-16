@@ -26,6 +26,9 @@ export type BoundarySignal =
   | 'destructive'        // command-safety CRITICAL/HIGH
   | 'leaves-root'        // a referenced path escapes the workspace root
   | 'network-send'       // outbound network (curl/wget/nc/ssh/scp …)
+  | 'opaque-script-exec' // interpreter invocation (python/node/ruby/…) whose
+                          // script contents aren't inspected — may perform
+                          // undetectable network I/O (DEFERRED bug #155a)
   | 'secret-read'        // reads a protected secret path (auth.json, keystore)
   | 'policy-write'       // writes the policy file / autonomy config (hard-deny)
   | 'write-or-exec';     // mutating/executing op (vs a pure read) — heuristic
@@ -92,6 +95,24 @@ const READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|
 const LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
 
 /**
+ * Interpreter invocations (with an argument — a script file, `-c`/`-e` inline
+ * code, etc.) whose contents we do NOT inspect at gate-decision time. codex
+ * can trivially route around NETWORK_RE by writing `script.py` with an
+ * embedded `requests.get(...)` / `fetch(...)` call and proposing
+ * `python3 script.py` — no network-tool name ever appears in the top-level
+ * command line. We can't read the referenced file here (out of MVP scope —
+ * see the file-level "Scope note" above), so this is a conservative SHAPE
+ * heuristic, not detected network activity: flag it and let the boundary
+ * gate treat it with the same caution as network-send. This intentionally
+ * also flags non-networking scripts (a formatter, a build step) — accepted
+ * false-positive / UX tradeoff, see docs/superpowers/DEFERRED.md bug #155(a).
+ * `python3?` tolerates a `\d+(?:\.\d+)*` version suffix (`python3.11`,
+ * `python3.9`) — a real, common invocation shape on Debian-derived bundles
+ * like this project's, not just the bare `python3` this list started with.
+ */
+const OPAQUE_SCRIPT_RE = /\b(?:python3?(?:\.\d+)*|node(?:js)?|ruby|perl|php|deno|bun)\b\s+\S/;
+
+/**
  * True when every network-tool target in `command` is a loopback host
  * (127.0.0.0/8, localhost, ::1) — e.g. an agent's own local-LLM
  * availability probe (`curl 127.0.0.1:8080/v1/models`). Such a command
@@ -136,6 +157,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push('secret-read');
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push('leaves-root');
   if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) signals.push('network-send');
+  if (OPAQUE_SCRIPT_RE.test(command)) signals.push('opaque-script-exec');
   const isPureRead = READ_ONLY_RE.test(command) && !signals.includes('network-send');
   if (!isPureRead) signals.push('write-or-exec');
 

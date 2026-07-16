@@ -7,5 +7,8 @@
   { "name": "rm -rf / any level -> deny", "command": "rm -rf /", "policy": { "level": "L3", "workspaceRoot": "/root/app" }, "expectedAnswer": "n" },
   { "name": "secret read L2 -> escalate", "command": "cat ~/.codex/auth.json", "policy": { "level": "L2", "workspaceRoot": "/root/app" }, "expectedAnswer": "escalate" },
   { "name": "operator denyPattern -> deny", "command": "git push origin x", "policy": { "level": "L3", "workspaceRoot": "/root/app", "denyPatterns": ["git\\s+push"] }, "expectedAnswer": "n" },
-  { "name": "operator allowPattern upgrades gray -> allow", "command": "cp src/a.ts /sdcard/x", "policy": { "level": "L2", "workspaceRoot": "/root/app", "allowPatterns": ["/sdcard/x"] }, "expectedAnswer": "y" }
+  { "name": "operator allowPattern upgrades gray -> allow", "command": "cp src/a.ts /sdcard/x", "policy": { "level": "L2", "workspaceRoot": "/root/app", "allowPatterns": ["/sdcard/x"] }, "expectedAnswer": "y" },
+  { "name": "bug #155a: python script indirection L2 -> escalate (was: allow)", "command": "python3 script.py", "policy": { "level": "L2", "workspaceRoot": "/root/app" }, "expectedAnswer": "escalate" },
+  { "name": "bug #155a: node script indirection L1 -> escalate", "command": "node app.js", "policy": { "level": "L1", "workspaceRoot": "/root/app" }, "expectedAnswer": "escalate" },
+  { "name": "bug #155a: script indirection L3 -> allow (audited)", "command": "python3 script.py", "policy": { "level": "L3", "workspaceRoot": "/root/app" }, "expectedAnswer": "y" }
 ]
