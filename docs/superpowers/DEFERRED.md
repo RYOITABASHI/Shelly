@@ -14,6 +14,28 @@
 
 ---
 
+### bug #151(新規) — terminfo データベース欠落で less/vim が正常動作しない
+
+**優先度**: P1（`less`は完全に機能不全、`vim`もdefaults.vim読み込み失敗＝一部デフォルト設定が無効。今夜の`1bec5af86`bashrcラッパー修正の実機検証中に発見）
+**状態**: 未調査・未着手。原因の当たりはついているが根治設計は未実施。
+
+**発見**: 2026-07-16、bug #119 exec-wrapper修正の実機検証セッション中。`~/Shelly$ less README.md` → `terminals database is inaccessible` を出して即座にプロンプトへ戻る(ページャが一切開かない)。同セッションで`vim README.md`も`E1187: Failed to source defaults.vim`という警告(Enterで継続すれば編集自体は可能)を出した。
+
+**確認した事実**:
+- `LibExtractor.kt`のバンドル一覧（`lib/arm64-v8a/libvim.so` / `liblbash.so` / `libless.so` / `libtmux.so`等）にterminfoデータベースの同梱は無い（`grep -rli terminfo`でコード全体を検索してもプロダクションコードに1件もヒットしない）。
+- `HomeInitializer.kt`は`export TERM=xterm-256color`をbashrcに焼くのみで、`$TERMINFO`/`$TERMINFO_DIRS`は一切設定していない。
+- ncursesベースのバイナリ（less/vim含む）は`$TERM`に対応するterminfoエントリを探しに行き、システムに`/usr/share/terminfo`相当のデータベースが存在しない（Android標準では非搭載）ため解決に失敗する。lessはこれを即エラーとして扱い起動を中止する。vimのdefaults.vim失敗も同じ「ランタイムデータ探索の失敗」系統である可能性が高いが未確認（vim単体は編集自体はterminfo無しでもフォールバック動作するように見える＝致命的ではない）。
+- `tmux`/`gh`/`gpg`/`gpg-agent`/`unzip`/`ssh-keygen`は同じ実機セッションでバージョン確認レベルでは問題なし（ただしtmuxは実インタラクティブセッションでの表示崩れの有無は未検証 — tmuxもncurses依存なので同じ問題を抱えている可能性が高い）。
+
+**想定される修正方針（未検証）**:
+1. 最小限のterminfoデータベース（`xterm-256color`エントリのみで十分な可能性が高い）をAPKアセットとして同梱し、`LibExtractor`で展開、bashrcで`export TERMINFO=$libDir/terminfo`のように参照させる。
+2. または`$TERM`を、静的にリンクされたビルトインterminfo（多くのncursesビルドは`xterm`/`vt100`程度は内蔵）でカバーされる値に変更する妥協策（ただし色/機能が制限される可能性）。
+3. どちらもncursesを静的にビルドし直す/ビルド設定を確認する必要があるかもしれず、単純な設定追加で終わらない可能性がある — 着手前にFable5等で現在のless/vim/tmuxバイナリのビルド設定（ncurses static linkかdynamic linkか、`--with-terminfo-dirs`指定の有無）を調査すること。
+
+→ sync: なし（まだ調査段階、README等の公開ドキュメントに影響する変更ではない）。
+
+---
+
 ### CommandKeyBar フッターに黒スモーク(グラデーション)を追加 — 未着手
 
 **優先度**: P3（任意の見た目ポリッシュ、機能影響なし）
