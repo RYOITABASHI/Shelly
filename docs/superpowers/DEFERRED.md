@@ -482,11 +482,11 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 **provider 表示の整合（likely fixed）**
 - 「autonomous で Local 表示なのに Codex」系の混乱は `resolveAutonomousFinalTool`（commit c738a47/6a533b6）でカード表示＝保存ツール一致に修正済の見込み。実機で再確認。
 
-**エスカレーションラダーが「毎回人間承認」アクションで人間に多重リクエストする（P3・UX）**
+✅ **エスカレーションラダーが「毎回人間承認」アクションで人間に多重リクエストする（P3・UX）— 解消済み（2026-07-16）**
 - `runLadderAttempts`（lib/agent-manager.ts）は autonomous かどうかに関係なく、単発実行でも失敗（`attemptFailed`）した run を次の候補ツールへ自動エスカレーションする。`cli`/`intent`/`dm-reply` のように毎回 in-app 承認が必須なアクション種別だと、1回目の失敗が**環境起因の決定論的な失敗**（例: 実機検証で確認した `ls` コマンドが Shelly の実行 PATH に無く exit 127）であっても、ツールを変えて2回目の承認リクエストを人間に再度出してしまう——ツール切り替えでは直らない失敗でも承認だけ2回求められる。
 - 発見経緯: 2026-07-14、PR #125（AgentActionApprovalBridge nonce 硬化）の実機検証で `cli` action agent を手動実行 → 1回目 Local LLM で exit 127 失敗 → ユーザーが何もタップしていないのに自動的に2回目（Codex CLI）の承認リクエストが発生。ソース追跡（`runLadderAttempts` 591行目 `if (!attemptFailed(...)) break; // else: escalate to the next tool`）で意図された既存挙動と確認、今夜のマージが原因ではないことを切り分け済み。nonce 硬化自体は2回とも Allow が正しく通ったことで検証成立。
-- **戻す条件**: `cli`/`intent`/`dm-reply` のような「実行結果が承認対象そのもの」なアクション種別では、ツール（LLM backend）を変えても意味がない失敗クラス（コマンド実行時エラーなど、モデル生成失敗と無関係な dispatch-time failure）を判別し、その場合はエスカレーションせず単一失敗として終了する分岐を `runLadderAttempts`/`attemptFailed` に追加する。
-- **Why not now**: 実害は「同じ承認を2回求められて煩わしい」程度で、fail-closed の安全性自体は壊れていない（各承認サイクルは独立して正しく検証される）。緊急度は低いが、app.act（X投稿）のような外部への実効果を持つアクションが将来この経路に乗ると、意図しない重複実行（例: 重複投稿）のリスクに変わりうるため、app.act の Tier-B 無人実行プラミング設計時に合わせて見直すこと。
+- **修正**: `lib/agent-escalation-ladder.ts`に`isDeterministicDispatchFailure(actionType, message)`を追加。`cli`/`intent`/`dm-reply`（「実行結果が承認対象そのもの」なアクション種別）に対してのみ、`dispatch_agent_action`（`lib/agent-executor.ts`）が書く固定フォーマットのエラー文字列9種（`CLI action failed with exit \d+.`等、実ファイルから直接grep確認済み）に一致する場合だけ「環境起因の決定論的失敗」と判定し、`runLadderAttempts`のループでエスカレーションせず単一失敗として終了する分岐を追加。`isLowQualityCompletion`由来のモデル品質失敗（プロンプトエコー・拒否文言）はこのパターンリストから意図的に除外されており、従来通りエスカレーションを継続——両方向の誤判定リスクをテストで確認済み（`cli`+決定論的失敗→非エスカレーション／`cli`+品質失敗→エスカレーション継続／`draft`等スコープ外アクション種別+同一失敗文言→エスカレーション継続、の3方向を回帰テストでロック）。`__tests__/agent-escalation-ladder.test.ts`+新規`__tests__/agent-manager-deterministic-dispatch-failure.test.ts`で46件PASS、`tsc --noEmit`クリーン。
+- **残課題**: `intent`/`dm-reply`の正規表現リストは現時点の`dispatch_agent_action`ソースに対して網羅的だが、将来シェル側のメッセージ文言が変わった場合、新しい決定論的失敗はこの分類にヒットせず従来通りエスカレーションする（安全側のフォールバック、リグレッションではない）。
 
 ### 曜日スケジュール NL パース — 残課題（agent-reviewed）
 

@@ -291,3 +291,77 @@ export function attemptFailed(
     isLowQualityCompletion(preview)
   );
 }
+
+/**
+ * Action types whose run RESULT *is* the human-facing approval object itself
+ * (dispatch_agent_action, lib/agent-executor.ts, requires an in-app approval
+ * tap every time): cli runs a fixed, agent-configured shell command; intent /
+ * dm-reply dispatch against fixed, agent-configured targets. None of the
+ * three depend on which LLM backend generated the preceding content for
+ * WHETHER the dispatch itself can succeed.
+ */
+const APPROVAL_IS_RESULT_ACTION_TYPES = new Set(['cli', 'intent', 'dm-reply']);
+
+/**
+ * dispatch_agent_action's own deterministic, config-driven failure messages
+ * for cli / intent / dm-reply (lib/agent-executor.ts) — verbatim strings the
+ * shell writes BEFORE any model-quality judgment is involved. Every one of
+ * these depends only on static agent configuration (the cli action's fixed
+ * command, or the intent/dm-reply action's fixed target/mode/pairing) and the
+ * OS/environment (PATH, permissions, pairing state) — re-running the exact
+ * same dispatch through a DIFFERENT LLM backend replays the identical
+ * command/config against the identical environment and reproduces the
+ * identical failure. Deliberately does NOT include the "...looks like a
+ * prompt echo or AI refusal..." messages emitted by is_low_quality_completion
+ * — those genuinely depend on what the model generated, so they must keep
+ * escalating exactly as before.
+ */
+const DETERMINISTIC_DISPATCH_FAILURE_PATTERNS = [
+  // cli: cap_workspace_exec ran the agent's fixed action.command and it
+  // exited non-zero — e.g. exit 127 (command not found / not on PATH), exit
+  // 126 (permission denied / not executable), or any other exit code from
+  // that same fixed command.
+  /^CLI action failed with exit \d+\.$/,
+  /^CLI action was blocked by command safety:/,
+  /^CLI action is missing a command\.$/,
+  // intent: static mode/target/share-text config is absent or invalid.
+  /^Intent action has an invalid mode\.$/,
+  /^Intent action is missing a launch target\.$/,
+  /^Intent action is missing share text\.$/,
+  // dm-reply: static pairing config is absent, revoked, or unverifiable.
+  /^DM-reply action is missing a paired conversation\.$/,
+  /^DM-reply target is no longer paired\.$/,
+  /^Could not verify the DM-reply pairing\.$/,
+];
+
+/**
+ * True when a FAILED attempt's failure is a deterministic dispatch-time /
+ * environment failure for an action type whose result IS the approval object
+ * (cli / intent / dm-reply — see APPROVAL_IS_RESULT_ACTION_TYPES) — a class
+ * of failure where escalating to a different tool cannot help, because the
+ * thing that failed (a fixed shell command, a fixed intent target, a fixed DM
+ * pairing) does not change with the backend. Callers should treat a `true`
+ * result as a reason to END the run as a single failure rather than climbing
+ * the ladder — climbing would just replay the identical dispatch and ask the
+ * human to approve the same doomed action a second time.
+ *
+ * Deliberately narrow and pattern-matched against dispatch_agent_action's own
+ * fixed-format strings (see DETERMINISTIC_DISPATCH_FAILURE_PATTERNS) so this
+ * can never mistake a genuine model-quality failure for an environment one:
+ * a low-quality completion (isLowQualityCompletion) is model-generated free
+ * text and essentially never collides with one of these exact script-written
+ * sentences, and the "prompt echo or AI refusal" messages are explicitly
+ * excluded from the pattern list on top of that. Scope is intentionally
+ * limited to cli/intent/dm-reply — draft/notify/webhook/app-act keep
+ * escalating on ANY failure class exactly as before (their action.command
+ * doesn't exist / their dispatch can genuinely vary with backend-generated
+ * content, e.g. a webhook payload built from the model's own text).
+ */
+export function isDeterministicDispatchFailure(
+  actionType: string | null | undefined,
+  message: string | null | undefined,
+): boolean {
+  if (typeof actionType !== 'string' || !APPROVAL_IS_RESULT_ACTION_TYPES.has(actionType)) return false;
+  if (typeof message !== 'string' || message.length === 0) return false;
+  return DETERMINISTIC_DISPATCH_FAILURE_PATTERNS.some((pattern) => pattern.test(message));
+}

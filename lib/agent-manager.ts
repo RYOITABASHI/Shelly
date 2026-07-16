@@ -7,7 +7,7 @@ import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
-import { resolveEscalationLadder, attemptFailed, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
+import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
@@ -784,6 +784,20 @@ async function runLadderAttempts(
     // skip again — let the concurrent run produce the result. Only a genuine
     // failure (error / fallback digest) climbs.
     if (!attemptFailed(finalLog?.status, finalLog?.outputPreview)) break;
+    // P3 UX fix (docs/superpowers/DEFERRED.md "エスカレーションラダーが「毎回
+    // 人間承認」アクションで人間に多重リクエストする"): cli/intent/dm-reply
+    // require an in-app approval tap on EVERY attempt because the run result
+    // IS the approval object. When this attempt's failure is a deterministic
+    // dispatch-time/environment failure (e.g. the cli action's fixed command
+    // exits 127 because it isn't on Shelly's PATH), switching to the next
+    // ladder tool re-runs generation but replays the exact same dispatch
+    // (same fixed command / intent target / dm pairing) against the same
+    // environment — it cannot succeed differently, so climbing would only ask
+    // the human to approve the identical doomed action a second time. End as
+    // a single failure instead. A genuine model-quality failure (prompt echo,
+    // refusal, empty completion — isLowQualityCompletion) is NOT this class
+    // and keeps escalating exactly as before.
+    if (isDeterministicDispatchFailure(runAgent.action?.type, finalLog?.outputPreview)) break;
     // else: escalate to the next tool
   }
 

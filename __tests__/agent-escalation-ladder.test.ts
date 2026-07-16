@@ -1,6 +1,7 @@
 import {
   resolveEscalationLadder,
   attemptFailed,
+  isDeterministicDispatchFailure,
   isLocalFallbackDigest,
   isLowQualityCompletion,
   LadderEnv,
@@ -293,5 +294,61 @@ describe('failure detection', () => {
 
   it('attemptFailed does not flag a normal successful completion', () => {
     expect(attemptFailed('success', 'STEAM教育×AI の最新動向まとめ、Obsidianに保存しました。')).toBe(false);
+  });
+});
+
+describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double approval)', () => {
+  it('flags a cli action exit-127 (command not found / not on PATH) dispatch failure', () => {
+    expect(isDeterministicDispatchFailure('cli', 'CLI action failed with exit 127.')).toBe(true);
+  });
+
+  it('flags a cli action exit-126 (permission denied / not executable) dispatch failure', () => {
+    expect(isDeterministicDispatchFailure('cli', 'CLI action failed with exit 126.')).toBe(true);
+  });
+
+  it('flags a cli action blocked by command safety (deterministic, not model-dependent)', () => {
+    expect(
+      isDeterministicDispatchFailure('cli', 'CLI action was blocked by command safety: rm -rf matches a CRITICAL pattern.'),
+    ).toBe(true);
+  });
+
+  it('flags the known deterministic intent / dm-reply dispatch messages', () => {
+    expect(isDeterministicDispatchFailure('intent', 'Intent action has an invalid mode.')).toBe(true);
+    expect(isDeterministicDispatchFailure('intent', 'Intent action is missing a launch target.')).toBe(true);
+    expect(isDeterministicDispatchFailure('dm-reply', 'DM-reply target is no longer paired.')).toBe(true);
+    expect(isDeterministicDispatchFailure('dm-reply', 'Could not verify the DM-reply pairing.')).toBe(true);
+  });
+
+  it('does NOT flag a low-quality/echoed completion for cli — that must keep escalating', () => {
+    const echoed = 'As an AI, I cannot generate a literal CLI command for this task.';
+    expect(isLowQualityCompletion(echoed)).toBe(true);
+    expect(isDeterministicDispatchFailure('cli', echoed)).toBe(false);
+  });
+
+  it('does NOT flag dispatch_agent_action\'s own quality-gate message (would double-count with isLowQualityCompletion)', () => {
+    expect(
+      isDeterministicDispatchFailure('cli', 'CLI action failed with exit 1.') // still matches — sanity check the pattern itself
+    ).toBe(true);
+    expect(
+      isDeterministicDispatchFailure('cli', 'CLI action content looks like a prompt echo or AI refusal, not real content — escalating.'),
+    ).toBe(false);
+    expect(
+      isDeterministicDispatchFailure('dm-reply', 'DM-reply content looks like a prompt echo or AI refusal, not real content — escalating.'),
+    ).toBe(false);
+  });
+
+  it('is scoped ONLY to cli / intent / dm-reply — draft/notify/webhook/app-act never match, even with the same message shape', () => {
+    expect(isDeterministicDispatchFailure('draft', 'CLI action failed with exit 127.')).toBe(false);
+    expect(isDeterministicDispatchFailure('notify', 'CLI action failed with exit 127.')).toBe(false);
+    expect(isDeterministicDispatchFailure('webhook', 'Webhook dispatch failed with exit 1: connection refused')).toBe(false);
+    expect(isDeterministicDispatchFailure('app-act', 'CLI action failed with exit 127.')).toBe(false);
+  });
+
+  it('is false for a normal generic error message, null/undefined action type or message', () => {
+    expect(isDeterministicDispatchFailure('cli', 'Agent produced no output. Check backend configuration.')).toBe(false);
+    expect(isDeterministicDispatchFailure(null, 'CLI action failed with exit 127.')).toBe(false);
+    expect(isDeterministicDispatchFailure('cli', null)).toBe(false);
+    expect(isDeterministicDispatchFailure('cli', undefined)).toBe(false);
+    expect(isDeterministicDispatchFailure(undefined, undefined)).toBe(false);
   });
 });
