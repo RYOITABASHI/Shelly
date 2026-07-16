@@ -1324,7 +1324,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### bug #155 — codex/cli 系 unattended agent はケイパビリティブローカーではなく boundary-policy ゲートで保護（当初想定より狭いが実在する2つのギャップ）— (a) 調査完了・修正なし、(b) 修正済み・実機未検証
+### bug #155 — codex/cli 系 unattended agent はケイパビリティブローカーではなく boundary-policy ゲートで保護（当初想定より狭いが実在する2つのギャップ）— (a)(b) ともに修正済み・実機未検証
 
 **発見**: 2026-07-16、`AgentRuntime.kt:605-618`（今夜の別セッションが残した adversarial-review コメント、日付は2026-07-16）を起点にした CAP-001 ケイパビリティブローカーのバイパス懸念調査。「オーケストレーション済み unattended agent が `auto` → `{type:'cli', cli:'codex'}` に解決されると `planSpecHasOrchestrationSteps()` が false を返し、legacy `.sh` script にフォールバックし、その `.sh` は `SHELLY_CAP_BROKER` 環境フラグ（デフォルト OFF、UI トグルなし）でしかブローカーを通らないため、チェーン全体がブローカーなしで走るのでは」という仮説を、`lib/agent-plan-spec.ts` / `lib/agent-credential-policy.ts` / `lib/agent-tool-router.ts` / `scripts/shelly-plan-executor.js` / `lib/agent-boundary-policy.ts` / `lib/agent-policy.ts` / `lib/agent-manager.ts` / `lib/agent-executor.ts` を実コードで再検証した。
 
@@ -1343,14 +1343,16 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
   **→ 2026-07-16 `0ec6053fe` で修正済み（実機未検証）**: 別セッションから「North Star P0(c) と構造的に同じギャップ、同様の修正を」という依頼を受けて着手。フルの bash 側マルチステップチェーン実行（(a) 案）と、単発実行は維持しつつ「潰れたこと」を可視化するだけの軽量修正（(b) 案）を比較検討した結果、(b) 案を採用: 理由は (1) P0(c) 自身が全く同じ「orchestration steps あり + tool unsupported」の組み合わせに遭遇した際、あえてこの legacy `.sh` フォールバックを変更せず単発実行のまま残す判断をしていた（"not completely unrunnable" が基準で、フルパリティではなかった）、(2) bash 側チェーン実行はこのコードベースで最もセキュリティセンシティブなファイルへの大規模な新規追加になり、この環境には実機検証手段（NDK/Gradle・実デバイス）が無い、(3) 本エントリの調査自体が「セキュリティバイパスではなく機能バグ、影響はむしろ縮む」と結論づけていた。実装: `generateRunScript()` が生成時に `ORCHESTRATION_COLLAPSED_NOTE`（ステップ数・解決済みツールラベルから構築）を計算し、`dispatch_agent_action` と失敗時通知が **既に $PREVIEW を読み終わった後** にのみ `$PREVIEW`/`$ERROR_MESSAGE` へ注入する — `resolve_app_act_params` の `{{result}}` 置換（app-act が唯一のライブ外部投稿面）や webhook/通知の実ペイロードには絶対に混入せず、run-log JSON（Sidebar のエージェント詳細ポップアップが表示、`~/.shelly/agents/logs/$AGENT_ID/*.json` からも直接読める）にのみ届く設計。`AGENT_SCRIPT_VERSION`/`AgentRuntime.kt` の `CURRENT_SCRIPT_VERSION` を 12→13 に連動更新（ネイティブ側のルーティング判定自体は無変更、定数バンプのみ）。新規テスト `__tests__/agent-executor-orchestration-collapse.test.ts`（9件）追加、`npx tsc --noEmit` クリーン、関連 jest スイート全部グリーン（agent-executor 系 132/136 — 残り4件は P0(c) 自身の commit にも記載済みの Windows-only ENAMETOOLONG 既知ベースラインで無関係、agent-orchestration/agent-manager-step-tool-pin/agent-plan-spec/agent-pipeline-presets 84/84）。security-review スキル経由の独立アドバーサリアルレビュー（サブエージェント）でも脆弱性ゼロを確認済み。**未了**: (i) 実機での実際のスケジュール発火検証（`AgentRuntime.kt` はローカルコンパイル不可）、(ii) フルの bash 側マルチステップチェーン実行（(a) 案）自体は依然として未実装のフォローアップ — codex/cli ツールに解決されたオーケストレーション agent は、スケジュール発火では今も「可視化された上での」単発実行にとどまる。
 
-**なぜ修正しないか**: タスクで提示された2つの修正候補（`classifyProposedCommand` への host-allowlist/budget 拡張、または legacy `.sh` 経路への `SHELLY_CAP_BROKER=1` 相当の注入）はどちらも「PlanSpec ルーティング判定によって codex agent がブローカー保護を失った」という前提に立つ差分だが、上記の通りその前提が誤り（codex agent は元々ブローカー経路に一度も乗ったことがない）。この誤った前提のまま「unsupported ルーティング時だけ」ゲートを拡張しても、(a)(b) のどちらも直接は塞がれない（(a) は codex 経路全般の恒常的な弱点、(b) はルーティング判定でなく `.sh` 生成側が steps を無視している別バグ）。安全境界に関わる差分を誤った脅威モデルのまま最小差分で急いで入れるのは、CLAUDE.md の「保守的に・最小差分・レビュー後 push」方針にも反する。実装するなら (a)(b) をそれぞれ独立の設計課題として次に回す方が適切と判断した。
+**なぜ当初修正しなかったか**: タスクで最初に提示された2つの修正候補（`classifyProposedCommand` への host-allowlist/budget 拡張、または legacy `.sh` 経路への `SHELLY_CAP_BROKER=1` 相当の注入）はどちらも「PlanSpec ルーティング判定によって codex agent がブローカー保護を失った」という前提に立つ差分だったが、上記の通りその前提が誤り（codex agent は元々ブローカー経路に一度も乗ったことがない）と判明したため、誤った脅威モデルのまま急いで実装するのを避けた。(a)(b) をそれぞれ独立の設計課題として正しい前提の上で後から実装する方針とした。
+
+**→ (a) 2026-07-16 `0a87b59fe` で修正済み（実機未検証）**: `classifyProposedCommand` に新シグナル `'opaque-script-exec'` を追加。`OPAQUE_SCRIPT_RE`（python/node/ruby/perl/php/deno/bun のインタプリタ起動を引数付きで検出、バージョン付き `python3.11` 等も対応）が一致したら、スクリプト内容は検査しない conservative な「形状ヒューリスティック」として `network-send` と同じ扱いでL1/L2の人間ゲートを強制する（`write-or-exec` と違い `boundarySignals` から除外されない）。オンデバイスの gate script アセット (`shelly-gate-decide.js`) にもバイト単位で反映済み。新規テスト19件（`__tests__/agent-boundary-policy.test.ts`）+ fixture 3件（L1/L2 escalate、L3 audited-allow）で「無人L2スケジュール実行のpythonスクリプト間接実行が、旧: 黙って allow → 新: escalate」の回帰を固定。独立セキュリティレビュー（サブエージェント）で SHIP 判定、脆弱性ゼロ確認済み。**残存する既知の限界**: スクリプトファイルの中身は検査しない設計上、インタプリタ名がリストに無い場合や、bashの組み込みで直接ネットワークI/O相当を行うような別経路は依然未検出（このヒューリスティック自体が意図的にMVPスコープと明記済み）。恒久対策（outbound network を uid/iptables レベルで制限する等）は引き続きフォローアップ。
 
 **次にやること**:
-1. (a) の恒久対策は script 内容の静的検査ではなく（base64 難読化等で容易に回避される）、Android で codex ネイティブ `--sandbox` が使えない制約下での代替、例えば outbound network を uid/iptables レベルで一時的に制限する、または `network-send` 判定を「トップレベルコマンドがインタプリタ実行のとき、対象スクリプトファイルの内容も grep する」形に一段深くする、のどちらが現実的か設計要。
-2. ~~(b) は `generateRunScript` が `agent.orchestration.steps` を無視している事実を明示テストで固定するか、もしくは legacy `.sh` 生成時にも簡易的な複数ステップ直列実行（JS ループを介さない bash 側の逐次実行）を持たせるかを検討。ユーザーに「スケジュール発火では2ステップ目以降が動かない」という制約を明示するだけでも十分な暫定対応になりうる。~~ → 2026-07-16 `0ec6053fe` で「可視化」側を実装済み（上記参照）。フルの bash 側チェーン実行は引き続きフォローアップ。
-3. (a) は本エントリの時点では未着手のまま。(b) は上記コミットで着手・着地済み（`AgentRuntime.kt` の定数バンプのみ、ルーティング判定は無変更）。
+1. ~~(a) の恒久対策は script 内容の静的検査ではなく（base64 難読化等で容易に回避される）、Android で codex ネイティブ `--sandbox` が使えない制約下での代替、例えば outbound network を uid/iptables レベルで一時的に制限する、または `network-send` 判定を「トップレベルコマンドがインタプリタ実行のとき、対象スクリプトファイルの内容も grep する」形に一段深くする、のどちらが現実的か設計要。~~ → 2026-07-16 `0a87b59fe` で形状ヒューリスティック側を実装済み（上記参照）。より強い恒久対策（uid/iptables 制限等）は引き続きフォローアップ。
+2. ~~(b) は `generateRunScript` が `agent.orchestration.steps` を無視している事実を明示テストで固定するか、もしくは legacy `.sh` 生成時にも簡易的な複数ステップ直列実行（JS ループを介さない bash 側の逐次実行）を持たせるかを検討。~~ → 2026-07-16 `0ec6053fe` で「可視化」側を実装済み。フルの bash 側チェーン実行は引き続きフォローアップ。
+3. (a)(b) ともに着手・着地済み（コード変更は最小限、ネイティブ側のルーティング判定自体は無変更）。両方とも実機での実際のスケジュール発火検証が未了。
 
-**優先度**: (a) は P1（codex 系 autonomous agent 全般に効く実在のセキュリティ縮退だが、悪用には agent に悪意あるスクリプト生成をさせる必要があり、CRITICAL destructive hard-deny・workspace-root 閉じ込め・secret-path 読み取り拒否等の他の防御層は健在）— 未着手のまま。(b) は P2 に降格（2026-07-16 `0ec6053fe` で可視化フィックス着地、実機未検証。フルのチェーン実行対応は別途 P2/P3 のフォローアップとして残す）。
+**優先度**: (a)(b) ともに P2 に降格（2026-07-16 `0a87b59fe`/`0ec6053fe` でそれぞれ修正着地、実機未検証。より強い恒久対策とフルのチェーン実行対応は別途 P2/P3 のフォローアップとして残す）。
 
 ---
 
