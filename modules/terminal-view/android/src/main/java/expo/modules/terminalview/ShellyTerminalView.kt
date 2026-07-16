@@ -154,6 +154,26 @@ class ShellyTerminalView(
         setWillNotDraw(false)
         setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
         terminalView.setBackgroundColor(OPAQUE_TERMINAL_BACKGROUND)
+        // Cold-start gray-wash fix (2026-07-09, re-landed 2026-07-16 — the
+        // original fix only ever shipped on an unmerged branch, never main):
+        // when the TerminalView ends up holding Android view focus (cold-start
+        // auto-refocus via focusCommand / showKeyboardFallback, before
+        // TerminalImeHostView steals focus) AND the device is out of touch mode
+        // (any real KeyEvent — e.g. an IME sending Enter/Backspace via
+        // sendKeyEvent — exits touch mode, and that state persists across app
+        // restarts), the framework paints its *default focus highlight* drawable
+        // over the focused view's entire bounds: a ~16%-white translucent wash
+        // that renders pure-black terminal cells as #292929. On-device pixel
+        // forensics matched that blend exactly (0→41, 111→133, 243→244) over
+        // precisely the TerminalView rect, while every color in the app's own
+        // render path is opaque black. Tapping "fixed" it only because
+        // onSingleTapUp routes focus to the hidden IME host view. Terminal
+        // surfaces must be visually focus-inert (PaneSlot draws its own focus
+        // ring), so disable the system decoration on both layers. API 26+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            defaultFocusHighlightEnabled = false
+            terminalView.defaultFocusHighlightEnabled = false
+        }
 
         val padPx = (4 * context.resources.displayMetrics.density).toInt()
         terminalView.setPadding(padPx, 0, padPx, 0)

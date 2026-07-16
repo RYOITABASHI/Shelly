@@ -59,6 +59,13 @@ class GLTerminalView(context: Context) : GLSurfaceView(context) {
 
         isFocusable = true
         isFocusableInTouchMode = true
+        // Same cold-start gray-wash guard as ShellyTerminalView: never let the
+        // framework paint its default focus highlight over the terminal surface
+        // when this view holds focus outside touch mode. See the comment in
+        // ShellyTerminalView.init (2026-07-09).
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            defaultFocusHighlightEnabled = false
+        }
 
         renderer.requestRenderCallback = { requestRender() }
 
