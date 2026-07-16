@@ -14,6 +14,26 @@
 
 ---
 
+### bug #153(新規) — agent-mrlg9tukのgateスクリプトがloopback除外ロジック導入前の古いバージョンで焼き固められている疑い
+
+**優先度**: P1（Hermes-parity北極星シナリオ本体の実行を毎回ブロックしている実害あり）
+**発見**: 2026-07-16、`Xの自動投稿はテスト不要？`という質問をきっかけに、実在するHermes-parity北極星エージェント(agent-mrlg9tuk、パープレ+STEAM×AI+ローカルLLM+X投稿)の直近失敗(7/15 19:12頃、Step3/3が約49分でタイムアウト)を実ログで調査して発見。
+
+**再現/根拠**:
+- `agent-driver-audit.jsonl`を見ると、`curl -sS --max-time 5 http://127.0.0.1:8080/v1/models`という**ループバックのみ**の呼び出しですら`"signals":["network-send","write-or-exec"]`となりエスカレーション(人間承認)が要求されていた。20.6秒後に人間が承認し通過。
+- 次の`curl ... http://127.0.0.1:8080/v1/chat/completions`(ローカルLLMへの本命の要約リクエスト、無人スケジュール発火中)も同様に`network-send`扱いされ、今度は誰も応答できず**120秒でタイムアウト→自動decline**、Step3が失敗した。
+- しかし現在の`lib/agent-boundary-policy.ts`には`isLoopbackOnlyNetworkCommand()`という、127.0.0.1/localhost/::1宛のみのコマンドから`network-send`シグナルを除外するロジックが**既に存在する**(コード上は`127.0.0.1:8080/v1/models`のURLパターンを正しくマッチしてloopback判定するはず)。もしこのロジックが適用されていれば、L2では`write-or-exec`単独では境界シグナル扱いされない(`boundarySignals = signals.filter(s => s !== 'write-or-exec')`)ため自動許可され、エスカレーション自体発生しないはずだった。
+- 実際のログとコードの矛盾から、**agent-mrlg9tukに焼き込まれたgateスクリプト(`.shelly-gate-decide.js`)がこのloopback除外ロジック導入より古いバージョンのまま**である可能性が高い。エージェントは登録時にmaterializeされたスクリプトをそのまま使い続け、コード側の修正が自動で反映される仕組み(BASHRC_VERSIONのようなバージョンbump駆動の再生成)を持っているか未確認。
+
+**次にやること**:
+1. `lib/agent-manager.ts`の`materializeAgentBody`/`rematerializeAutonomousAgents`が、コード変更(gate ロジックの更新等)をトリガーに既存の全自律エージェントのスクリプトを再生成する仕組みを持っているか調査する。持っていなければ、これはP0(c)と同種の「ロジックは直っているのに配線が古いまま」という構造的ギャップであり、根治にはバージョンマーカー方式の追従が必要。
+2. 応急処置として、該当エージェントを一度編集保存(またはRUN NOWでの再materialize相当のトリガー)して、gateスクリプトが最新化されるか実機確認する。
+3. 併せて確認中に見えた「Cannot connect to localhost:8080」(AI/CodeペインのUI)がローカルLLMサーバー未起動を示しているかどうかも確認する必要がある(別件の可能性)。
+
+→ sync: なし。
+
+---
+
 ### bug #152(新規) — スケジュール句がparseStepsFromTextの先頭に紛れ込み、スプリアスなstep 1になる
 
 **優先度**: P2（安全性への影響なし。無意味な最初のstepが1個増えるだけで、多段実行自体は正しく動く）
