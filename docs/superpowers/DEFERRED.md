@@ -1283,6 +1283,34 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### bug #155 — codex/cli 系 unattended agent はケイパビリティブローカーではなく boundary-policy ゲートで保護（当初想定より狭いが実在する2つのギャップ）— 調査完了・修正なし（理由後述）
+
+**発見**: 2026-07-16、`AgentRuntime.kt:605-618`（今夜の別セッションが残した adversarial-review コメント、日付は2026-07-16）を起点にした CAP-001 ケイパビリティブローカーのバイパス懸念調査。「オーケストレーション済み unattended agent が `auto` → `{type:'cli', cli:'codex'}` に解決されると `planSpecHasOrchestrationSteps()` が false を返し、legacy `.sh` script にフォールバックし、その `.sh` は `SHELLY_CAP_BROKER` 環境フラグ（デフォルト OFF、UI トグルなし）でしかブローカーを通らないため、チェーン全体がブローカーなしで走るのでは」という仮説を、`lib/agent-plan-spec.ts` / `lib/agent-credential-policy.ts` / `lib/agent-tool-router.ts` / `scripts/shelly-plan-executor.js` / `lib/agent-boundary-policy.ts` / `lib/agent-policy.ts` / `lib/agent-manager.ts` / `lib/agent-executor.ts` を実コードで再検証した。
+
+**確認した事実（仮説の訂正）**:
+1. `auto` は `agent.autonomous && agent.tool.type === 'auto'` のとき `agent-tool-router.ts:210-221` で明示的に「Autonomous auto route resolves to the OAuth Codex driver path」に解決され、`resolveForAutonomous()`（`agent-credential-policy.ts:83-88`）で `{type:'cli', cli:'codex'}` に確定する。これは edge case ではなく、cloud API tool を明示ピンしていない autonomous agent の**デフォルト経路**。`toPlanTool()`（`agent-plan-spec.ts:313-334`）の switch に `'cli'` の case が存在せず default で `type:'unsupported'` に落ちる点も確認。
+2. **しかし `scripts/shelly-plan-executor.js` の `modelRequest()`（546-577行）は switch(local/gemini-api/perplexity/cerebras/groq) で完結する「固定 URL への HTTP リクエスト実行器」であり、subprocess を exec する能力がそもそも無い。** つまり PlanSpec chain executor は「まだ codex 対応が実装されていない」のではなく、**アーキテクチャ上 codex（別プロセスの CLI）を実行できない**。ここが「もし Gemini に解決されていればブローカーが掛かったはずなのに codex だから掛からない」という当初のフレーミングの誤り: codex 系 agent は単体でもチェーンでも、PlanSpec 経路に乗ったことは一度もなく、乗る設計にもなっていない。
+3. codex/cli agent の実行は昔から別の専用ゲート `lib/agent-boundary-policy.ts` の `classifyProposedCommand()` が担っている（B2 driver が codex の `--ask-for-approval` プロンプトへの回答としてこれを呼ぶ、`lib/agent-policy.ts` の `decideAutoAnswer()` 経由）。これはケイパビリティブローカー（host allowlist・budget・secret-taint・audit を HTTP リクエスト単位で強制）とは**別物**だが、無関係ではない：
+   - CRITICAL destructive コマンドは全レベルで hard-deny。
+   - `network-send` シグナル（curl/wget/nc/ssh/scp 等をトップレベルコマンドに検出）は L1/L2 で `gray`（人間エスカレーション）。
+   - **`AgentRuntime.kt` の legacy `.sh` 実行は `agentPolicyJson` に `unattended: opts.attended !== true` を必ず乗せており（`agent-executor.ts:352`）、`AutonomyPolicy.unattended=true` のとき `gray` 判定は「エスカレーション待ちしてタイムアウトで通す」のではなく `agent-policy.ts:38-45` のコメント通り即座に `deny`（fail-closed）になる。** つまり unattended 実行中に codex が curl 等を直接叩こうとしても、既定では黙って通らない。
+4. `.sh` 側の `SHELLY_CAP_BROKER` はエージェントの最終アクション送信（`http_post_json`、webhook dispatch のみ）を対象にしたものであり、コード上も「CAP-001/SECRET-001/HTTP-001 strangler seam」と明記されている（`agent-executor.ts:1688-1712`）。codex セッション内部で codex 自身が発行する任意のネットワークコマンドを保護する機構では元々ない（bug #154 の記録にも同旨の確認あり: 「Codex自身が発行する生curlへのエスカレーション判定はensure_local_llm_serverの対象外」）。
+
+**実在する2つの狭いギャップ（訂正後の本当のリスク）**:
+- **(a) スクリプト間接実行による `network-send` シグナルの回避**: `classifyProposedCommand`（`agent-boundary-policy.ts:90,138`）の `NETWORK_RE` はトップレベルコマンド文字列中の `curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet` のみを検出する。codex が「スクリプトを書いて `python3 script.py` / `node script.js` で実行する」形で HTTP 呼び出しを埋め込めば、トップレベルコマンドは `network-send` を一切トリガーせず、in-workspace の `write-or-exec` として L2/L3 で無条件 allow（unattended でも fail-closed の対象にすらならない）。これは orchestration ルーティングとは無関係に、**codex/cli tool を使う autonomous agent 全般**（単発でもチェーンでも）に既存する gap で、command-string classification という MVP スコープの既知限界（ファイル冒頭のコメントにも "Scope note (MVP)" として明記済み）。
+- **(b) オーケストレーション済み agent が codex/cli に解決されると、unattended 実行時にチェーンが黙って1ステップに潰れる**: `AgentRuntime.kt:605-613` 自身のコメントが明言する通り、`planSpecHasOrchestrationSteps()` が false のとき使われる legacy `.sh` は `generateRunScript()`（`agent-executor.ts`）が生成する**単発**スクリプトで、`agent.orchestration.steps` を一切参照しない（charLimit だけは読むが steps.list は読まない、`agent-executor.ts:250-260`）。JS 側のマルチステップループ `runAgentOrchestrated`（`agent-manager.ts:784`）は `runAgentNow` から呼ばれる**フォアグラウンド専用**経路（"DEFERRED #2 境界: attended is set ONLY by the foreground TS ladder" — `agent-executor.ts:346`）で、AlarmManager 発火のネイティブ実行からは到達しない。したがって codex/cli に解決されたオーケストレーション agent は、スケジュール発火では**チェーンの2ステップ目以降が実行されず**、意図せず単発実行に縮退する。これはブローカーバイパスというより「セキュリティ的にはむしろ影響範囲が縮む」機能バグ・ユーザー期待とのズレ。
+
+**なぜ修正しないか**: タスクで提示された2つの修正候補（`classifyProposedCommand` への host-allowlist/budget 拡張、または legacy `.sh` 経路への `SHELLY_CAP_BROKER=1` 相当の注入）はどちらも「PlanSpec ルーティング判定によって codex agent がブローカー保護を失った」という前提に立つ差分だが、上記の通りその前提が誤り（codex agent は元々ブローカー経路に一度も乗ったことがない）。この誤った前提のまま「unsupported ルーティング時だけ」ゲートを拡張しても、(a)(b) のどちらも直接は塞がれない（(a) は codex 経路全般の恒常的な弱点、(b) はルーティング判定でなく `.sh` 生成側が steps を無視している別バグ）。安全境界に関わる差分を誤った脅威モデルのまま最小差分で急いで入れるのは、CLAUDE.md の「保守的に・最小差分・レビュー後 push」方針にも反する。実装するなら (a)(b) をそれぞれ独立の設計課題として次に回す方が適切と判断した。
+
+**次にやること**:
+1. (a) の恒久対策は script 内容の静的検査ではなく（base64 難読化等で容易に回避される）、Android で codex ネイティブ `--sandbox` が使えない制約下での代替、例えば outbound network を uid/iptables レベルで一時的に制限する、または `network-send` 判定を「トップレベルコマンドがインタプリタ実行のとき、対象スクリプトファイルの内容も grep する」形に一段深くする、のどちらが現実的か設計要。
+2. (b) は `generateRunScript` が `agent.orchestration.steps` を無視している事実を明示テストで固定するか、もしくは legacy `.sh` 生成時にも簡易的な複数ステップ直列実行（JS ループを介さない bash 側の逐次実行）を持たせるかを検討。ユーザーに「スケジュール発火では2ステップ目以降が動かない」という制約を明示するだけでも十分な暫定対応になりうる。
+3. 両方とも本セッションでは着手せず、コード変更ゼロ（`AgentRuntime.kt` 含め diff なし）。`npx tsc --noEmit` は本セッションで他に変更なしのため未実行が妥当（対象ファイルへの編集なし）。
+
+**優先度**: P1（(a) は codex 系 autonomous agent 全般に効く実在のセキュリティ縮退だが、悪用には agent に悪意あるスクリプト生成をさせる必要があり、CRITICAL destructive hard-deny・workspace-root 閉じ込め・secret-path 読み取り拒否等の他の防御層は健在。(b) はセキュリティでなく機能バグとして別トラッキングでも良いが、まとめて記録する）
+
+---
+
 ### exec-wrapper.c — フォーク子プロセス SIGSEGV（MAX_ARGC/MAX_ENVP スタックフレーム肥大化）— コミット済み・実機ランタイム検証待ち
 
 **発見**: 2026-07-15 の未マージブランチ棚卸しで `origin/fix/bash-launcher-ci-marker` から Codex サブエージェント経由で発見・移植。
