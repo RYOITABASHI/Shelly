@@ -106,19 +106,24 @@ export interface AgentPlanSpecV1 {
   };
   policy: ReturnType<typeof buildAgentPolicy>;
   routeDecision: AgentRouteDecision;
-  /** Increment 1 orchestration schema plumbing (2026-07-15). Present ONLY when
-   *  isOrchestrated(agent.orchestration) is true (≥2 real steps); absent for
-   *  every single-step agent, so this is a no-op for today's exact behavior.
-   *  `list`/`budget` are exactly what normalizeSteps()/resolveBudget() (the
-   *  existing pure helpers agent-orchestration.ts already exports and
-   *  runAgentOrchestrated() already uses for the manual "Run now" path)
-   *  independently compute for the same agent — no logic is re-derived here.
-   *  Zero runtime consumer yet: scripts/shelly-plan-executor.js, its APK asset
-   *  mirror, and AgentRuntime.kt all still only ever dispatch `prompt` as a
-   *  single call and simply ignore this key. A later increment teaches the
-   *  executor to walk `list` under `budget` and bumps PLAN_SPEC_SCHEMA_VERSION
-   *  (see the comment above PLAN_SPEC_SCHEMA_VERSION for why that bump is
-   *  deliberately NOT done here). */
+  /** Orchestration schema plumbing (Increment 1, 2026-07-15). Present ONLY
+   *  when isOrchestrated(agent.orchestration) is true (≥2 real steps); absent
+   *  for every single-step agent, so writing this key is a no-op for their
+   *  behavior. `list`/`budget` are exactly what normalizeSteps()/
+   *  resolveBudget() (the existing pure helpers agent-orchestration.ts
+   *  already exports and runAgentOrchestrated() already uses for the manual
+   *  "Run now" path) independently compute for the same agent — no logic is
+   *  re-derived here.
+   *  Consumed by scripts/shelly-plan-executor.js's runOrchestrationChain
+   *  (Increment 2, `ac6a324f2`) whenever this key is present — the executor
+   *  walks `list` under `budget` in-process rather than dispatching `prompt`
+   *  as a single call. AgentRuntime.kt's shouldRunPlanExecutor() detects this
+   *  key's presence on disk to route a scheduled/unattended fire to the plan
+   *  executor instead of the legacy single-shot `.sh` script (North Star
+   *  P0(c) fix) — see planSpecHasOrchestrationSteps() there. Additive only:
+   *  the key's absence still reduces to today's exact single-step behavior,
+   *  which is why PLAN_SPEC_SCHEMA_VERSION was never bumped for this field
+   *  (see the comment above PLAN_SPEC_SCHEMA_VERSION for why). */
   steps?: {
     list: NormalizedStep[];
     budget: ResolvedBudget;

@@ -570,10 +570,52 @@ object AgentRuntime {
         }
     }
 
+    /**
+     * North Star P0(c) fix (docs/superpowers/DEFERRED.md's "スケジュール実行が
+     * 多段オーケストレーションを使わない問題"): a scheduled/unattended fire for
+     * an agent with multi-step orchestration configured must route through the
+     * chain-aware PlanSpec executor, not silently collapse to the legacy
+     * single-shot .sh script's one-call-only agent.prompt. Detecting this from
+     * the on-disk PlanSpec's `steps` field (rather than requiring a per-agent
+     * manual flag) mirrors scripts/shelly-plan-executor.js's own `hasChain`
+     * check exactly, and is additive: buildAgentPlanSpec() only ever writes a
+     * `steps` field when the agent actually has orchestration configured, so
+     * every non-orchestrated agent's plan file has no `steps` key at all and
+     * this always falls through to the unchanged legacy `.sh` branch below —
+     * zero behavior change for the (overwhelming majority) of agents without
+     * multi-step orchestration. The manual SHELLY_PLAN_EXECUTOR canary stays
+     * available for testing a plan-executor run on an agent WITHOUT real
+     * orchestration configured.
+     */
     private fun shouldRunPlanExecutor(homeDir: File, agentId: String): Boolean {
         val flags = readAgentEnvFlags(homeDir)
-        if (!isTruthy(flags["SHELLY_PLAN_EXECUTOR"])) return false
-        return flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId
+        if (isTruthy(flags["SHELLY_PLAN_EXECUTOR"]) && flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId) {
+            return true
+        }
+        return planSpecHasOrchestrationSteps(homeDir, agentId)
+    }
+
+    private fun planSpecHasOrchestrationSteps(homeDir: File, agentId: String): Boolean {
+        val planFile = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json")
+        if (!planFile.isFile) return false
+        return try {
+            val json = JSONObject(planFile.readText())
+            val list = json.optJSONObject("steps")?.optJSONArray("list")
+            if (list == null || list.length() == 0) return false
+            // Adversarial review finding (2026-07-16): buildAgentPlanSpec()
+            // marks tool.type as "unsupported" for any backend the PlanSpec
+            // executor can't run yet (e.g. autonomous "auto" resolving to
+            // {type:'cli', cli:'codex'} — the plan executor only supports
+            // local/gemini-api/perplexity/cerebras/groq). Routing an
+            // unsupported-tool orchestrated agent here would make it refuse
+            // to run at all (worse than the pre-fix single-step .sh
+            // collapse) instead of falling through to the legacy .sh script,
+            // which DOES support every tool type. Only route chain-capable
+            // agents whose tool the plan executor can actually run.
+            json.optJSONObject("tool")?.optString("type") != "unsupported"
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /**

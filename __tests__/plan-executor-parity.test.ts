@@ -62,10 +62,26 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executor.HARD_TOTAL_TIMEOUT_MS).toBe(TS_HARD_TOTAL_TIMEOUT_MS);
   });
 
-  it('gates the canary by both flag and target agent id', () => {
+  it('gates the canary by both flag and target agent id, OR routes via the on-disk orchestration steps (North Star P0(c) fix)', () => {
     expect(agentRuntime).toContain('SHELLY_PLAN_EXECUTOR');
     expect(agentRuntime).toContain('SHELLY_PLAN_EXECUTOR_AGENT_ID');
-    expect(agentRuntime).toContain('return flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId');
+    expect(agentRuntime).toContain('flags["SHELLY_PLAN_EXECUTOR_AGENT_ID"] == agentId');
+    // 2026-07-16: the canary flag pair is still an OR-branch shortcut, but a
+    // scheduled agent with real orchestration.steps configured no longer
+    // needs it — planSpecHasOrchestrationSteps() reads the on-disk PlanSpec's
+    // `steps.list` directly, which is additive-only (absent for every
+    // non-orchestrated agent, so their gate behavior is unchanged).
+    expect(agentRuntime).toContain('planSpecHasOrchestrationSteps(homeDir, agentId)');
+    expect(agentRuntime).toContain('optJSONObject("steps")?.optJSONArray("list")');
+    // Adversarial review finding (2026-07-16, Codex): an orchestrated agent
+    // whose resolved tool the PlanSpec executor can't run (e.g. autonomous
+    // "auto" resolving to Codex CLI — buildAgentPlanSpec marks tool.type
+    // "unsupported" for anything beyond local/gemini-api/perplexity/
+    // cerebras/groq) must NOT be routed here — the plan executor refuses
+    // unsupported tools before running any step, which would make such an
+    // agent unrunnable instead of falling back to the legacy .sh script
+    // (which supports every tool type). Assert the tool-type guard exists.
+    expect(agentRuntime).toContain('optJSONObject("tool")?.optString("type") != "unsupported"');
   });
 
   it('passes native trust state separately from the untrusted plan file', () => {
@@ -177,14 +193,17 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain('appActRecipeId: extra.appActRecipeId');
     expect(executorSrc).toContain('appActParamsResolved: extra.appActParamsResolved');
     // 2026-07-14 (docs/superpowers/DEFERRED.md's "app-act Tier-B" entry,
-    // resolved): unattendedPreflightFailure now ALSO allowlists app-act, but
-    // ONLY behind trustedNativeLowRiskAction's narrow registration-time
-    // consent gate (autonomous + on-device tool + matching recipe id) — the
-    // SAME gate draft/notify's native fast-path already required. Assert the
-    // widened allowlist exists, and that it stays gated (not a blanket
-    // unattended-allow).
-    expect(executorSrc).toMatch(/if \(actionType !== 'draft' && actionType !== 'notify' && actionType !== 'app-act'\) \{/);
-    expect(executorSrc).toContain("if (!trustedNativeLowRiskAction(args, plan, actionType)) {");
+    // resolved): unattendedPreflightFailure allowlists app-act, but ONLY
+    // behind trustedNativeLowRiskAction's narrow registration-time consent
+    // gate (autonomous + on-device tool + matching recipe id) — the SAME
+    // gate draft/notify's native fast-path already required. North Star
+    // P0(c) fix (2026-07-16) widened draft/notify/webhook/cli to fire
+    // unattended whenever approval mode is auto (matching the .sh executor's
+    // own policy, independent of agent.autonomous), but app-act deliberately
+    // keeps the stricter trust gate — assert it stays that way, not folded
+    // into the blanket approval-mode check.
+    expect(executorSrc).toMatch(/if \(actionType === 'app-act'\) \{/);
+    expect(executorSrc).toContain('return trustedNativeLowRiskAction(args, plan, actionType)');
     expect(executorSrc).toContain("trusted-app-act-recipe-id");
   });
 

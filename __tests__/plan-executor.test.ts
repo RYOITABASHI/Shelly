@@ -730,7 +730,12 @@ describe('shelly-plan-executor host smoke', () => {
     const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
     const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
     expect(runLog.status).toBe('skipped');
-    expect(runLog.errorMessage).toContain('unsupported unattended PlanSpec action: cli');
+    // North Star P0(c) fix: cli/webhook are no longer unconditionally refused
+    // unattended — they now mirror the .sh executor's own policy (fire
+    // unattended when approval mode is auto, refuse when manual is
+    // required). This fixture's makePlan() sets requireActionApproval: true,
+    // so it correctly still fails closed, now with a more precise reason.
+    expect(runLog.errorMessage).toContain('cli action requires manual approval and cannot run unattended');
   });
 
   it('requests and accepts a targetless share intent with resolved share text', async () => {

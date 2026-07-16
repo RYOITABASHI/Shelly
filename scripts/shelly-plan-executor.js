@@ -54,6 +54,14 @@ const CONFIG_ENV_KEYS = new Set([
   'SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS',
   'WEBHOOK_TIMEOUT_SECONDS',
   'SHELLY_WEBHOOK_HOST_ALLOWLIST',
+  // North Star P0(c) companion fix (2026-07-16): requireActionApprovalTap()
+  // reads this to resolve the GLOBAL default approval mode when no per-agent
+  // override is present — without it in this allowlist, parseConfigEnv()
+  // silently dropped the key on every real run (production .env parsing,
+  // not the handcrafted config objects the unit tests pass directly), so a
+  // user who enabled "always require manual approval" globally would still
+  // have had their unattended orchestrated agents auto-approved here.
+  'SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL',
 ]);
 
 const REDACT_PATTERNS = [
@@ -239,6 +247,21 @@ function sleepMs(ms) {
 
 function previewText(text) {
   return redact(String(text || '')).replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+// Companion to previewText above, for contexts that need the COMPLETE
+// validated content rather than a notification-length preview — the webhook
+// dispatch's "result" field ships the full body, not just the 500-char
+// preview sitting next to it in the same payload. Mirrors the legacy .sh
+// executor's clean_result_full (2026-07-15 North Star P1 fix): same redact()
+// call, no truncation. Found 2026-07-16 (adversarial review of the P0(c)
+// unattended-webhook widening): write_webhook_payload's "result" field was
+// reading raw resultText directly, unredacted — harmless while webhook was
+// always refused unattended, but a real secret-leak risk once widened
+// unattended dispatch made this reachable without a human ever seeing the
+// payload first.
+function fullResultText(text) {
+  return redact(String(text || ''));
 }
 
 // Detect a response that echoes the step-prompt scaffold back verbatim (see
@@ -1456,15 +1479,40 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
   return trustedTool !== '' && trustedTool === plan.tool.type;
 }
 
-function unattendedPreflightFailure(args, plan) {
+// North Star P0(c) fix (docs/superpowers/DEFERRED.md's "スケジュール実行が
+// 多段オーケストレーションを使わない問題"): AgentRuntime.kt now routes ANY
+// scheduled/unattended fire for an agent with orchestration.steps through
+// this executor (not just agent.autonomous ones taking the old draft/notify/
+// app-act native fast-path), so this gate's policy must match what the
+// legacy .sh executor's request_and_wait_approval already does unattended
+// for the SAME action types — otherwise a real orchestrated agent that
+// today fires successfully (collapsed to one step) via .sh would newly be
+// silently skipped here after the routing change, a strict regression.
+// The .sh executor's policy (lib/agent-executor.ts's dispatch_agent_action):
+// draft/notify/webhook/cli fire unattended whenever ACTION_APPROVAL_MODE is
+// "auto" (the default), with NO dependency on agent.autonomous; intent/
+// dm-reply are always hard-refused unattended; app-act requires
+// AGENT_AUTONOMOUS=1. Mirror that exactly here — requireActionApprovalTap()
+// is this executor's equivalent of ACTION_APPROVAL_MODE != "manual", and
+// trustedNativeLowRiskAction() is what already gates the app-act
+// agent.autonomous requirement (via AgentRuntime.kt's trustedPlanLaunch).
+function unattendedPreflightFailure(args, plan, config = {}) {
   if (!argTruthy(args.unattended)) return '';
   const actionType = plan.action.type;
   if (actionType === '__suppressed__') return '';
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'app-act') {
+  if (actionType === 'intent' || actionType === 'dm-reply') {
     return `unsupported unattended PlanSpec action: ${actionType}`;
   }
-  if (!trustedNativeLowRiskAction(args, plan, actionType)) {
-    return `${actionType} action is not trusted for unattended PlanSpec execution`;
+  if (actionType === 'app-act') {
+    return trustedNativeLowRiskAction(args, plan, actionType)
+      ? ''
+      : `${actionType} action is not trusted for unattended PlanSpec execution`;
+  }
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli') {
+    return `unsupported unattended PlanSpec action: ${actionType}`;
+  }
+  if (requireActionApprovalTap(plan, config)) {
+    return `${actionType} action requires manual approval and cannot run unattended`;
   }
   return '';
 }
@@ -1563,13 +1611,19 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
-      if (isLowQualityCompletion(preview)) {
+      // The check above the 500-char preview only covers what fits in
+      // `preview` — check the FULL redacted body too, since that's what
+      // actually ships in the webhook's "result" field (see fullResultText's
+      // doc comment). Compute once, reuse for both the quality gate and the
+      // payload itself.
+      const webhookResultFull = fullResultText(resultText);
+      if (isLowQualityCompletion(preview) || isLowQualityCompletion(webhookResultFull)) {
         const message = 'Webhook payload looks like a prompt echo or AI refusal, not real content — escalating.';
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
       const payloadFile = path.join(paths.logDir, `webhook-payload-${Date.now()}.json`);
-      writeWebhookPayload(payloadFile, plan, 'success', preview, resultText);
+      writeWebhookPayload(payloadFile, plan, 'success', preview, webhookResultFull);
       maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
         destinationHost: host,
         destinationHostAllowlisted: webhookHostIsAllowlisted(host, config),
@@ -1954,7 +2008,7 @@ function run(args) {
     return finishSkipped(paths, plan, startedAt, 'All agents are stopped (global kill-switch is on).');
   }
 
-  const unattendedFailure = unattendedPreflightFailure(args, plan);
+  const unattendedFailure = unattendedPreflightFailure(args, plan, config);
   if (unattendedFailure) {
     return finishSkipped(paths, plan, startedAt, redact(unattendedFailure));
   }
@@ -2093,6 +2147,9 @@ module.exports = {
   // same convention as the exports above. See isLowQualityCompletion's doc
   // comment near previewText for the three-copy sync requirement.
   isLowQualityCompletion,
+  // 2026-07-16 webhook full-body redaction (P0(c) adversarial review fix) —
+  // exported for host unit tests only, same convention as the exports above.
+  fullResultText,
   // Orchestration chain mode (Increment 2, 2026-07-15) — exported for host unit
   // tests only (see __tests__/plan-executor-orchestration-chain.test.ts). The
   // four bound constants are asserted equal to lib/agent-orchestration.ts's
