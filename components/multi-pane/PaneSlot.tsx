@@ -1,5 +1,5 @@
 import React, { useState, useMemo, createContext, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
@@ -156,18 +156,24 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         {
           backgroundColor: panelPaneBg,
           borderColor: isFocusedPane ? C.accent : C.border,
-          shadowColor: isFocusedPane ? C.accent : 'transparent',
-          shadowOpacity: isFocusedPane ? 0.42 : 0,
-          shadowRadius: isFocusedPane ? 10 : 0,
-          // No `elevation` here (Android-only shadow prop, separate from
-          // the iOS shadowColor/shadowOpacity/shadowRadius above): RN's
-          // Android elevation shadow does not reliably honor shadowColor
-          // across OS/device versions and instead renders a neutral
-          // grayish/whitish native drop shadow. Against an opaque pane
-          // background that blended in unnoticed; against a transparent
-          // wallpaper-through pane (Terminal) it reads as a hazy white
-          // wash over the focused pane specifically — the border-color
-          // change above already carries the focus cue on Android.
+          // shadowColor/shadowOpacity/shadowRadius are iOS-only under RN's
+          // legacy (Paper) renderer, but this project runs the New
+          // Architecture (Fabric), whose cross-platform box-shadow layer
+          // DOES paint these on Android too. The previous fix here only
+          // removed the legacy Android `elevation` prop on the (incorrect,
+          // pre-Fabric) assumption that shadowColor/Opacity/Radius were
+          // iOS-only and therefore harmless to leave — against a
+          // transparent wallpaper-through pane (Terminal) that Fabric
+          // shadow reads as a hazy white wash over the focused pane. Gate
+          // it to iOS only; the border-color change above already carries
+          // the focus cue on Android.
+          ...(Platform.OS === 'ios'
+            ? {
+                shadowColor: isFocusedPane ? C.accent : 'transparent',
+                shadowOpacity: isFocusedPane ? 0.42 : 0,
+                shadowRadius: isFocusedPane ? 10 : 0,
+              }
+            : null),
         },
       ]}
       onTouchStart={handleFocusPane}
@@ -200,7 +206,7 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
               borderColor: withAlpha(C.accent, isFocusedPane ? 0.8 : 0.34),
               backgroundColor: withAlpha(C.accent, isFocusedPane ? 0.18 : 0.07),
             },
-            isFocusedPane && {
+            Platform.OS === 'ios' && isFocusedPane && {
               shadowColor: C.accent,
               shadowOpacity: 0.3,
               shadowRadius: 5,
