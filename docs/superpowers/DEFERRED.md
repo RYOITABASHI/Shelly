@@ -1924,15 +1924,7 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ### ✅ bug #137 — DRY ensureBrowserPane helper — 解決済み (2026-07-15)
 
-**解決**: `app/_layout.tsx` の3箇所（`handleDeepLink` の browser 分岐、`dispatchExternalBrowser` の in-app last resort、`dispatchInApp`）に copy-paste されていた同一の「Browser Pane が既に無ければ `addPane('browser')`」ロジックを共有関数 `ensureBrowserPane()` に抽出。挙動変更なし（純粋な重複排除）。以下は元の記録。
-
-### bug #137 — DRY ensureBrowserPane helper
-
-**発見**: 2026-05-08 PR #37 agent review
-**症状**: `app/_layout.tsx` の `drainQueue` と `handleDeepLink` で同じ pattern (slots.some → addPane なら) が duplicated
-**修正**: `lib/browser-pane-helpers.ts` (or similar) に `ensureBrowserPane()` を抽出
-**優先度**: P2 (cosmetic、duplicated は 5 行 × 2)
-**見積**: 15 分
+**解決**: `app/_layout.tsx` の3箇所（`handleDeepLink` の browser 分岐、`dispatchExternalBrowser` の in-app last resort、`dispatchInApp`）に copy-paste されていた同一の「Browser Pane が既に無ければ `addPane('browser')`」ロジックを共有関数 `ensureBrowserPane()` に抽出。挙動変更なし（純粋な重複排除）。
 
 ### ✅ bug #138 — `androidLayerType="hardware"` × YouTube fullscreen smoke test — 解消済み、revert 経由 (`f888ce781`、2026-07-15 監査で確認)
 
