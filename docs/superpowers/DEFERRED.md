@@ -14,6 +14,21 @@
 
 ---
 
+### bug #152(新規) — スケジュール句がparseStepsFromTextの先頭に紛れ込み、スプリアスなstep 1になる
+
+**優先度**: P2（安全性への影響なし。無意味な最初のstepが1個増えるだけで、多段実行自体は正しく動く）
+**発見**: 2026-07-16、North Star P0(c)実機検証のエージェント登録テスト中。
+
+**再現**: `@agent 5分ごとに、まず『自律エージェントの安全性』について観点を3つ箇条書きで挙げて、次にそれぞれを1行で言い換えて、最後にMarkdownドラフトとして保存して` を登録すると、`plan-agent-<id>.json`の`steps.list`が意図した3件ではなく**4件**になり、1件目のinstructionが`"5分ごとに"`というスケジュール句そのものになる。
+
+**原因(推定、未確認)**: `lib/agent-nl-parser.ts`のスケジュール抽出と`lib/agent-orchestration.ts`の`parseStepsFromText`(`JP_SEQUENCE_SPLIT = /(?:^|[、。\n])\s*(?:まず|最初に|次に|その後|それから|続いて|最後に|そして)\s*/`)は同じ生テキストに対して独立に走る。`JP_SEQUENCE_SPLIT`は最初の`まず`の**手前**にあるテキスト(「5分ごとに」)を空でない先頭フラグメントとして残してしまい、スケジュール句が本来除去されるべきなのにstep 1として生き残る。
+
+**次にやること**: `parseStepsFromText`を呼ぶ前に、確定したスケジュール句(cron文字列に変換済みの元テキスト範囲)をraw textから除去するか、あるいは`parseStepsFromText`側で最初の分割マーカー(まず等)より前の先頭フラグメントを常に捨てる(現状のコード内コメント「まず/次に/first/numbered marker becomes its own spurious "step 1" with no marker-word」はこのケースを指しているように見えるが、実際には拾われてしまっている＝既存のガードが機能していない可能性)。
+
+→ sync: なし。
+
+---
+
 ### bug #151(新規) — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない
 
 **優先度**: P1（`less`/`nano`は完全に機能不全、`vim`もdefaults.vim読み込み失敗＝一部デフォルト設定が無効。今夜の`1bec5af86`bashrcラッパー修正の実機検証中に発見）
