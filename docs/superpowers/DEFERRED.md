@@ -40,7 +40,7 @@
 - ✅ **NL parsing 非対応**: v1.1 `207f78e96` で narrow detector として解消（詳細は直上）。曖昧な表現を raw request に誤分類しないという元の安全境界は、provider+explicit API marker の二重条件と near-miss 回帰テストとして維持。
 - **非 orchestrated（単一ステップ）エージェントでの api-call**: UI editor は `orchestrationSteps.length >= 2` でのみ terminal action として `api-call` を提供（"dead capability" にしないため）。
 - **attended 実行との統合**: 上記の通り、apiCall を含むエージェントは "今すぐ実行" が常に拒否される。PlanSpec executor と legacy `.sh` executor の統合、または attended 経路での api-call 対応は future work。
-- **Track F（native notification polish）**: 今回のパスでは明示的にスコープ外（オプショナルな UI 磨き込みのみ、機能的には無関係）。
+- ✅ **Track F（native notification polish）**: 2026-07-16 `e354320da` で解消。`NotificationDispatcher.kt` に `"api-call" ->` ブランチを追加し、既存の汎用フィールド（`destinationHost`/`destinationHostAllowlisted`/`command`）を再利用してホスト・METHOD・解決済みpathを承認タップ通知に表示（新規Kotlinフィールド不要）。`shelly-plan-executor.js`側で`command`に`{{result}}`置換後の実際のpathを渡すよう修正、両ロケール（en/ja）文字列追加。副産物として`__tests__/plan-executor-api-call.test.ts`の`jest.spyOn(fs, 'writeFileSync')`失敗（`import * as fs`がES moduleネームスペースになりconfigurable falseになる既知の環境問題）を`require('fs')`経由に修正。独立レビューでSHIP判定、機密性・承認判定ロジックへの影響なしを確認。実機未検証。
 - **非 allowlist host / custom auth ref**: `EGRESS_ALLOWLIST`（9 host 固定）と `AUTH_REFS`（4 secret 固定）を単一ソースとして再利用するのみで、拡張・カスタムホスト・カスタム認証情報の追加は out of scope。
 
 **未実施の実機検証**: 本 feature は offline のみで検証済み（v1.1: `npx tsc --noEmit` clean、parser/orchestration 193/193 PASS、関連 executor/broker/autonomous 13 suites は 402 PASS + 既知 Windows-only 25 FAIL、new failure 0）。オンデバイスでの実際の agent 登録→スケジュール発火→api-call ディスパッチの end-to-end 実機確認は未実施（次のオンデバイステストで確認すること）。
