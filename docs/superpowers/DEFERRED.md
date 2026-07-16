@@ -14,21 +14,29 @@
 
 ---
 
-### bug #153(新規) — agent-mrlg9tukのgateスクリプトがloopback除外ロジック導入前の古いバージョンで焼き固められている疑い
+### bug #153 — agent-mrlg9tukのgateスクリプト staleness疑い → **調査完了・コード修正なし（原因は別）**
 
-**優先度**: P1（Hermes-parity北極星シナリオ本体の実行を毎回ブロックしている実害あり）
+**優先度**: ~~P1~~ → クローズ（コード側の問題ではないと判明。次回スケジュール発火での実機再確認のみ残タスク）
 **発見**: 2026-07-16、`Xの自動投稿はテスト不要？`という質問をきっかけに、実在するHermes-parity北極星エージェント(agent-mrlg9tuk、パープレ+STEAM×AI+ローカルLLM+X投稿)の直近失敗(7/15 19:12頃、Step3/3が約49分でタイムアウト)を実ログで調査して発見。
 
-**再現/根拠**:
-- `agent-driver-audit.jsonl`を見ると、`curl -sS --max-time 5 http://127.0.0.1:8080/v1/models`という**ループバックのみ**の呼び出しですら`"signals":["network-send","write-or-exec"]`となりエスカレーション(人間承認)が要求されていた。20.6秒後に人間が承認し通過。
-- 次の`curl ... http://127.0.0.1:8080/v1/chat/completions`(ローカルLLMへの本命の要約リクエスト、無人スケジュール発火中)も同様に`network-send`扱いされ、今度は誰も応答できず**120秒でタイムアウト→自動decline**、Step3が失敗した。
-- しかし現在の`lib/agent-boundary-policy.ts`には`isLoopbackOnlyNetworkCommand()`という、127.0.0.1/localhost/::1宛のみのコマンドから`network-send`シグナルを除外するロジックが**既に存在する**(コード上は`127.0.0.1:8080/v1/models`のURLパターンを正しくマッチしてloopback判定するはず)。もしこのロジックが適用されていれば、L2では`write-or-exec`単独では境界シグナル扱いされない(`boundarySignals = signals.filter(s => s !== 'write-or-exec')`)ため自動許可され、エスカレーション自体発生しないはずだった。
-- 実際のログとコードの矛盾から、**agent-mrlg9tukに焼き込まれたgateスクリプト(`.shelly-gate-decide.js`)がこのloopback除外ロジック導入より古いバージョンのまま**である可能性が高い。エージェントは登録時にmaterializeされたスクリプトをそのまま使い続け、コード側の修正が自動で反映される仕組み(BASHRC_VERSIONのようなバージョンbump駆動の再生成)を持っているか未確認。
+**元の仮説（再現/根拠）**: `agent-driver-audit.jsonl`で`curl -sS --max-time 5 http://127.0.0.1:8080/v1/models`というループバックのみの呼び出しが`network-send`扱いでエスカレーションされ、無人スケジュール発火中で誰も応答できず120秒タイムアウト→自動declineでStep3が失敗。しかし現在の`lib/agent-boundary-policy.ts`には`isLoopbackOnlyNetworkCommand()`による除外ロジックが既にあり、この矛盾から「agent-mrlg9tukに焼き込まれたgateスクリプト(`.shelly-gate-decide.js`)が古いバージョンのまま」というper-agent staleness仮説を立てた。
 
-**次にやること**:
-1. `lib/agent-manager.ts`の`materializeAgentBody`/`rematerializeAutonomousAgents`が、コード変更(gate ロジックの更新等)をトリガーに既存の全自律エージェントのスクリプトを再生成する仕組みを持っているか調査する。持っていなければ、これはP0(c)と同種の「ロジックは直っているのに配線が古いまま」という構造的ギャップであり、根治にはバージョンマーカー方式の追従が必要。
-2. 応急処置として、該当エージェントを一度編集保存(またはRUN NOWでの再materialize相当のトリガー)して、gateスクリプトが最新化されるか実機確認する。
-3. 併せて確認中に見えた「Cannot connect to localhost:8080」(AI/CodeペインのUI)がローカルLLMサーバー未起動を示しているかどうかも確認する必要がある(別件の可能性)。
+**調査結果（2026-07-16、worktree agent-a40ed41b950968813で実施）— 仮説は誤りと判明**:
+
+1. **`.shelly-gate-decide.js`はper-agentで焼き込まれるファイルではない。** アーキテクチャを確認したところ:
+   - `scripts/gate-decide-entry.ts`が`lib/agent-policy.ts`→`lib/agent-boundary-policy.ts`の`classifyProposedCommand`を**ライブimport**し、`pnpm build:gate`(`package.json`の`build:gate`スクリプト)でesbuild bundleして`modules/terminal-emulator/android/src/main/assets/shelly-gate-decide.js`としてAPKにアセット同梱される（ビルド時に静的生成、per-agentのstringifyコピーではない）。
+   - `HomeInitializer.kt:1186-1193`がこのアセットを`$HOME/.shelly-gate-decide.js`へ**無条件に毎回上書きコピー**する（BASHRC_VERSIONのようなバージョンゲートは無い。全エージェント共有の単一ファイル）。
+   - `AgentRuntime.kt:56`の`runAgent()`——AlarmManager発火のスケジュール実行を含む**全エージェント起動の入口**——が最初の一行で`HomeInitializer.initialize(appContext)`を呼ぶ。つまりスケジュール発火のたびに、その時点でインストールされているAPKが同梱する最新の`.shelly-gate-decide.js`で強制上書きされてから実行される。
+   - 結論: 「登録時にmaterializeされたスクリプトが古いまま使われ続ける」という配線は**存在しない**。`lib/agent-manager.ts`の`materializeAgentBody`/`rematerializeAutonomousAgents`はper-agentの`.sh`ランナー(スケジュール/consent/APIキー等)を生成するだけで、gate判定ロジックには一切触れていない(grep 0件)。P0(c)と同種の「配線が古いまま」ギャップはこの経路には存在しない。
+
+2. **`isLoopbackOnlyNetworkCommand()`は現行コードで正しく動作する（regexバグなし）。** `curl -sS --max-time 5 http://127.0.0.1:8080/v1/models`をL2で`classifyProposedCommand`に通すと、`network-send`は付与されず`write-or-exec`のみ→`boundarySignals.length===0`→`decision:'allow'`（手動トレース+既存回帰テスト`__tests__/agent-boundary-policy.test.ts:73`「does not flag network-send for a loopback-only self-check (regression)」で確認、`npx jest __tests__/agent-boundary-policy.test.ts`は12/12 PASS）。
+
+3. **本当の原因: 単純に「フィックスがまだ端末に届いていなかった」。** loopback除外を入れた修正コミット`c6bcbde96`(`fix(agent-boundary-policy): exempt loopback-only network commands from approval gate`)は**2026-07-15T18:52 JST**にmainへランド。そのCIビルド(`Build Android APK`、run 29406078736)が完了したのは**2026-07-15T19:04:09 JST**。一方、失敗ログの時刻は**19:12頃、しかもStep3自体が約49分継続していた**——つまりStep3の開始は概算**18:23頃**で、これは修正コミットの存在(18:52)にも、修正入りビルドの完成(19:04)にも**先行**する。当時端末で動いていたAPKが単に旧ビルド(loopback除外ロジック導入前)だったというだけで説明が付き、コード側・配線側のどちらにもギャップは無い。Shellyのin-appアップデータは手動トリガー(MEMORY.md記載の標準運用)なので、ビルド完成(19:04)から失敗(19:12)までの8分間でユーザーが気付いて更新完了させることも現実的ではない。
+
+**対応**: 上記によりコード修正は不要と判断（タスク定義の(b)「実際は別の理由だった」に該当、(a)/(c)いずれの分岐にも該当せず）。投機的な`GATE_SCRIPT_VERSION`的な仕組みは追加していない——そもそも`.shelly-gate-decide.js`は毎回無条件上書きなのでバージョンマーカーで解決すべき隙間が存在しない。
+
+**残タスク**: agent-mrlg9tukの次回スケジュール発火(7/17 09:00)時点で、端末が`c6bcbde96`以降のビルドを実行していることを確認した上で、loopbackプローブがもうエスカレーションされないことを実機ログ(`agent-driver-audit.jsonl`)で再確認する。もし7/17 09:00時点でも同じ現象が再発したら、それは今回の仮説とは別の原因（例: 端末側アップデート未実施、または未発見の別バグ）なので、その時はagent-driver-audit.jsonlの実ログを取ってこのエントリを再オープンすること。
+- 併せて確認中に見えた「Cannot connect to localhost:8080」(AI/CodeペインのUI)がローカルLLMサーバー未起動を示しているかどうかも別件として要確認(未着手)。
 
 → sync: なし。
 
