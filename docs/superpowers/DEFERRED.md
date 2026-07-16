@@ -14,6 +14,24 @@
 
 ---
 
+### API キーの `.env` バックフィル再同期がない — 未着手 (P3、ロバスト性向上)
+
+**優先度**: P3（実害は再現条件が限定的 — 現行UIの保存経路は全て正しくflushする。既存キーの一回きりの取りこぼしのみ）
+**発見**: 2026-07-16、STEAMニュースエージェントの実機テストでPerplexity呼び出しが`auth_ref "perplexity" has no configured secret`で失敗。調査の結果、`store/settings-store.ts`の`updateSettings()`は既知フィールド変更時に`setPendingEnvSync(cmd)`をキューするだけで、実際の`.env`書き込みは別途`flushPendingAgentEnvSync()`/`flushAutonomousCloudEnvSync()`（`lib/agent-env-sync.ts`）呼び出しに依存する。現行の`SettingsDropdown.tsx`/`ConfigTUI.tsx`の保存経路は両方とも正しくflushを呼んでいる（コード上バグなし）。ただし、この flush-on-save ロジックが導入される**前**に保存されたキーは`.env`に一度も書き込まれておらず、Settingsのチェックマーク（SecureStore保存成功のみを反映）はユーザーに`.env`未同期のギャップを一切知らせない。ワークアラウンドはSettings→API Keys→該当キー→EDIT→（値を変えずに）Save で再flushさせること。
+**次にやること**: アプリ起動時（`HomeInitializer.initialize()`等）に、SecureStoreに保存済みの全APIキーを`.env`へ一括バックフィル同期する処理を追加すると、この「fresh edit-save round-tripに頼る」脆さを解消できる。優先度は低い（新規ユーザーは今後この経路を踏まないため再発しない）。
+→ sync: なし。
+
+---
+
+### run-log の `toolUsed`/`routeDecision` が個別 api-call ステップの実ディスパッチ先を反映しない — 未着手 (P3、表示のみの軽微な不整合)
+
+**優先度**: P3（機能的影響なし、デバッグ時にわずかに紛らわしいだけ）
+**発見**: 2026-07-16、STEAMニュースエージェントの実機テスト中。run-logの最上位`toolUsed`/`routeDecision`フィールド（例: "Gemini API"）は、エージェント全体のプロンプトに対する Layer-2 スコアラーの一括判定を反映しており、個々の`apiCall`ステップの実際のディスパッチ先（例: Step 1はauthRef経由でPerplexityへ実際にディスパッチされている）とは独立している。実害はなく（実ディスパッチはブローカー経由で正しいauthRef/hostへ行われている）、run-logをデバッグする際に「Perplexity狙いのステップなのになぜGemini APIと表示されるのか」と混乱を招く程度。
+**次にやること**: 優先度は低いが、直すなら run-log の各ステップ record に、そのステップが実際に使った`authRef`/host を明示的に持たせると解消できる（`toolUsed`はエージェント全体の表示用ラベルとして残す）。
+→ sync: なし。
+
+---
+
 ### ✅ api-call capability broker authoring surface v1 + narrow NL authoring v1.1 — 実装済み（`986f08e39`〜`0a5439f39`, `207f78e96`）
 
 **優先度**: 完了（P1 follow-up は下記）／ **状態**: Track A–E + v1.1 narrow NL detector 実装・型チェック clean・jest 全緑（既知の pre-existing Windows fs-write path-doubling/ENAMETOOLONG バグ由来の 25 件を除く）・adversarial security review 実施 → 1 件の high-confidence finding を検出・即修正・再検証済み。
