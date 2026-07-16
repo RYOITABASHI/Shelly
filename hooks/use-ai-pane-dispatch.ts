@@ -65,7 +65,7 @@ import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
 
@@ -226,6 +226,7 @@ function createThrottledUpdate(updateFn: UpdateFn) {
  * - foreground terminal CLIs stay outside the AI Pane
  */
 export function useAIPaneDispatch(paneId: string) {
+  const { t } = useTranslation();
   const abortRef = useRef<AbortController | null>(null);
   const lastLocalStreamOkAtRef = useRef(0);
 

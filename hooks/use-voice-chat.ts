@@ -15,7 +15,7 @@ import { groqTranscribe } from '@/lib/groq';
 import { parseInput } from '@/lib/input-router';
 import { summarizeForSpeech } from '@/lib/voice-chain-helpers';
 import { releaseRecorder } from '@/hooks/use-speech-input';
-import { t } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 export type VoiceChatStatus =
   | 'idle'
@@ -58,6 +58,7 @@ export type UseVoiceChatOptions = {
 };
 
 export function useVoiceChat(options?: UseVoiceChatOptions) {
+  const { t } = useTranslation();
   const [state, setState] = useState<VoiceChatState>({
     status: 'idle',
     isActive: false,

@@ -12,7 +12,7 @@ import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fo
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
 import { loadAgentsFromDisk, syncAgentRunLogsFromDisk } from "@/lib/agent-manager";
-import { t, useI18n } from '@/lib/i18n';
+import { useI18n, useTranslation } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
@@ -176,6 +176,7 @@ function ensureBrowserPane(): void {
 }
 
 export default function RootLayout() {
+  const { t } = useTranslation();
   const [fontsLoaded] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,

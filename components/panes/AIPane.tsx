@@ -46,7 +46,7 @@ import {
   resolveAiPaneAgent,
 } from '@/lib/ai-pane-agents';
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
-import { t as i18nT } from '@/lib/i18n';
+import { useTranslation } from '@/lib/i18n';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -286,6 +286,7 @@ const bubbleStyles = StyleSheet.create({
 // ─── AIPane ──────────────────────────────────────────────────────────────────
 
 export default function AIPane() {
+  const { t } = useTranslation();
   const paneId = useContext(PaneIdContext);
   const paneBg = usePaneContentBackground(C.bgDeep);
   // Bug #56 — narrow grid layouts (2×2 or 1+2) drop pane width below
@@ -456,7 +457,7 @@ export default function AIPane() {
   const dismissScheduleReadiness = useCallback((messageId: string) => {
     useAIPaneStore.getState().updateMessage(paneId, messageId, {
       scheduleReadinessCard: false,
-      content: `✓ ${i18nT('schedulereadiness.title')}`,
+      content: `✓ ${t('schedulereadiness.title')}`,
     });
   }, [paneId]);
 
