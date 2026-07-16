@@ -14,6 +14,19 @@
 
 ---
 
+### CommandKeyBar フッターに黒スモーク(グラデーション)を追加 — 未着手
+
+**優先度**: P3（任意の見た目ポリッシュ、機能影響なし）
+**発見**: 2026-07-16、focus-highlight修正の実機確認時にユーザー指摘。「ターミナル背景はOK。強いて言えばフッダーだけAIチャットペインと同じ様に黒いスモークほしい」。
+
+**現状**: `components/terminal/CommandKeyBar.tsx` の `TERMINAL_KEY_BAR_BACKGROUND = '#000000'` は既に完全不透明のフラット単色黒（`settings.terminalWallpaperTransparency` 未オプトインの既定パス）。AIチャットペイン(`PaneInputBar.tsx`)側は壁紙が透けるコンテンツエリアから入力バーへ向けて黒くフェードする視覚効果があり、それと比べるとCommandKeyBarは境目が硬い単色パネルに見える。
+
+**Why not now**: CLAUDE.mdの「Terminal pane background」項目が明記する通り、この領域（TerminalPane.tsx/SettingsDropdown.tsx の壁紙・tint 関連）は過去に規約違反PR (`a96cdd8a4`) が実機グレー化を引き起こした実績があり、変更時は必ずP3チェックリスト+スクショ証跡を要求するルールになっている。今回の要望は「より不透明にする」方向（壁紙の透け戻しではない）なので同じリスクではないが、隣接コードであり自分ではスクショを撮れない制約もあるため、ユーザー確認込みの別セッションで着手する。
+
+**次にやること**: `CommandKeyBar.tsx` の `container` に、上端を透明→下端を`#000000`へフェードするオーバーレイ（`expo-linear-gradient`は未導入なので追加インストールが必要、または `View` を複数重ねたCSS的グラデーション代替）を追加。壁紙透過が無効な現状では見た目にほぼ差が出ない可能性もあるため、まず実機で現状のコントラストを再確認してから着手。
+
+---
+
 ### android/ 追跡ファイルの CNG drift-hardening — Strategy A 見送り（実質 hand-edit あり、Strategy B 未実施）
 
 **優先度**: P2（アーキテクチャ tech-debt。今すぐのリリースブロッカーではない — 元の newArch=false 事故自体は `13cd61b55` で既に修正済み・現行 main の `android/gradle.properties` は `newArchEnabled=true`/`hermesEnabled=true` で正しい）
