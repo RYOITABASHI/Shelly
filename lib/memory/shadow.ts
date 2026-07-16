@@ -28,6 +28,7 @@ import {
 import { MemoryStore } from './memory-store';
 import { JsonFileMemoryStorage } from './storage-json';
 import { createExpoFsPort, systemClock } from './fs-expo';
+import { createExpoEncryptionPort } from './crypto-expo';
 import {
   DEFAULT_RECALL_LIMIT,
   MemoryHit,
@@ -64,7 +65,7 @@ let sharedDeps: ShadowDeps | null = null;
 
 function getShadowDeps(): ShadowDeps {
   if (!sharedDeps) {
-    const adapter = new JsonFileMemoryStorage(createExpoFsPort(), {
+    const adapter = new JsonFileMemoryStorage(createExpoFsPort(), createExpoEncryptionPort(), {
       root: shadowRootDir(),
     });
     sharedDeps = {

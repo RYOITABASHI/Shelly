@@ -1,7 +1,16 @@
 jest.mock('@/lib/home-path', () => ({ getHomePath: () => '/home/shelly-test' }));
-// Empty mock: if the MEMORY_ENABLED gate ever leaked, the shadow path would hit
-// this stub, throw, and surface as a console.warn (asserted below).
+// Empty mocks: if the MEMORY_ENABLED gate ever leaked, the shadow path would
+// hit one of these stubs, throw, and surface as a console.warn (asserted
+// below). expo-file-system/legacy backs fs-expo.ts's FsPort; @noble/ciphers +
+// expo-crypto + expo-secure-store back crypto-expo.ts/encryption-key.ts's
+// Track A EncryptionPort (see DEFERRED.md MEMORY-001). @noble/ciphers ships
+// pure ESM with no CJS build, so it must be mocked here regardless of the
+// dormancy gate — otherwise ts-jest fails to parse it at require time.
 jest.mock('expo-file-system/legacy', () => ({}));
+jest.mock('@noble/ciphers/aes.js', () => ({}));
+jest.mock('@noble/ciphers/utils.js', () => ({}));
+jest.mock('expo-crypto', () => ({}));
+jest.mock('expo-secure-store', () => ({}));
 
 import {
   activateMemoryRecall,

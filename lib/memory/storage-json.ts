@@ -11,6 +11,8 @@
 
 import { classifyFsAccess, FsOperation } from '@/lib/capability-fs';
 import {
+  EncryptedEnvelope,
+  EncryptionPort,
   FsPort,
   MemoryHit,
   MemoryRecord,
@@ -60,16 +62,34 @@ function isWellFormed(value: unknown): value is MemoryRecord {
   );
 }
 
+// Envelope-shape guard (Track A, MEMORY-001), sibling to isWellFormed above.
+// A file that parses as JSON but doesn't look like an EncryptedEnvelope is
+// treated as absent/corrupt by readRecord() rather than passed to decrypt() —
+// same "tolerate one corrupt/foreign file, don't brick the namespace"
+// contract isWellFormed already gives the plaintext MemoryRecord shape.
+function isWellFormedEnvelope(value: unknown): value is EncryptedEnvelope {
+  if (!value || typeof value !== 'object') return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.v === 'number' &&
+    typeof e.iv === 'string' &&
+    typeof e.ciphertext === 'string' &&
+    (e.keyId === undefined || typeof e.keyId === 'string')
+  );
+}
+
 export interface JsonFileMemoryStorageOptions {
   root: string;
 }
 
 export class JsonFileMemoryStorage implements MemoryStorageAdapter {
   private readonly fs: FsPort;
+  private readonly encryption: EncryptionPort;
   private readonly root: string;
 
-  constructor(fs: FsPort, opts: JsonFileMemoryStorageOptions) {
+  constructor(fs: FsPort, encryption: EncryptionPort, opts: JsonFileMemoryStorageOptions) {
     this.fs = fs;
+    this.encryption = encryption;
     this.root = opts.root;
   }
 
@@ -86,25 +106,53 @@ export class JsonFileMemoryStorage implements MemoryStorageAdapter {
     return joinPath(this.nsDir(namespace), `${segment(key)}${FILE_SUFFIX}`);
   }
 
+  // Serializes + encrypts a record and writes the envelope. The plaintext
+  // MemoryRecord JSON never touches this.fs — only JSON.stringify(envelope)
+  // (base64 iv/ciphertext) does.
+  private async writeRecord(file: string, record: MemoryRecord): Promise<void> {
+    const envelope = await this.encryption.encrypt(JSON.stringify(record));
+    await this.fs.writeFileAtomic(file, JSON.stringify(envelope));
+  }
+
+  // Reads one record file end-to-end: raw bytes -> envelope-shape guard ->
+  // decrypt -> MemoryRecord-shape guard. ANY failure at any stage (missing
+  // file, non-JSON, non-envelope shape, decrypt/auth-tag failure, or a
+  // decrypted payload that isn't a well-formed MemoryRecord) degrades to
+  // null — "absent or corrupt" — never a throw, so a single bad/tampered file
+  // never bricks get() or loadNamespace().
+  private async readRecord(file: string): Promise<MemoryRecord | null> {
+    const raw = await this.fs.readFile(file);
+    if (raw === null) return null;
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (!isWellFormedEnvelope(envelope)) return null;
+    try {
+      const plaintext = await this.encryption.decrypt(envelope);
+      const parsed: unknown = JSON.parse(plaintext);
+      return isWellFormed(parsed) ? parsed : null;
+    } catch {
+      // Covers decrypt() throwing (auth-tag mismatch / wrong key / corrupt
+      // ciphertext) as well as a malformed decrypted JSON payload.
+      return null;
+    }
+  }
+
   async put(record: MemoryRecord): Promise<void> {
     const dir = this.nsDir(record.namespace);
     const file = this.fileFor(record.namespace, record.key);
     this.guard('write', file);
     await this.fs.ensureDir(dir);
-    await this.fs.writeFileAtomic(file, JSON.stringify(record));
+    await this.writeRecord(file, record);
   }
 
   async get(namespace: string, key: string): Promise<MemoryRecord | null> {
     const file = this.fileFor(namespace, key);
     this.guard('read', file);
-    const raw = await this.fs.readFile(file);
-    if (raw === null) return null;
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      return isWellFormed(parsed) ? parsed : null;
-    } catch {
-      return null;
-    }
+    return this.readRecord(file);
   }
 
   private async loadNamespace(namespace: string): Promise<MemoryRecord[]> {
@@ -115,15 +163,10 @@ export class JsonFileMemoryStorage implements MemoryStorageAdapter {
     const out: MemoryRecord[] = [];
     for (const name of names) {
       if (!name.endsWith(FILE_SUFFIX)) continue;
-      const raw = await this.fs.readFile(joinPath(dir, name));
-      if (raw === null) continue;
-      try {
-        const parsed: unknown = JSON.parse(raw);
-        // Tolerate one corrupt/foreign file instead of bricking the namespace.
-        if (isWellFormed(parsed)) out.push(parsed);
-      } catch {
-        continue;
-      }
+      // Tolerate one corrupt/foreign/undecryptable file instead of bricking
+      // the namespace — readRecord() already degrades every failure to null.
+      const record = await this.readRecord(joinPath(dir, name));
+      if (record) out.push(record);
     }
     return out;
   }

@@ -6,6 +6,7 @@ import { MemoryStore } from '@/lib/memory/memory-store';
 import { MEMORY_SCHEMA_VERSION, MemoryRecord } from '@/lib/memory';
 import { FakeClock } from '../support/event-queue-harness';
 import { makeNodeFsPort, makeTmpDir } from '../support/node-fs-port';
+import { makeNodeEncryptionPort } from '../support/node-encryption-port';
 
 function record(namespace: string, key: string, text = key): MemoryRecord {
   return {
@@ -30,7 +31,7 @@ describe('JsonFileMemoryStorage', () => {
   });
 
   it('round-trips put/get/query/delete via a MemoryStore over node fs', async () => {
-    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), { root });
+    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), makeNodeEncryptionPort(), { root });
     const store = new MemoryStore({ adapter, clock: new FakeClock(1000) });
     const rec = await store.put({ namespace: 'ns', text: 'durable note', tags: ['keep'] });
     expect((await store.get('ns', rec.key))?.text).toBe('durable note');
@@ -40,7 +41,7 @@ describe('JsonFileMemoryStorage', () => {
   });
 
   it('skips a corrupt .json on load instead of failing the namespace', async () => {
-    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), { root });
+    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), makeNodeEncryptionPort(), { root });
     await adapter.put(record('ns', 'good'));
     const nsDir = path.join(root, encodeURIComponent('ns'));
     fs.writeFileSync(path.join(nsDir, 'garbage.json'), '{ not json');
@@ -50,7 +51,7 @@ describe('JsonFileMemoryStorage', () => {
   });
 
   it('maps distinct keys/namespaces with special chars to distinct files', async () => {
-    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), { root });
+    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), makeNodeEncryptionPort(), { root });
     const keys = ['a/b', 'a b', 'a+b'];
     for (const k of keys) await adapter.put(record('ns', k));
     expect((await adapter.list('ns')).map((r) => r.key).sort()).toEqual([...keys].sort());
@@ -59,7 +60,7 @@ describe('JsonFileMemoryStorage', () => {
   });
 
   it('never writes above the root even for an escaping namespace/key', async () => {
-    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), { root });
+    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), makeNodeEncryptionPort(), { root });
     // encodeURIComponent neutralizes '/', so an escaping ns/key is just a weird
     // in-root segment (a miss), never a write above root.
     expect(await adapter.get('../../etc', 'passwd')).toBeNull();
@@ -72,7 +73,7 @@ describe('JsonFileMemoryStorage', () => {
     // encodeURIComponent('..') === '..' (dots unreserved), so <root>/.. escapes
     // and only assertWithinRoot's canonicalization catches it — proves the JAIL,
     // not the encoder, through the normal adapter API.
-    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), { root });
+    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), makeNodeEncryptionPort(), { root });
     await expect(adapter.put(record('..', 'k'))).rejects.toThrow(/scoped\.fs denied/);
     await expect(adapter.list('..')).rejects.toThrow(/scoped\.fs denied/);
     await expect(adapter.get('..', 'k')).rejects.toThrow(/scoped\.fs denied/);
@@ -80,7 +81,7 @@ describe('JsonFileMemoryStorage', () => {
   });
 
   it('isolates namespaces on disk', async () => {
-    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), { root });
+    const adapter = new JsonFileMemoryStorage(makeNodeFsPort(), makeNodeEncryptionPort(), { root });
     await adapter.put(record('A', 'k', 'in A'));
     await adapter.put(record('B', 'k', 'in B'));
     expect((await adapter.list('A')).map((r) => r.text)).toEqual(['in A']);

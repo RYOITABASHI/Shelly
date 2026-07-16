@@ -99,4 +99,30 @@ export interface FsPort {
   ensureDir(dir: string): Promise<void>;
 }
 
+// Encrypted-at-rest envelope for a serialized MemoryRecord (Track A,
+// MEMORY-001 — see DEFERRED.md's MEMORY-001 2026-07-16 plan). `v` is the
+// envelope format version (1 today; bump alongside a cipher/shape change).
+// `keyId` is reserved for a future multi-key rotation scheme; Track A never
+// writes it (no rotation yet) but the field exists so a future rotation can
+// tell old envelopes apart from new ones without another migration. `iv` and
+// `ciphertext` are base64 (see ./base64.ts) — ciphertext carries the AEAD
+// auth tag appended, exactly as the underlying cipher's output.
+export interface EncryptedEnvelope {
+  v: number;
+  keyId?: string;
+  iv: string;
+  ciphertext: string;
+}
+
+// Injected, REQUIRED by JsonFileMemoryStorage (Track A envelope encryption).
+// Mirrors FsPort: a pure interface with no fs/expo/native import here — only
+// the device implementation (./crypto-expo.ts) touches @noble/ciphers /
+// expo-crypto, and only the key-lifecycle module (./encryption-key.ts)
+// touches expo-secure-store. Host tests inject a node:crypto-backed fake
+// (see __tests__/support/node-encryption-port.ts) instead of the real port.
+export interface EncryptionPort {
+  encrypt(plaintext: string): Promise<EncryptedEnvelope>;
+  decrypt(envelope: EncryptedEnvelope): Promise<string>;
+}
+
 export const DEFAULT_RECALL_LIMIT = 5;

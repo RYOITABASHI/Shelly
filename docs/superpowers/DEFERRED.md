@@ -1399,7 +1399,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない
+### MEMORY-001 — 保存時暗号化・一般 PII/taint 分類がない（Track A 実装済み・実機未検証、Track B/C/D 未着手）
 
 **発見**: 2026-07-13 Batch 11 の MEMORY-001 移植時に、source design の既知制限を再確認。
 
@@ -1422,7 +1422,13 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 - **PII/taint分類**: 新規`lib/memory/pii-guard.ts`（`secret-guard.ts`と同じ形のpure rule-basedスキャナ、ML不使用）。write境界（`activateMemoryWrite`）とrecall境界（`recordsToRecallContext`→`agent.prompt`挿入点、既存`scanForSecrets`の再スキャンと同じchokepoint）の両方に接続、`model-router/wiring.ts`の`RunRequirements`に`touchesPii`相当のシグナルを追加。
 - **フェーズ分割**: Track A(暗号化コア、host-testable)→Track B(dev data掃除+バージョンタグ、Aと同時可)→Track C(PII分類器、A/Bと並行可)→flag-ON判定はA+B+C全部+実機検証後の1本化PR。Track D(ネイティブKeystore Cipher)は任意・別レビュー。
 - **rollout gate**: 平文ファイルが実機で一切残らないことの確認／アンインストール後の復号不能を確認・文書化／PII分類器がwrite+recall両方に接続済み／non-secret-pattern機微proseのcorpusテストがcloud送信を止めることを証明／MODEL-001側が新シグナルを消費してから両flag同時ONにする／`pnpm run check`/`test`/`lint`green／READMEのprivacy節を同時更新。
-- 詳細な理由・代替案の比較（whole-corpus暗号化を却下した理由、ネイティブKeystore直叩きを今回見送った理由等）は本entry作成時のPlanログを参照。まだ実装は着手していない。
+- 詳細な理由・代替案の比較（whole-corpus暗号化を却下した理由、ネイティブKeystore直叩きを今回見送った理由等）は本entry作成時のPlanログを参照。
+
+**✅ Track A 実装済み（2026-07-16、実機検証は未実施）**: `lib/memory/base64.ts`（依存ゼロbase64コーデック）・`lib/memory/encryption-key.ts`（DEKライフサイクル、`expo-secure-store`に専用キー名`shelly_memory_v2_dek`で保存、`lib/secure-store.ts`の`API_KEY_NAMES`には非掲載＝設定UIに絶対出ない、promise memoizeで同時生成レース回避）・`lib/memory/crypto-expo.ts`（実機用`EncryptionPort`、`@noble/ciphers`のAES-256-GCM + `expo-crypto`の`getRandomBytesAsync`で呼び出し毎に新規96-bit IV）を新規追加。`JsonFileMemoryStorage`（storage-json.ts）が`EncryptionPort`を注入され、`put`/`get`/`loadNamespace`で暗号化・復号を透過的に実施、envelope形状チェックで非envelopeファイルを既存の`isWellFormed()`同様「不在扱い」に縮退（クラッシュしない）。ホストテスト用に`__tests__/support/node-encryption-port.ts`（Node実crypto AES-256-GCM、リバーシブルなダミーではない）+ `__tests__/memory/encryption.test.ts`（5件: round-trip、平文が実際に書き込みバイトへ現れないことの直接アサート、非envelope/誤鍵/改ざんciphertextの耐性）を追加。独立セキュリティレビュー（general-purpose subagent、`@noble/ciphers`の実装コードを直接読解・IV一意性/DEK生成/GCM tag検証/平文非流出/依存パッケージの真正性を個別に検証、`tsc`+`jest __tests__/memory/`を独自実行して54件PASSを再現）でSHIP判定。`MEMORY_ENABLED`は無変更のまま`false`。**残作業**: `crypto-expo.ts`自体（実機の`expo-secure-store`/`expo-crypto`経路）は直接の自動テストカバレッジがなく、Track A単体でのオンデバイス往復スモークテスト（1回の実`put()`/`get()`）が推奨——ただしrollout gate自体は元々「Track A+B+C全部+実機検証後」を要求しているため、これは新たなブロッカーではない。Track B（開発機の旧平文データ掃除+バージョンタグ）・Track C（PII/taint分類器のwrite/recall両境界接続）・Track D（任意、ネイティブKeystore Cipher）は未着手。
+
+---
+
+### CC schema-diff watcher を updater に組み込む
 
 **発見**: 2026-05-20 Claude Code 2.1.143+ Bash tool 追従調査中
 
