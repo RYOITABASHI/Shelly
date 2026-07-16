@@ -355,7 +355,18 @@ describe('shelly-plan-executor host smoke', () => {
     expect(result.stderr).toContain('--home or absolute HOME is required');
   });
 
-  it('fails closed before model IO for unattended runs without native low-risk trust', async () => {
+  // North Star P0(c) fix (2026-07-16): draft/notify/webhook/cli's unattended
+  // gate no longer depends on trustedNativeLowRiskAction (native-supplied
+  // --trusted-* flags) at all — it mirrors the legacy .sh executor's actual
+  // policy, which only ever checks ACTION_APPROVAL_MODE for these four
+  // action types (trust flags were never part of .sh's request_and_wait_
+  // approval logic for draft/notify/webhook/cli, only for the PlanSpec
+  // executor's own narrower pre-fix gate). trustedNativeLowRiskAction still
+  // matters for app-act (see plan-executor-approval-default.test.ts's
+  // dedicated app-act trust coverage, including its own tool-tampering
+  // defense test) — it is simply no longer consulted for draft's own
+  // unattended check.
+  it('fails closed before model IO for unattended draft runs when approval is required (requireActionApproval:true, the makePlan default)', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
 
@@ -380,12 +391,17 @@ describe('shelly-plan-executor host smoke', () => {
     expect(runLogs).toHaveLength(1);
     const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
     expect(runLog.status).toBe('skipped');
-    expect(runLog.errorMessage).toContain('not trusted for unattended');
+    expect(runLog.errorMessage).toContain('draft action requires manual approval and cannot run unattended');
   });
 
-  it('allows unattended local draft only when native supplies matching trusted action and tool', async () => {
+  it('allows unattended local draft when approval mode is auto — trust flags, if supplied, are irrelevant to draft/notify/webhook/cli', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
+    // Override makePlan's default requireActionApproval:true — this test's
+    // whole point post-fix is that draft's unattended gate is approval-mode
+    // driven, not trust-flag driven, so the positive case needs auto mode.
+    (plan as any).agent.requireActionApproval = false;
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
 
     const result = await runExecutor([
       executor,
@@ -393,6 +409,8 @@ describe('shelly-plan-executor host smoke', () => {
       '--home', home,
       '--agent-id', plan.agent.id,
       '--unattended', '1',
+      // Trust flags are supplied but deliberately no longer required for
+      // draft to succeed — they simply have no effect here now.
       '--trusted-autonomous-agent-id', plan.agent.id,
       '--trusted-autonomous-action', 'draft',
       '--trusted-tool-type', 'local',
@@ -404,15 +422,12 @@ describe('shelly-plan-executor host smoke', () => {
     const outputFiles = listMarkdownFiles(path.join(home, 'agent-output'));
     expect(outputFiles).toHaveLength(1);
     expect(fs.readFileSync(outputFiles[0], 'utf8')).toContain('fixture result: say hello');
-
-    const planAudit = fs.readFileSync(path.join(home, `.shelly/agents/logs/${plan.agent.id}/plan-executor-audit.jsonl`), 'utf8');
-    expect(planAudit).toContain('"event":"action_trusted_allow"');
     const requestDir = path.join(home, '.shelly/agents/action-approvals');
     const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
     expect(approvalRequests).toHaveLength(0);
   });
 
-  it('does not let trusted action args authorize a tampered cloud tool in unattended mode', async () => {
+  it('a mismatched/tampered --trusted-* arg set does not bypass the requireActionApproval:true refusal for draft', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
     (plan as any).tool = { type: 'gemini-api', label: 'Gemini', model: 'gemini-2.5-flash', authRef: 'gemini' };
@@ -424,6 +439,10 @@ describe('shelly-plan-executor host smoke', () => {
       '--home', home,
       '--agent-id', plan.agent.id,
       '--unattended', '1',
+      // Mismatched tool-type trust args — irrelevant to draft's gate now
+      // (only requireActionApprovalTap matters), but confirms garbage
+      // --trusted-* input can't accidentally bypass the manual-approval
+      // requirement either.
       '--trusted-autonomous-agent-id', plan.agent.id,
       '--trusted-autonomous-action', 'draft',
       '--trusted-tool-type', 'local',
@@ -437,7 +456,7 @@ describe('shelly-plan-executor host smoke', () => {
     const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
     const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
     expect(runLog.status).toBe('skipped');
-    expect(runLog.errorMessage).toContain('not trusted for unattended');
+    expect(runLog.errorMessage).toContain('draft action requires manual approval and cannot run unattended');
   });
 
   it('redacts secret-like model text from action approval request previews', async () => {
