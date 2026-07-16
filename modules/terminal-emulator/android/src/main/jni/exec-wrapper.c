@@ -29,6 +29,10 @@
 #define DEFAULT_BASH DEFAULT_HOME "/bin/bash"
 #define DEFAULT_EXEC_WRAPPER DEFAULT_LIB_DIR "/libexec_wrapper.so"
 #define DEFAULT_PATH DEFAULT_HOME "/bin:" DEFAULT_LIB_DIR ":/system/bin:/vendor/bin:/apex/com.android.runtime/bin"
+/* bug #151 (2026-07-16): terminfo dir for the hardcoded fallback envp
+ * arrays below (minimal_envp / minimal_wrapper_envp). Matches the tree
+ * LibExtractor.extractAll() extracts assets/terminfo.tar.gz into. */
+#define DEFAULT_TERMINFO_DIR DEFAULT_LIB_DIR "/terminfo"
 
 /* used+retain keeps this CI freshness marker past compiler dead-strip and
  * linker --gc-sections; `used` alone does not bind the linker. */
@@ -100,6 +104,24 @@ static char default_bash_env[] = "BASH=" DEFAULT_BASH;
 static char default_shelly_lib_dir_env[] = "SHELLY_LIB_DIR=" DEFAULT_LIB_DIR;
 static char default_ld_library_path_env[] = "LD_LIBRARY_PATH=" DEFAULT_LIB_DIR;
 static char default_ld_preload_env[] = "LD_PRELOAD=" DEFAULT_EXEC_WRAPPER;
+/* bug #151 (2026-07-16): execvp() below intentionally passes NULL envp
+ * (not the real inherited environ) into shelly_execve_internal. Two
+ * fallthrough paths land on these arrays when envp is NULL:
+ * add_app_loader_envp()'s `source = envp ? envp : minimal_envp` (used for
+ * the linker64/ELF-rewrite exec path, which is how bundled Termux ELF
+ * binaries like less/nano/vim/tmux actually launch), and
+ * raw_execve_call()'s own `envp ? envp : minimal_envp` substitution for
+ * any non-ELF-rewrite exec with a NULL envp. Without TERM/TERMINFO here,
+ * an ncurses-linked binary launched through either path lost the terminfo
+ * database even after LibExtractor started bundling it and
+ * HomeInitializer.kt started exporting it in .bashrc, since neither of
+ * those cover an envp that never reached this file at all. (Note:
+ * scrub_system_envp()'s separate NULL-source branch below builds its own
+ * small literal list, not minimal_envp/minimal_wrapper_envp — it targets
+ * /system,/vendor,/apex binaries only, which aren't Shelly-bundled
+ * ncurses consumers, so it's intentionally left as-is here.) */
+static char default_term_env[] = "TERM=xterm-256color";
+static char default_terminfo_env[] = "TERMINFO=" DEFAULT_TERMINFO_DIR;
 static char *const minimal_envp[] = {
     default_path_env,
     default_home_env,
@@ -107,6 +129,8 @@ static char *const minimal_envp[] = {
     default_shell_env,
     default_bash_env,
     default_shelly_lib_dir_env,
+    default_term_env,
+    default_terminfo_env,
     NULL
 };
 static char *const minimal_wrapper_envp[] = {
@@ -118,6 +142,8 @@ static char *const minimal_wrapper_envp[] = {
     default_shelly_lib_dir_env,
     default_ld_library_path_env,
     default_ld_preload_env,
+    default_term_env,
+    default_terminfo_env,
     NULL
 };
 

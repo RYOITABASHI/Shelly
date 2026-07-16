@@ -153,6 +153,18 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
         snprintf(preloadBuf, sizeof(preloadBuf),
                  "LD_PRELOAD=%s/libexec_wrapper.so", ldLibPath);
 
+        /* bug #151 (2026-07-16): this envp is used for non-interactive
+         * execCommand()/agent subprocess invocation (separate from the
+         * PTY/.bashrc path in shelly-pty.c + HomeInitializer.kt). Without
+         * TERMINFO, ncurses-linked binaries invoked through this path
+         * (e.g. less/nano/vim run via execCommand, or by a scheduled
+         * agent) can't resolve even the "dumb" terminfo entry from
+         * ldLibPath/terminfo, since Termux's compiled-in fallback path
+         * doesn't exist on-device. ldLibPath here is the same libDir
+         * LibExtractor.extractAll() extracts assets/terminfo.tar.gz into. */
+        char terminfoBuf[512];
+        snprintf(terminfoBuf, sizeof(terminfoBuf), "TERMINFO=%s/terminfo", ldLibPath);
+
         char *envp[] = {
             pathBuf,
             homeBuf,
@@ -161,6 +173,7 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
             ldBuf,
             shellBuf,
             preloadBuf,
+            terminfoBuf,
             NULL
         };
 

@@ -1065,7 +1065,14 @@ patchCodex(libDir);
     //      its compiled-in Termux socket-dir path
     //      ($TMUX_TMPDIR:/data/data/com.termux/files/usr/var/run), which
     //      doesn't exist on a Shelly-only device.
-    private const val BASHRC_VERSION = 233
+    // 234: bug #151 fix. Export TERMINFO="$libDir/terminfo" so the
+    //      LibExtractor-bundled terminfo db (Termux-sourced) is reachable by
+    //      less/nano/vim/tmux, which are dynamically linked against
+    //      libncursesw.so.6 and otherwise hard-fail with no terminfo db
+    //      present on-device. Also threaded TERMINFO through the env -i
+    //      allowlist in __shelly_run_node_clean so Codex/agent child
+    //      processes inherit it.
+    private const val BASHRC_VERSION = 234
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1388,6 +1395,13 @@ patchCodex(libDir);
             // shims add LD_LIBRARY_PATH only around app-private binaries.
             sb.appendLine("export HOME=\"${home.absolutePath}\"")
             sb.appendLine("export TERM=xterm-256color")
+            // bug #151 (2026-07-16): less/nano/vim/tmux are Termux prebuilt
+            // binaries dynamically linked against libncursesw.so.6, whose
+            // compiled-in terminfo search path is Termux's own prefix
+            // (which doesn't exist on Shelly). Point ncurses at the
+            // LibExtractor-extracted terminfo tree instead so these
+            // resolve $TERM without hard-failing.
+            sb.appendLine("export TERMINFO=\"$libDir/terminfo\"")
             sb.appendLine("export COLORTERM=truecolor")
             sb.appendLine("export LANG=en_US.UTF-8")
             sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
@@ -1903,7 +1917,7 @@ patchCodex(libDir);
             sb.appendLine("  __shelly_mkdir -p \"\$__shelly_tmp\" \"\$HOME/.config\" \"\$HOME/.cache\" \"\$HOME/.local/share\" 2>/dev/null || true")
             sb.appendLine("  /system/bin/env -i \\")
             sb.appendLine("    HOME=\"\$HOME\" PWD=\"\$PWD\" USER=\"\${USER:-shelly}\" LOGNAME=\"\${LOGNAME:-shelly}\" SHELL=\"\$SHELL\" \\")
-            sb.appendLine("    TERM=\"\${TERM:-xterm-256color}\" COLORTERM=\"\${COLORTERM:-truecolor}\" LANG=\"\${LANG:-C.UTF-8}\" LC_ALL=\"\${LC_ALL:-C.UTF-8}\" \\")
+            sb.appendLine("    TERM=\"\${TERM:-xterm-256color}\" TERMINFO=\"\${TERMINFO:-$libDir/terminfo}\" COLORTERM=\"\${COLORTERM:-truecolor}\" LANG=\"\${LANG:-C.UTF-8}\" LC_ALL=\"\${LC_ALL:-C.UTF-8}\" \\")
             sb.appendLine("    PATH=\"\$PATH\" LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" ANDROID_DATA=\"\${ANDROID_DATA:-/data}\" ANDROID_ROOT=\"\${ANDROID_ROOT:-/system}\" \\")
             sb.appendLine("    TMPDIR=\"\$__shelly_tmp\" \\")
             sb.appendLine("    NPM_CONFIG_PREFIX=\"\${NPM_CONFIG_PREFIX:-\$HOME/.npm-global}\" XDG_CONFIG_HOME=\"\${XDG_CONFIG_HOME:-\$HOME/.config}\" XDG_CACHE_HOME=\"\${XDG_CACHE_HOME:-\$HOME/.cache}\" XDG_DATA_HOME=\"\${XDG_DATA_HOME:-\$HOME/.local/share}\" \\")
