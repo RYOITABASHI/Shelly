@@ -45,7 +45,7 @@
 
 **未実施の実機検証**: 本 feature は offline のみで検証済み（v1.1: `npx tsc --noEmit` clean、parser/orchestration 193/193 PASS、関連 executor/broker/autonomous 13 suites は 402 PASS + 既知 Windows-only 25 FAIL、new failure 0）。オンデバイスでの実際の agent 登録→スケジュール発火→api-call ディスパッチの end-to-end 実機確認は未実施（次のオンデバイステストで確認すること）。
 
-→ sync: なし。README Status 表への反映は次リリースの棚卸し時に実施。
+**2026-07-16 実機検証で発見・修正した品質バグ（`apiPrompt` がツール選択の指示文をそのままモデルへ送っていた）**: `agent-mrnaqw5g`（「まずPerplexityのAPIを呼んで最新のSTEAM教育ニュースを取得して、次にそれを要約してMarkdownとして保存して」）を実機で5分毎に自動発火させて確認したところ、broker HTTPレベルでは全ステップ`[success]`になるにもかかわらず、Step 2（要約担当のGemini）の応答が「前回のステップでは、PerplexityのAPIを呼び出すための手順とコード例が提供されましたが、実際のAPI呼び出しは実行されておらず、最新のSTEAM教育ニュース記事やそのURLは取得されていません」という内容になっていた。原因は`lib/agent-orchestration.ts`の`apiPrompt()`が、step instructionをそのまま（ツール選択の指示文＝「PerplexityのAPIを呼んで」を含めたまま）Perplexityのsonarモデルへの`messages[0].content`に流し込んでいたこと。sonarのような検索拡張モデルにこの文言をそのまま渡すと、「Perplexity APIの呼び方を説明してほしい」というメタな依頼として解釈され、実際に検索を実行する代わりに「呼び出し方の説明・コード例」を返してしまう——broker/HTTPレイヤーは正常応答（200 OK）なので`[success]`のまま埋もれる、という実害のある内容品質バグだった。**修正**: `stripApiCallClause()`を追加し、各 provider の既存検出正規表現（`PERPLEXITY_PROVIDER_RE`等）+ 既存のトリガー動詞語彙（`呼んで/呼び出して/叩いて/コールして/使って`、英語`call/invoke/query/request/use the ... API`）にマッチする「ツール選択節」だけをinstructionから除去してからモデルへ渡すよう`apiPrompt()`を変更。除去後に実質的な内容（4文字未満など）が残らない場合は元のinstructionへフォールバックする安全弁付き。`__tests__/agent-orchestration.test.ts`に実機再現ケース（日本語・英語の両方、フォールバックケース含む）を追加、既存70件+新規3件すべてPASS、`npx tsc --noEmit` clean。broker/enforcement/native側は無変更（authoring側のプロンプト構築のみの変更）。
 
 ---
 

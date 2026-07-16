@@ -280,13 +280,49 @@ interface ApiCallPreset {
 const EXPLICIT_API_CALL_RE =
   /API\s*(?:を)?\s*(?:呼(?:んで|び出(?:して|す)|ぶ)|叩(?:いて|く)|コール(?:して|する)|使(?:って|う))|API\s*(?:の)?\s*(?:レスポンス|応答|response)\s*(?:を)?\s*使|\bapi\s+call\b|\b(?:call|invoke|query|request|use)\s+(?:the\s+)?(?:[a-z0-9.-]+\s+)?api\b|\buse\s+(?:the\s+)?api\s+(?:response|result)\b/i;
 
-function apiPrompt(instruction: string): string {
-  return `${instruction.trim()}\n\nPrevious step result:\n{{result}}`;
+// Same trigger-verb vocabulary as EXPLICIT_API_CALL_RE, reused below to strip
+// the tool-invocation clause out of the text that actually reaches the model.
+const JP_TRIGGER_VERB = '(?:呼(?:んで|び出(?:して|す)|ぶ)|叩(?:いて|く)|コール(?:して|する)|使(?:って|う))';
+const EN_TRIGGER_VERB = '(?:call|invoke|query|request|use)';
+
+/**
+ * Strip the tool-invocation clause (e.g. "PerplexityのAPIを呼んで" / "call the
+ * Perplexity API to") out of an instruction before it becomes the model's
+ * actual prompt. Found 2026-07-16 on-device: without this, apiPrompt() sent
+ * the RAW instruction verbatim as the chat message — but that text was
+ * authored as a ROUTING directive for the agent ("use Perplexity for this
+ * step"), not as a question for the model itself. A real search-augmented
+ * model (sonar) reads "call the Perplexity API and get the latest STEAM
+ * news" as a meta-request to explain HOW to call an API, and answers with
+ * usage instructions instead of performing the search — reproduced live via
+ * agent-mrnaqw5g (step 1 "succeeded" at the HTTP layer, but step 2 correctly
+ * recognized the carried-forward content was an API-usage explanation, not
+ * real news, and refused to summarize it as fact).
+ *
+ * Only strips the FIRST clause matching this provider's own detection
+ * pattern plus a trigger verb; falls back to the untouched instruction if
+ * stripping would leave nothing substantive (e.g. an instruction that is
+ * ONLY the tool mention, with no separate content clause).
+ */
+function stripApiCallClause(instruction: string, providerRe: RegExp): string {
+  const jpClause = new RegExp(`(?:${providerRe.source})\\s*の?\\s*API\\s*(?:を)?\\s*${JP_TRIGGER_VERB}[、,]?\\s*`, 'i');
+  const enClause = new RegExp(`${EN_TRIGGER_VERB}\\s+(?:the\\s+)?(?:${providerRe.source})\\s+api\\s*(?:to|and|,)?\\s*`, 'i');
+  const stripped = instruction.replace(jpClause, '').replace(enClause, '').replace(/^[の、,\s]+/, '').trim();
+  return stripped.length >= 4 ? stripped : instruction.trim();
 }
+
+function apiPrompt(instruction: string, providerRe: RegExp): string {
+  return `${stripApiCallClause(instruction, providerRe)}\n\nPrevious step result:\n{{result}}`;
+}
+
+const PERPLEXITY_PROVIDER_RE = /api\.perplexity\.ai|パープレ(?:キシティ)?|\bperplexity\b/i;
+const GEMINI_PROVIDER_RE = /generativelanguage\.googleapis\.com|\bgemini\b|ジェミニ/i;
+const CEREBRAS_PROVIDER_RE = /api\.cerebras\.ai|\bcerebras\b|セレブラス/i;
+const GROQ_PROVIDER_RE = /api\.groq\.com|\bgroq\b/i;
 
 const API_CALL_PRESETS: ApiCallPreset[] = [
   {
-    provider: /api\.perplexity\.ai|パープレ(?:キシティ)?|\bperplexity\b/i,
+    provider: PERPLEXITY_PROVIDER_RE,
     buildConfig: (instruction) => ({
       host: AUTH_REFS.perplexity.host,
       method: 'POST',
@@ -294,22 +330,22 @@ const API_CALL_PRESETS: ApiCallPreset[] = [
       authRef: 'perplexity',
       bodyTemplate: JSON.stringify({
         model: 'sonar',
-        messages: [{ role: 'user', content: apiPrompt(instruction) }],
+        messages: [{ role: 'user', content: apiPrompt(instruction, PERPLEXITY_PROVIDER_RE) }],
       }),
     }),
   },
   {
-    provider: /generativelanguage\.googleapis\.com|\bgemini\b|ジェミニ/i,
+    provider: GEMINI_PROVIDER_RE,
     buildConfig: (instruction) => ({
       host: AUTH_REFS.gemini.host,
       method: 'POST',
       path: '/v1beta/models/gemini-2.5-flash:generateContent',
       authRef: 'gemini',
-      bodyTemplate: JSON.stringify({ contents: [{ parts: [{ text: apiPrompt(instruction) }] }] }),
+      bodyTemplate: JSON.stringify({ contents: [{ parts: [{ text: apiPrompt(instruction, GEMINI_PROVIDER_RE) }] }] }),
     }),
   },
   {
-    provider: /api\.cerebras\.ai|\bcerebras\b|セレブラス/i,
+    provider: CEREBRAS_PROVIDER_RE,
     buildConfig: (instruction) => ({
       host: AUTH_REFS.cerebras.host,
       method: 'POST',
@@ -317,12 +353,12 @@ const API_CALL_PRESETS: ApiCallPreset[] = [
       authRef: 'cerebras',
       bodyTemplate: JSON.stringify({
         model: 'qwen-3-235b-a22b-instruct-2507',
-        messages: [{ role: 'user', content: apiPrompt(instruction) }],
+        messages: [{ role: 'user', content: apiPrompt(instruction, CEREBRAS_PROVIDER_RE) }],
       }),
     }),
   },
   {
-    provider: /api\.groq\.com|\bgroq\b/i,
+    provider: GROQ_PROVIDER_RE,
     buildConfig: (instruction) => ({
       host: AUTH_REFS.groq.host,
       method: 'POST',
@@ -330,7 +366,7 @@ const API_CALL_PRESETS: ApiCallPreset[] = [
       authRef: 'groq',
       bodyTemplate: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: apiPrompt(instruction) }],
+        messages: [{ role: 'user', content: apiPrompt(instruction, GROQ_PROVIDER_RE) }],
       }),
     }),
   },

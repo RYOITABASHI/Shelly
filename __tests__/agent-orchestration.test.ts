@@ -333,6 +333,45 @@ describe('detectApiCallStep — explicit, curated NL api-call detection', () => 
     expect(steps[1]).toEqual({ instruction: 'Geminiで普通に要約して', tool: { type: 'gemini-api' } });
     expect(steps[2]).toBe('call the Groq API for the final wording');
   });
+
+  // bug found 2026-07-16 on-device (docs/superpowers/DEFERRED.md, api-call NL
+  // authoring): the bodyTemplate's model prompt used to carry the RAW
+  // instruction verbatim, including the tool-invocation clause itself
+  // ("PerplexityのAPIを呼んで"). A real search-augmented model reads that as a
+  // meta-request to explain HOW to call an API, and answers with usage
+  // instructions instead of performing the search. The prompt sent to the
+  // model must contain the actual content question, not the routing
+  // directive that selected the tool in the first place.
+  describe('apiPrompt content — strips the tool-invocation clause, keeps the real question', () => {
+    it('strips the exact on-device-reproduced Perplexity clause', () => {
+      const step = detectApiCallStep('まずPerplexityのAPIを呼んで最新のSTEAM教育ニュースを取得して');
+      const body = JSON.parse(step!.apiCall!.bodyTemplate!);
+      const content = body.messages[0].content as string;
+      expect(content).not.toMatch(/Perplexity/i);
+      expect(content).not.toMatch(/API/);
+      expect(content).not.toMatch(/呼んで/);
+      expect(content).toContain('最新のSTEAM教育ニュースを取得して');
+      expect(content).toContain('{{result}}');
+    });
+
+    it('strips an English tool-invocation clause the same way', () => {
+      const step = detectApiCallStep('call the Gemini API to draft a concise review of the notes');
+      const body = JSON.parse(step!.apiCall!.bodyTemplate!);
+      const content = body.contents[0].parts[0].text as string;
+      expect(content).not.toMatch(/Gemini/i);
+      expect(content.toLowerCase()).not.toContain('api');
+      expect(content).toContain('draft a concise review of the notes');
+    });
+
+    it('falls back to the untouched instruction when stripping would leave nothing substantive', () => {
+      const step = detectApiCallStep('パープレのAPIを使って');
+      const body = JSON.parse(step!.apiCall!.bodyTemplate!);
+      const content = body.messages[0].content as string;
+      // Nothing left after the clause but the tool mention itself — keep the
+      // original text rather than sending an empty/near-empty prompt.
+      expect(content).toContain('パープレ');
+    });
+  });
 });
 
 describe('detectToolPinnedSteps — Phase 6 tool-mention chain detection', () => {
