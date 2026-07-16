@@ -1059,7 +1059,13 @@ patchCodex(libDir);
     // 231: Codex v0.142.2+ unified binary layout. Stop requiring codex_exec;
     //      route `codex exec ...` as `codex_tui exec ...` so fs-helper
     //      self-relaunch sees the same SHELLY_CODEX_EXEC_PATH as the process.
-    private const val BASHRC_VERSION = 232
+    // 233: bug #151 related issue B — export TMUX_TMPDIR pointing at the
+    //      existing $TMPDIR ($HOME/tmp, already created above) so the
+    //      bundled tmux (Termux prebuilt libtmux.so) doesn't fall back to
+    //      its compiled-in Termux socket-dir path
+    //      ($TMUX_TMPDIR:/data/data/com.termux/files/usr/var/run), which
+    //      doesn't exist on a Shelly-only device.
+    private const val BASHRC_VERSION = 233
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1804,6 +1810,16 @@ patchCodex(libDir);
             // Generic writable temp dir for bundled Node/Codex helpers.
             sb.appendLine("export TMPDIR=\"\$HOME/tmp\"")
             sb.appendLine("__shelly_mkdir -p \"\$TMPDIR\" 2>/dev/null")
+            // bug #151 related issue B: the bundled tmux (Termux prebuilt
+            // libtmux.so) has its socket-directory fallback compiled to
+            // `$TMUX_TMPDIR:/data/data/com.termux/files/usr/var/run` — a
+            // Termux-only path that doesn't exist on a Shelly-only device.
+            // Even after the terminfo fix clears tmux's terminfo hurdle,
+            // socket creation would still fail because neither var is set
+            // nor does the Termux fallback exist. Point TMUX_TMPDIR at the
+            // same $TMPDIR we already export and create above, rather than
+            // introducing a new directory.
+            sb.appendLine("export TMUX_TMPDIR=\"\$TMPDIR\"")
             // bug #106 part B: explicit PS2 so a wrapped or unclosed paste
             // never confuses the user with a non-default continuation
             // prompt. The literal `<` line-prefix observed during
