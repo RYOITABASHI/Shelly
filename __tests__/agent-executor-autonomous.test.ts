@@ -3,6 +3,9 @@ jest.mock('@/lib/home-path', () => ({
 }));
 
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, computeAgentSlug, sanitizeOutputTemplate } from '@/lib/agent-executor';
 import { MAX_RESULT_CARRY_CHARS } from '@/lib/agent-orchestration';
 import { Agent, ToolChoice } from '@/store/types';
@@ -477,7 +480,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=14');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=15');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -853,5 +856,100 @@ describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
   it('emits parseable shell with the baked ladder', () => {
     const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
     expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+  });
+});
+
+describe('generateRunScript — ab-article-eval routes its Codex side through the B2 driver (DEFERRED.md #3)', () => {
+  // Regression guard: ab-article-eval used to shell out to a bare
+  // `"$CODEX_CMD" exec "$(cat ...)"`, the exact invariant codexDriverCommand()
+  // exists to prevent — Android codex has no working native --sandbox, so an
+  // un-driven `codex exec` runs danger-full-access and every internal
+  // shell tool-call codex makes bypasses command-safety/workspace-boundary
+  // classification. ab-article-eval is autonomous-allowed
+  // (agent-credential-policy.ts: credentialClass === 'oauth'), so this was a
+  // real unattended exposure, not just a manual/foreground nicety. It must
+  // now route through the SAME driver + --policy-json gate as every other
+  // codex-resolved tool (the primary `cli` case, the `auto` fallback, and the
+  // baked web→Codex ladder all already do this — see the neighboring
+  // describe blocks in this file for their equivalent assertions).
+  it('routes the Codex comparison leg through .shelly-agent-driver.js, never a bare codex exec', () => {
+    const s = generateRunScript(agent({ type: 'ab-article-eval' }, true));
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).toContain('.shelly-agent-driver.js');
+    expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
+    expect(s).toContain('shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js"');
+    expect(s).toContain('--approval-policy untrusted');
+    expect(s).toContain('--policy-json');
+    expect(s).toContain('--codex-bin "$CODEX_CMD"');
+    expect(s).toContain('--answer-file "$RUN_DIR/codex.md"');
+    expect(s).toContain('--prompt-file "$RUN_DIR/prompt.md"');
+    expect(s).toContain('--audit-log "$LOG_DIR/agent-driver-audit.jsonl"');
+    // The old danger-full-access shape must never resurface.
+    expect(s).not.toMatch(/timeout "\$TIMEOUT" "\$CODEX_CMD" exec/);
+    expect(s).not.toMatch(/"\$CODEX_CMD" exec "\$\(cat/);
+  });
+
+  it('mirrors the driver audit log to app-private storage on the article-eval leg too', () => {
+    const s = generateRunScript(agent({ type: 'ab-article-eval' }, true));
+    // Same audit-mirroring calls every other driver invocation makes — proves
+    // this call site isn't a special, unaudited one-off.
+    const driverBlockStart = s.indexOf('ARTICLE_EVAL_DRIVER_CWD=');
+    expect(driverBlockStart).toBeGreaterThan(-1);
+    const driverBlock = s.slice(driverBlockStart, driverBlockStart + 1500);
+    expect(driverBlock).toContain('mirror_driver_audit_to_app_private || true');
+    expect(driverBlock).toContain('mirror_driver_audit_to_sdcard || true');
+  });
+
+  it('passes this agent\'s configured autonomy level to the driver (not a hardcoded default)', () => {
+    const l1 = generateRunScript({ ...agent({ type: 'ab-article-eval' }, true), autonomyLevel: 'L1' });
+    expect(l1).toContain('"level":"L1"');
+    const l3 = generateRunScript({ ...agent({ type: 'ab-article-eval' }, true), autonomyLevel: 'L3' });
+    expect(l3).toContain('"level":"L3"');
+  });
+
+  it('wires agent.workspaceRoot through to the article-eval driver --cwd, falling back to the content-studio $PROJECT_DIR when unset', () => {
+    const withRoot = generateRunScript({
+      ...agent({ type: 'ab-article-eval' }, true),
+      workspaceRoot: '/home/shelly-test/projects/my-workspace',
+    });
+    expect(withRoot).toContain("AGENT_WORKSPACE_ROOT='/home/shelly-test/projects/my-workspace'");
+    expect(withRoot).toContain('ARTICLE_EVAL_DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"');
+    expect(withRoot).toContain('--cwd "$ARTICLE_EVAL_DRIVER_CWD"');
+
+    const withoutRoot = generateRunScript(agent({ type: 'ab-article-eval' }, true));
+    expect(withoutRoot).toContain("AGENT_WORKSPACE_ROOT=''");
+    expect(withoutRoot).toContain('ARTICLE_EVAL_DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"');
+  });
+
+  it('still runs the local-Qwen comparison leg unchanged (only the Codex leg moved behind the driver)', () => {
+    const s = generateRunScript(agent({ type: 'ab-article-eval' }, true));
+    expect(s).toContain('ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"');
+    expect(s).toContain('local-qwen.md');
+    expect(s).toContain('metrics.json');
+    expect(s).toContain(UNSET); // oauth+local path → keys scrubbed
+  });
+
+  it('emits parseable shell for the driver-routed article-eval script', () => {
+    // Written to a temp file and syntax-checked with `bash -n <file>` rather
+    // than `bash -n -c <script>` — the driver invocation makes this generated
+    // script long enough to hit Windows' ENAMETOOLONG argv limit via -c (a
+    // known baseline flake for this project's other `-c`-based parse checks
+    // on Windows; see docs/superpowers/DEFERRED.md "ENAMETOOLONG Windows
+    // ベースライン"). Reading from a file sidesteps the argv-length limit
+    // entirely while checking the exact same thing.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-article-eval-parse-'));
+    try {
+      const s = generateRunScript(agent({ type: 'ab-article-eval' }, true));
+      const scriptFile = path.join(tmpDir, 'autonomous.sh');
+      fs.writeFileSync(scriptFile, s);
+      expect(() => execFileSync('bash', ['-n', scriptFile])).not.toThrow();
+
+      const nonAutonomous = generateRunScript(agent({ type: 'ab-article-eval' }, false));
+      const nonAutonomousFile = path.join(tmpDir, 'manual.sh');
+      fs.writeFileSync(nonAutonomousFile, nonAutonomous);
+      expect(() => execFileSync('bash', ['-n', nonAutonomousFile])).not.toThrow();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

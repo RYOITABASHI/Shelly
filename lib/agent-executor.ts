@@ -28,7 +28,13 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // preloads libexec_wrapper.so scoped to git only so HTTPS git operations
 // work from the autonomous runtime the same way the interactive PTY's
 // git() already does (DEFERRED.md #2 残り / git-over-HTTPS latent gap).
-const AGENT_SCRIPT_VERSION = 14;
+// v15 (DEFERRED.md #3 ab-article-eval が B2 driver を迂回): articleEvalCommand()'s
+// codex leg no longer shells out to a bare `codex exec` (which runs
+// danger-full-access, bypassing command-safety/workspace-boundary
+// classification for every tool-call codex makes internally) — it now
+// routes through the same B2 driver every other codex-resolved autonomous
+// tool uses.
+const AGENT_SCRIPT_VERSION = 15;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3304,7 +3310,7 @@ function generateToolCommand(
         authRef: 'groq',
       });
     case 'ab-article-eval':
-      return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd);
+      return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd, options.policyJson ?? '');
     case 'auto':
       // `auto` never actually resolves to this arm in a live run today —
       // resolveAgentRoute (autonomous) and scoreRoutes (non-autonomous) both
@@ -3401,7 +3407,32 @@ elif grep -qiE 'usage limit|rate.?limit|too many requests|quota (exceeded|reache
 fi`;
 }
 
-function articleEvalCommand(rawPrompt: string, resultVar: string, systemPromptJson: string, localModel?: string, codexCmd?: string): string {
+/**
+ * A/B article evaluator: runs the SAME fixed, code-defined editorial rubric
+ * against local Qwen and Codex, side by side, for manual comparison. Only the
+ * `## User Request` + `## Recent Sources` sections are agent/user-supplied
+ * (never model-chosen commands); everything else — the rubric, the run
+ * layout, both invocations — is authored here, not generated at runtime.
+ *
+ * The Codex side used to shell out to a bare `codex exec "$(cat prompt.md)"`.
+ * That is EXACTLY the invariant codexDriverCommand()'s doc comment warns
+ * about: Android codex has no working native --sandbox, so an un-driven
+ * `codex exec` runs danger-full-access — every shell tool-call codex makes
+ * internally (not just the fixed prompt text) bypasses command-safety /
+ * workspace-boundary classification entirely. The "Recent Sources" block
+ * folded into the prompt (lib/agent-executor.ts, context.md builder above)
+ * is file content this app did not author (scraped articles / vault notes),
+ * so it is exactly the kind of untrusted text a prompt-injection could hide
+ * in — the same class of risk the B2 driver's gate exists to catch. `ab-
+ * article-eval` is autonomous-allowed (agent-credential-policy.ts), so this
+ * is a real unattended exposure, not merely a manual/foreground nicety.
+ * Routed through the same B2 driver (audit log, --policy-json boundary gate,
+ * AGENT_WORKSPACE_ROOT --cwd anchoring) as every other codex-resolved tool —
+ * see DEFERRED.md "#3 ab-article-eval が B2 driver を迂回". The article-eval
+ * capability surface (fixed rubric + local/codex A/B compare, nothing else)
+ * is unchanged; only HOW codex is invoked changed.
+ */
+function articleEvalCommand(rawPrompt: string, resultVar: string, systemPromptJson: string, localModel?: string, codexCmd?: string, policyJson = ''): string {
   const promptMarker = `SHELLY_AB_PROMPT_${Math.random().toString(36).slice(2)}`;
   const localModelValue = (localModel || LOCAL_MODEL_BALANCED).replace(/"/g, '\\"');
   const codexCmdValue = (codexCmd || 'codex').replace(/"/g, '\\"');
@@ -3487,14 +3518,35 @@ else
 fi
 
 CODEX_START=$(date +%s)
+# Same B2 driver every other codex-resolved autonomous tool routes through
+# (codexDriverCommand() above) — audit log, --policy-json boundary gate,
+# AGENT_WORKSPACE_ROOT --cwd anchoring — instead of a bare "$CODEX_CMD" exec.
+# See the doc comment on articleEvalCommand() for why this exposure was real.
+ARTICLE_EVAL_DRIVER_CWD="\${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"
+[ -d "$ARTICLE_EVAL_DRIVER_CWD" ] || ARTICLE_EVAL_DRIVER_CWD="$HOME"
 set +e
-if command -v "$CODEX_CMD" >/dev/null 2>&1; then
-  timeout "$TIMEOUT" "$CODEX_CMD" exec "$(cat "$RUN_DIR/prompt.md")" > "$RUN_DIR/codex.md" 2> "$RUN_DIR/codex.stderr.log"
+if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+  rm -f "$RUN_DIR/codex.md"
+  shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+    --cwd "$ARTICLE_EVAL_DRIVER_CWD" \\
+    --approval-policy untrusted \\
+    --policy-json ${shellQuote(policyJson)} \\
+    --codex-bin "$CODEX_CMD" \\
+    --agent-id "$AGENT_ID" \\
+    --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+    --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+    --answer-file "$RUN_DIR/codex.md" \\
+    --prompt-file "$RUN_DIR/prompt.md" > "$RUN_DIR/codex.stderr.log" 2>&1
   CODEX_EXIT=$?
+  mirror_driver_audit_to_app_private || true
+  mirror_driver_audit_to_sdcard || true
+  if [ ! -s "$RUN_DIR/codex.md" ]; then
+    cp "$RUN_DIR/codex.stderr.log" "$RUN_DIR/codex.md" 2>/dev/null || echo "Codex driver produced no answer (exit $CODEX_EXIT)" > "$RUN_DIR/codex.md"
+  fi
 else
-  echo "Codex CLI not found: $CODEX_CMD" > "$RUN_DIR/codex.md"
-  echo "Codex CLI not found: $CODEX_CMD" > "$RUN_DIR/codex.stderr.log"
-  CODEX_EXIT=127
+  echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > "$RUN_DIR/codex.md"
+  echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > "$RUN_DIR/codex.stderr.log"
+  CODEX_EXIT=1
 fi
 set -e
 CODEX_END=$(date +%s)

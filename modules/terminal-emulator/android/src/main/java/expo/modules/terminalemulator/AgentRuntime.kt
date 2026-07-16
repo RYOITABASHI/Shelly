@@ -40,7 +40,11 @@ object AgentRuntime {
     // scoped LD_PRELOAD the interactive PTY's git() already has, so HTTPS git
     // works from the autonomous runtime too. Bumped so a stale pre-v14
     // on-disk script is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 14
+    // v15 (docs/superpowers/DEFERRED.md #3): ab-article-eval's codex leg now
+    // routes through the B2 driver instead of a bare `codex exec` (which ran
+    // danger-full-access, bypassing command-safety/workspace-boundary
+    // classification). Bumped so a stale pre-v15 on-disk script regenerates.
+    private const val CURRENT_SCRIPT_VERSION = 15
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 

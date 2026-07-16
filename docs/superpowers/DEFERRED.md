@@ -455,15 +455,17 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 
 ### 自律エージェント制御面レビュー（2-model）— 残課題
 
-2モデル＋人手のクロスレビューで挙がった自律エージェント制御面の穴。**#2（policy 配線漏れ）と one-shot cleanup（Med）は修正済**。残り：
+2モデル＋人手のクロスレビューで挙がった自律エージェント制御面の穴。**#2（policy 配線漏れ）、#3（ab-article-eval driver 迂回）、one-shot cleanup（Med）は修正済**。残り：
 
 **#1 action approval reply の偽造可能性（P1・security・要実機）**
 - `wait_action_approval`（lib/agent-executor.ts）は reply の `runId` と `requestSha256`（＝リクエストの sha256、秘密でない）一致のみ検証。同一 UID（＝エージェントスクリプト自身）が reply ファイルを書けば自分の action（cli/webhook/notify）承認を偽造できる。
 - 緩和事実：承認対象は**作成時にユーザーが設定したアクション**（cli コマンドは `agent.action.command` 固定、モデルが実行時に任意注入しない）。モデル選択コマンドの **driver escalation は公開鍵署名済**（AgentEscalationBridge / Android Keystore RSA + shelly-agent-driver の verifier）。よって任意 RCE でなく「ユーザー設定アクションの自動承認」＝defense-in-depth。
 - 戻す条件：escalation 署名インフラを action approval に拡張（`AgentActionApprovalBridge` で reply を署名 → `wait_action_approval` が node 検証ヘルパーで公開鍵検証、pin は escalation と同様）。**crypto/keystore/承認フローの実機検証必須**。実機接続セッション（Codex-on-device / ワイヤレスデバッグ）で実装すること。
 
-**#3 ab-article-eval が B2 driver を迂回（P2・consistency）**
-- `ab-article-eval` は autonomous 許可（agent-credential-policy）だが `articleEvalCommand` が `codex exec` を直叩きし driver audit/pin/gate を通らない。ただし記事評価専用の制約ツールで**任意シェルを実行しない**ため gate の必要性は低い。整合性のため将来 driver 経由化 or 明示的に「driver 不要ツール」と仕様化。
+✅ **#3 ab-article-eval が B2 driver を迂回（P2・consistency）— 解消済み（2026-07-17）**
+- 再調査の結果、当時の「記事評価専用の制約ツールで任意シェルを実行しないため gate の必要性は低い」という判断は不正確と判明: `articleEvalCommand`（lib/agent-executor.ts）の codex 側は `"$CODEX_CMD" exec "$(cat prompt.md)"` を直叩きしており、これは `codexDriverCommand()` のコメントが警告する不変条件そのもの——Android の codex には動作する native `--sandbox` がないため、driver を経由しない `codex exec` は danger-full-access で走り、codex が内部的に出す**シェルツールコール全て**（固定プロンプト文字列そのものではなく）が command-safety/workspace-boundary 分類を完全にバイパスする。プロンプトに折り込まれる `context.md`（`$PROJECT_DIR/sources` や Obsidian vault の "Recent Sources"）はこのアプリが著者ではないファイル内容（スクレイプ記事・vaultノート）であり、プロンプトインジェクションが隠れうる非信頼テキストという点で、まさに B2 driver の gate が対象とするリスクそのもの。`ab-article-eval` は `agent-credential-policy.ts` で `credentialClass === 'oauth'`（autonomous 許可）なので、これは実際に無人実行で露出しうる穴だった（過去の「Finding 3」— baked web→Codex fallback の bare `codex exec` 修正と同種のクラス）。
+- 実装: driver 経由化（Option A）を選択。`articleEvalCommand` に `policyJson` パラメータを追加し（`generateToolCommand` の `case 'ab-article-eval'` から `options.policyJson ?? ''` を渡す）、codex 比較leg を bare exec から `codexDriverCommand()` と同型の driver 呼び出し（`--cwd`/`--approval-policy untrusted`/`--policy-json`/`--codex-bin`/`--agent-id`/`--escalation-public-key-sha256`/`--audit-log`/`--answer-file`/`--prompt-file`）に置き換え。`DRIVER_CWD`境界も同じ `${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}` フォールバック（#2 の workspaceRoot 修正と同じパターン）で統一。ローカル Qwen 側の A/B 比較ロジック・固定 rubric・ツールの実行可能面（記事評価 A/B 比較のみ、それ以外は不可）は変更なし——「何を実行できるか」は変えず「どう codex を呼ぶか」だけを変えた。
+- テスト: `__tests__/agent-executor-autonomous.test.ts` に新規 describe ブロック「ab-article-eval routes its Codex side through the B2 driver」を追加（6 test: driver invocation shape / audit mirror呼び出し / autonomyLevel 伝播 / workspaceRoot→DRIVER_CWD 配線 / local-Qwen leg 不変 / bash構文パース）。`tsc --noEmit` クリーン、`jest`（agent-executor-autonomous / agent-executor-credential 他）は patch 適用前後で失敗数同一（vanilla 25件 → 適用後25件、全て既知の Windows `ENAMETOOLONG`（`bash -n -c` の argv 長制限）等の既存ベースライン、新規失敗ゼロ・新規テスト6件全PASS）。
 
 ✅ **#2 の残り：workspaceRoot → driver --cwd（P2）— 解消済み（2026-07-16）**
 - `lib/agent-executor.ts`に`AGENT_WORKSPACE_ROOT=${shellQuote(agent.workspaceRoot ?? '')}`を追加し、`codexDriverCommand()`の`DRIVER_CWD="$PROJECT_DIR"`固定を`DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"`へ変更。`workspaceRoot`未設定時はbashの`:-`がempty文字列をunset同様に扱うため、既定の`$PROJECT_DIR`動作は無変化（`bash -c`実行で直接確認済み）。`scripts/shelly-agent-driver.js:236-242`が`--cwd`から`AutonomyPolicy.workspaceRoot`を無条件に再導出することを実コード読解で確認済み——この`--cwd`が実際の境界ゲートそのものであるというコメントの主張は正確。
