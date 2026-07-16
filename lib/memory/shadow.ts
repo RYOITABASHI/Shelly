@@ -28,7 +28,7 @@ import {
 import { MemoryStore } from './memory-store';
 import { JsonFileMemoryStorage } from './storage-json';
 import { createExpoFsPort, systemClock } from './fs-expo';
-import { createExpoEncryptionPort } from './crypto-expo';
+import type { EncryptionPort } from './types';
 import {
   DEFAULT_RECALL_LIMIT,
   MemoryHit,
@@ -61,10 +61,23 @@ export interface ShadowDeps {
 // Lazy singleton: the expo FsPort + store are only constructed the first time a
 // flag-ON shadow pass actually runs, so the dormant (flag-OFF) app pays zero
 // cost and host tests never construct the expo port.
+//
+// crypto-expo.ts is require()'d HERE (not statically imported at module top)
+// deliberately: it pulls in @noble/ciphers, which ships pure ESM with no CJS
+// build. Jest's default config never transforms node_modules, so any test
+// file that merely IMPORTS this module (shadow.ts is imported unconditionally
+// by lib/agent-manager.ts, which dozens of unrelated test files import) would
+// fail to parse — even though MEMORY_ENABLED gates every call site so the
+// port is never actually constructed. A lazy require() means the ESM-only
+// dependency graph is only touched by a test/build that actually reaches this
+// line, matching the "dormant, zero cost while off" contract the rest of this
+// file already documents.
 let sharedDeps: ShadowDeps | null = null;
 
 function getShadowDeps(): ShadowDeps {
   if (!sharedDeps) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createExpoEncryptionPort } = require('./crypto-expo') as { createExpoEncryptionPort: () => EncryptionPort };
     const adapter = new JsonFileMemoryStorage(createExpoFsPort(), createExpoEncryptionPort(), {
       root: shadowRootDir(),
     });
