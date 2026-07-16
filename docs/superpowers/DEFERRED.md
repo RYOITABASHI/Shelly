@@ -112,10 +112,18 @@
 
 ---
 
-### ✅ bug #151 — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない — 実装済み・**実機未検証** (`21217c6af`、2026-07-16)
+### ✅ bug #151 — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない — 実装済み・**実機検証で新たな真因判明、再修正中** (`21217c6af`→`463cf784d`→`8e5e81565`→次コミットで真因修正、2026-07-16)
 
 **優先度**: P1（`less`/`nano`は完全に機能不全、`vim`もdefaults.vim読み込み失敗＝一部デフォルト設定が無効。今夜の`1bec5af86`bashrcラッパー修正の実機検証中に発見）
-**状態**: Fable5による根本原因調査 + 修正設計 完了(2026-07-16) → 同日中に実装完了(`21217c6af`)。**⚠️ 実機未検証**: この作業はNDK/Gradleの無い環境（Windows、実機adb接続なし）で行われたため、native diffのコンパイル確認・実機での`less`/`nano`/`vim`/`tmux`起動スモークテストのいずれも未実施。次のビルド後に必ず実機検証すること。
+**状態**: Fable5による根本原因調査 + 修正設計 完了(2026-07-16) → 同日中に実装完了(`21217c6af`)。**実機検証の結果、当初の「terminfo未展開」自体は正しい診断だったが、その後の2回の追加修正（`463cf784d`のgzip magic-byte sniffィング、`8e5e81565`のvimrc `syntax on`削除）はCIグリーン後も実機で `less`/`nano`/`vim` の症状が変化せず、真因ではなかったことが判明。実際の根本原因を`adb logcat`直読み+APK内バイナリの直接バイト解析で特定し、`terminfo.tar.gz`アセット自体を再生成して修正した（詳細は下記「2026-07-16 実機再調査」節）。**
+
+**2026-07-16 実機再調査（`463cf784d`/`8e5e81565`ビルド後）**: CI green (`29486782882`) 後にアプリ完全再起動＋`rm -f ~/.vimrc`＋再テストしたところ、`less README.md`は変わらず`terminals database is inaccessible`、`nano CLAUDE.md`も変わらず`ncurses: cannot initialize terminal type`で起動不可のまま（`vim README.md`は`E1187`警告こそ出るがEnterで継続すればファイルは正常に開けて`:q`で正常終了 — これは元々「許容範囲の警告」として設計された動作で、実際に検証してみると意図通り機能していた）。`adb -s <serial> logcat -d -b all --pid=<新プロセスPID>`で`LibExtractor`タグを直読みした結果、**新コード（gzip magic-byte sniffィング適用後）でも `terminfo.tar tar failed (exit 1): tar: bad header` が毎回発生**していることを確認 — プロセスは`lastUpdateTime`後に新規起動されており（`versionCode=1922`確認済み）、ビルド反映漏れではなく本物のランタイム失敗。
+
+**真の根本原因（APKから直接抽出したバイトで実証済み）**: `assets/terminfo.tar`として公開されるバイト列を実機からpullしたAPKから直接抽出・解析した結果、**gzip圧縮バイトではなく、最初から正しく展開済みの生tarアーカイブ**だった（`file`コマンドで`POSIX tar archive (GNU)`と判定、先頭バイトは`7465726d696e666f2f` = `"terminfo/"`のASCII）。つまり`463cf784d`の「gzip判定をnameからbyte sniffingへ変更」という修正自体は無害だが的外れで、`isTarGz`は結局`false`と正しく判定され、以前と同じ`tar xf`（`-z`なし）が使われていた。デスクトップのGNU tarではこのtarを警告付き（`implausibly old timestamp`）で正常展開できるが、**Android実機の`/system/bin/tar`（toybox tar）は`tar tvf`のリストアップ段階から`bad header`で即失敗**することを、抽出したバイト列を`adb push`して実機の`tar`バイナリに直接食わせて確認した。ヘッダーを16進ダンプで検査した結果、mtimeフィールド（オフセット136、12バイト）が標準のoctal ASCII表現ではなく、**GNU tarの拡張base-256数値エンコーディング（先頭バイトの最上位ビットが立った`ff ff ff ff ff ff ff ff ff ff ff 81`パターン）**になっており、これは負数（1970年より前の日付、おそらくTermuxの`.deb`パッケージ由来のreproducible-build用ゼロ化タイムスタンプ）をoctal ASCIIで表現できないためGNU tarが自動的に使う拡張形式。**toybox tarはこのGNU拡張ヘッダー形式をパースできず、全エントリで`bad header`エラーになる** — gzip/raw判定とは完全に無関係の、tarヘッダー形式そのものの非互換性が真因だった。
+
+**修正**: `modules/terminal-emulator/android/src/main/assets/terminfo.tar.gz`を、mtimeを`2020-01-01`（octal ASCII表現内に収まる正の値）に正規化した`--format=ustar`で再パックしたものに差し替え。修正後のtarを実機に`adb push`して`/system/bin/tar xf`で直接展開テストし、`TAR_OK`＋全10エントリ（`a/ansi`, `d/dumb`, `l/linux`, `s/screen`, `s/screen-256color`, `t/tmux`, `t/tmux-256color`, `v/vt100`, `x/xterm`, `x/xterm-256color`）の展開成功を実機バイナリで直接確認済み（Kotlin側のコンパイルを待たずに検証できた、tarフォーマット自体の問題だったため）。`463cf784d`のgzip magic-byte sniffィングは実害はなく、aaptの挙動（gzipのまま出るか展開済みで出るか）のどちらにも頑健に対応する防御的改善として維持。
+
+**残作業**: この節を書いている時点でアセット差し替えはローカルで完了、次のコミット＋pushでCIビルド後に実機再検証が必要（`less README.md`/`nano CLAUDE.md`/`vim README.md`/`tmux new -s test`の4点、前回`tmux`はユーザーのタイプミス`mux new -s test`で未検証のまま）。
 
 **発見**: 2026-07-16、bug #119 exec-wrapper修正の実機検証セッション中。`~/Shelly$ less README.md` → `terminals database is inaccessible`。`vim README.md` → `E1187: Failed to source defaults.vim`(Enterで継続すれば編集自体は可能)。`nano CLAUDE.md` → `ncurses: cannot initialize terminal type ($TERM="xterm-256color"); exiting`(起動不可)。
 
