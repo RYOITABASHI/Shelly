@@ -1059,7 +1059,7 @@ patchCodex(libDir);
     // 231: Codex v0.142.2+ unified binary layout. Stop requiring codex_exec;
     //      route `codex exec ...` as `codex_tui exec ...` so fs-helper
     //      self-relaunch sees the same SHELLY_CODEX_EXEC_PATH as the process.
-    private const val BASHRC_VERSION = 231
+    private const val BASHRC_VERSION = 232
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2063,6 +2063,34 @@ patchCodex(libDir);
             sb.appendLine("rg() { _run $libDir/rg \"\$@\"; }")
             sb.appendLine("jq() { _run $libDir/jq \"\$@\"; }")
             sb.appendLine("sqlite3() { _run $libDir/sqlite3 \"\$@\"; }")
+            // v232: bug #119-adjacent on-device smoke test found `vim` (and,
+            // by the same missing-wrapper root cause, tmux/make/less/nano/
+            // gh/gpg/unzip/ssh-keygen) fail bare in the terminal with
+            // "Permission denied" — NOT a regression from the exec-wrapper
+            // TOCTOU fix (c7a39c20c), but a pre-existing gap since 2026-05-21
+            // (bashrc v180, commit 3bed887ad) intentionally removed the
+            // PTY-wide LD_PRELOAD (a crashing interposer couldn't be
+            // recovered by .bashrc, so new tabs repeatedly segfaulted before
+            // the prompt). Since then, every bundled app-data ELF is only
+            // reachable from the interactive shell via an explicit function
+            // that preloads libexec_wrapper.so per-command (see git() above)
+            // — any bundled tool WITHOUT such a function silently falls
+            // through to a raw kernel execve() that Knox denies on
+            // app_data_file. These 10 tools had no wrapper function and no
+            // $HOME/bin shim, so they were unreachable bare in the terminal
+            // on every build since v180, not just this one. Do NOT revert
+            // 3bed887ad — keep the preload scoped per-command, not PTY-wide.
+            sb.appendLine("vim() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/vim \"\$@\"; }")
+            sb.appendLine("vi() { vim \"\$@\"; }")
+            sb.appendLine("tmux() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/tmux \"\$@\"; }")
+            sb.appendLine("make() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/make \"\$@\"; }")
+            sb.appendLine("less() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/less \"\$@\"; }")
+            sb.appendLine("nano() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/nano \"\$@\"; }")
+            sb.appendLine("gh() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gh \"\$@\"; }")
+            sb.appendLine("gpg() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gpg \"\$@\"; }")
+            sb.appendLine("gpg-agent() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gpg-agent \"\$@\"; }")
+            sb.appendLine("unzip() { _run $libDir/unzip \"\$@\"; }")
+            sb.appendLine("ssh-keygen() { _run $libDir/ssh-keygen \"\$@\"; }")
             sb.appendLine()
 
             // AI CLI tools — use updated JS CLIs ($HOME/.shelly-cli) if available, else bundled
