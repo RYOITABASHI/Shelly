@@ -2868,9 +2868,19 @@ patchCodex(libDir);
         // exists, so a minimal vimrc satisfies that check and silences the
         // warning at zero APK bundling cost. Only written when absent so we
         // never clobber a user's own vim customizations.
+        // 2026-07-16 on-device follow-up: the original version also set
+        // `syntax on`, which hits the SAME missing-runtime root cause one
+        // layer deeper — vim tries to load
+        // $VIMRUNTIME/syntax/syntax.vim (hardcoded to the same
+        // /data/data/com.termux/... path) and fails with a harder E484
+        // error instead of the softer E1187 warning this file was meant to
+        // silence. Dropped `syntax on` — no vim runtime files are bundled,
+        // so syntax highlighting genuinely isn't available yet (tracked as
+        // a separate, larger follow-up); `set nocompatible` alone is
+        // sufficient to give vim a non-empty vimrc and skip defaults.vim.
         val vimrc = File(home, ".vimrc")
         if (!vimrc.exists()) {
-            vimrc.writeText("syntax on\nset nocompatible\n")
+            vimrc.writeText("set nocompatible\n")
         }
 
         return home
