@@ -95,6 +95,35 @@ describe('Agent PlanSpec v1', () => {
     expect(JSON.stringify(spec.action)).not.toContain('notificationId');
   });
 
+  it('serializes an api-call action (v1) with its full structured config', () => {
+    const spec = buildAgentPlanSpec(agent({
+      orchestration: { steps: ['gather sources', 'post the digest'] },
+      action: {
+        type: 'api-call',
+        apiCall: {
+          host: 'api.perplexity.ai',
+          method: 'POST',
+          path: '/chat/completions',
+          authRef: 'perplexity',
+          bodyTemplate: '{"query":"{{result}}"}',
+        },
+      },
+    }));
+    expect(spec.action).toEqual({
+      type: 'api-call',
+      apiCall: {
+        host: 'api.perplexity.ai',
+        method: 'POST',
+        path: '/chat/completions',
+        authRef: 'perplexity',
+        bodyTemplate: '{"query":"{{result}}"}',
+      },
+    });
+    expect(validateAgentPlanSpec(spec).ok).toBe(true);
+    expect(JSON.stringify(spec.action)).not.toContain('PERPLEXITY_API_KEY');
+    expect(JSON.stringify(spec.action)).not.toContain('Bearer ');
+  });
+
   it('serializes the orchestration char limit as an optional executor limit', () => {
     const spec = buildAgentPlanSpec(agent({
       orchestration: {
@@ -185,6 +214,31 @@ describe('Agent PlanSpec v1', () => {
 
     it('validateAgentPlanSpec still accepts an orchestrated PlanSpec (the extra `steps` key is not rejected)', () => {
       const spec = buildAgentPlanSpec(agent({ orchestration: { steps: ['a', 'b', 'c'] } }));
+      expect(validateAgentPlanSpec(spec).ok).toBe(true);
+    });
+
+    // api-call (v1): a step's apiCall config must serialize into
+    // steps.list[i].apiCall exactly like normalizeSteps() independently
+    // computes it — buildAgentPlanSpec must not re-derive or drop it.
+    it('serializes a step-carried apiCall config into steps.list[i].apiCall', () => {
+      const orchestration = {
+        steps: [
+          {
+            instruction: 'search for sources',
+            apiCall: { host: 'api.perplexity.ai', method: 'GET' as const, path: '/v1/search?q={{result}}' },
+          },
+          'summarize and post the digest',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ orchestration }));
+      expect(spec.steps).toBeDefined();
+      expect(spec.steps!.list).toEqual(normalizeSteps(orchestration));
+      expect(spec.steps!.list[0].apiCall).toEqual({
+        host: 'api.perplexity.ai',
+        method: 'GET',
+        path: '/v1/search?q={{result}}',
+      });
+      expect(spec.steps!.list[0].tool).toBeUndefined();
       expect(validateAgentPlanSpec(spec).ok).toBe(true);
     });
   });

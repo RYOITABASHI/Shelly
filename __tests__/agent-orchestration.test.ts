@@ -1,4 +1,5 @@
 import {
+  apiCallLabel,
   buildStepPrompt,
   combineFinalPreview,
   DEFAULT_MAX_STEPS,
@@ -11,10 +12,11 @@ import {
   normalizeSteps,
   parseStepsFromText,
   reduceStatus,
+  resolveApiCallTemplate,
   resolveBudget,
 } from '@/lib/agent-orchestration';
 import { classifyProposedCommand } from '@/lib/agent-boundary-policy';
-import type { AgentOrchestrationConfig, AgentRunStep } from '@/store/types';
+import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentRunStep } from '@/store/types';
 
 const cfg = (over: Partial<AgentOrchestrationConfig> = {}): AgentOrchestrationConfig => ({
   steps: ['a', 'b', 'c'],
@@ -52,6 +54,61 @@ describe('normalizeStep — single-entry normalization (Phase 5 tool pin)', () =
     const long = 'x'.repeat(900);
     expect(normalizeStep(long).instruction.length).toBeLessThanOrEqual(500);
     expect(normalizeStep({ instruction: long, tool: { type: 'local' } }).instruction.length).toBeLessThanOrEqual(500);
+  });
+
+  // api-call (v1)
+  const apiCall: AgentApiCallConfig = { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' };
+  it('an object with an apiCall passes it through, with a real instruction untouched', () => {
+    expect(normalizeStep({ instruction: 'search for sources', apiCall })).toEqual({
+      instruction: 'search for sources',
+      apiCall,
+    });
+  });
+  it('synthesizes a label from apiCallLabel when instruction is blank, so the step is not dropped by normalizeSteps\' filter', () => {
+    expect(normalizeStep({ instruction: '', apiCall })).toEqual({
+      instruction: apiCallLabel(apiCall),
+      apiCall,
+    });
+    expect(normalizeStep({ instruction: '   ', apiCall }).instruction).toBe(apiCallLabel(apiCall));
+  });
+  it('apiCall wins over tool when (invalidly) both are present on the raw input — mutually exclusive per the type contract', () => {
+    // normalizeStep does not itself enforce mutual exclusivity (the UI does,
+    // per AgentOrchestrationStep's doc comment) but must still produce a
+    // single unambiguous shape rather than silently carrying both.
+    const step = normalizeStep({ instruction: 'x', apiCall, tool: { type: 'local' } } as any);
+    expect(step.apiCall).toEqual(apiCall);
+    expect(step.tool).toBeUndefined();
+  });
+});
+
+describe('apiCallLabel — display-only, never sent to a model', () => {
+  it('formats METHOD host+path', () => {
+    expect(apiCallLabel({ host: 'api.perplexity.ai', method: 'GET', path: '/v1/search?q=x' })).toBe(
+      'GET api.perplexity.ai/v1/search?q=x',
+    );
+  });
+  it('truncates to the same 500-char instruction budget as normalizeStep', () => {
+    const long = apiCallLabel({ host: 'api.perplexity.ai', method: 'POST', path: '/' + 'x'.repeat(900) });
+    expect(long.length).toBeLessThanOrEqual(500);
+  });
+});
+
+describe('resolveApiCallTemplate — plain string-replace, no template engine', () => {
+  it('replaces the literal {{result}} placeholder', () => {
+    expect(resolveApiCallTemplate('/v1/search?q={{result}}', 'hello world')).toBe('/v1/search?q=hello world');
+  });
+  it('replaces every occurrence', () => {
+    expect(resolveApiCallTemplate('{{result}}-{{result}}', 'x')).toBe('x-x');
+  });
+  it('is a no-op when the placeholder is absent', () => {
+    expect(resolveApiCallTemplate('/v1/fixed-path', 'anything')).toBe('/v1/fixed-path');
+  });
+  it('returns an empty string for an absent template, regardless of lastResult', () => {
+    expect(resolveApiCallTemplate(undefined, 'anything')).toBe('');
+    expect(resolveApiCallTemplate('', 'anything')).toBe('');
+  });
+  it('handles an empty lastResult (first step in a chain) by removing the placeholder', () => {
+    expect(resolveApiCallTemplate('/v1/search?q={{result}}', '')).toBe('/v1/search?q=');
   });
 });
 

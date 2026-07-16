@@ -42,6 +42,14 @@ const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
   // Phase 4: real dispatch path, see dispatch_agent_action's app-act) case
   // below and agent-plan-spec.ts toPlanAction's 'app-act' case.
   'app-act': 'Produce exactly the content needed for the requested app action.',
+  // api-call (v1) is PlanSpec-executor-only (scripts/shelly-plan-executor.js) —
+  // deliberately NOT wired into this legacy .sh executor's dispatch_agent_action
+  // (see the plan/DEFERRED.md entry for this feature). This entry exists only
+  // to satisfy Record<AgentActionType, string> exhaustiveness now that
+  // AgentActionType includes 'api-call'; it is unreachable in practice because
+  // lib/agent-manager.ts's runAgentNow refuses to run any agent carrying an
+  // api-call action/step through this attended .sh path at all.
+  'api-call': 'Produce exactly the content needed for the requested API call.',
 };
 const ACTION_OUTPUT_RULES = 'Follow explicit user instructions for content, format, length, and tone. When they are not specified, be direct and concise. Output only the requested deliverable. Never add meta-commentary about your reasoning or interpretation of the request.';
 

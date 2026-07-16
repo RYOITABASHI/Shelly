@@ -583,7 +583,36 @@ export type AgentActionType =
   | 'cli'
   | 'intent'
   | 'dm-reply'
-  | 'app-act';
+  | 'app-act'
+  | 'api-call';
+
+/**
+ * api-call (v1, UI-only authoring — see AgentOrchestrationStep's doc comment
+ * and lib/agent-nl-parser.ts, which deliberately never produces this shape):
+ * a structured, pre-allowlisted HTTP call authored in AgentConfirmCard, routed
+ * through the SAME capability broker (host allowlist + secret-by-reference +
+ * taint gate, lib/capability-envelope.ts) every other egress already uses —
+ * this is a new AUTHORING surface, not a new enforcement path.
+ */
+export interface AgentApiCallConfig {
+  /** One of EGRESS_ALLOWLIST (lib/capability-envelope.ts) — the UI constrains
+   *  this to a picker, never free text, so a non-allowlisted host can't be
+   *  authored here in the first place. */
+  host: string;
+  method: 'GET' | 'POST';
+  /** Absolute path (+ optional query), no scheme/host. May contain the
+   *  literal placeholder "{{result}}", resolved (URL-encoded) against the
+   *  prior step's/prompt's result — see resolveApiCallTemplate. */
+  path: string;
+  /** Secret-by-reference (SECRET-001): when set, the broker injects the
+   *  matching AUTH_REFS credential and the host is auto-derived/locked to
+   *  that ref's bound host (AUTH_REFS[authRef].host) — never a free host. */
+  authRef?: 'perplexity' | 'gemini' | 'cerebras' | 'groq';
+  /** POST only. May contain the literal placeholder "{{result}}", string-
+   *  replaced (no template engine, plain string-replace like
+   *  intentShareText/dmReplyText/appActParams) with the prior result. */
+  bodyTemplate?: string;
+}
 
 export interface AgentAction {
   type: AgentActionType;
@@ -626,6 +655,12 @@ export interface AgentAction {
    *  app-act actions written before this field existed don't need a migration.
    *  Schema only in this phase; no dispatch logic reads this yet. */
   appActMethod?: 'accessibility' | 'api';
+  /** api-call (v1): a structured HTTP call to an allowlisted host. Same
+   *  approval tier as draft/notify/webhook/cli (see this interface's own
+   *  doc comment above). UI-only authoring — lib/agent-nl-parser.ts never
+   *  produces this; only AgentConfirmCard's editor writes it, gated to
+   *  orchestrated (>=2 step) agents. See AgentApiCallConfig. */
+  apiCall?: AgentApiCallConfig;
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */
@@ -777,6 +812,17 @@ export interface AgentOrchestrationStep {
    *  autonomous unattended runs still force local/Codex via resolveForAutonomous,
    *  and a top-level `Agent.runOn` on-device/cloud pin still outranks it. */
   tool?: ToolChoice;
+  /** api-call (v1): a structured HTTP call, consulted ONLY on NON-FINAL
+   *  steps — the final step's real action is always Agent.action, so an
+   *  apiCall set on the last step index is a no-op by construction in the
+   *  executor (scripts/shelly-plan-executor.js's runOrchestrationChain only
+   *  branches on step.apiCall before the isFinal dispatch). Mutually
+   *  exclusive with `tool`: no model call happens when apiCall is set, so
+   *  the confirm card must hide/clear one when the other is set. When
+   *  apiCall is set, `instruction` is display-only (a human-readable label,
+   *  e.g. via apiCallLabel()) and is NEVER sent to a model — contrast with
+   *  a plain/tool-pinned step, where instruction IS the model prompt. */
+  apiCall?: AgentApiCallConfig;
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */

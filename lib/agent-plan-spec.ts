@@ -1,4 +1,4 @@
-import type { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
+import type { Agent, AgentApiCallConfig, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
 import { detectRouteSignals } from './agent-router-scoring';
 import { resolveForAutonomous } from './agent-credential-policy';
@@ -42,7 +42,7 @@ export type PlanToolType =
   | 'groq'
   | 'unsupported';
 
-export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | '__suppressed__' | 'unsupported';
+export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'api-call' | '__suppressed__' | 'unsupported';
 
 export interface AgentPlanSpecV1 {
   kind: typeof PLAN_SPEC_KIND;
@@ -79,6 +79,7 @@ export interface AgentPlanSpecV1 {
     dmReplyText?: string;
     appActRecipeId?: string;
     appActParams?: Record<string, string>;
+    apiCall?: AgentApiCallConfig;
     safety?: ReturnType<typeof evaluateAgentActionCommand>;
     unsupportedReason?: string;
   };
@@ -299,6 +300,8 @@ function toPlanAction(
         appActRecipeId: action?.appActRecipeId,
         appActParams: action?.appActParams,
       };
+    case 'api-call':
+      return { type: 'api-call', apiCall: action?.apiCall };
     default:
       return {
         type: 'unsupported',

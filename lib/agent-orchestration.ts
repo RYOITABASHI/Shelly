@@ -15,7 +15,7 @@
  *
  * All functions are pure (no IO) for deterministic unit tests.
  */
-import type { AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
+import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
@@ -66,21 +66,56 @@ export function resolveBudget(cfg: AgentOrchestrationConfig | undefined): Resolv
 export interface NormalizedStep {
   instruction: string;
   /** Present only when this step pins a concrete tool (Phase 5). Absent =
-   *  today's exact auto-routing behavior. */
+   *  today's exact auto-routing behavior. Mutually exclusive with `apiCall`
+   *  (see AgentOrchestrationStep's doc comment, store/types.ts). */
   tool?: ToolChoice;
+  /** Present only when this step is a structured API-call step (api-call v1).
+   *  See AgentOrchestrationStep.apiCall's doc comment for the non-final-only,
+   *  display-only-instruction contract. */
+  apiCall?: AgentApiCallConfig;
 }
 
 /**
  * Normalize a single step entry — either the legacy plain-string shape or the
- * Phase 5 { instruction, tool? } object — into one canonical shape. Pure,
- * trims/truncates the instruction the same way for both input shapes.
+ * Phase 5 { instruction, tool? } / api-call { instruction, apiCall? } object —
+ * into one canonical shape. Pure, trims/truncates the instruction the same
+ * way for both input shapes. An apiCall step with a blank `instruction` gets
+ * a synthesized label (apiCallLabel) so normalizeSteps's
+ * `.filter(s => s.instruction.length > 0)` below never silently drops it —
+ * without this, an api-call step authored with no display text would vanish
+ * from the chain entirely instead of running with a generated label.
  */
 export function normalizeStep(step: string | AgentOrchestrationStep): NormalizedStep {
   if (typeof step === 'string') {
     return { instruction: step.trim().slice(0, MAX_STEP_INSTRUCTION_CHARS) };
   }
-  const instruction = (step.instruction ?? '').trim().slice(0, MAX_STEP_INSTRUCTION_CHARS);
+  let instruction = (step.instruction ?? '').trim().slice(0, MAX_STEP_INSTRUCTION_CHARS);
+  if (step.apiCall && instruction.length === 0) {
+    instruction = apiCallLabel(step.apiCall);
+  }
+  if (step.apiCall) return { instruction, apiCall: step.apiCall };
   return step.tool ? { instruction, tool: step.tool } : { instruction };
+}
+
+/** A human-readable, display-only label for an api-call step (e.g. shown in
+ *  the confirm card's step list and used as the synthesized `instruction`
+ *  when the step was authored with no display text — see normalizeStep).
+ *  NEVER sent to a model; the executor's model-call branch is skipped
+ *  entirely for an apiCall step (see AgentOrchestrationStep.apiCall). */
+export function apiCallLabel(cfg: AgentApiCallConfig): string {
+  return `${cfg.method} ${cfg.host}${cfg.path}`.slice(0, MAX_STEP_INSTRUCTION_CHARS);
+}
+
+/**
+ * Resolve the literal "{{result}}" placeholder in an api-call template
+ * (path or bodyTemplate) against the prior step's/prompt's result, via plain
+ * string-replace — no template engine, same convention as
+ * intentShareText/dmReplyText/appActParams. Callers URL-encode `lastResult`
+ * themselves before calling this for `path` (this function does no encoding
+ * of its own, since `bodyTemplate` must NOT be URL-encoded).
+ */
+export function resolveApiCallTemplate(template: string | undefined, lastResult: string): string {
+  return String(template ?? '').split('{{result}}').join(lastResult);
 }
 
 /** Return the ordered, bounded, non-empty steps for an agent (normalized). */
