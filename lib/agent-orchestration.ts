@@ -196,19 +196,26 @@ const EN_SEQUENCE_SPLIT = /(?:^|[.\n])\s*(?:first|then|next|after that|finally|l
  */
 export function parseStepsFromText(text: string): string[] {
   for (const re of [NUMBERED_SPLIT, JP_SEQUENCE_SPLIT, EN_SEQUENCE_SPLIT]) {
-    let parts = text
-      .split(new RegExp(re, re.flags.includes('g') ? re.flags : re.flags + 'g'))
+    const raw = text.split(new RegExp(re, re.flags.includes('g') ? re.flags : re.flags + 'g'));
+    // raw[0] is whatever precedes the FIRST marker match -- a schedule clause
+    // ("5分ごとに"), a greeting, or (when the marker sits at the very start of
+    // the text, the common case) an empty string. Every one of these three
+    // split patterns anchors on the marker itself (まず/次に/…, first/then/…,
+    // "1."/"ステップ1"/…), so by construction a real step can never start
+    // before the first marker -- raw[0] is always preamble, never step 1.
+    //
+    // bug #152: this used to only drop raw[0] when it matched the narrow
+    // isScheduleOnlyClause() pattern (weekday/daily markers only), which
+    // missed interval schedule cues like "5分ごとに"/"3時間ごとに" -- those
+    // survived as a spurious, content-free "step 1". Since raw[0] can never
+    // be a legitimate step regardless of what it contains, drop it
+    // unconditionally whenever a marker actually matched (raw.length > 1);
+    // when nothing matched, raw is just [text] and parts stays a single
+    // element below, so this never returns true for a genuinely single-task
+    // utterance.
+    const parts = (raw.length > 1 ? raw.slice(1) : raw)
       .map((s) => s.trim())
       .filter((s) => s.length > 1);
-    // Same leading-schedule-clause leak as detectToolPinnedSteps below (see
-    // isScheduleOnlyClause's doc comment): a schedule stated before the first
-    // まず/次に/first/numbered marker becomes its own spurious "step 1" with no
-    // real instruction content, since none of these split patterns anchor on
-    // (or strip) a leading schedule clause -- only on the sequence marker
-    // itself.
-    if (parts.length > 0 && isScheduleOnlyClause(parts[0])) {
-      parts = parts.slice(1);
-    }
     if (parts.length >= 2) {
       return parts.slice(0, HARD_MAX_STEPS).map((s) => s.slice(0, MAX_STEP_INSTRUCTION_CHARS));
     }

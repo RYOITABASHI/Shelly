@@ -186,6 +186,42 @@ describe('parseStepsFromText — conservative multi-step detection', () => {
     const many = Array.from({ length: 30 }, (_, i) => `${i + 1}. step`).join('\n');
     expect(parseStepsFromText(many).length).toBeLessThanOrEqual(HARD_MAX_STEPS);
   });
+
+  it('bug #152 on-device repro: an interval schedule clause ("5分ごとに") before the first まず marker is dropped, not kept as a spurious content-free step 1', () => {
+    const steps = parseStepsFromText(
+      '5分ごとに、まず『自律エージェントの安全性』について観点を3つ箇条書きで挙げて、次にそれぞれを1行で言い換えて、最後にMarkdownドラフトとして保存して',
+    );
+    expect(steps.length).toBe(3);
+    expect(steps.some((s) => s === '5分ごとに' || s.includes('5分ごとに'))).toBe(false);
+    expect(steps[0]).toContain('観点');
+    expect(steps[1]).toContain('言い換えて');
+    expect(steps[2]).toContain('Markdown');
+  });
+
+  it('EN equivalent: an interval schedule clause ("every 5 minutes") before the first "first" marker is dropped', () => {
+    // EN_SEQUENCE_SPLIT only anchors on ^ / "." / "\n" (unlike JP_SEQUENCE_SPLIT,
+    // which also anchors on 、) -- so the schedule preamble must end the
+    // sentence with a period for "First" to be recognised as a marker at all.
+    const steps = parseStepsFromText(
+      'Every 5 minutes. First gather sources. Then summarize. Finally email it.',
+    );
+    expect(steps.length).toBe(3);
+    expect(steps.some((s) => s.toLowerCase().includes('every 5 minutes'))).toBe(false);
+    expect(steps[0].toLowerCase()).toContain('gather');
+  });
+
+  it('a plain まず/次に/最後に chain with NO leading preamble is unaffected (no regression)', () => {
+    const steps = parseStepsFromText('まずニュースを集めて、次に要約して、最後に保存して');
+    expect(steps.length).toBe(3);
+    expect(steps[0]).toContain('ニュース');
+    expect(steps[1]).toContain('要約');
+    expect(steps[2]).toContain('保存');
+  });
+
+  it('a plain numbered list with NO leading preamble is unaffected (no regression)', () => {
+    const steps = parseStepsFromText('1. collect data\n2. analyze it\n3. report');
+    expect(steps).toEqual(['collect data', 'analyze it', 'report']);
+  });
 });
 
 describe('detectToolPinnedSteps — Phase 6 tool-mention chain detection', () => {
