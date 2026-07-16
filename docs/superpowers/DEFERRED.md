@@ -112,7 +112,7 @@
 
 ---
 
-### ✅ bug #151 — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない — 実装済み・**実機検証で新たな真因判明、再修正中** (`21217c6af`→`463cf784d`→`8e5e81565`→次コミットで真因修正、2026-07-16)
+### ✅ bug #151 — terminfo データベース欠落で less/vim/nano/tmux が正常動作しない — 実装済み・**実機検証PASS（`ebb0e93da`）** (`21217c6af`→`463cf784d`→`8e5e81565`→`ebb0e93da`、2026-07-16)
 
 **優先度**: P1（`less`/`nano`は完全に機能不全、`vim`もdefaults.vim読み込み失敗＝一部デフォルト設定が無効。今夜の`1bec5af86`bashrcラッパー修正の実機検証中に発見）
 **状態**: Fable5による根本原因調査 + 修正設計 完了(2026-07-16) → 同日中に実装完了(`21217c6af`)。**実機検証の結果、当初の「terminfo未展開」自体は正しい診断だったが、その後の2回の追加修正（`463cf784d`のgzip magic-byte sniffィング、`8e5e81565`のvimrc `syntax on`削除）はCIグリーン後も実機で `less`/`nano`/`vim` の症状が変化せず、真因ではなかったことが判明。実際の根本原因を`adb logcat`直読み+APK内バイナリの直接バイト解析で特定し、`terminfo.tar.gz`アセット自体を再生成して修正した（詳細は下記「2026-07-16 実機再調査」節）。**
@@ -123,7 +123,7 @@
 
 **修正**: `modules/terminal-emulator/android/src/main/assets/terminfo.tar.gz`を、mtimeを`2020-01-01`（octal ASCII表現内に収まる正の値）に正規化した`--format=ustar`で再パックしたものに差し替え。修正後のtarを実機に`adb push`して`/system/bin/tar xf`で直接展開テストし、`TAR_OK`＋全10エントリ（`a/ansi`, `d/dumb`, `l/linux`, `s/screen`, `s/screen-256color`, `t/tmux`, `t/tmux-256color`, `v/vt100`, `x/xterm`, `x/xterm-256color`）の展開成功を実機バイナリで直接確認済み（Kotlin側のコンパイルを待たずに検証できた、tarフォーマット自体の問題だったため）。`463cf784d`のgzip magic-byte sniffィングは実害はなく、aaptの挙動（gzipのまま出るか展開済みで出るか）のどちらにも頑健に対応する防御的改善として維持。
 
-**残作業**: この節を書いている時点でアセット差し替えはローカルで完了、次のコミット＋pushでCIビルド後に実機再検証が必要（`less README.md`/`nano CLAUDE.md`/`vim README.md`/`tmux new -s test`の4点、前回`tmux`はユーザーのタイプミス`mux new -s test`で未検証のまま）。
+**実機検証PASS（`ebb0e93da`ビルド、2026-07-16 20:5x台）**: `ebb0e93da`をCIビルド→アプリ内アップデーター→完全再起動後、`~/Shelly`で4点すべて確認: `less README.md`（README本文が正常に表示、"terminals database is inaccessible"エラーなし）／`nano CLAUDE.md`（タイトルバー"GNU nano 9.1 CLAUDE.md"+下部ヘルプメニュー表示、"cannot initialize terminal type"エラーなし）／`vim README.md`（E1187警告なしで正常にファイル内容表示）／`tmux new -s test`（ステータスバー`[test] 0:linker64* "localhost"`表示、セッション作成成功）。terminfoのtarヘッダー修正（GNU base-256拡張 → ustar標準octal ASCII）で真因が解消されたことを実機で確認済み。残作業なし、本entryクローズ。
 
 **発見**: 2026-07-16、bug #119 exec-wrapper修正の実機検証セッション中。`~/Shelly$ less README.md` → `terminals database is inaccessible`。`vim README.md` → `E1187: Failed to source defaults.vim`(Enterで継続すれば編集自体は可能)。`nano CLAUDE.md` → `ncurses: cannot initialize terminal type ($TERM="xterm-256color"); exiting`(起動不可)。
 
