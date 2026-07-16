@@ -391,7 +391,6 @@ object LibExtractor {
             // aapt may strip .gz, so try both .tar and .tar.gz
             val baseName = assetName.removeSuffix(".gz")
             val actualName = tryAssetName(context, baseName, assetName)
-            val isTarGz = actualName.endsWith(".gz")
             val tempTar = File(context.cacheDir, actualName)
             context.assets.open(actualName).use { input ->
                 tempTar.outputStream().use { output ->
@@ -399,6 +398,17 @@ object LibExtractor {
                 }
             }
             destDir.mkdirs()
+            // bug #151 follow-up (2026-07-16, on-device): the asset NAME's .gz
+            // suffix is not a reliable signal for whether the bytes are
+            // actually gzip-compressed. aapt's asset-compression handling can
+            // expose a small asset under its .gz-stripped name (as observed
+            // on-device for terminfo.tar.gz, "tar: bad header" — the bytes
+            // were still gzip-compressed but isTarGz==false skipped -z)
+            // even though other, larger assets (cli-tools.tar.gz,
+            // python3.tar.gz) have kept their .gz name and worked fine for
+            // months. Sniff the real gzip magic bytes (0x1f 0x8b) from the
+            // downloaded file instead of trusting the resolved asset name.
+            val isTarGz = tempTar.inputStream().use { it.read() == 0x1f && it.read() == 0x8b }
             val tarFlags = if (isTarGz) "xzf" else "xf"
             val pb = ProcessBuilder("/system/bin/tar", tarFlags, tempTar.absolutePath, "-C", destDir.absolutePath)
             pb.redirectErrorStream(true)
