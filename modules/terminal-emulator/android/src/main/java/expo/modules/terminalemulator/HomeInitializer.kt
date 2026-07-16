@@ -1072,7 +1072,18 @@ patchCodex(libDir);
     //      present on-device. Also threaded TERMINFO through the env -i
     //      allowlist in __shelly_run_node_clean so Codex/agent child
     //      processes inherit it.
-    private const val BASHRC_VERSION = 234
+    // 235: bug #151 related issue A — vim prints "E1187: Failed to source
+    //      defaults.vim" on every launch because the bundled Termux vim
+    //      binary hardcodes a runtime path Shelly does not ship. vim only
+    //      attempts to source defaults.vim when no ~/.vimrc exists, so
+    //      initialize() now drops a minimal ~/.vimrc (only if absent) to
+    //      silence the warning at zero APK bundling cost. This write is a
+    //      plain existence check outside the versioned .bashrc regeneration
+    //      block (same pattern as the ~/.profile write below it), so it
+    //      already runs on every initialize() call regardless of
+    //      BASHRC_VERSION; bumping here is for the changelog/audit trail,
+    //      not because the write itself needed a version gate.
+    private const val BASHRC_VERSION = 235
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2848,6 +2859,18 @@ patchCodex(libDir);
         val profile = File(home, ".profile")
         if (!profile.exists()) {
             profile.writeText("[ -f ~/.bashrc ] && . ~/.bashrc\n")
+        }
+
+        // Create .vimrc — bug #151 related issue A. The bundled Termux vim
+        // binary hardcodes a runtime path Shelly doesn't ship, so every vim
+        // launch prints "E1187: Failed to source defaults.vim" (non-fatal,
+        // but noisy). vim only tries to source defaults.vim when no ~/.vimrc
+        // exists, so a minimal vimrc satisfies that check and silences the
+        // warning at zero APK bundling cost. Only written when absent so we
+        // never clobber a user's own vim customizations.
+        val vimrc = File(home, ".vimrc")
+        if (!vimrc.exists()) {
+            vimrc.writeText("syntax on\nset nocompatible\n")
         }
 
         return home
