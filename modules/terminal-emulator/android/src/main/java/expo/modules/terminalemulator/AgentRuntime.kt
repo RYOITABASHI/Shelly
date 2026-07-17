@@ -54,7 +54,19 @@ object AgentRuntime {
     // shouldRunPlanExecutor is false, unchanged) — bumped only because the
     // generated script's runtime BEHAVIOR changed for this case, so a stale
     // pre-v16 on-disk script (old single-step collapse) is regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 16
+    // v17 (2026-07-17, docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1):
+    // wait_action_approval() no longer trusts an action-approval reply on
+    // runId+requestSha256 equality alone (both derivable by the same-uid
+    // agent script itself from files it can already read) — it now also
+    // verifies an Android Keystore RSA signature over the reply (via a new
+    // bundled node helper), with the verifier public key sha256 pinned into
+    // the script's environment the SAME way SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256
+    // already is below. AgentActionApprovalBridge.writeHumanReply/
+    // writeAutoApprovedReply now sign every reply with a dedicated Keystore
+    // key (separate alias from the escalation bridge's). Bumped so a stale
+    // pre-v17 on-disk script (unsigned-reply trust) is regenerated rather
+    // than kept.
+    private const val CURRENT_SCRIPT_VERSION = 17
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 
@@ -159,9 +171,19 @@ object AgentRuntime {
 
         val libPath = libDir.absolutePath
         val escalationPublicKeySha256 = AgentEscalationBridge.verifierPublicKeySha256(appContext)
+        // docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1 (2026-07-17):
+        // same pin-injection pattern as the escalation key above, for
+        // wait_action_approval()'s reply-signature verification. Both the sha256
+        // pin AND the DER path are injected here (unlike escalation, whose JS
+        // driver independently re-derives its own DER path from $HOME) because
+        // the legacy .sh path has no existing "$HOME sibling dir" formula to
+        // reuse — exporting the real path is simpler and less error-prone than
+        // teaching bash Android's noBackupFilesDir layout.
+        val actionApprovalPublicKeySha256 = AgentActionApprovalBridge.verifierPublicKeySha256(appContext)
+        val actionApprovalPublicKeyPath = AgentActionApprovalBridge.verifierPublicKeyFile(appContext).absolutePath
         Log.i(
             TAG,
-            "Agent $agentId starting via Shelly runtime script=$scriptPath version=$scriptVersion pinInjected=${escalationPublicKeySha256.isNotBlank()}"
+            "Agent $agentId starting via Shelly runtime script=$scriptPath version=$scriptVersion pinInjected=${escalationPublicKeySha256.isNotBlank()} actionApprovalPinInjected=${actionApprovalPublicKeySha256.isNotBlank()}"
         )
         val command = buildString {
             append("export PATH=")
@@ -173,6 +195,12 @@ object AgentRuntime {
             append(" && export SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256=")
             append(shellQuote(escalationPublicKeySha256))
             append(" && readonly SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256")
+            append(" && export SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_SHA256=")
+            append(shellQuote(actionApprovalPublicKeySha256))
+            append(" && readonly SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_SHA256")
+            append(" && export SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_FILE=")
+            append(shellQuote(actionApprovalPublicKeyPath))
+            append(" && readonly SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_FILE")
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }

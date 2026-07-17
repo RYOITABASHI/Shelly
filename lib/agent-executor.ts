@@ -113,7 +113,22 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // tool such as ab-article-eval). Bumped because the generated script's
 // runtime BEHAVIOR changed for this case (new loop, new helper functions,
 // new bash variables), not just cosmetic text.
-const AGENT_SCRIPT_VERSION = 16;
+// v17 (2026-07-17, docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1):
+// wait_action_approval() previously trusted a reply file on runId +
+// requestSha256 equality alone — both values are derivable by the agent
+// script itself (same uid as the reply file it's reading), so the script
+// could forge its own action-approval reply and bypass the human-approval
+// gate for its own configured action (cli/webhook/notify/etc). Now mirrors
+// the escalation-reply signing fix (AgentEscalationBridge / Android Keystore
+// RSA + shelly-agent-driver.js's verifier): AgentActionApprovalBridge signs
+// every reply with a dedicated (separate-alias) Keystore key, and the new
+// verify_action_approval_reply() helper checks that signature via a bundled
+// node verifier before wait_action_approval trusts a reply — an unsigned or
+// badly-signed reply is now rejected exactly like a runId/requestSha256
+// mismatch already was. Bumped because the generated script's runtime
+// BEHAVIOR changed (new helper function, new bash variables, new rejection
+// path), not just cosmetic text.
+const AGENT_SCRIPT_VERSION = 17;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -659,6 +674,15 @@ ACTION_RUN_ID="$AGENT_ID-$(date +%s)-$$"
 ACTION_APPROVAL_REQUEST_FILE="$ACTION_APPROVAL_DIR/action-$ACTION_RUN_ID.json"
 ACTION_APPROVAL_REPLY_FILE="$ACTION_APPROVAL_REPLY_DIR/action-$ACTION_RUN_ID.reply.json"
 ACTION_APPROVAL_REQUEST_SHA256=""
+# docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1 (2026-07-17):
+# reply-signature verification anchor. Both are injected by AgentRuntime.kt as
+# readonly env vars before this script is sourced (same pin-injection pattern
+# as SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256 above it) — falling back to
+# empty here only matters for host/test harnesses that source this script
+# directly without going through AgentRuntime.kt, where verify_action_approval_reply
+# then fails closed (see node_usable / pin checks there).
+ACTION_APPROVAL_PUBLIC_KEY_FILE="\${SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_FILE:-}"
+ACTION_APPROVAL_PUBLIC_KEY_SHA256="\${SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_SHA256:-}"
 ACTION_APPROVAL_TIMEOUT_SECONDS="\${SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS:-120}"
 ACTION_DISPATCH_STATUS=""
 ACTION_DISPATCH_MESSAGE=""
@@ -1476,6 +1500,60 @@ request_and_wait_approval() {
   wait_action_approval "$approval_type"
 }
 
+# docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1 (2026-07-17): the
+# runId+requestSha256 equality wait_action_approval used to rely on alone is
+# NOT a secret — requestSha256 is a hash of a file the agent script itself
+# wrote, and both files live under the SAME uid's filesystem the script runs
+# as, so the script could forge its own reply. Mirrors AgentEscalationBridge's
+# fix for the analogous escalation-reply forgery: AgentActionApprovalBridge
+# now signs every reply with an Android Keystore RSA key whose private
+# material never leaves the keystore, and this verifies that signature before
+# trusting a reply. Fails CLOSED (returns 1 / "invalid") on every negative
+# signal — missing signature, wrong algorithm, unpinned/mismatched public key,
+# unparseable key, or a signature that doesn't verify — exactly like a
+# runId/requestSha256 mismatch already did. $ACTION_APPROVAL_PUBLIC_KEY_SHA256
+# empty (host harness / a launcher that forgot to inject the pin) fails closed
+# too, matching the escalation verifier's own "no pin -> refuse the key"
+# production default (scripts/shelly-agent-driver.js's ensureEscalationVerifierKey).
+verify_action_approval_reply() {
+  run_id="$1"
+  decision="$2"
+  request_ts="$3"
+  request_sha256="$4"
+  sig_alg="$5"
+  signature="$6"
+  case "$decision" in
+    accept|decline) ;;
+    *) return 1 ;;
+  esac
+  [ "$sig_alg" = "SHA256withRSA" ] || return 1
+  [ -n "$signature" ] || return 1
+  [ -n "$ACTION_APPROVAL_PUBLIC_KEY_SHA256" ] || return 1
+  [ -n "$ACTION_APPROVAL_PUBLIC_KEY_FILE" ] && [ -s "$ACTION_APPROVAL_PUBLIC_KEY_FILE" ] || return 1
+  node_usable || return 1
+  shelly_node - "$run_id" "$decision" "$request_ts" "$request_sha256" "$signature" \
+    "$ACTION_APPROVAL_PUBLIC_KEY_FILE" "$ACTION_APPROVAL_PUBLIC_KEY_SHA256" <<'NODEEOF' 2>/dev/null
+const fs = require('fs');
+const crypto = require('crypto');
+const [runId, decision, requestTs, requestSha256, signatureB64, keyFile, keySha256] = process.argv.slice(2);
+try {
+  const der = fs.readFileSync(keyFile);
+  const actualSha256 = crypto.createHash('sha256').update(der).digest('hex');
+  if (!keySha256 || actualSha256 !== keySha256) process.exit(1);
+  const publicKey = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+  const message = [runId, decision, requestTs, requestSha256].join('\\n');
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(message, 'utf8');
+  verifier.end();
+  const signature = Buffer.from(signatureB64 || '', 'base64');
+  if (signature.length < 16 || !verifier.verify(publicKey, signature)) process.exit(1);
+  process.exit(0);
+} catch (_err) {
+  process.exit(1);
+}
+NODEEOF
+}
+
 wait_action_approval() {
   approval_type="$1"
   deadline=$(( $(date +%s) + ACTION_APPROVAL_TIMEOUT_SECONDS ))
@@ -1484,12 +1562,22 @@ wait_action_approval() {
       reply_run_id="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "runId")"
       reply_decision="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "decision")"
       reply_request_sha="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "requestSha256")"
+      reply_request_ts="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "requestTs")"
+      reply_sig_alg="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "sigAlg")"
+      reply_signature="$(json_field_file "$ACTION_APPROVAL_REPLY_FILE" "signature")"
       if [ "$reply_run_id" != "$ACTION_RUN_ID" ] ||
         [ -z "$ACTION_APPROVAL_REQUEST_SHA256" ] ||
         [ "$reply_request_sha" != "$ACTION_APPROVAL_REQUEST_SHA256" ]; then
         rm -f "$ACTION_APPROVAL_REPLY_FILE" "$ACTION_APPROVAL_REQUEST_FILE" 2>/dev/null || true
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="$approval_type action approval reply did not match the pending request."
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      if ! verify_action_approval_reply "$ACTION_RUN_ID" "$reply_decision" "$reply_request_ts" "$reply_request_sha" "$reply_sig_alg" "$reply_signature"; then
+        rm -f "$ACTION_APPROVAL_REPLY_FILE" "$ACTION_APPROVAL_REQUEST_FILE" 2>/dev/null || true
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="$approval_type action approval reply signature could not be verified."
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi

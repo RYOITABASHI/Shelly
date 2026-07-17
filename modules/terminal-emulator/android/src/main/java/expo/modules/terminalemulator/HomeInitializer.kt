@@ -1,6 +1,7 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
+import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
 import expo.modules.terminalemulator.scouter.AgentEscalationBridge
 import org.json.JSONObject
 import java.io.File
@@ -1257,6 +1258,15 @@ patchCodex(libDir);
             AgentEscalationBridge.ensureVerifierPublicKey(context)
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "agent escalation verifier key init failed: ${e.message}")
+        }
+        // docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1 (2026-07-17):
+        // same idempotent "publish the DER once, keep the Keystore-backed private
+        // key from ever touching disk" bootstrap as the escalation bridge above,
+        // for AgentActionApprovalBridge's own (separate) signing key.
+        try {
+            AgentActionApprovalBridge.ensureVerifierPublicKey(context)
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "agent action approval verifier key init failed: ${e.message}")
         }
 
         // v78–v80: extracted a node-based shelly-xdg-open.js helper that
