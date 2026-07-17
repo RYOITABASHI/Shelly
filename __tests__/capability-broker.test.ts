@@ -5,6 +5,23 @@ import * as path from 'path';
 
 const BROKER = path.resolve(__dirname, '..', 'scripts', 'shelly-capability-broker.js');
 
+// The broker guards its CLI entry point with `if (require.main === module)`
+// specifically so its pure helper functions (parseEnvFile, scrubEnvValue,
+// evaluateSecretFileMode, checkSecretFilePermissions, describeDenySignal,
+// describeApproveSignal, formatBudgetExceededMessage) can be unit-tested
+// in-process, in addition to the black-box subprocess tests above. Requiring
+// it here does NOT run main() / does NOT process.exit.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const brokerInternals = require(BROKER) as {
+  parseEnvFile: (filePath: string, wantedKey?: string) => Record<string, string>;
+  scrubEnvValue: (env: Record<string, unknown>, key: string) => void;
+  evaluateSecretFileMode: (mode: number, platform: string) => { ok: boolean; reason?: string };
+  checkSecretFilePermissions: (filePath: string) => { ok: boolean; reason?: string };
+  describeDenySignal: (verdict: any, authRef: string | null) => { category: string; explanation: string };
+  describeApproveSignal: (verdict: any, authRef: string | null) => { category: string; explanation: string };
+  formatBudgetExceededMessage: (state: any, budget: any, nowMs: number) => string;
+};
+
 interface RunResult {
   code: number;
   out: string;
@@ -164,12 +181,26 @@ describe('shelly-capability-broker: policy gates (no network)', () => {
     expect(r.audit[0].signals).toContain('ref-host-mismatch');
     // The secret must never appear in any output file.
     expect(r.err + r.out + JSON.stringify(r.audit)).not.toContain('pplx-SECRET');
+    // 2026-07-17 diagnostic-display follow-up: the err message names the
+    // specific policy check that failed (auth_ref/host binding), not just
+    // classifyEgress's raw reason string.
+    expect(r.err).toContain('[auth-ref-host-mismatch]');
+    expect(r.err).toContain('perplexity');
   });
 
   it('DENYs plaintext http to a remote host', async () => {
     const r = await runBroker(dir, { url: 'http://api.groq.com/x' });
     expect(r.code).toBe(40);
     expect(r.audit[0].signals).toContain('insecure-scheme');
+    expect(r.err).toContain('[insecure-scheme]');
+  });
+
+  it('DENYs an unrecognized auth_ref name', async () => {
+    const r = await runBroker(dir, { url: 'https://api.perplexity.ai/chat/completions', authRef: 'not-a-real-ref' });
+    expect(r.code).toBe(40);
+    expect(r.audit[0].decision).toBe('deny');
+    expect(r.err).toContain('[unknown-auth-ref]');
+    expect(r.err).toContain('not-a-real-ref');
   });
 
   it('blocks a non-allowlist host fail-closed when not approved (41)', async () => {
@@ -177,6 +208,7 @@ describe('shelly-capability-broker: policy gates (no network)', () => {
     expect(r.code).toBe(41);
     expect(r.audit[0].decision).toBe('approve');
     expect(r.audit[0].signals).toContain('non-allowlist-host');
+    expect(r.err).toContain('[non-allowlist-host]');
   });
 
   it('fails closed with NO_SECRET (43) when the auth_ref env var is missing', async () => {
@@ -196,9 +228,10 @@ describe('shelly-capability-broker: policy gates (no network)', () => {
     expect(r.audit[0].signals).toContain('tainted-secret-spend');
     // The secret must never appear in any output file even though it was loaded.
     expect(r.err + r.out + JSON.stringify(r.audit)).not.toContain('pplx-SECRET');
+    expect(r.err).toContain('[tainted-secret-spend]');
   });
 
-  it('fails closed with BUDGET (42) when the call budget is exhausted', async () => {
+  it('fails closed with BUDGET (42) when the call budget is exhausted, with real limit/usage numbers', async () => {
     const r = await runBroker(dir, {
       url: 'https://api.groq.com/openai/v1/chat/completions',
       authRef: 'groq',
@@ -207,6 +240,11 @@ describe('shelly-capability-broker: policy gates (no network)', () => {
     });
     expect(r.code).toBe(42);
     expect(r.err).toMatch(/budget/);
+    // 2026-07-17 diagnostic-display follow-up: real configured limits (40
+    // calls / 10 min) and real current usage (40 calls made), not a bare
+    // "budget exhausted" string.
+    expect(r.err).toContain('40 calls / 10 min budget exceeded');
+    expect(r.err).toContain('made 40 call(s)');
   });
 });
 
@@ -659,5 +697,119 @@ describe('shelly-capability-broker: EXEC-001 workspace.exec', () => {
     expect(r.code).toBe(124);
     expect(r.err).toContain('timed out');
     expect(r.audit[0].exitCode).toBe(124);
+  });
+});
+
+// 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker
+// Phase 0" — "SECRET-001 は部分適用...完全 de-source は follow-up"). Unit
+// tests for the pure helpers (in-process, via the require.main guard) plus
+// one black-box integration test for the permission gate wired into main().
+describe('shelly-capability-broker: SECRET-001 full de-source', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = makeDir();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('parseEnvFile(path, wantedKey) only materializes the ONE requested secret, never the others in the same file', () => {
+    const envFile = path.join(dir, '.env');
+    fs.writeFileSync(
+      envFile,
+      "PERPLEXITY_API_KEY='pplx-SECRETSECRETSECRETSECRET'\nGEMINI_API_KEY='AIza-OTHERSECRETOTHERSECRET'\nGROQ_API_KEY='gsk_YETANOTHERSECRETVALUE'\n",
+    );
+    const scoped = brokerInternals.parseEnvFile(envFile, 'PERPLEXITY_API_KEY');
+    expect(scoped).toEqual({ PERPLEXITY_API_KEY: 'pplx-SECRETSECRETSECRETSECRET' });
+    expect(Object.keys(scoped)).toHaveLength(1);
+    expect(scoped).not.toHaveProperty('GEMINI_API_KEY');
+    expect(scoped).not.toHaveProperty('GROQ_API_KEY');
+
+    // Unfiltered call (no wantedKey) keeps returning everything — used by no
+    // live call site today, but proves the filter is additive, not a
+    // behaviour change for any hypothetical future caller that wants the
+    // full map.
+    const all = brokerInternals.parseEnvFile(envFile);
+    expect(Object.keys(all).sort()).toEqual(['GEMINI_API_KEY', 'GROQ_API_KEY', 'PERPLEXITY_API_KEY']);
+  });
+
+  it('scrubEnvValue drops the resolved secret from the in-memory env object', () => {
+    const env: Record<string, string | null> = { PERPLEXITY_API_KEY: 'pplx-SECRETSECRETSECRETSECRET' };
+    brokerInternals.scrubEnvValue(env, 'PERPLEXITY_API_KEY');
+    expect(env.PERPLEXITY_API_KEY).toBeNull();
+    // Never throws / no-ops cleanly on an absent key.
+    expect(() => brokerInternals.scrubEnvValue(env, 'NOT_PRESENT')).not.toThrow();
+  });
+
+  it('evaluateSecretFileMode denies group/world-accessible modes on a real (non-Windows) platform with a clear reason', () => {
+    const tooOpen = brokerInternals.evaluateSecretFileMode(0o100644, 'linux');
+    expect(tooOpen.ok).toBe(false);
+    expect(tooOpen.reason).toContain('644');
+    expect(tooOpen.reason).toContain('600');
+
+    const worldWritable = brokerInternals.evaluateSecretFileMode(0o100666, 'linux');
+    expect(worldWritable.ok).toBe(false);
+  });
+
+  it('evaluateSecretFileMode allows an owner-only mode on a real (non-Windows) platform', () => {
+    expect(brokerInternals.evaluateSecretFileMode(0o100600, 'linux')).toEqual({ ok: true });
+  });
+
+  it('evaluateSecretFileMode is a no-op on win32 (no real POSIX permission bits to check)', () => {
+    // Windows synthesizes ~0o666 for any writable file regardless of real
+    // ACLs, so enforcing this check there would false-positive on every
+    // file; the production target (Android) is where it applies for real.
+    expect(brokerInternals.evaluateSecretFileMode(0o100644, 'win32')).toEqual({ ok: true });
+    expect(brokerInternals.evaluateSecretFileMode(0o100666, 'win32')).toEqual({ ok: true });
+  });
+
+  it('checkSecretFilePermissions does not fail-closed on a missing .env file (lets the normal NO_SECRET path report it)', () => {
+    const missing = path.join(dir, 'does-not-exist', '.env');
+    expect(brokerInternals.checkSecretFilePermissions(missing)).toEqual({ ok: true });
+  });
+
+  // Real filesystem permission enforcement is only meaningful where the host
+  // OS actually has POSIX group/other bits — Windows dev machines (this
+  // suite's normal CI/local environment) cannot construct a genuinely
+  // insecure-mode file via fs.chmodSync (it only toggles the read-only DOS
+  // attribute), so this integration-level check is gated to POSIX hosts.
+  // Windows coverage for the underlying rule lives in the
+  // evaluateSecretFileMode unit tests above, which are host-OS-independent.
+  const posixIt = process.platform === 'win32' ? it.skip : it;
+  posixIt('main() fails closed with a clear permission message when the real .env file is group/world-readable (POSIX only)', async () => {
+    const insecureEnvFile = path.join(dir, '.env');
+    fs.writeFileSync(insecureEnvFile, "PERPLEXITY_API_KEY='pplx-SECRETSECRETSECRETSECRET'\n");
+    fs.chmodSync(insecureEnvFile, 0o644);
+    const outFile = path.join(dir, 'out.txt');
+    const errFile = path.join(dir, 'err.txt');
+    const bodyFile = path.join(dir, 'body.json');
+    fs.writeFileSync(bodyFile, '{}');
+    await new Promise<void>((resolve) => {
+      execFile(
+        'node',
+        [
+          BROKER,
+          '--method', 'POST',
+          '--url', 'https://api.perplexity.ai/chat/completions',
+          '--body-file', bodyFile,
+          '--auth-ref', 'perplexity',
+          '--secret-env-file', insecureEnvFile,
+          '--out', outFile,
+          '--err', errFile,
+          '--timeout-seconds', '5',
+        ],
+        { encoding: 'utf8' },
+        (err: any) => {
+          expect(err).not.toBeNull();
+          expect(typeof err.code).toBe('number');
+          expect(err.code).toBe(43); // EXIT.NO_SECRET
+          const errText = fs.readFileSync(errFile, 'utf8');
+          expect(errText).toContain('insecure permissions');
+          expect(errText).toContain('600');
+          expect(errText).not.toContain('pplx-SECRET');
+          resolve();
+        },
+      );
+    });
   });
 });

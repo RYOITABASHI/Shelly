@@ -37,7 +37,9 @@
  *   40  denied by policy (bad URL / secret bound to another host)
  *   41  non-allowlist host requires approval (fail-closed; not pre-approved)
  *   42  budget exhausted
- *   43  auth_ref could not be resolved (missing/empty secret)
+ *   43  auth_ref could not be resolved (missing/empty secret, or the secrets
+ *       file failed the SECRET-001 permission check — see
+ *       checkSecretFilePermissions)
  *   44  usage error
  *   45  scoped.fs denied or failed
  *   46  workspace.exec denied
@@ -176,6 +178,90 @@ function classifyEgress(url, authRef, tainted) {
     return { decision: 'approve', reason: 'tainted input plus a live secret "' + authRef + '" to ' + host + ' requires human approval', signals: signals };
   }
   return { decision: 'allow', reason: 'host ' + host + ' is allowlisted', signals: signals };
+}
+
+// ---------------------------------------------------------------------------
+// Human-facing diagnostic messages (2026-07-17 follow-up,
+// docs/superpowers/DEFERRED.md "Capability broker Phase 0" — "policy deny /
+// budget 超過の診断表示改善"). classifyEgress/checkBudget above are NOT
+// modified by this follow-up (per the task's explicit constraint): these
+// functions are read-only interpreters of their existing
+// {decision, reason, signals} / {ok, reason} output. They translate the
+// terse structural signal names into a stable, greppable category plus a
+// plain-language sentence, so a run-log reader can tell WHICH check failed
+// (bad scheme? unknown ref? wrong host for this ref? non-allowlisted
+// destination? tainted content spending a live secret?) without parsing
+// classifyEgress's short reason string, and so a budget-exceeded message
+// carries the run's actual configured limits and actual usage instead of a
+// bare "budget exhausted".
+// ---------------------------------------------------------------------------
+
+function describeDenySignal(verdict, authRef) {
+  const signals = verdict.signals || [];
+  if (signals.indexOf('insecure-scheme') !== -1) {
+    return {
+      category: 'insecure-scheme',
+      explanation: 'the request URL is not https (or http to loopback) — only encrypted egress is permitted',
+    };
+  }
+  if (signals.indexOf('ref-host-mismatch') !== -1) {
+    return {
+      category: 'auth-ref-host-mismatch',
+      explanation:
+        'auth_ref "' +
+        (authRef || '') +
+        '" is bound to a single fixed host and this request targets a different one — a secret can never follow a mis-routed URL',
+    };
+  }
+  if (authRef && signals.indexOf('secret-spend') !== -1) {
+    return {
+      category: 'unknown-auth-ref',
+      explanation: 'auth_ref "' + authRef + '" is not a recognized secret reference',
+    };
+  }
+  return { category: 'policy-denied', explanation: 'the request failed a structural policy check' };
+}
+
+function describeApproveSignal(verdict, authRef) {
+  const signals = verdict.signals || [];
+  if (signals.indexOf('tainted-secret-spend') !== -1) {
+    return {
+      category: 'tainted-secret-spend',
+      explanation:
+        'this request combines untrusted (tainted) input with a live secret ("' +
+        (authRef || '') +
+        '") — even on an allowlisted, correctly-bound host, spending a real API key on attacker-influenced content always requires a human to approve, with no mid-run auto-approval path',
+    };
+  }
+  if (signals.indexOf('non-allowlist-host') !== -1) {
+    return {
+      category: 'non-allowlist-host',
+      explanation: 'the destination host is not on the egress allowlist and needs a human to allow it for this one request',
+    };
+  }
+  return { category: 'approval-required', explanation: 'the request requires human approval before it can proceed' };
+}
+
+/**
+ * Formats a clear budget-exceeded message with the run's actual configured
+ * limits AND its actual usage so far — e.g. "40 calls / 10 min budget
+ * exceeded: this run has made 40 call(s) over 3.2 min" — instead of a bare
+ * "budget exhausted" string. Purely reformats the numbers checkBudget
+ * already computed; does not change the ok/deny decision itself.
+ */
+function formatBudgetExceededMessage(state, budget, nowMs) {
+  const maxWallMin = budget.maxWallMs / 60000;
+  const elapsedMin = (nowMs - state.startedAtMs) / 60000;
+  return (
+    budget.maxCalls +
+    ' calls / ' +
+    (Number.isInteger(maxWallMin) ? String(maxWallMin) : maxWallMin.toFixed(1)) +
+    ' min budget exceeded: this run has made ' +
+    state.calls +
+    ' call(s) over ' +
+    elapsedMin.toFixed(1) +
+    ' min'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +746,19 @@ function classifyCommandSafety(command) {
 // does not inherit these — the broker must read the file itself. That is the
 // point: the raw secret never becomes an environment variable a sibling skill can
 // read via /proc, and never rides in this process's argv.
-function parseEnvFile(filePath) {
+//
+// SECRET-001 full de-source (2026-07-17 follow-up, docs/superpowers/DEFERRED.md
+// "Capability broker Phase 0"). An optional `wantedKey` narrows what gets
+// materialized into the returned JS object. Any single request only ever
+// needs ONE secret (the auth_ref's envVar), so parsing — and then
+// RETAINING, for the rest of this process's lifetime — every OTHER
+// configured secret (the other backends' API keys) just to throw them away
+// is unnecessary exposure surface: a heap dump or debugger attach mid-request
+// would otherwise see every configured key, not just the one in use. When
+// `wantedKey` is supplied, any other KEY=value line is skipped entirely
+// (never assigned to a local, never placed in `out`) and parsing stops as
+// soon as the wanted key is found.
+function parseEnvFile(filePath, wantedKey) {
   const out = {};
   let text;
   try {
@@ -676,6 +774,7 @@ function parseEnvFile(filePath) {
     let key = line.slice(0, eq).trim();
     key = key.replace(/^export\s+/, '');
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (wantedKey && key !== wantedKey) continue;
     let val = line.slice(eq + 1).trim();
     if (val.length >= 2 && val[0] === "'" && val[val.length - 1] === "'") {
       val = val.slice(1, -1).replace(/'\\''/g, "'");
@@ -683,8 +782,77 @@ function parseEnvFile(filePath) {
       val = val.slice(1, -1).replace(/\\(["\\])/g, '$1');
     }
     out[key] = val;
+    if (wantedKey && key === wantedKey) break;
   }
   return out;
+}
+
+/**
+ * SECRET-001 full de-source: drops the reference to a resolved secret value
+ * from an in-memory env object as soon as it has been copied into the
+ * outbound request header, so `env` stops being a live, easily-found
+ * reference to it for whatever remains of this process's lifetime (the
+ * network send + response wait). Defence-in-depth (a heap dump/debugger
+ * attach window during that send), not a hard guarantee — the original V8
+ * string's backing storage may still exist until the GC reclaims it — but it
+ * removes the one obvious reachable reference.
+ */
+function scrubEnvValue(env, key) {
+  if (env && Object.prototype.hasOwnProperty.call(env, key)) {
+    env[key] = null;
+  }
+}
+
+/**
+ * SECRET-001 full de-source: pure evaluation of a stat mode against the
+ * "not group/world accessible" rule, factored out from the actual
+ * fs.statSync call so it can be unit-tested with synthetic mode values
+ * regardless of host OS — see checkSecretFilePermissions for why real
+ * enforcement only applies on non-Windows platforms.
+ */
+function evaluateSecretFileMode(mode, platform) {
+  if (platform === 'win32') {
+    // Windows has no real POSIX group/other permission bits; fs.stat
+    // synthesizes a uniform mode (effectively ~0o666 for any writable file)
+    // that would false-positive on literally every file. The production
+    // target for this broker is Android (real Linux permissions, and the
+    // .env file settings-store writes there), so the check is only
+    // meaningful — and only enabled — on a platform where it means anything.
+    return { ok: true };
+  }
+  const perm = (mode == null ? 0 : mode) & 0o777;
+  if (perm & 0o077) {
+    return {
+      ok: false,
+      reason:
+        'insecure permissions on secrets file (mode ' +
+        perm.toString(8).padStart(3, '0') +
+        '; group/other must have no access — expected 600 or stricter)',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Verifies the agent .env file is not group/world-readable before trusting
+ * its contents. Fails closed (refuses to read secrets) rather than silently
+ * proceeding if the file is looser than expected: a plaintext secrets file
+ * that any other process on the device can read off disk directly defeats
+ * the point of keeping the raw value out of argv/child env.
+ */
+function checkSecretFilePermissions(filePath) {
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (_) {
+    // Missing/unreadable file: let the normal parseEnvFile + "no configured
+    // secret" path report that (already a clear diagnostic) — do not
+    // fail-closed here on a merely-absent file.
+    return { ok: true };
+  }
+  const verdict = evaluateSecretFileMode(stat.mode, process.platform);
+  if (!verdict.ok) return { ok: false, reason: verdict.reason + ' (' + filePath + ')' };
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -1388,7 +1556,11 @@ function main() {
   // 1. Structural classification.
   const verdict = classifyEgress(url, authRef, tainted);
   if (verdict.decision === 'deny') {
-    fs.writeSync(errFd, 'capability broker: ' + redact(verdict.reason) + '\n');
+    const denyInfo = describeDenySignal(verdict, authRef);
+    fs.writeSync(
+      errFd,
+      'capability broker DENIED [' + denyInfo.category + ']: ' + denyInfo.explanation + ' (' + redact(verdict.reason) + ')\n',
+    );
     return finish(EXIT.DENY, verdict);
   }
 
@@ -1399,7 +1571,8 @@ function main() {
   const budgetState = loadBudgetState(budgetFile, nowMs);
   const budgetVerdict = checkBudget(budgetState, DEFAULT_BUDGET, nowMs);
   if (!budgetVerdict.ok) {
-    fs.writeSync(errFd, 'capability broker: ' + budgetVerdict.reason + '\n');
+    const budgetMessage = formatBudgetExceededMessage(budgetState, DEFAULT_BUDGET, nowMs);
+    fs.writeSync(errFd, 'capability broker BUDGET EXCEEDED: ' + budgetMessage + '\n');
     return finish(EXIT.BUDGET, verdict, { reason: budgetVerdict.reason });
   }
 
@@ -1446,7 +1619,17 @@ function main() {
         nowIso: nowIso,
       });
       if (!waitResult.approved) {
-        fs.writeSync(errFd, 'capability broker: ' + redact(waitResult.reason || verdict.reason) + ' (egress blocked — not approved)\n');
+        const approveInfo = describeApproveSignal(verdict, authRef);
+        fs.writeSync(
+          errFd,
+          'capability broker BLOCKED [' +
+            approveInfo.category +
+            ']: ' +
+            approveInfo.explanation +
+            ' — ' +
+            redact(waitResult.reason || verdict.reason) +
+            ' (egress blocked — not approved)\n',
+        );
         return finish(EXIT.APPROVAL_REQUIRED, verdict);
       }
       // Approved for THIS request only: fall through exactly as if
@@ -1457,16 +1640,45 @@ function main() {
       // Fail-closed: a non-allowlist host is blocked unless the call site
       // already obtained a human approval (--approved 1), or (above) this
       // process itself just obtained one via the mid-run flow.
-      fs.writeSync(errFd, 'capability broker: ' + redact(verdict.reason) + ' (egress blocked — not approved)\n');
+      const approveInfo = describeApproveSignal(verdict, authRef);
+      fs.writeSync(
+        errFd,
+        'capability broker BLOCKED [' +
+          approveInfo.category +
+          ']: ' +
+          approveInfo.explanation +
+          ' (' +
+          redact(verdict.reason) +
+          ', egress blocked — not approved)\n',
+      );
       return finish(EXIT.APPROVAL_REQUIRED, verdict);
     }
   }
 
   // 3. Secret-by-reference resolution (inside the broker only).
+  //
+  // SECRET-001 full de-source (2026-07-17 follow-up): three hardenings beyond
+  // "the raw value never returns to the shell":
+  //   (a) checkSecretFilePermissions fails closed if the .env file is
+  //       group/world-accessible, instead of silently trusting whatever
+  //       permissions it happens to have;
+  //   (b) parseEnvFile is called with the ONE envVar this request needs, so
+  //       the other configured backends' secrets are never even parsed into
+  //       a JS object, let alone retained;
+  //   (c) scrubEnvValue drops the resolved value's only live reference from
+  //       `env` immediately after it is copied into the outbound header.
   const headers = {};
   if (authRef) {
     const spec = AUTH_REFS[authRef]; // classifyEgress already validated existence + host binding
-    const env = envFile ? parseEnvFile(envFile) : {};
+    let env = {};
+    if (envFile) {
+      const permVerdict = checkSecretFilePermissions(envFile);
+      if (!permVerdict.ok) {
+        fs.writeSync(errFd, 'capability broker: ' + redact(permVerdict.reason) + '\n');
+        return finish(EXIT.NO_SECRET, verdict, { reason: permVerdict.reason });
+      }
+      env = parseEnvFile(envFile, spec.envVar);
+    }
     const value = env[spec.envVar];
     if (!value) {
       const reason = 'auth_ref "' + authRef + '" has no configured secret (' + spec.envVar + ')';
@@ -1474,6 +1686,7 @@ function main() {
       return finish(EXIT.NO_SECRET, verdict, { reason: reason });
     }
     headers[spec.header] = spec.scheme + value;
+    scrubEnvValue(env, spec.envVar);
   }
 
   // 4. Body (POST) and send.
@@ -1522,4 +1735,27 @@ function main() {
   }
 }
 
-main();
+// Only run the CLI entry point when this file is executed directly (`node
+// shelly-capability-broker.js ...`, exactly how the generated agent .sh and
+// the existing black-box tests invoke it) — NOT when it is `require()`d, so
+// unit tests can exercise the pure helper functions below without also
+// triggering main()'s process.exit-driven CLI flow. Behaviourally inert for
+// every existing caller: require.main === module is true for direct
+// execution, so `node scripts/shelly-capability-broker.js ...` still runs
+// main() exactly as before.
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  classifyEgress,
+  checkBudget,
+  parseEnvFile,
+  scrubEnvValue,
+  evaluateSecretFileMode,
+  checkSecretFilePermissions,
+  describeDenySignal,
+  describeApproveSignal,
+  formatBudgetExceededMessage,
+  redact,
+};
